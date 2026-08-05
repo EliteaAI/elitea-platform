@@ -176,13 +176,23 @@ func main() {
 	// Mount the /llm dialect surface over the embedded bifrost/core client.
 	// WithLoopBreaker arms circular-routing guard #2 (spec §2.6) — it MUST be
 	// present in production wiring; TestMainWiring asserts it.
+	// WithStreamGrace / WithStreamDrainLimit arm the disconnect-billing path
+	// (issue #9): a streamed response whose client vanishes keeps its provider
+	// stream alive for a bounded grace period so the authoritative usage
+	// trailer can still be billed, with the concurrent drains bounded. Without
+	// this wiring a mid-stream disconnect is free inference — a hard-budget
+	// bypass; TestMainWiring asserts both are present.
 	handlerOpts := append(
 		[]llmproxy.HandlerOption{
 			llmproxy.WithModelResolver(modelResolver),
 			llmproxy.WithLoopBreaker(),
+			llmproxy.WithStreamGrace(cfg.StreamGrace),
+			llmproxy.WithStreamDrainLimit(cfg.StreamDrainLimit),
 		},
 		budgetOpts...,
 	)
+	logger.Info("stream disconnect billing configured",
+		"grace", cfg.StreamGrace, "drain_max_inflight", cfg.StreamDrainLimit)
 	handler := llmproxy.NewHandler(
 		llmproxy.NewBifrostRouter(srv.Core()),
 		logger,

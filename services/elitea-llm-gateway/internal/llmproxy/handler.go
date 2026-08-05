@@ -65,6 +65,32 @@ type Handler struct {
 	// keyed by the scope+scopeID admission key. Values are decremented by the
 	// billing goroutine after UpdateUsage completes.
 	inflightNano sync.Map // key: string → *atomic.Int64
+
+	// streamGrace is how long a stream whose SSE loop exited early may keep its
+	// provider stream alive waiting for the authoritative usage trailer
+	// (issue #9, DECISIONS.md 2026-08-05). 0 disables the mechanism: the
+	// provider context is then bound to the request context exactly as before,
+	// and an early exit bills nothing. Set via WithStreamGrace.
+	streamGrace time.Duration
+
+	// drainSlots bounds the number of concurrently-detained streams: each drain
+	// holds a goroutine and an open provider socket for up to streamGrace.
+	// nil = unbounded (unit-test construction only); production wiring always
+	// sets a limit via WithStreamDrainLimit.
+	drainSlots chan struct{}
+
+	// drainClosing is closed by DrainBilling so a detached drain stops waiting
+	// for a provider trailer once graceful shutdown starts — the pod's
+	// termination grace must not be held hostage to streamGrace.
+	drainClosing     chan struct{}
+	drainClosingOnce sync.Once
+
+	// streamCtxHook receives every context built by newStreamContext. It is a
+	// TEST SEAM ONLY (nil in production, never set by any HandlerOption): the
+	// "was the stream context cancelled when the budget gate blocked the
+	// request?" assertion has no other observation point, because a blocked
+	// request never reaches the router.
+	streamCtxHook func(*schemas.BifrostContext)
 }
 
 // HandlerOption customises Handler construction. It keeps NewHandler's core
@@ -124,6 +150,36 @@ func WithAlertEventPublisher(p AlertEventPublisher) HandlerOption {
 	return func(h *Handler) { h.alertEvents = p }
 }
 
+// WithStreamGrace sets how long an early-exiting stream may keep its provider
+// stream alive waiting for the authoritative usage trailer (issue #9). The
+// value is clamped to [0, MaxStreamGrace]; 0 disables the mechanism entirely
+// (provider context stays bound to the request context, early exits bill
+// nothing). The composition root wires this from LLM_STREAM_GRACE_MS.
+func WithStreamGrace(d time.Duration) HandlerOption {
+	return func(h *Handler) {
+		if d < 0 {
+			d = 0
+		}
+		if d > MaxStreamGrace {
+			d = MaxStreamGrace
+		}
+		h.streamGrace = d
+	}
+}
+
+// WithStreamDrainLimit bounds how many abandoned streams may be drained
+// concurrently. n <= 0 leaves the pool unbounded (test construction); the
+// composition root always passes a positive limit.
+func WithStreamDrainLimit(n int) HandlerOption {
+	return func(h *Handler) {
+		if n <= 0 {
+			h.drainSlots = nil
+			return
+		}
+		h.drainSlots = make(chan struct{}, n)
+	}
+}
+
 // NewHandler builds a /llm Handler over the given router. logger may be nil
 // (a discarding logger is substituted). identitySecret may be empty to disable
 // HMAC verification of the forwarded identity headers. Optional features (the
@@ -132,7 +188,18 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(discard{}, nil))
 	}
-	h := &Handler{router: router, logger: logger, identitySecret: identitySecret}
+	h := &Handler{
+		router:         router,
+		logger:         logger,
+		identitySecret: identitySecret,
+		// Issue #9: the grace-period drain is ON by default so a Handler built
+		// without the option (tests, embedders) still bills a disconnected
+		// stream rather than silently dropping it. Production overrides the
+		// duration and the concurrency bound from config.
+		streamGrace:  DefaultStreamGrace,
+		drainSlots:   make(chan struct{}, DefaultStreamDrainLimit),
+		drainClosing: make(chan struct{}),
+	}
 	for _, opt := range opts {
 		opt(h)
 	}
@@ -152,6 +219,14 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 //  3. srv.Shutdown()         — closes HTTP, bifrost, NATS.
 func (h *Handler) DrainBilling() {
 	h.billingClosing.Store(1)
+	// Tell in-flight stream drains to stop waiting for a provider trailer: a
+	// stream that has already lost its client must not extend the pod's
+	// termination grace by up to streamGrace (issue #9).
+	h.drainClosingOnce.Do(func() {
+		if h.drainClosing != nil {
+			close(h.drainClosing)
+		}
+	})
 	h.billingWg.Wait()
 }
 
@@ -165,14 +240,63 @@ func (discard) Write(p []byte) (int, error) { return len(p), nil }
 // projectID as the Bifrost virtual-key value (design §5.3). It returns false
 // (after writing a 403) when a configured identity secret does not verify.
 func (h *Handler) newContext(w http.ResponseWriter, r *http.Request) (*schemas.BifrostContext, bool) {
+	ctx, _, ok := h.buildContext(w, r, false)
+	return ctx, ok
+}
+
+// newStreamContext builds the BifrostContext for a STREAMING request. Unlike
+// newContext it decouples the provider stream from the client's request
+// context: the parent is context.WithoutCancel(r.Context()), so a client
+// disconnect no longer makes net/http cancel the context that bifrost's stream
+// goroutine is watching (issue #9).
+//
+// That cancellation is what destroyed the authoritative usage trailer — the
+// very record needed to bill the tokens the provider had already generated —
+// and it is why simply draining the channel after a disconnect billed nothing.
+// The returned streamCancel hands that decision to us instead: the SSE loop
+// cancels on clean completion, and on an early exit the detached drain cancels
+// once the trailer arrives or the grace period expires.
+//
+// The caller MUST ensure cancel is eventually invoked on every path (it is
+// idempotent). Values — the virtual-key/project handle and user ID, on which
+// per-project credential resolution depends — survive WithoutCancel unchanged.
+func (h *Handler) newStreamContext(w http.ResponseWriter, r *http.Request) (*schemas.BifrostContext, *streamCancel, bool) {
+	ctx, sc, ok := h.buildContext(w, r, h.streamGrace > 0)
+	if ok && h.streamCtxHook != nil {
+		h.streamCtxHook(ctx)
+	}
+	return ctx, sc, ok
+}
+
+// requestContext picks the streaming or unary context for a handler that serves
+// both from one body (Chat, Responses, Messages). The caller owns the returned
+// cancel until it hands it to a stream loop.
+func (h *Handler) requestContext(w http.ResponseWriter, r *http.Request, streaming bool) (*schemas.BifrostContext, *streamCancel, bool) {
+	if streaming {
+		return h.newStreamContext(w, r)
+	}
+	return h.buildContext(w, r, false)
+}
+
+// buildContext is the shared body of newContext / newStreamContext. When
+// detach is false the returned context inherits request cancellation exactly as
+// before; the cancel is still returned so callers can release the context's
+// watcher deterministically.
+func (h *Handler) buildContext(w http.ResponseWriter, r *http.Request, detach bool) (*schemas.BifrostContext, *streamCancel, bool) {
 	if !verifySignature(r.Header, h.identitySecret) {
 		writeError(w, http.StatusForbidden, "permission_error", "invalid identity signature", "")
-		return nil, false
+		return nil, nil, false
 	}
 
-	// Inherit the request's cancellation so a client disconnect propagates into
-	// core; no deadline (the SSE path is long-lived, §9.5).
-	ctx := schemas.NewBifrostContext(r.Context(), schemas.NoDeadline)
+	// Unary (and grace-disabled streaming) requests inherit the request's
+	// cancellation so a client disconnect propagates into core; no deadline
+	// (the SSE path is long-lived, §9.5).
+	parent := r.Context()
+	if detach {
+		parent = context.WithoutCancel(r.Context())
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(parent)
+	sc := &streamCancel{fn: cancel}
 
 	// vk = the resolved projectID handle (never the raw key). Only set when
 	// present; a missing project is fatal at the gateway only when
@@ -186,7 +310,7 @@ func (h *Handler) newContext(w http.ResponseWriter, r *http.Request) (*schemas.B
 			ctx.SetValue(schemas.BifrostContextKeyUserID, id.userID)
 		}
 	}
-	return ctx, true
+	return ctx, sc, true
 }
 
 // finish applies the response-header hygiene every /llm response gets: strip
@@ -222,7 +346,8 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx, ok := h.newContext(w, r)
+	streaming := isStream(req.Stream)
+	ctx, sc, ok := h.requestContext(w, r, streaming)
 	if !ok {
 		return
 	}
@@ -233,16 +358,21 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	// format does not expose a pre-counted prompt token count. The FSM uses
 	// reqCostNano only for the FRESH_NEAR per-replica cap; 0 never over-gates.
 	if !h.checkBudget(w, ctx, provider, model, 0) {
+		sc.cancel() // blocked before dispatch: nothing owns the context
 		return
 	}
 
-	if isStream(req.Stream) {
+	if streaming {
 		ch, bErr := h.router.ChatCompletionStreamRequest(ctx, bifReq)
 		// FIX #5: pass billing context so streamOpenAI can call updateUsage
 		// after the channel drains with the final usage-carrying chunk.
-		h.streamOpenAI(w, ctx, provider, model, ch, bErr)
+		// Issue #9: streamOpenAI takes ownership of sc — it settles the stream
+		// inline on a clean close, or hands both channel and cancel to the
+		// detached drain on an early exit.
+		h.streamOpenAI(w, r.Context().Done(), ctx, sc, provider, model, ch, bErr)
 		return
 	}
+	defer sc.cancel()
 	// Stamp the header BEFORE dispatch: the value is the pre-dispatch overhead
 	// (see t0 above), and headers must be set before the first body write anyway.
 	setElapsedHeader(w, time.Since(t0))
@@ -316,7 +446,8 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx, ok := h.newContext(w, r)
+	streaming := isStream(req.Stream)
+	ctx, sc, ok := h.requestContext(w, r, streaming)
 	if !ok {
 		return
 	}
@@ -325,16 +456,18 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	// FIX #3: enforce the budget gate before calling the provider (mirrors Messages).
 	provider, model := providerModelFromResponsesReq(bifReq)
 	if !h.checkBudget(w, ctx, provider, model, 0) {
+		sc.cancel() // blocked before dispatch: nothing owns the context
 		return
 	}
 
-	if isStream(req.Stream) {
+	if streaming {
 		ch, bErr := h.router.ResponsesStreamRequest(ctx, bifReq)
 		// FIX #5: pass billing context so streamResponses can call updateUsage
 		// after the channel drains with the final usage chunk.
-		h.streamResponses(w, ctx, provider, model, ch, bErr, false)
+		h.streamResponses(w, r.Context().Done(), ctx, sc, provider, model, ch, bErr, false)
 		return
 	}
+	defer sc.cancel()
 	resp, bErr := h.router.ResponsesRequest(ctx, bifReq)
 	h.writeUnary(w, resp, bErr)
 	// FIX #3: bill the unary response after writing to the client.
@@ -397,7 +530,8 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ctx, ok := h.newContext(w, r)
+	streaming := isStream(req.Stream)
+	ctx, sc, ok := h.requestContext(w, r, streaming)
 	if !ok {
 		return
 	}
@@ -406,16 +540,18 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	provider, model := providerModelFromResponsesReq(bifReq)
 	// Pre-flight budget check. promptTokenEst=0 (see Chat handler comment).
 	if !h.checkBudget(w, ctx, provider, model, 0) {
+		sc.cancel() // blocked before dispatch: nothing owns the context
 		return
 	}
 
-	if isStream(req.Stream) {
+	if streaming {
 		ch, bErr := h.router.ResponsesStreamRequest(ctx, bifReq)
 		// FIX #5: pass billing context so streamAnthropic can call updateUsage
 		// after the channel drains with the final usage-carrying chunk.
-		h.streamAnthropic(w, ctx, provider, model, ch, bErr)
+		h.streamAnthropic(w, r.Context().Done(), ctx, sc, provider, model, ch, bErr)
 		return
 	}
+	defer sc.cancel()
 	resp, bErr := h.router.ResponsesRequest(ctx, bifReq)
 	if bErr != nil {
 		// Fix round-3 #4: spec §2.5 mandates OpenAI-shaped errors on ALL /llm
@@ -572,15 +708,24 @@ func (h *Handler) writeUnary(w http.ResponseWriter, resp interface{}, bErr *sche
 //
 // FIX #5: the final usage-carrying chunk (BifrostChatResponse.Usage != nil)
 // is captured; after the channel drains updateUsage is called with the real
-// streamed token counts. If no usage chunk appears a warning is logged.
+// streamed token counts.
+//
+// Issue #9: every early exit hands the still-open channel AND the stream
+// cancel to a detached drain instead of returning, so a client that
+// disconnects mid-stream is still billed from the provider's own usage trailer
+// if it arrives within the grace period — and the loss is metered if it does
+// not. sc is owned by this function from here on and is settled exactly once.
 func (h *Handler) streamOpenAI(
 	w http.ResponseWriter,
+	clientGone <-chan struct{},
 	ctx *schemas.BifrostContext,
+	sc *streamCancel,
 	provider, model string,
 	ch chan *schemas.BifrostStreamChunk,
 	bErr *schemas.BifrostError,
 ) {
 	if bErr != nil {
+		sc.cancel()
 		h.writeOpenAIError(w, bErr)
 		return
 	}
@@ -588,51 +733,58 @@ func (h *Handler) streamOpenAI(
 		// A nil channel with a nil error is a router contract violation
 		// (observed from bifrost's responses-stream path); ranging over it
 		// would hang the request forever. Surface it as a 502 instead.
+		sc.cancel()
 		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
 		writeError(w, http.StatusBadGateway, "api_error",
 			"upstream stream could not be established", "bad_gateway")
 		return
 	}
+	s := h.newChatSettler("streamOpenAI", ctx, sc, provider, model, ch)
 	sw, err := h.beginStream(w)
 	if err != nil {
+		// The provider stream is already open; it must be drained (and billed)
+		// even though we can never write it to this client.
+		s.settleEarly(lossReasonBeginStreamFail)
 		return
 	}
-	var (
-		streamedIn, streamedOut int64
-		gotUsage                bool
-	)
-	for chunk := range ch {
+	for {
+		chunk, more := nextChunk(ch, clientGone)
+		if !more {
+			if chunk == nil && isClientGone(clientGone) {
+				// The client vanished while the provider was silent. Without
+				// this the loop would park here until the provider's own idle
+				// timeout, because the provider stream no longer dies with the
+				// request (issue #9).
+				s.settleEarly(lossReasonClientGone)
+				return
+			}
+			break
+		}
 		if chunk == nil {
 			continue
 		}
 		if chunk.BifrostError != nil {
 			data, _ := json.Marshal(openAIErrorBody(chunk.BifrostError))
 			_ = sw.Data(string(data))
+			s.settleEarly(lossReasonProviderError)
 			return
 		}
 		// Capture usage from the final usage-carrying chunk (providers send
 		// usage in the last chunk before [DONE]; earlier chunks have Usage=nil).
-		if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
-			streamedIn, streamedOut = usageFromChatResponse(chunk.BifrostChatResponse)
-			gotUsage = true
-		}
+		s.observe(chunk)
 		data, mErr := json.Marshal(chunk)
 		if mErr != nil {
 			h.logger.Warn("marshal stream chunk", "err", mErr)
 			continue
 		}
 		if writeErr := sw.Data(string(data)); writeErr != nil {
-			return // client disconnected
+			s.settleEarly(lossReasonWriteError) // client disconnected
+			return
 		}
 	}
 	_ = sw.Data("[DONE]")
 	// Bill after the channel drains successfully.
-	if gotUsage {
-		h.updateUsage(ctx, provider, model, streamedIn, streamedOut, identityProjectFromCtx(ctx))
-	} else {
-		h.logger.Warn("streamOpenAI: no usage chunk in stream; response unbilled",
-			"provider", provider, "model", model)
-	}
+	s.settleClean()
 }
 
 // streamResponses writes the OpenAI Responses-API SSE framing: each chunk
@@ -641,15 +793,20 @@ func (h *Handler) streamOpenAI(
 //
 // FIX #5: the "response.completed" event carries Response.Usage; usage is
 // captured from that chunk and updateUsage is called after the channel drains.
+// Issue #9: see streamOpenAI — every early exit hands the open channel and the
+// stream cancel to the detached drain.
 func (h *Handler) streamResponses(
 	w http.ResponseWriter,
+	clientGone <-chan struct{},
 	ctx *schemas.BifrostContext,
+	sc *streamCancel,
 	provider, model string,
 	ch chan *schemas.BifrostStreamChunk,
 	bErr *schemas.BifrostError,
 	sendDone bool,
 ) {
 	if bErr != nil {
+		sc.cancel()
 		h.writeOpenAIError(w, bErr)
 		return
 	}
@@ -657,37 +814,42 @@ func (h *Handler) streamResponses(
 		// A nil channel with a nil error is a router contract violation
 		// (observed from bifrost's responses-stream path); ranging over it
 		// would hang the request forever. Surface it as a 502 instead.
+		sc.cancel()
 		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
 		writeError(w, http.StatusBadGateway, "api_error",
 			"upstream stream could not be established", "bad_gateway")
 		return
 	}
+	s := h.newResponsesSettler("streamResponses", ctx, sc, provider, model, ch)
 	sw, err := h.beginStream(w)
 	if err != nil {
+		s.settleEarly(lossReasonBeginStreamFail)
 		return
 	}
-	var (
-		streamedIn, streamedOut int64
-		gotUsage                bool
-	)
-	for chunk := range ch {
+	for {
+		chunk, more := nextChunk(ch, clientGone)
+		if !more {
+			if chunk == nil && isClientGone(clientGone) {
+				s.settleEarly(lossReasonClientGone)
+				return
+			}
+			break
+		}
 		if chunk == nil {
 			continue
 		}
 		if chunk.BifrostError != nil {
 			data, _ := json.Marshal(openAIErrorBody(chunk.BifrostError))
 			_ = sw.Event("error", string(data))
+			s.settleEarly(lossReasonProviderError)
 			return
 		}
 		if chunk.BifrostResponsesStreamResponse == nil {
 			continue
 		}
 		// Capture usage from the response.completed event (carries Response.Usage).
+		s.observe(chunk)
 		sr := chunk.BifrostResponsesStreamResponse
-		if sr.Response != nil && sr.Response.Usage != nil {
-			streamedIn, streamedOut = usageFromResponsesResponse(sr.Response)
-			gotUsage = true
-		}
 		event := string(sr.Type)
 		data, mErr := json.Marshal(sr)
 		if mErr != nil {
@@ -695,6 +857,7 @@ func (h *Handler) streamResponses(
 			continue
 		}
 		if writeErr := sw.Event(event, string(data)); writeErr != nil {
+			s.settleEarly(lossReasonWriteError)
 			return
 		}
 	}
@@ -702,12 +865,7 @@ func (h *Handler) streamResponses(
 		_ = sw.Data("[DONE]")
 	}
 	// Bill after the channel drains successfully.
-	if gotUsage {
-		h.updateUsage(ctx, provider, model, streamedIn, streamedOut, identityProjectFromCtx(ctx))
-	} else {
-		h.logger.Warn("streamResponses: no usage in stream; response unbilled",
-			"provider", provider, "model", model)
-	}
+	s.settleClean()
 }
 
 // streamAnthropic writes the Anthropic SSE framing: each Responses stream chunk
@@ -717,9 +875,13 @@ func (h *Handler) streamResponses(
 //
 // FIX #5: usage is captured from the response.completed event (Response.Usage)
 // and updateUsage is called after the channel drains successfully.
+// Issue #9: see streamOpenAI — every early exit hands the open channel and the
+// stream cancel to the detached drain.
 func (h *Handler) streamAnthropic(
 	w http.ResponseWriter,
+	clientGone <-chan struct{},
 	ctx *schemas.BifrostContext,
+	sc *streamCancel,
 	provider, model string,
 	ch chan *schemas.BifrostStreamChunk,
 	bErr *schemas.BifrostError,
@@ -727,25 +889,33 @@ func (h *Handler) streamAnthropic(
 	if bErr != nil {
 		// Fix round-3 #4: spec §2.5 — OpenAI-shaped errors on ALL /llm routes,
 		// including the Anthropic /v1/messages streaming pre-error path.
+		sc.cancel()
 		h.writeOpenAIError(w, bErr)
 		return
 	}
 	if ch == nil {
 		// Router contract violation (nil chan + nil error) — see streamResponses.
+		sc.cancel()
 		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
 		writeError(w, http.StatusBadGateway, "api_error",
 			"upstream stream could not be established", "bad_gateway")
 		return
 	}
+	s := h.newResponsesSettler("streamAnthropic", ctx, sc, provider, model, ch)
 	sw, err := h.beginStream(w)
 	if err != nil {
+		s.settleEarly(lossReasonBeginStreamFail)
 		return
 	}
-	var (
-		streamedIn, streamedOut int64
-		gotUsage                bool
-	)
-	for chunk := range ch {
+	for {
+		chunk, more := nextChunk(ch, clientGone)
+		if !more {
+			if chunk == nil && isClientGone(clientGone) {
+				s.settleEarly(lossReasonClientGone)
+				return
+			}
+			break
+		}
 		if chunk == nil {
 			continue
 		}
@@ -753,17 +923,15 @@ func (h *Handler) streamAnthropic(
 			// ToAnthropicResponsesStreamError returns a complete
 			// "event: error\ndata: ...\n\n" frame.
 			_ = sw.Raw(anthropic.ToAnthropicResponsesStreamError(chunk.BifrostError))
+			s.settleEarly(lossReasonProviderError)
 			return
 		}
 		if chunk.BifrostResponsesStreamResponse == nil {
 			continue
 		}
 		// Capture usage from the response.completed event.
+		s.observe(chunk)
 		sr := chunk.BifrostResponsesStreamResponse
-		if sr.Response != nil && sr.Response.Usage != nil {
-			streamedIn, streamedOut = usageFromResponsesResponse(sr.Response)
-			gotUsage = true
-		}
 		events := anthropic.ToAnthropicResponsesStreamResponse(ctx, sr)
 		for _, ev := range events {
 			if ev == nil {
@@ -775,17 +943,13 @@ func (h *Handler) streamAnthropic(
 				continue
 			}
 			if writeErr := sw.Event(string(ev.Type), string(data)); writeErr != nil {
+				s.settleEarly(lossReasonWriteError)
 				return
 			}
 		}
 	}
 	// Bill after the channel drains successfully.
-	if gotUsage {
-		h.updateUsage(ctx, provider, model, streamedIn, streamedOut, identityProjectFromCtx(ctx))
-	} else {
-		h.logger.Warn("streamAnthropic: no usage in stream; response unbilled",
-			"provider", provider, "model", model)
-	}
+	s.settleClean()
 }
 
 // beginStream applies header hygiene, then constructs the SSE writer (which
