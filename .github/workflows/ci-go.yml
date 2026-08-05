@@ -74,6 +74,27 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Backs ELITEA_TEST_DATABASE_URL below. Without this, every Postgres
+    # integration test across the workspace (internal/infra/db/repos,
+    # internal/runtimecomposition, internal/application/artifactbootstrap,
+    # ...) silently t.Skips — this test job ran green for a long time while
+    # that entire class of test provided zero actual coverage. Each test
+    # provisions its own isolated CREATE DATABASE against this one shared
+    # server instance, so a single service container is enough.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -111,6 +132,7 @@ jobs:
           AZURE_STORAGE_KEY: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
           AZURE_STORAGE_ENDPOINT: "http://127.0.0.1:10000/devstoreaccount1"
           GCS_ENDPOINT: "http://127.0.0.1:4443/storage/v1/"
+          ELITEA_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
         run: |
           for mod in $(go list -m -f '{{.Dir}}'); do
             (cd "$mod" && go test -race -count=1 -coverprofile=coverage.out ./...)
