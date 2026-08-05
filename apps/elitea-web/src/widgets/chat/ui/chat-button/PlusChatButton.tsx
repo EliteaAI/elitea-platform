@@ -18,7 +18,7 @@ import {
   type PlusChatButtonEntitySubmenus,
   type SubmenuKey,
 } from './PlusChatButton.helpers';
-import PlusChatSubmenu from './PlusChatSubmenu';
+import { PlusChatSubmenu } from './PlusChatSubmenu';
 
 /**
  * Chat button primitive: PlusChatButton
@@ -235,5 +235,3 @@ export const PlusChatButton = memo(
 );
 
 PlusChatButton.displayName = 'PlusChatButton';
-
-export default PlusChatButton;

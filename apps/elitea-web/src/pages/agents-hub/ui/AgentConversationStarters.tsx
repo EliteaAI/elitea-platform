@@ -69,5 +69,3 @@ const gridSx = (isSingle: boolean): SxProps<Theme> => ({
   gap: '0.5rem',
   width: '100%',
 });
-
-export default AgentConversationStarters;

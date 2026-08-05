@@ -42,5 +42,3 @@ export const ClearChatButton = memo(({ disabled = false, onClear }: ClearChatBut
 });
 
 ClearChatButton.displayName = 'ClearChatButton';
-
-export default ClearChatButton;

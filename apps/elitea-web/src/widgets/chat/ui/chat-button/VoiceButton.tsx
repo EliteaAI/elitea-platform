@@ -317,5 +317,3 @@ export const VoiceButton = memo(
 );
 
 VoiceButton.displayName = 'VoiceButton';
-
-export default VoiceButton;

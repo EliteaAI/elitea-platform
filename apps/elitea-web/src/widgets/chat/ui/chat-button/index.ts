@@ -1,10 +1,10 @@
-export { default as AttachmentButton } from './AttachmentButton';
-export { default as ChatInternalToolsConfigButton } from './ChatInternalToolsConfigButton';
-export { default as ClearChatButton } from './ClearChatButton';
-export { default as VoiceButton } from './VoiceButton';
-export { default as SendButton } from './SendButton';
-export { default as PlusChatButton } from './PlusChatButton';
-export { default as PlusChatSubmenu } from './PlusChatSubmenu';
+export { AttachmentButton } from './AttachmentButton';
+export { ChatInternalToolsConfigButton } from './ChatInternalToolsConfigButton';
+export { ClearChatButton } from './ClearChatButton';
+export { VoiceButton } from './VoiceButton';
+export { SendButton } from './SendButton';
+export { PlusChatButton } from './PlusChatButton';
+export { PlusChatSubmenu } from './PlusChatSubmenu';
 
 export type { AttachmentButtonHandle, AttachmentButtonProps } from './AttachmentButton';
 export type { VoiceButtonHandle, VoiceButtonInputHandle, VoiceButtonProps } from './VoiceButton';

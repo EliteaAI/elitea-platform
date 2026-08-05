@@ -20,7 +20,7 @@ import { RESOURCES_TOUR_TARGET_IDS } from '@/features/interactive-tours';
 
 import { RESOURCE_CARD_CONFIGS } from './lib/ResourceCardConfig';
 import { useResourcesConfig } from './lib/useResourcesConfig';
-import ResourceCard from './ui/ResourceCard';
+import { ResourceCard } from './ui/ResourceCard';
 import ResourceVersionInfo from './ui/ResourceVersionInfo';
 
 /**

@@ -55,5 +55,3 @@ const styles = {
   },
   empty: { color: 'text.tertiary', textAlign: 'center' },
 };
-
-export default AgentWelcomeMessage;
