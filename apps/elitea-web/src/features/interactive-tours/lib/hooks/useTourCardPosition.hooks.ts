@@ -25,11 +25,6 @@ export interface TargetInfo {
  * When placement is 'bottom', this object may contain both `positionSx`
  * and `bodySx` (a split shape).
  */
-export interface CardPositionSx {
-  positionSx: Record<string, unknown>;
-  bodySx: Record<string, unknown> | null;
-}
-
 const CARD_GAP_PX = 18;
 const CARD_ESTIMATED_HEIGHT_PX = 400;
 const VIEWPORT_MARGIN_PX = 16;

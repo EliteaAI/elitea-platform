@@ -269,7 +269,39 @@
     "src/features/chat-messages/ui/chat-box/ApplicationAnswer.tsx",
     "src/features/chat-messages/ui/chat-box/ChatMessageList.tsx",
     "src/features/chat-messages/ui/chat-continue/ChatContinue.tsx",
-    "src/features/chat-messages/ui/attachments/MessageAttachmentList.tsx"
+    "src/features/chat-messages/ui/attachments/MessageAttachmentList.tsx",
+    // [#71] The AI-configuration `ModelConfiguration` layer. The baseline's
+    // `pages/settings/AIConfiguration.jsx` renders
+    // `ai-configuration/Configuration/ModelConfiguration.jsx`, which this app
+    // never ported — its two leaf children were ported and stranded instead
+    // (`ProjectAIConfiguration`/`FieldWithCopy`, now wired into
+    // `pages/settings/AIConfiguration.tsx` by this change;
+    // `ModelCapabilitiesSection`, still blocked, see `ignoreFiles` below).
+    // These three exports are the same layer's helpers, each with a real
+    // baseline caller inside the un-ported component or hook:
+    //   `getModelCapabilities`   <- ModelConfiguration.jsx:158
+    //   `buildConfigurationData` <- useModelConfiguration.hooks.jsx:237
+    //   `createOptions`          <- useModelConfiguration.hooks.jsx:159 (the
+    //                               `useModelOptions` option-builder; the
+    //                               baseline keeps it as an internal
+    //                               `useCallback`, this port hoisted it to a
+    //                               module-level export)
+    // They are correct ported code waiting on the composition layer, not dead
+    // code, and deleting them would throw away the port. Tracked in the parity
+    // follow-up filed from #71. REMOVE these two entries when that layer lands.
+    "src/features/settings/lib/ai-configuration/modelConfiguration.helpers.ts",
+    "src/features/settings/lib/ai-configuration/useModelConfiguration.ts",
+    // [#71] `profileUtils.ts`'s `parseModelValue` splits a `name$$$projectId`
+    // select value (via this unit's own `SEPARATOR`). Its baseline caller is
+    // `pages/UserSettings/components/ProfileSummarization.jsx:61` — the
+    // summarization model *selector*, which this app has not built:
+    // `features/settings/ui/profile/ProfileSummarization.tsx` still takes the
+    // `modelList` prop as `_modelList` with its own comment saying the prop is
+    // "available for future model selection in summarization". Its sibling
+    // `createContextStrategyFormData` had the same status until this change
+    // wired it up; this one has no call site to wire it into yet. REMOVE this
+    // entry when the model selector lands.
+    "src/features/settings/lib/profile/profileUtils.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [

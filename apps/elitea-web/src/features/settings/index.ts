@@ -29,7 +29,7 @@ import { ProfileValidationSchema, deserializeProfileFormData, serializeProfileFo
 export type { ProfileFormValues } from './lib/profile/profileUtils';
 
 import { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION } from './lib/environment/environment.constants';
-import { buildFieldDefinition, validateFieldValue } from './lib/environment/environmentField.helpers';
+import { buildFieldDefinition, parseFieldValue, validateFieldValue } from './lib/environment/environmentField.helpers';
 import { EnvironmentFieldRow } from './ui/environment/EnvironmentFieldRow';
 export type { EnvironmentFieldDefinition } from './lib/environment/environmentField.helpers';
 
@@ -58,7 +58,7 @@ export const projectContextFeature = { ProjectContextBody, ProjectContextToasts,
 export const profileFeature = { useDefaultModel, ProfileFormContent, ProfileValidationSchema, deserializeProfileFormData, serializeProfileFormData };
 
 /** Environment tab (`pages/settings/Environment.tsx`). */
-export const environmentFeature = { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, validateFieldValue, EnvironmentFieldRow };
+export const environmentFeature = { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, parseFieldValue, validateFieldValue, EnvironmentFieldRow };
 
 /** AI-configuration tab (`pages/settings/AIConfiguration.tsx`). */
 export const aiConfigurationFeature = {

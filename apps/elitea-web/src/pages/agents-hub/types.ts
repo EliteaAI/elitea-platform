@@ -39,25 +39,6 @@ interface VersionDetails {
   variables?: Record<string, unknown>;
 }
 
-export interface CategoryItem {
-  key: string;
-  label: string;
-  icon: string | null;
-  category: string[];
-  value: ApplicationData;
-}
-
-/* ── Context ──────────────────────────────────────────────────────────── */
-
-export interface AgentHubContextValue {
-  updateApplicationInState: (
-    applicationId: string,
-    updateFn: (app: ApplicationData) => ApplicationData,
-  ) => void;
-  addToMyLiked: (application: ApplicationData) => void;
-  removeFromMyLiked: (applicationId: string) => void;
-}
-
 /* ── Strategy enum ────────────────────────────────────────────────────── */
 
 export type LikeUpdateStrategyValue = (typeof LikeUpdateStrategy)[keyof typeof LikeUpdateStrategy];

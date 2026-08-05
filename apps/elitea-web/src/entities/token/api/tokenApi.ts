@@ -20,7 +20,7 @@ import { useMutation, useQuery, useQueryClient, type UseMutationResult, type Use
 
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 
-import type { PersonalAccessToken } from '../model/types';
+import type { PersonalAccessToken, TokenExpirationRequest } from '../model/types';
 
 /* ── transport helpers ─────────────────────────────────────────────────── */
 
@@ -59,7 +59,7 @@ export function useListTokensQuery(options: { enabled?: boolean } = {}): UseQuer
 export interface CreateTokenParams {
   readonly name: string;
   /** `null` for never-expiring, or `{ measure, value }` for time-bound. */
-  readonly expires: { measure: string; value: number } | null;
+  readonly expires: TokenExpirationRequest;
 }
 
 export interface CreatedTokenResponse {
