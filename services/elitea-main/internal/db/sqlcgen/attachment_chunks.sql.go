@@ -7,6 +7,8 @@ package sqlcgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countAttachmentChunks = `-- name: CountAttachmentChunks :one
@@ -41,6 +43,25 @@ type DeleteAttachmentChunksParams struct {
 
 func (q *Queries) DeleteAttachmentChunks(ctx context.Context, arg DeleteAttachmentChunksParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteAttachmentChunks, arg.ProjectID, arg.ConversationID, arg.FileID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteStaleAttachmentChunks = `-- name: DeleteStaleAttachmentChunks :execrows
+DELETE FROM elitea_storage.attachment_chunks
+WHERE received_at < $1
+`
+
+// Reclaims chunk rows for a chunked upload that was abandoned before its
+// final chunk arrived (browser tab closed, connection lost) — the only
+// other path that deletes these rows is the completed-merge path
+// (DeleteAttachmentChunks above), which an abandoned upload never reaches.
+// Legacy's equivalent is utils/file_utils.py's cleanup_stale_chunks, a
+// 12-hour local-disk TTL swept by the elitea_core_cleanup_stale_chunks RPC.
+func (q *Queries) DeleteStaleAttachmentChunks(ctx context.Context, receivedAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteStaleAttachmentChunks, receivedAt)
 	if err != nil {
 		return 0, err
 	}

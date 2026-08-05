@@ -48,15 +48,15 @@ func newAttachmentStore(pool *pgxpool.Pool) v2convs.AttachmentStore {
 	return &attachmentRepoAdapter{buckets: buckets, objects: objects, chunks: chunks}
 }
 
-func (a *attachmentRepoAdapter) AttachmentBucketName(ctx context.Context, projectID int64) (string, error) {
+func (a *attachmentRepoAdapter) AttachmentPolicy(ctx context.Context, projectID int64) (bucketName string, maxFileBytes *int64, retentionDays *int32, err error) {
 	policy, err := a.objects.GetProjectStoragePolicy(ctx, projectID)
 	if err != nil {
-		return "", err
+		return "", nil, nil, err
 	}
-	if policy.AttachmentBucket == nil {
-		return "", nil
+	if policy.AttachmentBucket != nil {
+		bucketName = *policy.AttachmentBucket
 	}
-	return *policy.AttachmentBucket, nil
+	return bucketName, policy.MaxObjectBytes, policy.RetentionDefaultDays, nil
 }
 
 // RequireAttachmentBucket returns the reserved system bucket every

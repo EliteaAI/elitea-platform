@@ -2,9 +2,11 @@ package artifacts_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -520,5 +522,74 @@ func TestArtifactGrantCommitNonPutGrantReturns400(t *testing.T) {
 	r.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/grants/1/"+grantID+":commit", nil))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// grantAuditCapturingHandler is a minimal slog.Handler capturing every
+// emitted record's attributes — no shared testutil exists in this codebase,
+// so this mirrors internal/infra/storage/observability_test.go's own
+// capturingSlogHandler locally rather than exporting one across packages.
+type grantAuditCapturingHandler struct {
+	records []map[string]string
+}
+
+func (h *grantAuditCapturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *grantAuditCapturingHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]string, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.String()
+		return true
+	})
+	h.records = append(h.records, attrs)
+	return nil
+}
+
+func (h *grantAuditCapturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *grantAuditCapturingHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestArtifactGrantCreateEmitsAuditLogOnSuccess closes a real gap an
+// adversarial review found: nothing in this package's test suite asserted
+// that a successful CreateTransferGrant call actually invokes
+// storage.LogAudit — grants.go:252's call could be deleted entirely and
+// every other test here would stay green. This asserts on the real emitted
+// slog record, not by calling LogAudit directly.
+func TestArtifactGrantCreateEmitsAuditLogOnSuccess(t *testing.T) {
+	handler := &grantAuditCapturingHandler{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(previous)
+
+	h, _, _ := newObjectTestHandler(t)
+	r := newGrantTestRouter(h)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newGrantRequest(t, "/grants/1/reports", `{"method":"PUT","content_type":"image/png","max_bytes":1024}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	resp := decodeGrantResponse(t, rr.Body)
+
+	var auditRecord map[string]string
+	for _, rec := range handler.records {
+		if rec["operation"] == "grant_issued" {
+			auditRecord = rec
+			break
+		}
+	}
+	if auditRecord == nil {
+		t.Fatalf("no grant_issued audit record emitted; got records: %+v", handler.records)
+	}
+	want := map[string]string{
+		"operation":  "grant_issued",
+		"bucket":     "reports",
+		"key":        resp.GrantID,
+		"project_id": "1",
+		"outcome":    "success",
+	}
+	for k, wantV := range want {
+		if got := auditRecord[k]; got != wantV {
+			t.Errorf("grant_issued audit record attr %q = %q, want %q", k, got, wantV)
+		}
 	}
 }

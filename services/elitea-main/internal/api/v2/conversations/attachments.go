@@ -111,10 +111,18 @@ type AttachmentChunk struct {
 // adapter wrapping the real repos.Artifact{Buckets,Objects}Repository and
 // repos.AttachmentChunksRepository.
 type AttachmentStore interface {
-	// AttachmentBucketName resolves elitea_storage.project_storage_policy's
-	// attachment_bucket for projectID, or "" when unset (the caller falls
-	// back to defaultAttachmentBucketName).
-	AttachmentBucketName(ctx context.Context, projectID int64) (string, error)
+	// AttachmentPolicy resolves the elitea_storage.project_storage_policy
+	// fields this stage's limits can legitimately be sourced from for
+	// projectID: attachment_bucket (bucketName, "" when unset — the caller
+	// falls back to defaultAttachmentBucketName), max_object_bytes
+	// (maxFileBytes, nil when unset — matches objects.go's own
+	// policy-first-env-fallback-second precedent for the identical concept,
+	// "cap on one uploaded object"), and retention_default_days
+	// (retentionDays, nil when unset). There is no policy field for
+	// "max bytes across every file in one upload call" or "per-image cap"
+	// specifically — those two stay env/const-only; see
+	// attachmentMaxTotalBytes/attachmentMaxImageBytes's own doc comments.
+	AttachmentPolicy(ctx context.Context, projectID int64) (bucketName string, maxFileBytes *int64, retentionDays *int32, err error)
 	// RequireAttachmentBucket returns the reserved system bucket's database
 	// ID and its own ExpiresAt (stamped onto every object written into it),
 	// creating the bucket row on first use.
@@ -153,6 +161,20 @@ func attachmentEnvMB(envVar string, defaultMB int64) int64 {
 		}
 	}
 	return defaultMB << 20
+}
+
+// maxAttachmentChunks bounds total_chunks — see its call site's own comment.
+// Derived from the total-upload limit divided by the per-chunk limit
+// (rounded up), doubled for slack: a caller splitting into smaller chunks
+// than the maximum is normal, not abuse, so a hard "exactly ceil(total/chunk)"
+// ceiling would reject legitimate smaller-chunked uploads under the same
+// total-byte budget.
+func maxAttachmentChunks() int {
+	n := attachmentMaxTotalBytes() / attachmentMaxChunkBytes
+	if attachmentMaxTotalBytes()%attachmentMaxChunkBytes != 0 {
+		n++
+	}
+	return int(n) * 2
 }
 
 // attachmentCreated is legacy's AttachmentMessageItemCreated wire shape —
@@ -272,6 +294,21 @@ func (h *Handler) writeAttachmentBytes(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, apierr.BadRequest("Invalid chunk parameters: total_chunks must be a positive integer"))
 		return
 	}
+	// An adversarial-review finding confirmed that without this cap,
+	// total_chunks was unbounded: a caller could declare an arbitrarily
+	// large total_chunks and drip-feed distinct chunk_index values forever,
+	// accumulating unbounded BYTEA rows in elitea_storage.attachment_chunks
+	// (never reached by S12's SumProjectBytes quota, which only sums
+	// elitea_storage.objects) — and, separately, a real total_chunks near
+	// that size would make the merge step's buffer pre-allocation attempt a
+	// multi-gigabyte allocation from a modest real payload. Capped at the
+	// number of max-size chunks the total-upload limit could ever
+	// legitimately require, with a little slack for a caller that
+	// (reasonably) split into smaller-than-maximum chunks.
+	if totalChunks > maxAttachmentChunks() {
+		apierr.Write(w, apierr.BadRequest(fmt.Sprintf("Invalid chunk parameters: total_chunks exceeds the maximum of %d", maxAttachmentChunks())))
+		return
+	}
 	if chunkIndex >= totalChunks {
 		apierr.Write(w, apierr.BadRequest("Invalid chunk parameters: chunk_index must be less than total_chunks"))
 		return
@@ -307,7 +344,17 @@ func (h *Handler) writeAttachmentBytes(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, apierr.Internal(err.Error()))
 		return
 	}
-	merged := make([]byte, 0, len(chunks)*attachmentMaxChunkBytes)
+	// Pre-allocate from the chunks' own actual byte lengths, not
+	// len(chunks)*attachmentMaxChunkBytes — an adversarial-review finding
+	// confirmed the latter could request a multi-gigabyte capacity from a
+	// real payload of a few KB (every chunk near-empty, total_chunks large)
+	// even with maxAttachmentChunks() capping the chunk *count*, since
+	// nothing bounds how small an individual chunk's real byte length is.
+	var mergedSize int
+	for _, c := range chunks {
+		mergedSize += len(c.Bytes)
+	}
+	merged := make([]byte, 0, mergedSize)
 	for _, c := range chunks {
 		merged = append(merged, c.Bytes...)
 	}
@@ -325,8 +372,25 @@ func (h *Handler) writeAttachmentBytes(w http.ResponseWriter, r *http.Request) {
 // the chunked and the plain-multipart paths above, mirroring legacy's own
 // process_uploaded_files, which both call identically.
 func (h *Handler) finalizeAttachment(w http.ResponseWriter, ctx context.Context, projectID int64, projectIDStr, conversationID, fileName, contentType string, content []byte) {
+	bucketName, policyMaxFileBytes, policyRetentionDays, err := h.attachments.AttachmentPolicy(ctx, projectID)
+	if err != nil {
+		apierr.Write(w, apierr.Internal("get project storage policy: "+err.Error()))
+		return
+	}
+	if bucketName == "" {
+		bucketName = defaultAttachmentBucketName
+	}
+
 	isImage := isImageAttachment(fileName)
+	// Policy-value-first, env-fallback-second — matches objects.go's own
+	// precedent for the identical concept (S12's max_object_bytes: a cap on
+	// one uploaded object). Image uploads stay on the env/const-only image
+	// ceiling: there is no policy field for "per-image cap" specifically,
+	// see AttachmentStore's own doc comment.
 	maxFileBytes := attachmentMaxFileBytes()
+	if policyMaxFileBytes != nil {
+		maxFileBytes = *policyMaxFileBytes
+	}
 	kind := "File"
 	if isImage {
 		maxFileBytes = attachmentMaxImageBytes()
@@ -341,16 +405,11 @@ func (h *Handler) finalizeAttachment(w http.ResponseWriter, ctx context.Context,
 		return
 	}
 
-	bucketName, err := h.attachments.AttachmentBucketName(ctx, projectID)
-	if err != nil {
-		apierr.Write(w, apierr.Internal("get project storage policy: "+err.Error()))
-		return
+	retentionDays := attachmentRetentionDays()
+	if policyRetentionDays != nil {
+		retentionDays = *policyRetentionDays
 	}
-	if bucketName == "" {
-		bucketName = defaultAttachmentBucketName
-	}
-
-	bucketID, bucketExpiresAt, err := h.attachments.RequireAttachmentBucket(ctx, projectID, bucketName, attachmentRetentionDays())
+	bucketID, bucketExpiresAt, err := h.attachments.RequireAttachmentBucket(ctx, projectID, bucketName, retentionDays)
 	if err != nil {
 		apierr.Write(w, apierr.Internal("get or create attachment bucket: "+err.Error()))
 		return

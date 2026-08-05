@@ -998,12 +998,22 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			if artifactNotificationsErr != nil {
 				return nil, fmt.Errorf("construct artifact retention notification repository: %w", artifactNotificationsErr)
 			}
+			// S20a: reclaims elitea_storage.attachment_chunks rows left by
+			// abandoned chunked attachment uploads — see
+			// artifactRetentionAttachmentChunksRepository's own doc comment
+			// for why this one dependency is optional (WithAttachmentChunks)
+			// rather than a fifth constructor-required argument.
+			attachmentChunks, attachmentChunksErr := repos.NewAttachmentChunksRepository(dependencies.AdmissionPool)
+			if attachmentChunksErr != nil {
+				return nil, fmt.Errorf("construct attachment chunks repository: %w", attachmentChunksErr)
+			}
 			retentionSweep, retentionSweepErr := newArtifactRetentionSweep(
 				artifactObjects, artifactBuckets, artifactNotifications, dependencies.ObjectStore,
 			)
 			if retentionSweepErr != nil {
 				return nil, fmt.Errorf("construct artifact retention sweep: %w", retentionSweepErr)
 			}
+			retentionSweep = retentionSweep.WithAttachmentChunks(attachmentChunks)
 			retentionSchedule, retentionScheduleErr := schedulingapp.ParseCron(
 				artifactRetentionSweepCadence,
 			)

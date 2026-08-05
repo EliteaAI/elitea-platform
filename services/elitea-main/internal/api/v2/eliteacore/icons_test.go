@@ -242,3 +242,50 @@ func TestArtifactIconDownloadRejectsInvalidProjectID(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+func TestArtifactIconDownloadWithNilStoreReturns500(t *testing.T) {
+	req := newRequest(http.MethodGet, "/", map[string]string{"projectID": "1", "filename": "icon.png"}, nil)
+	rec := httptest.NewRecorder()
+	eliteacore.DownloadIcon(nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (not a panic)", rec.Code)
+	}
+}
+
+// TestArtifactIconUploadRejectsNonImageExtensionAndDownloadSetsNosniff
+// closes a stored-XSS path an adversarial review found: DownloadIcon is a
+// public, unauthenticated route (a browser <img src> carries no auth
+// header), so anything it could be made to serve back with an
+// attacker-chosen Content-Type is script-executable in the app's own
+// origin. Uploading a file named "evil.html" must not let the response be
+// served as text/html.
+func TestArtifactIconUploadRejectsNonImageExtensionAndDownloadSetsNosniff(t *testing.T) {
+	store := newFakeIconObjectStore()
+	h := eliteacore.NewHandler(nil, eliteacore.WithObjectStore(store))
+
+	payload := []byte(`<script>alert(document.cookie)</script>`)
+	uploadReq := iconUploadRequest(t, "1", "evil.html", payload)
+	uploadRec := httptest.NewRecorder()
+	h.UploadIcon(uploadRec, uploadReq)
+	assertStatus(t, uploadRec, http.StatusOK)
+
+	body := decodeObj(t, uploadRec)
+	iconURL, _ := body["url"].(string)
+	if strings.HasSuffix(iconURL, ".html") {
+		t.Fatalf("icon URL = %q, want a non-.html extension (safeIconExtension should have forced the default)", iconURL)
+	}
+	filename := strings.TrimPrefix(iconURL, "/icons/1/")
+
+	downloadReq := newRequest(http.MethodGet, "/", map[string]string{"projectID": "1", "filename": filename}, nil)
+	downloadRec := httptest.NewRecorder()
+	eliteacore.DownloadIcon(store).ServeHTTP(downloadRec, downloadReq)
+
+	assertStatus(t, downloadRec, http.StatusOK)
+	if got := downloadRec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if ct := downloadRec.Header().Get("Content-Type"); strings.Contains(ct, "html") {
+		t.Fatalf("Content-Type = %q, want a non-HTML type", ct)
+	}
+}

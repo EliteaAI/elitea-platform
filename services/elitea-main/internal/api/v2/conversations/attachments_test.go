@@ -27,12 +27,14 @@ import (
 // in-memory — no shared testutil exists in this codebase (established
 // convention: each test file writes its own fake).
 type fakeAttachmentStore struct {
-	mu           sync.Mutex
-	bucketName   string
-	nextBucketID int64
-	buckets      map[string]int64 // "projectID/name" -> id
-	chunks       map[string][]conversations.AttachmentChunk
-	recorded     []recordedAttachmentObject
+	mu            sync.Mutex
+	bucketName    string
+	maxFileBytes  *int64
+	retentionDays *int32
+	nextBucketID  int64
+	buckets       map[string]int64 // "projectID/name" -> id
+	chunks        map[string][]conversations.AttachmentChunk
+	recorded      []recordedAttachmentObject
 }
 
 type recordedAttachmentObject struct {
@@ -49,8 +51,8 @@ func newFakeAttachmentStore() *fakeAttachmentStore {
 	}
 }
 
-func (f *fakeAttachmentStore) AttachmentBucketName(context.Context, int64) (string, error) {
-	return f.bucketName, nil
+func (f *fakeAttachmentStore) AttachmentPolicy(context.Context, int64) (string, *int64, *int32, error) {
+	return f.bucketName, f.maxFileBytes, f.retentionDays, nil
 }
 
 func (f *fakeAttachmentStore) RequireAttachmentBucket(_ context.Context, projectID int64, bucketName string, _ int32) (int64, *time.Time, error) {
@@ -270,9 +272,13 @@ func TestArtifactAttachmentChunkedUploadReceivesThenMerges(t *testing.T) {
 		}
 	}
 
-	rec1 := doAttachmentUpload(t, h, fields(0), "chunk", part1)
+	// Sent out of index order (1 before 0) deliberately: this is what
+	// actually distinguishes index-order merging from arrival-order
+	// merging below — sending them in index order too would make this
+	// test pass even if the merge silently regressed to arrival order.
+	rec1 := doAttachmentUpload(t, h, fields(1), "chunk", part2)
 	if rec1.Code != http.StatusAccepted {
-		t.Fatalf("chunk 0 status = %d, want 202; body=%s", rec1.Code, rec1.Body.String())
+		t.Fatalf("chunk 1 status = %d, want 202; body=%s", rec1.Code, rec1.Body.String())
 	}
 	var chunkResp map[string]any
 	if err := json.Unmarshal(rec1.Body.Bytes(), &chunkResp); err != nil {
@@ -282,7 +288,7 @@ func TestArtifactAttachmentChunkedUploadReceivesThenMerges(t *testing.T) {
 		t.Fatalf("chunk response = %+v, want status=chunk_received", chunkResp)
 	}
 
-	rec2 := doAttachmentUpload(t, h, fields(1), "chunk", part2)
+	rec2 := doAttachmentUpload(t, h, fields(0), "chunk", part1)
 	if rec2.Code != http.StatusCreated {
 		t.Fatalf("final chunk status = %d, want 201; body=%s", rec2.Code, rec2.Body.String())
 	}
@@ -297,7 +303,9 @@ func TestArtifactAttachmentChunkedUploadReceivesThenMerges(t *testing.T) {
 		t.Fatalf("final response = %+v, want file_size=%d", final, wantSize)
 	}
 
-	// Chunks were merged in index order, not arrival order.
+	// Chunks were merged in index order (0 then 1), not arrival order (1
+	// then 0, per the out-of-order sends above) — this assertion would fail
+	// if the merge regressed to arrival order.
 	var merged []byte
 	for _, data := range objStore.objects {
 		merged = data
@@ -326,6 +334,35 @@ func TestArtifactAttachmentChunkOutOfRangeIsRejected(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestArtifactAttachmentExcessiveTotalChunksIsRejected closes a real gap an
+// adversarial review found: without this cap, a caller could declare an
+// arbitrarily large total_chunks and drip-feed distinct chunk_index values
+// forever, growing elitea_storage.attachment_chunks unbounded (never
+// reached by S12's SumProjectBytes quota, which only sums
+// elitea_storage.objects) — and, separately, would have made the merge
+// step's buffer pre-allocation attempt a multi-gigabyte allocation from a
+// modest real payload.
+func TestArtifactAttachmentExcessiveTotalChunksIsRejected(t *testing.T) {
+	attStore := newFakeAttachmentStore()
+	objStore := newFakeAttachmentObjectStore()
+	h := newAttachmentTestHandler(t, attStore, objStore)
+
+	rec := doAttachmentUpload(t, h, map[string]string{
+		"file_id":      "abc123",
+		"chunk_index":  "0",
+		"total_chunks": "100000",
+		"file_name":    "big.txt",
+	}, "chunk", []byte("x"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	count, err := attStore.CountAttachmentChunks(context.Background(), 1, "conv-abc", "abc123")
+	if err != nil || count != 0 {
+		t.Fatalf("chunk count after rejected upload = %d (err=%v), want 0 — the chunk must never be stored", count, err)
 	}
 }
 
@@ -429,6 +466,23 @@ func TestArtifactAttachmentUsesProjectStoragePolicyBucketName(t *testing.T) {
 
 	rec := doAttachmentUpload(t, h, nil, "notes.txt", []byte("hi"))
 	requireAttachmentCreatedFilepathContains(t, rec, "/custom-attachments/")
+}
+
+// TestArtifactAttachmentUsesProjectStoragePolicyFileLimit proves
+// project_storage_policy.max_object_bytes overrides the env/const per-file
+// ceiling for non-image uploads — matching objects.go's own established
+// policy-first precedent for the identical concept (S12).
+func TestArtifactAttachmentUsesProjectStoragePolicyFileLimit(t *testing.T) {
+	attStore := newFakeAttachmentStore()
+	tinyLimit := int64(10)
+	attStore.maxFileBytes = &tinyLimit
+	objStore := newFakeAttachmentObjectStore()
+	h := newAttachmentTestHandler(t, attStore, objStore)
+
+	rec := doAttachmentUpload(t, h, nil, "notes.txt", []byte("this is more than ten bytes"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (policy's 10-byte limit should apply); body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func requireAttachmentCreatedFilepathContains(t *testing.T, rec *httptest.ResponseRecorder, substr string) {

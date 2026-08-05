@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	schedulingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/scheduling"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
@@ -228,6 +232,97 @@ func TestArtifactRetentionSweepUpdatesProjectByteUsageGaugeForEveryKnownProject(
 	want := []int64{100, 200}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("SumProjectBytes calls = %v, want %v", got, want)
+	}
+}
+
+// artifactRetentionGaugeTestReader installs a ManualReader-backed
+// MeterProvider for this test binary exactly once — see
+// internal/infra/storage/observability_test.go's own harness for why: OTel's
+// global package delegates every otel.Meter(...)-created instrument
+// (including storage.RecordProjectByteUsage's package-level gauge) to
+// whichever provider otel.SetMeterProvider installs on its *first* call in
+// the process, guarded by a package-level sync.Once — a second call would
+// not re-delegate. This test binary (internal/runtimecomposition's own
+// `go test` process) is independent of internal/infra/storage's, so
+// installing a test provider here does not conflict with that package's own
+// test binary.
+var (
+	artifactRetentionGaugeReaderOnce sync.Once
+	artifactRetentionGaugeReader     *sdkmetric.ManualReader
+)
+
+func setupArtifactRetentionGaugeReader(t *testing.T) *sdkmetric.ManualReader {
+	t.Helper()
+	artifactRetentionGaugeReaderOnce.Do(func() {
+		artifactRetentionGaugeReader = sdkmetric.NewManualReader()
+		otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(artifactRetentionGaugeReader)))
+	})
+	return artifactRetentionGaugeReader
+}
+
+// gaugeValueForProject reads storage's project_bytes_used gauge's current
+// value for projectID directly, bypassing the sweeper entirely — proof this
+// test observes what the sweeper actually recorded, not a value it computed
+// independently.
+func gaugeValueForProject(t *testing.T, reader *sdkmetric.ManualReader, projectID int64) (int64, bool) {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "artifact.storage.project_bytes_used" {
+				continue
+			}
+			gauge, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("project_bytes_used: data is %T, want Gauge[int64]", m.Data)
+			}
+			for _, dp := range gauge.DataPoints {
+				pid, _ := dp.Attributes.Value("project_id")
+				if pid.AsInt64() == projectID {
+					return dp.Value, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// TestArtifactRetentionSweepRecordsTheActualByteTotalNotJustCallPresence
+// closes a real gap an adversarial review found: the sibling test above only
+// checks that SumProjectBytes was called for the right project IDs, which
+// would still pass even if storage.RecordProjectByteUsage's two int64
+// arguments were accidentally swapped at the sweeper's call site (labelling
+// the gauge with a byte count and recording a project ID as the byte
+// value) — nothing else in this codebase's test suite reads the gauge back
+// through a real sweep. This test does, via the same OTel test-harness
+// technique internal/infra/storage/observability_test.go itself uses.
+func TestArtifactRetentionSweepRecordsTheActualByteTotalNotJustCallPresence(t *testing.T) {
+	reader := setupArtifactRetentionGaugeReader(t)
+	sweep, objects, buckets, _, _ := newArtifactRetentionSweepFixture(t)
+
+	// Distinct, easily-misattributable project IDs and byte totals — a
+	// swapped-argument regression (project ID recorded as the value, or
+	// vice versa) would be immediately visible in the assertion below,
+	// unlike e.g. project_id=100/total=100 where a swap is invisible.
+	const projectID = int64(918_222_001)
+	const wantTotal = int64(55_667_788)
+	buckets.seed(repos.BucketRow{ID: 1, ProjectID: projectID, Name: "reports"})
+	objects.seedProjectBytes(projectID, wantTotal)
+
+	outcome, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now()))
+	if err != nil || outcome != schedulingapp.OutcomeLocalCompleted {
+		t.Fatalf("outcome=%q error=%v", outcome, err)
+	}
+
+	got, ok := gaugeValueForProject(t, reader, projectID)
+	if !ok {
+		t.Fatalf("project_bytes_used: no data point for project_id %d", projectID)
+	}
+	if got != wantTotal {
+		t.Fatalf("project_bytes_used for project %d = %d, want %d (SumProjectBytes's return value, unmodified)", projectID, got, wantTotal)
 	}
 }
 
@@ -497,3 +592,71 @@ func (s *artifactRetentionFakeStore) Capabilities() storage.Capabilities {
 }
 
 var _ storage.ObjectStore = (*artifactRetentionFakeStore)(nil)
+
+// artifactRetentionFakeAttachmentChunksRepo is S20a's cleanup-step fake —
+// see artifactRetentionAttachmentChunksRepository's own doc comment for why
+// this dependency is optional rather than part of newArtifactRetentionSweepFixture.
+type artifactRetentionFakeAttachmentChunksRepo struct {
+	deleteStaleCalls []time.Time
+	deleteStaleErr   error
+}
+
+func (r *artifactRetentionFakeAttachmentChunksRepo) DeleteStaleChunks(_ context.Context, olderThan time.Time) (int64, error) {
+	r.deleteStaleCalls = append(r.deleteStaleCalls, olderThan)
+	if r.deleteStaleErr != nil {
+		return 0, r.deleteStaleErr
+	}
+	return 0, nil
+}
+
+var _ artifactRetentionAttachmentChunksRepository = (*artifactRetentionFakeAttachmentChunksRepo)(nil)
+
+// TestArtifactRetentionSweepSkipsAttachmentChunkCleanupWhenNotWired proves
+// the dependency is genuinely optional: a sweep built via the plain
+// newArtifactRetentionSweepFixture (no WithAttachmentChunks call) still
+// completes normally — S20a's cleanup step must not become a hard
+// requirement for every other caller of this sweeper.
+func TestArtifactRetentionSweepSkipsAttachmentChunkCleanupWhenNotWired(t *testing.T) {
+	sweep, _, _, _, _ := newArtifactRetentionSweepFixture(t)
+	outcome, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now()))
+	if err != nil || outcome != schedulingapp.OutcomeLocalCompleted {
+		t.Fatalf("outcome=%q error=%v", outcome, err)
+	}
+}
+
+// TestArtifactRetentionSweepCleansUpStaleAttachmentChunksWhenWired proves
+// Execute calls DeleteStaleChunks with a cutoff in the past (now minus the
+// TTL) once WithAttachmentChunks is used to wire the dependency in.
+func TestArtifactRetentionSweepCleansUpStaleAttachmentChunksWhenWired(t *testing.T) {
+	sweep, _, _, _, _ := newArtifactRetentionSweepFixture(t)
+	chunks := &artifactRetentionFakeAttachmentChunksRepo{}
+	sweep = sweep.WithAttachmentChunks(chunks)
+
+	before := time.Now()
+	outcome, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now()))
+	if err != nil || outcome != schedulingapp.OutcomeLocalCompleted {
+		t.Fatalf("outcome=%q error=%v", outcome, err)
+	}
+
+	if len(chunks.deleteStaleCalls) != 1 {
+		t.Fatalf("DeleteStaleChunks calls = %d, want 1", len(chunks.deleteStaleCalls))
+	}
+	cutoff := chunks.deleteStaleCalls[0]
+	if !cutoff.Before(before) {
+		t.Fatalf("DeleteStaleChunks cutoff = %v, want a time before this test started (now - TTL)", cutoff)
+	}
+}
+
+// TestArtifactRetentionSweepPropagatesAttachmentChunkCleanupFailure proves a
+// cleanup failure fails the whole tick — the same failure posture every
+// other Execute step already has, not a silently-ignored best-effort step.
+func TestArtifactRetentionSweepPropagatesAttachmentChunkCleanupFailure(t *testing.T) {
+	sweep, _, _, _, _ := newArtifactRetentionSweepFixture(t)
+	chunks := &artifactRetentionFakeAttachmentChunksRepo{deleteStaleErr: errors.New("boom")}
+	sweep = sweep.WithAttachmentChunks(chunks)
+
+	outcome, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now()))
+	if err == nil || outcome != "" {
+		t.Fatalf("outcome=%q error=%v, want a propagated error and empty outcome", outcome, err)
+	}
+}

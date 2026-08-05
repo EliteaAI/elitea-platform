@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -65,13 +66,15 @@ func collectMetric(t *testing.T, reader *sdkmetric.ManualReader, name string) (m
 // instrumentedStore's own wrapping behavior, not any real backend, so the
 // inner store only needs to be programmable, not realistic.
 type observabilityFakeStore struct {
-	putInfo   ObjectInfo
-	putErr    error
-	getBody   io.ReadCloser
-	getInfo   ObjectInfo
-	getErr    error
-	statErr   error
-	deleteErr error
+	putInfo           ObjectInfo
+	putErr            error
+	getBody           io.ReadCloser
+	getInfo           ObjectInfo
+	getErr            error
+	statErr           error
+	deleteErr         error
+	deleteBatchResult BatchResult
+	deleteBatchErr    error
 }
 
 func (f *observabilityFakeStore) Put(context.Context, ObjectRef, io.Reader, PutOptions) (ObjectInfo, error) {
@@ -91,7 +94,7 @@ func (f *observabilityFakeStore) Delete(context.Context, ObjectRef) error {
 }
 
 func (f *observabilityFakeStore) DeleteBatch(context.Context, []ObjectRef) (BatchResult, error) {
-	return BatchResult{}, nil
+	return f.deleteBatchResult, f.deleteBatchErr
 }
 
 func (f *observabilityFakeStore) List(context.Context, ListQuery) (ListPage, error) {
@@ -393,5 +396,92 @@ func TestArtifactObservabilityLogsAuditForDeleteAndGrantIssuance(t *testing.T) {
 		if got := grantAttrs[k]; got != want {
 			t.Errorf("grant_issued audit record attr %q = %q, want %q", k, got, want)
 		}
+	}
+}
+
+// TestArtifactObservabilityInstrumentedStoreEmitsAuditThroughTheRealWrapper
+// closes a real gap an adversarial review found: the test above calls
+// LogAudit directly with hand-picked arguments, so it would still pass even
+// if instrumentedStore.Delete/DeleteBatch's own LogAudit calls were deleted,
+// swapped ref.Bucket()/ref.Key(), or hardcoded outcome to "success" — none
+// of that wiring is exercised anywhere else. This test goes through
+// Instrument(...) itself.
+func TestArtifactObservabilityInstrumentedStoreEmitsAuditThroughTheRealWrapper(t *testing.T) {
+	handler := &capturingSlogHandler{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(previous)
+
+	ref, err := NewObjectRef("42", "reports", "q1.csv")
+	if err != nil {
+		t.Fatalf("NewObjectRef: %v", err)
+	}
+	store := Instrument(&observabilityFakeStore{deleteErr: ErrNotFound}, t.Name())
+
+	if err := store.Delete(context.Background(), ref); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Delete err = %v, want ErrNotFound", err)
+	}
+	if len(handler.records) != 1 {
+		t.Fatalf("got %d audit records after Delete, want 1", len(handler.records))
+	}
+	attrs := handler.attrMap(handler.records[0])
+	want := map[string]string{
+		"operation":  "delete",
+		"bucket":     "reports",
+		"key":        "q1.csv",
+		"project_id": "42",
+		"outcome":    "failure",
+	}
+	for k, wantV := range want {
+		if got := attrs[k]; got != wantV {
+			t.Errorf("Delete audit record attr %q = %q, want %q", k, got, wantV)
+		}
+	}
+}
+
+// TestArtifactObservabilityInstrumentedStoreDeleteBatchAuditsEveryRequestedKey
+// proves instrumentedStore.DeleteBatch emits an audit line for every
+// requested ref — including one the backend never reports in either
+// BatchResult.Deleted or Failed, which an adversarial review confirmed is
+// reachable (a chunked S3 DeleteBatch call can fail outright partway
+// through, leaving some requested keys in neither list) — and that the
+// bucket/project_id on each line come from the matching ref in refs itself,
+// not a bare-key-keyed lookup that could misattribute a batch spanning
+// multiple buckets with a colliding key.
+func TestArtifactObservabilityInstrumentedStoreDeleteBatchAuditsEveryRequestedKey(t *testing.T) {
+	handler := &capturingSlogHandler{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(previous)
+
+	refDeleted, err := NewObjectRef("42", "reports", "deleted.csv")
+	if err != nil {
+		t.Fatalf("NewObjectRef: %v", err)
+	}
+	refOmitted, err := NewObjectRef("43", "archive", "omitted.csv")
+	if err != nil {
+		t.Fatalf("NewObjectRef: %v", err)
+	}
+	fake := &observabilityFakeStore{
+		// refOmitted is deliberately absent from both Deleted and Failed —
+		// simulating the whole batch call erroring outright before it
+		// could report a per-key outcome for it.
+		deleteBatchResult: BatchResult{Deleted: []string{"deleted.csv"}},
+		deleteBatchErr:    errors.New("boom"),
+	}
+	store := Instrument(fake, t.Name())
+
+	_, _ = store.DeleteBatch(context.Background(), []ObjectRef{refDeleted, refOmitted})
+
+	if len(handler.records) != 2 {
+		t.Fatalf("got %d audit records after DeleteBatch, want 2 (one per requested ref)", len(handler.records))
+	}
+	deletedAttrs := handler.attrMap(handler.records[0])
+	if deletedAttrs["bucket"] != "reports" || deletedAttrs["key"] != "deleted.csv" || deletedAttrs["project_id"] != "42" || deletedAttrs["outcome"] != "success" {
+		t.Errorf("deleted ref audit record = %+v, want bucket=reports key=deleted.csv project_id=42 outcome=success", deletedAttrs)
+	}
+	omittedAttrs := handler.attrMap(handler.records[1])
+	if omittedAttrs["bucket"] != "archive" || omittedAttrs["key"] != "omitted.csv" || omittedAttrs["project_id"] != "43" || omittedAttrs["outcome"] != "failure" {
+		t.Errorf("omitted-from-result ref audit record = %+v, want bucket=archive key=omitted.csv project_id=43 outcome=failure (never silently skipped)", omittedAttrs)
 	}
 }

@@ -2921,6 +2921,39 @@ pre-existing pool-dependent methods (unrelated to attachments) start
 receiving a real pool for the first time as an incidental side effect of
 this stage's own wiring need.
 
+**The three now-pool-fed methods, investigated and left unfixed as a
+deliberate, acknowledged scope boundary — not silently carried forward.**
+`List`, `PostMessage`, and `UpdateEntitySettings` (`handler.go`, pre-dating
+this migration entirely) each build raw SQL with `fmt.Sprintf("p_%s",
+projectID)` for the caller's tenant schema, then `%q`-interpolate that
+string directly into the query text (`fmt.Sprintf(`SELECT ... FROM
+%q.chat_conversations ...`, s)`) rather than using a parameterized
+identifier — `%q` produces a Go-escaped string literal, not a
+Postgres-escaped quoted identifier, so a `projectID` containing a literal
+`"` is not neutralized the way it would be by proper identifier quoting.
+None of the three validates `projectID`'s format before this point (the
+route itself registers `{projectID}` with no regex constraint), so this is
+a latent SQL-injection-shaped gap in the *identifier* position of these
+three queries. It predates S20a and this migration; S20a's only actual
+change is that `cfg.Pool` now reaches it when it never did before.
+Confirmed, not assumed, before deciding not to fix it: this whole route
+group is gated on `if cfg.ConvsRepo != nil` (`router.go`), and
+`internal/runtimecomposition/composition.go` never sets `RouterConfig.ConvsRepo`
+— grepped, zero hits — so it stays exactly as unreachable from real
+production traffic today as it was before this stage, matching the
+established "production composition never sets these fields" prototype-compat
+convention `TestArtifactStubRoutesReturn501WithTypedEnvelope`'s own doc
+comment describes for the artifact stub routes. Fixing the underlying raw-SQL
+pattern in three chat handlers is out of scope for a storage migration plan —
+it is pre-existing legacy-compat code this plan does not otherwise touch, and
+a change there carries its own regression risk this plan's own tests cannot
+cover. Left as an open question for a human owner: if `ConvsRepo` is ever
+wired into real production composition, `projectID` must be validated as
+strictly numeric — matching `storage.NewBucketRef`'s own
+`^[1-9][0-9]{0,17}$` convention — before it reaches any of these three query
+sites, either via a `{projectID:[0-9]+}` chi route constraint or an
+explicit check at the top of each handler.
+
 **One legacy DB write deliberately not ported, flagged as an open question
 — same treatment S13/S14/S18 give their own external-ownership gaps.**
 Legacy also inserts a `chat_messages_attachment` row (schema
@@ -3057,6 +3090,134 @@ against an in-memory fake — no infra dependency), the full pre-existing
 `TestDefaultIcons`/the three `ProjectIcon` stubs/etc. all still pass
 unchanged), and a full workspace `task test` with every emulator + a real
 Postgres attached (103 packages, zero failures).
+
+**Swarm review across S18–S20b: 48-agent adversarial pass, every finding
+addressed.** Per the standing instruction to run a swarm review after full
+implementation and fix everything it finds, a `Workflow`-orchestrated review
+ran across the four just-completed stage groups (S18/S19/S20a/S20b): 2
+lenses (correctness/bug-hunt, plan-compliance+test-integrity) × 4 stage
+groups = 8 review agents, surfacing 20 candidate findings; each went through
+2 independent adversarial verifiers (confirmed only if both agreed), 40
+verify agents, 19 of 20 confirmed. Two were blocking, fixed first:
+
+- **Stored XSS in icon serving (S20b).** `DownloadIcon` derived
+  `Content-Type` from the backend's stored `ObjectInfo.ContentType` (an
+  unauthenticated, public route — a browser `<img src>` carries no auth
+  header), so an uploaded file with an HTML/SVG-script payload and a
+  browser-sniffable or attacker-chosen content type could execute script in
+  the app's own origin. Fixed at both the write path (`allowedIconExtensions`
+  allowlist gating `safeIconExtension`, restricting storage to genuine image
+  extensions) and the read path (`Content-Type` now derived only from the
+  allowlisted extension, never the stored value; `X-Content-Type-Options:
+  nosniff` added). Regression test:
+  `TestArtifactIconUploadRejectsNonImageExtensionAndDownloadSetsNosniff`.
+- **Unbounded chunk-storage growth (S20a).** Nothing capped `total_chunks`
+  on a chunked attachment upload before storing chunks, and nothing ever
+  reclaimed an abandoned session's partial chunks — an attacker or a client
+  bug could grow `elitea_storage.attachment_chunks` without bound. Fixed
+  with `maxAttachmentChunks()` (rejects `total_chunks` above the limit
+  before any chunk is stored, 400) and a new `DeleteStaleAttachmentChunks`
+  sqlc query wired into S14's existing retention sweeper as an optional
+  `WithAttachmentChunks` dependency (`artifactRetentionStaleChunkTTL = 12h`).
+
+Moderate/minor findings, all fixed:
+
+- **S18's `instrumented.go` `DeleteBatch` audit had two bugs**, both in
+  `LogAudit`'s per-key attribution: a bucket-collision misattribution (keys
+  from different buckets folded into one lookup) and a silent omission (a
+  key absent from `result.Deleted` never got an audit line at all, including
+  on partial failure). Rewritten to iterate `refs` directly and emit exactly
+  one audit line per requested ref, defaulting to `"failure"` when absent
+  from `Deleted`. Regression test:
+  `TestArtifactObservabilityInstrumentedStoreDeleteBatchAuditsEveryRequestedKey`.
+- **S18 test-coverage gaps (3), closed.** `TestArtifactObservabilityInstrumentedStoreEmitsAuditThroughTheRealWrapper`
+  (the existing suite asserted audit *content* but never proved it flowed
+  through the real `instrumentedStore.Delete` wrapper, not a bypassed
+  helper); a new cross-package OTel `ManualReader` harness in
+  `internal/runtimecomposition` (`setupArtifactRetentionGaugeReader`,
+  mirroring `observability_test.go`'s own pattern) backing
+  `TestArtifactRetentionSweepRecordsTheActualByteTotalNotJustCallPresence`
+  (proves the gauge shows the real `SumProjectBytes` value, not a swapped
+  argument that happened to also be an `int64`); and
+  `TestArtifactGrantCreateEmitsAuditLogOnSuccess` (asserts real `slog`
+  output from `CreateTransferGrant`'s success path, not just that the call
+  compiles).
+- **S20a: chunk-merge buffer over-allocation.** The merge step
+  pre-allocated `len(chunks) * attachmentMaxChunkBytes` regardless of each
+  chunk's actual size; changed to sum actual `len(c.Bytes)` across fetched
+  chunks.
+- **S20a: attachment size/retention limits ignored the project storage
+  policy.** `finalizeAttachment` now calls `AttachmentPolicy` once and uses
+  its `max_object_bytes`/`retention_default_days` as overrides
+  (policy-first, env-fallback-second), matching `objects.go`'s S12
+  precedent — previously only the env-var defaults applied, regardless of
+  a project's configured policy. Regression test:
+  `TestArtifactAttachmentUsesProjectStoragePolicyFileLimit`.
+- **S20a: chunk-merge test only proved arrival-order merge, not
+  index-order.** `TestArtifactAttachmentChunkedUploadReceivesThenMerges`
+  sent chunk 1 before chunk 0 in the underlying fix, and the merge step
+  reorders by `chunk_index` rather than assuming request arrival order
+  already matches it.
+- **S20a's `router.go` `WithPool` reactivating three pre-existing,
+  unrelated pool-dependent methods** — investigated and documented rather
+  than fixed, as its own paragraph above under S20a explains (confirmed
+  unreachable from real production traffic: `composition.go` never sets
+  `RouterConfig.ConvsRepo`).
+
+**Bugs the fix pass itself introduced, and caught by rerunning the suite
+against real infra afterward — not by inspection.** Two of `tests/contract`'s
+pre-existing helpers, `decodeArtifactJSON` (read body, no close) and
+`requireArtifactStatus` (check status, no body read), were unified into one
+`requireArtifactJSON` that reads-and-closes exactly once, closing an HTTP
+connection leak (the old `requireArtifactStatus` never closed a successful
+response's body) and a lost-diagnostic-body bug (the old
+decode-then-status call order left a status-mismatch failure message
+reading an already-drained body). This refactor itself broke three call
+sites that read a response's *raw* bytes after a status check
+(`TestArtifactObjectUploadDownloadHeadDeleteRangeRead`'s full-object and
+range-read downloads, `TestArtifactGrantPresignedUploadAndCommitRoundTrip`'s
+downloaded-object check) — each now called the new `requireArtifactJSON`
+for the status check first, which drains and closes the body, then tried to
+`io.ReadAll` the same already-closed body for the digest/content
+comparison, either erroring outright (`http: read on closed response body`)
+or, where the read error was discarded, silently comparing against an empty
+byte slice. Only surfaced by actually running `go test ./tests/contract/...`
+against the real Postgres + RustFS stack afterward — the package still
+compiled and `go vet` stayed silent, since nothing about a double body read
+is a static-analysis error. Fixed with a third helper,
+`requireArtifactBody`, for exactly this raw-bytes-after-status shape (read,
+close, check status, return bytes — one call, one read).
+
+**S19's `TestArtifactErrorEnvelopeCoversRemainingCodes` acceptance
+criterion — "every error code in the envelope enum is reachable by some
+request" — closed for `NotImplemented`/`Internal`, the two codes it did not
+yet cover.** Both are unreachable through `tests/contract`'s own harness:
+its one real backend (RustFS/S3) never returns `storage.ErrNotSupported`
+for any operation the harness exercises, and forcing a genuine Postgres
+failure without corrupting the shared suite's own database would need a
+second, disposable harness. Investigated instead of built from scratch:
+`internal/api/artifact_stub_routes_test.go` (S7/S8/S9) already drives both
+codes through the real router in a white-box `RouterConfig`-level suite —
+`TestArtifactStubRoutesReturn501WithTypedEnvelope` already asserts
+`NotImplemented` for all 13 stub routes, and
+`TestArtifactBucketRoutesWireToRealHandlerWhenConfigured` already drives a
+request into the real handler against an unreachable pool (port 1,
+connection refused), landing on `Internal` — but only asserted the code was
+*not* still the S7 stub, never pinning the exact code. Added one new test,
+`TestArtifactRouteReturnsInternalCodeWhenBackendFails`, targeting
+`ListBuckets` specifically (the one bucket-plane route with no request body
+to decode first, so nothing else can 400 before the pool is ever touched)
+and asserting `code == "Internal"` explicitly — closing the gap without
+building a second ephemeral-database harness for one assertion.
+
+**Full verification after every fix above:** `gofmt -l` (clean on every file
+this fix pass touched — pre-existing, unrelated formatting debt in ~27
+other files, none of them touched here, is left as-is), `go build ./...`,
+`go vet ./...`, `task lint` (0 issues), `task vet`, `task build`, the S18
+and S19 Verify commands re-run directly against real Postgres + RustFS +
+Azurite + fake-gcs-server, and a full workspace `go test -race -count=1
+./...` with every emulator and a real Postgres attached — every package
+`ok`, zero `FAIL`.
 
 **S20c — Result-artifact attestation.** `elitea_runtime.index_result_artifacts`
 is documented as owned by "the future artifact upload data plane".

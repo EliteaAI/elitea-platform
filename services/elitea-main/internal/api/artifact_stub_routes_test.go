@@ -260,3 +260,52 @@ func TestArtifactObjectRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 		})
 	}
 }
+
+// TestArtifactRouteReturnsInternalCodeWhenBackendFails pins the "Internal"
+// error envelope code (storageErrorCode's default branch, objects.go) to an
+// actual response through the real router — closing the other half of the
+// plan's S19 acceptance criterion ("every error code in the envelope enum is
+// reachable by some request") alongside
+// TestArtifactStubRoutesReturn501WithTypedEnvelope's NotImplemented coverage
+// above. TestArtifactBucketRoutesWireToRealHandlerWhenConfigured already
+// drives a request into the real handler against this same unreachable
+// pool, but only asserts the code is *not* still the S7 stub; this pins the
+// exact code that failure produces. ListBuckets is the target because it is
+// the one bucket-plane route with no request body to decode first — every
+// other route in that table risks 400ing on InvalidArgument before ever
+// reaching the pool, which would prove nothing about this specific branch.
+func TestArtifactRouteReturnsInternalCodeWhenBackendFails(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
+	if err != nil {
+		t.Fatalf("pgxpool.New (lazy, must not dial): %v", err)
+	}
+	defer pool.Close()
+
+	router := NewRouter(RouterConfig{
+		AppsRepo:                   struct{ applications.Repository }{},
+		Pool:                       pool,
+		ObjectStore:                noopObjectStore{},
+		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/buckets/1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("response body is not the typed error envelope: %v (body=%s)", err, rec.Body.String())
+	}
+	if envelope.Error.Code != "Internal" {
+		t.Fatalf("error.code = %q, want Internal", envelope.Error.Code)
+	}
+}

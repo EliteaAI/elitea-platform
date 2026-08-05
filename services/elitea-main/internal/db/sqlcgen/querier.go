@@ -57,6 +57,13 @@ type Querier interface {
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeleteCurrentNotification(ctx context.Context, arg DeleteCurrentNotificationParams) (int64, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
+	// Reclaims chunk rows for a chunked upload that was abandoned before its
+	// final chunk arrived (browser tab closed, connection lost) — the only
+	// other path that deletes these rows is the completed-merge path
+	// (DeleteAttachmentChunks above), which an abandoned upload never reaches.
+	// Legacy's equivalent is utils/file_utils.py's cleanup_stale_chunks, a
+	// 12-hour local-disk TTL swept by the elitea_core_cleanup_stale_chunks RPC.
+	DeleteStaleAttachmentChunks(ctx context.Context, receivedAt pgtype.Timestamptz) (int64, error)
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
 	// These unqualified names are intentional. Every query is executed inside a
 	// transaction whose local search_path is derived from the authorized project.

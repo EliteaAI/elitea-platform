@@ -69,21 +69,34 @@ func (s *instrumentedStore) DeleteBatch(ctx context.Context, refs []ObjectRef) (
 	result, err := s.inner.DeleteBatch(ctx, refs)
 	recordOperation(ctx, s.backend, "delete_batch", start, err)
 
-	// One audit line per key, not one per call — DeleteBatch is many
-	// logical deletes sharing one request, and each one is independently
-	// auditable (a partial failure must not make the keys that DID delete
-	// invisible to audit, or vice versa).
-	refsByKey := make(map[string]ObjectRef, len(refs))
-	for _, ref := range refs {
-		refsByKey[ref.Key()] = ref
-	}
+	// One audit line per requested ref, not one per call — DeleteBatch is
+	// many logical deletes sharing one request, and each one is
+	// independently auditable (a partial failure must not make the keys
+	// that DID delete invisible to audit, or vice versa). Driven by refs
+	// itself, not a bare-key-keyed lookup map built from it: an
+	// adversarial-review finding confirmed the earlier map-by-Key()
+	// approach would silently misattribute bucket/project_id for a batch
+	// spanning multiple buckets whose keys happen to collide (unreachable
+	// through this codebase's sole production caller today, which always
+	// groups by bucket first, but not a guarantee this method's own
+	// signature makes). Every requested ref gets a line even if the
+	// backend never reports it in Deleted or Failed — confirmed reachable:
+	// s3.Backend.DeleteBatch can return a partial result alongside a
+	// non-nil err when one chunk of a >1000-key batch fails outright, and
+	// "log every delete" must still hold for the keys in that chunk.
+	// Any requested key absent from result.Deleted defaults to "failure" —
+	// this correctly covers both an explicit entry in result.Failed and a
+	// key the backend never mentioned in either list at all.
+	deletedKeys := make(map[string]bool, len(result.Deleted))
 	for _, key := range result.Deleted {
-		ref := refsByKey[key]
-		LogAudit(ctx, "delete", ref.Bucket(), key, ref.ProjectID(), "success")
+		deletedKeys[key] = true
 	}
-	for _, failure := range result.Failed {
-		ref := refsByKey[failure.Key]
-		LogAudit(ctx, "delete", ref.Bucket(), failure.Key, ref.ProjectID(), "failure")
+	for _, ref := range refs {
+		outcome := "failure"
+		if deletedKeys[ref.Key()] {
+			outcome = "success"
+		}
+		LogAudit(ctx, "delete", ref.Bucket(), ref.Key(), ref.ProjectID(), outcome)
 	}
 	return result, err
 }

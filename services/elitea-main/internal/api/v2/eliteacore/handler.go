@@ -65,8 +65,10 @@ func WithHTTPClient(client *http.Client) Option {
 }
 
 // WithObjectStore wires S20b's icon byte path (UploadIcon/DeleteIcon) onto
-// the object store instead of ICONS_DATA_DIR. Left nil, both methods report
-// a clear 500 rather than silently falling back to disk.
+// the object store instead of ICONS_DATA_DIR. Left nil, UploadIcon reports a
+// clear 500 for a real upload attempt (never for its "no file" no-op) rather
+// than silently falling back to disk; DeleteIcon stays unconditionally 204
+// either way, matching its pre-S20b best-effort semantics.
 func WithObjectStore(store storage.ObjectStore) Option {
 	return func(handler *Handler) {
 		handler.store = store
@@ -1900,6 +1902,11 @@ func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
 // static file servers.
 func DownloadIcon(store storage.ObjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if store == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
 		projectID := chi.URLParam(r, "projectID")
 		filename := chi.URLParam(r, "filename")
 		ref, err := storage.NewObjectRef(projectID, iconBucket, filename)
@@ -1908,18 +1915,24 @@ func DownloadIcon(store storage.ObjectStore) http.HandlerFunc {
 			return
 		}
 
-		body, info, err := store.Get(r.Context(), ref, nil)
+		body, _, err := store.Get(r.Context(), ref, nil)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		defer func() { _ = body.Close() }()
 
-		contentType := info.ContentType
-		if contentType == "" {
-			contentType = mime.TypeByExtension(safeIconExtension(filename))
-		}
-		if contentType != "" {
+		// nosniff + a content type derived only from the allowlisted
+		// extension safeIconExtension itself enforces (never the backend-
+		// reported ObjectInfo.ContentType, which for an object written
+		// before this allowlist existed could still be arbitrary) — an
+		// adversarial-review finding confirmed a stored-XSS path through
+		// this route otherwise: it is public/unauthenticated by design (a
+		// browser <img src> carries no auth header), so anything it serves
+		// with a browser-sniffable or attacker-chosen Content-Type is
+		// script-executable in the app's own origin.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if contentType := mime.TypeByExtension(safeIconExtension(filename)); contentType != "" {
 			w.Header().Set("Content-Type", contentType)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -1935,6 +1948,20 @@ func validIconPathSegment(value string) bool {
 		!strings.ContainsAny(value, "/\\\x00")
 }
 
+// allowedIconExtensions is the entire set safeIconExtension can return.
+// S20b's adversarial review confirmed a stored-XSS path: without this
+// allowlist, a caller could upload a "file.html"/"file.svg-with-script"-
+// named part, have it stored and served back by DownloadIcon (a public,
+// unauthenticated route, since a browser <img src> carries no auth header)
+// with a browser-sniffable or attacker-chosen Content-Type, executing
+// script in the app's own origin. Restricting storage to genuine image
+// extensions closes this at the write path, which is more robust than
+// relying on Content-Type alone at the read path (also hardened below).
+var allowedIconExtensions = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".svg": true, ".webp": true, ".ico": true, ".bmp": true,
+}
+
 func safeIconExtension(filename string) string {
 	const defaultExtension = ".png"
 
@@ -1947,16 +1974,17 @@ func safeIconExtension(filename string) string {
 		return defaultExtension
 	}
 
-	extension := filename[lastDot:]
+	extension := strings.ToLower(filename[lastDot:])
 	if len(extension) > 16 {
 		return defaultExtension
 	}
 	for _, char := range extension[1:] {
-		if (char < 'a' || char > 'z') &&
-			(char < 'A' || char > 'Z') &&
-			(char < '0' || char > '9') {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') {
 			return defaultExtension
 		}
+	}
+	if !allowedIconExtensions[extension] {
+		return defaultExtension
 	}
 	return extension
 }

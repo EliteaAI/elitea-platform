@@ -16,6 +16,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -60,35 +61,77 @@ type artifactErrorEnvelope struct {
 	} `json:"error"`
 }
 
-// decodeArtifactJSON asserts resp's Content-Type is application/json (never
-// plain text, per S19's acceptance criterion) and unmarshals its body into
-// v.
-func decodeArtifactJSON(t *testing.T, resp *http.Response, v any) {
-	t.Helper()
-	defer func() { _ = resp.Body.Close() }()
-	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Content-Type = %q, want application/json; body=%s", ct, body)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
-		t.Fatalf("decode response body: %v", err)
-	}
-}
-
+// requireArtifactStatus, requireArtifactJSON, and requireArtifactBody all
+// read resp.Body exactly once, close it exactly once, and check StatusCode
+// before anything else — a single-read design that closes two
+// adversarial-review findings at once: the previous two-call
+// decode-then-status pattern used everywhere in this file left every
+// successful status-only check leaking its HTTP connection
+// (decodeArtifactJSON's own Close never ran for those), and every
+// decode-then-status pair lost the response body from its failure message
+// (decodeArtifactJSON's Close ran first, so a subsequent status mismatch
+// read from an already-drained body). Call requireArtifactJSON instead of
+// requireArtifactStatus whenever the body needs JSON decoding, or
+// requireArtifactBody when it needs the raw bytes (object downloads, range
+// reads) — do not call any of the three a second time on the same
+// *http.Response, or manually io.ReadAll it afterward: the first call to
+// touch the body consumes and closes it, and every later read fails with
+// "http: read on closed response body" (confirmed the hard way — this was
+// the exact bug this doc comment now warns against, caught empirically by
+// running this suite against real Postgres+RustFS after this file's
+// decodeArtifactJSON→requireArtifactJSON migration, not by inspection).
 func requireArtifactStatus(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
+	requireArtifactJSON(t, resp, want, nil)
+}
+
+// requireArtifactBody is requireArtifactStatus's raw-bytes counterpart for
+// binary/non-JSON payloads (object downloads, range reads), which
+// requireArtifactJSON's automatic Content-Type/JSON-decode check does not
+// fit.
+func requireArtifactBody(t *testing.T, resp *http.Response, want int) []byte {
+	t.Helper()
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
 	if resp.StatusCode != want {
-		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, want, body)
+	}
+	return body
+}
+
+// requireArtifactJSON checks resp's status and Content-Type (never plain
+// text, per S19's acceptance criterion), then unmarshals its body into v —
+// unless v is nil, for a status-only check that still wants this function's
+// single-read-and-close behavior.
+func requireArtifactJSON(t *testing.T, resp *http.Response, want int, v any) {
+	t.Helper()
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if resp.StatusCode != want {
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, want, body)
+	}
+	if v == nil {
+		return
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json; body=%s", ct, body)
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		t.Fatalf("decode response body: %v; body=%s", err, body)
 	}
 }
 
 func requireArtifactErrorCode(t *testing.T, resp *http.Response, wantStatus int, wantCode string) artifactErrorEnvelope {
 	t.Helper()
-	requireArtifactStatus(t, resp, wantStatus)
 	var env artifactErrorEnvelope
-	decodeArtifactJSON(t, resp, &env)
+	requireArtifactJSON(t, resp, wantStatus, &env)
 	if env.Error.Code != wantCode {
 		t.Fatalf("error.code = %q, want %q", env.Error.Code, wantCode)
 	}
@@ -112,9 +155,8 @@ func mustCreateArtifactBucket(t *testing.T, srv string, projectID int64, name st
 	t.Helper()
 	resp := doArtifactJSON(t, srv, http.MethodPost, fmt.Sprintf("/api/v2/artifacts/buckets/%d", projectID),
 		map[string]any{"name": name})
-	requireArtifactStatus(t, resp, http.StatusOK)
 	var b artifactBucket
-	decodeArtifactJSON(t, resp, &b)
+	requireArtifactJSON(t, resp, http.StatusOK, &b)
 	return b
 }
 
@@ -159,8 +201,7 @@ func TestArtifactBucketLifecycle(t *testing.T) {
 
 	getResp := doArtifact(t, srv, http.MethodGet, fmt.Sprintf("/api/v2/artifacts/buckets/%d/reports", projectID), nil, "")
 	var got artifactBucket
-	decodeArtifactJSON(t, getResp, &got)
-	requireArtifactStatus(t, getResp, http.StatusOK)
+	requireArtifactJSON(t, getResp, http.StatusOK, &got)
 	if got.Name != "reports" {
 		t.Fatalf("GetBucket name = %q, want reports", got.Name)
 	}
@@ -169,7 +210,7 @@ func TestArtifactBucketLifecycle(t *testing.T) {
 	var listed struct {
 		Buckets []artifactBucket `json:"buckets"`
 	}
-	decodeArtifactJSON(t, listResp, &listed)
+	requireArtifactJSON(t, listResp, http.StatusOK, &listed)
 	found := false
 	for _, b := range listed.Buckets {
 		if b.Name == "reports" {
@@ -183,8 +224,7 @@ func TestArtifactBucketLifecycle(t *testing.T) {
 	patchResp := doArtifactJSON(t, srv, http.MethodPatch, fmt.Sprintf("/api/v2/artifacts/buckets/%d/reports", projectID),
 		map[string]any{"is_pinned": true, "tags": map[string]string{"env": "prod"}})
 	var patched artifactBucket
-	decodeArtifactJSON(t, patchResp, &patched)
-	requireArtifactStatus(t, patchResp, http.StatusOK)
+	requireArtifactJSON(t, patchResp, http.StatusOK, &patched)
 	if !patched.IsPinned {
 		t.Fatalf("UpdateBucket is_pinned = %v, want true", patched.IsPinned)
 	}
@@ -195,8 +235,7 @@ func TestArtifactBucketLifecycle(t *testing.T) {
 	retentionResp := doArtifactJSON(t, srv, http.MethodPatch, fmt.Sprintf("/api/v2/artifacts/buckets/%d/reports", projectID),
 		map[string]any{"retention_days": 30})
 	var withRetention artifactBucket
-	decodeArtifactJSON(t, retentionResp, &withRetention)
-	requireArtifactStatus(t, retentionResp, http.StatusOK)
+	requireArtifactJSON(t, retentionResp, http.StatusOK, &withRetention)
 	if withRetention.RetentionDays == nil || *withRetention.RetentionDays != 30 || withRetention.ExpiresAt == nil {
 		t.Fatalf("UpdateBucket retention = %+v, want retention_days=30 with a computed expires_at", withRetention)
 	}
@@ -260,19 +299,13 @@ func TestArtifactObjectUploadDownloadHeadDeleteRangeRead(t *testing.T) {
 		Key       string `json:"key"`
 		SizeBytes int64  `json:"size_bytes"`
 	}
-	decodeArtifactJSON(t, uploadResp, &uploaded)
-	requireArtifactStatus(t, uploadResp, http.StatusCreated)
+	requireArtifactJSON(t, uploadResp, http.StatusCreated, &uploaded)
 	if uploaded.Key != "bigfile.bin" || uploaded.SizeBytes != int64(len(content)) {
 		t.Fatalf("UploadObject = %+v, want key=bigfile.bin size_bytes=%d", uploaded, len(content))
 	}
 
 	downloadResp := doArtifact(t, srv, http.MethodGet, fmt.Sprintf("/api/v2/artifacts/objects/%d/objects1/bigfile.bin", projectID), nil, "")
-	requireArtifactStatus(t, downloadResp, http.StatusOK)
-	got, err := io.ReadAll(downloadResp.Body)
-	_ = downloadResp.Body.Close()
-	if err != nil {
-		t.Fatalf("read download body: %v", err)
-	}
+	got := requireArtifactBody(t, downloadResp, http.StatusOK)
 	if gotDigest := sha256.Sum256(got); gotDigest != wantDigest {
 		t.Fatalf("downloaded object digest mismatch: got %x, want %x", gotDigest, wantDigest)
 	}
@@ -289,9 +322,7 @@ func TestArtifactObjectUploadDownloadHeadDeleteRangeRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("range GET: %v", err)
 	}
-	requireArtifactStatus(t, rangeResp, http.StatusPartialContent)
-	rangeBody, _ := io.ReadAll(rangeResp.Body)
-	_ = rangeResp.Body.Close()
+	rangeBody := requireArtifactBody(t, rangeResp, http.StatusPartialContent)
 	if len(rangeBody) != 100 || !bytes.Equal(rangeBody, content[:100]) {
 		t.Fatalf("range GET returned %d bytes, want the first 100 bytes unmodified", len(rangeBody))
 	}
@@ -334,8 +365,7 @@ func TestArtifactObjectListWithPrefixAndDelimiterPaginates(t *testing.T) {
 		Objects        []struct{ Key string } `json:"objects"`
 		CommonPrefixes []string               `json:"common_prefixes"`
 	}
-	decodeArtifactJSON(t, delimResp, &delimListed)
-	requireArtifactStatus(t, delimResp, http.StatusOK)
+	requireArtifactJSON(t, delimResp, http.StatusOK, &delimListed)
 	if len(delimListed.Objects) != 1 || delimListed.Objects[0].Key != "top.txt" {
 		t.Fatalf("delimiter listing objects = %+v, want exactly [top.txt]", delimListed.Objects)
 	}
@@ -349,20 +379,37 @@ func TestArtifactObjectListWithPrefixAndDelimiterPaginates(t *testing.T) {
 		}
 	}
 
+	const pageLimit = 2
 	seen := map[string]bool{}
 	cursor := ""
 	for page := 0; page < 10; page++ {
-		path := fmt.Sprintf("/api/v2/artifacts/objects/%d/listing1?prefix=a/&limit=2", projectID)
+		path := fmt.Sprintf("/api/v2/artifacts/objects/%d/listing1?prefix=a/&limit=%d", projectID, pageLimit)
 		if cursor != "" {
-			path += "&cursor=" + cursor
+			// url.QueryEscape, not raw concatenation: an adversarial-review
+			// finding confirmed next_cursor is a backend-opaque,
+			// commonly base64-shaped token (S3's NextContinuationToken,
+			// passed through verbatim) that can legitimately contain '+',
+			// '&', or '=' — any of which corrupts the reconstructed query
+			// string if appended raw.
+			path += "&cursor=" + url.QueryEscape(cursor)
 		}
 		resp := doArtifact(t, srv, http.MethodGet, path, nil, "")
 		var listed struct {
 			Objects    []struct{ Key string } `json:"objects"`
 			NextCursor string                 `json:"next_cursor"`
 		}
-		decodeArtifactJSON(t, resp, &listed)
-		requireArtifactStatus(t, resp, http.StatusOK)
+		requireArtifactJSON(t, resp, http.StatusOK, &listed)
+		// A regression that silently ignores the limit query parameter
+		// (returning everything on one page) would still pass the
+		// no-duplicates/no-gaps assertions below on its own — confirmed
+		// empirically by adversarial review, which patched ListObjects to
+		// discard limit and reran only this test: it still reported PASS,
+		// because the accumulated `seen` set matched after a single
+		// now-unbounded page. This per-page ceiling is what actually
+		// proves limit was honored.
+		if len(listed.Objects) > pageLimit {
+			t.Fatalf("page %d returned %d objects, want at most %d (limit=%d) — is the limit query parameter being ignored?", page, len(listed.Objects), pageLimit, pageLimit)
+		}
 		for _, o := range listed.Objects {
 			if seen[o.Key] {
 				t.Fatalf("pagination returned duplicate key %q", o.Key)
@@ -405,8 +452,7 @@ func TestArtifactObjectBatchDeleteMixedPresentAbsent(t *testing.T) {
 			Message string `json:"message"`
 		} `json:"failed"`
 	}
-	decodeArtifactJSON(t, resp, &result)
-	requireArtifactStatus(t, resp, http.StatusOK)
+	requireArtifactJSON(t, resp, http.StatusOK, &result)
 
 	accounted := map[string]bool{}
 	for _, k := range result.Deleted {
@@ -468,8 +514,7 @@ func TestArtifactGrantPresignedUploadAndCommitRoundTrip(t *testing.T) {
 			"digest":       hex.EncodeToString(digest[:]),
 		})
 	var grant transferGrantResponse
-	decodeArtifactJSON(t, grantResp, &grant)
-	requireArtifactStatus(t, grantResp, http.StatusOK)
+	requireArtifactJSON(t, grantResp, http.StatusOK, &grant)
 	if grant.URL == "" || grant.UploadID != nil {
 		t.Fatalf("CreateTransferGrant = %+v, want a presigned url and no upload_id (below the multipart threshold)", grant)
 	}
@@ -495,16 +540,13 @@ func TestArtifactGrantPresignedUploadAndCommitRoundTrip(t *testing.T) {
 		SizeBytes int64  `json:"size_bytes"`
 		MediaType string `json:"media_type"`
 	}
-	decodeArtifactJSON(t, commitResp, &committed)
-	requireArtifactStatus(t, commitResp, http.StatusOK)
+	requireArtifactJSON(t, commitResp, http.StatusOK, &committed)
 	if committed.Key != grant.GrantID || committed.SizeBytes != int64(len(content)) {
 		t.Fatalf("CommitTransferGrant = %+v, want key=%s size_bytes=%d", committed, grant.GrantID, len(content))
 	}
 
 	downloadResp := doArtifact(t, srv, http.MethodGet, fmt.Sprintf("/api/v2/artifacts/objects/%d/grants1/%s", projectID, grant.GrantID), nil, "")
-	requireArtifactStatus(t, downloadResp, http.StatusOK)
-	got, _ := io.ReadAll(downloadResp.Body)
-	_ = downloadResp.Body.Close()
+	got := requireArtifactBody(t, downloadResp, http.StatusOK)
 	if !bytes.Equal(got, content) {
 		t.Fatalf("downloaded committed object = %q, want %q", got, content)
 	}
@@ -527,8 +569,7 @@ func TestArtifactGrantCommitDigestMismatchReturns409(t *testing.T) {
 			"digest":       hex.EncodeToString(wrongDigest[:]),
 		})
 	var grant transferGrantResponse
-	decodeArtifactJSON(t, grantResp, &grant)
-	requireArtifactStatus(t, grantResp, http.StatusOK)
+	requireArtifactJSON(t, grantResp, http.StatusOK, &grant)
 
 	putReq, _ := http.NewRequest(http.MethodPut, grant.URL, strings.NewReader("actual uploaded content"))
 	putReq.Header.Set("Content-Type", contentType)
@@ -558,8 +599,7 @@ func TestArtifactGrantCommitMediaTypeMismatchReturns409(t *testing.T) {
 	grantResp := doArtifactJSON(t, srv, http.MethodPost, fmt.Sprintf("/api/v2/artifacts/grants/%d/grants3", projectID),
 		map[string]any{"method": "PUT", "content_type": "application/json", "max_bytes": 4096})
 	var grant transferGrantResponse
-	decodeArtifactJSON(t, grantResp, &grant)
-	requireArtifactStatus(t, grantResp, http.StatusOK)
+	requireArtifactJSON(t, grantResp, http.StatusOK, &grant)
 
 	putReq, _ := http.NewRequest(http.MethodPut, grant.URL, strings.NewReader(`{"not":"checked"}`))
 	// Deliberately no Content-Type header.
@@ -631,8 +671,7 @@ func TestArtifactCrossProjectMultipartAccessReturns403(t *testing.T) {
 			"max_bytes":    70 << 20, // above multipartThreshold (64 MiB)
 		})
 	var grant transferGrantResponse
-	decodeArtifactJSON(t, grantResp, &grant)
-	requireArtifactStatus(t, grantResp, http.StatusOK)
+	requireArtifactJSON(t, grantResp, http.StatusOK, &grant)
 	if grant.UploadID == nil {
 		t.Fatalf("CreateTransferGrant = %+v, want a native multipart upload_id above the 64 MiB threshold", grant)
 	}
@@ -677,8 +716,7 @@ func TestArtifactErrorEnvelopeCoversRemainingCodes(t *testing.T) {
 		grantResp := doArtifactJSON(t, srv, http.MethodPost, fmt.Sprintf("/api/v2/artifacts/grants/%d/expired1", projectID),
 			map[string]any{"method": "PUT", "content_type": "text/plain", "max_bytes": 1024})
 		var grant transferGrantResponse
-		decodeArtifactJSON(t, grantResp, &grant)
-		requireArtifactStatus(t, grantResp, http.StatusOK)
+		requireArtifactJSON(t, grantResp, http.StatusOK, &grant)
 
 		if _, err := artifactPool.Exec(context.Background(),
 			`UPDATE elitea_storage.transfer_grants SET expires_at = now() - interval '1 hour' WHERE id = $1::uuid`,

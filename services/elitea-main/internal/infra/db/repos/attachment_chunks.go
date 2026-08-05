@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -99,4 +100,15 @@ func (r *AttachmentChunksRepository) DeleteChunks(ctx context.Context, projectID
 		return fmt.Errorf("delete attachment chunks: %w", err)
 	}
 	return nil
+}
+
+// DeleteStaleChunks reclaims chunk rows whose received_at is older than
+// olderThan — see the underlying query's own doc comment on why abandoned
+// (never-completed) chunked uploads need this in addition to DeleteChunks.
+func (r *AttachmentChunksRepository) DeleteStaleChunks(ctx context.Context, olderThan time.Time) (int64, error) {
+	n, err := r.queries.DeleteStaleAttachmentChunks(ctx, toTimestamptz(&olderThan))
+	if err != nil {
+		return 0, fmt.Errorf("delete stale attachment chunks: %w", err)
+	}
+	return n, nil
 }

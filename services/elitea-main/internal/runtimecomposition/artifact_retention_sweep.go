@@ -21,6 +21,9 @@ const (
 	artifactRetentionSweepMaxBatchesPerTick = 20
 	artifactRetentionSweepNotifyWithin      = 24 * time.Hour
 	artifactRetentionSweepNotifyLimit       = int32(100)
+	// artifactRetentionStaleChunkTTL matches legacy's cleanup_stale_chunks —
+	// see cleanupStaleAttachmentChunks's own doc comment.
+	artifactRetentionStaleChunkTTL = 12 * time.Hour
 )
 
 var errArtifactRetentionSweepInvalidOccurrence = errors.New("invalid artifact retention sweep occurrence")
@@ -53,6 +56,15 @@ type artifactRetentionNotifier interface {
 	NotifyBucketExpiring(ctx context.Context, projectID, userID, bucketID int64, expiresAt time.Time) error
 }
 
+// artifactRetentionAttachmentChunksRepository is S20a's cleanup dependency
+// (repos.AttachmentChunksRepository satisfies it) — optional, unlike the
+// four constructor-required dependencies above: an installation with no
+// attachment-chunk cleanup wired simply skips that step rather than failing
+// to construct the whole sweeper over an unrelated feature's dependency.
+type artifactRetentionAttachmentChunksRepository interface {
+	DeleteStaleChunks(ctx context.Context, olderThan time.Time) (int64, error)
+}
+
 // artifactRetentionSweep is the typed retention adapter behind the generic
 // platform scheduler, following the shape of currentIndexScheduleDueWork:
 // it owns product-aware sweeping (expired object purge, expiry
@@ -63,10 +75,11 @@ type artifactRetentionNotifier interface {
 // synchronously within Execute — there is no downstream durable system this
 // handler merely admits work into, unlike currentIndexScheduleDueWork.
 type artifactRetentionSweep struct {
-	objects  artifactRetentionObjectsRepository
-	buckets  artifactRetentionBucketsRepository
-	notifier artifactRetentionNotifier
-	store    storage.ObjectStore
+	objects          artifactRetentionObjectsRepository
+	buckets          artifactRetentionBucketsRepository
+	notifier         artifactRetentionNotifier
+	store            storage.ObjectStore
+	attachmentChunks artifactRetentionAttachmentChunksRepository
 }
 
 func newArtifactRetentionSweep(
@@ -79,6 +92,15 @@ func newArtifactRetentionSweep(
 		return nil, errors.New("artifact retention sweep dependencies are required")
 	}
 	return &artifactRetentionSweep{objects: objects, buckets: buckets, notifier: notifier, store: store}, nil
+}
+
+// WithAttachmentChunks activates S20a's stale-chunk cleanup step. Optional:
+// left unset, Execute simply skips it — see
+// artifactRetentionAttachmentChunksRepository's own doc comment for why this
+// one dependency is not constructor-required like the other four.
+func (s *artifactRetentionSweep) WithAttachmentChunks(repo artifactRetentionAttachmentChunksRepository) *artifactRetentionSweep {
+	s.attachmentChunks = repo
+	return s
 }
 
 func (*artifactRetentionSweep) Name() string {
@@ -107,7 +129,24 @@ func (s *artifactRetentionSweep) Execute(
 	if err := s.updateProjectByteUsageGauges(ctx); err != nil {
 		return "", err
 	}
+	if s.attachmentChunks != nil {
+		if err := s.cleanupStaleAttachmentChunks(ctx); err != nil {
+			return "", err
+		}
+	}
 	return schedulingapp.OutcomeLocalCompleted, nil
+}
+
+// cleanupStaleAttachmentChunks reclaims S20a chunk rows for chunked
+// attachment uploads abandoned before their final chunk arrived — the
+// completed-merge path (DeleteAttachmentChunks) never runs for those, so
+// nothing else in this service ever deletes them. Matches legacy's
+// cleanup_stale_chunks 12-hour TTL.
+func (s *artifactRetentionSweep) cleanupStaleAttachmentChunks(ctx context.Context) error {
+	if _, err := s.attachmentChunks.DeleteStaleChunks(ctx, time.Now().Add(-artifactRetentionStaleChunkTTL)); err != nil {
+		return fmt.Errorf("delete stale attachment chunks: %w", err)
+	}
+	return nil
 }
 
 var _ schedulingapp.Handler = (*artifactRetentionSweep)(nil)
@@ -254,6 +293,9 @@ func (s *artifactRetentionSweep) updateProjectByteUsageGauges(ctx context.Contex
 		if err != nil {
 			return fmt.Errorf("sum artifact project bytes for project %d: %w", projectID, err)
 		}
+		// Argument order matters and the compiler cannot catch a swap here —
+		// both parameters are int64. See RecordProjectByteUsage's own
+		// signature: (ctx, projectID, totalBytes), in that order.
 		storage.RecordProjectByteUsage(ctx, projectID, total)
 	}
 	return nil
