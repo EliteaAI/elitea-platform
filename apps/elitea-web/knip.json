@@ -287,8 +287,8 @@
     //                               `useCallback`, this port hoisted it to a
     //                               module-level export)
     // They are correct ported code waiting on the composition layer, not dead
-    // code, and deleting them would throw away the port. Tracked in the parity
-    // follow-up filed from #71. REMOVE these two entries when that layer lands.
+    // code, and deleting them would throw away the port. Tracked in #80.
+    // REMOVE these two entries when that layer lands.
     "src/features/settings/lib/ai-configuration/modelConfiguration.helpers.ts",
     "src/features/settings/lib/ai-configuration/useModelConfiguration.ts",
     // [#71] `profileUtils.ts`'s `parseModelValue` splits a `name$$$projectId`
@@ -370,9 +370,8 @@
     // and `options` comes from `useModelOptions` — a hook this app never
     // ported, along with the per-model selection state
     // (`ModelConfiguration.jsx`'s own selector) that supplies `model`.
-    // Porting that is real feature work, tracked as the parity follow-up filed
-    // from #71. REMOVE this entry when `useModelOptions` lands and the chips
-    // are rendered.
+    // Porting that is real feature work, tracked in #80. REMOVE this entry
+    // when `useModelOptions` lands and the chips are rendered.
     "src/features/settings/ui/ai-configuration/ModelCapabilitiesSection.tsx"
   ],
   "ignoreDependencies": [
