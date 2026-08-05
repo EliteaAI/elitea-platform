@@ -78,6 +78,33 @@ describe('useToolMenuItems', () => {
     expect(keys).not.toContain('application');
   });
 
+  it('limits the MCP-mode menu to mcp-flavoured schemas plus the synthesized Remote MCP entry, excluding ordinary toolkit types (R1 regression guard)', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () =>
+        HttpResponse.json({
+          github: { metadata: { label: 'GitHub' } },
+          jira: { metadata: { label: 'Jira' } },
+          openapi: { metadata: { label: 'OpenAPI' } },
+          mcp: { metadata: { label: 'MCP' } },
+          my_local_mcp: { metadata: { label: 'My Local MCP' }, type: 'mcp' },
+        }),
+      ),
+    );
+
+    const { box } = renderToolMenuItems({ isMCP: true });
+
+    await waitFor(() => expect(box.current?.isFetchingToolkitTypes).toBe(false));
+    const keys = box.current?.toolMenuItems.map((item) => item.key);
+    // Ordinary (non-mcp-shaped) toolkit types must NOT pollute the MCP menu.
+    expect(keys).not.toContain('github');
+    expect(keys).not.toContain('jira');
+    expect(keys).not.toContain('openapi');
+    // The user's own discovered MCP server, plus the synthesized "Remote MCP" entry, must be present.
+    expect(keys).toContain('my_local_mcp');
+    const remoteMcp = box.current?.toolMenuItems.find((item) => item.key === 'mcp');
+    expect(remoteMcp?.label).toBe('Remote MCP');
+  });
+
   it('does not add a Custom entry for isMCP', async () => {
     server.use(http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})));
 
@@ -98,6 +125,20 @@ describe('useToolMenuItems', () => {
     const keys = box.current?.toolMenuItems.map((item) => item.key);
     expect(keys).toContain('github');
     expect(keys).not.toContain('custom');
+  });
+
+  it('carries an iconKind on every entry, including the synthesized Custom entry, instead of dropping icon information entirely (R6 regression guard)', async () => {
+    server.use(http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: 'GitHub' } } })));
+
+    const { box } = renderToolMenuItems({});
+
+    await waitFor(() => expect(box.current?.isFetchingToolkitTypes).toBe(false));
+    const github = box.current?.toolMenuItems.find((item) => item.key === 'github');
+    const custom = box.current?.toolMenuItems.find((item) => item.key === 'custom');
+    expect(github).toHaveProperty('iconKind');
+    expect(github?.iconKind).toBe('toolkit');
+    expect(custom).toHaveProperty('iconKind');
+    expect(custom?.iconKind).toBe('toolkit');
   });
 
   it('wires onAddTool into each entry as onClick, called with the entry key and the resolved schema map', async () => {

@@ -78,6 +78,25 @@ describe('SharepointDelegatedLoginButton', () => {
     },
   );
 
+  it(
+    'falls back to "SharePoint" in the tooltip when toolName is an empty string ' +
+      "(baseline: `toolName || 'SharePoint'` — falsy, not nullish-only)",
+    async () => {
+      renderWithProviders(
+        <SharepointDelegatedLoginButton
+          projectId="proj-1"
+          spConfig={spConfig}
+          oauthTokenKey={oauthTokenKey}
+          toolName=""
+        />,
+      );
+
+      fireEvent.mouseOver(screen.getByText('Log in'));
+
+      expect(await screen.findByText('SharePoint is not connected. Log in to use.')).toBeInTheDocument();
+    },
+  );
+
   it('renders the injected auth-modal slot only when both renderAuthModal and authModalSlotProps are supplied', () => {
     const renderAuthModal = vi.fn(() => <div data-testid="injected-modal" />);
     renderWithProviders(

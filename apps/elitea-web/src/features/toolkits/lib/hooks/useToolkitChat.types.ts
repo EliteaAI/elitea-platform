@@ -13,6 +13,8 @@ export interface ToolkitChatModel {
   readonly name?: string;
   readonly project_id?: string;
   readonly default?: boolean;
+  /** Drives `generateLlmSettings`'s `reasoning_effort` inclusion (`../helpers/toolkitConversation.helpers.ts`) — baseline: `llmSettings.utils.js`'s `modelSupportsReasoning`. */
+  readonly supports_reasoning?: boolean;
 }
 
 /** Alias, not a duplicate — `../helpers/toolkitConversation.helpers.ts`'s `DefaultLlmSettings` already carries this exact shape (three named fields + an index signature for provider-specific extras). */

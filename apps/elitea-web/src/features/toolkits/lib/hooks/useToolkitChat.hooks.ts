@@ -60,14 +60,19 @@
  *    siblings owned by the toolkits/indexes sub-unit (A4a).
  *
  * `generateLLMSettings(model)` (`[fsd]/shared/lib/utils/llmSettings.utils.js`)
- * — model-specific LLM-settings defaulting — has no port anywhere in this
- * app (independently reconfirmed by two OTHER already-landed files:
- * `entities/application-form/model/initialValues.ts` and
- * `features/agents/ui/generate-agent-modal/useAgentDraftApproval.ts`, both
- * citing the exact same gap for their own callers). `DEFAULT_LLM_SETTINGS`
- * (this sub-unit's own port of the baseline's STATIC fallback constant) is
- * used in its place on model selection — a real, disclosed narrowing, not a
- * silent behaviour change.
+ * — model-specific LLM-settings defaulting — has no port of its OWN FILE
+ * anywhere in this app (independently reconfirmed by two OTHER
+ * already-landed files: `entities/application-form/model/initialValues.ts`
+ * and `features/agents/ui/generate-agent-modal/useAgentDraftApproval.ts`,
+ * both citing the exact same gap for their own callers). The function
+ * itself, however, IS re-implemented locally — `../helpers/
+ * toolkitConversation.helpers.ts`'s `generateLlmSettings` — and used here on
+ * both the initial `llmSettings` state and every `onSelectModel` call,
+ * matching the baseline's own `useState(() => generateLLMSettings(defaultModel))`
+ * / `onSelectModel`'s `setLLmSettings(generateLLMSettings(model))` exactly
+ * (real fix, not `DEFAULT_LLM_SETTINGS`'s previous static fallback on every
+ * selection — see that helper file's own module doc comment for the full
+ * `top_k`/`reasoning_effort` parity rationale).
  *
  * `ToolkitsHelpers.prettifyToolkitConversation` is deliberately NOT applied
  * to the recovered history (`historyMessages`, below) — the SAME decision
@@ -84,7 +89,7 @@ import { generateMockMessageTemplate, generateWelcomeMessage } from '../../index
 import { useIndexHistory } from '../../indexes/lib/hooks/useIndexHistory.hooks';
 import { ToolkitChatModesEnum } from '../constants/toolkitChat.constants';
 import type { CreatedConversation } from '../helpers/toolkitConversation.helpers';
-import { createToolkitConversationWithParticipant, DEFAULT_LLM_SETTINGS, findToolkitParticipant } from '../helpers/toolkitConversation.helpers';
+import { createToolkitConversationWithParticipant, findToolkitParticipant, generateLlmSettings } from '../helpers/toolkitConversation.helpers';
 import { useSelectedProjectId } from './useSelectedProjectId';
 import { useToolkitChatSocket } from './useToolkitChatSocket.hooks';
 import type { ToolkitChatIndexLike, ToolkitChatLlmSettings, ToolkitChatMessage, ToolkitChatModel, UseToolkitChatParams, UseToolkitChatResult } from './useToolkitChat.types';
@@ -157,7 +162,7 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
   const isCreateIndexMode = useMemo(() => modes.includes(ToolkitChatModesEnum.createIndex), [modes]);
 
   const [selectedModel, setSelectedModel] = useState<ToolkitChatModel | null>(defaultModel);
-  const [llmSettings, setLLmSettings] = useState<ToolkitChatLlmSettings>(DEFAULT_LLM_SETTINGS);
+  const [llmSettings, setLLmSettings] = useState<ToolkitChatLlmSettings>(() => generateLlmSettings(defaultModel));
 
   const [chatHistory, setChatHistory] = useState<ToolkitChatMessage[]>([generateWelcomeMessage(runTool, isTestToolsMode)]);
   const [isFullScreenChat, toggleFullScreenChat] = useState(false);
@@ -189,7 +194,7 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
 
   const onSelectModel = useCallback((model: ToolkitChatModel) => {
     setSelectedModel(model);
-    setLLmSettings(DEFAULT_LLM_SETTINGS);
+    setLLmSettings(generateLlmSettings(model));
   }, []);
 
   const onRunFinish = useCallback(

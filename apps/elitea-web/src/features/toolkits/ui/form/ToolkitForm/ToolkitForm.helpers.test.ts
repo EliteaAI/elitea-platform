@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ConfigurationMode } from '@/entities/toolkit';
 
 import type { ConfigurationWire } from '../../../api/configurations';
 
 import {
+  applyAutoSelectFormReset,
   resolveCredentialReverts,
   resolveDisabledConfigFields,
   resolveExcludedFields,
@@ -274,5 +275,40 @@ describe('resolveCredentialReverts', () => {
       other_key: { elitea_title: 'Stable', private: true },
     };
     expect(resolveCredentialReverts(current, initial)).toEqual([{ field: 'settings.api_key', value: initial.api_key }]);
+  });
+});
+
+describe('applyAutoSelectFormReset', () => {
+  /**
+   * [R1 regression] The exact helper `editField` (`ToolkitForm.core.hooks.ts`)
+   * calls unconditionally on every field change — pre-fix, this function
+   * (and the whole call site) did not exist at all, so `onResetForm` was
+   * never invoked under any condition. Confirmed failing pre-fix by
+   * reverting `ToolkitForm.core.hooks.ts`'s call site locally and
+   * re-running the higher-level `useToolkitFormCore` suite
+   * (`ToolkitForm.core.hooks.test.tsx`), which exercises this same code
+   * path end to end.
+   */
+  it('calls onResetForm with the auto-selected value merged into formValues when isAutoSelect is true', () => {
+    const onResetForm = vi.fn();
+    applyAutoSelectFormReset({ isAutoSelect: true }, { type: 'github', settings: { embedding_model: 'old' } }, 'settings.embedding_model', 'new', onResetForm);
+
+    expect(onResetForm).toHaveBeenCalledWith({ type: 'github', settings: { embedding_model: 'new' } });
+  });
+
+  it('does not call onResetForm when isAutoSelect is false', () => {
+    const onResetForm = vi.fn();
+    applyAutoSelectFormReset({ isAutoSelect: false }, {}, 'name', 'x', onResetForm);
+    expect(onResetForm).not.toHaveBeenCalled();
+  });
+
+  it('does not call onResetForm when options is undefined (a normal user edit)', () => {
+    const onResetForm = vi.fn();
+    applyAutoSelectFormReset(undefined, {}, 'name', 'x', onResetForm);
+    expect(onResetForm).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when onResetForm is undefined, even with isAutoSelect: true', () => {
+    expect(() => applyAutoSelectFormReset({ isAutoSelect: true }, {}, 'name', 'x', undefined)).not.toThrow();
   });
 });

@@ -112,10 +112,18 @@ function collectRowTags(rows: readonly LoadedToolkit[] | undefined): readonly To
   return uniqueTags.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** One toolkit TYPE's display label — schema `metadata.label`, else `entities/credential`'s `providerDisplayName` on the capitalized type name (baseline: `CredentialNameHelpers.extraCredentialName`). */
+/**
+ * One toolkit TYPE's display label — schema `metadata.label`, else
+ * `entities/credential`'s `providerDisplayName` on the capitalized type name
+ * (baseline: `CredentialNameHelpers.extraCredentialName`). `||`, not `??` —
+ * matching the baseline's `typeInfo?.metadata?.label || CredentialNameHelpers.
+ * extraCredentialName(type)` exactly (`useLoadToolkits.js:46`/`106`): a
+ * backend-supplied EMPTY-STRING `metadata.label` must fall through to the
+ * computed name too, not render as a blank tag/label (R4 regression guard).
+ */
 function toolkitTypeLabel(type: string, toolkitSchemas: ToolkitTypeSchemaMap | undefined): string {
   const typeInfo = toolkitSchemas?.[type] as { readonly metadata?: { readonly label?: string } } | undefined;
-  return typeInfo?.metadata?.label ?? providerDisplayName(type.charAt(0).toUpperCase() + type.slice(1));
+  return typeInfo?.metadata?.label || providerDisplayName(type.charAt(0).toUpperCase() + type.slice(1));
 }
 
 /** `projectWideTagList` — every known toolkit TYPE (from the schema catalogue) as a selectable tag, name-sorted. */
@@ -131,14 +139,22 @@ const MCP_TAG_LIST: readonly ToolkitTag[] = [
   { id: 2, name: McpCategory.Remote, data: { type: 'mcp' } },
 ];
 
-/** `tagList`'s own resolution branch, split out of the hook body to stay under the §3.5 complexity budget. */
+/**
+ * `tagList`'s own resolution branch, split out of the hook body to stay
+ * under the §3.5 complexity budget. Truthy check on `authorId`, not
+ * `!== undefined` — matching the baseline's `if (author_id) { ... }`
+ * exactly (`useLoadToolkits.js:149-152`): an EMPTY-STRING `authorId` must be
+ * treated the same as "no author filter" and fall through to the full
+ * project-wide/MCP tag list, not switch to the smaller per-page row-derived
+ * one (R5 regression guard).
+ */
 function resolveTagList(
   authorId: string | undefined,
   isMCP: boolean,
   rows: readonly LoadedToolkit[] | undefined,
   toolkitSchemas: ToolkitTypeSchemaMap | undefined,
 ): readonly ToolkitTag[] {
-  if (authorId !== undefined) return collectRowTags(rows);
+  if (authorId) return collectRowTags(rows);
   if (isMCP) return MCP_TAG_LIST;
   return buildProjectWideTagList(toolkitSchemas);
 }

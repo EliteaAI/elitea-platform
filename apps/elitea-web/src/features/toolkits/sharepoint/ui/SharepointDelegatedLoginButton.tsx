@@ -63,7 +63,10 @@ export function SharepointDelegatedLoginButton({
     void runCheck(onConfigAuthRequired, oauthTokenKey);
   }, [runCheck, onConfigAuthRequired, oauthTokenKey]);
 
-  const resolvedToolName = toolName ?? 'SharePoint';
+  // Baseline (`SharepointDelegatedLoginButton.jsx:37-39`): `toolName || 'SharePoint'`,
+  // NOT `??` — an empty/whitespace-collapsed-to-empty `toolName` must also fall
+  // back to the literal 'SharePoint', not render a blank tooltip.
+  const resolvedToolName = toolName || 'SharePoint';
   const statusTip = isOAuthLoggedIn
     ? t('features.toolkits.sharepointDelegatedLoginButton.connected', '{{toolName}} is connected', { toolName: resolvedToolName })
     : t('features.toolkits.sharepointDelegatedLoginButton.notConnected', '{{toolName}} is not connected. Log in to use.', {

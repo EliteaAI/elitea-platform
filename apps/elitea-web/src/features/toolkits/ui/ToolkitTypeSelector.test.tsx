@@ -141,4 +141,36 @@ describe('ToolkitTypeSelector', () => {
 
     await waitFor(() => expect(screen.queryByText('Choose the MCP type')).not.toBeInTheDocument());
   });
+
+  /**
+   * [R2 regression] Baseline: `ToolkitTypeSelector.jsx:165-190`'s MCP-only
+   * `EmptyPlaceholder` (`allowEmptyCategory={isMCP}` +
+   * `renderCategory`) — a project with zero locally-registered MCP toolkit
+   * types gets a direct docs link instead of the generic "no results, try
+   * adjusting your search terms" message (which is misleading here: there
+   * is nothing to search for). Before this fix, `ToolkitTypeSelector.tsx`
+   * had exactly one empty-state branch (`filteredItems.length === 0` ->
+   * always the generic `NoResultsMessage`), so this assertion fails against
+   * the pre-fix code (confirmed by reverting the fix locally and
+   * re-running: the generic "No MCPs found" / "Try adjusting your search
+   * terms" copy renders instead, and the docs link is absent) and passes
+   * once the MCP-specific branch is restored.
+   */
+  it('shows the MCP-specific "no local MCP available" documentation link, not the generic no-results message, when there are zero MCP toolkit types', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})),
+      http.get('/api/v2/elitea_core/platform_settings/prompt_lib', () => HttpResponse.json({ mcp_enabled: true })),
+    );
+    renderSelector({ isMCP: true });
+
+    await waitFor(() => expect(screen.getByText('Choose the MCP type')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Still no local MCP available/)).toBeInTheDocument());
+
+    const link = screen.getByRole('link', { name: 'Documentation' });
+    expect(link).toHaveAttribute('href', 'https://docs.elitea.ai/integrations/mcp/create-and-use-server-stdio');
+    expect(link).toHaveAttribute('target', '_blank');
+
+    expect(screen.queryByText('No MCPs found')).not.toBeInTheDocument();
+    expect(screen.queryByText('Try adjusting your search terms')).not.toBeInTheDocument();
+  });
 });

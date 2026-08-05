@@ -182,7 +182,13 @@ function applyStreamingUpdate(
   const msg = updatedHistory[responseMsgIndex]!;
   const contentType = message.response_metadata?.content_type;
   const shouldWrapInBlock = contentType === 'json';
-  msg.content = convertJsonToString(message.content ?? message.response_metadata?.message, shouldWrapInBlock);
+  // `||`, not `??` — matches the baseline's `message.content ||
+  // response_metadata.message` (`indexChat.helpers.js:222`) exactly: ANY
+  // falsy `message.content` (including a legitimate empty-string streaming
+  // chunk) falls back to `response_metadata.message`, not just
+  // null/undefined. See this file's own header doc comment for the
+  // zero-behavior-change porting convention this branch is part of.
+  msg.content = convertJsonToString(message.content || message.response_metadata?.message, shouldWrapInBlock);
   msg.isLoading = false;
 
   if (message.response_metadata?.finish_reason) {

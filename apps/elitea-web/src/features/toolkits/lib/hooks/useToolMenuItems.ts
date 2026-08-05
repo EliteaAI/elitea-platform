@@ -3,6 +3,9 @@ import { useMemo } from 'react';
 import { ToolTypes, toolkitTypeMenuEntries } from '@/entities/toolkit';
 import type { ToolkitTypeSchemaMap } from '@/entities/toolkit';
 
+import { getToolkitIcon } from '../helpers/toolkits.helpers';
+import type { ToolkitIconInfo } from '../helpers/toolkits.helpers';
+
 import { useGetCurrentMCPSchemas } from './useGetCurrentMCPSchemas.hooks';
 import { useGetCurrentToolkitSchemas } from './useGetCurrentToolkitSchemas.hooks';
 
@@ -24,19 +27,30 @@ import { useGetCurrentToolkitSchemas } from './useGetCurrentToolkitSchemas.hooks
  * gap for the identical reason) — reimplemented locally below since it is
  * ~10 lines, not worth requesting a budget slot for.
  *
- * DISCLOSED SCOPE REDUCTION: `getToolIconByType`/`JsonIcon` (icon
- * rendering, `@mui/material`'s `useTheme` for icon colouring) are DROPPED,
- * not ported — this hook's `key`/`label`/`onClick` triad is what
- * `ToolkitTypeSelector.tsx`'s `Category.CategorySection` rendering actually
- * needs; a faithful icon port would need `../ui/EntityIcon.tsx`'s/
- * `useToolkitIconKind.hooks.ts`'s icon-resolution rules re-derived for a
- * MENU-item (not entity-detail) context, which is out of this unit's scope
- * to build from scratch.
+ * DISCLOSED SCOPE REDUCTION (R6 fix — partial): `getToolIconByType`
+ * (`common/toolkitUtils.jsx`, ~30 per-brand SVG icon components) is still
+ * DROPPED, not ported — this app has no per-brand toolkit-icon asset
+ * library anywhere (grepped `shared/ui/icons/`: partial brand coverage
+ * only), the SAME real, disclosed, app-wide gap `../helpers/
+ * toolkits.helpers.ts`'s own module doc comment (point 4) and
+ * `../ui/EntityIcon.tsx`'s doc comment already document — restoring genuine
+ * per-brand icon fidelity needs new icon components under `shared/ui/
+ * icons/`, well outside this hook's (or this unit's) scope. What this hook
+ * DOES now restore is icon information itself: each entry carries an
+ * `iconKind` — the SAME semantic-category substitution
+ * `useToolkitIconKind.hooks.ts` and `../helpers/toolkits.helpers.ts`'s own
+ * `getToolkitIcon` already established for this exact gap ("drop the
+ * decorative fanciness, keep the function") — computed via that very
+ * function, rather than the previous key/label/onClick-only triad that
+ * dropped icon information entirely. A `ui/`-layer caller maps `iconKind`
+ * to whatever generic icon component is available (matching `EntityIcon.tsx`'s
+ * own `EntityTypeFallbackIcon`).
  */
 
 interface ToolMenuItem {
   readonly key: string;
   readonly label: string;
+  readonly iconKind: ToolkitIconInfo['iconKind'];
   readonly onClick: () => void;
 }
 
@@ -85,11 +99,21 @@ export function useToolMenuItems({ onAddTool, isMCP = false, isApplication = fal
 
   const toolMenuItems = useMemo<readonly ToolMenuItem[]>(() => {
     const entries = toolkitTypeMenuEntries(toolSchemas, { isApplication });
-    const items: ToolMenuItem[] = entries.map(({ key, label }) => ({ key, label, onClick: onAddTool ? onAddTool(key, toolSchemas) : () => {} }));
+    const items: ToolMenuItem[] = entries.map(({ key, label }) => ({
+      key,
+      label,
+      iconKind: getToolkitIcon({ type: key }, toolSchemas, isMCP).iconKind,
+      onClick: onAddTool ? onAddTool(key, toolSchemas) : () => {},
+    }));
 
     // Don't include "Custom" for applications (baseline: `useToolMenuItems.jsx:88-99`).
     if (!isMCP && !isApplication && !items.some((item) => item.key === ToolTypes.custom.value)) {
-      items.push({ key: ToolTypes.custom.value, label: ToolTypes.custom.label, onClick: onAddTool ? onAddTool(ToolTypes.custom.value, toolSchemas) : () => {} });
+      items.push({
+        key: ToolTypes.custom.value,
+        label: ToolTypes.custom.label,
+        iconKind: 'toolkit',
+        onClick: onAddTool ? onAddTool(ToolTypes.custom.value, toolSchemas) : () => {},
+      });
     }
 
     return [...items].sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()));

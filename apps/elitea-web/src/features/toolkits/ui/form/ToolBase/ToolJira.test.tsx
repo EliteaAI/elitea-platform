@@ -1,12 +1,11 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render } from '@testing-library/react';
+import { waitFor } from '@testing-library/react';
 import { HttpResponse, http } from 'msw';
-import { ThemeProvider } from '@mui/material/styles';
 
-import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 import { configureGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
+
+import { renderWithRouterSocketAndProject } from '../../../__tests__/testUtils';
 
 import { ToolJira } from './ToolJira';
 import type { ToolBaseProps } from './ToolBase';
@@ -36,22 +35,15 @@ beforeAll(() => {
       }),
     ),
   );
+  server.use(http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})));
 });
 
-const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
-
+// `ToolJira` -> `ToolBase` renders the real `NameDescriptionInput` by
+// default now (R2 fix) — see `ToolBase.test.tsx`'s own `renderToolBase` doc
+// comment for why this harness (router + socket, not just query/theme) is
+// required.
 function renderJira(props: ToolBaseProps) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider
-        theme={theme}
-        defaultMode={DEFAULT_COLOR_SCHEME}
-      >
-        <ToolJira {...props} />
-      </ThemeProvider>
-    </QueryClientProvider>,
-  );
+  return renderWithRouterSocketAndProject(<ToolJira {...props} />, 'proj-1');
 }
 
 const SCHEMA: ToolSchema = {
@@ -64,24 +56,57 @@ const SCHEMA: ToolSchema = {
 };
 
 describe('ToolJira', () => {
-  it('excludes the cloud field, matching JIRA_EXCLUDED_FIELDS', () => {
-    const { queryByText } = renderJira({
-      toolDetail: { value: { name: '', description: '', settings: {} }, onChange: vi.fn() },
+  it('excludes the cloud field, matching JIRA_EXCLUDED_FIELDS', async () => {
+    const { getByText, queryByText } = renderJira({
+      editToolDetail: { name: '', description: '', settings: {} },
+      setEditToolDetail: vi.fn(),
       editField: vi.fn(),
-      formState: { toolErrors: {}, showValidation: false, setToolErrors: vi.fn() },
+      toolErrors: {},
+      showValidation: false,
+      setToolErrors: vi.fn(),
       schema: SCHEMA,
     });
+    await waitFor(() => expect(getByText('Limit')).toBeInTheDocument());
     expect(queryByText('Cloud')).not.toBeInTheDocument();
   });
 
-  it('renders verify_ssl inside the Advanced Settings accordion', () => {
+  it('renders verify_ssl inside the Advanced Settings accordion', async () => {
     const { getByText } = renderJira({
-      toolDetail: { value: { name: '', description: '', settings: {} }, onChange: vi.fn() },
+      editToolDetail: { name: '', description: '', settings: {} },
+      setEditToolDetail: vi.fn(),
       editField: vi.fn(),
-      formState: { toolErrors: {}, showValidation: false, setToolErrors: vi.fn() },
+      toolErrors: {},
+      showValidation: false,
+      setToolErrors: vi.fn(),
       schema: SCHEMA,
     });
-    expect(getByText('Advanced Settings')).toBeInTheDocument();
+    await waitFor(() => expect(getByText('Advanced Settings')).toBeInTheDocument());
     expect(getByText('Verify SSL')).toBeInTheDocument();
+  });
+
+  // R1 regression guard, `ToolJira`-specific: the live composition root
+  // resolves `getToolComponent` to `ToolJira` for a jira-typed toolkit and
+  // spreads its flat `toolComponentProps` bag directly onto it (no
+  // `toolDetail`/`formState` grouping) — `ToolJira` just forwards its own
+  // props (plus its field-order overrides) straight to `ToolBase`, so the
+  // same crash R1 fixed in `ToolBase` reached here too.
+  it('renders without crashing when given the exact flat prop shape the live ToolkitForm composition root produces', async () => {
+    const toolComponentProps: Record<string, unknown> = {
+      editToolDetail: { name: 'My Jira', description: '', settings: {} },
+      setEditToolDetail: vi.fn(),
+      editField: vi.fn(),
+      toolErrors: {},
+      setToolErrors: vi.fn(),
+      showValidation: false,
+      schema: SCHEMA,
+      disabledConfigFieldsForOldToolkits: false,
+      shouldInitRequiredFields: false,
+      isMCP: false,
+      disabled: false,
+      excludedFields: [],
+    };
+    const { queryByText, getByText } = renderJira(toolComponentProps);
+    await waitFor(() => expect(getByText('Limit')).toBeInTheDocument());
+    expect(queryByText('Cloud')).not.toBeInTheDocument();
   });
 });

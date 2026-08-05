@@ -194,22 +194,41 @@ export interface EnumSelectFieldProps {
   readonly onChange: (value: string) => void;
 }
 
-/** A `string` field with an `enum` — ported from `ToolBaseProperty.jsx:425-450`. */
+/**
+ * A `string` field with an `enum` — ported from `ToolBaseProperty.jsx:425-450`.
+ *
+ * **R3 FIX (was: `description` passed as `SingleSelect`'s `placeholder`,
+ * only visible while the field is unset — `shared/ui`'s `SingleSelect`, out
+ * of this cluster's scope, has no `infoIconDescription`/persistent-tooltip
+ * prop like the baseline's own `SingleSelect.jsx:633-636`).** A persistent
+ * `InfoTooltip` (the same component `labelWithHint` above already uses) now
+ * renders alongside the select instead — present whenever `description` is
+ * set, independent of `value`.
+ */
 export function EnumSelectField({ label, description, required, value, options, disabled, onChange }: EnumSelectFieldProps): ReactNode {
   return (
-    <SingleSelect
-      label={label}
-      required={required}
-      onChange={onChange}
-      value={value}
-      options={[...options]}
-      sx={selectSx}
-      disabled={disabled}
-      {...(description !== undefined ? { placeholder: description } : {})}
-    />
+    <Box sx={enumFieldContainerSx}>
+      <SingleSelect
+        label={label}
+        required={required}
+        onChange={onChange}
+        value={value}
+        options={[...options]}
+        sx={selectSx}
+        disabled={disabled}
+      />
+      {description && (
+        <InfoTooltip
+          title={description}
+          sx={enumInfoIconSx}
+        />
+      )}
+    </Box>
   );
 }
 
+const enumFieldContainerSx = { position: 'relative' as const };
+const enumInfoIconSx = { position: 'absolute' as const, top: '0.5rem', right: '0.5rem' };
 const selectSx = { marginTop: '0.5rem' };
 
 export interface CodeLanguageFieldProps {

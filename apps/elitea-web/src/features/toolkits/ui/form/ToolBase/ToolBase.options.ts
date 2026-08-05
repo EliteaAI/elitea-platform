@@ -1,5 +1,7 @@
-import type { ToolBaseFieldOrder, ToolBaseFieldVisibility, ToolBaseSections } from './ToolBase.types';
+import type { ToolBasePropertyCredentialContext } from './ToolBaseProperty';
+import type { ToolBaseFieldOrder, ToolBaseFieldVisibility, ToolBaseProps, ToolBaseSections } from './ToolBase.types';
 import type { ToolSectionSubsection } from './ToolSection';
+import type { EditToolDetail, EditToolField, SetEditToolDetail, SetToolErrors, ToolErrors, ToolSchema } from './types';
 
 /**
  * `ToolBase.tsx`'s destructuring-default resolution, split into its own
@@ -79,4 +81,60 @@ export interface ResolvedSections {
 
 export function resolveSections(v: ToolBaseSections | undefined): ResolvedSections {
   return { sections: v?.sections ?? {}, sectionProps: v?.sectionProps ?? [] };
+}
+
+const EMPTY_EDIT_TOOL_DETAIL: EditToolDetail = { settings: {} };
+const EMPTY_SCHEMA: ToolSchema = {};
+const EMPTY_TOOL_ERRORS: ToolErrors = {};
+const NOOP_EDIT_FIELD: EditToolField = () => undefined;
+const NOOP_SET_EDIT_TOOL_DETAIL: SetEditToolDetail = () => undefined;
+const NOOP_SET_TOOL_ERRORS: SetToolErrors = () => undefined;
+
+/**
+ * R1 fix support: `ToolBaseProps` is flat now (see `ToolBase.types.ts`'s own
+ * module doc comment), so every field the baseline defaulted via a plain
+ * destructuring default (`ToolBase.jsx:27-32`: `editToolDetail = {}`,
+ * `setEditToolDetail = () => {}`, `editField = () => {}`, `toolErrors = {}`,
+ * `setToolErrors = () => {}`, `showValidation = false`) needs the same
+ * resolution here — split into its own function for the same
+ * complexity-budget reason as `resolveFieldPresentation`/
+ * `resolveFieldBehavior`/`resolveFieldOrder` above. `schema` has no baseline
+ * default (`ToolBase.jsx:30` destructures it bare) but every internal
+ * `ToolBase.render.tsx`/`ToolBase.fields.ts` helper types its own `schema`
+ * parameter as a required `ToolSchema` (not `| undefined`), so an empty
+ * schema is resolved here rather than threading `| undefined` through every
+ * one of those signatures — `schema?.properties`-style guards throughout
+ * this file family already tolerate an empty schema identically to a
+ * missing one.
+ */
+export interface ResolvedCoreProps {
+  readonly editToolDetail: EditToolDetail;
+  readonly setEditToolDetail: SetEditToolDetail;
+  readonly editField: EditToolField;
+  readonly toolErrors: ToolErrors;
+  readonly setToolErrors: SetToolErrors;
+  readonly showValidation: boolean;
+  readonly schema: ToolSchema;
+  readonly disabled: boolean;
+  readonly shouldUseAccordionView: boolean;
+}
+
+export function resolveCoreProps(props: ToolBaseProps): ResolvedCoreProps {
+  return {
+    editToolDetail: props.editToolDetail ?? EMPTY_EDIT_TOOL_DETAIL,
+    setEditToolDetail: props.setEditToolDetail ?? NOOP_SET_EDIT_TOOL_DETAIL,
+    editField: props.editField ?? NOOP_EDIT_FIELD,
+    toolErrors: props.toolErrors ?? EMPTY_TOOL_ERRORS,
+    setToolErrors: props.setToolErrors ?? NOOP_SET_TOOL_ERRORS,
+    showValidation: props.showValidation ?? false,
+    schema: props.schema ?? EMPTY_SCHEMA,
+    disabled: props.disabled ?? false,
+    shouldUseAccordionView: props.shouldUseAccordionView ?? true,
+  };
+}
+
+/** `credentialContext` (an advanced escape hatch) wins when supplied; otherwise the plain `onCredentialReload` prop (the baseline's own `ToolBase.jsx:56` shape) is wrapped into the same struct `ToolBaseProperty`'s `credentialContext` prop expects. */
+export function resolveCredentialContext(props: ToolBaseProps): ToolBasePropertyCredentialContext | undefined {
+  if (props.credentialContext) return props.credentialContext;
+  return props.onCredentialReload ? { onCredentialReload: props.onCredentialReload } : undefined;
 }

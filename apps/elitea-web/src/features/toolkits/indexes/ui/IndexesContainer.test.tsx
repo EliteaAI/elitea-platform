@@ -156,6 +156,28 @@ describe('IndexesContainer', () => {
     await waitFor(() => expect(window.location.search).not.toContain('index_name'));
   });
 
+  it('selects a temp-only index (not yet reflected in the server list) named by the ?index_name= URL param instead of showing "not found"', async () => {
+    // A `tempIndex` (e.g. a locally-tracked "new index" the user navigated
+    // away from — see `handleSelectIndex`'s `addTempLocalIndex` call) is
+    // never in `serverIndexes`, but IS visible in the sidebar via
+    // `indexesWithStub`'s overlay. The URL-select effect must search that
+    // same overlay, not the raw server list, or a notification link to this
+    // index would incorrectly show "Item no longer exists" even though the
+    // index is right there in the list.
+    server.use(http.get(`${BASE}/elitea_core/index_meta/prompt_lib/proj-1/tk-1`, () => HttpResponse.json([])));
+    useIndexesStore.setState({
+      tempIndexes: [{ id: 'temp-1', metadata: { collection: 'temp-index', state: 'in_progress' } }],
+      indexPatches: {},
+      toolkitScheduler: {},
+      selectedHistoryItem: null,
+    });
+    window.history.replaceState(null, '', '/?index_name=temp-index');
+    renderContainer({}, '/?index_name=temp-index');
+    await waitFor(() => expect(screen.getAllByText('temp-index')).toHaveLength(2));
+    expect(screen.queryByText('Item no longer exists')).not.toBeInTheDocument();
+    await waitFor(() => expect(window.location.search).not.toContain('index_name'));
+  });
+
   it('shows the "item no longer exists" notice when the URL names an index that is not in the list', async () => {
     server.use(http.get(`${BASE}/elitea_core/index_meta/prompt_lib/proj-1/tk-1`, () => HttpResponse.json([])));
     window.history.replaceState(null, '', '/?index_name=ghost');

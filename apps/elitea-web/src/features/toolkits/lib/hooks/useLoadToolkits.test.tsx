@@ -150,6 +150,40 @@ describe('useLoadToolkits', () => {
     expect(box.current?.tagList).toEqual([{ id: 'github', name: 'GitHub', data: { type: 'agent' } }]);
   });
 
+  it('falls back to the computed display name when a toolkit type schema has an empty-string metadata.label, not just a missing one (R4 regression guard)', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: '' } } })),
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [], total: 0 })),
+    );
+
+    const { box } = renderLoadToolkits({ page: 0, pageSize: 20 }, 'proj-1');
+    await waitFor(() => expect(box.current?.isToolkitsFetching).toBe(false));
+    // An empty-string `metadata.label` must NOT render as a blank tag —
+    // it must fall through to the computed `providerDisplayName` name, same
+    // as a missing label would.
+    expect(box.current?.tagList).toEqual([{ id: 1, name: 'Github', data: { type: 'github' } }]);
+  });
+
+  it('falls through to the full project-wide tag list when authorId is an empty string, not just when it is undefined (R5 regression guard)', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: 'GitHub' } } })),
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () =>
+        HttpResponse.json({
+          rows: [{ id: 'tk-1', name: 'x', type: 'github', tags: [{ id: 'github', name: 'GitHub', data: { type: 'github' } }] }],
+          total: 1,
+        }),
+      ),
+    );
+
+    const { box } = renderLoadToolkits({ page: 0, pageSize: 20, authorId: '' }, 'proj-1');
+    await waitFor(() => expect(box.current?.isToolkitsFetching).toBe(false));
+    // An empty-string authorId is "no author filter" — the full schema-derived
+    // project-wide tag list (id 1, from buildProjectWideTagList), NOT the
+    // smaller per-page row-derived list (which would carry the row tag's own
+    // id, 'github').
+    expect(box.current?.tagList).toEqual([{ id: 1, name: 'GitHub', data: { type: 'github' } }]);
+  });
+
   it('does not fetch while no project is selected', async () => {
     const { box } = renderLoadToolkits({ page: 0, pageSize: 20 }, undefined);
     await waitFor(() => expect(box.current).toBeDefined());

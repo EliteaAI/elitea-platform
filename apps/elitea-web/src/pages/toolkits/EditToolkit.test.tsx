@@ -1,11 +1,13 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolEvents } from '@/entities/toolkit';
 import { eventEmitter } from '@/features/toolkits/lib/eventEmitter';
+import { getPermissionListMockHandler } from '@/shared/api/generated/auth/auth.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { PERMISSIONS } from '@/shared/lib/permissions';
 import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
 
@@ -86,6 +88,136 @@ describe('EditToolkit', () => {
     await screen.findByText('My GitHub');
     expect(screen.getByLabelText('export toolkit')).toBeInTheDocument();
     expect(screen.getByLabelText('delete entity')).toBeInTheDocument();
+  });
+
+  /**
+   * Regression: R2. The baseline's `ToolkitsControls.jsx` (lines 55-69)
+   * disables its Export/Delete menu items unless the caller holds BOTH the
+   * `applications.*` AND `toolkits.*` permission for that action. Before
+   * this fix, `EditToolkit.tsx` never passed a `disabled` prop to either
+   * button — both default `disabled={false}` (`ExportToolkitButton.tsx`/
+   * `DeleteToolkitButton.tsx`), so every caller could click Delete/Export on
+   * any toolkit regardless of permissions. These four tests would all have
+   * failed pre-fix: the buttons were never disabled no matter what
+   * `usePermissionList` returned.
+   */
+  it('enables Export/Delete when the caller holds every required permission', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [mockToolkitRow()], total: 1 })),
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})),
+      getPermissionListMockHandler([
+        { name: PERMISSIONS.applications.export, enabled: true },
+        { name: PERMISSIONS.toolkits.export, enabled: true },
+        { name: PERMISSIONS.applications.delete, enabled: true },
+        { name: PERMISSIONS.toolkits.delete, enabled: true },
+      ]),
+    );
+    const saveToolkit = vi.fn();
+
+    renderToolkitsRoute(<EditToolkit deps={{ saveToolkit }} />, '/toolkits/latest/tk-1', { projectId: 'proj-1' });
+
+    await screen.findByText('My GitHub');
+    await waitFor(() => expect(screen.getByLabelText('export toolkit')).not.toBeDisabled());
+    expect(screen.getByLabelText('delete entity')).not.toBeDisabled();
+  });
+
+  it('disables Export when the caller is missing the toolkits.export permission (holds applications.export only)', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [mockToolkitRow()], total: 1 })),
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})),
+      getPermissionListMockHandler([
+        { name: PERMISSIONS.applications.export, enabled: true },
+        { name: PERMISSIONS.applications.delete, enabled: true },
+        { name: PERMISSIONS.toolkits.delete, enabled: true },
+      ]),
+    );
+    const saveToolkit = vi.fn();
+
+    renderToolkitsRoute(<EditToolkit deps={{ saveToolkit }} />, '/toolkits/latest/tk-1', { projectId: 'proj-1' });
+
+    await screen.findByText('My GitHub');
+    await waitFor(() => expect(screen.getByLabelText('export toolkit')).toBeDisabled());
+    expect(screen.getByLabelText('delete entity')).not.toBeDisabled();
+  });
+
+  it('disables Delete when the caller is missing the applications.delete permission (holds toolkits.delete only)', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [mockToolkitRow()], total: 1 })),
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})),
+      getPermissionListMockHandler([
+        { name: PERMISSIONS.applications.export, enabled: true },
+        { name: PERMISSIONS.toolkits.export, enabled: true },
+        { name: PERMISSIONS.toolkits.delete, enabled: true },
+      ]),
+    );
+    const saveToolkit = vi.fn();
+
+    renderToolkitsRoute(<EditToolkit deps={{ saveToolkit }} />, '/toolkits/latest/tk-1', { projectId: 'proj-1' });
+
+    await screen.findByText('My GitHub');
+    await waitFor(() => expect(screen.getByLabelText('delete entity')).toBeDisabled());
+    expect(screen.getByLabelText('export toolkit')).not.toBeDisabled();
+  });
+
+  it('disables both Export and Delete when the caller holds no relevant permissions at all', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [mockToolkitRow()], total: 1 })),
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})),
+      getPermissionListMockHandler([]),
+    );
+    const saveToolkit = vi.fn();
+
+    renderToolkitsRoute(<EditToolkit deps={{ saveToolkit }} />, '/toolkits/latest/tk-1', { projectId: 'proj-1' });
+
+    await screen.findByText('My GitHub');
+    await waitFor(() => expect(screen.getByLabelText('export toolkit')).toBeDisabled());
+    expect(screen.getByLabelText('delete entity')).toBeDisabled();
+  });
+
+  /**
+   * Regression: R3. Before this fix, `ToolkitsControls` (the kebab dropdown
+   * the baseline's `EditToolkit.jsx` renders next to Export/Delete) was
+   * fully built, tested, and exported from `features/toolkits`, but
+   * imported nowhere in the app — a project-wide grep for `<ToolkitsControls`
+   * found no call sites outside its own definition/test files. These two
+   * tests would both have failed pre-fix: no "More actions" trigger existed
+   * anywhere in the rendered page at all.
+   */
+  it('renders the ToolkitsControls kebab dropdown next to Export/Delete', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [mockToolkitRow()], total: 1 })),
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})),
+    );
+    const saveToolkit = vi.fn();
+
+    renderToolkitsRoute(<EditToolkit deps={{ saveToolkit }} />, '/toolkits/latest/tk-1', { projectId: 'proj-1' });
+
+    await screen.findByText('My GitHub');
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument();
+  });
+
+  it('copies the current page URL to the clipboard via the kebab\'s real Copy Link item', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [mockToolkitRow()], total: 1 })),
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})),
+    );
+    const saveToolkit = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+    renderToolkitsRoute(<EditToolkit deps={{ saveToolkit }} />, '/toolkits/latest/tk-1', { projectId: 'proj-1' });
+
+    await screen.findByText('My GitHub');
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(await screen.findByText('Copy link'));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(window.location.href));
+
+    // `ControlsDropdown`'s own `handleLeafActivate` closes the menu right
+    // after firing `onClick` — the "Copied!" label swap is only visible on
+    // the NEXT open.
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(await screen.findByText('Copied!')).toBeInTheDocument();
   });
 
   it('falls back to "Edit Toolkit" (or "Edit MCP") while the detail is loading / unresolved', async () => {

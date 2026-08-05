@@ -4,8 +4,9 @@ import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 
 import { useEliteaTitleValidation, useInitRequiredFields, useIntegerConstraintsValidation, useRequiredFieldsValidation } from './ToolBase.effects';
 import { createHandleInputChange } from './ToolBase.handlers';
-import { resolveFieldBehavior, resolveFieldOrder, resolveFieldPresentation, resolveSections } from './ToolBase.options';
+import { resolveCoreProps, resolveCredentialContext, resolveFieldBehavior, resolveFieldOrder, resolveFieldPresentation, resolveSections } from './ToolBase.options';
 import { resolveFieldEntryGroups, ToolBaseConfigurationBody, ToolBaseStatusSlots, ToolBaseToolsSection } from './ToolBase.render';
+import type { ToolBasePropertyFormState } from './ToolBaseProperty';
 import type { ToolBaseProps } from './ToolBase.types';
 import { useIsMcpVisible } from '../../../api/useIsMcpVisible';
 
@@ -40,6 +41,25 @@ export type { ToolBaseProps } from './ToolBase.types';
  * render the 3 top-level pieces (status slots, configuration body, tools
  * section). A file-organization change only, no behaviour change.
  *
+ * **R1 FIX: flat props, not a grouped `{toolDetail: {value, onChange},
+ * formState, fieldVisibility, fieldOrder, ...}` shape.** `ToolBaseProps`
+ * (`ToolBase.types.ts`) is now byte-for-byte the baseline's own flat prop
+ * bag — the exact shape the live composition root
+ * (`ToolkitForm/ToolkitForm.hooks.ts`'s `toolComponentProps`, not owned by
+ * this cluster) actually spreads onto whichever of `ToolJira`/
+ * `ToolConfluence`/`ToolBase`/`ToolCustom` it resolves
+ * (`lib/helpers/toolComponent.helpers.ts`'s `getToolComponent`), and the
+ * same shape `ToolCustomProps` (`../ToolCustom.tsx`) already accepted. The
+ * previous grouped shape left `toolDetail` (and friends) `undefined`
+ * whenever reached that way — `toolDetail.value` on this function's first
+ * line threw a `TypeError` immediately. `ToolBase.options.ts`'s
+ * `resolveCoreProps`/`resolveCredentialContext` plus the pre-existing
+ * `resolveFieldPresentation`/`resolveFieldBehavior`/`resolveFieldOrder`/
+ * `resolveSections` now resolve the flat `props` object straight into the
+ * SAME internal grouped shapes `ToolBase.render.tsx`/`ToolBaseProperty.tsx`
+ * consume — those files, and their own grouped internal contracts, are
+ * unchanged; only this function's own public boundary moved.
+ *
  * **DISCLOSED REDESIGN, several independent reasons — read before wiring
  * this up:**
  *  - **`no-sideways-features`, no carve-out.** The baseline directly
@@ -53,30 +73,33 @@ export type { ToolBaseProps } from './ToolBase.types';
  *    `isSharepointToolkit`/`isOpenApiToolkit` boolean gates, computed from
  *    `schema.title`/`editToolDetail.type`), the caller supplies the actual
  *    widget.
- *  - **`ToolkitForm.NameDescriptionInput` (A4d) — slot, not a direct
- *    import.** `slots.renderNameDescriptionInput` is a render-prop slot
- *    (`NameDescriptionInputSlotProps`, `ToolBase.slots.ts`) carrying the
- *    exact same argument shape the baseline passed as JSX props, rather
- *    than a direct import of `ui/form/NameDescriptionInput.tsx`. That file
- *    DID land intra-slice partway through this unit's build (confirmed by
- *    re-checking after most of this file was already written) — R-L3 would
- *    allow importing it directly now — but its real, independently-designed
- *    prop contract is not a drop-in match for this file's own types
- *    (`editField: (field: 'name'|'description', value: string) => void` vs.
- *    this file's general-path `EditToolField`; `toolErrors: Record<string,
- *    boolean|undefined>` vs. this file's `boolean|string`-valued
- *    `ToolErrors`; `configuration_title` vs. this slot's `configurationTitle`)
- *    — wiring it for real is a follow-up integration task, not a rename.
- *    The slot already carries every value that component needs; a caller
- *    can do `(props) => <NameDescriptionInput {...props}
- *    configuration_title={props.configurationTitle} .../>` today with a
- *    thin adapter, or this slot can be dropped once the two contracts are
- *    reconciled. Same not-yet-landed-at-write-time reasoning, still
- *    accurate at time of writing, applies to the two `ToolBaseProperty.tsx`
- *    slots this component forwards unchanged: `slots.renderOpenApiSpecField`/
- *    `slots.renderCredentialLikeField`.
- *  - **No ambient form context.** No Formik — `editField`/`toolDetail.
- *    onChange` are plain callback props (see `types.ts`'s own doc comment).
+ *  - **`ToolkitForm.NameDescriptionInput`/OpenAPI editor — wired directly,
+ *    not slot-only.** R2 fix: `slots.renderNameDescriptionInput`/
+ *    `slots.renderOpenApiSpecField` remain available as caller OVERRIDES
+ *    (still used by this file's/`ToolBaseProperty.dispatch.tsx`'s own
+ *    tests), but the real, now-landed intra-slice siblings
+ *    (`../NameDescriptionInput.tsx`, `../ToolOpenAPI/{OpenAPISchemaInput,
+ *    OpenAPIActions}.tsx`) are the DEFAULT when no slot is supplied — see
+ *    `ToolBase.render.tsx`'s `resolveNameDescriptionSlot`/
+ *    `ToolBaseProperty.dispatch.tsx`'s `renderOpenapiSpec`. Previously both
+ *    were slot-only with no real caller ever supplying one (the live
+ *    composition root, `ToolkitForm.hooks.ts`, has no `slots` concept at
+ *    all — R1), so both silently rendered blank in production; restoring
+ *    them as the default matches the baseline, which rendered both inline,
+ *    unconditionally, no caller injection needed (`ToolBase.jsx:225-245`,
+ *    `ToolBaseProperty.jsx:230-276`). `slots.renderCredentialLikeField`
+ *    (the 7 `CredentialsSelect`/`@/components/*` "smart select" branches)
+ *    stays slot-only and still defaults to blank — `CredentialsSelect` is a
+ *    genuinely different `features/` slice (`no-sideways-features`, a real
+ *    dependency-cruiser-enforced gate, not just a convention), and the other
+ *    6 have no port anywhere in this app yet. Wiring a real
+ *    `slots.renderCredentialLikeField` through requires the live
+ *    composition root (`ToolkitForm.hooks.ts`/`ToolkitForm.tsx`, out of this
+ *    cluster's file scope) to actually construct and pass one — disclosed,
+ *    not fixed here.
+ *  - **No ambient form context.** No Formik — `editField`/
+ *    `setEditToolDetail` are plain callback props (see `types.ts`'s own doc
+ *    comment).
  *  - **`useToolkitConfigurationProperties` (`sections`) is a legacy
  *    top-level `hooks/*.js` file, not owned by any Wave-2 sub-unit's
  *    mission brief, and is itself RTK-Query-backed (`useGetCurrentToolkitSchemas`/
@@ -109,37 +132,26 @@ export type { ToolBaseProps } from './ToolBase.types';
  *    `useGetRemoteMcpTools()` call — nothing here can do that wiring on the
  *    caller's behalf since the caller, not `ToolBase`, owns the hook call.
  */
-export function ToolBase({
-  toolDetail,
-  editField,
-  formState,
-  schema,
-  onConfigurationNameChange,
-  fieldVisibility,
-  fieldOrder,
-  disabled,
-  credentialContext,
-  slots,
-  context,
-  sections: sectionsProp,
-}: ToolBaseProps): ReactNode {
-  const editToolDetail = toolDetail.value;
+export function ToolBase(props: ToolBaseProps): ReactNode {
+  const core = resolveCoreProps(props);
+  const { editToolDetail, setEditToolDetail, editField, toolErrors, setToolErrors, showValidation, schema, disabled, shouldUseAccordionView } = core;
   const { settings, enableEditEliteaTitle = false } = editToolDetail;
 
-  const presentation = resolveFieldPresentation(fieldVisibility);
-  const behavior = resolveFieldBehavior(fieldVisibility);
-  const resolvedFieldOrder = resolveFieldOrder(fieldOrder);
-  const sectionsResolved = resolveSections(sectionsProp);
-  const shouldUseAccordionView = context?.shouldUseAccordionView ?? true;
+  const presentation = resolveFieldPresentation(props);
+  const behavior = resolveFieldBehavior(props);
+  const resolvedFieldOrder = resolveFieldOrder(props);
+  const sectionsResolved = resolveSections(props.sections);
+  const credentialContext = resolveCredentialContext(props);
   const isMcpExposureEnabled = useIsMcpVisible();
 
-  useRequiredFieldsValidation(schema, settings, sectionsResolved.sectionProps, enableEditEliteaTitle, formState.setToolErrors);
-  useIntegerConstraintsValidation(schema, settings, formState.setToolErrors);
+  useRequiredFieldsValidation(schema, settings, sectionsResolved.sectionProps, enableEditEliteaTitle, setToolErrors);
+  useIntegerConstraintsValidation(schema, settings, setToolErrors);
   useInitRequiredFields(schema, settings, sectionsResolved.sectionProps, behavior.shouldInitRequiredFields, editField);
-  useEliteaTitleValidation(settings, enableEditEliteaTitle, formState.setToolErrors);
+  useEliteaTitleValidation(settings, enableEditEliteaTitle, setToolErrors);
 
-  const handleInputChange = createHandleInputChange({ schema, setToolErrors: formState.setToolErrors, editField, settings, onConfigurationNameChange });
+  const handleInputChange = createHandleInputChange({ schema, setToolErrors, editField, settings, onConfigurationNameChange: props.setConfigurationName });
   const entries = resolveFieldEntryGroups(schema, sectionsResolved.sectionProps, resolvedFieldOrder);
+  const formState: ToolBasePropertyFormState = { toolErrors, setToolErrors, showValidation, validationErrorMessages: props.validationErrorMessages };
   const passParams = {
     formState,
     settings,
@@ -147,7 +159,7 @@ export function ToolBase({
     handleInputChange,
     disabled,
     credentialContext,
-    slots,
+    slots: props.slots,
     editFieldRootPath: resolvedFieldOrder.editFieldRootPath,
     showOnlyRequiredFields: presentation.showOnlyRequiredFields,
     showDisabledConfigFields: behavior.disabledConfigFieldsForOldToolkits,
@@ -163,8 +175,8 @@ export function ToolBase({
       presentation={presentation}
       behavior={behavior}
       sectionsResolved={sectionsResolved}
-      setEditToolDetail={toolDetail.onChange}
-      slots={slots}
+      setEditToolDetail={setEditToolDetail}
+      slots={props.slots}
       checkboxAsteriskRequired={behavior.checkboxAsteriskRequired}
       showDisabledConfigFields={behavior.disabledConfigFieldsForOldToolkits}
       disabled={disabled}
@@ -176,7 +188,7 @@ export function ToolBase({
       <ToolBaseStatusSlots
         schema={schema}
         editToolDetail={editToolDetail}
-        slots={slots}
+        slots={props.slots}
         showTools={behavior.showTools}
       />
       {shouldUseAccordionView ? <BasicAccordion items={[{ title: 'Configuration', content: configurationBody }]} /> : configurationBody}
@@ -187,7 +199,7 @@ export function ToolBase({
           passParams={passParams}
           isMcpExposureEnabled={isMcpExposureEnabled}
           shouldUseAccordionView={shouldUseAccordionView}
-          slots={slots}
+          slots={props.slots}
           disabled={disabled}
         />
       )}

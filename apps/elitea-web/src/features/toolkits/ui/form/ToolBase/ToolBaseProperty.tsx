@@ -18,20 +18,32 @@ import type { ToolBasePropertyProps } from './ToolBaseProperty.types';
  * table), `ToolBaseProperty.renderers.tsx` (the leaf UI components). A
  * file-organization change only, no behaviour change.
  *
- * **DISCLOSED REDESIGN — 8 baseline sub-components have no port in this
- * worktree, folded into two caller-injected slots (`slots.
- * renderOpenApiSpecField`/`slots.renderCredentialLikeField`):**
- *  - `uiComponent === 'openapi_spec'` (`ToolBaseProperty.jsx:231-276`)
- *    composed TWO not-yet-landed intra-slice siblings (`ToolkitForm.
- *    OpenAPISchemaInput`/`ToolkitForm.OpenAPIActions`) — R-L3 intra-slice
- *    imports are legal even before the sibling lands, but importing a file
- *    that does not exist yet breaks THIS unit's own build, so both are
- *    delegated as one `renderOpenApiSpecField` slot instead (`OpenApiSpecFieldContext`,
- *    `types.ts`), matching `AgentEditor.tsx`'s established
- *    not-yet-landed-sibling precedent.
+ * **R2 FIX — `uiComponent === 'openapi_spec'` now wired for real by
+ * default.** `ToolBaseProperty.dispatch.tsx`'s `renderOpenapiSpec` used to
+ * unconditionally return `null` unless a caller supplied a
+ * `slots.renderOpenApiSpecField` render-prop — no real caller ever did (the
+ * live composition root, `ToolkitForm.hooks.ts`, has no `slots` concept at
+ * all), so this was silently blank in production for every OpenAPI
+ * toolkit. `ToolkitForm.OpenAPISchemaInput`/`ToolkitForm.OpenAPIActions`
+ * (`../ToolOpenAPI/{OpenAPISchemaInput,OpenAPIActions}.tsx`) have since
+ * landed intra-slice and are now the DEFAULT, composed exactly like the
+ * baseline (`ToolBaseProperty.jsx:230-276`) — `slots.renderOpenApiSpecField`
+ * remains available as a caller OVERRIDE (still exercised by this file's own
+ * tests).
+ *
+ * **DISCLOSED REDESIGN, still accurate — the remaining 6 baseline
+ * sub-components have no port anywhere in this app, folded into one
+ * caller-injected `slots.renderCredentialLikeField` slot that still
+ * defaults to blank (a real, disclosed gap, not fixed by R2):**
  *  - `type === 'configuration'` used `CredentialsSelect`
  *    (`features/credentials/ui`) — a genuinely different `features/` slice;
- *    `no-sideways-features` forbids the import outright, no carve-out.
+ *    `no-sideways-features` (a real dependency-cruiser-enforced gate, not
+ *    just a convention) forbids the import outright, no carve-out. The
+ *    component itself now exists (`features/credentials/ui/
+ *    CredentialsSelect.tsx`), but wiring it through requires the live
+ *    composition root (`ToolkitForm.hooks.ts`/`ToolkitForm.tsx`, out of this
+ *    cluster's file scope) to actually construct and pass a
+ *    `slots.renderCredentialLikeField` — disclosed, not fixed here.
  *  - `type` in `{llm_model, embedding_model, image_generation_model,
  *    toolkit_reference, agent_reference, pipeline_reference}` each used a
  *    `@/components/*` legacy "smart select" (`LlmModelSelect`,

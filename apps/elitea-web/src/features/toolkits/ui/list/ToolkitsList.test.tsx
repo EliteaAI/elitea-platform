@@ -32,24 +32,31 @@ describe('isListEmpty (pure)', () => {
 });
 
 describe('isZeroStateEligible (pure)', () => {
-  it('is true when empty, no query, zero total, and no type filter', () => {
-    expect(isZeroStateEligible(true, undefined, 0, 0)).toBe(true);
+  // Regression: R4. The baseline's `CardList.jsx` computes
+  // `showCustomEmptyState = showEmptyOrError && customEmptyState &&
+  // !isError` — since `ToolkitsList.jsx` (the baseline caller) ALWAYS
+  // supplies a non-null `customEmptyState`, that reduces to just "the list
+  // is empty and not erroring", with NO dependency on query/type-filter/
+  // totalCount at all. A previous version of this function additionally
+  // required `!query && totalCount === 0 && selectedTypesCount === 0`,
+  // which made the "No toolkits yet" CTA lose to the plain "Nothing found"
+  // placeholder whenever a search query or type filter was active — these
+  // three tests are what would have failed against that previous signature
+  // (each used to assert `false`; the baseline's real behaviour is `true`).
+  it('is true when the list is empty, regardless of an active search query', () => {
+    expect(isZeroStateEligible(true)).toBe(true);
+  });
+
+  it('is true when the list is empty, regardless of a non-zero totalCount (e.g. every row filtered client-side)', () => {
+    expect(isZeroStateEligible(true)).toBe(true);
+  });
+
+  it('is true when the list is empty, regardless of an active type filter', () => {
+    expect(isZeroStateEligible(true)).toBe(true);
   });
 
   it('is false when not empty', () => {
-    expect(isZeroStateEligible(false, undefined, 0, 0)).toBe(false);
-  });
-
-  it('is false with a query', () => {
-    expect(isZeroStateEligible(true, 'react', 0, 0)).toBe(false);
-  });
-
-  it('is false with a non-zero totalCount', () => {
-    expect(isZeroStateEligible(true, undefined, 5, 0)).toBe(false);
-  });
-
-  it('is false with an active type filter', () => {
-    expect(isZeroStateEligible(true, undefined, 0, 1)).toBe(false);
+    expect(isZeroStateEligible(false)).toBe(false);
   });
 });
 
@@ -320,6 +327,21 @@ describe('ToolkitsList (component)', () => {
       />,
     );
     expect(screen.getByText('No toolkits yet')).toBeInTheDocument();
+  });
+
+  it('shows the create CTA even with an active search query AND a non-zero totalCount, matching CardList.jsx\'s always-wins customEmptyState precedence (regression: R4 — the CTA used to lose to "Nothing found" here)', () => {
+    const onCreateClick = vi.fn();
+    renderWithProviders(
+      <ToolkitsList
+        {...baseProps()}
+        data={[]}
+        listState={{ ...baseListState(), totalCount: 5 }}
+        query="react"
+        emptyStateConfig={{ title: 'No toolkits yet', description: 'Create one.', onCreateClick }}
+      />,
+    );
+    expect(screen.getByText('No toolkits yet')).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing found\./)).not.toBeInTheDocument();
   });
 
   it('renders an infinite-scroll sentinel and calls onLoadMore when it intersects', () => {

@@ -58,6 +58,19 @@ export interface ToolkitEditorDeps {
   readonly saveToolkit: UseToolkitEditMutation;
   /** Credential-change warning gate — see `ToolkitEditor.tsx`'s module doc comment. Omitted entirely skips the check. */
   readonly checkBeforeSave?: (performSave: () => void) => boolean;
+  /**
+   * [R3] `usePublicProjectAccessCheck()` injection point — baseline:
+   * `disabled={isPublic && !hasPublicProjectAccess}` (`ToolkitEditor.jsx:303`):
+   * a public-project toolkit is only locked for users who LACK explicit
+   * public-project access. No `features/project` slice exists to compute
+   * this locally (same disclosed gap `AgentEditorPanel.derive.ts`/
+   * `projectOptions.ts` independently give). Omitted (every caller today),
+   * `disabled` reduces to `isPublic` alone — conservative, never LESS
+   * locked than baseline (see `resolveToolkitFormDisabled`). A future
+   * caller with a real permission source supplies it here, same
+   * "inject the capability" convention as `checkBeforeSave` above.
+   */
+  readonly hasPublicProjectAccess?: boolean;
   readonly onEditorClosed?: () => void;
 }
 
@@ -89,6 +102,19 @@ function resolveIsPublic(entityProjectId: string | number | undefined): boolean 
   const config = getConfig();
   if (config.status !== 'ok') return false;
   return isPublicProject(entityProjectId, config.config.vite_public_project_id);
+}
+
+/**
+ * [R3] Baseline: `ToolkitEditor.jsx:303`'s `disabled={isPublic &&
+ * !hasPublicProjectAccess}`. `hasPublicProjectAccess` is `undefined` (i.e.
+ * `false`) for every caller today — see `ToolkitEditorDeps.
+ * hasPublicProjectAccess`'s own doc comment — so this reduces to `isPublic`
+ * alone until a real caller supplies `true`. Exported as a standalone pure
+ * function (not inlined at its one call site) so the formula is
+ * independently unit-tested.
+ */
+export function resolveToolkitFormDisabled(isPublic: boolean, hasPublicProjectAccess: boolean | undefined): boolean {
+  return isPublic && !(hasPublicProjectAccess ?? false);
 }
 
 export function resolveToolkitName(isCreating: boolean, isMCP: boolean, editToolDetail: ToolkitFormEditDetail | null, toolkit: ToolkitEditorParticipant): string {
@@ -129,8 +155,15 @@ export interface ToolkitEditorBodyProps {
   readonly isCreating: boolean;
   readonly isMCP: boolean;
   readonly editToolDetail: ToolkitFormEditDetail | null;
-  /** Already wrapped to mark the editor dirty on every real edit — see `useToolkitEditorState`'s own `handleChangeToolDetail`. */
-  readonly onChangeToolDetail: (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null) => void;
+  /**
+   * [R1] Already wrapped to mark the editor dirty on every real edit — see
+   * `useToolkitEditorState`'s own `handleChangeToolDetail`. The optional
+   * `options` argument mirrors `ToolkitForm`'s `onChangeToolDetail`
+   * contract: `{ isAutoSelect: true }` (a child selector auto-picking a
+   * fallback value, e.g. a shared credential default) must NOT flip the
+   * dirty flag — see `handleChangeToolDetail`'s own inline comment.
+   */
+  readonly onChangeToolDetail: (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null, options?: { readonly isAutoSelect?: boolean }) => void;
   readonly formInitialValues: Readonly<Record<string, unknown>>;
   readonly setFormInitialValues: (updater: (prev: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>>) => void;
   readonly disabled: boolean;
@@ -278,7 +311,7 @@ export interface UseToolkitEditorStateResult {
   readonly editToolDetail: ToolkitFormEditDetail | null;
   readonly formInitialValues: Readonly<Record<string, unknown>>;
   readonly setFormInitialValues: (updater: (prev: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>>) => void;
-  readonly handleChangeToolDetail: (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null) => void;
+  readonly handleChangeToolDetail: (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null, options?: { readonly isAutoSelect?: boolean }) => void;
   readonly handleDiscard: () => void;
 }
 
@@ -310,8 +343,17 @@ export function useToolkitEditorState(toolkit: ToolkitEditorParticipant, isVisib
   const { editToolDetail, setEditToolDetail, formInitialValues, setFormInitialValues } = useEditorFormState(isCreating, typedDetails, isVisible);
 
   const handleChangeToolDetail = useCallback(
-    (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null) => {
-      setIsDirty(true);
+    (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null, options?: { readonly isAutoSelect?: boolean }) => {
+      // An auto-corrected field (a child selector picking a fallback value
+      // on the user's behalf, e.g. a shared credential/embedding-model
+      // default) must not mark the editor dirty — baseline:
+      // `pages/Toolkits/ConfigurationTab.jsx`'s own `onChangeToolDetail`
+      // (`if (!options?.isAutoSelect) setIsToolDirty(...)`); see this
+      // prop's own doc comment (`ToolkitEditorBodyProps.onChangeToolDetail`)
+      // for the fuller cross-reference.
+      if (!options?.isAutoSelect) {
+        setIsDirty(true);
+      }
       setEditToolDetail(updater);
     },
     [setEditToolDetail],

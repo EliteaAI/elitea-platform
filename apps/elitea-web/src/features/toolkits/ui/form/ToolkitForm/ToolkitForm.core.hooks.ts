@@ -11,7 +11,7 @@ import type { RawToolkitTypeSchema } from '../../../lib/helpers/toolkitSchema.he
 import { useGetCurrentToolkitSchemas } from '../../../lib/hooks/useGetCurrentToolkitSchemas.hooks';
 import { useToolkitNameProp } from '../../../lib/hooks/useToolkitNameProp.hooks';
 
-import { resolveOutOfBandFieldSync, updateDetailByPath } from './ToolkitForm.helpers';
+import { applyAutoSelectFormReset, resolveOutOfBandFieldSync, updateDetailByPath } from './ToolkitForm.helpers';
 import type { ResolvedToolkitFormProps, ToolkitConfigurationState } from './ToolkitForm.types';
 
 /**
@@ -52,7 +52,7 @@ export interface CoreState {
 }
 
 export function useToolkitFormCore(props: ResolvedToolkitFormProps): CoreState {
-  const { editToolDetail, onChangeToolDetail, isMCP, onValidationStateChange, formValues, onSetFormField, onMcpScopesChanged, forceCustomView } = props;
+  const { editToolDetail, onChangeToolDetail, isMCP, onValidationStateChange, formValues, onSetFormField, onMcpScopesChanged, forceCustomView, onResetForm } = props;
 
   const hasSetViewManually = useRef(false);
   const [view, setView] = useState<string>(ToolkitViewOptions.Form);
@@ -119,8 +119,9 @@ export function useToolkitFormCore(props: ResolvedToolkitFormProps): CoreState {
       setToolErrors((prev) => (fieldKey in prev ? Object.fromEntries(Object.entries(prev).filter(([key]) => key !== fieldKey)) : prev));
       setServerToolErrors((prev) => (fieldKey in prev ? Object.fromEntries(Object.entries(prev).filter(([key]) => key !== fieldKey)) : prev));
       onChangeToolDetail((prevState) => updateDetailByPath(prevState ?? {}, field, value, replace), options);
+      applyAutoSelectFormReset(options, formValues, field, value, onResetForm);
     },
-    [onChangeToolDetail, onSetFormField, toolType, isMcpType, onMcpScopesChanged, formValues.settings],
+    [onChangeToolDetail, onSetFormField, toolType, isMcpType, onMcpScopesChanged, formValues, onResetForm],
   );
 
   const isValidSchema = useMemo(() => Object.keys(effectiveToolSchema ?? {}).length > 0, [effectiveToolSchema]);

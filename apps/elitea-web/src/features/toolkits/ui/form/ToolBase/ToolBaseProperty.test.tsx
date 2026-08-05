@@ -111,6 +111,37 @@ describe('ToolBaseProperty', () => {
     expect(getByText('slow')).toBeInTheDocument();
   });
 
+  // R3 regression guard: `EnumSelectField` (`ToolBaseProperty.renderers.tsx`)
+  // used to pass `description` as `SingleSelect`'s `placeholder`, which only
+  // ever shows in place of an unset/unmatched value — the description
+  // disappeared the instant a value was selected. On the pre-fix code
+  // `getByRole('button', {name: ...})` below finds nothing (no persistent
+  // tooltip concept existed); after the fix, a persistent `InfoTooltip`
+  // renders alongside the select regardless of the selected value.
+  it('renders a persistent info-icon tooltip for an enum field with a description, even after a value is selected', () => {
+    const schema: ToolPropertySchema = { title: 'Mode', type: 'string', enum: ['fast', 'slow'], description: 'Pick a processing mode' };
+    const { getByRole, getByText } = renderWithTheme(
+      <ToolBaseProperty
+        {...baseProps({ field: { key: 'mode', schema, required: false }, settings: { mode: 'slow' } })}
+      />,
+    );
+    // The selected value itself still renders as the select's own value —
+    // proves `description` is no longer squatting in the `placeholder` slot
+    // (which only ever shows for an empty/unmatched value).
+    expect(getByText('slow')).toBeInTheDocument();
+    expect(getByRole('button', { name: 'Pick a processing mode' })).toBeInTheDocument();
+  });
+
+  it('does not render an info-icon tooltip for an enum field with no description', () => {
+    const schema: ToolPropertySchema = { title: 'Mode', type: 'string', enum: ['fast', 'slow'] };
+    const { queryByRole } = renderWithTheme(
+      <ToolBaseProperty
+        {...baseProps({ field: { key: 'mode', schema, required: false }, settings: { mode: 'slow' } })}
+      />,
+    );
+    expect(queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('renders an array field via ArrayFieldInput', () => {
     const { getByRole } = renderWithTheme(
       <ToolBaseProperty
@@ -158,13 +189,35 @@ describe('ToolBaseProperty', () => {
     expect(queryByRole('button', { expanded: false })).not.toBeInTheDocument();
   });
 
-  it('returns null for an openapi_spec field when no slot is supplied (disclosed gap)', () => {
-    const { container } = renderWithTheme(
+  // R2 regression guard: `renderOpenapiSpec` (`ToolBaseProperty.dispatch.tsx`)
+  // used to unconditionally return `null` unless a caller supplied a
+  // `slots.renderOpenApiSpecField` render-prop — no real caller ever did
+  // (the live composition root, `ToolkitForm.hooks.ts`, has no `slots`
+  // concept at all), so this was silently blank for every OpenAPI toolkit
+  // in production. On the pre-fix code `getByText('Schema')` below throws
+  // (no such element, `container` was `{container).toBeEmptyDOMElement()`);
+  // after the fix, the real `../ToolOpenAPI/OpenAPISchemaInput.tsx` renders
+  // by default.
+  it('renders the real OpenAPI schema editor by default when no slot is supplied', () => {
+    const { getByText } = renderWithTheme(
       <ToolBaseProperty
         {...baseProps({ field: { key: 'schema_text', schema: { ui_component: 'openapi_spec' }, required: false } })}
       />,
     );
-    expect(container).toBeEmptyDOMElement();
+    expect(getByText('Schema')).toBeInTheDocument();
+  });
+
+  it('renders the real OpenAPIActions table for an openapi_spec field whose current value already has parsed paths', () => {
+    const settings = { schema_text: JSON.stringify({ paths: { '/pets': { get: { operationId: 'listPets' } } } }) };
+    const { getByText } = renderWithTheme(
+      <ToolBaseProperty
+        {...baseProps({
+          field: { key: 'schema_text', schema: { ui_component: 'openapi_spec' }, required: false },
+          settings,
+        })}
+      />,
+    );
+    expect(getByText('listPets')).toBeInTheDocument();
   });
 
   it('invokes the renderOpenApiSpecField slot with the resolved context', () => {

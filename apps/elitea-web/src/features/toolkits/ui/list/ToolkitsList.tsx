@@ -118,9 +118,24 @@ export function isListEmpty(isLoading: boolean, isError: boolean, itemCount: num
   return !isLoading && !isError && itemCount === 0;
 }
 
-/** Same reason as {@link isListEmpty}: "genuinely nothing anywhere" (no query, no type filter narrowing an otherwise non-empty catalogue) vs. "this particular filter/search yielded nothing". */
-export function isZeroStateEligible(empty: boolean, query: string | undefined, totalCount: number, selectedTypesCount: number): boolean {
-  return empty && !query && totalCount === 0 && selectedTypesCount === 0;
+/**
+ * Baseline fidelity fix (parity-review finding R4): the old app's
+ * `CardList.jsx` computes `showCustomEmptyState = showEmptyOrError &&
+ * customEmptyState && !isError` — since `ToolkitsList.jsx` (the baseline
+ * caller) ALWAYS passes a non-null `customEmptyState`, that condition
+ * reduces to just "the list is empty and not erroring", with NO dependency
+ * on `query`/type-filter/`totalCount` at all. A previous version of this
+ * function additionally gated on `!query && totalCount === 0 &&
+ * selectedTypesCount === 0`, which made the "No toolkits yet" CTA lose to
+ * `ToolkitsEmptyListPlaceHolder`'s plain "Nothing found" text whenever a
+ * search query or an active type filter was present — a real content
+ * divergence from `CardList.jsx`'s own always-wins precedence (see
+ * `ToolkitsList.test.tsx`'s own regression test for the exact scenario this
+ * fixes). `totalCount`/`selectedTypesCount` are no longer read here at all
+ * — same "genuinely nothing" signal `isListEmpty`'s own `empty` already is.
+ */
+export function isZeroStateEligible(empty: boolean): boolean {
+  return empty;
 }
 
 /** Same reason as {@link isListEmpty}: the cards-grid branch's own gate. */
@@ -207,7 +222,7 @@ export function ToolkitsList({
   rightPanelExtra,
   sx,
 }: ToolkitsListProps): ReactNode {
-  const { isLoading, isFetchingMore = false, isError = false, hasMore, onLoadMore, totalCount } = listState;
+  const { isLoading, isFetchingMore = false, isError = false, hasMore, onLoadMore } = listState;
   const { tagList, selectedTypes, onSelectType, onClearTypes } = typeFilter;
 
   const isMcpVisible = useIsMcpVisible();
@@ -226,7 +241,7 @@ export function ToolkitsList({
   }, [hasMore, isFetchingMore, onLoadMore]);
 
   const isEmpty = isListEmpty(isLoading, isError, items.length);
-  const zeroStateEligible = isZeroStateEligible(isEmpty, query, totalCount, selectedTypes.length);
+  const zeroStateEligible = isZeroStateEligible(isEmpty);
   const showCards = shouldShowCards(isLoading, isError, items.length);
 
   return (

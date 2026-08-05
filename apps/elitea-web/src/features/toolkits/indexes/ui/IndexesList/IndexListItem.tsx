@@ -109,8 +109,17 @@ export function IndexListItem(props: IndexListItemProps): ReactNode {
         height: '4rem',
         borderRadius: (theme) => theme.vars.shape.radiusMd,
         padding: '.375rem 1rem',
-        border: (theme) => `.0625rem solid ${isSelected ? theme.vars.palette.action.selected : isProgressError ? theme.vars.palette.error.main : 'transparent'}`,
-        background: (theme) => (isSelected ? theme.vars.palette.action.selected : isProgressError ? theme.vars.palette.error.light : theme.vars.palette.action.hover),
+        // `isProgressError` checked FIRST, `isSelected` second — matches the
+        // baseline's sx-array ordering (`wrapper`, then `selectedWrapper` if
+        // selected, then `errorWrapper` LAST if stale+in-progress, plus
+        // `errorWrapper`'s own `'&.selected'` sub-rule), which keeps the red
+        // error styling on a row even when it is simultaneously selected
+        // (`IndexListItem.jsx` lines 66-70, 191-197). Reversing this
+        // precedence (selected-first) would let a plain "selected" style win
+        // and silently drop the error/stale indicator the baseline
+        // deliberately preserves.
+        border: (theme) => `.0625rem solid ${isProgressError ? theme.vars.palette.error.main : isSelected ? theme.vars.palette.action.selected : 'transparent'}`,
+        background: (theme) => (isProgressError ? theme.vars.palette.error.light : isSelected ? theme.vars.palette.action.selected : theme.vars.palette.action.hover),
         position: 'relative',
         gap: '.25rem',
         cursor: 'pointer',
