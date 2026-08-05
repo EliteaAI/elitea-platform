@@ -141,12 +141,26 @@ describe('§4.6 check 7 — brand-pack round trip', () => {
 
     // The reverse direction is deliberately NOT asserted: an unreferenced
     // token is not an error (spec §4.6 check 7.2), it is a token nothing has
-    // been authored against yet.
-    expect(emitted.size).toBeGreaterThan(references.length);
+    // been authored against yet — this headroom check only confirms that
+    // is still true (some token remains unconsumed), so it must count
+    // DISTINCT referenced tokens, not raw reference occurrences: a real app
+    // legitimately re-reads the same handful of tokens from hundreds of
+    // call sites (934 occurrences of 174 distinct tokens, as of Wave 2
+    // batch 2), and comparing occurrence count against `emitted.size` would
+    // start failing purely from adding more pages, with no loss of headroom
+    // at all.
+    const uniqueReferencedTokens = new Set(references.map((ref) => ref.cssVar));
+    expect(emitted.size).toBeGreaterThan(uniqueReferencedTokens.size);
     for (const ref of references) {
       expect(ref.cssVar.startsWith(`--${CSS_VAR_PREFIX}-palette-`)).toBe(true);
     }
-  });
+    // [F2] explicit timeout, not the 5000ms default: `scanThemeVarReferences`
+    // Babel-parses every source file under `src/` (~2400 files as of Wave 2
+    // batch 2) — legitimately slower than 5s under CI's shared runners when
+    // this test lands near the tail of the full, highly-parallel suite run
+    // (observed: PR #21's first batch-2 run, real timeout at 5000ms with
+    // 813/815 other files already passed).
+  }, 20_000);
 
   it('(c) renders the available surface under a hostile pack with zero default-pack colours', () => {
     // Colours the default pack states, minus the ones a bare MUI theme also

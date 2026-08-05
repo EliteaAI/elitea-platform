@@ -125,20 +125,28 @@ describe('SimpleSearchBar', () => {
     // ('ab') call. Checking the final call count once everything has long
     // since settled catches that regression exactly as precisely, with no
     // timing race at all.
+    //
+    // debounceMs=500 with only a 100ms sleep before the second keystroke
+    // (widened from an earlier 150/100 pairing that left just a ~50ms
+    // margin, closeable by ordinary CI scheduling jitter -- same fix shape
+    // as this file's "does not call it before debounceMs elapses" test):
+    // the whole point is that keystroke 1's timer must still be pending
+    // when keystroke 2 arrives, so the margin needs to comfortably survive
+    // real wall-clock variance, not just the fast path on a quiet machine.
     const user = userEvent.setup();
     const onChange = vi.fn();
     const { getByDisplayValue } = renderWithTheme(
       <SimpleSearchBar
         value=""
         onChange={onChange}
-        debounceMs={150}
+        debounceMs={500}
       />,
     );
     const input = getByDisplayValue('');
     await user.type(input, 'a');
     await sleep(100);
     await user.type(input, 'b');
-    await sleep(300);
+    await sleep(700);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith('ab');
   });

@@ -48,9 +48,9 @@ type TestToolRequest = indexersvc.TestToolRequest
 type TestToolResponse = indexersvc.TestToolResponse
 
 type Handler struct {
-	repo    Repository
-	pool    *pgxpool.Pool
-	tester  ToolTester
+	repo   Repository
+	pool   *pgxpool.Pool
+	tester ToolTester
 }
 
 func NewHandler(pool *pgxpool.Pool, tester ToolTester) *Handler {
@@ -105,9 +105,9 @@ var toolkitTypeSchemas = map[string]map[string]any{
 	"artifact": {
 		"type": "object",
 		"properties": map[string]any{
-			"bucket":                   map[string]any{"type": "string"},
-			"pgvector_configuration":   map[string]any{"type": "object"},
-			"embedding_model":          map[string]any{"type": "string"},
+			"bucket":                 map[string]any{"type": "string"},
+			"pgvector_configuration": map[string]any{"type": "object"},
+			"embedding_model":        map[string]any{"type": "string"},
 			"selected_tools": map[string]any{
 				"type": "object",
 				"args_schemas": map[string]any{
@@ -125,8 +125,8 @@ var toolkitTypeSchemas = map[string]map[string]any{
 	"github": {
 		"type": "object",
 		"properties": map[string]any{
-			"repository":    map[string]any{"type": "string"},
-			"access_token":  map[string]any{"type": "string"},
+			"repository":   map[string]any{"type": "string"},
+			"access_token": map[string]any{"type": "string"},
 			"selected_tools": map[string]any{
 				"type": "object",
 				"args_schemas": map[string]any{
@@ -153,9 +153,9 @@ var toolkitTypeSchemas = map[string]map[string]any{
 	"jira": {
 		"type": "object",
 		"properties": map[string]any{
-			"url":           map[string]any{"type": "string"},
-			"username":      map[string]any{"type": "string"},
-			"password":      map[string]any{"type": "string"},
+			"url":      map[string]any{"type": "string"},
+			"username": map[string]any{"type": "string"},
+			"password": map[string]any{"type": "string"},
 			"selected_tools": map[string]any{
 				"type": "object",
 				"args_schemas": map[string]any{
@@ -171,9 +171,9 @@ var toolkitTypeSchemas = map[string]map[string]any{
 	"openapi": {
 		"type": "object",
 		"properties": map[string]any{
-			"spec_url":      map[string]any{"type": "string"},
+			"spec_url": map[string]any{"type": "string"},
 			"selected_tools": map[string]any{
-				"type": "object",
+				"type":         "object",
 				"args_schemas": map[string]any{},
 			},
 		},
@@ -196,7 +196,7 @@ var toolkitTypeSchemas = map[string]map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"selected_tools": map[string]any{
-				"type": "object",
+				"type":         "object",
 				"args_schemas": map[string]any{},
 			},
 		},
@@ -395,7 +395,7 @@ func (h *Handler) ExportToolkit(w http.ResponseWriter, r *http.Request) {
 		"name":        name,
 		"type":        toolType,
 		"description": desc,
-		"settings":    settingsObj,
+		"settings":    redactSettings(settingsObj),
 		"env_vars":    envVarsObj,
 		"meta":        metaObj,
 		"forked":      fork,
@@ -466,39 +466,39 @@ func (h *Handler) IndexCancel(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) IndexTypes(w http.ResponseWriter, _ *http.Request) {
 	items := []map[string]any{
 		{
-			"type":                "file_loader",
-			"name":                "File Loader",
-			"description":         "Load documents from uploaded files",
+			"type":                 "file_loader",
+			"name":                 "File Loader",
+			"description":          "Load documents from uploaded files",
 			"supported_extensions": []string{"pdf", "txt", "docx", "xlsx", "csv", "md", "json", "html", "xml", "pptx"},
 		},
 		{
-			"type":                "web_loader",
-			"name":                "Web Loader",
-			"description":         "Load documents from web URLs",
+			"type":                 "web_loader",
+			"name":                 "Web Loader",
+			"description":          "Load documents from web URLs",
 			"supported_extensions": []string{},
 		},
 		{
-			"type":                "confluence_loader",
-			"name":                "Confluence Loader",
-			"description":         "Load documents from Confluence spaces",
+			"type":                 "confluence_loader",
+			"name":                 "Confluence Loader",
+			"description":          "Load documents from Confluence spaces",
 			"supported_extensions": []string{},
 		},
 		{
-			"type":                "github_loader",
-			"name":                "GitHub Loader",
-			"description":         "Load documents from GitHub repositories",
+			"type":                 "github_loader",
+			"name":                 "GitHub Loader",
+			"description":          "Load documents from GitHub repositories",
 			"supported_extensions": []string{},
 		},
 		{
-			"type":                "jira_loader",
-			"name":                "Jira Loader",
-			"description":         "Load documents from Jira projects",
+			"type":                 "jira_loader",
+			"name":                 "Jira Loader",
+			"description":          "Load documents from Jira projects",
 			"supported_extensions": []string{},
 		},
 		{
-			"type":                "s3_loader",
-			"name":                "S3 Loader",
-			"description":         "Load documents from S3 buckets",
+			"type":                 "s3_loader",
+			"name":                 "S3 Loader",
+			"description":          "Load documents from S3 buckets",
 			"supported_extensions": []string{},
 		},
 	}
@@ -525,7 +525,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	items, total, err := h.repo.ListToolkits(r.Context(), projectID, page, limit)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list toolkits"})
 		return
 	}
 	if items == nil {
@@ -821,7 +821,7 @@ func (r *pgRepo) ListToolkits(ctx context.Context, projectID string, page, pageS
 	q := fmt.Sprintf(`
 		SELECT id, type, name, COALESCE(description,''),
 		       COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
-		       created_at, updated_at, author_id, shared_id
+		       created_at, author_id
 		FROM %q.elitea_tools
 		ORDER BY name LIMIT $1 OFFSET $2`, s)
 	rows, err := r.pool.Query(ctx, q, pageSize, offset)
@@ -834,9 +834,8 @@ func (r *pgRepo) ListToolkits(ctx context.Context, projectID string, page, pageS
 	for rows.Next() {
 		var id, typ, name, desc string
 		var settingsRaw, metaRaw []byte
-		var createdAt, updatedAt any
-		var authorID, sharedID any
-		if err := rows.Scan(&id, &typ, &name, &desc, &settingsRaw, &metaRaw, &createdAt, &updatedAt, &authorID, &sharedID); err != nil {
+		var createdAt, authorID any
+		if err := rows.Scan(&id, &typ, &name, &desc, &settingsRaw, &metaRaw, &createdAt, &authorID); err != nil {
 			continue
 		}
 		var settings, meta any
@@ -848,15 +847,45 @@ func (r *pgRepo) ListToolkits(ctx context.Context, projectID string, page, pageS
 			"type":        typ,
 			"name":        name,
 			"description": desc,
-			"settings":    settings,
+			"settings":    redactSettings(settings),
 			"meta":        meta,
 			"created_at":  createdAt,
-			"updated_at":  updatedAt,
 			"author_id":   authorID,
-			"shared_id":   sharedID,
 		})
 	}
 	return items, total, nil
+}
+
+// redactSettings returns a deep copy of settings with credential-like values
+// removed. Toolkit configuration is not a secret transport; execution code
+// reads the stored JSON directly and must never depend on this API response.
+func redactSettings(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, nested := range v {
+			if isSensitiveSettingKey(key) {
+				continue
+			}
+			out[key] = redactSettings(nested)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, nested := range v {
+			out[i] = redactSettings(nested)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func isSensitiveSettingKey(key string) bool {
+	key = strings.ToLower(key)
+	return strings.Contains(key, "secret") || strings.Contains(key, "token") ||
+		strings.Contains(key, "password") || strings.Contains(key, "credential") ||
+		strings.Contains(key, "api_key") || strings.Contains(key, "apikey")
 }
 
 func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
@@ -882,14 +911,13 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, type, name, COALESCE(description,''),
 		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
-		          created_at, updated_at, author_id, shared_id`, s)
+		       created_at, author_id`, s)
 	var id, retType, retName, retDesc string
 	var settingsRaw, metaRaw []byte
-	var createdAt, updatedAt any
-	var authorID, sharedID any
+	var createdAt, authorID any
 	err := r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), authorIDStr).Scan(
 		&id, &retType, &retName, &retDesc, &settingsRaw, &metaRaw,
-		&createdAt, &updatedAt, &authorID, &sharedID)
+		&createdAt, &authorID)
 	if err != nil {
 		return nil, fmt.Errorf("create toolkit: %w", err)
 	}
@@ -902,12 +930,10 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 		"type":        retType,
 		"name":        retName,
 		"description": retDesc,
-		"settings":    settings,
+		"settings":    redactSettings(settings),
 		"meta":        meta,
 		"created_at":  createdAt,
-		"updated_at":  updatedAt,
 		"author_id":   authorID,
-		"shared_id":   sharedID,
 	}, nil
 }
 
@@ -916,20 +942,19 @@ func (r *pgRepo) GetToolkit(ctx context.Context, projectID, toolkitID string) (m
 	q := fmt.Sprintf(`
 		SELECT t.id, t.type, t.name, COALESCE(t.description,''),
 		       COALESCE(t.settings::text,'{}'), COALESCE(t.meta::text,'{}'),
-		       t.created_at, t.updated_at, t.author_id, t.shared_id,
+		       t.created_at, t.author_id,
 		       COALESCE(u.id, 0), COALESCE(u.email, ''), COALESCE(u.name, '')
 		FROM %q.elitea_tools t
 		LEFT JOIN public.auth_core__user u ON u.id = t.author_id
 		WHERE t.id = $1`, s)
 	var id, typ, name, desc string
 	var settingsRaw, metaRaw []byte
-	var createdAt, updatedAt any
-	var authorID, sharedID any
+	var createdAt, authorID any
 	var uID int
 	var uEmail, uName string
 	if err := r.pool.QueryRow(ctx, q, toolkitID).Scan(
 		&id, &typ, &name, &desc, &settingsRaw, &metaRaw,
-		&createdAt, &updatedAt, &authorID, &sharedID,
+		&createdAt, &authorID,
 		&uID, &uEmail, &uName); err != nil {
 		return nil, fmt.Errorf("get toolkit: %w", err)
 	}
@@ -949,13 +974,11 @@ func (r *pgRepo) GetToolkit(ctx context.Context, projectID, toolkitID string) (m
 		"name":         name,
 		"toolkit_name": sanitizedName,
 		"description":  desc,
-		"settings":     settings,
+		"settings":     redactSettings(settings),
 		"meta":         meta,
 		"created_at":   createdAt,
-		"updated_at":   updatedAt,
 		"author_id":    authorID,
 		"author":       author,
-		"shared_id":    sharedID,
 		"agent_type":   nil,
 		"online":       nil,
 	}
@@ -1003,15 +1026,14 @@ func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string,
 		UPDATE %q.elitea_tools SET %s WHERE id = $%d
 		RETURNING id, type, name, COALESCE(description,''),
 		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
-		          created_at, updated_at, author_id, shared_id`,
+		          created_at, author_id`,
 		s, strings.Join(setClauses, ", "), argIdx)
 	var id, typ, name, desc string
 	var settingsRaw, metaRaw []byte
-	var createdAt, updatedAt any
-	var authorID, sharedID any
+	var createdAt, authorID any
 	if err := r.pool.QueryRow(ctx, q, args...).Scan(
 		&id, &typ, &name, &desc, &settingsRaw, &metaRaw,
-		&createdAt, &updatedAt, &authorID, &sharedID); err != nil {
+		&createdAt, &authorID); err != nil {
 		return nil, fmt.Errorf("update toolkit: %w", err)
 	}
 	var settings, meta any
@@ -1023,12 +1045,10 @@ func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string,
 		"type":        typ,
 		"name":        name,
 		"description": desc,
-		"settings":    settings,
+		"settings":    redactSettings(settings),
 		"meta":        meta,
 		"created_at":  createdAt,
-		"updated_at":  updatedAt,
 		"author_id":   authorID,
-		"shared_id":   sharedID,
 	}, nil
 }
 

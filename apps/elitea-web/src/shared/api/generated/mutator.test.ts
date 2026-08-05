@@ -36,7 +36,12 @@ describe('client injection (R-S2: factory + inject, no module-scope construction
     const client = configureGeneratedClient({ baseUrl: '/api/v2' });
     expect(client.baseUrl).toBe('/api/v2');
     server.use(probeOk());
-    await expect(eliteaFetch(PROBE_PATH, { method: 'GET' })).resolves.toEqual({ message: 'transport probe ok' });
+    const envelope = await eliteaFetch<{ data: { message: string }; status: number; headers: Headers }>(
+      PROBE_PATH,
+      { method: 'GET' },
+    );
+    expect(envelope.headers).toBeInstanceOf(Headers);
+    expect(envelope).toEqual({ data: { message: 'transport probe ok' }, status: 200, headers: envelope.headers });
   });
 
   it('resetGeneratedClient forces the next call back to the unconfigured error', async () => {
@@ -109,11 +114,15 @@ describe('the fetch(url, options) contract orval\'s httpClient: \'fetch\' genera
 });
 
 describe('§3.6 unwrap: HttpResult becomes a thrown EliteaApiError for react-query', () => {
-  it('resolves with the parsed data on a 2xx (never a Result wrapper)', async () => {
+  it('resolves with the {data, status, headers} envelope on a 2xx (matches orval\'s enveloped generated type — never a Result wrapper, never the bare body)', async () => {
     configureGeneratedClient({ baseUrl: '/api/v2' });
     server.use(probeOk());
-    const data = await eliteaFetch<{ message: string }>(PROBE_PATH, { method: 'GET' });
-    expect(data).toEqual({ message: 'transport probe ok' });
+    const result = await eliteaFetch<{ data: { message: string }; status: number; headers: Headers }>(
+      PROBE_PATH,
+      { method: 'GET' },
+    );
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result).toEqual({ data: { message: 'transport probe ok' }, status: 200, headers: result.headers });
   });
 
   it('throws EliteaApiError carrying a kind:http failure for a 404', async () => {

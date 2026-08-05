@@ -1,0 +1,277 @@
+import type { ReactElement, ReactNode } from 'react';
+
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { renderWithTheme } from '@/shared/ui/lib/testTheme';
+import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { SocketClientContext } from '@/shared/api/socket/client';
+import { createTestSocketClient } from '@/shared/api/socket/testing';
+import { server } from '@/test/setup';
+import { installWebStorageShim } from '@/test/webstorage';
+
+import { SimpleLLMInputItem, type SimpleLLMInputItemProps } from './SimpleLLMInputItem';
+
+installCodeMirrorTestPolyfills();
+installWebStorageShim();
+
+function renderItem(props: SimpleLLMInputItemProps): ReturnType<typeof renderWithTheme> {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestSocketClient();
+  function Wrapper({ children }: { children: ReactNode }): ReactElement {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <SocketClientContext.Provider value={client}>{children as ReactElement}</SocketClientContext.Provider>
+      </QueryClientProvider>
+    );
+  }
+  return renderWithTheme(
+    <Wrapper>
+      <SimpleLLMInputItem {...props} />
+    </Wrapper>,
+  );
+}
+
+afterEach(() => {
+  resetGeneratedClient();
+});
+
+describe('SimpleLLMInputItem', () => {
+  it('renders a heading chip with the capitalized, underscore-stripped variable name', () => {
+    const { getByText } = renderItem({
+      variableName: 'user_message',
+      variable: 'user_message',
+      type: 'fixed',
+      value: '',
+      defaultValue: '',
+      onChangeMapping: vi.fn(),
+    });
+    expect(getByText('User message')).toBeInTheDocument();
+  });
+
+  it('renders a plain text field for a fixed/fstring/string type', () => {
+    const { getByLabelText } = renderItem({
+      variableName: 'system',
+      variable: 'system',
+      type: 'fixed',
+      value: 'hello',
+      defaultValue: '',
+      onChangeMapping: vi.fn(),
+    });
+    expect(getByLabelText('Value')).toHaveValue('hello');
+  });
+
+  it('renders a Value select (not a text field) for a variable type', () => {
+    const { queryByRole, getByRole } = renderItem({
+      variableName: 'code',
+      variable: 'code',
+      type: 'variable',
+      value: 'input',
+      defaultValue: '',
+      onChangeMapping: vi.fn(),
+    });
+    expect(queryByRole('textbox', { name: 'Value' })).not.toBeInTheDocument();
+    expect(getByRole('combobox', { name: 'Value' })).toBeInTheDocument();
+  });
+
+  it('JSON.stringifies a non-string value for the resolved display value', () => {
+    const { getByLabelText } = renderItem({
+      variableName: 'system',
+      variable: 'system',
+      type: 'fixed',
+      value: { foo: 'bar' },
+      defaultValue: '',
+      onChangeMapping: vi.fn(),
+    });
+    expect(getByLabelText('Value')).toHaveValue('{"foo":"bar"}');
+  });
+
+  it('calls onChangeMapping with the new value on edit', async () => {
+    const user = userEvent.setup();
+    const onChangeMapping = vi.fn();
+    const { getByLabelText } = renderItem({
+      variableName: 'system',
+      variable: 'system',
+      type: 'fixed',
+      value: '',
+      defaultValue: '',
+      onChangeMapping,
+    });
+
+    await user.type(getByLabelText('Value'), 'x');
+
+    expect(onChangeMapping).toHaveBeenCalledWith('system', { type: 'fixed', value: 'x' });
+  });
+
+  it('parses chat_history JSON input when type is fixed', async () => {
+    const user = userEvent.setup();
+    const onChangeMapping = vi.fn();
+    const { getByLabelText } = renderItem({
+      variableName: 'chat_history',
+      variable: 'chat_history',
+      type: 'fixed',
+      value: '',
+      defaultValue: '',
+      onChangeMapping,
+    });
+
+    await user.type(getByLabelText('Value'), '5');
+
+    expect(onChangeMapping).toHaveBeenCalledWith('chat_history', { type: 'fixed', value: 5 });
+  });
+
+  it('preserves the value when switching between fstring and fixed types', async () => {
+    const user = userEvent.setup();
+    const onChangeMapping = vi.fn();
+    const { getByLabelText } = renderItem({
+      variableName: 'system',
+      variable: 'system',
+      type: 'fstring',
+      value: 'hello',
+      defaultValue: 'default',
+      onChangeMapping,
+    });
+
+    await user.click(getByLabelText('Type'));
+    await user.click(document.querySelector('[data-value="fixed"]') as Element);
+
+    expect(onChangeMapping).toHaveBeenCalledWith('system', { type: 'fixed', value: 'hello' });
+  });
+
+  it('resets to the default value when switching to a variable type', async () => {
+    const user = userEvent.setup();
+    const onChangeMapping = vi.fn();
+    const { getByLabelText } = renderItem({
+      variableName: 'code',
+      variable: 'code',
+      type: 'fixed',
+      value: 'hello',
+      defaultValue: 'default',
+      onChangeMapping,
+    });
+
+    await user.click(getByLabelText('Type'));
+    await user.click(document.querySelector('[data-value="variable"]') as Element);
+
+    expect(onChangeMapping).toHaveBeenCalledWith('code', { type: 'variable', value: 'default' });
+  });
+
+  it('renders via AIAssistantInput when enableAIAssistant is set for an eligible variable', () => {
+    server.use(
+      http.get('/api/v2/configurations/available/', () => HttpResponse.json([])),
+      http.get('/api/v2/configurations/configurations/7', () => HttpResponse.json({ items: [], total: 0 })),
+    );
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+
+    const { getByLabelText } = renderItem({
+      variableName: 'system',
+      variable: 'system',
+      type: 'fixed',
+      value: 'hi',
+      defaultValue: '',
+      onChangeMapping: vi.fn(),
+      enableAIAssistant: true,
+    });
+
+    expect(getByLabelText('AI Assistant')).toBeInTheDocument();
+  });
+
+  // Regression coverage: `NodeFieldInput`'s doc comment above records this
+  // as a formerly-confirmed cluster finding (#2, A2-settings-panels) — the
+  // AI-Assistant-enabled field's visible input used to silently discard
+  // direct keystrokes because `../AIAssistantInput.tsx` never wired an
+  // `onChange` onto its base `InputBase` (fixed there since). This test
+  // exercises the full integration through THIS component, not just
+  // `AIAssistantInput.tsx`'s own unit test.
+  it('reports edits typed directly into an AI-Assistant-enabled field, not just through the modal', async () => {
+    server.use(
+      http.get('/api/v2/configurations/available/', () => HttpResponse.json([])),
+      http.get('/api/v2/configurations/configurations/7', () => HttpResponse.json({ items: [], total: 0 })),
+    );
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+
+    const user = userEvent.setup();
+    const onChangeMapping = vi.fn();
+    const { getByLabelText } = renderItem({
+      variableName: 'system',
+      variable: 'system',
+      type: 'fixed',
+      value: 'hi',
+      defaultValue: '',
+      onChangeMapping,
+      enableAIAssistant: true,
+    });
+
+    await user.type(getByLabelText('Value'), '!');
+
+    expect(onChangeMapping).toHaveBeenCalledWith('system', { type: 'fixed', value: 'hi!' });
+  });
+
+  it('does not enable AI Assistant for an ineligible variable name', () => {
+    const { queryByText } = renderItem({
+      variableName: 'not_eligible',
+      variable: 'not_eligible',
+      type: 'fixed',
+      value: '',
+      defaultValue: '',
+      onChangeMapping: vi.fn(),
+      enableAIAssistant: true,
+    });
+    expect(queryByText('AI Assistant')).not.toBeInTheDocument();
+  });
+
+  describe('the code field AI-Assistant editor pre-sets content type to Python', () => {
+    function stubForModal(): void {
+      server.use(
+        http.get('/api/v2/configurations/available/', () => HttpResponse.json([])),
+        http.get('/api/v2/configurations/configurations/7', () => HttpResponse.json({ items: [], total: 0 })),
+      );
+      configureGeneratedClient({ baseUrl: '/api/v2' });
+    }
+
+    it('opens the AI Assistant editor with "Python" pre-selected for the `code` variable (baseline `language` override)', async () => {
+      stubForModal();
+      const user = userEvent.setup();
+
+      // 'x = 1' does not match any of `detectContentType`'s python keyword markers
+      // (def/class/import/from/print(/if __name__/elif/self.), so without the
+      // restored override this would auto-detect as "Text", not "Python" —
+      // this is what would have caught the regression.
+      const { getByRole } = renderItem({
+        variableName: 'code',
+        variable: 'code',
+        type: 'fixed',
+        value: 'x = 1',
+        defaultValue: '',
+        onChangeMapping: vi.fn(),
+        enableAIAssistant: true,
+      });
+
+      await user.click(getByRole('button', { name: 'AI Assistant' }));
+
+      expect(getByRole('combobox', { name: 'Content type' })).toHaveTextContent('Python');
+    });
+
+    it('does not force Python for a non-`code` eligible variable (auto-detected instead)', async () => {
+      stubForModal();
+      const user = userEvent.setup();
+
+      const { getByRole } = renderItem({
+        variableName: 'system',
+        variable: 'system',
+        type: 'fixed',
+        value: 'hi',
+        defaultValue: '',
+        onChangeMapping: vi.fn(),
+        enableAIAssistant: true,
+      });
+
+      await user.click(getByRole('button', { name: 'AI Assistant' }));
+
+      expect(getByRole('combobox', { name: 'Content type' })).not.toHaveTextContent('Python');
+    });
+  });
+});

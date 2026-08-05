@@ -8,7 +8,7 @@ import type { SvgIconComponent } from '../svg-icon.types';
  * Table-driven smoke test for the whole icon set (unit S2, §3.7/§4.4 R-T8).
  *
  * Icon components are mechanical one-line re-exports (`export { default as
- * XxxIcon } from './svg/xxx.svg?react'`) generated from the 191 icons ported
+ * XxxIcon } from './svg/xxx.svg?react'`) generated from the 193 icons ported
  * from apps/elitea-ui/src/assets/**. Per-icon hand-written tests would be
  * pure boilerplate, so this file auto-discovers every sibling icon module via
  * `import.meta.glob` and asserts, for each one:
@@ -37,8 +37,8 @@ const icons: IconEntry[] = Object.entries(modules).flatMap(([moduleId, mod]) =>
 );
 
 describe('shared/ui/icons — full-set smoke test', () => {
-  it('discovered the full ported set (191 icons, see final report for the merge/rename ledger)', () => {
-    expect(icons.length).toBe(191);
+  it('discovered the full ported set (193 icons, see final report for the merge/rename ledger)', () => {
+    expect(icons.length).toBe(193);
   });
 
   it('every discovered export has a unique PascalCase "*Icon" name', () => {

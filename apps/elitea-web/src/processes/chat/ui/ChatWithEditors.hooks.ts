@@ -1,0 +1,329 @@
+import { useCallback, useRef } from 'react';
+
+import { agentEditorHooks } from '@/features/agents';
+import { useEditPipeline, usePipelineCreation } from '@/features/pipelines';
+import { toolkitEditorHooks } from '@/features/toolkits';
+import type { Participant } from '@/entities/participant';
+import { useEditorStateStore } from '@/shared/lib/editorState';
+import { t } from '@/shared/i18n';
+import { useNavBlockerStore } from '@/widgets/app-shell';
+
+import {
+  readAgentParticipantSnapshot,
+  readPipelineParticipantSnapshot,
+  readToolkitParticipantSnapshot,
+  toAgentParticipantSnapshot,
+  toPipelineParticipantSnapshot,
+} from '../lib/editorParticipantAdapters';
+import { useEditorMutex, type CanvasEditPayload, type EditorOpenInfo } from '../model/useEditorMutex';
+
+/**
+ * The real wiring behind `ChatWithEditors.tsx` — split into this sibling
+ * file purely to keep `ChatWithEditors.tsx` itself under the §3.5 400-line
+ * budget (the composition root's own JSX is already substantial once three
+ * editors + two confirm dialogs are laid out). Everything here is plain
+ * hook composition, no JSX.
+ */
+
+const NAV_BLOCK_WARNING = t(
+  'processes.chat.chatWithEditors.navBlockWarning',
+  'You have unsaved changes in the editor. Are you sure you want to leave?',
+);
+
+/**
+ * **DISCLOSED GAP — `activeParticipant`/`setActiveParticipant`/
+ * `onChangeParticipantSettings` (`useEditAgent`'s optional participant-sync
+ * params) are not wired.** Both are about keeping the currently-EDITED
+ * agent's local state in sync with the conversation's ACTIVE participant
+ * (the resync effect, `useEditAgent.ts`'s own `useEffect`) and about
+ * writing a saved agent's data back into it (`handleAgentSaved`). That state
+ * — `activeParticipant`/`setActiveParticipant` — is owned INSIDE
+ * `pages/chat/index.tsx`'s `ChatPage` (local `useState`, never exposed
+ * upward) and never reaches this composition root, which only renders
+ * `<ChatPage>` as an opaque child (per this unit's own design — `ChatPage`
+ * gains new OPTIONAL callback props, not a lifted-up participant value).
+ * All three params are OPTIONAL on `UseEditAgentParams` precisely because
+ * the baseline hook already tolerates their absence (`handleAgentSaved`'s
+ * own first line: `if (!savedData || !activeParticipant ||
+ * !setActiveParticipant) return;`), so omitting them here is a safe,
+ * disclosed degradation — not a silent invention — matching the "disclosed
+ * gap, not silently invented" convention `PipelineEditor.tsx`'s own module
+ * doc comment establishes. Consequence: editing an agent that is ALSO the
+ * conversation's current active participant will not auto-resync if that
+ * participant changes elsewhere while the editor is open, and a completed
+ * SAVE (not CREATE — creation already routes through `onAgentCreated`
+ * below) will not push its refreshed variables/version id back onto the
+ * active participant. Real fix requires lifting `ChatPage`'s
+ * `activeParticipant` state (or an equivalent controlled-value bridge) up
+ * to this composition root — a `pages/chat` contract change bigger than
+ * this unit's "wire the already-built editors" scope.
+ */
+function useAgentEditing(isEditingAgent: boolean) {
+  const setAgentEditingBlockNav = useCallback((blocked: boolean) => {
+    useEditorStateStore.getState().setEditingAgent(blocked);
+    useNavBlockerStore.getState().setBlockNav(blocked, NAV_BLOCK_WARNING);
+  }, []);
+
+  const editAgent = agentEditorHooks.useEditAgent({ navBlocker: { isEditingAgent, setAgentEditingBlockNav } });
+
+  /**
+   * **DISCLOSED GAP — `addNewParticipants`/`onSetActiveParticipant` (both
+   * REQUIRED on `UseAgentCreationParams`, unlike the three above) are
+   * inert stubs.** Adding the freshly-created agent to the conversation's
+   * participant list, and activating it, are real chat-conversation
+   * operations owned deep inside `widgets/chat-box`'s own hooks (e.g.
+   * `useChatBoxParticipant`/the participant-mutation API `features/
+   * chat-participants` exposes) — this composition root has no reach into
+   * that state either, for the same reason given above. `onAgentEditorCreated`
+   * (the one field this hook can genuinely honour) still fires correctly —
+   * the editor switches from create to edit mode on the new agent — so
+   * creating an agent from chat works end-to-end EXCEPT that the new agent
+   * is not auto-added to / activated in the current conversation. A stub
+   * that resolves without calling its `onAdded` callback is safe (the
+   * baseline's own `try { await addNewParticipants(...) } catch {...}`
+   * around this call handles a no-op the same as a slow network op).
+   */
+  const agentCreation = agentEditorHooks.useAgentCreation({
+    // `useAgentCreation`'s own `CreatedAgentParticipant.entity_settings.variables`
+    // is `readonly unknown[]` (element shape unvalidated) — narrower than
+    // `useEditAgent`'s own `EditAgentParticipant.entity_settings.variables?:
+    // readonly AgentVariable[]`, so `editAgent.onAgentEditorCreated` cannot be
+    // passed straight through (`unknown[]` is not assignable to a
+    // `{name?,value?}[]`). This wrapper forwards only the two fields both
+    // sides actually declare (`entity_meta.id`/`entity_settings.version_id`) —
+    // `variables` is intentionally not carried over; the freshly-created
+    // agent has no participant-scoped variable VALUES yet regardless.
+    onAgentEditorCreated: (createdAgent) => {
+      editAgent.onAgentEditorCreated({
+        ...(createdAgent.entity_meta?.id !== undefined ? { entity_meta: { id: createdAgent.entity_meta.id } } : {}),
+        ...(createdAgent.entity_settings?.version_id !== undefined
+          ? { entity_settings: { version_id: createdAgent.entity_settings.version_id } }
+          : {}),
+      });
+    },
+    addNewParticipants: async () => {},
+    onSetActiveParticipant: () => {},
+  });
+
+  return { editAgent, agentCreation };
+}
+
+function usePipelineEditing(isEditingPipeline: boolean) {
+  const setPipelineEditingBlockNav = useCallback((blocked: boolean) => {
+    useEditorStateStore.getState().setEditingPipeline(blocked);
+    useNavBlockerStore.getState().setBlockNav(blocked, NAV_BLOCK_WARNING);
+  }, []);
+
+  const editPipeline = useEditPipeline({ navBlocker: { isEditingPipeline, setPipelineEditingBlockNav } });
+  // `addNewParticipants`/`onSetActiveParticipant` are OPTIONAL on
+  // `UsePipelineCreationParams` (unlike the agent/toolkit equivalents) —
+  // omitted for the same disclosed reason `useAgentEditing` gives, but no
+  // stub is needed since the hook already no-ops their absence itself.
+  const pipelineCreation = usePipelineCreation({ onPipelineEditorCreated: editPipeline.onPipelineEditorCreated });
+
+  return { editPipeline, pipelineCreation };
+}
+
+/**
+ * **DISCLOSED GAP — toolkit editing is fully, correctly WIRED but has no
+ * reachable OPEN trigger in the live app yet.** Unlike agent/pipeline,
+ * `features/chat-input`'s `NewChatInputAgentEditorProps`
+ * (`NewChatInput.types.ts`) has no `onShowToolkitEditor` field at all —
+ * confirmed by reading that file in full — so nothing under `ChatBox`/
+ * `NewChatInput` can ever call `mutex.onEditToolkit(...)`. The likely real
+ * trigger is `PlusChatButton` (`widgets/chat/ui/chat-button/
+ * PlusChatButton.tsx`, per `features/agents/model/agentEditorHooks.ts`'s
+ * own doc comment citing its baseline call to
+ * `useAvailableInternalTools`/`useIsMcpVisible`) — a DIFFERENT widget, not
+ * in this unit's touch-scope (`src/widgets/chat-box/ui/ChatBox.tsx` only).
+ * Everything below is real and ready for that future wiring: `useEditToolkit`/
+ * `useToolkitCreation`/`useEditorMutex`'s toolkit callbacks/`<ToolkitEditor>`
+ * (`ChatWithEditors.tsx`) all function correctly the moment a caller invokes
+ * `mutex.onEditToolkit`/`mutex.onCreateToolkit` — this hook does not need to
+ * change; only a new trigger call site does.
+ */
+function useToolkitEditing(isEditingToolkit: boolean) {
+  const setToolkitEditingBlockNav = useCallback((blocked: boolean) => {
+    useEditorStateStore.getState().setEditingToolkit(blocked);
+    useNavBlockerStore.getState().setBlockNav(blocked, NAV_BLOCK_WARNING);
+  }, []);
+  // Baseline: a Redux `isToolkitCreateMode` flag distinct from
+  // `isEditingToolkit`. No consumer anywhere else in this worktree reads an
+  // equivalent flag (`useEditToolkit`'s OWN `isToolkitCreateMode` return
+  // value already tracks this locally for its own callers) — a disclosed
+  // no-op, not a silently-dropped write.
+  const setToolkitCreateMode = useCallback((_creating: boolean) => {}, []);
+
+  const editToolkit = toolkitEditorHooks.useEditToolkit({
+    navBlocker: { isEditingToolkit, setToolkitEditingBlockNav, setToolkitCreateMode },
+  });
+
+  // Same disclosed "no reach into the conversation's participant list" gap
+  // as `useAgentEditing`'s `addNewParticipants` — required by
+  // `UseToolkitCreationParams`, stubbed inert.
+  const toolkitCreation = toolkitEditorHooks.useToolkitCreation({
+    onToolkitEditorCreated: editToolkit.onToolkitEditorCreated,
+    addNewParticipants: async () => {},
+  });
+
+  return { editToolkit, toolkitCreation };
+}
+
+export interface ChatWithEditorsWiring {
+  readonly isEditingAgent: boolean;
+  readonly isEditingPipeline: boolean;
+  readonly isEditingToolkit: boolean;
+  /**
+   * `editAgent.editingAgent`, re-derived through `readAgentParticipantSnapshot`
+   * — NOT the same value passed straight through. `useEditAgent`'s own
+   * `EditAgentParticipant`/`EditAgentParticipantSettings` declare their
+   * optional fields WITH an explicit `| undefined` (e.g. `version_id?:
+   * string | number | undefined`); `AgentEditor`'s `agent` prop
+   * (`AgentEditorAgentLike`) declares the same fields WITHOUT it. Under
+   * `exactOptionalPropertyTypes` these are genuinely incompatible types —
+   * verified directly (`npx tsc --noEmit` rejects `editAgent.editingAgent`
+   * passed as-is to `agent`) — even though `Pipeline`'s/`Toolkit`'s
+   * equivalent state objects have no such mismatch (their own hooks never
+   * added the explicit `| undefined`). Re-decoding through
+   * `readAgentParticipantSnapshot` (the SAME defensive `typeof`-narrowing
+   * function built for the mutex's queue round-trip) rebuilds a clean,
+   * `exactOptionalPropertyTypes`-safe object — and, as a side benefit,
+   * recovers `entity_meta.project_id`/`meta.name` (fields
+   * `EditAgentParticipant` itself never declares but `AgentEditorAgentLike`
+   * needs for correct public-agent detection/title display) because they
+   * are still genuinely present on the underlying object at runtime — it
+   * was built by this same file's own `toAgentParticipantSnapshot` when the
+   * editor was opened, see `useAgentEditing`'s own `onShowAgentEditor` call
+   * site below.
+   */
+  readonly agentForEditor: ReturnType<typeof readAgentParticipantSnapshot>;
+  readonly editAgent: ReturnType<typeof useAgentEditing>['editAgent'];
+  readonly agentCreation: ReturnType<typeof useAgentEditing>['agentCreation'];
+  readonly editPipeline: ReturnType<typeof usePipelineEditing>['editPipeline'];
+  readonly pipelineCreation: ReturnType<typeof usePipelineEditing>['pipelineCreation'];
+  readonly editToolkit: ReturnType<typeof useToolkitEditing>['editToolkit'];
+  readonly toolkitCreation: ReturnType<typeof useToolkitEditing>['toolkitCreation'];
+  readonly mutex: ReturnType<typeof useEditorMutex>;
+  readonly handleShowAgentEditor: (participant: Participant) => void;
+  readonly handleShowPipelineEditor: (participant: Participant) => void;
+}
+
+/**
+ * Composes every editor's hooks + `useEditorMutex` into one wiring object.
+ * The actual mutual-exclusion logic lives entirely in `useEditorMutex`
+ * itself (unmodified, imported from `../model/useEditorMutex`) — this hook
+ * only supplies its five real open/close callback pairs (agent/pipeline/
+ * toolkit) plus two DISCLOSED, INERT stubs for canvas/artifact.
+ *
+ * **Canvas/artifact stubs — disclosed, not silently invented.** `useEditorMutex`
+ * requires `onShowCanvasEditor`/`canvasEditorRef`/`onShowArtifactEditor`/
+ * `onCloseArtifactEditor` as non-optional params (its own TypeScript
+ * contract has no "editor not wired yet" escape hatch). `CanvasEditor.tsx`
+ * (`src/features/chat-messages/ui/canvas/CanvasEditor.tsx`) exists but has
+ * NO established composition point anywhere in this app yet, and no
+ * `ArtifactEditor` component exists at all (confirmed by grep) — wiring
+ * either for real is a genuinely separate, larger follow-up unit, per this
+ * unit's own brief. The four values below satisfy the TypeScript contract
+ * with visibly-inert behaviour: `onShowCanvasEditor`/`onShowArtifactEditor`/
+ * `onCloseArtifactEditor` are no-ops, and `canvasEditorRef.current` is
+ * always `null` (so `useEditorMutex`'s own `closeHandlers.isEditingCanvas
+ * = () => canvasEditorRef.current?.save?.()` correctly no-ops too, rather
+ * than throwing on a stale/wrong ref).
+ */
+export function useChatWithEditors(): ChatWithEditorsWiring {
+  const isEditingAgent = useEditorStateStore((s) => s.isEditingAgent);
+  const isEditingPipeline = useEditorStateStore((s) => s.isEditingPipeline);
+  const isEditingToolkit = useEditorStateStore((s) => s.isEditingToolkit);
+
+  const { editAgent, agentCreation } = useAgentEditing(isEditingAgent);
+  const { editPipeline, pipelineCreation } = usePipelineEditing(isEditingPipeline);
+  const { editToolkit, toolkitCreation } = useToolkitEditing(isEditingToolkit);
+
+  const canvasEditorRef = useRef<{ readonly save?: () => void } | null>(null);
+  const onShowCanvasEditor = useCallback((_info: CanvasEditPayload) => {}, []);
+  const onShowArtifactEditor = useCallback((_info: EditorOpenInfo) => {}, []);
+  const onCloseArtifactEditor = useCallback(() => {}, []);
+
+  const onShowAgentEditor = useCallback(
+    (info: EditorOpenInfo) => {
+      const snapshot = readAgentParticipantSnapshot(info);
+      if (snapshot) editAgent.onShowAgentEditor(snapshot);
+    },
+    [editAgent],
+  );
+  const onShowPipelineEditor = useCallback(
+    (info: EditorOpenInfo) => {
+      const snapshot = readPipelineParticipantSnapshot(info);
+      if (snapshot) editPipeline.onShowPipelineEditor(snapshot);
+    },
+    [editPipeline],
+  );
+  const onShowToolkitEditor = useCallback(
+    (info: EditorOpenInfo) => {
+      const snapshot = readToolkitParticipantSnapshot(info);
+      if (snapshot) editToolkit.onShowToolkitEditor(snapshot);
+    },
+    [editToolkit],
+  );
+
+  const mutex = useEditorMutex({
+    onShowAgentEditor,
+    onCloseAgentEditor: editAgent.onCloseAgentEditor,
+    onShowToolkitEditor,
+    onCloseToolkitEditor: editToolkit.onCloseToolkitEditor,
+    onShowPipelineEditor,
+    onClosePipelineEditor: editPipeline.onClosePipelineEditor,
+    onShowCanvasEditor,
+    canvasEditorRef,
+    onShowArtifactEditor,
+    onCloseArtifactEditor,
+    onShowAgentEditorCreator: editAgent.onShowAgentEditorCreator,
+    onShowToolkitEditorCreator: editToolkit.onShowToolkitEditorCreator,
+    onShowPipelineEditorCreator: editPipeline.onShowPipelineEditorCreator,
+  });
+
+  // The producer half: `NewChatInput`'s `onShowAgentEditor`/
+  // `onShowPipelineEditor` (via `ChatBox`/`ChatPage`) call these with a
+  // real `Participant` — encoded into `EditorOpenInfo` via a fresh object
+  // literal (assignable to `Record<string, unknown>`; the typed snapshot
+  // itself is not — see `../lib/editorParticipantAdapters.ts`'s own doc
+  // comment) and handed to the mutex, which opens immediately or queues.
+  const handleShowAgentEditor = useCallback(
+    (participant: Participant) => {
+      mutex.onEditAgent({ ...toAgentParticipantSnapshot(participant) });
+    },
+    [mutex],
+  );
+  const handleShowPipelineEditor = useCallback(
+    (participant: Participant) => {
+      mutex.onEditPipeline({ ...toPipelineParticipantSnapshot(participant) });
+    },
+    [mutex],
+  );
+
+  // See `ChatWithEditorsWiring.agentForEditor`'s own doc comment for why
+  // this re-decode (rather than passing `editAgent.editingAgent` straight
+  // through) is necessary. `{ ...editAgent.editingAgent }` first, because a
+  // concretely-typed value (not a fresh object literal) is not assignable
+  // to `EditorOpenInfo`'s `Record<string, unknown>` without this spread —
+  // same reasoning as `handleShowAgentEditor` below; spreading `null`
+  // (`isEditingAgent`/`isCreateMode` both false) is valid JS, evaluates to
+  // `{}`, and `readAgentParticipantSnapshot` safely returns `undefined` for it.
+  const agentForEditor = readAgentParticipantSnapshot({ ...editAgent.editingAgent });
+
+  return {
+    isEditingAgent,
+    isEditingPipeline,
+    isEditingToolkit,
+    agentForEditor,
+    editAgent,
+    agentCreation,
+    editPipeline,
+    pipelineCreation,
+    editToolkit,
+    toolkitCreation,
+    mutex,
+    handleShowAgentEditor,
+    handleShowPipelineEditor,
+  };
+}

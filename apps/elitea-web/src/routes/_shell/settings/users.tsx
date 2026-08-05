@@ -1,13 +1,27 @@
-/** ROUTE-059 `/settings/users` -> `Users`. Query param PARAM-061 `inviteUsers` (spec QP-002). */
-import { createFileRoute } from '@tanstack/react-router';
+/**
+ * ROUTE-059 `/settings/users` -> `Users`. Query param PARAM-061 `inviteUsers`.
+ *
+ * Replaces the RouteShell stub with the actual `UsersPage` component.
+ * The users page needs the project ID from the route context.
+ */
+import { createFileRoute, useRouteContext } from '@tanstack/react-router';
 
-import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
-import { pickParams } from '../../-search/params';
+import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
+import { pickParams } from '@/routes/-search/params';
+import { Users } from '@/pages/settings/Users';
 
 export const Route = createFileRoute('/_shell/settings/users')({
   validateSearch: pickParams('inviteUsers'),
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => <RouteShell routeId="settings.users" fallback="Users" />,
+  component: UsersPageComponent,
 });
+
+function UsersPageComponent() {
+  const context = useRouteContext({ strict: false }) as Record<string, unknown> | undefined;
+  const projectId =
+    (context as { auth?: { getSelectedProjectId?: () => string | undefined } })
+      ?.auth?.getSelectedProjectId?.() ?? '';
+
+  return <Users projectId={projectId} />;
+}

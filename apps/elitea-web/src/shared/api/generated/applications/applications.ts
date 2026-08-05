@@ -8,11 +8,14 @@
  * ## Response shape conventions
  * - **Single resource**: returned directly at top level — `{"id": 42, "name": "..."}`
  * - **General errors (4xx/5xx)**: `{"error": "message"}` (pkg/apierr/apierr.go:47-59
- *   and the handlers' inline `map[string]any{"error": ...}` writes). No operation
- *   documented in this spec produces the pylon-era `{"ok": false, "error": ...}`
- *   envelope; a handful of UNDOCUMENTED paths still do (social/handler.go:268,
- *   301, 321, 341, 419 and toolkits/handler.go:286, 312, 324, 350, 362) — scope
- *   that shape there when those domains are spec'd.
+ *   and the handlers' inline `map[string]any{"error": ...}` writes). One
+ *   documented shape deviates: the five social/handler.go 500 sites (Like
+ *   :268, Unlike :301, Pin :321, Unpin :341, CreateFeedback :419) emit the
+ *   pylon-era `{"ok": false, "error": ...}` envelope instead, modeled as
+ *   the named `SocialActionErrorResponse` schema and referenced only on
+ *   those specific operations. Five more UNDOCUMENTED sites of the same
+ *   envelope remain on toolkits/handler.go (:286, 312, 324, 350, 362) —
+ *   scope that shape there when those domains are spec'd.
  * - **Rate limit (429)**: intentionally NOT documented. The Go RateLimit
  *   middleware is a pass-through stub (internal/api/middleware/ratelimit.go:9-14)
  *   and no elitea-main code emits a 429 body — documenting one would be contract
@@ -62,6 +65,7 @@ import type {
   ApplicationUpdateRequest,
   ApplicationUpdatedResponse,
   ApplicationVersionDetail,
+  AuthorDetail,
   BatchReplaceVersionReferencesParams,
   DefaultIcon,
   DeleteApplicationVersionParams,
@@ -8323,6 +8327,204 @@ export function useUpdatePipelineTrigger<
     pipelineTriggerUpdateRequest,
     options,
   );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getAuthorDetailResponse200 = {
+  data: AuthorDetail;
+  status: 200;
+};
+
+export type getAuthorDetailResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getAuthorDetailResponseSuccess = getAuthorDetailResponse200 & {
+  headers: Headers;
+};
+export type getAuthorDetailResponseError = getAuthorDetailResponse401 & {
+  headers: Headers;
+};
+
+export type getAuthorDetailResponse =
+  getAuthorDetailResponseSuccess | getAuthorDetailResponseError;
+
+export const getGetAuthorDetailUrl = (authorId: number) => {
+  return `/elitea_core/author/prompt_lib/${authorId}`;
+};
+
+/**
+ * NOTE(W2): internal/api/v2/eliteacore/handler.go:380-438 (Author),
+ * router.go:512 `r.Get("/author/prompt_lib/{authorID}",
+ * coreHandler.Author)` — nested inside the elitea_core route group,
+ * unlike social's OWN /author (mounted as a sibling of elitea_core; see
+ * the SOCIAL section's NOTE(W2)). This is a DIFFERENT handler/package
+ * from social's GetAuthor/ListAuthors despite the similar name — do not
+ * confuse the two. BUG-FOR-BUG: on no-matching-author or any query
+ * error the handler writes a bare `{}` with 200 instead of a 404
+ * (:392-395) — see AuthorDetail's schema description.
+ * @summary Get an author's public profile and activity counts
+ */
+export const getAuthorDetail = async (
+  authorId: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getAuthorDetailResponse> => {
+  return eliteaFetch<getAuthorDetailResponse>(getGetAuthorDetailUrl(authorId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAuthorDetailQueryKey = (authorId: number) => {
+  return [`/elitea_core/author/prompt_lib/${authorId}`] as const;
+};
+
+export const getGetAuthorDetailQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAuthorDetail>>,
+  TError = N401Response,
+>(
+  authorId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAuthorDetail>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetAuthorDetailQueryKey(authorId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAuthorDetail>>> = ({
+    signal,
+  }) => getAuthorDetail(authorId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: authorId !== null && authorId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAuthorDetail>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetAuthorDetailQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAuthorDetail>>
+>;
+export type GetAuthorDetailQueryError = N401Response;
+
+export function useGetAuthorDetail<
+  TData = Awaited<ReturnType<typeof getAuthorDetail>>,
+  TError = N401Response,
+>(
+  authorId: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAuthorDetail>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getAuthorDetail>>,
+          TError,
+          Awaited<ReturnType<typeof getAuthorDetail>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetAuthorDetail<
+  TData = Awaited<ReturnType<typeof getAuthorDetail>>,
+  TError = N401Response,
+>(
+  authorId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAuthorDetail>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getAuthorDetail>>,
+          TError,
+          Awaited<ReturnType<typeof getAuthorDetail>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetAuthorDetail<
+  TData = Awaited<ReturnType<typeof getAuthorDetail>>,
+  TError = N401Response,
+>(
+  authorId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAuthorDetail>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Get an author's public profile and activity counts
+ */
+
+export function useGetAuthorDetail<
+  TData = Awaited<ReturnType<typeof getAuthorDetail>>,
+  TError = N401Response,
+>(
+  authorId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAuthorDetail>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetAuthorDetailQueryOptions(authorId, options);
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,

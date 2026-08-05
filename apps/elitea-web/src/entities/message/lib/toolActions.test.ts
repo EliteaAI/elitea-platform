@@ -1,0 +1,84 @@
+import { describe, expect, it } from 'vitest';
+
+import { buildToolActions } from './toolActions';
+
+describe('buildToolActions', () => {
+  it('returns an empty array when there are no thinking steps or tool calls', () => {
+    expect(buildToolActions([], {}, '2026-01-01T00:00:00Z', undefined, undefined)).toEqual([]);
+  });
+
+  it('skips a thinking step whose text is empty or whitespace-only', () => {
+    const result = buildToolActions(
+      [{ text: '   ', timestamp_start: '2026-01-01T00:00:01Z' }],
+      {},
+      '2026-01-01T00:00:00Z',
+      undefined,
+      undefined,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('accepts tool_calls as either an object-map or an array, producing the same shape', () => {
+    const step = { tool_name: 'search', tool_run_id: 'r1', timestamp_start: '2026-01-01T00:00:01Z' };
+    const viaMap = buildToolActions([], { c1: step }, '2026-01-01T00:00:00Z', undefined, undefined);
+    const viaArray = buildToolActions([], [step], '2026-01-01T00:00:00Z', undefined, undefined);
+    expect(viaMap).toEqual(viaArray);
+    expect(viaMap[0]).toMatchObject({ type: 'tool', name: 'search', id: 'r1' });
+  });
+
+  it('sorts thinking steps and tool calls into one chronological list by timestamp_start', () => {
+    const result = buildToolActions(
+      [{ text: 'second', timestamp_start: '2026-01-01T00:00:05Z' }],
+      [{ tool_name: 'first-tool', tool_run_id: 'r1', timestamp_start: '2026-01-01T00:00:01Z' }],
+      '2026-01-01T00:00:00Z',
+      undefined,
+      undefined,
+    );
+    expect(result.map((a) => a.type)).toEqual(['tool', 'llm']);
+    expect(result[0]?.name).toBe('first-tool');
+    expect(result[1]?.content).toBe('second');
+  });
+
+  it('derives toolkit_name from the old "toolkit___tool" naming format when nothing else provides it', () => {
+    const result = buildToolActions(
+      [],
+      [{ tool_name: 'github___create_issue', tool_run_id: 'r1' }],
+      '2026-01-01T00:00:00Z',
+      undefined,
+      undefined,
+    );
+    expect(result[0]?.toolMeta).toMatchObject({ toolkit_name: 'github' });
+  });
+
+  it('resolves toolkit_type from the participant\'s tools[] list by matching toolkit_name', () => {
+    const result = buildToolActions(
+      [],
+      [{ toolkit_name: 'jira', tool_run_id: 'r1' }],
+      '2026-01-01T00:00:00Z',
+      undefined,
+      { id: 'p1', meta: { tools: [{ name: 'jira', type: 'external' }] } },
+    );
+    expect(result[0]?.toolMeta).toMatchObject({ toolkit_type: 'external' });
+  });
+
+  it('marks isError true when the tool_call step carries an error, falling content back to the (string) error', () => {
+    const result = buildToolActions([], [{ tool_run_id: 'r1', error: 'boom' }], '2026-01-01T00:00:00Z', undefined, undefined);
+    expect(result[0]?.isError).toBe(true);
+    expect(result[0]?.content).toBe('boom');
+  });
+
+  it('falls the first step\'s created_at back to first_tool_timestamp_start, not later steps', () => {
+    const result = buildToolActions(
+      [],
+      [
+        { tool_run_id: 'r1', timestamp_start: '2026-01-01T00:00:05Z' },
+        { tool_run_id: 'r2', timestamp_start: '2026-01-01T00:00:06Z' },
+      ],
+      '2026-01-01T00:00:00Z',
+      '2026-01-01T00:00:01Z',
+      undefined,
+    );
+    expect(result[0]?.created_at).toBe('2026-01-01T00:00:01Z');
+    expect(result[1]?.created_at).toBe('2026-01-01T00:00:06Z');
+  });
+});

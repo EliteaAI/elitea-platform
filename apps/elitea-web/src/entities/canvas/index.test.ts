@@ -17,6 +17,18 @@ const PUBLIC_SURFACE = [
   'normaliseCanvas',
   'realCanvasEditors',
   'unwrapCanvasSyncPayload',
+  'useCanvasDetailsQuery',
+  'useCreateCanvasMutation',
+  'useEditCanvasMutation',
+  'useSetAttachmentStorageMutation',
+  'useUploadAttachmentsMutation',
+  'useRemoveAttachmentsMutation',
+  'useCanvasEditSocket',
+  'useCanvasSyncSocket',
+  'useCanvasErrorSocket',
+  'useCanvasDetailSocket',
+  'useCanvasContentChangeSocket',
+  'useCanvasPresenceSocket',
 ] as const;
 
 describe('entities/canvas public surface', () => {

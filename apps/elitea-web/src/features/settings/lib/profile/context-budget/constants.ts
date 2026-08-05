@@ -1,0 +1,48 @@
+/**
+ * Context-budget constants — copied from the old-app's widget slice.
+ *
+ * Source: `apps/elitea-ui/src/[fsd]/widgets/context-budget/lib/constants.js`
+ *
+ * Copied here (not imported from `widgets/`) because:
+ * - The `widgets/` directory does not exist in the new-app yet
+ * - These constants are consumed by `pages/settings/` components,
+ *   and `pages/` importing from `widgets/` would be an architectural
+ *   violation once the widget is ported
+ * - The constants are small, stable, and self-contained
+ */
+
+/** Field-name separator used in model value strings. */
+export const SEPARATOR = '$$$';
+
+/** Default context strategy configuration. */
+export const DEFAULT_CONTEXT_STRATEGY = {
+  ENABLED: true,
+  MAX_CONTEXT_TOKENS: 64000,
+  PRESERVE_RECENT_MESSAGES: 5,
+  PRESERVE_SYSTEM_MESSAGES: true,
+  ENABLE_SUMMARIZATION: true,
+  SYSTEM_MESSAGES: '',
+};
+
+/** Validation limits — used by Yup schemas. */
+export const VALIDATION_LIMITS = {
+  MAX_CONTEXT_TOKENS: {
+    MIN: 1000,
+    MAX: 10_000_000,
+  },
+  PRESERVE_RECENT_MESSAGES: {
+    MIN: 1,
+    MAX: 99,
+  },
+  MAX_TOKENS: {
+    MIN: 100,
+    MAX: 4096,
+  },
+};
+
+/** Messages used in the context-budget UI. */
+export const CONTEXT_MESSAGES = {
+  HIGH_USAGE_WARNING: 'Context usage is high. Consider configuring budget settings.',
+  DEFAULT_SUMMARY_INSTRUCTION:
+    'Generate a concise summary of the following conversation messages.',
+};

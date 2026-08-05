@@ -27,6 +27,8 @@ import {
   CHUNK_SIZE,
   buildAttachmentUploadUrl,
   createFileChunks,
+  normalizeFileExtension,
+  normalizeFileNameExtension,
   parseChunkAck,
   parseSmallFileAck,
   uploadChunk,
@@ -286,6 +288,42 @@ describe('uploadChunk — fields, progress, credentials, DEV token', () => {
   });
 });
 
+describe('normalizeFileNameExtension / normalizeFileExtension — regression', () => {
+  /**
+   * Found while porting Wave-2 unit C1 (chat model/store): the old app's
+   * useUploadWithProgress.js:154 calls normalizeFileExtension(file) BEFORE
+   * ever branching into the small-file/chunked paths — this file (its
+   * direct port) never carried that step over, so an uppercase-extension
+   * upload silently reached the server under a different filename.
+   */
+  it('lowercases only the extension, leaving the base name untouched', () => {
+    expect(normalizeFileNameExtension('photo.JPG')).toBe('photo.jpg');
+    expect(normalizeFileNameExtension('MyFile.PDF')).toBe('MyFile.pdf');
+  });
+
+  it('leaves an already-lowercase extension and a dotless name unchanged', () => {
+    expect(normalizeFileNameExtension('photo.jpg')).toBe('photo.jpg');
+    expect(normalizeFileNameExtension('README')).toBe('README');
+  });
+
+  it('treats a trailing dot with nothing after it as dotless (no rewrite)', () => {
+    expect(normalizeFileNameExtension('weird.')).toBe('weird.');
+  });
+
+  it('normalizeFileExtension returns the SAME File instance when nothing changes (no gratuitous re-wrap)', () => {
+    const file = new File(['x'], 'photo.jpg', { type: 'image/jpeg' });
+    expect(normalizeFileExtension(file)).toBe(file);
+  });
+
+  it('normalizeFileExtension rebuilds the File with a lowercased extension, preserving type/content', async () => {
+    const file = new File(['content'], 'PHOTO.JPG', { type: 'image/jpeg' });
+    const normalized = normalizeFileExtension(file);
+    expect(normalized.name).toBe('PHOTO.jpg');
+    expect(normalized.type).toBe('image/jpeg');
+    expect(await normalized.text()).toBe('content');
+  });
+});
+
 describe('uploadSmallFile — 2 fields only (no chunk fields)', () => {
   it('sends only file + overwrite_attachments', async () => {
     server.use(smallFileOk());
@@ -302,6 +340,15 @@ describe('uploadSmallFile — 2 fields only (no chunk fields)', () => {
     const result = await uploadSmallFile({ baseUrl: '/api/v2', projectId: 'p1', conversationId: 'c1', file: makeBlob(10) });
     expect(result).toEqual({ ok: false, error: { kind: 'http', status: 500 } });
   });
+
+  it('normalizes an uppercase file extension before appending, given a real File', async () => {
+    server.use(smallFileOk());
+    const appendSpy = vi.spyOn(FormData.prototype, 'append');
+    const file = new File(['x'], 'PHOTO.JPG', { type: 'image/jpeg' });
+    await uploadSmallFile({ baseUrl: '/api/v2', projectId: 'p1', conversationId: 'c1', file });
+    const appendedFile = appendSpy.mock.calls.find(([key]) => key === 'file')?.[1] as File;
+    expect(appendedFile.name).toBe('PHOTO.jpg');
+  });
 });
 
 describe('uploadFileWithProgress — small-file vs. chunked orchestration', () => {
@@ -312,6 +359,28 @@ describe('uploadFileWithProgress — small-file vs. chunked orchestration', () =
       file: makeBlob(1024), fileName: 'small.txt', fileId: 'file-1',
     });
     expect(result).toEqual({ ok: true, data: { id: 'att-2', filename: 'small.txt', size: 42 } });
+  });
+
+  it('normalizes an uppercase fileName extension on the single-shot path, even given a plain (non-File) Blob', async () => {
+    server.use(smallFileOk());
+    const appendSpy = vi.spyOn(FormData.prototype, 'append');
+    await uploadFileWithProgress({
+      baseUrl: '/api/v2', projectId: 'p1', conversationId: 'c1',
+      file: makeBlob(10), fileName: 'PHOTO.JPG', fileId: 'file-5',
+    });
+    const appendedFile = appendSpy.mock.calls.find(([key]) => key === 'file')?.[1] as File;
+    expect(appendedFile.name).toBe('PHOTO.jpg');
+  });
+
+  it('normalizes an uppercase fileName extension on the chunked path\'s file_name field', async () => {
+    server.use(chunkAckSequence(2));
+    const appendSpy = vi.spyOn(FormData.prototype, 'append');
+    await uploadFileWithProgress({
+      baseUrl: '/api/v2', projectId: 'p1', conversationId: 'c1',
+      file: makeBlob(CHUNK_SIZE + 100), fileName: 'BIG.BIN', fileId: 'file-6',
+    });
+    const fileNameValue = appendSpy.mock.calls.find(([key]) => key === 'file_name')?.[1];
+    expect(fileNameValue).toBe('BIG.bin');
   });
 
   it('uses the chunked path for a file > CHUNK_SIZE, aggregating progress and returning the final ack', async () => {

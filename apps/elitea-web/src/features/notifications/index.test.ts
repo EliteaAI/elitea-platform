@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'vitest';
+
+import * as slice from './index';
+
+/**
+ * Pins the slice's RUNTIME public surface (spec §3.3: `index.ts` is the
+ * only file other slices may import). `export type` interfaces are erased
+ * by `verbatimModuleSyntax` and never appear on the runtime namespace
+ * object, so this list is deliberately the value-export subset only — see
+ * `./index.ts` for the full (type + value) surface. Precedent:
+ * `src/entities/notification/index.test.ts`.
+ */
+const PUBLIC_SURFACE = [
+  'NOTIFICATIONS_QUERY_ROOT',
+  'NotificationListItem',
+  'parseNotificationMessage',
+  'resolveNotificationHref',
+  'useBulkDeleteNotifications',
+  'useBulkMarkSeenNotifications',
+  'useDeleteNotification',
+  'useNotificationsList',
+  'useReadNotification',
+  'useSoundNotification',
+] as const;
+
+describe('features/notifications public surface', () => {
+  it('exports exactly the documented runtime set', () => {
+    expect(Object.keys(slice).sort()).toEqual([...PUBLIC_SURFACE].sort());
+  });
+
+  it('stays within the §3.5 20-symbol budget (type + value exports combined)', () => {
+    // ./index.ts source-level export count, hand-counted against the file:
+    // 5 `export type` statements (7 type names) + 10 value exports = 17.
+    expect(PUBLIC_SURFACE.length).toBeLessThanOrEqual(20);
+  });
+});

@@ -141,6 +141,20 @@ function describeFailure(failure: HttpFailure): string {
  * state, whereas `http.ts` itself returns errors as values (§3.6) — this is
  * the one boundary in the app where a `Result` is deliberately unwrapped
  * back into a throw, and it happens ONLY here.
+ *
+ * On success, `T` is always the ENVELOPED type orval generates for every
+ * operation — `{data, status, headers}` — never the bare body.
+ * `override.fetch.includeHttpResponseReturnType` defaults to `true` in
+ * orval 8.23.0 (`orval.config.ts` does not override it), and with a custom
+ * mutator configured, orval's generated call site is a bare
+ * `return eliteaFetch<T>(url, options)` — no wrapping step of its own (see
+ * `@orval/fetch/dist/index.mjs`'s `customFetchResponseImplementation`,
+ * versus its OWN default-fetch-client body a few lines away, which builds
+ * `{data, status, headers}` itself when there is no custom mutator). So the
+ * mutator is exactly where that envelope has to be built when a custom
+ * mutator is in play — `HttpClient.request`'s `HttpResult` already carries
+ * `status`/`data`/the real `headers` (threaded through from the raw
+ * `Response` in `http.ts`'s `toResult`) for precisely this.
  */
 export async function eliteaFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   const client = requireClient();
@@ -151,11 +165,13 @@ export async function eliteaFetch<T>(url: string, options: RequestInit = {}): Pr
   // AbortSignal` (never `AbortSignal | undefined`) — an explicit `signal:
   // undefined` key is a type error, so the key is only added when there
   // really is one. Same reasoning for `headers`/`body` below.
-  const result = await client.request<T>(method, url, {
+  const result = await client.request<unknown>(method, url, {
     ...(options.signal ? { signal: options.signal } : {}),
     ...(headers !== undefined ? { headers } : {}),
     ...(body !== undefined ? { body } : {}),
   });
-  if (result.ok) return result.data;
+  if (result.ok) {
+    return { data: result.data, status: result.status, headers: result.headers } as T;
+  }
   throw new EliteaApiError(result.error);
 }

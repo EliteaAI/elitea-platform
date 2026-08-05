@@ -17,6 +17,14 @@ const PUBLIC_SURFACE = [
   'isParticipantStillActive',
   'isSkippedContainerParticipant',
   'participantDisplayName',
+  'participantSources',
+  'useParticipants',
+  'useFilteredEntityItems',
+  'useIsActiveParticipantBeingEdited',
+  'useAddParticipantMutation',
+  'useDeleteParticipantMutation',
+  'useUpdateParticipantSettingsMutation',
+  'useUpdateParticipantLlmSettingsMutation',
 ] as const;
 
 describe('entities/participant public surface', () => {

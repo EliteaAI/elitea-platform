@@ -10,6 +10,7 @@ import CssBaseline from '@mui/material/CssBaseline';
 import Dialog from '@mui/material/Dialog';
 import Drawer from '@mui/material/Drawer';
 import FormControl from '@mui/material/FormControl';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import FormHelperText from '@mui/material/FormHelperText';
 import IconButton from '@mui/material/IconButton';
 import Input from '@mui/material/Input';
@@ -33,6 +34,7 @@ import { DataGrid } from '@mui/x-data-grid';
 import { App } from '@/app/App';
 
 import { muiOverrides } from '../mui-overrides';
+import OutlinedInput from '@mui/material/OutlinedInput';
 
 /**
  * The render surface for §4.6 check 7 assertion (c).
@@ -195,6 +197,7 @@ const OVERRIDE_SURFACES: Record<string, () => React.ReactElement> = {
       <FormHelperText>form control</FormHelperText>
     </FormControl>
   ),
+  MuiFormControlLabel: () => <FormControlLabel control={<Checkbox />} label="form control label" />,
   MuiFormHelperText: () => <FormHelperText error>helper text</FormHelperText>,
   MuiIconButton: () => (
     <>
@@ -227,6 +230,7 @@ const OVERRIDE_SURFACES: Record<string, () => React.ReactElement> = {
       <MenuItem selected>selected</MenuItem>
     </MenuList>
   ),
+  MuiOutlinedInput: () => <OutlinedInput defaultValue="outlined input" />,
   MuiList: () => (
     <MenuList>
       <MenuItem>item</MenuItem>

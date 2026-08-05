@@ -13,6 +13,7 @@ export const MuiDialog: EliteaComponents['MuiDialog'] = {
       borderRadius: theme.vars.shape.radiusLg,
       border: `0.0625rem solid ${theme.vars.palette.border.lines}`,
       boxShadow: theme.vars.palette.boxShadow.default,
+      minWidth: 400,
     }),
   },
 };

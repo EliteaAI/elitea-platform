@@ -1,0 +1,219 @@
+/**
+ * indexesApi.test.ts — contract + hook coverage for `./indexesApi.ts` (unit
+ * A4a). Every test asserts against a real `eliteaFetch` call (MSW-mocked,
+ * no `vi.mock()` of application code, matching R-M1 / `configurations.test.ts`'s
+ * own convention), and hook tests use a real `QueryClient` +
+ * `useIndexesStore` singleton (reset per test).
+ */
+import type { ReactNode } from 'react';
+
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { renderHook, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { server } from '../../../../test/setup';
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+
+import { useIndexesStore } from '../model/indexesStore';
+
+import {
+  deleteIndexItem,
+  getIndexHistoryConversationDetails,
+  getIndexSchedule,
+  getIndexesList,
+  stopIndexingItem,
+  updateIndexSchedule,
+  useDeleteIndexItemMutation,
+  useIndexHistoryConversationDetailsQuery,
+  useIndexScheduleQuery,
+  useIndexesListQuery,
+  useStopIndexingItemMutation,
+  useUpdateIndexScheduleMutation,
+} from './indexesApi';
+
+const BASE = '/api/v2';
+
+function createWrapper(): { wrapper: ({ children }: { children: ReactNode }) => ReactNode } {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  function Wrapper({ children }: { children: ReactNode }): ReactNode {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  return { wrapper: Wrapper };
+}
+
+beforeEach(() => {
+  configureGeneratedClient({ baseUrl: BASE });
+  useIndexesStore.setState({ tempIndexes: [], indexPatches: {}, toolkitScheduler: {}, selectedHistoryItem: null });
+});
+
+afterEach(() => {
+  resetGeneratedClient();
+});
+
+describe('getIndexesList', () => {
+  it('GETs elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/index_meta/prompt_lib/7/tk-1`, () =>
+        HttpResponse.json([{ id: 'i1', metadata: { collection: 'idx' } }]),
+      ),
+    );
+    const result = await getIndexesList({ toolkitId: 'tk-1', projectId: 7 });
+    expect(result).toEqual([{ id: 'i1', metadata: { collection: 'idx' } }]);
+  });
+});
+
+describe('useIndexesListQuery', () => {
+  it('stays disabled until toolkitId and projectId are both defined', () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useIndexesListQuery({ toolkitId: undefined, projectId: 7 }), { wrapper });
+    expect(result.current.fetchStatus).toBe('idle');
+  });
+
+  it('fetches once both ids are present', async () => {
+    server.use(http.get(`${BASE}/elitea_core/index_meta/prompt_lib/7/tk-1`, () => HttpResponse.json([])));
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useIndexesListQuery({ toolkitId: 'tk-1', projectId: 7 }), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual([]);
+  });
+});
+
+describe('deleteIndexItem', () => {
+  it('DELETEs with is_hidden:true in the body', async () => {
+    let capturedBody: unknown;
+    server.use(
+      http.delete(`${BASE}/elitea_core/index_meta/prompt_lib/7/tk-1/idx-1`, async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    await deleteIndexItem({ projectId: 7, toolkitId: 'tk-1', indexId: 'idx-1', indexName: 'my-index' });
+    expect(capturedBody).toEqual({ is_hidden: true });
+  });
+});
+
+describe('useDeleteIndexItemMutation', () => {
+  it('on success, removes the deleted index name from the schedule store', async () => {
+    useIndexesStore.getState().setToolkitScheduler({ 'my-index': { enabled: true }, other: { enabled: false } });
+    server.use(http.delete(`${BASE}/elitea_core/index_meta/prompt_lib/7/tk-1/idx-1`, () => HttpResponse.json({})));
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useDeleteIndexItemMutation(), { wrapper });
+    result.current.mutate({ projectId: 7, toolkitId: 'tk-1', indexId: 'idx-1', indexName: 'my-index' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(useIndexesStore.getState().toolkitScheduler).toEqual({ other: { enabled: false } });
+  });
+});
+
+describe('stopIndexingItem / useStopIndexingItemMutation', () => {
+  it('DELETEs elitea_core/index_cancel/.../{indexName}/{taskId}', async () => {
+    server.use(http.delete(`${BASE}/elitea_core/index_cancel/prompt_lib/7/tk-1/my-index/task-9`, () => HttpResponse.json({})));
+    await expect(
+      stopIndexingItem({ projectId: 7, toolkitId: 'tk-1', indexName: 'my-index', taskId: 'task-9' }),
+    ).resolves.toEqual({});
+  });
+
+  it('mutation resolves via the hook', async () => {
+    server.use(http.delete(`${BASE}/elitea_core/index_cancel/prompt_lib/7/tk-1/my-index/task-9`, () => HttpResponse.json({})));
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useStopIndexingItemMutation(), { wrapper });
+    result.current.mutate({ projectId: 7, toolkitId: 'tk-1', indexName: 'my-index', taskId: 'task-9' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+});
+
+describe('updateIndexSchedule', () => {
+  it('PATCHes with cron/enabled/credentials + timezone in the body, indexName kept out of the body', async () => {
+    let capturedBody: unknown;
+    server.use(
+      http.patch(`${BASE}/elitea_core/index_meta/prompt_lib/7/tk-1/my-index`, async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    await updateIndexSchedule({
+      projectId: 7,
+      toolkitId: 'tk-1',
+      indexName: 'my-index',
+      timezone: 'UTC',
+      cron: '0 0 * * 6',
+      enabled: true,
+      credentials: 'cred-1',
+    });
+    expect(capturedBody).toEqual({ timezone: 'UTC', cron: '0 0 * * 6', enabled: true, credentials: 'cred-1' });
+  });
+});
+
+describe('useUpdateIndexScheduleMutation', () => {
+  it('invalidates the index-schedule query scope for the toolkit on success', async () => {
+    server.use(http.patch(`${BASE}/elitea_core/index_meta/prompt_lib/7/tk-1/my-index`, () => HttpResponse.json({})));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    function Wrapper({ children }: { children: ReactNode }) {
+      return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    }
+    const { result } = renderHook(() => useUpdateIndexScheduleMutation(), { wrapper: Wrapper });
+    result.current.mutate({ projectId: 7, toolkitId: 'tk-1', indexName: 'my-index', timezone: 'UTC', enabled: true });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(client.getQueryState(['toolkits', 'indexSchedule', 'tk-1'])?.isInvalidated ?? true).toBeTruthy();
+  });
+});
+
+describe('getIndexSchedule', () => {
+  it('GETs elitea_core/tool/prompt_lib/{projectId}/{toolkitId}', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/tool/prompt_lib/7/tk-1`, () =>
+        HttpResponse.json({ meta: { indexes_meta: { 'my-index': { enabled: true } } } }),
+      ),
+    );
+    const result = await getIndexSchedule({ projectId: 7, toolkitId: 'tk-1' });
+    expect(result.meta?.indexes_meta).toEqual({ 'my-index': { enabled: true } });
+  });
+});
+
+describe('useIndexScheduleQuery', () => {
+  it('on success, mirrors meta.indexes_meta into the store toolkitScheduler', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/tool/prompt_lib/7/tk-1`, () =>
+        HttpResponse.json({ meta: { indexes_meta: { 'my-index': { enabled: true, cron: '0 0 * * 6' } } } }),
+      ),
+    );
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useIndexScheduleQuery({ projectId: 7, toolkitId: 'tk-1' }), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(useIndexesStore.getState().toolkitScheduler).toEqual({ 'my-index': { enabled: true, cron: '0 0 * * 6' } });
+  });
+
+  it('defaults to an empty scheduler map when meta.indexes_meta is absent', async () => {
+    server.use(http.get(`${BASE}/elitea_core/tool/prompt_lib/7/tk-1`, () => HttpResponse.json({})));
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useIndexScheduleQuery({ projectId: 7, toolkitId: 'tk-1' }), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(useIndexesStore.getState().toolkitScheduler).toEqual({});
+  });
+});
+
+describe('getIndexHistoryConversationDetails / useIndexHistoryConversationDetailsQuery', () => {
+  it('GETs elitea_core/conversation/prompt_lib/{projectId}/{conversationId}', async () => {
+    server.use(http.get(`${BASE}/elitea_core/conversation/prompt_lib/7/conv-1`, () => HttpResponse.json({ id: 'conv-1' })));
+    const result = await getIndexHistoryConversationDetails({ projectId: 7, conversationId: 'conv-1' });
+    expect(result).toEqual({ id: 'conv-1' });
+  });
+
+  it('hook stays disabled until conversationId is defined', () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(
+      () => useIndexHistoryConversationDetailsQuery({ projectId: 7, conversationId: undefined }),
+      { wrapper },
+    );
+    expect(result.current.fetchStatus).toBe('idle');
+  });
+
+  it('hook can be explicitly disabled even with both ids present', () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(
+      () => useIndexHistoryConversationDetailsQuery({ projectId: 7, conversationId: 'conv-1' }, { enabled: false }),
+      { wrapper },
+    );
+    expect(result.current.fetchStatus).toBe('idle');
+  });
+});

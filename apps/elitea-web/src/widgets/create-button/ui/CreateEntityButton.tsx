@@ -1,0 +1,264 @@
+import type { ReactNode } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+
+import { useNavigate, useRouterState } from '@tanstack/react-router';
+
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import Box from '@mui/material/Box';
+import ClickAwayListener from '@mui/material/ClickAwayListener';
+import Paper from '@mui/material/Paper';
+import Popper from '@mui/material/Popper';
+import type { Theme } from '@mui/material/styles';
+import Typography from '@mui/material/Typography';
+
+import { BaseBtn } from '@/shared/ui/BaseBtn';
+import { PlusIcon } from '@/shared/ui/icons/plus-icon';
+import { t } from '@/shared/i18n';
+import { getConfig } from '@/shared/config';
+
+import { createEntityOptions, type CreateEntityKind, type CreateEntityOption } from '../lib/constants';
+import { currentEntityFromPathname, defaultEntityKind, hasCreatePermission, resolveCreateCommand } from '../lib/command';
+
+export interface CreateEntityButtonProps {
+  /** SHELL-010-style permission gating, computed by the caller (Sidebar) from `usePermissionList`. */
+  permissions: ReadonlySet<string>;
+  /** Sidebar-collapsed layout mode — icon-only button, no dropdown label. */
+  collapsed?: boolean;
+  /** The project the "own LLMs" config gate (§7.1 C7 `allow_project_own_llms`) compares against `vite_public_project_id`. */
+  projectId?: string | undefined;
+}
+
+/** `allow_project_own_llms` reads `unknown` (schema.ts) — old app compares with a strict `=== false`, never coerced. */
+function ownLlmsDisabled(): boolean {
+  const result = getConfig();
+  if (result.status !== 'ok') return false;
+  return result.config.allow_project_own_llms === false;
+}
+
+function isOwnLlmsBlocked(activeKind: CreateEntityKind, projectId: string | undefined): boolean {
+  if (activeKind !== 'configuration' || projectId === undefined) return false;
+  const configResult = getConfig();
+  const publicProjectId = configResult.status === 'ok' ? configResult.config.vite_public_project_id : undefined;
+  return ownLlmsDisabled() && projectId !== publicProjectId;
+}
+
+interface TriggerProps {
+  isSimple: boolean;
+  collapsed: boolean;
+  disabled: boolean;
+  currentLabel: string | undefined;
+  menuOpen: boolean;
+  onMainClick: () => void;
+  onToggleMenu: () => void;
+}
+
+/** The main button — a plain icon+label trigger on simple/collapsed routes, or a split button with a dropdown chevron otherwise. */
+function CreateEntityTrigger({
+  isSimple,
+  collapsed,
+  disabled,
+  currentLabel,
+  menuOpen,
+  onMainClick,
+  onToggleMenu,
+}: TriggerProps): ReactNode {
+  if (isSimple) {
+    return (
+      <BaseBtn
+        variant="special"
+        disabled={disabled}
+        startIcon={<PlusIcon />}
+        onClick={onMainClick}
+        data-testid="sidebar-create-button"
+        sx={{ width: '100%', ...(collapsed ? { minWidth: '1.75rem', width: '1.75rem' } : {}) }}
+      >
+        {!collapsed ? t('widgets.createButton.label', 'Create') : null}
+      </BaseBtn>
+    );
+  }
+
+  return (
+    <>
+      <BaseBtn
+        variant="special"
+        disabled={disabled}
+        startIcon={<PlusIcon />}
+        onClick={onMainClick}
+        data-testid="sidebar-create-button"
+        // [S1-D precedent] Grouped split-button corners are square, not the
+        // old app's asymmetric merged-pill radius — `radiusPill` (uniform)
+        // cannot express "square at the interior join, rounded only at the
+        // outer end" without a per-position asymmetric token that does not
+        // exist yet. Same documented, deliberate deviation as
+        // `TabButtonItem`/`TabGroupButton` (decision record, S1-D).
+        sx={{ flex: '1 1 auto' }}
+      >
+        {currentLabel}
+      </BaseBtn>
+      <BaseBtn
+        variant="special"
+        disabled={disabled}
+        onClick={onToggleMenu}
+        aria-label={t('widgets.createButton.chooseEntity', 'Choose what to create')}
+        sx={{ padding: '0 0.5rem', minWidth: 'unset' }}
+      >
+        <ExpandMoreIcon style={{ transform: menuOpen ? 'rotate(180deg)' : 'none' }} />
+      </BaseBtn>
+    </>
+  );
+}
+
+interface DropdownProps {
+  open: boolean;
+  anchorEl: HTMLElement | null;
+  collapsed: boolean;
+  options: readonly CreateEntityOption[];
+  activeKind: CreateEntityKind;
+  permissions: ReadonlySet<string>;
+  onSelect: (kind: CreateEntityKind) => void;
+}
+
+function CreateEntityDropdown({ open, anchorEl, collapsed, options, activeKind, permissions, onSelect }: DropdownProps): ReactNode {
+  return (
+    <Popper
+      open={open}
+      anchorEl={anchorEl}
+      placement={collapsed ? 'right-start' : 'bottom-start'}
+      sx={{ zIndex: 1300 }}
+    >
+      <Paper
+        sx={(theme: Theme) => ({
+          background: theme.vars.palette.background.secondary,
+          borderRadius: theme.vars.shape.radiusMd,
+          border: `0.0625rem solid ${theme.vars.palette.border.lines}`,
+          padding: '0.5rem 0',
+          minWidth: '11.5rem',
+          boxShadow: theme.vars.palette.boxShadow.default,
+        })}
+      >
+        {options.map((option) => {
+          const optionDisabled = !hasCreatePermission(option.kind, permissions);
+          return (
+            <Box
+              key={option.kind}
+              role="menuitem"
+              tabIndex={optionDisabled ? -1 : 0}
+              aria-disabled={optionDisabled}
+              onClick={() => onSelect(option.kind)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onSelect(option.kind);
+                }
+              }}
+              sx={(theme: Theme) => ({
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: theme.spacing(1, 2),
+                cursor: optionDisabled ? 'not-allowed' : 'pointer',
+                color: optionDisabled ? theme.vars.palette.text.default : theme.vars.palette.text.secondary,
+                ...(activeKind === option.kind && !optionDisabled
+                  ? { backgroundColor: theme.vars.palette.split.pressed }
+                  : {}),
+              })}
+            >
+              <Typography variant="labelSmall">{option.label}</Typography>
+            </Box>
+          );
+        })}
+      </Paper>
+    </Popper>
+  );
+}
+
+/**
+ * SHELL-013..026 — the sidebar's global "Create" button: a 13-entity
+ * dropdown (or, on simple/collapsed routes, a plain icon button) that
+ * navigates to the right create surface and permission-gates each option.
+ *
+ * Ported from `apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/
+ * CreateEntityButton.jsx`; the route-detection/permission/navigation
+ * decisions live in `../lib/command.ts` (pure, independently tested), and
+ * the trigger/dropdown rendering is split into `CreateEntityTrigger`/
+ * `CreateEntityDropdown` above (§3.5 complexity budget) — this component's
+ * own job is just wiring state to those two. Reduced-scope notes are in
+ * `command.ts`'s header and in `../index.ts`.
+ */
+export function CreateEntityButton({ permissions, collapsed = false, projectId }: CreateEntityButtonProps): ReactNode {
+  const navigate = useNavigate();
+  const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
+  const [selectedKind, setSelectedKind] = useState<CreateEntityKind>(() => defaultEntityKind(pathname));
+  const [menuOpen, setMenuOpen] = useState(false);
+  const anchorRef = useRef<HTMLElement | null>(null);
+
+  const options = useMemo(() => createEntityOptions(), []);
+  const currentLabel = useMemo(() => {
+    const kind = currentEntityFromPathname(pathname);
+    return kind ? options.find((option) => option.kind === kind)?.label : undefined;
+  }, [pathname, options]);
+
+  const isSimple = collapsed || currentLabel === undefined;
+  const activeKind = currentEntityFromPathname(pathname) ?? selectedKind;
+  const isSystemPromptsPage = pathname.includes('/settings/prompts');
+
+  const runCommand = useCallback(
+    (kind: CreateEntityKind) => {
+      const target = resolveCreateCommand(kind, pathname);
+      void navigate({ to: target.to, search: target.search, replace: target.replace });
+    },
+    [navigate, pathname],
+  );
+
+  const handleMainClick = useCallback(() => {
+    runCommand(activeKind);
+  }, [runCommand, activeKind]);
+
+  const handleOptionClick = useCallback(
+    (kind: CreateEntityKind) => {
+      if (!hasCreatePermission(kind, permissions)) return;
+      setSelectedKind(kind);
+      setMenuOpen(false);
+      runCommand(kind);
+    },
+    [permissions, runCommand],
+  );
+
+  const toggleMenu = useCallback(() => setMenuOpen((open) => !open), []);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+
+  const disabled =
+    !hasCreatePermission(activeKind, permissions) || isSystemPromptsPage || isOwnLlmsBlocked(activeKind, projectId);
+
+  return (
+    <ClickAwayListener onClickAway={closeMenu}>
+      <Box
+        component="span"
+        ref={anchorRef}
+        sx={{ position: 'relative', display: 'flex', justifyContent: 'center', width: '100%', boxSizing: 'border-box' }}
+      >
+        <Box sx={{ display: 'flex', width: '100%', gap: '0.0625rem' }}>
+          <CreateEntityTrigger
+            isSimple={isSimple}
+            collapsed={collapsed}
+            disabled={disabled}
+            currentLabel={currentLabel}
+            menuOpen={menuOpen}
+            onMainClick={handleMainClick}
+            onToggleMenu={toggleMenu}
+          />
+        </Box>
+
+        <CreateEntityDropdown
+          open={menuOpen}
+          anchorEl={anchorRef.current}
+          collapsed={collapsed}
+          options={options}
+          activeKind={activeKind}
+          permissions={permissions}
+          onSelect={handleOptionClick}
+        />
+      </Box>
+    </ClickAwayListener>
+  );
+}

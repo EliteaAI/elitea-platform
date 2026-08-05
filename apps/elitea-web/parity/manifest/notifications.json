@@ -52,7 +52,7 @@
         "testId": "api > notifications.js > notificationList"
       },
       "unit": "A11",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/notifications/index.ts",
         "min": 88
@@ -80,7 +80,7 @@
         "testId": "api > notifications.js > notificationRead"
       },
       "unit": "A11",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/notifications/index.ts",
         "min": 88
@@ -108,7 +108,7 @@
         "testId": "api > notifications.js > notificationDelete"
       },
       "unit": "A11",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/notifications/index.ts",
         "min": 88
@@ -136,7 +136,7 @@
         "testId": "api > notifications.js > notificationBulkDelete"
       },
       "unit": "A11",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/notifications/index.ts",
         "min": 88
@@ -164,7 +164,7 @@
         "testId": "api > notifications.js > notificationBulkMarkSeen"
       },
       "unit": "A11",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/notifications/index.ts",
         "min": 88
@@ -222,7 +222,7 @@
         "testId": "action > notifications > notificationBulkDelete"
       },
       "unit": "A11",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/notifications/index.ts",
         "min": 88
@@ -251,7 +251,7 @@
         "testId": "action > notifications > notificationBulkMarkSeen"
       },
       "unit": "A11",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/notifications/index.ts",
         "min": 88

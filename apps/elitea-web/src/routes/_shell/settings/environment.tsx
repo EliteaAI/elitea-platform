@@ -1,11 +1,42 @@
-/** ROUTE-054 `/settings/environment` -> `EnvironmentSettings`. */
+/** ROUTE-054 `/settings/environment` — environment variable settings. */
 import { createFileRoute } from '@tanstack/react-router';
 
-import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
+import Box from '@mui/material/Box';
+import Paper from '@mui/material/Paper';
+import type { SxProps, Theme } from '@mui/material/styles';
+
+import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
+import { Environment } from '@/pages/settings/Environment';
+import { t } from '@/shared/i18n';
 
 export const Route = createFileRoute('/_shell/settings/environment')({
-  pendingComponent: RoutePending,
-  errorComponent: RouteError,
-  component: () => <RouteShell routeId="settings.environment" fallback="Environment" />,
+  component: EnvironmentSettingsPage,
 });
+
+function EnvironmentSettingsPage() {
+  return (
+    <Paper elevation={0} sx={styles.root}>
+      <DrawerPageHeader
+        title={t('routes.settings.environment.title', 'Environment')}
+        showBorder
+      />
+      <Box sx={styles.content}>
+        <Environment />
+      </Box>
+    </Paper>
+  );
+}
+
+const styles: Record<string, SxProps<Theme>> = {
+  root: {
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+    overflow: 'hidden',
+    borderRadius: 'var(--el-shape-radiusSm, 0px)',
+  },
+  content: {
+    flex: 1,
+    minHeight: 0,
+  },
+};

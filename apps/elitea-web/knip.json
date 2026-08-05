@@ -32,7 +32,244 @@
     // dead code — the exact same "public surface awaiting Wave 2" situation
     // `src/shared/api/generated/**` above already has an entry for, applied
     // the same way. Not a signal to prune anything.
-    "src/shared/ui/**/index.ts"
+    "src/shared/ui/**/index.ts",
+    // Same "public surface awaiting Wave 2 consumption" situation, one
+    // layer up: Wave-2 batch 1's own features/widgets/pages domain barrels
+    // (analytics, apps, credentials, mcps, notifications, user-public,
+    // app-shell, create-button, sidebar) aren't imported by anything yet
+    // because the route-wiring pass (pointing each src/routes/**
+    // placeholder RouteShell at its real page) hasn't landed. Same
+    // mechanism as the two entries above: marking each domain's index.ts
+    // an entry point makes everything it re-exports (including things it
+    // re-exports FROM a model/lib file, e.g. widgets/app-shell/index.ts ->
+    // model/navBlocker.store.ts's createNavBlockerStore) reachable too.
+    "src/features/**/index.ts",
+    "src/pages/**/index.ts",
+    "src/widgets/**/index.ts",
+    // Same reachability gap one level deeper: these R-S2 lazy-singleton
+    // store factories (createNavBlockerStore/createSelectedProjectStore/
+    // createSidebarCollapsedStore) are exported for the same reason
+    // shared/api/generated/mutator.ts's configureGeneratedClient/
+    // resetGeneratedClient are -- so a future test can construct an
+    // isolated instance -- but aren't re-exported through their widget's
+    // index.ts (only the resolveStore()-backed hook is), so the **/index.ts
+    // entries above don't reach them.
+    "src/widgets/**/model/*.store.ts",
+    // Same "exported for a Wave-2 consumer that hasn't landed yet" gap on
+    // individual types (component prop/state shapes, a route-key alias)
+    // that aren't re-exported through their slice's index.ts either.
+    "src/widgets/create-button/lib/routes.ts",
+    "src/entities/message/lib/wire.ts",
+    "src/features/credentials/model/useCredentialValidation.ts",
+    "src/features/credentials/ui/CredentialsSelect.tsx",
+    // Same "exported for a Wave-2 consumer that hasn't landed yet" gap, sub-unit
+    // A1d's ("Generate-agent-modal + AgentEditor composition") own contribution.
+    // `AgentEditor.tsx`'s `AgentEditorShellProps`/`AgentConfigurationFormSlotProps`/
+    // `EditorBodyAgentState` are the injected-slot/derived-state contracts a future
+    // page-level composition (and Wave-2 unit C6, which needs `AgentEditor` itself —
+    // already reachable via `features/agents/index.ts`) will construct object
+    // literals against; `useAgentCreation.ts`/`useAgentEditorUrlSync.ts`/
+    // `useEditAgent.ts`'s result/param types are these hooks' own public contracts
+    // for the same not-yet-landed chat-domain caller (see each file's own doc
+    // comment for the real, disclosed reason those callers don't exist in this
+    // worktree yet). `GenerateAgentReviewForm.tsx`'s `SuggestionSelection`/
+    // `GenerateAgentDraftSelection` and `useAgentDraftApproval.ts`'s
+    // `DraftSelection` are real types used structurally by their own file's
+    // exported function signature; no external caller constructs one directly yet.
+    "src/features/agents/ui/AgentEditor.tsx",
+    "src/features/agents/model/useAgentCreation.ts",
+    "src/features/agents/model/useAgentEditorUrlSync.ts",
+    "src/features/agents/model/useEditAgent.ts",
+    "src/features/agents/ui/generate-agent-modal/GenerateAgentReviewForm.tsx",
+    "src/features/agents/ui/generate-agent-modal/useAgentDraftApproval.ts",
+    // Same "exported for a Wave-2 consumer that hasn't landed yet" gap,
+    // sub-unit A1b's ("Agent core hooks, helpers & API") own contribution.
+    // `useApplicationChat` (split across `applicationChat.types.ts`/
+    // `applicationChat.helpers.ts`/`useApplicationChatConversation.hooks.ts`/
+    // `useApplicationChatMessaging.hooks.ts`/
+    // `useApplicationChatStreaming.hooks.ts`/
+    // `useApplicationChatSockets.hooks.ts` purely to stay under this
+    // codebase's `complexity`/`max-lines` gates — see that hook's own
+    // module doc comment) has no consumer in this worktree yet: the real
+    // backend-gap adapter it requires (`ChatConversationAdapter` — no
+    // generated conversation-domain REST endpoint exists at all, see that
+    // same doc comment) and the chat-page/widget layer that would mount it
+    // are both out of this sub-unit's scope. `generateAgentDraft.ts`'s
+    // `UseGenerateAgentDraftMutationArgs` and `useDisassociateToolkit.
+    // hooks.ts`'s/`useInstructionsMention.hooks.ts`'s/
+    // `useInstructionsSkillMention.hooks.ts`'s own exported parameter/result
+    // contract types are real types used structurally by their own file's
+    // exported function signature (those FILES already have a real
+    // consumer — a sibling A1 sub-unit's already-landed UI — just not one
+    // that names these specific types directly yet).
+    "src/features/agents/lib/hooks/useApplicationChat.hooks.ts",
+    "src/features/agents/lib/hooks/applicationChat.types.ts",
+    "src/features/agents/lib/hooks/applicationChat.helpers.ts",
+    "src/features/agents/lib/hooks/useApplicationChatConversation.hooks.ts",
+    "src/features/agents/lib/hooks/useApplicationChatMessaging.hooks.ts",
+    "src/features/agents/lib/hooks/useApplicationChatStreaming.hooks.ts",
+    "src/features/agents/lib/hooks/useApplicationChatSockets.hooks.ts",
+    "src/features/agents/api/generateAgentDraft.ts",
+    "src/features/agents/lib/hooks/useDisassociateToolkit.hooks.ts",
+    "src/features/agents/lib/hooks/useInstructionsMention.hooks.ts",
+    "src/features/agents/lib/hooks/useInstructionsSkillMention.hooks.ts",
+    // Wave-2 batch 2 (agents/pipelines/toolkits) fix-round additions below.
+    //
+    // `entities/toolkit/model/toolForm.ts`'s `ValidateToolEventReason` is a
+    // real, deliberately-kept export, not dead code: `features/toolkits/ui/
+    // toolkits-tab-bar/ToolkitsTabBar.tsx`'s own module doc comment (point 5,
+    // "DISCLOSED REDESIGNS") explicitly names
+    // `ValidateToolEventReason.saveNewVersion` as the baseline's
+    // concurrent-save-new-version guard, and says in so many words that this
+    // flow "belongs to a separate 'Save As Version' button/feature not in
+    // this sub-unit's owned scope... and has no toolkit-domain equivalent
+    // landed to coordinate with here" — the same class of not-yet-landed
+    // sibling `features/agents/ui/SaveNewVersionButton.tsx` already fills on
+    // the agent side. `entities/toolkit/index.ts`'s own curated barrel is
+    // already at 19/20 of its §3.5 budget (one slot of headroom), so this
+    // isn't re-exported there yet either — same "public surface awaiting a
+    // Wave-2 consumer" situation as everything else in this list.
+    "src/entities/toolkit/model/toolForm.ts",
+    // `features/agents/ui/ConfigurationTab.tsx`'s `AgentTestPaneSettings`/
+    // `AgentTestPaneRenderProps`/`AgentRunHistoryRenderProps` are the
+    // `renderTestPane`/`renderRunHistory` slot-prop parameter types this
+    // component's own module doc comment (constraint 1) explains in detail:
+    // the real right-pane content (`ChatBox`/`RunHistoryContainer`/
+    // `ContextBudgetUI`) lives in `features/chat`/`entities/run-history`/
+    // `widgets/context-budget`, none of which exist in this worktree yet
+    // ("Wave-2 unit C6 (a much later chat unit)", the doc comment's own
+    // words) — `no-sideways-features`/`no-upward-from-features` forbid this
+    // slice from reaching them even once they land. A future page-level
+    // composition supplies `renderTestPane`/`renderRunHistory` as inline
+    // arrow functions checked structurally against these parameter types,
+    // with no need to import them by name — same reason `AgentEditorDeps`/
+    // `AgentEditorShellProps` (this file's own sibling `AgentEditor.tsx`,
+    // already listed above) needed this treatment.
+    "src/features/agents/ui/ConfigurationTab.tsx",
+    // `features/pipelines/model/useEditPipeline.ts`'s `EditPipelineParticipant`
+    // and `features/pipelines/model/usePipelineCreation.ts`'s
+    // `CreatedPipelineResult`/`CreatedPipelineParticipant` are these two
+    // hooks' own params/result types — `features/pipelines/index.ts`'s own
+    // doc comment (sub-unit A2l's contribution) explicitly says both hooks'
+    // "own params/result types stay off this curated list, same call
+    // `features/agents/index.ts` already made for `AgentEditor`'s
+    // identically-shaped `AgentEditorDeps`/`AgentEditorShellProps`... every
+    // one of them is a plain object literal a caller builds inline, checked
+    // structurally... with no explicit import required." `useEditPipeline`/
+    // `usePipelineCreation` themselves ARE exported from `pipelines/
+    // index.ts` ("Wave-2 unit C6 needs all three importable cross-feature —
+    // their only real consumer today is `pages/NewChat/NewChat.jsx`"); only
+    // their nested parameter/result shapes are left off the curated list.
+    "src/features/pipelines/model/useEditPipeline.ts",
+    "src/features/pipelines/model/usePipelineCreation.ts",
+    // `features/pipelines/ui/ConfigurationTab.tsx`'s
+    // `ConfigurationTabRunHistoryRenderProps`/`ConfigurationTabSlots` are the
+    // pipelines-domain twin of the `features/agents/ui/ConfigurationTab.tsx`
+    // entry above — that file's own doc comment on `renderRunHistory`
+    // literally says it "mirrors `features/agents/ui/ConfigurationTab.tsx`'s
+    // own `renderRunHistory` (same real dependency gap: no `entities/
+    // run-history` exists in this worktree)". Same slot-parameter-type
+    // situation, same not-yet-landed consumer.
+    "src/features/pipelines/ui/ConfigurationTab.tsx",
+    // `features/toolkits/ui/ConfigurationTab.tsx`'s
+    // `ToolkitTestPaneRenderProps`/`ToolkitRunHistoryRenderProps`/
+    // `ToolkitDetailState`/`ToolkitSaveHandlers` are the toolkits-domain
+    // third of this same family — that file's own doc comment says its
+    // slot-based redesign matches "the precedent `features/agents/ui/
+    // ConfigurationTab.tsx` already established for the IDENTICAL
+    // architectural problem", naming both `TestTools` (a sibling A4
+    // sub-unit's own not-yet-owned-here file) and `RunHistoryContainer`
+    // (`entities/run-history`, which "does not exist anywhere in this
+    // worktree") as the real, disclosed gaps `renderTestPane`/
+    // `renderRunHistory` defer to. `ToolkitDetailState`/`ToolkitSaveHandlers`
+    // are the same §3.5 12-prop-budget "group into one option object" move
+    // as `ConfigurationTabProps`'s other groupings, not slot types, but have
+    // the identical "no current caller needs the type by name, only the
+    // grouped prop" shape.
+    "src/features/toolkits/ui/ConfigurationTab.tsx",
+    // Unit C1 ("entities/conversation extension"): same "public surface
+    // awaiting a Wave-2 consumer" gap as everything else in this list.
+    // `entities/conversation/index.ts`'s own §3.5 20-export budget left no
+    // room to re-export `useConversationLifecycle.ts`'s
+    // `NewConversationInput`/`EditConversationInput`/`ConversationIdentity`,
+    // `useUploadAttachments.ts`'s `UploadAttachmentsParams`/
+    // `UploadedAttachment`/`UploadAttachmentsOutcome`, or
+    // `chatSessionStore.ts`'s `StreamingInfoByProject` (see that barrel's
+    // own doc comment for the full trade-off) — each is a real, exported
+    // parameter/result/state-shape type with no current caller outside its
+    // own file (the C2-C6 chat page/feature units that will construct
+    // these object literals haven't landed in this worktree yet).
+    "src/entities/conversation/lib/hooks/useConversationLifecycle.ts",
+    "src/entities/conversation/lib/hooks/useUploadAttachments.ts",
+    "src/entities/conversation/model/chatSessionStore.ts",
+    // Wave-2 sub-unit C4 (chat-messages): same "public surface awaiting consumer"
+    // gap. `useEnvironmentSettingByKey` and its result/param types
+    // (`UseEnvironmentSettingByKeyResult`, `useErrorToastDuration`) are exported
+    // for a future chat-domain caller (not yet wired) to consume;
+    // `SubAgentLiveness` from `subAgentGrouping.ts` is the type a Wave-2 message
+    // grouping consumer will construct against. Both files follow the established
+    // pattern — re-exports left off the curated barrel until their consumer lands.
+    "src/shared/lib/hooks/useEnvironmentSettingByKey.ts",
+    "src/features/chat-messages/lib/subAgentGrouping.ts",
+    // `ARTIFACT_PREVIEW_SIZE_LIMIT_BYTES` from `artifactParsers.ts` — exported
+    // for the Wave-2 artifact consumer that constructs preview configurations;
+    // the artifacts feature (Wave-2 unit) is awaiting its page-level wiring.
+    "src/features/artifacts/lib/artifactParsers.ts",
+    // Legacy entity API exports from the old app port — these files are
+    // imported by other code (reachable) but their individual exports are
+    // not consumed by any Wave-2 consumer yet. Adding to entry marks each
+    // export as reachable (knip's entry array makes all exports of listed
+    // files reachable, unlike ignoreFiles which only suppresses "unused
+    // files" reports). REMOVE these entries once real consumers replace the
+    // old API calls or the files are deleted.
+    "src/entities/project/api/projectContextApi.ts",
+    "src/entities/secret/api/secretApi.ts",
+    "src/entities/token/model/constants.ts",
+    // Legacy chat-participants exports from the old app port — reachable
+    // via barrel re-exports but individual function/type exports are not
+    // consumed by any Wave-2 consumer yet. Same rationale as entities above.
+    "src/features/chat-participants/api/useSelectedProjectId.ts",
+    "src/features/chat-participants/hooks/chat/useDeleteParticipant.ts",
+    "src/features/chat-participants/hooks/chat/useLocalActiveParticipant.ts",
+    "src/features/chat-participants/hooks/chat/useRemoteParticipantUpdate.ts",
+    "src/features/chat-participants/lib/context/ParticipantDetailsContext.tsx",
+    "src/features/chat-participants/lib/hooks/useActiveParticipantDetails.ts",
+    "src/features/chat-participants/lib/helpers.ts",
+    "src/features/chat-participants/model/constants.ts",
+    "src/features/chat-participants/model/types.ts",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantItem.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantItemRow.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantSection.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantWarning.tsx",
+    "src/features/chat-participants/ui/ParticipantActions/DeleteParticipantButton.tsx",
+    "src/features/chat-participants/ui/ParticipantActions/EditParticipantButton.tsx",
+    "src/features/chat-participants/ui/ParticipantActions/ParticipantActions.tsx",
+    "src/features/chat-participants/ui/ParticipantsWrapper.tsx",
+    // Legacy shared API exports — functions exported from the old app's
+    // configurations API and sound notification hooks, not consumed by
+    // Wave-2 consumers yet.
+    "src/shared/api/configurationsApi.ts",
+    "src/shared/lib/hooks/useSoundNotification.ts",
+    // C4 (chat-messages) adversarial-verify fix round: option-object prop-group
+    // types (`ApplicationAnswerStatus`/`ApplicationAnswerActionHandlers`/
+    // `ApplicationAnswerTts`/`ApplicationAnswerContinuation`/`ApplicationAnswerHitl`
+    // on `ApplicationAnswer.tsx`, `ChatMessageListActions`/`ChatMessageListTts`/
+    // `ChatMessageListContinuation`/`ChatMessageListPagination` on
+    // `ChatMessageList.tsx`) are real, used-structurally types — callers pass a
+    // matching object literal without importing the type by name, same pattern
+    // as `AgentEditorShellProps`/`ConfigurationTabRunHistoryRenderProps` above.
+    // `ChatContinue.tsx`'s `McpAuthMetadataLocal`/`ChatContinueAuthModalSlotProps`
+    // are its local auth-metadata shape and the `renderAuthModal` slot-prop type
+    // a future page-level composition root fills with the real `McpAuthModal`
+    // (no-sideways-features forbids importing it directly from `features/mcps`
+    // here). `MessageAttachmentList.tsx`'s `NormalAttachmentArtifactData` is the
+    // artifact-storage attachment shape its own exported helpers are typed
+    // against. Wave-2 unit C4 itself is still awaiting full route-level wiring
+    // (see the `src/features/chat-messages/**` entry in `ignoreFiles` below).
+    "src/features/chat-messages/ui/chat-box/ApplicationAnswer.tsx",
+    "src/features/chat-messages/ui/chat-box/ChatMessageList.tsx",
+    "src/features/chat-messages/ui/chat-continue/ChatContinue.tsx",
+    "src/features/chat-messages/ui/attachments/MessageAttachmentList.tsx"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [
@@ -45,7 +282,38 @@
     // mui-overrides/index.ts — its target library (`@mui/x-tree-view`) is
     // intentionally not a dependency of this app (spec §2.2/P1: "the file
     // tree is hand-rolled"). See the file's own header comment.
-    "src/shared/brand/mui-overrides/MuiTreeItem.ts"
+    "src/shared/brand/mui-overrides/MuiTreeItem.ts",
+    // unit S1: same "deliberately NOT wired into mui-overrides/index.ts"
+    // gap — `MuiInputBase` overrides MUI's InputBase component so the
+    // theme token system applies to all text inputs, but the barrel file
+    // hasn't re-exported it yet. See `src/shared/brand/mui-overrides/`.
+    "src/shared/brand/mui-overrides/MuiInputBase.ts",
+    // Wave-2 sub-unit C4 (chat-messages): 25 files, not wired into any
+    // app consumer yet — `all:true` in vitest counts their 0% as dead
+    // weight. Same rationale as the vitest coverage exclude. REMOVE when
+    // a real consumer imports from this unit.
+    "src/features/chat-messages/**",
+    // Legacy chat-participants files ported from the old app that have no
+    // current consumer in the new architecture (the port uses a rewritten
+    // participants model in `features/chat-participants/model/` and
+    // `features/chat-participants/ui/ParticipantsLayout.tsx`). These are
+    // hooks/context files from the baseline `apps/elitea-ui` that were
+    // copied but never wired into the new consumer layer. REMOVE when
+    // a Wave-2 consumer actually needs these.
+    "src/features/chat-participants/hooks/chat/useChangeParticipantSettings.ts",
+    "src/features/chat-participants/hooks/chat/useMCPParticipantStatusMonitor.ts",
+    "src/features/chat-participants/lib/context/ParticipantStatusRunner.tsx",
+    "src/features/chat-participants/lib/hooks/useAddNewParticipants.ts",
+    "src/features/chat-participants/ui/chat-modal/AddNewUserModal.tsx",
+    "src/features/chat-participants/ui/chat-modal/UserSearchSelect.tsx",
+    "src/features/chat-participants/ui/CollapsedParticipants/CollapsedParticipantsDropdown.tsx",
+    "src/features/chat-participants/ui/CollapsedParticipants/CollapsedParticipantsList.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ExpandedParticipantsList.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantsAccordion.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/UserParticipantItem.tsx",
+    "src/features/chat-participants/ui/UsersParticipantDropdown/DropdownFooter.tsx",
+    "src/features/chat-participants/ui/UsersParticipantDropdown/index.tsx",
+    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx"
   ],
   "ignoreDependencies": [
     // Genuinely still unused: pinned ahead of a Wave-2 consumer that hasn't
@@ -57,16 +325,32 @@
     // knip to get the ground-truth "still genuinely unused" list, rather
     // than guessing from the truncated config-hints output) after removing
     // the 16 entries below that already have real consumers.
-    "@hookform/resolvers",
-    "@mui/x-date-pickers",
-    "@xyflow/react",
-    "date-fns",
-    "react-hook-form",
-    "recharts",
     "@axe-core/playwright",
     "@lhci/cli",
     "@swc/core",
     "dependency-cruiser"
+    // [Wave-2 batch 2] `react-hook-form`/`@hookform/resolvers`/
+    // `@xyflow/react`/`@mui/x-date-pickers`/`recharts` REMOVED from this
+    // list: this batch (agents/pipelines/toolkits + analytics) built all 5
+    // pinned-ahead consumers this array's own comment anticipated
+    // ("forms/date-pickers/charts/flow-diagram libraries").
+    // `react-hook-form`'s/`@hookform/resolvers`'s first real consumers are
+    // the page-level agent/pipeline forms — `src/pages/agents/lib/
+    // useEditApplicationForm.ts`/`src/pages/agents/CreateApplication.tsx`
+    // (react-hook-form's `useForm`/`Controller`, `@hookform/resolvers`'s
+    // `zodResolver`) and their `src/pages/pipelines/lib/
+    // useEditPipelineForm.ts`/`CreatePipeline.tsx` pipeline-domain twins.
+    // `@xyflow/react`'s first real consumer is the pipelines flow editor
+    // itself — `src/features/pipelines/ui/FlowEditorCanvasControls.tsx`
+    // (plus the rest of `features/pipelines/lib/flow-editor/**`).
+    // `@mui/x-date-pickers`'s first real consumer is
+    // `src/features/analytics/ui/components/DateRangeField.tsx`.
+    // `recharts`'s first real consumer is
+    // `src/features/analytics/ui/AnalyticsAgents.tsx` (plus its
+    // `AnalyticsHealth.tsx`/`AnalyticsOverview.tsx` siblings). All 5 now
+    // have real consumers and knip finds them itself — same pattern S1-E/
+    // S1-G below already established for this exact "pinned ahead, batch
+    // lands, remove from this list" lifecycle.
     // [S1-E] `@codemirror/commands`/`@codemirror/lang-json`/`@codemirror/lint`/
     // `@codemirror/search`/`@codemirror/state`/`@codemirror/view` REMOVED from
     // this list: S1 pinned them ahead of their first consumer
@@ -103,5 +387,9 @@
     // ignoreDependencies" configuration hints, confirmed empirically (see
     // note above the remaining list) — every one now has a real consumer
     // knip finds on its own, same pattern as every removal noted above.
+    // [A11] `date-fns` REMOVED from this list: `NotificationListItem.tsx`'s
+    // relative-time-ago string (`formatDistanceToNow`, ported from
+    // `NotificationListItem.jsx:3,105`) is its first real consumer — knip's
+    // own "Remove from ignoreDependencies" hint confirmed this empirically.
   ]
 }

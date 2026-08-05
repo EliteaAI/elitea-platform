@@ -40,3 +40,34 @@ export interface CredentialPage {
   readonly offset: number;
   readonly shared?: { readonly items: readonly Credential[]; readonly total: number };
 }
+
+/**
+ * Model info returned by GET /configurations/models/{projectId}.
+ * Ported from `apps/elitea-ui/src/api/configurations.js`'s `listModels`
+ * response shape (the endpoint has no OpenAPI entry — the shape is observed
+ * from the RTK Query request/response cycle).
+ */
+export interface ModelInfo {
+  /** Unique model identifier — `project_id` + `_` + `name`. */
+  readonly id: string;
+  /** Canonical model name (e.g. `gpt-4o`). */
+  readonly name: string;
+  /** Display name shown to users. */
+  readonly display_name: string;
+  /** Provider type slug (e.g. `open_ai`, `anthropic`, `ollama`). */
+  readonly type: string;
+  /** Display label (alias for `display_name` in some responses). */
+  readonly label: string;
+  /** Owning project ID. */
+  readonly project_id: string;
+  /** Whether this model is the default for its section. */
+  readonly default: boolean;
+  /** Whether this is a low-tier (cheaper/faster) model. */
+  readonly low_tier?: boolean;
+  /** Whether this is a high-tier (more capable) model. */
+  readonly high_tier?: boolean;
+  /** Provider integration name (e.g. `OpenAI`, `Anthropic`). */
+  readonly integration_name?: string;
+  /** Model capabilities (chat_completion, embedding, etc.). */
+  readonly capabilities?: Record<string, boolean>;
+}

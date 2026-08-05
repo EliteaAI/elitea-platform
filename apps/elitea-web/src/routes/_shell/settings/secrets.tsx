@@ -1,11 +1,24 @@
-/** ROUTE-058 `/settings/secrets` -> `Secrets` (`createSecret` inherited from `settings/route.tsx`). */
+/** ROUTE-058 `/settings/secrets` -> `Secrets` page. */
 import { createFileRoute } from '@tanstack/react-router';
 
-import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
+import { pickParams } from '@/routes/-search/params';
+import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
+import { RouteShell } from '@/routes/-ui/RouteShell';
+import { SecretsContent } from '@/pages/settings/Secrets';
 
 export const Route = createFileRoute('/_shell/settings/secrets')({
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => <RouteShell routeId="settings.secrets" fallback="Secrets" />,
+  validateSearch: pickParams('createSecret'),
+  component: SecretsPage,
 });
+
+function SecretsPage() {
+  const { createSecret } = Route.useSearch();
+  return (
+    <>
+      <RouteShell routeId="settings.secrets" fallback="Secrets" />
+      <SecretsContent shouldCreate={createSecret === '1'} search="" onSearchChange={() => {}} />
+    </>
+  );
+}

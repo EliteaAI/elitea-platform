@@ -1,19 +1,18 @@
+/**
+ * Maintenance entry root — wires up a standalone MUI theme and renders the
+ * MaintenancePage (spec §7.4).
+ *
+ * Unlike the main SPA this entry point has no `<AppProviders>` wrapper and no
+ * react-query provider — it is a self-contained splash page, so the theme is
+ * defined here directly.
+ */
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { CssBaseline, ThemeProvider } from '@mui/material';
+import MaintenanceApp from '@/entries/maintenance/components/MaintenancePage';
 
-/**
- * Maintenance build entry (spec §7.4): vite-plugin-singlefile inlines this whole
- * bundle into a single self-contained maintenance.html. The real splash content
- * (absorbing frontends/Maintenance-UI) arrives with unit A15.
- */
-function MaintenanceApp() {
-  return (
-    <main>
-      <h1>Elitea</h1>
-      <p>Scheduled maintenance is in progress.</p>
-    </main>
-  );
-}
+import theme from '@/entries/maintenance/theme';
+import '@/entries/maintenance/reset.css';
 
 const container = document.getElementById('root');
 if (!container) {
@@ -22,6 +21,9 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <MaintenanceApp />
+    <ThemeProvider theme={theme} defaultMode="light">
+      <CssBaseline />
+      <MaintenanceApp />
+    </ThemeProvider>
   </StrictMode>,
 );

@@ -52,7 +52,7 @@
         "testId": "api > analyticsApi.js > projectAnalytics"
       },
       "unit": "A10",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/analytics/index.ts",
         "min": 88
@@ -80,7 +80,7 @@
         "testId": "api > analyticsApi.js > analyticsUsers"
       },
       "unit": "A10",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/analytics/index.ts",
         "min": 88
@@ -108,7 +108,7 @@
         "testId": "api > analyticsApi.js > analyticsUserDetail"
       },
       "unit": "A10",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/analytics/index.ts",
         "min": 88
@@ -136,7 +136,7 @@
         "testId": "api > analyticsApi.js > analyticsTools"
       },
       "unit": "A10",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/analytics/index.ts",
         "min": 88
@@ -164,7 +164,7 @@
         "testId": "api > analyticsApi.js > analyticsToolDetail"
       },
       "unit": "A10",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/analytics/index.ts",
         "min": 88
@@ -192,7 +192,7 @@
         "testId": "api > analyticsApi.js > analyticsAgents"
       },
       "unit": "A10",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/analytics/index.ts",
         "min": 88
@@ -220,7 +220,7 @@
         "testId": "api > analyticsApi.js > analyticsAgentDetail"
       },
       "unit": "A10",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/analytics/index.ts",
         "min": 88

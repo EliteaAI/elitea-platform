@@ -32,8 +32,32 @@ export interface PipelineTrigger {
 }
 
 /**
+ * Wire shape (snake_case) as returned by the Go handler, before the
+ * `lib/normalise.ts` camelCase mapping. Mirrors the generated
+ * `src/shared/api/generated/model/pipelineTrigger.zod.ts` schema
+ * (`PipelineTrigger`, v2.yaml:1284-1306): `version_id` is required;
+ * `enabled`/`schedule`/`type` are `.nullish()` (optional AND nullable).
+ * NOTE(W2) on that schema: "GetTrigger/UpdateTrigger response maps,
+ * internal/api/v2/pipelines/handler.go:122-127,136-141,153-158,187-192 ...
+ * Keys read from the settings.trigger jsonb are null when absent."
+ */
+export interface PipelineTriggerWire {
+  readonly version_id: string;
+  readonly enabled?: boolean | null;
+  readonly schedule?: unknown;
+  readonly type?: string | null;
+}
+
+/**
  * `PipelineSettings` (v2.yaml:430-437) — opaque DB-jsonb passthrough,
  * `application_versions.pipeline_settings`, never inspected server-side.
+ * Confirmed against the generated
+ * `src/shared/api/generated/model/pipelineSettings.zod.ts`, which is
+ * `zod.record(zod.string(), zod.unknown())` — an unstructured bag with no
+ * named fields to rename or reshape. There is deliberately no
+ * `PipelineSettingsWire`/`normalisePipelineSettings`: the wire shape and this
+ * domain type are the same opaque record, so a normaliser here would be an
+ * identity function over `unknown` keys.
  */
 export type PipelineSettings = Readonly<Record<string, unknown>>;
 
