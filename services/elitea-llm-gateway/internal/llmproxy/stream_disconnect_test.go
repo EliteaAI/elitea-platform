@@ -1237,3 +1237,166 @@ func TestCutStream_NoAccumulatedUsageStillMetersTheLoss(t *testing.T) {
 		t.Errorf("reason = %q, want %q", p.Reason, lossReasonWriteError)
 	}
 }
+
+// The four tests below pin round-1 fixes that were mutation-verified as
+// DELETABLE with the whole suite still green. A defensive fix with no failing
+// input is indistinguishable from dead code to the next person editing it.
+
+// TestNextChunk_ClosedChannelWinsOverClientGone: when the provider closes and
+// the client hangs up at the same instant, a bare select would pick either at
+// random — mislabelling a completed stream as a disconnect and burning a drain
+// slot on an already-closed channel.
+func TestNextChunk_ClosedChannelWinsOverClientGone(t *testing.T) {
+	gone := make(chan struct{})
+	close(gone)
+
+	for i := range 200 {
+		ch := make(chan *schemas.BifrostStreamChunk)
+		close(ch)
+		if _, exit := nextChunk(ch, gone); exit != streamExitChanDone {
+			t.Fatalf("iteration %d: exit = %v, want streamExitChanDone — a closed provider channel is "+
+				"a clean completion even when the client is also gone", i, exit)
+		}
+	}
+	// A live channel with a departed client must still report the disconnect.
+	live := make(chan *schemas.BifrostStreamChunk)
+	if _, exit := nextChunk(live, gone); exit != streamExitClient {
+		t.Errorf("exit = %v, want streamExitClient when only the client is gone", exit)
+	}
+}
+
+// TestSSELoop_PanicDoesNotLeakTheProviderStream: with the context decoupled
+// from the request, nothing else will ever cancel it, so a panic in the loop
+// leaks the provider stream (and its socket) forever.
+func TestSSELoop_PanicDoesNotLeakTheProviderStream(t *testing.T) {
+	router := &panickingRouter{}
+	h := NewHandler(router, nil, nil, WithStreamGrace(DefaultStreamGrace))
+
+	req := chatReqWithProject(t, "30", true)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected the panic to propagate to the caller")
+			}
+		}()
+		h.Chat(&panicOnWrite{}, req)
+	}()
+
+	select {
+	case <-router.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider context was never cancelled after a panic — the stream is leaked for the " +
+			"lifetime of the process")
+	}
+}
+
+type panickingRouter struct {
+	fakeRouter
+	cancelled chan struct{}
+	once      sync.Once
+}
+
+func (r *panickingRouter) ChatCompletionStreamRequest(ctx *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	r.once.Do(func() { r.cancelled = make(chan struct{}) })
+	ch := make(chan *schemas.BifrostStreamChunk, 1)
+	ch <- chatDelta("c1", "boom")
+	go func() {
+		<-ctx.Done()
+		close(r.cancelled)
+	}()
+	return ch, nil
+}
+
+type panicOnWrite struct{ hdr http.Header }
+
+func (w *panicOnWrite) Header() http.Header {
+	if w.hdr == nil {
+		w.hdr = http.Header{}
+	}
+	return w.hdr
+}
+func (w *panicOnWrite) Write([]byte) (int, error) { panic("writer exploded") }
+func (w *panicOnWrite) WriteHeader(int)           {}
+func (w *panicOnWrite) Flush()                    {}
+
+// TestCheckBudget_BoundedOnTheDetachedContext: the streaming path hands
+// checkBudget a context.WithoutCancel-derived context, so without an explicit
+// timeout a stalled budget store parks the handler goroutine forever — there is
+// no client cancellation left to unwind it.
+func TestCheckBudget_BoundedOnTheDetachedContext(t *testing.T) {
+	if budgetGateTimeout <= 0 {
+		t.Fatal("budgetGateTimeout must be positive or the gate is unbounded")
+	}
+	gate := &deadlineObservingChecker{seen: make(chan bool, 1)}
+	h := NewHandler(&fakeRouter{}, nil, nil,
+		WithBudgetGate(gate, &fakeCostEstimator{totalNano: 1}))
+
+	req := chatReqWithProject(t, "30", true)
+	ctx, sc, ok := h.newStreamContext(httptest.NewRecorder(), req)
+	if !ok {
+		t.Fatal("newStreamContext rejected the request")
+	}
+	defer sc.cancel()
+
+	if ctxDeadline, has := ctx.Deadline(); has {
+		t.Fatalf("the stream context itself must stay deadline-free (§9.5); got %v", ctxDeadline)
+	}
+	h.checkBudget(httptest.NewRecorder(), ctx, "openai", "gpt-4o", 0)
+
+	select {
+	case hasDeadline := <-gate.seen:
+		if !hasDeadline {
+			t.Error("CheckBudget received a context with NO deadline — a stalled budget store would " +
+				"park this streaming handler goroutine forever")
+		}
+	default:
+		t.Fatal("CheckBudget was never called")
+	}
+}
+
+type deadlineObservingChecker struct {
+	fakeBudgetChecker
+	seen chan bool
+}
+
+func (d *deadlineObservingChecker) CheckBudget(ctx context.Context, _ int, _, _ string, _, _ int64) (failmode.Decision, error) {
+	_, has := ctx.Deadline()
+	select {
+	case d.seen <- has:
+	default:
+	}
+	return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
+}
+
+// TestDrain_ShutdownShrinksTheHardBackstop: once shutdown starts, a wedged
+// provider must cost ~drainShutdownTimeout of the pod's termination grace, not
+// the full grace + drainHardTimeout.
+func TestDrain_ShutdownShrinksTheHardBackstop(t *testing.T) {
+	if drainShutdownTimeout >= drainHardTimeout {
+		t.Fatalf("drainShutdownTimeout (%v) must be well under drainHardTimeout (%v) or shutdown "+
+			"inherits the full backstop", drainShutdownTimeout, drainHardTimeout)
+	}
+	gate := allowGate()
+	h := NewHandler(&wedgedRouter{}, nil, nil,
+		WithBudgetGate(gate, &fakeCostEstimator{totalNano: 1_000}),
+		WithStreamGrace(MaxStreamGrace))
+
+	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true))
+
+	start := time.Now()
+	h.DrainBilling()
+	if elapsed := time.Since(start); elapsed > drainShutdownTimeout+2*time.Second {
+		t.Errorf("DrainBilling took %v against a wedged provider; the hard backstop must shrink to "+
+			"~%v once shutdown starts", elapsed, drainShutdownTimeout)
+	}
+}
+
+// wedgedRouter never closes its channel and ignores cancellation entirely.
+type wedgedRouter struct{ fakeRouter }
+
+func (r *wedgedRouter) ChatCompletionStreamRequest(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ch := make(chan *schemas.BifrostStreamChunk, 2)
+	ch <- chatDelta("c1", "hello")
+	ch <- chatDelta("c2", "world")
+	return ch, nil // never closed, never cancelled
+}
