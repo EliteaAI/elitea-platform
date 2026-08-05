@@ -140,17 +140,13 @@ jobs:
             echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
             npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }}
           fi
-      - name: Stage coverage shard artifact
-        if: steps.shard.outputs.coverage_ran == 'true'
-        run: |
-          mkdir -p ../coverage-shard-${{ matrix.shardIndex }}
-          cp coverage-shards/shard-${{ matrix.shardIndex }}/coverage-final.json ../coverage-shard-${{ matrix.shardIndex }}/coverage-final.json
       - name: Upload coverage shard
         if: steps.shard.outputs.coverage_ran == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-shard-${{ matrix.shardIndex }}
-          path: coverage-shard-${{ matrix.shardIndex }}/coverage-final.json
+          path: apps/elitea-web/coverage-shards/shard-${{ matrix.shardIndex }}/coverage-final.json
+          if-no-files-found: error
           retention-days: 7
 
   coverage-merge:
@@ -169,23 +165,21 @@ jobs:
         run: npm ci
       - name: Download coverage shards
         uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-shard-*
+          path: apps/elitea-web/coverage-shards/
       - name: Merge coverage (no validation — thresholds checked in coverage-validation)
         id: merge
         run: |
           node scripts/merge-coverage.mjs --no-validate
           echo "merged=$?" >> $GITHUB_OUTPUT
-      - name: Debug coverage output
-        run: |
-          echo "=== Coverage dir contents ==="
-          ls -la coverage/ || echo "coverage/ not found"
-          echo "=== Coverage dir file count ==="
-          find coverage/ -type f 2>/dev/null | wc -l || echo "0"
       - name: Upload merged coverage
         if: steps.merge.outputs.merged == '0'
         uses: actions/upload-artifact@v7
         with:
           name: elitea-web-coverage
           path: apps/elitea-web/coverage/
+          if-no-files-found: error
           retention-days: 7
 
   coverage-validation:
@@ -207,13 +201,6 @@ jobs:
         with:
           name: elitea-web-coverage
           path: apps/elitea-web/coverage/
-      - name: Debug coverage download
-        # Verify the downloaded coverage files exist before running merge
-        working-directory: apps/elitea-web
-        run: |
-          echo "=== Coverage download contents ==="
-          ls -la coverage/ 2>/dev/null || echo "coverage/ not found"
-          find coverage/ -type f 2>/dev/null | head -20
       - name: Validate coverage thresholds
         # merge-coverage.mjs enforces thresholds by default (exits non-zero on failure).
         # working-directory ensures the script runs from apps/elitea-web/ where

@@ -37,6 +37,16 @@ const fileThresholdRules = [
 async function main() {
   const shardFiles = await findCoverageFiles();
   if (shardFiles.length === 0) {
+    if (skipValidation) {
+      // --no-validate is the coverage-merge job's mode: it merges *fresh*
+      // shard artifacts and must never go green with nothing to merge (the
+      // bug that let this job report success while uploading an empty
+      // coverage/ directory — see issue #67). The outputDir fallback below
+      // is for coverage-validation's rerun (no --no-validate), which must
+      // stay reachable.
+      console.error('No coverage shard artifacts found; refusing to report success with nothing merged.');
+      process.exit(1);
+    }
     console.log('No coverage shard artifacts found; skipping merged coverage generation.');
     return;
   }
