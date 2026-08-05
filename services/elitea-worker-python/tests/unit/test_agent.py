@@ -409,12 +409,15 @@ def test_sdk_adapter_submits_projected_history_on_one_checkpoint_thread() -> Non
 
 
 class _CheckpointMemory:
-    def __init__(self, pending_writes) -> None:
+    def __init__(self, pending_writes, *, thread_writes=None) -> None:
         self.pending_writes = pending_writes
+        self.thread_writes = dict(thread_writes or {})
         self.deleted_threads: list[str] = []
 
-    def get_tuple(self, _config):
-        return SimpleNamespace(pending_writes=self.pending_writes)
+    def get_tuple(self, config):
+        thread_id = config["configurable"]["thread_id"]
+        pending_writes = self.thread_writes.get(thread_id, self.pending_writes)
+        return SimpleNamespace(pending_writes=pending_writes)
 
     def delete_thread(self, thread_id: str) -> None:
         self.deleted_threads.append(thread_id)
@@ -432,6 +435,66 @@ def test_sdk_adapter_repairs_only_an_explicit_failed_checkpoint() -> None:
 
     assert memory.deleted_threads == ["thread-1"]
     assert len(client.adhoc_executor.calls) == 1
+
+
+@pytest.mark.parametrize("application", [True, False])
+def test_sdk_adapter_repairs_explicit_failed_direct_application_checkpoint(
+    application: bool,
+) -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(
+        [],
+        thread_writes={
+            "thread-1:release-notes": [
+                ("failed-child-task", "__error__", RuntimeError("redacted"))
+            ],
+        },
+    )
+    adapter._memory = memory  # type: ignore[attr-defined]
+    payload = _request(application=application).payload
+    child = {
+        "type": "application",
+        "name": "release-notes",
+        "toolkit_name": "release-notes",
+    }
+    if application:
+        payload.application["version_details"]["tools"] = [child]
+    else:
+        payload.tools.append(child)
+
+    if application:
+        adapter.execute_application(payload)
+    else:
+        adapter.execute_adhoc(payload)
+
+    assert memory.deleted_threads == ["thread-1:release-notes"]
+
+
+def test_sdk_adapter_preserves_direct_application_interrupt_checkpoint() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(
+        [],
+        thread_writes={
+            "thread-1:release-notes": [
+                ("paused-child-task", "__interrupt__", {"type": "hitl"})
+            ],
+        },
+    )
+    adapter._memory = memory  # type: ignore[attr-defined]
+    payload = _request(application=False).payload
+    payload.tools.append(
+        {
+            "type": "application",
+            "name": "release-notes",
+            "toolkit_name": "release-notes",
+        }
+    )
+
+    adapter.execute_adhoc(payload)
+
+    assert memory.deleted_threads == []
 
 
 def test_sdk_adapter_regeneration_resets_the_exact_thread_before_invoke() -> None:

@@ -230,6 +230,9 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentRegeneration(
 			if queryErr != nil {
 				return fmt.Errorf("resolve current agent regeneration: %w", queryErr)
 			}
+			if row.ResponseIsStreaming {
+				return agentexecutionapp.ErrCurrentAgentRegenerationStillFinalizing
+			}
 			target = agentexecutionapp.CurrentRegenerationTarget{
 				Kind:                agentexecutionapp.CurrentRegenerationKind(row.RegenerationKind),
 				ConversationUUID:    uuid.UUID(row.ConversationUuid.Bytes).String(),

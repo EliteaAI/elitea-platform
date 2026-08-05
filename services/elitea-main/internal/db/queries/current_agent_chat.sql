@@ -240,7 +240,9 @@ JOIN chat_participants AS target_participant
      OR target_participant.id = sqlc.arg(target_participant_id)::integer
  )
 LEFT JOIN LATERAL (
-    SELECT jsonb_agg(
+    SELECT jsonb_agg(current_tool.payload ORDER BY current_tool.mapping_id) AS tools
+    FROM (
+        SELECT toolkit_mapping.id AS mapping_id,
                jsonb_build_object(
                    'id', tool.id,
                    'type', tool.type,
@@ -259,17 +261,71 @@ LEFT JOIN LATERAL (
                    'variables', '[]'::jsonb,
                    'is_pinned', FALSE,
                    'indexes_count', NULL
-               )
-               ORDER BY toolkit_mapping.id
-           ) AS tools
-    FROM chat_participant_mapping AS toolkit_mapping
-    JOIN chat_participants AS toolkit_participant
-      ON toolkit_participant.id = toolkit_mapping.participant_id
-     AND toolkit_participant.entity_name = 'toolkit'
-    JOIN elitea_tools AS tool
-      ON tool.id::text = toolkit_participant.entity_meta ->> 'id'
-    WHERE toolkit_mapping.conversation_id = conversation.id
-      AND toolkit_participant.entity_meta ->> 'project_id' = (sqlc.arg(project_id)::integer)::text
+               ) AS payload
+        FROM chat_participant_mapping AS toolkit_mapping
+        JOIN chat_participants AS toolkit_participant
+          ON toolkit_participant.id = toolkit_mapping.participant_id
+         AND toolkit_participant.entity_name = 'toolkit'
+        JOIN elitea_tools AS tool
+          ON tool.id::text = toolkit_participant.entity_meta ->> 'id'
+        WHERE toolkit_mapping.conversation_id = conversation.id
+          AND toolkit_participant.entity_meta ->> 'project_id' = (sqlc.arg(project_id)::integer)::text
+
+        UNION ALL
+
+        SELECT application_mapping.id AS mapping_id,
+               jsonb_build_object(
+                   'type', 'application',
+                   'name', application_participant.meta ->> 'name',
+                   'description', COALESCE(application_participant.meta ->> 'description', ''),
+                   'author_id', sqlc.arg(actor_user_id)::bigint,
+                   'participant_id', application_participant.id,
+                   'project_id', sqlc.arg(project_id)::integer,
+                   'settings', jsonb_build_object(
+                       'variables', '[]'::jsonb,
+                       'application_id', application_version.application_id,
+                       'selected_tools', '[]'::jsonb,
+                       'application_version_id', application_version.id
+                   ),
+                   'id', NULL,
+                   'toolkit_name', application_participant.meta ->> 'name',
+                   'agent_type', COALESCE(
+                       application_participant.meta ->> 'agent_type',
+                       application_version.agent_type
+                   ),
+                   'created_at', statement_timestamp()
+               ) AS payload
+        FROM chat_participant_mapping AS application_mapping
+        JOIN chat_participants AS application_participant
+          ON application_participant.id = application_mapping.participant_id
+         AND application_participant.entity_name = 'application'
+        JOIN application_versions AS application_version
+          ON application_version.application_id::text = application_participant.entity_meta ->> 'id'
+         AND application_version.id::text = application_mapping.entity_settings ->> 'version_id'
+        WHERE application_mapping.conversation_id = conversation.id
+          AND application_participant.entity_meta ->> 'project_id'
+              = (sqlc.arg(project_id)::integer)::text
+          AND COALESCE(application_participant.meta ->> 'name', '') <> ''
+          AND application_version.agent_type <> 'pipeline'
+          AND LOWER(COALESCE(
+              application_participant.meta ->> 'agent_type',
+              application_version.agent_type
+          )) <> 'pipeline'
+          AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+          AND NOT EXISTS (
+              SELECT 1
+              FROM entity_tool_mapping AS child_mapping
+              JOIN elitea_tools AS child_tool
+                ON child_tool.id = child_mapping.tool_id
+              WHERE child_mapping.entity_version_id = application_version.id
+                AND child_mapping.entity_type = 'agent'
+                AND (
+                    child_tool.type = 'application'
+                    OR child_tool.type = 'mcp'
+                    OR child_tool.meta ->> 'mcp' = 'true'
+                )
+          )
+    ) AS current_tool
 ) AS current_tools ON TRUE
 LEFT JOIN LATERAL (
     SELECT jsonb_agg(
@@ -344,7 +400,7 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       JOIN chat_participants AS unsupported_participant
         ON unsupported_participant.id = unsupported_mapping.participant_id
       WHERE unsupported_mapping.conversation_id = conversation.id
-        AND unsupported_participant.entity_name NOT IN ('user', 'dummy', 'toolkit')
+        AND unsupported_participant.entity_name NOT IN ('user', 'dummy', 'toolkit', 'application')
   )
   AND NOT EXISTS (
       SELECT 1
@@ -361,6 +417,45 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
             OR invalid_toolkit.id IS NULL
             OR invalid_toolkit.type IN ('application', 'mcp')
             OR invalid_toolkit.meta ->> 'mcp' = 'true'
+        )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_participant_mapping AS invalid_application_mapping
+      JOIN chat_participants AS invalid_application_participant
+        ON invalid_application_participant.id = invalid_application_mapping.participant_id
+       AND invalid_application_participant.entity_name = 'application'
+      LEFT JOIN application_versions AS invalid_application_version
+        ON invalid_application_version.application_id::text
+            = invalid_application_participant.entity_meta ->> 'id'
+       AND invalid_application_version.id::text
+            = invalid_application_mapping.entity_settings ->> 'version_id'
+      WHERE invalid_application_mapping.conversation_id = conversation.id
+        AND (
+            invalid_application_participant.entity_meta ->> 'project_id'
+                IS DISTINCT FROM (sqlc.arg(project_id)::integer)::text
+            OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
+            OR invalid_application_version.id IS NULL
+            OR invalid_application_version.agent_type = 'pipeline'
+            OR LOWER(COALESCE(
+                invalid_application_participant.meta ->> 'agent_type',
+                invalid_application_version.agent_type,
+                ''
+            )) = 'pipeline'
+            OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
+            OR EXISTS (
+                SELECT 1
+                FROM entity_tool_mapping AS unsupported_child_mapping
+                JOIN elitea_tools AS unsupported_child_tool
+                  ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
+                WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
+                  AND unsupported_child_mapping.entity_type = 'agent'
+                  AND (
+                      unsupported_child_tool.type = 'application'
+                      OR unsupported_child_tool.type = 'mcp'
+                      OR unsupported_child_tool.meta ->> 'mcp' = 'true'
+                  )
+            )
         )
   )
   AND NOT EXISTS (
@@ -416,6 +511,7 @@ LIMIT 1;
 SELECT conversation.uuid AS conversation_uuid,
        question.uuid AS question_id,
        response.author_participant_id AS target_participant_id,
+       response.is_streaming AS response_is_streaming,
        CASE response_author.entity_name
            WHEN 'application' THEN 'application'
            WHEN 'dummy' THEN 'adhoc'
@@ -449,7 +545,6 @@ JOIN LATERAL (
     LIMIT 1
 ) AS question_text ON TRUE
 WHERE response.uuid = sqlc.arg(response_message_id)::uuid
-  AND NOT response.is_streaming
   AND (
       conversation.author_id = sqlc.arg(actor_user_id)::bigint
       OR (question_author.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
@@ -738,7 +833,7 @@ WITH resolved AS MATERIALIZED (
           JOIN chat_participants AS unsupported_participant
             ON unsupported_participant.id = unsupported_mapping.participant_id
           WHERE unsupported_mapping.conversation_id = conversation.id
-            AND unsupported_participant.entity_name NOT IN ('user', 'dummy', 'toolkit')
+            AND unsupported_participant.entity_name NOT IN ('user', 'dummy', 'toolkit', 'application')
       )
       AND NOT EXISTS (
           SELECT 1
@@ -755,6 +850,45 @@ WITH resolved AS MATERIALIZED (
                 OR invalid_toolkit.id IS NULL
                 OR invalid_toolkit.type IN ('application', 'mcp')
                 OR invalid_toolkit.meta ->> 'mcp' = 'true'
+            )
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_participant_mapping AS invalid_application_mapping
+          JOIN chat_participants AS invalid_application_participant
+            ON invalid_application_participant.id = invalid_application_mapping.participant_id
+           AND invalid_application_participant.entity_name = 'application'
+          LEFT JOIN application_versions AS invalid_application_version
+            ON invalid_application_version.application_id::text
+                = invalid_application_participant.entity_meta ->> 'id'
+           AND invalid_application_version.id::text
+                = invalid_application_mapping.entity_settings ->> 'version_id'
+          WHERE invalid_application_mapping.conversation_id = conversation.id
+            AND (
+                invalid_application_participant.entity_meta ->> 'project_id'
+                    IS DISTINCT FROM (sqlc.arg(project_id)::integer)::text
+                OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
+                OR invalid_application_version.id IS NULL
+                OR invalid_application_version.agent_type = 'pipeline'
+                OR LOWER(COALESCE(
+                    invalid_application_participant.meta ->> 'agent_type',
+                    invalid_application_version.agent_type,
+                    ''
+                )) = 'pipeline'
+                OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
+                OR EXISTS (
+                    SELECT 1
+                    FROM entity_tool_mapping AS unsupported_child_mapping
+                    JOIN elitea_tools AS unsupported_child_tool
+                      ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
+                    WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
+                      AND unsupported_child_mapping.entity_type = 'agent'
+                      AND (
+                          unsupported_child_tool.type = 'application'
+                          OR unsupported_child_tool.type = 'mcp'
+                          OR unsupported_child_tool.meta ->> 'mcp' = 'true'
+                      )
+                )
             )
       )
       AND NOT EXISTS (

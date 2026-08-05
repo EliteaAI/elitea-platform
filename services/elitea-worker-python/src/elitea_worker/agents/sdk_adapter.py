@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import re
 import sys
 from contextlib import contextmanager, redirect_stdout
 from copy import deepcopy
@@ -31,6 +32,10 @@ from elitea_worker.constants import (
 )
 from elitea_worker.execution.errors import DependencyUnavailable, UnsupportedCapability
 from elitea_worker.handlers.agent import AgentExecutionPayload
+
+
+_CURRENT_APPLICATION_TOOL_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]")
+_MAX_CURRENT_APPLICATION_TOOL_NAME_BYTES = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,6 +488,11 @@ def _invoke_initial_agent(
         _discard_regenerated_thread(memory, invoke_config)
     else:
         _discard_failed_checkpoint(memory, invoke_config)
+        _discard_failed_direct_application_checkpoints(
+            memory,
+            invoke_config,
+            payload,
+        )
     result = executor.invoke({"messages": messages}, invoke_config)
     if not isinstance(result, dict):
         raise TypeError("the SDK agent invocation returned a non-object result")
@@ -525,6 +535,69 @@ def _discard_failed_checkpoint(memory: Any, config: dict[str, Any]) -> None:
         )
     delete_thread(thread_id)
     configurable.pop("checkpoint_id", None)
+
+
+def _discard_failed_direct_application_checkpoints(
+    memory: Any,
+    config: dict[str, Any],
+    payload: AgentExecutionPayload,
+) -> None:
+    """Repair explicit failures on deterministic direct child threads only.
+
+    The current SDK derives an ordinary direct application checkpoint as
+    ``<parent-thread>:<clean-tool-name>``. Parallel children add a call ID and
+    deeper descendants require the child application's own immutable snapshot;
+    neither identity is guessed here. Intentional interrupts remain protected
+    by ``_discard_failed_checkpoint``'s exact ``__error__`` predicate.
+    """
+
+    configurable = config.get("configurable")
+    thread_id = (
+        configurable.get("thread_id")
+        if isinstance(configurable, dict)
+        else None
+    )
+    if not isinstance(thread_id, str) or not thread_id:
+        return
+    for tool_name in _direct_application_tool_names(payload):
+        _discard_failed_checkpoint(
+            memory,
+            {"configurable": {"thread_id": f"{thread_id}:{tool_name}"}},
+        )
+
+
+def _direct_application_tool_names(
+    payload: AgentExecutionPayload,
+) -> tuple[str, ...]:
+    tool_groups: list[Any] = [payload.tools]
+    version_details = payload.application.get("version_details")
+    if isinstance(version_details, dict):
+        tool_groups.append(version_details.get("tools"))
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for group in tool_groups:
+        if not isinstance(group, list):
+            continue
+        for tool in group:
+            if not isinstance(tool, dict) or tool.get("type") != "application":
+                continue
+            name = tool.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            cleaned = _CURRENT_APPLICATION_TOOL_NAME_PATTERN.sub("", name).replace(
+                ".", "_"
+            )
+            if (
+                not cleaned
+                or len(cleaned.encode("utf-8"))
+                > _MAX_CURRENT_APPLICATION_TOOL_NAME_BYTES
+                or cleaned in seen
+            ):
+                continue
+            seen.add(cleaned)
+            names.append(cleaned)
+    return tuple(names)
 
 
 def _discard_regenerated_thread(memory: Any, config: dict[str, Any]) -> None:

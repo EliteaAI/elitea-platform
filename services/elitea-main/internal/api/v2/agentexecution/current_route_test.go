@@ -220,6 +220,38 @@ func TestCurrentRegenerationRouteRejectsEditedItemsBeforeUseCase(t *testing.T) {
 	}
 }
 
+func TestCurrentRegenerationRouteReportsFinalizingResponseAsRetryable(t *testing.T) {
+	useCase := &currentStartUseCaseStub{
+		err: agentexecutionapp.ErrCurrentAgentRegenerationStillFinalizing,
+	}
+	route := newCurrentStartRoute(t, useCase, currentStartPermissionResolverFunc(func(
+		context.Context, auth.User, string, string,
+	) (auth.PermissionResolution, error) {
+		return auth.PermissionResolution{
+			UserID: 11, Permissions: []string{CurrentRegenerationPermission},
+		}, nil
+	}))
+
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentRegenerationRequest(validCurrentRegenerationBody()))
+
+	if response.Code != http.StatusConflict || response.Header().Get("Retry-After") != "1" ||
+		useCase.regenerationCalls != 1 {
+		t.Fatalf("status=%d retry_after=%q calls=%d body=%s",
+			response.Code, response.Header().Get("Retry-After"), useCase.regenerationCalls, response.Body.String())
+	}
+	var body struct {
+		Error     string `json:"error"`
+		Message   string `json:"message"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil ||
+		body.Error != "agent_regeneration_pending" || !body.Retryable ||
+		!strings.Contains(body.Message, "still being finalized") {
+		t.Fatalf("body=%+v error=%v", body, err)
+	}
+}
+
 func TestCurrentApplicationStartRouteFallsBackBeforeUseCaseForUnsupportedTurn(t *testing.T) {
 	useCase := &currentStartUseCaseStub{}
 	permissions := allowCurrentStartPermission()

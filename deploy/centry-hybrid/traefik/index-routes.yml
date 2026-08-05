@@ -60,3 +60,21 @@ http:
         - normalize-runtime-public-authority
         - go-main-forward-auth
       service: current-main
+
+    # SDK 0.9.1 resolves an admitted nested application by reference. Keep the
+    # current application/version handlers and RBAC semantics during hybrid
+    # operation, while making the worker PAT pass through the same trusted
+    # forward-auth boundary as the already-supported tools-list lookup.
+    runtime-worker-current-application-reference:
+      rule: >-
+        Host(`elitea-gateway`) &&
+        ((PathRegexp(`^/api/v2/elitea_core/application/prompt_lib/[1-9][0-9]*/[1-9][0-9]*$`) && Method(`GET`)) ||
+        (PathRegexp(`^/api/v2/elitea_core/version/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[1-9][0-9]*$`) && Method(`PATCH`)))
+      priority: 85
+      entryPoints: [websecure]
+      tls: {}
+      middlewares:
+        - strip-caller-auth-context
+        - normalize-runtime-public-authority
+        - go-main-forward-auth
+      service: current-main

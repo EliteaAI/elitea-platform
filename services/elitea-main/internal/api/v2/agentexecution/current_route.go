@@ -319,6 +319,13 @@ func writeStartError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusBadRequest, "Invalid agent execution request")
 	case errors.Is(err, agentexecutionapp.ErrUnsupportedCurrentAgentStart):
 		writeUnsupported(writer)
+	case errors.Is(err, agentexecutionapp.ErrCurrentAgentRegenerationStillFinalizing):
+		writer.Header().Set("Retry-After", "1")
+		writeJSON(writer, http.StatusConflict, map[string]any{
+			"error":     "agent_regeneration_pending",
+			"message":   "The previous agent response is still being finalized. Please retry shortly.",
+			"retryable": true,
+		})
 	case errors.Is(err, executionapp.ErrIdempotencyConflict):
 		writeError(writer, http.StatusConflict, "Agent execution request conflicts with an existing turn")
 	case errors.As(err, &capacity):
