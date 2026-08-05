@@ -3252,6 +3252,199 @@ would exit 0 for the wrong reason: no tests found, not tests passed.
 cd services/elitea-main && go test ./internal/application/output/ ./internal/infra/db/repos/ -race -run TestIndexIngestArtifact -v > /tmp/s20c.log 2>&1; rc=$?; cat /tmp/s20c.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s20c.log && ! grep -q -- '--- SKIP' /tmp/s20c.log
 ```
 
+**Open question 2 answered before implementation, via explicit user
+direction:** yes, the attestation plane shares this `ObjectStore` — S20c is
+implemented on the existing S15 grant machinery
+(`ArtifactTransferGrantsRepository`, `elitea_storage.transfer_grants`) and
+`storage.ObjectStore`, per the plan's own default framing above, rather than
+inventing a second grant table or object-store adapter.
+
+**Package split mirrors the existing ArtifactVerifier/VerifyDurable
+pair.** `internal/application/output/index_artifact_writer.go` defines the
+domain contract only — `ArtifactGrant`, `CreateArtifactGrantRequest`,
+`CommitArtifactRequest`, and the `ArtifactGrantIssuer` interface (`Create
+ArtifactGrant`/`CommitArtifact`/`ResolveArtifact`) — the same layering
+`ArtifactVerifier` already uses one file up. `internal/infra/db/repos/
+index_result_artifact_writer.go`'s `IndexResultArtifactWriter` is the
+concrete implementation, composing `*ArtifactTransferGrantsRepository`,
+`*ArtifactBucketsRepository`, and `storage.ObjectStore` — the same three
+dependencies `internal/api/v2/artifacts/grants.go`'s `CreateTransferGrant`/
+`CommitTransferGrant` already use, just orchestrated as plain Go methods
+instead of HTTP handlers, since this stage has no route to mount. ADR-0014
+actually lists `CreateArtifactGrant`/`CommitArtifact`/`ResolveArtifact`
+among the *runtime control service's* stable gRPC methods (mTLS unary
+Protocol Buffers) — this stage deliberately stops at the isolated
+application-layer logic those RPCs would eventually call, not the RPC
+methods themselves: `AGENTS.md`'s "no gRPC" guardrail for this codebase's
+general application/repository layers, and the existing
+`internal/transport/runtimegrpc/control` package (which has no reference to
+any of these three names) is where that transport wiring would live, as a
+separate, later stage.
+
+**`storage_record_id` is the S15 grant's own id, reused rather than
+inventing a second identifier.** `DurableIndexArtifact.StorageRecordID` is
+documented as "opaque... never a data-plane URI or token" — a fresh UUIDv4
+grant id already satisfies that, and `elitea_storage.transfer_grants` rows
+are never deleted (grepped for a delete path; none exists — only S14's own
+lifecycle rule reclaims *backend-side* incomplete multipart sessions, never
+metadata rows), so `GetTransferGrantByID(storageRecordID)` durably resolves
+bucket/key for `ResolveArtifact` indefinitely. The bucket itself is a fixed
+per-project system bucket (`index-artifacts`), auto-created on first use —
+the same `RequireAttachmentBucket`/`iconBucket` convention S20a/S20b
+already established, again because no project-creation hook exists
+anywhere in this service for a writer to depend on.
+
+**Real bug found running the Verify command, not by inspection: a CHECK
+constraint the schema already had.**
+`index_result_artifact_verified_order CHECK (bytes_verified_at >=
+metadata_created_at)` — `bytes_verified_at` is caller-supplied, but
+`metadata_created_at` only had a `DEFAULT clock_timestamp()`, evaluated
+server-side at INSERT time. A Go-computed `time.Now()` stamped before the
+INSERT statement runs is always microseconds earlier than that DEFAULT,
+so every real commit's insert failed the CHECK (SQLSTATE 23514) — this
+never showed up in `go build`/`go vet`, only in the real-Postgres
+integration test. Fixed by setting `metadata_created_at` explicitly to the
+same Go-computed value as `bytes_verified_at` in `InsertIndexResultArtifact`
+(`internal/db/queries/runtime_index_ingest.sql`), guaranteeing equality
+rather than relying on two independently-evaluated timestamps to land in
+the right order.
+
+**Duplicate-identity commit handling: retry vs. conflict, distinguished
+in Go, not SQL.** `InsertIndexResultArtifact` has no `ON CONFLICT` clause on
+purpose — a `(artifact_id, immutable_version)` primary-key collision can
+only be reached *after* `MarkTransferGrantConsumed` already succeeded on
+the grant this call is committing (an exact replay of the *same* grant
+always fails earlier, at `grant.ConsumedAt != nil`), so a collision here
+is always a *different*, fresh grant claiming the same declared artifact
+identity — either a legitimate producer retry (a prior grant/commit round
+trip the caller never observed the result of) or a genuine identity reuse
+bug. `IndexResultArtifactWriter.reconcileDuplicateCommit` loads the
+existing durable row and compares every field the newly-verified upload
+produced against it: an exact match returns the existing row as a
+successful idempotent no-op; any mismatch returns the new
+`ErrArtifactGrantConflict` sentinel, kept distinct from
+`ErrIndexIngestArtifactMismatch` (which fires earlier, for an upload that
+disagrees with its own grant) so a caller can tell "this commit's bytes
+were wrong" apart from "this identity was already committed as something
+else." Both branches leave the just-uploaded, now-orphaned object in the
+bucket — a bounded, non-permanent leak, the same tolerance this plan's own
+`rejectCommit` (S15) and multipart-abort-failure (S16) precedents already
+accept, since nothing outside a caller ever observes it and nothing in
+this bucket is tracked by S14's `elitea_storage.objects`-based sweeper
+regardless.
+
+**Test proves genuine integration with the pre-existing read side, not
+just the new write side in isolation.** Every other `index_ingest_results`
+Postgres integration test in this repo seeds its artifact row with a raw
+`INSERT` (`seedPostgresIndexArtifactAttestation`) — necessary before this
+stage, since nothing produced a real row any other way.
+`TestIndexIngestArtifactGrantCommitResolveAndIngestRoundTrip` does not call
+that helper at all: it drives a real `CreateArtifactGrant` → real presigned
+PUT against RustFS → real `CommitArtifact`, then feeds the exact same
+`IndexIngestFrame` straight into the already-shipped, unmodified
+`IndexIngestService.IngestIndex` (`ArtifactVerifier.VerifyDurable` reading
+back precisely what this stage's writer just committed) and asserts it
+settles — proving this stage's write path and S16-era's existing read path
+actually agree on the wire, not just independently pass their own tests.
+Also covers: an exact retry through a *fresh* grant is idempotent (same
+`StorageRecordID` returned, no second durable row); a fresh grant reusing
+the same artifact identity with genuinely different content returns
+`ErrArtifactGrantConflict`; and `ResolveArtifact`'s returned URL, fetched
+for real, serves back the exact bytes that were committed.
+
+**Full verify sweep green:** `gofmt`, `go build`, `go vet`, `task lint` (one
+staticcheck finding — an unnecessary embedded-field selector in the new
+test file — fixed), the literal Verify command above, and a full workspace
+`go test -race ./...` with every emulator + a real Postgres attached, zero
+failures.
+
+**Still open, exactly as this stage's own text requires — not answered
+here:** who builds the producer-side caller for `CreateArtifactGrant`/
+`CommitArtifact` (`services/elitea-worker-python`, a Go-side skill/pipeline
+runner, or elsewhere), and whether wiring it — along with the
+`CreateArtifactGrant`/`CommitArtifact`/`ResolveArtifact` gRPC methods
+ADR-0014 lists on the runtime control service — is a new stage of this plan
+or belongs to the worker's own tracked issue. `IndexResultArtifactWriter`
+has no caller anywhere in this codebase, by design, matching S13's own
+precedent.
+
+**S20c-scoped swarm review: 4 agents (2 review lenses + 2 independent
+adversarial verifiers), 4 findings, both verifiers confirmed all 4, all 4
+fixed.** Smaller than the 48-agent S18-S20b pass, scaled to this stage's own
+size (5 files, ~650 lines) — 2 review lenses (correctness/bug-hunt,
+plan-compliance+test-integrity) read the stage in full plus every
+cross-check file (`index_ingest_results.go`, `grants.go`,
+`artifact_transfer_grants.go`), one of them additionally ran the plan's own
+literal Verify command live and empirically committed a 10 MiB `image/png`
+artifact against the running emulator stack to *prove* one finding rather
+than infer it; 2 independent verifiers then read the live code
+(not the findings' own quoted snippets) and tried to refute each — both
+returned `refuted: false` on all 4, all fixed before commit:
+
+- **Doc-comment overclaim.** `CommitArtifactRequest`'s comment claimed
+  re-supplying identity at commit time lets `CommitArtifact` "detect a
+  caller that tries to commit a grant against a *different* artifact
+  identity" — true for only 3 of the 9 relevant fields
+  (`MediaType`/`ByteLength`/`Digest`, the only ones the shared
+  `elitea_storage.transfer_grants` row has room for); `ArtifactID`,
+  `ImmutableVersion`, `ExecutionID`, `Generation`, `TenantID`,
+  `ProjectionProjectID`, `CommandID`, `Classification` were never
+  cross-checked. Fixed the comment to state exactly what is and is not
+  checked, and flagged the real, still-open gap this exposes (a caller
+  that mixes up which `CommitArtifactRequest` identity belongs to which
+  grant ID is not caught) as a must-close-before-wiring item for whoever
+  eventually connects a producer — not something this pass attempted to
+  close by itself, since the only real fix (binding an identity digest to
+  the grant) would mean extending the shared S15 grant schema, a
+  larger-blast-radius change than this already-long pass should make
+  hastily at the very end of the plan.
+- **No grant-provenance check (fixed for real).** `CommitArtifact` never
+  checked `grant.Method == "PUT"` or that the resolved bucket was
+  `index-artifacts` — unlike S15's own `CommitTransferGrant`
+  (`grants.go:382-385`), which does check `Method`. Since
+  `elitea_storage.transfer_grants` is shared with S15's general-purpose
+  REST grant API, a grant minted there for an unrelated bucket (with
+  caller-controlled `content_type`/`max_bytes`/`digest`) could be
+  "laundered" through this writer's `CommitArtifact`. Added both checks;
+  regression tests exercise a real GET-method grant and a real
+  different-bucket grant, each correctly rejected.
+- **Missing cheap pre-hash size check (fixed for real).** `CommitArtifact`
+  streamed and SHA-256-hashed the entire object before ever checking its
+  size, unlike S15's `finalizeGrantCommit` (`grants.go:437-440`), which
+  checks `info.Size > grant.MaxBytes` immediately after `Get` — a
+  presigned PUT URL enforces no server-side size cap, so an oversized
+  upload forced a full read+hash before rejection. Added the same
+  early-exit check S15 uses (kept the post-hash check too, matching S15's
+  own "optimization, not a replacement" reasoning for keeping both).
+- **1 MiB/`application/json` policy unenforced at write time (fixed for
+  real).** The plan's own text ("honouring the existing 1 MiB and
+  `application/json` policy") was not honored anywhere — `CreateArtifactGrant`
+  never referenced `IndexIngestOutputPolicy`; the only check that ran was
+  `IndexArtifactReference.Validate()`'s generic non-zero-length/parseable-MIME-type
+  check. Empirically proven exploitable by the reviewer (a 10 MiB
+  `image/png` grant succeeded cleanly). `NewIndexResultArtifactWriter` now
+  takes the same `IndexIngestOutputPolicy`
+  `NewIndexIngestResultsRepository` already validates against — reused
+  directly rather than a second, independently-configured policy type, so
+  a future caller wiring both cannot let them drift — and
+  `CreateArtifactGrant` rejects a mismatched media type or an oversized
+  artifact before ever minting a grant.
+
+Four new regression tests
+(`TestIndexIngestArtifactGrantCommitResolveAndIngestRoundTrip`'s own new
+subtests) prove each fix against the real Postgres+RustFS stack. Full
+resweep after fixing: `gofmt`, `go build`, `go vet`, `task lint` (0
+issues), the literal Verify command above, and a full workspace `go test
+-race ./...` with every emulator + a real Postgres attached — zero
+failures.
+
+**Plan complete: S1-S20c, all 21 stages (20 numbered plus S20's three-part
+split), implemented, adversarially reviewed, and tested** — the swarm
+review's own findings across both passes (S18-S20b's 48-agent pass and
+S20c's own 4-agent pass) are fixed and regression-tested, fulfilling the
+standing instruction to run a swarm review after full implementation and
+fix everything it finds.
+
 ---
 
 ## Explicitly out of scope

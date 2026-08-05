@@ -809,3 +809,52 @@ WHERE a.artifact_id = sqlc.arg(artifact_id)::text
   AND j.projection_project_id = sqlc.arg(projection_project_id)::integer
   AND j.command_id = sqlc.arg(command_id)::text
   AND j.capability_id = 'index.ingest.v1';
+
+-- name: InsertIndexResultArtifact :one
+-- S20c: the writer side of elitea_runtime.index_result_artifacts —
+-- GetDurableIndexResultArtifact above is the pre-existing read side
+-- (ArtifactVerifier.VerifyDurable), this is IndexResultArtifactWriter's own
+-- CommitArtifact. No ON CONFLICT: a (artifact_id, immutable_version)
+-- collision is handled in Go (repos.IndexResultArtifactWriter), which
+-- distinguishes a safe exact-content retry from a genuine identity
+-- conflict — a bare ON CONFLICT DO NOTHING can't make that distinction
+-- from the write alone.
+--
+-- metadata_created_at is set explicitly to the same value as
+-- bytes_verified_at, rather than left to its own DEFAULT clock_timestamp()
+-- — confirmed empirically (a real 23514 violation, not by inspection) that
+-- a client-computed bytes_verified_at is always microseconds earlier than
+-- a server-side DEFAULT evaluated at INSERT time, which the table's own
+-- index_result_artifact_verified_order CHECK (bytes_verified_at >=
+-- metadata_created_at) rejects. Reusing one Go-computed timestamp for both
+-- columns guarantees equality, which satisfies >=.
+INSERT INTO elitea_runtime.index_result_artifacts (
+    artifact_id, immutable_version, execution_id, generation,
+    resource_project_id, media_type, byte_length, digest, classification,
+    storage_record_id, bytes_verified_at, metadata_created_at
+) VALUES (
+    sqlc.arg(artifact_id)::text, sqlc.arg(immutable_version)::text,
+    sqlc.arg(execution_id)::text, sqlc.arg(generation)::bigint,
+    sqlc.arg(resource_project_id)::integer, sqlc.arg(media_type)::text,
+    sqlc.arg(byte_length)::bigint, sqlc.arg(digest)::bytea,
+    sqlc.arg(classification)::text, sqlc.arg(storage_record_id)::text,
+    sqlc.arg(bytes_verified_at)::timestamptz, sqlc.arg(bytes_verified_at)::timestamptz
+)
+RETURNING artifact_id, immutable_version, execution_id, generation,
+    resource_project_id, media_type, byte_length, digest, classification,
+    storage_record_id, bytes_verified_at;
+
+-- name: GetIndexResultArtifactByPrimaryKey :one
+-- S20c: keyed only by the table's actual primary key, no execution_jobs
+-- join — used both by CommitArtifact's duplicate-PK reconciliation (decide
+-- exact-retry vs genuine conflict) and by ResolveArtifact (find the
+-- storage_record_id to resolve a read grant against). Unlike
+-- GetDurableIndexResultArtifact above, this does not re-check
+-- tenant/projection/command identity; ResolveArtifact does that itself
+-- against the row's own execution_id/generation/resource_project_id.
+SELECT artifact_id, immutable_version, execution_id, generation,
+    resource_project_id, media_type, byte_length, digest, classification,
+    storage_record_id, bytes_verified_at
+FROM elitea_runtime.index_result_artifacts
+WHERE artifact_id = sqlc.arg(artifact_id)::text
+  AND immutable_version = sqlc.arg(immutable_version)::text;
