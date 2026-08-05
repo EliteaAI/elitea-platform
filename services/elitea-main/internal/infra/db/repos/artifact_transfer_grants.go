@@ -13,7 +13,8 @@ import (
 )
 
 // TransferGrantRow is the domain-shaped view of one
-// elitea_storage.transfer_grants row (S15).
+// elitea_storage.transfer_grants row (S15). UploadID (S16) is non-nil only
+// for a grant CreateTransferGrant started as a native multipart upload.
 type TransferGrantRow struct {
 	ID          string
 	ProjectID   int64
@@ -24,6 +25,7 @@ type TransferGrantRow struct {
 	MaxBytes    int64
 	DigestAlg   *string
 	Digest      []byte
+	UploadID    *string
 	ExpiresAt   time.Time
 	ConsumedAt  *time.Time
 	CreatedAt   time.Time
@@ -41,12 +43,14 @@ type NewTransferGrantInput struct {
 	MaxBytes    int64
 	DigestAlg   *string
 	Digest      []byte
+	UploadID    *string
 	ExpiresAt   time.Time
 }
 
 type artifactTransferGrantQueries interface {
 	CreateArtifactTransferGrant(context.Context, sqlcgen.CreateArtifactTransferGrantParams) (sqlcgen.CreateArtifactTransferGrantRow, error)
 	GetArtifactTransferGrant(context.Context, sqlcgen.GetArtifactTransferGrantParams) (sqlcgen.GetArtifactTransferGrantRow, error)
+	GetArtifactTransferGrantByID(context.Context, string) (sqlcgen.GetArtifactTransferGrantByIDRow, error)
 	MarkArtifactTransferGrantConsumed(context.Context, string) (int64, error)
 }
 
@@ -83,6 +87,7 @@ func (r *ArtifactTransferGrantsRepository) CreateTransferGrant(ctx context.Conte
 		MaxBytes:    input.MaxBytes,
 		DigestAlg:   input.DigestAlg,
 		Digest:      input.Digest,
+		UploadID:    input.UploadID,
 		ExpiresAt:   toTimestamptz(&expiresAt),
 	})
 	if err != nil {
@@ -91,7 +96,7 @@ func (r *ArtifactTransferGrantsRepository) CreateTransferGrant(ctx context.Conte
 	return TransferGrantRow{
 		ID: row.ID, ProjectID: row.ProjectID, BucketID: row.BucketID, Key: row.Key,
 		Method: row.Method, ContentType: row.ContentType, MaxBytes: row.MaxBytes,
-		DigestAlg: row.DigestAlg, Digest: row.Digest,
+		DigestAlg: row.DigestAlg, Digest: row.Digest, UploadID: row.UploadID,
 		ExpiresAt: row.ExpiresAt.Time, ConsumedAt: fromTimestamptz(row.ConsumedAt), CreatedAt: row.CreatedAt.Time,
 	}, nil
 }
@@ -109,7 +114,26 @@ func (r *ArtifactTransferGrantsRepository) GetTransferGrant(ctx context.Context,
 	return TransferGrantRow{
 		ID: row.ID, ProjectID: row.ProjectID, BucketID: row.BucketID, Key: row.Key,
 		Method: row.Method, ContentType: row.ContentType, MaxBytes: row.MaxBytes,
-		DigestAlg: row.DigestAlg, Digest: row.Digest,
+		DigestAlg: row.DigestAlg, Digest: row.Digest, UploadID: row.UploadID,
+		ExpiresAt: row.ExpiresAt.Time, ConsumedAt: fromTimestamptz(row.ConsumedAt), CreatedAt: row.CreatedAt.Time,
+	}, nil
+}
+
+// GetTransferGrantByID is unscoped by projectID — see the wrapped sqlc
+// query's own comment for why S16's multipart continuation endpoints need
+// this alongside the project-scoped GetTransferGrant.
+func (r *ArtifactTransferGrantsRepository) GetTransferGrantByID(ctx context.Context, id string) (TransferGrantRow, error) {
+	row, err := r.queries.GetArtifactTransferGrantByID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TransferGrantRow{}, storage.ErrNotFound
+	}
+	if err != nil {
+		return TransferGrantRow{}, fmt.Errorf("get artifact transfer grant by id: %w", err)
+	}
+	return TransferGrantRow{
+		ID: row.ID, ProjectID: row.ProjectID, BucketID: row.BucketID, Key: row.Key,
+		Method: row.Method, ContentType: row.ContentType, MaxBytes: row.MaxBytes,
+		DigestAlg: row.DigestAlg, Digest: row.Digest, UploadID: row.UploadID,
 		ExpiresAt: row.ExpiresAt.Time, ConsumedAt: fromTimestamptz(row.ConsumedAt), CreatedAt: row.CreatedAt.Time,
 	}, nil
 }

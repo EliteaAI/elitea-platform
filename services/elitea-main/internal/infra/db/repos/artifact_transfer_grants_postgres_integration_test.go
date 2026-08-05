@@ -66,6 +66,56 @@ func TestArtifactGrantRepositoryCreatesAndFetchesAgainstRealPostgres(t *testing.
 	}
 }
 
+// TestArtifactGrantRepositoryUploadIDRoundTripsAndGetByIDIsUnscopedAgainstRealPostgres
+// proves S16's schema addition end to end: a grant created with a non-nil
+// UploadID round-trips it through both CreateTransferGrant and
+// GetTransferGrant, and GetTransferGrantByID resolves the same row without
+// the project_id filter GetTransferGrant applies — the property S16's
+// ownership check (requireOwnedMultipartGrant, internal/api/v2/artifacts)
+// depends on.
+func TestArtifactGrantRepositoryUploadIDRoundTripsAndGetByIDIsUnscopedAgainstRealPostgres(t *testing.T) {
+	buckets, grants := newArtifactTransferGrantsTestRepos(t)
+	ctx := context.Background()
+	const projectID = int64(9205)
+
+	bucket := mustCreateArtifactBucket(t, buckets, projectID, "reports")
+	uploadID := "s3-multipart-upload-abc123"
+	created, err := grants.CreateTransferGrant(ctx, NewTransferGrantInput{
+		ID: "44444444-4444-4444-8444-444444444444", ProjectID: projectID, BucketID: bucket.ID,
+		Key: "44444444-4444-4444-8444-444444444444", Method: "PUT", ContentType: "application/octet-stream",
+		MaxBytes: 200 << 20, UploadID: &uploadID, ExpiresAt: time.Now().Add(15 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CreateTransferGrant: %v", err)
+	}
+	if created.UploadID == nil || *created.UploadID != uploadID {
+		t.Fatalf("created.UploadID = %v, want %q", created.UploadID, uploadID)
+	}
+
+	fetched, err := grants.GetTransferGrant(ctx, created.ID, projectID)
+	if err != nil {
+		t.Fatalf("GetTransferGrant: %v", err)
+	}
+	if fetched.UploadID == nil || *fetched.UploadID != uploadID {
+		t.Fatalf("fetched.UploadID = %v, want %q", fetched.UploadID, uploadID)
+	}
+
+	// GetTransferGrantByID resolves the same row regardless of which
+	// project asks — the caller (requireOwnedMultipartGrant), not the
+	// query, is responsible for the ownership decision.
+	byID, err := grants.GetTransferGrantByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetTransferGrantByID: %v", err)
+	}
+	if byID.ProjectID != projectID || byID.UploadID == nil || *byID.UploadID != uploadID {
+		t.Fatalf("byID = %+v, want ProjectID=%d UploadID=%q", byID, projectID, uploadID)
+	}
+
+	if _, err := grants.GetTransferGrantByID(ctx, "00000000-0000-4000-8000-000000000000"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("GetTransferGrantByID for an unknown id: err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestArtifactGrantRepositoryGetIsScopedToProjectIDAgainstRealPostgres(t *testing.T) {
 	buckets, grants := newArtifactTransferGrantsTestRepos(t)
 	ctx := context.Background()

@@ -72,6 +72,12 @@ type Repository interface {
 	GetTransferGrant(ctx context.Context, id string, projectID int64) (repos.TransferGrantRow, error)
 	MarkTransferGrantConsumed(ctx context.Context, id string) error
 	GetBucketByID(ctx context.Context, id int64) (repos.BucketRow, error)
+	// GetTransferGrantByID is S16's addition, backing multipart.go's
+	// ownership check — see its own doc comment in
+	// internal/infra/db/repos/artifact_transfer_grants.go for why the
+	// multipart continuation endpoints need an unscoped lookup that
+	// GetTransferGrant's project-scoped query cannot provide.
+	GetTransferGrantByID(ctx context.Context, id string) (repos.TransferGrantRow, error)
 }
 
 type Handler struct {

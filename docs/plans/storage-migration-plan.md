@@ -38,6 +38,33 @@ indexer all call endpoints that will no longer exist. Each is a separately
 tracked issue, reworked once the new API lands. Do not edit `elitea-sdk`,
 `apps/elitea-web`, `apps/elitea-ui`, or the indexer as part of any stage here.
 
+**Horizontal scaling and plane separation are standing constraints, not a
+per-stage concern.** ADR-0016's whole decision rests on "any number of
+`elitea-main` replicas, no PVC, no node affinity... losing a pod loses no
+data and interrupts no subsequent read" — every stage must hold that
+invariant, not just the ones that mention it explicitly. Concretely: no
+stage may introduce state that lives only in one `elitea-main` process's
+memory, or that assumes a request and a later request for the same logical
+operation land on the same replica (no sticky routing, no local caches that
+are the only copy of something). Any single-use, claim, or "only once"
+semantic (a grant's `consumed_at`, a sweeper tick, a lease) must be enforced
+by an atomic Postgres operation (`UPDATE ... WHERE <not-yet-claimed>`,
+`SELECT ... FOR UPDATE`, an advisory lock) — never an in-process mutex,
+`sync.Once`, or local map, all of which silently stop providing the
+guarantee they appear to provide the moment a deployment runs more than one
+replica, which is the normal case here, not an edge case. This also means a
+periodic background job (a scheduler tick, a sweep) must either be
+idempotent under concurrent execution by construction, or be started from a
+scheduling mechanism that itself guarantees single-instance execution — do
+not assume "there's only one process" when reasoning about a job's
+correctness. Separately, ADR-0016 depends on and must stay consistent with
+ADR-0014 (`adr-0014-control-output-data-plane-separation.mdx`): bulk artifact
+bytes belong on the scoped transfer-grant path directly between the caller
+and the object store, never proxied through a control-plane RPC/broker path,
+and a reference (grant ID, object key) is never itself an authorization —
+every read of a reference must re-check a current, unexpired, correctly-
+scoped grant against Postgres.
+
 ---
 
 ## How to execute this plan
@@ -1860,7 +1887,37 @@ but `TestTenantBoundariesRejectMissingLegacySchema` inserts a row omitting
 both columns. Invisible in CI since `ci-go.yml` never sets
 `ELITEA_TEST_DATABASE_URL` or runs a Postgres service for this job, so
 these tests always skip in the pipeline. Flagged as a follow-up task rather
-than fixed inline — unrelated to artifact storage.
+than fixed inline — unrelated to artifact storage. (Fixed in a later,
+separate commit, `8041a1f`, alongside wiring a real Postgres service into
+`ci-go.yml` so this package's integration tests stop skipping in CI —
+`9b60898`. Neither commit is otherwise part of this plan's stage sequence.)
+
+**Horizontal-scaling audit (added after S16, prompted by an explicit
+request to verify ADR-0016's "any number of `elitea-main` replicas"
+requirement holds):** confirmed the sweeper is safe under multiple
+concurrently-running replicas, and that this was never something S14 had
+to build — it piggybacks on the exact same `schedulingapp.Registry`/`Runner`
+the pre-existing index-scan job already uses
+(`internal/runtimecomposition/scheduled_job_registry.go`), and that shared
+framework's cross-replica correctness boundary is Postgres-native: occurrence
+claims use `FOR UPDATE OF occurrence SKIP LOCKED` plus a fenced
+`lease_epoch`/`claim_fence` UPDATE
+(`internal/db/queries/scheduled_occurrences.sql`,
+`internal/infra/db/repos/schedule_occurrences.go`), not an in-process lock
+of any kind — see `internal/application/scheduling/runner.go`'s own doc
+comment: "Every Main replica may run it: PostgreSQL planning and occurrence
+leases provide logical ownership and takeover." `MaxParallel:1`/`PageSize:1`
+per tick means only one occurrence is guaranteed exclusive per replica-tick;
+if the sweeper falls behind, two different due occurrences of the same job
+could in principle be claimed by two different replicas concurrently — but
+the sweep's own business logic tolerates this by construction, not by
+avoiding it: `sweepExpiredObjects`'s delete calls are idempotent no-ops on
+an already-deleted row, and `notifyExpiringBuckets`'s
+`NotifyBucketExpiring` derives a deterministic UUID from
+`(bucketID, expiresAt)` with `ON CONFLICT (uuid) DO NOTHING`
+(`artifact_retention_notification.go`), so a duplicate concurrent
+notification insert produces zero rows rather than a duplicate delivery.
+No code change needed; recorded here since it was checked, not assumed.
 
 ---
 
@@ -2077,6 +2134,187 @@ least 3 `--- PASS` lines, not just a nonzero count.
 ```
 cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run TestArtifactMultipart -v > /tmp/s16.log 2>&1; rc=$?; cat /tmp/s16.log; test $rc -eq 0 && test "$(grep -c -- '--- PASS' /tmp/s16.log)" -ge 3
 ```
+
+**Plan defect found during implementation:** unlike S15's own section (which
+explicitly warns "this package cannot reach `internal/api/router.go`... a
+handler-level Verify command can pass while the route itself is still
+unwired" and requires a router-level test as an acceptance criterion), this
+S16 section named no such requirement and the Verify command above never
+runs `internal/api` at all — the exact failure mode S15's text warns about,
+un-guarded here. Closed the same way S15 was: added
+`TestArtifactMultipartRoutesResolveThroughRealHandlerWhenConfigured` in
+`internal/api/router_security_test.go`, proving all three new routes
+resolve through the real handler chain (not the S7 stub), even though
+nothing in this stage's own literal Verify command would have caught its
+absence.
+
+**Design decisions made during implementation, not fully pinned down by the
+plan text above:** "expose the four multipart operations through the grant
+API" was read as folding Start into the *existing* `CreateTransferGrant`
+endpoint (same URL, response shape changes based on whether `upload_id` or
+`url` comes back) rather than adding a fourth new endpoint — three new
+routes were added (part presign, complete, abort), not four, matching
+storage.ObjectStore's own four multipart methods 1:1 once Start is counted
+against the endpoint it reuses. `multipartThreshold` (64 MiB) is a Go
+constant, not project-configurable — the plan names the number but not a
+policy override, and `project_storage_policy` has no matching column to
+source one from. `maxPartNumber` (10000) is S3's own limit, used as a
+shared validation ceiling for all backends since the plan names no number
+of its own and GCS never reaches this code path at all
+(`Capabilities().NativeMultipart` is always false).
+
+The plan's own acceptance criterion — "a part call with another project's
+grant returns 403" — is a deliberate departure from S15's own
+`CommitTransferGrant`, which collapses "wrong project" and "grant does not
+exist" into a single 404 via a project-scoped SQL `WHERE` clause. S16's
+multipart continuation endpoints (`PresignUploadPart`,
+`CompleteMultipartUpload`, `AbortMultipartUpload`) instead fetch the grant
+by ID alone (`GetTransferGrantByID`, unscoped) and compare `ProjectID`
+explicitly in the handler, so a real-but-foreign grant ID gets 403
+(AccessDenied) while a genuinely unknown ID still gets 404 — exactly the
+distinction the plan's own acceptance criterion requires and S15's shape
+cannot make. This 403 check was extended to `AbortMultipartUpload` too,
+beyond what the plan's acceptance-criteria sentence names literally ("a
+part call") — the plan's body text ("ownership must be verified on every
+part and completion call") plus ordinary security-consistency reasoning
+argued for treating abort identically, since an unauthenticated-for-this-grant
+caller aborting someone else's in-progress upload is exactly the kind of
+cross-tenant interference the check exists to prevent.
+
+`PresignUploadPart`/`CompleteMultipartUpload` both reject an expired grant
+(412); `AbortMultipartUpload` deliberately does not — cleanup of an
+abandoned session must not be blocked by the same TTL that blocks new
+uploads, or an expired-but-still-open provider-side multipart session would
+have no way to be released through this API before S14's lifecycle-rule GC
+eventually reaps it. A part-presign URL's TTL is bounded by the parent
+grant's own remaining lifetime (`time.Until(grant.ExpiresAt)`), not a fresh
+`defaultGrantTTL` on every call — otherwise a caller could keep refreshing
+part URLs indefinitely past the grant's own 15-minute boundary.
+`AbortMultipartUpload` marks a grant terminal by reusing the same
+`consumed_at` column a successful commit uses, rather than adding a
+dedicated `aborted_at` column — every other endpoint treats "consumed" as
+simply "no longer usable," and this stage found no place in the codebase
+that reads `consumed_at` and assumes it specifically means "successfully
+committed" (S14's sweeper works off `elitea_storage.objects`, not
+`transfer_grants`, and is unaffected either way).
+
+**Horizontal-scaling and control/data-plane-separation check** (prompted by
+an explicit request mid-stage to verify this plan still meets
+`elitea-docs/docs/internal/03-architecture/adrs/adr-0016-object-storage-architecture.mdx`'s
+"any number of `elitea-main` replicas... losing a pod loses no data and
+interrupts no subsequent read" requirement and
+`elitea-docs/docs/internal/03-architecture/adrs/adr-0014-control-output-data-plane-separation.mdx`'s
+plane separation): confirmed clean on both counts. No multipart state lives
+in `elitea-main` process memory or in Redis — the only durable state is the
+`upload_id` string in `elitea_storage.transfer_grants` (Postgres) plus the
+session the provider itself holds; any pod can service any request for a
+given grant, with no session affinity requirement, exactly like S15's
+existing grants. This is also why the blocking concurrency fix below had to
+be a Postgres-level atomic claim (`UPDATE ... WHERE consumed_at IS NULL`)
+rather than an in-process mutex or `sync.Once` — the latter would silently
+stop working the moment a deployment ran more than one replica, which is
+the normal case per ADR-0016, not an edge case. Bulk part bytes never
+transit `elitea-main` at all (client uploads each part directly to the
+provider via the presigned URL `PresignUploadPart` returns) except at
+`CompleteMultipartUpload`'s own verification read — the same
+already-accepted, already-documented cost `CommitTransferGrant` (S15) pays,
+not a new one.
+
+**One blocking defect found and fixed by a Workflow adversarial-review pass
+(plan-compliance + bug-hunt + test-integrity reviewers, each independently
+verified) run before committing:** `CompleteMultipartUpload` and
+`AbortMultipartUpload`'s first-draft shape both claimed the grant
+(`MarkTransferGrantConsumed`) only *after* calling their own store method
+(`store.CompleteMultipart` / `store.AbortMultipart`) — mirroring
+`CommitTransferGrant`'s existing, already-shipped ordering. Two concurrent
+same-project requests (a client retry racing a cancel, for example) could
+both observe `consumed_at IS NULL` before either wrote, then race on which
+backend call landed first: if abort won, it could delete the very parts
+complete was in the middle of assembling, silently and permanently
+discarding an otherwise fully, legitimately uploaded transfer, with no way
+to recover it (the grant would already read as consumed by whichever side
+won the metadata write). Fixed by claiming the grant *before* calling
+either store method in both handlers, making the two mutually exclusive:
+whichever request wins the claim proceeds; the loser gets a clean 409
+without the store ever being touched. `AbortMultipartUpload`'s original
+"treat a lost race as a tolerated no-op, return 204 anyway" handling was
+itself part of the bug (it could report success on an abort that a
+concurrent, legitimate completion had already beaten) and was replaced with
+a hard 409 on a lost claim.
+
+This fix has a real, documented trade-off: a `CompleteMultipartUpload` that
+fails verification (digest/media-type/quota, inside the shared
+`finalizeGrantCommit`) is no longer retriable in place the way
+`CommitTransferGrant` is — the grant is already consumed by the time
+verification runs. A caller whose large upload fails verification must
+start a new grant. Judged acceptable given multipart exists specifically
+for objects above the 64 MiB threshold, where closing the concurrent-abort
+race matters more than in-place retry convenience after a failed check.
+
+Regression coverage:
+`TestArtifactMultipartConcurrentCompleteAndAbortAreMutuallyExclusive`
+(`internal/api/v2/artifacts/multipart_test.go`) reproduces the race
+deterministically — not via real goroutines, which are inherently
+timing-dependent — using new `fakeStore` hooks
+(`beforeCompleteMultipart`/`beforeAbortMultipart`) that synchronously make
+a second, "concurrent" request land exactly inside the window a genuine
+race would occupy. The initial version of this test was itself flawed: it
+pre-set `ConsumedAt` on the grant before issuing the request, which is
+rejected by `requireOwnedMultipartGrant`'s ownership check before the
+ordering-dependent code is ever reached, regardless of which ordering is
+under test — it passed identically against both the buggy and fixed code
+and proved nothing. The hook-based version was confirmed, by temporarily
+reverting the fix, to actually fail against the pre-fix ordering (a
+concurrent complete corrupting an in-flight abort's parts, and vice versa)
+before being confirmed to pass against the fix.
+
+**Minor defect found and fixed:** `CreateTransferGrant`'s native-multipart
+branch calls `store.StartMultipart` (creating real, billed backend-side
+state) *before* persisting the grant row. If the subsequent database insert
+failed, the caller received a 500 with no `grant_id`/`upload_id` to ever
+reference or clean up that session with — an orphaned multipart upload with
+no compensating rollback, unlike `rejectCommit`'s established
+cleanup-on-failure convention elsewhere in this package. Fixed by calling
+`store.AbortMultipart` as best-effort compensation when the metadata write
+fails after a successful `StartMultipart`; if that compensating call itself
+fails too, S14's own incomplete-multipart-upload lifecycle rule (S3/GCS;
+Azure documented gap — see S14) eventually reclaims it, matching this
+package's existing tolerance for bounded, non-permanent leaks elsewhere.
+
+**Nits found and fixed:** a `time.Until(grant.ExpiresAt)` computed after a
+database round trip that followed the handler's own expiry check could, in
+principle, read as non-positive despite that check having just passed
+(`PresignUploadPart`) — added a second, cheap guard immediately before the
+value is used. The exact 64 MiB boundary (`max_bytes == 67108864`) had no
+dedicated test, only values well clear of it on both sides — added
+`TestArtifactMultipartExactlyAtThresholdStaysSingleShot`. The sqlc compiler
+baseline (`internal/db/schema/artifact_storage_baseline.sql`) declared
+`upload_id` mid-table while the real migration
+(`0058_artifact_multipart.sql`) appends it via `ALTER TABLE`, making it
+physically last in the deployed table — no functional effect (every query
+names its columns explicitly; nothing here does `SELECT *`), but corrected
+for legibility so the two files describe the same physical layout, not
+just the same logical one. A test's "parts deliberately out of order"
+comment overclaimed what it proved — the ordering guarantee actually comes
+from the store layer (both `fakeStore` and the real S3 backend re-sort by
+part number internally), not the handler — corrected to state what the
+test actually demonstrates. `fakeStore.CompleteMultipart` never validated
+a part's ETag against what `simulateMultipartPartUpload` issued, so no test
+anywhere exercised a wrong-ETag rejection even though
+`CompleteMultipartUpload` is the first place in this codebase an
+externally-supplied ETag reaches `storage.ObjectStore.CompleteMultipart` —
+added the check to the fake (modeling real S3/Azure `InvalidPart`-style
+behavior) plus a regression test.
+
+**Known, accepted gap, inherited from S15:** as with
+`ArtifactTransferGrantsRepository`'s existing Postgres integration tests,
+S16's own addition
+(`TestArtifactGrantRepositoryUploadIDRoundTripsAndGetByIDIsUnscopedAgainstRealPostgres`)
+does not exercise the `bucket_id` foreign key or `grants_method_valid`
+CHECK constraint directly — both are enforced by the schema and by the
+handler's own validation before a grant is ever created, so a
+constraint-violation path only exists as defense-in-depth against a bug
+that would already be caught elsewhere.
 
 ---
 

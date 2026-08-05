@@ -1864,23 +1864,76 @@ components:
           description: Hex-encoded digest, algorithm named by digest_alg.
       description: >
         PUT grants are single-use. Default TTL 15 minutes, maximum 60 (S15).
+        A PUT request above 64 MiB on a backend whose Capabilities() reports
+        NativeMultipart starts a native multipart upload instead of a
+        single-shot grant (S16) — see TransferGrantResponse.upload_id.
 
     TransferGrantResponse:
       type: object
-      required: [grant_id, url, method, expires_at, content_type, max_bytes]
+      required: [grant_id, method, expires_at, content_type, max_bytes]
       properties:
         grant_id: { type: string }
         url:
           type: string
           description: >
             Never the physical bucket, backend URL, or a credential — a
-            complete, ready-to-use presigned (or facade) URL (S15).
+            complete, ready-to-use presigned (or facade) URL (S15). Absent
+            when upload_id is present (S16) — a native multipart upload has
+            no single URL for the whole object, only per-part ones obtained
+            via POST .../grants/{projectID}/{grantID}/parts/{partNumber}.
         method:
           type: string
           enum: [GET, PUT]
         expires_at: { type: string, format: date-time }
         content_type: { type: string }
         max_bytes: { type: integer, format: int64 }
+        upload_id:
+          type: string
+          description: >
+            Present only for a native multipart upload (S16) — mutually
+            exclusive with url. Exchange it for part-level presigned URLs,
+            then finish with :completeMultipart or cancel with
+            :abortMultipart.
+
+    PresignUploadPartResponse:
+      type: object
+      required: [part_number, url, expires_at]
+      description: >
+        Response for POST .../grants/{projectID}/{grantID}/parts/{partNumber}
+        (S16).
+      properties:
+        part_number: { type: integer, format: int32 }
+        url:
+          type: string
+          description: A presigned PUT URL for this part only.
+        expires_at:
+          type: string
+          format: date-time
+          description: >
+            Never later than the parent grant's own expires_at — a part URL
+            cannot outlive the upload session it belongs to.
+
+    CompletedPart:
+      type: object
+      required: [part_number, etag]
+      properties:
+        part_number: { type: integer, format: int32 }
+        etag:
+          type: string
+          description: The ETag the backend returned for this part's upload.
+
+    CompleteMultipartRequest:
+      type: object
+      required: [parts]
+      description: >
+        Body for POST .../grants/{projectID}/{grantID}:completeMultipart
+        (S16).
+      properties:
+        parts:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CompletedPart'
 
     # ---- Chat / settings ---------------------------------------------------------
     ChatConfig:
@@ -4716,6 +4769,169 @@ paths:
           description: >
             Uploaded object exceeds the grant's max_bytes, or committing it
             would exceed the project's storage quota
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /artifacts/grants/{projectID}/{grantID}/parts/{partNumber}:
+    parameters:
+      - name: projectID
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: grantID
+        in: path
+        required: true
+        schema: { type: string }
+      - name: partNumber
+        in: path
+        required: true
+        schema: { type: integer, format: int32, minimum: 1, maximum: 10000 }
+
+    post:
+      operationId: presignUploadPart
+      summary: Presign one part of a native multipart upload
+      description: >
+        S16. grantID must be a grant CreateTransferGrant started as native
+        multipart (its response carried upload_id, not url) — a single-shot
+        grant, a GET grant, or a grant belonging to a different project
+        cannot be used here.
+      tags: [artifacts]
+      responses:
+        '200':
+          description: A presigned PUT URL for this part
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PresignUploadPartResponse'
+        '400':
+          description: Invalid part number, or grantID is not a multipart grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: >
+            grantID belongs to a different project — see AccessDenied in
+            components/schemas/Error.code
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/404' }
+        '409':
+          description: The grant was already committed or aborted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '412':
+          description: The grant has expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /artifacts/grants/{projectID}/{grantID}:completeMultipart:
+    parameters:
+      - name: projectID
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: grantID
+        in: path
+        required: true
+        schema: { type: string }
+
+    post:
+      operationId: completeMultipartUpload
+      summary: Finish a native multipart upload, making it listable
+      description: >
+        S16. Applies the identical size/digest/media-type/quota
+        verification commitTransferGrant does — completing via multipart is
+        not a lesser-verified path. See commitTransferGrant's own
+        description for what each response code means; they are shared.
+      tags: [artifacts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteMultipartRequest'
+      responses:
+        '200':
+          description: Completed — the object is now listable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadObjectResponse'
+        '400':
+          description: Invalid request, or grantID is not a multipart grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: >
+            grantID belongs to a different project — see AccessDenied in
+            components/schemas/Error.code
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/404' }
+        '409':
+          description: Digest or media-type mismatch, or the grant was already consumed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '412':
+          description: The grant has expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: >
+            The completed object exceeds the grant's max_bytes, or
+            completing it would exceed the project's storage quota
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /artifacts/grants/{projectID}/{grantID}:abortMultipart:
+    parameters:
+      - name: projectID
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: grantID
+        in: path
+        required: true
+        schema: { type: string }
+
+    post:
+      operationId: abortMultipartUpload
+      summary: Cancel a native multipart upload
+      description: >
+        S16. Unlike presignUploadPart/completeMultipartUpload, an expired
+        grant may still be aborted — cleaning up an abandoned upload session
+        is not itself subject to the grant's own TTL.
+      tags: [artifacts]
+      responses:
+        '204':
+          description: Aborted
+        '400':
+          description: grantID is not a multipart grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: >
+            grantID belongs to a different project — see AccessDenied in
+            components/schemas/Error.code
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/404' }
+        '409':
+          description: The grant was already committed or aborted
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

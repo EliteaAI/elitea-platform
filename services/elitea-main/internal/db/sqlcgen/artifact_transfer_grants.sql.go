@@ -14,15 +14,15 @@ import (
 const createArtifactTransferGrant = `-- name: CreateArtifactTransferGrant :one
 INSERT INTO elitea_storage.transfer_grants (
     id, project_id, bucket_id, key, method, content_type, max_bytes,
-    digest_alg, digest, expires_at
+    digest_alg, digest, upload_id, expires_at
 ) VALUES (
     $1::text::uuid, $2::bigint, $3::bigint,
     $4::text, $5::text, $6::text,
     $7::bigint, $8::text, $9::bytea,
-    $10::timestamptz
+    $10::text, $11::timestamptz
 )
 RETURNING id::text AS id, project_id, bucket_id, key, method, content_type, max_bytes,
-    digest_alg, digest, expires_at, consumed_at, created_at
+    digest_alg, digest, upload_id, expires_at, consumed_at, created_at
 `
 
 type CreateArtifactTransferGrantParams struct {
@@ -35,6 +35,7 @@ type CreateArtifactTransferGrantParams struct {
 	MaxBytes    int64              `db:"max_bytes" json:"max_bytes"`
 	DigestAlg   *string            `db:"digest_alg" json:"digest_alg"`
 	Digest      []byte             `db:"digest" json:"digest"`
+	UploadID    *string            `db:"upload_id" json:"upload_id"`
 	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 }
 
@@ -48,6 +49,7 @@ type CreateArtifactTransferGrantRow struct {
 	MaxBytes    int64              `db:"max_bytes" json:"max_bytes"`
 	DigestAlg   *string            `db:"digest_alg" json:"digest_alg"`
 	Digest      []byte             `db:"digest" json:"digest"`
+	UploadID    *string            `db:"upload_id" json:"upload_id"`
 	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 	ConsumedAt  pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
 	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
@@ -57,6 +59,8 @@ type CreateArtifactTransferGrantRow struct {
 // casting to text on both sides keeps the Go-side type a plain string,
 // matching this codebase's established convention (e.g.
 // InsertArtifactBucketExpiryNotification, S14) rather than pgtype.UUID.
+// upload_id (S16) is set only when CreateTransferGrant started a native
+// multipart upload; a normal single-shot grant passes it as NULL.
 func (q *Queries) CreateArtifactTransferGrant(ctx context.Context, arg CreateArtifactTransferGrantParams) (CreateArtifactTransferGrantRow, error) {
 	row := q.db.QueryRow(ctx, createArtifactTransferGrant,
 		arg.ID,
@@ -68,6 +72,7 @@ func (q *Queries) CreateArtifactTransferGrant(ctx context.Context, arg CreateArt
 		arg.MaxBytes,
 		arg.DigestAlg,
 		arg.Digest,
+		arg.UploadID,
 		arg.ExpiresAt,
 	)
 	var i CreateArtifactTransferGrantRow
@@ -81,6 +86,7 @@ func (q *Queries) CreateArtifactTransferGrant(ctx context.Context, arg CreateArt
 		&i.MaxBytes,
 		&i.DigestAlg,
 		&i.Digest,
+		&i.UploadID,
 		&i.ExpiresAt,
 		&i.ConsumedAt,
 		&i.CreatedAt,
@@ -90,7 +96,7 @@ func (q *Queries) CreateArtifactTransferGrant(ctx context.Context, arg CreateArt
 
 const getArtifactTransferGrant = `-- name: GetArtifactTransferGrant :one
 SELECT id::text AS id, project_id, bucket_id, key, method, content_type, max_bytes,
-    digest_alg, digest, expires_at, consumed_at, created_at
+    digest_alg, digest, upload_id, expires_at, consumed_at, created_at
 FROM elitea_storage.transfer_grants
 WHERE id = $1::text::uuid AND project_id = $2::bigint
 `
@@ -110,6 +116,7 @@ type GetArtifactTransferGrantRow struct {
 	MaxBytes    int64              `db:"max_bytes" json:"max_bytes"`
 	DigestAlg   *string            `db:"digest_alg" json:"digest_alg"`
 	Digest      []byte             `db:"digest" json:"digest"`
+	UploadID    *string            `db:"upload_id" json:"upload_id"`
 	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 	ConsumedAt  pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
 	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
@@ -132,6 +139,60 @@ func (q *Queries) GetArtifactTransferGrant(ctx context.Context, arg GetArtifactT
 		&i.MaxBytes,
 		&i.DigestAlg,
 		&i.Digest,
+		&i.UploadID,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getArtifactTransferGrantByID = `-- name: GetArtifactTransferGrantByID :one
+SELECT id::text AS id, project_id, bucket_id, key, method, content_type, max_bytes,
+    digest_alg, digest, upload_id, expires_at, consumed_at, created_at
+FROM elitea_storage.transfer_grants
+WHERE id = $1::text::uuid
+`
+
+type GetArtifactTransferGrantByIDRow struct {
+	ID          string             `db:"id" json:"id"`
+	ProjectID   int64              `db:"project_id" json:"project_id"`
+	BucketID    int64              `db:"bucket_id" json:"bucket_id"`
+	Key         string             `db:"key" json:"key"`
+	Method      string             `db:"method" json:"method"`
+	ContentType string             `db:"content_type" json:"content_type"`
+	MaxBytes    int64              `db:"max_bytes" json:"max_bytes"`
+	DigestAlg   *string            `db:"digest_alg" json:"digest_alg"`
+	Digest      []byte             `db:"digest" json:"digest"`
+	UploadID    *string            `db:"upload_id" json:"upload_id"`
+	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	ConsumedAt  pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
+	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// Unscoped by project_id, unlike GetArtifactTransferGrant above — used only
+// by S16's multipart continuation endpoints (part presign, complete,
+// abort), which must distinguish "grant does not exist" (404) from "grant
+// exists but belongs to a different project" (403 AccessDenied): the
+// plan's own S16 acceptance criterion ("a part call with another project's
+// grant returns 403") requires exactly that distinction, which a
+// project-scoped WHERE clause can't make — a wrong project and a
+// nonexistent id both return zero rows. See handler.go's
+// requireOwnedMultipartGrant for where the 403 decision actually happens.
+func (q *Queries) GetArtifactTransferGrantByID(ctx context.Context, id string) (GetArtifactTransferGrantByIDRow, error) {
+	row := q.db.QueryRow(ctx, getArtifactTransferGrantByID, id)
+	var i GetArtifactTransferGrantByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.BucketID,
+		&i.Key,
+		&i.Method,
+		&i.ContentType,
+		&i.MaxBytes,
+		&i.DigestAlg,
+		&i.Digest,
+		&i.UploadID,
 		&i.ExpiresAt,
 		&i.ConsumedAt,
 		&i.CreatedAt,
@@ -150,6 +211,8 @@ WHERE id = $1::text::uuid AND consumed_at IS NULL
 // exist or was already consumed. The caller (commitTransferGrant) has
 // already fetched the row by this point, so 0 rows here unambiguously means
 // "already consumed" — see repository.go's MarkTransferGrantConsumed.
+// S16 also uses this to mark an aborted multipart grant terminal — see
+// AbortMultipartUpload.
 func (q *Queries) MarkArtifactTransferGrantConsumed(ctx context.Context, id string) (int64, error) {
 	result, err := q.db.Exec(ctx, markArtifactTransferGrantConsumed, id)
 	if err != nil {

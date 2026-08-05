@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -138,23 +139,46 @@ func (alwaysSucceedsArtifactRepo) CreateTransferGrant(_ context.Context, input r
 	}, nil
 }
 
+// fixedMultipartUploadID is the upload_id alwaysSucceedsArtifactRepo's fixed
+// grants carry — alwaysSucceedsArtifactStore's multipart methods (S16)
+// accept any UploadID unconditionally, so the exact value is only ever
+// echoed back, never validated.
+var fixedMultipartUploadID = "fixed-upload-id"
+
 // GetTransferGrant returns a fixed PUT grant with no digest declared. Its
 // ContentType matches alwaysSucceedsArtifactStore.Get's fixed ContentType
 // (both "application/octet-stream") so CommitTransferGrant's mandatory
 // media-type check passes and its digest check (skipped when the grant
 // declared none) is a no-op, letting the router-level "succeeds with exact
 // permission" tests exercise a genuine 200 without needing a real upload to
-// have happened first.
+// have happened first. UploadID is always set (S16) so the same fixed grant
+// also satisfies requireOwnedMultipartGrant for the multipart continuation
+// routes — CommitTransferGrant itself never inspects UploadID, so this has
+// no effect on the pre-S16 single-shot commit tests.
 func (alwaysSucceedsArtifactRepo) GetTransferGrant(_ context.Context, id string, projectID int64) (repos.TransferGrantRow, error) {
 	return repos.TransferGrantRow{
 		ID: id, ProjectID: projectID, BucketID: 1, Key: id, Method: "PUT",
 		ContentType: "application/octet-stream", MaxBytes: 1 << 20,
+		UploadID:  &fixedMultipartUploadID,
 		ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
 	}, nil
 }
 
 func (alwaysSucceedsArtifactRepo) MarkTransferGrantConsumed(context.Context, string) error {
 	return nil
+}
+
+// GetTransferGrantByID (S16) returns the same fixed grant as
+// GetTransferGrant, ignoring the projectID scoping GetTransferGrant applies
+// — router-level tests exercising the multipart continuation routes rely on
+// this to reach a genuine 200 through the real handler chain.
+func (alwaysSucceedsArtifactRepo) GetTransferGrantByID(_ context.Context, id string) (repos.TransferGrantRow, error) {
+	return repos.TransferGrantRow{
+		ID: id, ProjectID: 1, BucketID: 1, Key: id, Method: "PUT",
+		ContentType: "application/octet-stream", MaxBytes: 1 << 20,
+		UploadID:  &fixedMultipartUploadID,
+		ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+	}, nil
 }
 
 var _ v2artifacts.Repository = alwaysSucceedsArtifactRepo{}
@@ -201,20 +225,26 @@ func (alwaysSucceedsArtifactStore) PresignPut(context.Context, storage.ObjectRef
 	return "", storage.ErrNotSupported
 }
 
+// StartMultipart stays ErrNotSupported: Capabilities().NativeMultipart is
+// false for this store, so CreateTransferGrant's S16 multipart-start gate
+// never calls it — router-level tests that need a multipart-shaped grant
+// construct one directly via the fixed GetTransferGrant/GetTransferGrantByID
+// row instead (see fixedMultipartUploadID) and exercise PresignPart/
+// CompleteMultipart/AbortMultipart below directly.
 func (alwaysSucceedsArtifactStore) StartMultipart(context.Context, storage.ObjectRef, storage.PutOptions) (storage.UploadID, error) {
 	return "", storage.ErrNotSupported
 }
 
-func (alwaysSucceedsArtifactStore) PresignPart(context.Context, storage.ObjectRef, storage.UploadID, int32, time.Duration) (string, error) {
-	return "", storage.ErrNotSupported
+func (alwaysSucceedsArtifactStore) PresignPart(_ context.Context, ref storage.ObjectRef, _ storage.UploadID, part int32, _ time.Duration) (string, error) {
+	return fmt.Sprintf("https://presigned.example.test/part/%s/%d", ref.Key(), part), nil
 }
 
-func (alwaysSucceedsArtifactStore) CompleteMultipart(context.Context, storage.ObjectRef, storage.UploadID, []storage.Part) (storage.ObjectInfo, error) {
-	return storage.ObjectInfo{}, storage.ErrNotSupported
+func (alwaysSucceedsArtifactStore) CompleteMultipart(_ context.Context, ref storage.ObjectRef, _ storage.UploadID, _ []storage.Part) (storage.ObjectInfo, error) {
+	return storage.ObjectInfo{Key: ref.Key(), LastModified: time.Now()}, nil
 }
 
 func (alwaysSucceedsArtifactStore) AbortMultipart(context.Context, storage.ObjectRef, storage.UploadID) error {
-	return storage.ErrNotSupported
+	return nil
 }
 
 func (alwaysSucceedsArtifactStore) Capabilities() storage.Capabilities { return storage.Capabilities{} }

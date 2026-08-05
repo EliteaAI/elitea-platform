@@ -267,7 +267,8 @@ func (r *fakeRepo) CreateTransferGrant(_ context.Context, input repos.NewTransfe
 	row := repos.TransferGrantRow{
 		ID: input.ID, ProjectID: input.ProjectID, BucketID: input.BucketID, Key: input.Key,
 		Method: input.Method, ContentType: input.ContentType, MaxBytes: input.MaxBytes,
-		DigestAlg: input.DigestAlg, Digest: input.Digest, ExpiresAt: input.ExpiresAt, CreatedAt: time.Now(),
+		DigestAlg: input.DigestAlg, Digest: input.Digest, UploadID: input.UploadID,
+		ExpiresAt: input.ExpiresAt, CreatedAt: time.Now(),
 	}
 	r.grants[row.ID] = row
 	return row, nil
@@ -278,6 +279,20 @@ func (r *fakeRepo) GetTransferGrant(_ context.Context, id string, projectID int6
 	defer r.mu.Unlock()
 	row, ok := r.grants[id]
 	if !ok || row.ProjectID != projectID {
+		return repos.TransferGrantRow{}, storage.ErrNotFound
+	}
+	return row, nil
+}
+
+// GetTransferGrantByID mirrors the real repository's unscoped lookup (S16)
+// — unlike GetTransferGrant above, it does not filter on projectID at all,
+// leaving the ownership decision to the caller (multipart.go's
+// requireOwnedMultipartGrant).
+func (r *fakeRepo) GetTransferGrantByID(_ context.Context, id string) (repos.TransferGrantRow, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row, ok := r.grants[id]
+	if !ok {
 		return repos.TransferGrantRow{}, storage.ErrNotFound
 	}
 	return row, nil

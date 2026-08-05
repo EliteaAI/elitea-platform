@@ -75,6 +75,38 @@ func TestArtifactGrantRepositoryGetScopesByProjectID(t *testing.T) {
 	}
 }
 
+func TestArtifactGrantRepositoryGetByIDIsNotScopedByProject(t *testing.T) {
+	queries := &artifactTransferGrantQueriesStub{
+		getByIDRow: sqlcgen.GetArtifactTransferGrantByIDRow{ID: "grant-1", ProjectID: 7, Method: "PUT"},
+	}
+	repository, err := newArtifactTransferGrantsRepository(queries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := repository.GetTransferGrantByID(context.Background(), "grant-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ProjectID != 7 {
+		t.Fatalf("row.ProjectID = %d, want 7 — the caller, not the query, is responsible for comparing this against the request's own projectID", row.ProjectID)
+	}
+	if queries.getByIDArg != "grant-1" {
+		t.Fatalf("get-by-id arg = %q, want grant-1", queries.getByIDArg)
+	}
+}
+
+func TestArtifactGrantRepositoryGetByIDMapsNoRowsToNotFound(t *testing.T) {
+	queries := &artifactTransferGrantQueriesStub{getByIDErr: pgx.ErrNoRows}
+	repository, err := newArtifactTransferGrantsRepository(queries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repository.GetTransferGrantByID(context.Background(), "missing")
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+}
+
 // TestArtifactGrantRepositoryMarkConsumedRejectsSecondCallWithAlreadyExists
 // proves the plan's "a second commit on the same grant returns 409"
 // acceptance criterion at the repository layer: 0 rows affected — whether
@@ -113,6 +145,10 @@ type artifactTransferGrantQueriesStub struct {
 	getArg sqlcgen.GetArtifactTransferGrantParams
 	getErr error
 
+	getByIDRow sqlcgen.GetArtifactTransferGrantByIDRow
+	getByIDArg string
+	getByIDErr error
+
 	markRows int64
 	markErr  error
 }
@@ -129,6 +165,13 @@ func (stub *artifactTransferGrantQueriesStub) GetArtifactTransferGrant(
 ) (sqlcgen.GetArtifactTransferGrantRow, error) {
 	stub.getArg = arg
 	return stub.getRow, stub.getErr
+}
+
+func (stub *artifactTransferGrantQueriesStub) GetArtifactTransferGrantByID(
+	_ context.Context, id string,
+) (sqlcgen.GetArtifactTransferGrantByIDRow, error) {
+	stub.getByIDArg = id
+	return stub.getByIDRow, stub.getByIDErr
 }
 
 func (stub *artifactTransferGrantQueriesStub) MarkArtifactTransferGrantConsumed(

@@ -340,6 +340,72 @@ func TestArtifactGrantRoutesResolveThroughRealHandlerWhenConfigured(t *testing.T
 	}
 }
 
+// TestArtifactMultipartRoutesResolveThroughRealHandlerWhenConfigured is
+// S16's equivalent of the S15 check above: internal/api/v2/artifacts's own
+// tests (multipart_test.go) exercise PresignUploadPart/
+// CompleteMultipartUpload/AbortMultipartUpload directly and never touch the
+// mounted route, so only a test in this package can prove router.go's S16
+// wiring actually happened. Notably, unlike S15's own plan section, S16's
+// plan text never names this requirement and its literal Verify command
+// never runs this package at all — an omission relative to S15's own
+// explicit warning about exactly this failure mode, recorded as a plan
+// defect in docs/plans/storage-migration-plan.md's S16 section (added
+// after this gap was found and closed here, not present in the plan's
+// original S16 text). alwaysSucceedsArtifactRepo's fixed
+// grant always carries an upload_id (fixedMultipartUploadID), so any
+// syntactically valid grant id resolves through requireOwnedMultipartGrant
+// without needing to create a real grant first.
+func TestArtifactMultipartRoutesResolveThroughRealHandlerWhenConfigured(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
+	router := NewRouter(RouterConfig{
+		AppsRepo:                   struct{ applications.Repository }{},
+		ArtifactHandler:            handler,
+		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
+	})
+	const grantID = "11111111-1111-4111-8111-111111111111"
+
+	partReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+"/parts/1", nil)
+	partRec := httptest.NewRecorder()
+	router.ServeHTTP(partRec, partReq)
+	if partRec.Code == http.StatusNotImplemented {
+		t.Fatalf("presignUploadPart route still resolves to the S7 stub; body=%s", partRec.Body.String())
+	}
+	if partRec.Code != http.StatusOK {
+		t.Fatalf("presign part: status = %d, want 200; body=%s", partRec.Code, partRec.Body.String())
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+":completeMultipart",
+		strings.NewReader(`{"parts":[{"part_number":1,"etag":"x"}]}`))
+	completeReq.Header.Set("Content-Type", "application/json")
+	completeRec := httptest.NewRecorder()
+	router.ServeHTTP(completeRec, completeReq)
+	if completeRec.Code == http.StatusNotImplemented {
+		t.Fatalf("completeMultipartUpload route still resolves to the S7 stub; body=%s", completeRec.Body.String())
+	}
+	if completeRec.Code != http.StatusOK {
+		t.Fatalf("complete multipart: status = %d, want 200; body=%s", completeRec.Code, completeRec.Body.String())
+	}
+
+	abortReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+":abortMultipart", nil)
+	abortRec := httptest.NewRecorder()
+	router.ServeHTTP(abortRec, abortReq)
+	if abortRec.Code == http.StatusNotImplemented {
+		t.Fatalf("abortMultipartUpload route still resolves to the S7 stub; body=%s", abortRec.Body.String())
+	}
+	// alwaysSucceedsArtifactRepo.MarkTransferGrantConsumed always succeeds
+	// and never actually marks the fixed in-memory grant consumed (it isn't
+	// a real, stateful repository), so this call reaches AbortMultipartUpload
+	// fully, past requireOwnedMultipartGrant's already-consumed check —
+	// unlike the stateful fakeRepo-backed tests in multipart_test.go, this
+	// double cannot exercise the "already consumed by the prior complete
+	// call above" case.
+	if abortRec.Code != http.StatusNoContent {
+		t.Fatalf("abort multipart: status = %d, want 204; body=%s", abortRec.Code, abortRec.Body.String())
+	}
+}
+
 // TestArtifactBucketPatchRequiresEditPermissionNotCreate proves S11's third
 // acceptance bullet: PATCH on a bucket is gated on the edit permission, not
 // create — a principal holding only create (which authorizes bucket/object

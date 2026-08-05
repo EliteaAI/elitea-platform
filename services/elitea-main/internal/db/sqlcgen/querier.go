@@ -44,6 +44,8 @@ type Querier interface {
 	// casting to text on both sides keeps the Go-side type a plain string,
 	// matching this codebase's established convention (e.g.
 	// InsertArtifactBucketExpiryNotification, S14) rather than pgtype.UUID.
+	// upload_id (S16) is set only when CreateTransferGrant started a native
+	// multipart upload; a normal single-shot grant passes it as NULL.
 	CreateArtifactTransferGrant(ctx context.Context, arg CreateArtifactTransferGrantParams) (CreateArtifactTransferGrantRow, error)
 	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
@@ -89,6 +91,16 @@ type Querier interface {
 	// should not be the exception that lets a caller commit a grant belonging
 	// to a project they only guessed the ID for.
 	GetArtifactTransferGrant(ctx context.Context, arg GetArtifactTransferGrantParams) (GetArtifactTransferGrantRow, error)
+	// Unscoped by project_id, unlike GetArtifactTransferGrant above — used only
+	// by S16's multipart continuation endpoints (part presign, complete,
+	// abort), which must distinguish "grant does not exist" (404) from "grant
+	// exists but belongs to a different project" (403 AccessDenied): the
+	// plan's own S16 acceptance criterion ("a part call with another project's
+	// grant returns 403") requires exactly that distinction, which a
+	// project-scoped WHERE clause can't make — a wrong project and a
+	// nonexistent id both return zero rows. See handler.go's
+	// requireOwnedMultipartGrant for where the 403 decision actually happens.
+	GetArtifactTransferGrantByID(ctx context.Context, id string) (GetArtifactTransferGrantByIDRow, error)
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
@@ -195,6 +207,8 @@ type Querier interface {
 	// exist or was already consumed. The caller (commitTransferGrant) has
 	// already fetched the row by this point, so 0 rows here unambiguously means
 	// "already consumed" — see repository.go's MarkTransferGrantConsumed.
+	// S16 also uses this to mark an aborted multipart grant terminal — see
+	// AbortMultipartUpload.
 	MarkArtifactTransferGrantConsumed(ctx context.Context, id string) (int64, error)
 	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
 	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)

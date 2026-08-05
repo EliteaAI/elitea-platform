@@ -2,7 +2,8 @@
 -- docs/plans/storage-migration-plan.md).
 --
 -- This file is NOT a runtime migration. The embedded shared migration
--- history (migrations/shared/0057_artifact_storage.sql) remains the only
+-- history (migrations/shared/0057_artifact_storage.sql,
+-- migrations/shared/0058_artifact_multipart.sql) remains the only
 -- target-schema authority.
 
 CREATE SCHEMA elitea_storage;
@@ -55,6 +56,10 @@ CREATE TABLE elitea_storage.project_storage_policy (
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Column order matches the real deployed table: 0057_artifact_storage.sql
+-- created every column through created_at, then 0058_artifact_multipart.sql
+-- appended upload_id afterward via ALTER TABLE — so it is physically last,
+-- not grouped with digest_alg/digest despite the conceptual relationship.
 CREATE TABLE elitea_storage.transfer_grants (
     id           UUID        PRIMARY KEY,
     project_id   BIGINT      NOT NULL,
@@ -68,6 +73,7 @@ CREATE TABLE elitea_storage.transfer_grants (
     expires_at   TIMESTAMPTZ NOT NULL,
     consumed_at  TIMESTAMPTZ,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    upload_id    TEXT,
     CONSTRAINT grants_method_valid CHECK (method IN ('GET','PUT'))
 );
 CREATE INDEX grants_expiry ON elitea_storage.transfer_grants (expires_at);

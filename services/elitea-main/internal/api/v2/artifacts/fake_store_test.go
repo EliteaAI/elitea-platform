@@ -3,6 +3,7 @@ package artifacts_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -33,6 +34,48 @@ type fakeStore struct {
 	// in this package relies on the false default (facade fallback /
 	// ErrNotSupported), unchanged from before S15.
 	presign bool
+
+	// multipart, when true, makes StartMultipart/PresignPart/CompleteMultipart
+	// succeed and Capabilities report NativeMultipart — S16's
+	// multipart_test.go sets this to exercise CreateTransferGrant's
+	// native-multipart branch; every other test in this package relies on
+	// the false default, unchanged from before S16.
+	multipart bool
+	// nextUploadNum generates deterministic, unique upload ids —
+	// Date.now()/math/rand are unnecessary here and a counter keeps test
+	// output stable.
+	nextUploadNum int
+	// uploadContentType records the ContentType StartMultipart was called
+	// with, keyed by upload id, so CompleteMultipart can report it back on
+	// the assembled object the same way a real backend's own multipart
+	// session would.
+	uploadContentType map[storage.UploadID]string
+	// uploadParts holds each part's bytes, keyed by upload id then part
+	// number — simulateMultipartPartUpload (test helper, not part of
+	// storage.ObjectStore) writes here directly, standing in for the
+	// out-of-band presigned PUT a real client would perform against the URL
+	// PresignPart returns; CompleteMultipart reads back from here.
+	uploadParts map[storage.UploadID]map[int32][]byte
+	// uploadPartETags records the ETag simulateMultipartPartUpload handed
+	// back for each part, so CompleteMultipart can reject a request that
+	// supplies the wrong one — modeling real S3/Azure CompleteMultipartUpload
+	// behavior (an InvalidPart-style error on an ETag mismatch), which this
+	// fake did not enforce at all before this check was added.
+	uploadPartETags map[storage.UploadID]map[int32]string
+
+	// beforeCompleteMultipart/beforeAbortMultipart, when set, run
+	// synchronously as the very first thing inside CompleteMultipart/
+	// AbortMultipart — before either method takes s.mu. This is the one
+	// hook point multipart_test.go's concurrency regression tests need: it
+	// lets a test synchronously make a *second*, "concurrent" HTTP request
+	// land exactly inside the window a real race would occupy (after the
+	// handler's own ownership/claim checks have already passed, but before
+	// the backend call those checks were guarding), without needing real
+	// goroutines or flaky timing. Deliberately called before the lock, not
+	// after: fakeStore's own mutex is not reentrant, and the hook's nested
+	// request will itself call back into these same methods.
+	beforeCompleteMultipart func()
+	beforeAbortMultipart    func()
 }
 
 // firstReadRecorder wraps an io.Reader and calls onFirstRead exactly once,
@@ -50,9 +93,34 @@ func (f *firstReadRecorder) Read(p []byte) (int, error) {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		objects: make(map[string]storage.ObjectInfo),
-		data:    make(map[string][]byte),
+		objects:           make(map[string]storage.ObjectInfo),
+		data:              make(map[string][]byte),
+		uploadContentType: make(map[storage.UploadID]string),
+		uploadParts:       make(map[storage.UploadID]map[int32][]byte),
+		uploadPartETags:   make(map[storage.UploadID]map[int32]string),
 	}
+}
+
+// simulateMultipartPartUpload records part data directly into the fake's
+// tracked session, standing in for the out-of-band presigned PUT a real
+// client would perform against PresignPart's returned URL — commit-side
+// code only ever observes the assembled object through CompleteMultipart
+// and Get, so it cannot tell the difference. Returns a synthetic ETag the
+// test then reports back in CompleteMultipartUpload's request body, exactly
+// as a real client would report the ETag its presigned PUT received.
+func (s *fakeStore) simulateMultipartPartUpload(id storage.UploadID, part int32, data []byte) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.uploadParts[id] == nil {
+		s.uploadParts[id] = make(map[int32][]byte)
+	}
+	if s.uploadPartETags[id] == nil {
+		s.uploadPartETags[id] = make(map[int32]string)
+	}
+	s.uploadParts[id][part] = data
+	etag := fmt.Sprintf("etag-%s-%d", id, part)
+	s.uploadPartETags[id][part] = etag
+	return etag
 }
 
 func (s *fakeStore) objectCount() int {
@@ -175,24 +243,95 @@ func (s *fakeStore) PresignPut(_ context.Context, ref storage.ObjectRef, _ time.
 	return "https://presigned.example.test/put/" + ref.Key(), nil
 }
 
-func (s *fakeStore) StartMultipart(context.Context, storage.ObjectRef, storage.PutOptions) (storage.UploadID, error) {
-	return "", storage.ErrNotSupported
+func (s *fakeStore) StartMultipart(_ context.Context, _ storage.ObjectRef, opts storage.PutOptions) (storage.UploadID, error) {
+	if !s.multipart {
+		return "", storage.ErrNotSupported
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextUploadNum++
+	id := storage.UploadID(fmt.Sprintf("upload-%d", s.nextUploadNum))
+	s.uploadContentType[id] = opts.ContentType
+	s.uploadParts[id] = make(map[int32][]byte)
+	return id, nil
 }
 
-func (s *fakeStore) PresignPart(context.Context, storage.ObjectRef, storage.UploadID, int32, time.Duration) (string, error) {
-	return "", storage.ErrNotSupported
+func (s *fakeStore) PresignPart(_ context.Context, ref storage.ObjectRef, id storage.UploadID, part int32, _ time.Duration) (string, error) {
+	if !s.multipart {
+		return "", storage.ErrNotSupported
+	}
+	return fmt.Sprintf("https://presigned.example.test/part/%s/%s/%d", ref.Key(), id, part), nil
 }
 
-func (s *fakeStore) CompleteMultipart(context.Context, storage.ObjectRef, storage.UploadID, []storage.Part) (storage.ObjectInfo, error) {
-	return storage.ObjectInfo{}, storage.ErrNotSupported
+// CompleteMultipart concatenates tracked parts in ascending part-number
+// order — mirroring S3's own requirement that a multipart object's bytes
+// are the concatenation of its parts in numeric order, regardless of the
+// order parts were uploaded or listed in the request. Also validates each
+// part's supplied ETag against the one simulateMultipartPartUpload issued —
+// modeling real S3/Azure CompleteMultipartUpload's own InvalidPart-style
+// rejection of a caller-supplied ETag that doesn't match what the backend
+// actually has on record for that part, which this fake previously ignored
+// entirely (the ETag field was accepted but never checked).
+func (s *fakeStore) CompleteMultipart(_ context.Context, ref storage.ObjectRef, id storage.UploadID, parts []storage.Part) (storage.ObjectInfo, error) {
+	if !s.multipart {
+		return storage.ObjectInfo{}, storage.ErrNotSupported
+	}
+	if s.beforeCompleteMultipart != nil {
+		s.beforeCompleteMultipart()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tracked, ok := s.uploadParts[id]
+	if !ok {
+		return storage.ObjectInfo{}, storage.ErrNotFound
+	}
+
+	sorted := make([]storage.Part, len(parts))
+	copy(sorted, parts)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Number < sorted[j].Number })
+
+	var assembled bytes.Buffer
+	for _, p := range sorted {
+		data, ok := tracked[p.Number]
+		if !ok {
+			return storage.ObjectInfo{}, fmt.Errorf("fakeStore: part %d was never uploaded for upload id %s", p.Number, id)
+		}
+		if want := s.uploadPartETags[id][p.Number]; p.ETag != want {
+			return storage.ObjectInfo{}, fmt.Errorf("%w: part %d etag %q does not match %q", storage.ErrPreconditionFailed, p.Number, p.ETag, want)
+		}
+		assembled.Write(data)
+	}
+
+	info := storage.ObjectInfo{
+		Key: ref.Key(), Size: int64(assembled.Len()), LastModified: time.Now(),
+		ContentType: s.uploadContentType[id],
+	}
+	storageKey := ref.StorageKey("")
+	s.objects[storageKey] = info
+	s.data[storageKey] = assembled.Bytes()
+	delete(s.uploadParts, id)
+	delete(s.uploadPartETags, id)
+	delete(s.uploadContentType, id)
+	return info, nil
 }
 
-func (s *fakeStore) AbortMultipart(context.Context, storage.ObjectRef, storage.UploadID) error {
-	return storage.ErrNotSupported
+func (s *fakeStore) AbortMultipart(_ context.Context, _ storage.ObjectRef, id storage.UploadID) error {
+	if !s.multipart {
+		return storage.ErrNotSupported
+	}
+	if s.beforeAbortMultipart != nil {
+		s.beforeAbortMultipart()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.uploadParts, id)
+	delete(s.uploadPartETags, id)
+	delete(s.uploadContentType, id)
+	return nil
 }
 
 func (s *fakeStore) Capabilities() storage.Capabilities {
-	return storage.Capabilities{Presign: s.presign}
+	return storage.Capabilities{Presign: s.presign, NativeMultipart: s.multipart}
 }
 
 var _ storage.ObjectStore = (*fakeStore)(nil)

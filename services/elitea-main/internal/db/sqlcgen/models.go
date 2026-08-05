@@ -604,6 +604,7 @@ type EliteaStorageTransferGrant struct {
 	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 	ConsumedAt  pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
 	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UploadID    *string            `db:"upload_id" json:"upload_id"`
 }
 
 type EliteaTool struct {

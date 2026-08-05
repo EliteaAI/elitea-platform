@@ -236,7 +236,8 @@ type ArtifactDeps struct {
 	Resolver     platformauth.PermissionResolver
 }
 
-// mountArtifactRoutes registers all 13 artifact routes (S7) on r, wrapped in
+// mountArtifactRoutes registers all 16 artifact routes (13 from S7, plus
+// S16's 3 native-multipart continuation routes) on r, wrapped in
 // deps.Authenticate and per-route RBAC (S11). It is called from both
 // newPrototypeCompatibilityRouter and production_router.go's NewRouter so
 // the oapiserver conformance suite — which walks the prototype router only —
@@ -254,12 +255,15 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 	listBuckets, createBucket, getBucket, updateBucket, deleteBucket := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	createTransferGrant, commitTransferGrant := notImplementedArtifact, notImplementedArtifact
+	presignUploadPart, completeMultipartUpload, abortMultipartUpload := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	if deps.Handler != nil {
 		listBuckets, createBucket, getBucket, updateBucket, deleteBucket =
 			deps.Handler.ListBuckets, deps.Handler.CreateBucket, deps.Handler.GetBucket, deps.Handler.UpdateBucket, deps.Handler.DeleteBucket
 		listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject =
 			deps.Handler.ListObjects, deps.Handler.UploadObject, deps.Handler.BatchDeleteObjects, deps.Handler.DownloadObject, deps.Handler.StatObject, deps.Handler.DeleteObject
 		createTransferGrant, commitTransferGrant = deps.Handler.CreateTransferGrant, deps.Handler.CommitTransferGrant
+		presignUploadPart, completeMultipartUpload, abortMultipartUpload =
+			deps.Handler.PresignUploadPart, deps.Handler.CompleteMultipartUpload, deps.Handler.AbortMultipartUpload
 	}
 
 	r.Group(func(r chi.Router) {
@@ -286,6 +290,15 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 			// grant lifecycle and the plan does not distinguish it.
 			r.With(create).Post("/grants/{projectID}/{bucket}", createTransferGrant)
 			r.With(create).Post("/grants/{projectID}/{grantID}:commit", commitTransferGrant)
+
+			// Native multipart upload continuation — S16. Same permission
+			// tier as the grant routes above: a part presign, a complete, and
+			// an abort are all steps of the same create-time write lifecycle
+			// CreateTransferGrant started, not a distinct RBAC category the
+			// plan introduces.
+			r.With(create).Post("/grants/{projectID}/{grantID}/parts/{partNumber}", presignUploadPart)
+			r.With(create).Post("/grants/{projectID}/{grantID}:completeMultipart", completeMultipartUpload)
+			r.With(create).Post("/grants/{projectID}/{grantID}:abortMultipart", abortMultipartUpload)
 		})
 	})
 }

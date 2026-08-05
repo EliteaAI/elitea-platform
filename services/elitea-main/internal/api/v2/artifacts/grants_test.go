@@ -39,6 +39,7 @@ func decodeGrantResponse(t *testing.T, body *bytes.Buffer) struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 	ContentType string    `json:"content_type"`
 	MaxBytes    int64     `json:"max_bytes"`
+	UploadID    *string   `json:"upload_id"`
 } {
 	t.Helper()
 	var resp struct {
@@ -48,6 +49,7 @@ func decodeGrantResponse(t *testing.T, body *bytes.Buffer) struct {
 		ExpiresAt   time.Time `json:"expires_at"`
 		ContentType string    `json:"content_type"`
 		MaxBytes    int64     `json:"max_bytes"`
+		UploadID    *string   `json:"upload_id"`
 	}
 	if err := json.Unmarshal(body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode grant response: %v (body=%s)", err, body.String())

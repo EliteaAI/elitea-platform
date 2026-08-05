@@ -39,6 +39,25 @@ const (
 
 	methodGet = "GET"
 	methodPut = "PUT"
+
+	// multipartThreshold is S16's "objects above 64 MiB" gate: a PUT grant
+	// request at or below this size always gets a single-shot grant (the
+	// S15 behavior), even when the backend supports native multipart.
+	// Multipart exists to avoid re-uploading a huge object from scratch
+	// after a partial-network failure — it is not a benefit for small
+	// objects, and every additional part/complete round trip has a real
+	// cost (ownership-checked database round trips this package would
+	// rather not pay for a 10 KiB upload).
+	multipartThreshold = 64 << 20
+
+	// maxPartNumber matches S3's own hard limit (parts are numbered
+	// 1-10000) — the plan does not name a number, but Azure block blobs
+	// share the same ceiling (50000 blocks, though this codebase's own Put
+	// path documents an 8 MiB chunk size elsewhere) and GCS never reaches
+	// this code path at all (NativeMultipart is always false). Using S3's
+	// tighter number as the shared validation ceiling rejects a
+	// pathological part count before it ever reaches a real backend.
+	maxPartNumber = 10000
 )
 
 // transferGrantRequest is CreateTransferGrantRequest's JSON shape
@@ -57,14 +76,19 @@ type transferGrantRequest struct {
 }
 
 // transferGrantResponse is TransferGrantResponse's JSON shape
-// (api/openapi/v2.yaml).
+// (api/openapi/v2.yaml). Exactly one of URL and UploadID is present (S16):
+// a single-shot grant carries url and no upload_id; a native-multipart
+// grant carries upload_id and no url — there is no one presigned URL for
+// the whole object, only per-part ones a caller requests separately via
+// PresignUploadPart.
 type transferGrantResponse struct {
 	GrantID     string    `json:"grant_id"`
-	URL         string    `json:"url"`
+	URL         string    `json:"url,omitempty"`
 	Method      string    `json:"method"`
 	ExpiresAt   time.Time `json:"expires_at"`
 	ContentType string    `json:"content_type"`
 	MaxBytes    int64     `json:"max_bytes"`
+	UploadID    *string   `json:"upload_id,omitempty"`
 }
 
 // generateGrantID returns a random UUIDv4, following the same crypto/rand
@@ -166,10 +190,28 @@ func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	expiresAt := time.Now().Add(defaultGrantTTL)
 
-	url, err := h.grantURL(r.Context(), ref, req.Method, req.ContentType, projectIDStr, bucket, grantID)
-	if err != nil {
-		writeStorageError(w, err)
-		return
+	// S16: "for objects above 64 MiB, gated on Capabilities().NativeMultipart"
+	// — a PUT request past the threshold on a backend that supports it
+	// starts a native multipart upload instead of a single presigned PUT.
+	// GCS (NativeMultipart always false) and any PUT at or under the
+	// threshold transparently fall through to the existing S15 path — same
+	// endpoint, same request shape, different response.
+	var url string
+	var uploadID *string
+	if req.Method == methodPut && req.MaxBytes > multipartThreshold && h.store.Capabilities().NativeMultipart {
+		id, err := h.store.StartMultipart(r.Context(), ref, storage.PutOptions{ContentType: req.ContentType})
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		idStr := string(id)
+		uploadID = &idStr
+	} else {
+		url, err = h.grantURL(r.Context(), ref, req.Method, req.ContentType, projectIDStr, bucket, grantID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
 	}
 
 	if _, err := h.repo.CreateTransferGrant(r.Context(), repos.NewTransferGrantInput{
@@ -182,8 +224,23 @@ func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 		MaxBytes:    req.MaxBytes,
 		DigestAlg:   digestAlg,
 		Digest:      digest,
+		UploadID:    uploadID,
 		ExpiresAt:   expiresAt,
 	}); err != nil {
+		if uploadID != nil {
+			// StartMultipart above already created live, billed backend-side
+			// state (e.g. S3 CreateMultipartUpload) before this metadata
+			// write failed — the caller never received a grant_id/upload_id
+			// to clean it up with, and nothing else in this codebase will
+			// ever reference this specific upload_id again. Best-effort
+			// compensation: if this abort itself fails too, S14's own
+			// incomplete-multipart-upload lifecycle rule (S3/GCS; Azure
+			// documented gap — see S14) eventually reclaims it, matching
+			// this package's existing tolerance for bounded, non-permanent
+			// leaks elsewhere (e.g. rejectCommit's own cleanup-error
+			// handling).
+			_ = h.store.AbortMultipart(r.Context(), ref, storage.UploadID(*uploadID))
+		}
 		writeError(w, http.StatusInternalServerError, "Internal", "create transfer grant: "+err.Error())
 		return
 	}
@@ -195,6 +252,7 @@ func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   expiresAt,
 		ContentType: req.ContentType,
 		MaxBytes:    req.MaxBytes,
+		UploadID:    uploadID,
 	})
 }
 
@@ -340,7 +398,25 @@ func (h *Handler) CommitTransferGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, info, err := h.store.Get(r.Context(), ref, nil)
+	h.finalizeGrantCommit(r.Context(), w, projectID, grant, bucketRow, ref, false)
+}
+
+// finalizeGrantCommit is the verification and metadata-recording shared by
+// CommitTransferGrant (a single-shot presigned PUT) and
+// CompleteMultipartUpload (S16, a native-multipart upload) — from this
+// point on in either flow, the object is a single opaque blob the store can
+// Get, and the plan's size/digest/media-type/quota checks apply identically
+// regardless of how the bytes arrived.
+//
+// claimed reports whether the caller has already called
+// MarkTransferGrantConsumed on this grant before invoking this method:
+// CompleteMultipartUpload does this to close a race against a concurrent
+// AbortMultipartUpload (see its own doc comment) — when true, this method
+// skips its own MarkTransferGrantConsumed call at the end, since a second
+// call would only ever return ErrAlreadyExists and turn an otherwise
+// successful commit into a hollow 409.
+func (h *Handler) finalizeGrantCommit(ctx context.Context, w http.ResponseWriter, projectID int64, grant repos.TransferGrantRow, bucketRow repos.BucketRow, ref storage.ObjectRef, claimed bool) {
+	body, info, err := h.store.Get(ctx, ref, nil)
 	if err != nil {
 		writeStorageError(w, err)
 		return
@@ -353,7 +429,7 @@ func (h *Handler) CommitTransferGrant(w http.ResponseWriter, r *http.Request) {
 	// this is purely an optimization for the common oversized case, not a
 	// replacement for it.
 	if info.Size > grant.MaxBytes {
-		h.rejectCommit(r.Context(), w, ref, http.StatusRequestEntityTooLarge, "TooLarge", "uploaded object exceeds the grant's max_bytes")
+		h.rejectCommit(ctx, w, ref, http.StatusRequestEntityTooLarge, "TooLarge", "uploaded object exceeds the grant's max_bytes")
 		return
 	}
 
@@ -365,7 +441,7 @@ func (h *Handler) CommitTransferGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if n > grant.MaxBytes {
-		h.rejectCommit(r.Context(), w, ref, http.StatusRequestEntityTooLarge, "TooLarge", "uploaded object exceeds the grant's max_bytes")
+		h.rejectCommit(ctx, w, ref, http.StatusRequestEntityTooLarge, "TooLarge", "uploaded object exceeds the grant's max_bytes")
 		return
 	}
 	// No "info.ContentType != ''" exemption: the plan is explicit that this
@@ -377,18 +453,18 @@ func (h *Handler) CommitTransferGrant(w http.ResponseWriter, r *http.Request) {
 	// presigned PUT omits the Content-Type header entirely — exactly the
 	// case this check exists to catch, not exempt.
 	if info.ContentType != grant.ContentType {
-		h.rejectCommit(r.Context(), w, ref, http.StatusConflict, "MediaTypeMismatch", "uploaded object's media type does not match the grant")
+		h.rejectCommit(ctx, w, ref, http.StatusConflict, "MediaTypeMismatch", "uploaded object's media type does not match the grant")
 		return
 	}
 	if grant.DigestAlg != nil {
 		actual := hasher.Sum(nil)
 		if !bytes.Equal(actual, grant.Digest) {
-			h.rejectCommit(r.Context(), w, ref, http.StatusConflict, "DigestMismatch", "uploaded object's digest does not match the grant")
+			h.rejectCommit(ctx, w, ref, http.StatusConflict, "DigestMismatch", "uploaded object's digest does not match the grant")
 			return
 		}
 	}
 
-	if _, err := h.repo.UpsertObject(r.Context(), repos.NewObjectInput{
+	if _, err := h.repo.UpsertObject(ctx, repos.NewObjectInput{
 		BucketID:   grant.BucketID,
 		Key:        grant.Key,
 		ByteLength: n,
@@ -406,31 +482,33 @@ func (h *Handler) CommitTransferGrant(w http.ResponseWriter, r *http.Request) {
 	// roll-back-on-violation shape (objects.go): the object's exact byte
 	// length isn't known until the upload is read, so the check can only
 	// run after UpsertObject, not before it.
-	policy, err := h.repo.GetProjectStoragePolicy(r.Context(), projectID)
+	policy, err := h.repo.GetProjectStoragePolicy(ctx, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Internal", "get project storage policy: "+err.Error())
 		return
 	}
 	if policy.MaxTotalBytes != nil {
-		total, err := h.repo.SumProjectBytes(r.Context(), projectID)
+		total, err := h.repo.SumProjectBytes(ctx, projectID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Internal", "sum project bytes: "+err.Error())
 			return
 		}
 		if total > *policy.MaxTotalBytes {
-			_ = h.repo.DeleteObjects(r.Context(), grant.BucketID, []string{grant.Key})
-			h.rejectCommit(r.Context(), w, ref, http.StatusRequestEntityTooLarge, "TooLarge", "commit would exceed the project's storage quota")
+			_ = h.repo.DeleteObjects(ctx, grant.BucketID, []string{grant.Key})
+			h.rejectCommit(ctx, w, ref, http.StatusRequestEntityTooLarge, "TooLarge", "commit would exceed the project's storage quota")
 			return
 		}
 	}
 
-	if err := h.repo.MarkTransferGrantConsumed(r.Context(), grant.ID); err != nil {
-		if errors.Is(err, storage.ErrAlreadyExists) {
-			writeError(w, http.StatusConflict, "AlreadyExists", "grant has already been committed")
+	if !claimed {
+		if err := h.repo.MarkTransferGrantConsumed(ctx, grant.ID); err != nil {
+			if errors.Is(err, storage.ErrAlreadyExists) {
+				writeError(w, http.StatusConflict, "AlreadyExists", "grant has already been committed")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "Internal", "mark transfer grant consumed: "+err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "Internal", "mark transfer grant consumed: "+err.Error())
-		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
