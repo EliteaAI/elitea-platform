@@ -2367,6 +2367,118 @@ done && \
 ! grep -qE 'persistentVolumeClaim|emptyDir' /tmp/rendered.yaml
 ```
 
+**Design decisions made during implementation:** the three storage secrets
+(`S3_ACCESS_KEY`, `S3_SECRET_KEY`, `AZURE_STORAGE_KEY`) are rendered via a
+new `secrets:` map in `values.yaml`, mirroring
+`deploy/helm/elitea-llm-gateway`'s already-established convention exactly
+(same map shape, same `valueFrom.secretKeyRef` rendering loop in
+`deployment.yaml`) rather than inventing a new pattern — this is the first
+time elitea-main's own chart uses that convention; the pre-existing
+plaintext-forbidden secrets (`APPLICATION_SECRET_KEY`, `OIDC_CLIENT_SECRET`,
+etc.) remain allowlisted only, out of scope for this stage. All three
+default to `optional: true`, since only one backend is ever active per
+`STORAGE_BACKEND`: `AZURE_STORAGE_KEY` is simply irrelevant when
+`STORAGE_BACKEND=s3`, and either backend can run credential-less via
+workload identity (the new `serviceAccount.annotations` knob) instead of a
+static key. `GOOGLE_APPLICATION_CREDENTIALS` was deliberately left
+allowlisted rather than wired as a fourth chart secret — GCS's intended
+production path is GKE Workload Identity (needing no credentials file at
+all), and forcing every deployment to provision a credentials-file Secret
+would be wiring the non-default path as if it were required.
+
+**Pylon-indexer / elitea-worker-python Helm charts: recorded out of scope
+for R1**, per the bullet's own "or record explicitly" alternative. Both
+have a `Containerfile` (confirmed:
+`services/pylon-indexer/Containerfile`, `services/elitea-worker-python/Containerfile`)
+but no chart today. Building production-grade charts for two Python
+services with their own env/secret/health-check surfaces is materially
+larger than this stage's remaining bullets and outside this plan's actual
+scope (a Go artifact-storage migration, not a general infra uplift) —
+tracked as a separate, unscoped follow-up, not silently dropped.
+
+**Defects found and fixed while empirically verifying this stage** (running
+the actual downstream consumer of `env-drift-allowlist.txt`,
+`services/elitea-llm-gateway/scripts/env-drift-check.sh`, rather than
+assuming the allowlist edit alone was sufficient) — both in shared
+infrastructure also used by `elitea-llm-gateway`'s own CI, not storage-specific,
+but directly blocking trust in this stage's own verification:
+
+1. The script's `_test.go` exclusion was silently a no-op: three
+   `grep -rhoE ...` extraction calls used `-h` (suppress filename), and the
+   *next* pipeline stage filtered `grep -v '_test.go'` — by the time that
+   filter ran, the filename it was supposed to match against was already
+   gone. Every env var read only inside an integration test file (e.g.
+   `ELITEA_TEST_DATABASE_URL`) was misreported as a hard, production-breaking
+   FAIL. Fixed by dropping `-h`; each `sed` step's existing greedy `.*\("`
+   prefix-strip already discards the now-preserved `path/to/file.go:` prefix
+   in the same step, so no other pipeline stage needed to change.
+2. None of the script's three read-detection patterns (`os.Getenv(`, a
+   `*Or(` helper, or a `fooEnv = "X"` const) could see
+   `storage.ConfigFromEnv`'s `lookup("X")`-parameter indirection (S1's
+   injectable-lookup design, used for every storage env var) — every var
+   read that way was misreported as "chart sets it but code never reads it."
+   Added a fourth extraction pattern for `lookup\("[A-Z][A-Z0-9_]+"\)`, WARN-tier
+   only (same treatment as the existing indirect-const pattern), since a
+   regex cannot tell a required call from an optional one for this shape.
+
+Both were real, live bugs in a script gating CI (`ci-gateway.yml`) with no
+storage connection at all — found only because this stage's own Verify
+philosophy is "run the actual consumer, don't assume the input file is
+correct." Fixing them dropped `bash env-drift-check.sh`'s elitea-main
+result from 9–12 FAILs to 2 (see below), and turned ~20 previously-invisible
+WARN-tier findings visible for the first time.
+
+**Also discovered, not a script bug:** `env-drift-check.sh`'s elitea-main
+coverage was reachable only through `ci-gateway.yml`, whose own path trigger
+is scoped to `services/elitea-llm-gateway/**` — meaning it never fires for
+an elitea-main-only or a chart-only change, despite the script's own header
+comment claiming "it just also covers elitea-main now." In practice this
+meant the check had never actually run against elitea-main in this
+engagement's own CI history. Fixed by adding a dedicated `env-drift` job to
+`ci-go.yml` (which does trigger on `services/elitea-main/**` and, newly,
+`deploy/helm/elitea-main/**`), running the script's single-target form
+against elitea-main specifically rather than duplicating the gateway's own
+check.
+
+**Two genuinely pre-existing, storage-unrelated FAILs surfaced once the
+above were fixed**, both trivial and both fixed rather than left red (a
+freshly-wired, immediately-red CI gate is worse than not wiring it):
+`BRAND_PACK_PATH` (`internal/api/router.go`) was never wired into the
+chart at all — added to `values.yaml`'s `env` map.
+`ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA` (`cmd/elitea-main/main.go`) is a
+dev-only bootstrap flag that should never be an exposed production chart
+knob — added to the allowlist with justification instead of wiring it.
+`bash services/elitea-llm-gateway/scripts/env-drift-check.sh` now exits 0
+(passed) for both services; the remaining ~20 WARN-tier findings (vars read
+with a code default but no chart override knob — `ELITEA_RUNTIME_ENABLED`,
+`REDIS_URL`, and others, all pre-existing and unrelated to storage) do not
+fail CI and were left as visible, now-honest debt rather than silently
+re-hidden — recorded in `services/elitea-llm-gateway/DECISIONS.md`.
+
+**Two minor findings from a Workflow adversarial-review pass, both fixed:**
+
+1. `optional: true` on the three storage secrets, combined with the S3/Azure
+   backends' existing (pre-S17) fallback to their cloud SDK's own ambient
+   credential chain (`LoadDefaultConfig` / `NewDefaultAzureCredential` —
+   see S2/S3), means an operator who forgets *both* the Secret above *and*
+   `serviceAccount.annotations` doesn't get a clear startup failure — on a
+   cluster whose nodes already carry some IAM role/managed identity with
+   storage access (common for node-level logging/monitoring DaemonSets),
+   the pod silently starts and runs under whatever ambient identity it
+   inherited. Not a logic bug this stage introduced (the backends'
+   fallback behavior predates S17 and is required for IRSA/Workload
+   Identity to work at all) but the chart's own comment didn't warn that
+   "credential-less" can mean "credentialed by whatever the node has"
+   rather than "fails until configured." Fixed by expanding the `secrets:`
+   block's comment in `values.yaml` with this exact caveat.
+2. The new `env-drift` job wasn't in `build`'s `needs:` list, unlike
+   `sqlc`/`lint`/`test`. `needs:` only controls scheduling, not merge
+   enforcement (that's entirely a branch-protection setting outside this
+   repo's files, and applies identically to the pre-existing three jobs
+   too) — so this wasn't a regression specific to the new job, but adding
+   it to `needs:` costs nothing and keeps the four gating jobs visually
+   and schedule-wise consistent.
+
 ---
 
 ## S18 — Observability

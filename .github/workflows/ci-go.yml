@@ -11,6 +11,12 @@ on:
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/ci-go.yml"
+      # S17: the env-drift job below checks elitea-main's Go env reads
+      # against this chart, so a chart-only change (no Go diff at all) must
+      # still trigger it — the whole point is catching drift introduced from
+      # either side.
+      - "deploy/helm/elitea-main/**"
+      - "services/elitea-llm-gateway/scripts/env-drift-check.sh"
   push:
     branches:
       - main
@@ -23,6 +29,8 @@ on:
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/ci-go.yml"
+      - "deploy/helm/elitea-main/**"
+      - "services/elitea-llm-gateway/scripts/env-drift-check.sh"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -47,6 +55,26 @@ jobs:
           sqlc generate
           sqlc vet
           git diff --exit-code -- internal/db/sqlcgen
+
+  env-drift:
+    name: Env-drift gate — elitea-main code env reads vs Helm chart
+    runs-on: ubuntu-latest
+    # S17: ci-gateway.yml already runs this same script (no-args form, both
+    # services) but only triggers on services/elitea-llm-gateway/** paths —
+    # an elitea-main-only or chart-only change never touches that workflow at
+    # all, so elitea-main's own coverage was previously never exercised in
+    # practice despite the script's own header claiming otherwise. Runs the
+    # single-target form here instead of duplicating the gateway's own check.
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install yq
+        run: |
+          command -v yq >/dev/null || { sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq; }
+      - name: Check elitea-main env vars are settable by its Helm chart
+        run: |
+          services/elitea-llm-gateway/scripts/env-drift-check.sh \
+            elitea-main deploy/helm/elitea-main deploy/helm/elitea-main/env-drift-allowlist.txt \
+            services/elitea-main/internal services/elitea-main/cmd
 
   lint:
     name: Lint (${{ matrix.service }})
@@ -156,7 +184,7 @@ jobs:
     # CI validation only — confirms the binaries compile cleanly on every PR/push.
     # Production images are built via Containerfile in publish.yml, not here.
     runs-on: ubuntu-latest
-    needs: [sqlc, lint, test]
+    needs: [sqlc, lint, test, env-drift]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6

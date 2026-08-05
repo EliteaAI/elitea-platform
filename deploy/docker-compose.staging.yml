@@ -9,14 +9,11 @@ services:
       SKIP_MIGRATIONS: "true"
       APPLICATION_SECRET_KEY: "staging-secret-for-local-dev"
       SECRETS_MASTER_KEY: "vKSMVUaVhEdptzHFisRSSDED_0UcixrxbIvKtthpyrk="
-      ARTIFACTS_DATA_DIR: "/data/artifacts"
       OIDC_ISSUER_URL: "https://oidc-mock.technicaldomain.xyz"
       OIDC_CLIENT_ID: "elitea-local"
       OIDC_CLIENT_SECRET: "elitea-local-secret"
       OIDC_REDIRECT_URI: "http://localhost/forward-auth/auth_oidc/callback"
       PUBLIC_PROJECT_ID: "1"
-    volumes:
-      - ./data/staging/storage-restructured:/data/artifacts
 
   pylon-indexer:
     environment:

@@ -43,6 +43,89 @@ env:
   # ELITEA_SELF_LLM_ORIGINS also empty, §2.6 guard #1 is inert.
   DEPLOYMENT_URL: ""
 
+  # Filesystem path to a custom brand pack directory (internal/api/router.go);
+  # empty serves the built-in default brand pack. Discovered unwired while
+  # empirically verifying S17's env-drift gate — not itself a storage
+  # variable, but the same one-line fix as everything else in this map, and
+  # left unfixed it would have made the freshly-wired gate immediately red
+  # for an unrelated pre-existing reason.
+  BRAND_PACK_PATH: ""
+
+  # --- Object storage (S17; ADR-0016) -----------------------------------------
+  # STORAGE_BACKEND has no code default — ConfigFromEnv fails closed with no
+  # object store configured until this is explicitly one of "s3"/"azure"/"gcs".
+  # Never leave this empty in a real deployment; it is empty here only because
+  # the chart cannot know which backend an environment uses.
+  STORAGE_BACKEND: ""
+  # Physical bucket/container name. Required by ConfigFromEnv for every backend.
+  STORAGE_CONTAINER: ""
+  # Optional key prefix under which every object this deployment writes is
+  # scoped (multi-environment sharing of one bucket/container).
+  STORAGE_KEY_PREFIX: ""
+  # S3-only. Leave S3_ENDPOINT_URL empty for real AWS S3; set it for an
+  # S3-compatible endpoint (RustFS, MinIO, etc.). S3_ACCESS_KEY/S3_SECRET_KEY
+  # are NOT here — see the secrets: block below.
+  S3_ENDPOINT_URL: ""
+  S3_REGION: ""
+  S3_FORCE_PATH_STYLE: ""
+  # Azure-only. AZURE_STORAGE_KEY is NOT here — see the secrets: block below;
+  # leaving it unset (empty string, the Secret's `optional: true`) makes the
+  # backend use workload identity via serviceAccount.annotations instead of a
+  # static shared key.
+  AZURE_STORAGE_ACCOUNT: ""
+  AZURE_STORAGE_ENDPOINT: ""
+  # GCS-only. Leave empty for real GCS with workload identity (the normal
+  # production path — GOOGLE_APPLICATION_CREDENTIALS is deliberately not
+  # wired here; see env-drift-allowlist.txt). Set for an emulator endpoint.
+  GCS_ENDPOINT: ""
+  # Per-object upload size cap (bytes). Empty means "no override" — the
+  # handler falls back to its own default (S12).
+  ARTIFACT_MAX_OBJECT_BYTES: ""
+
+# secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
+# valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
+# above — mirrors deploy/helm/elitea-llm-gateway's values.yaml `secrets:`
+# block. Each entry maps the ENV VAR NAME the binary reads -> the Secret
+# name + key. `optional: true` lets the pod start when the Secret or key is
+# absent — correct here because only one storage backend is active per
+# STORAGE_BACKEND value, so e.g. AZURE_STORAGE_KEY is simply irrelevant
+# when STORAGE_BACKEND=s3, and S3/Azure can each run credential-less via
+# workload identity (serviceAccount.annotations) instead of a static key.
+#
+# CAUTION (found by adversarial review, S17): "credential-less" here does
+# NOT mean "fails until configured" — it means the Go backend falls through
+# to the cloud SDK's own ambient-credential chain (AWS's LoadDefaultConfig /
+# Azure's NewDefaultAzureCredential / GCP's Application Default Credentials;
+# see internal/infra/storage/{s3,azure,gcs}/backend.go). On a cluster whose
+# NODES already carry some IAM role/managed identity with storage access
+# (common when nodes also run logging/monitoring DaemonSets), an operator
+# who forgets BOTH the Secret above AND serviceAccount.annotations gets a
+# pod that starts, passes objectStoreReadinessProbe, and silently runs
+# under whatever ambient node identity it happened to inherit — not the
+# clear startup failure an operator would expect and could quickly
+# diagnose. Set exactly one of (this Secret) or (serviceAccount.annotations)
+# per backend deliberately; do not rely on "it started, so it must be
+# configured right."
+#
+# Provision the referenced Secret out-of-band (kubectl create secret /
+# external-secrets operator / sealed-secrets), e.g.:
+#   kubectl create secret generic elitea-main-storage-secrets \
+#     --from-literal=s3-access-key=... --from-literal=s3-secret-key=... \
+#     --from-literal=azure-storage-key=...
+secrets:
+  S3_ACCESS_KEY:
+    secretName: elitea-main-storage-secrets
+    key: s3-access-key
+    optional: true
+  S3_SECRET_KEY:
+    secretName: elitea-main-storage-secrets
+    key: s3-secret-key
+    optional: true
+  AZURE_STORAGE_KEY:
+    secretName: elitea-main-storage-secrets
+    key: azure-storage-key
+    optional: true
+
 probes:
   startup:
     path: /startupz
@@ -72,6 +155,12 @@ podDisruptionBudget:
 serviceAccount:
   create: true
   name: ""
+  # IRSA (eks.amazonaws.com/role-arn) or Azure Workload Identity
+  # (azure.workload.identity/client-id) go here (S17) — credential-less
+  # access to the object store backend, an alternative to the static keys
+  # in the secrets: block above. Empty by default: static keys remain the
+  # baseline until an environment opts into workload identity.
+  annotations: {}
 
 nodeSelector: {}
 tolerations: []
