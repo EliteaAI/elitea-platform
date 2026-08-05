@@ -1068,6 +1068,7 @@ func requireIssue5681GatewayTLSBinding(
 		strings.Contains(router, "service: current-main") {
 		t.Fatal("attested gateway index router is broader than the Go runtime route")
 	}
+	requireNestedApplicationReferenceRouter(t, route)
 	base := string(baseBytes)
 	for _, required := range []string{
 		"normalize-runtime-public-authority:",
@@ -3384,5 +3385,54 @@ func TestIssue5681CleanupManifestIsOwnerOnlyAndRoundTripsSafeIDs(t *testing.T) {
 	if actualPath != path || len(resources) != 2 ||
 		resources[0] != first || resources[1] != second {
 		t.Fatal("cleanup manifest did not preserve exact safe resource identities")
+	}
+}
+
+func TestHybridNestedApplicationReferenceRouterIsBounded(t *testing.T) {
+	routePath := filepath.Join(
+		findRepositoryRoot(t),
+		"deploy",
+		"centry-hybrid",
+		"traefik",
+		"index-routes.yml",
+	)
+	routeBytes, err := os.ReadFile(routePath)
+	if err != nil {
+		t.Fatalf("read hybrid gateway route %s: %v", routePath, err)
+	}
+	requireNestedApplicationReferenceRouter(t, string(routeBytes))
+}
+
+func requireNestedApplicationReferenceRouter(t *testing.T, route string) {
+	t.Helper()
+	applicationRouterStart := strings.Index(
+		route,
+		"    runtime-worker-current-application-reference:\n",
+	)
+	if applicationRouterStart < 0 {
+		t.Fatal("gateway route lacks the nested-application reference router")
+	}
+	applicationRouter := route[applicationRouterStart:]
+	for _, required := range []string{
+		"Host(`elitea-gateway`)",
+		"PathRegexp(`^/api/v2/elitea_core/application/prompt_lib/[1-9][0-9]*/[1-9][0-9]*$`)",
+		"Method(`GET`)",
+		"PathRegexp(`^/api/v2/elitea_core/version/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[1-9][0-9]*$`)",
+		"Method(`PATCH`)",
+		"priority: 85",
+		"entryPoints: [websecure]",
+		"tls: {}",
+		"middlewares:\n        - strip-caller-auth-context\n        - normalize-runtime-public-authority\n        - go-main-forward-auth",
+		"service: current-main",
+	} {
+		if strings.Count(applicationRouter, required) != 1 {
+			t.Fatal("nested-application reference router has an unexpected semantic contract")
+		}
+	}
+	if strings.Contains(applicationRouter, "PathPrefix(") ||
+		strings.Contains(applicationRouter, "Method(`POST`)") ||
+		strings.Contains(applicationRouter, "Method(`PUT`)") ||
+		strings.Contains(applicationRouter, "Method(`DELETE`)") {
+		t.Fatal("nested-application reference router is broader than the SDK read contract")
 	}
 }

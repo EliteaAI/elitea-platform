@@ -9,6 +9,7 @@ import (
 	"time"
 
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -178,11 +179,11 @@ func (r *NodeEventsRepository) ProjectNodeEvent(ctx context.Context, frame outpu
 		}
 
 		var cursor int64
-		var authorityClaimID, desiredState string
+		var authorityClaimID, desiredState, capabilityID string
 		var deadlineExpired, terminalPresent bool
 		err := tx.QueryRow(ctx, `
 WITH authority AS MATERIALIZED (
-    SELECT c.claim_id, j.desired_state,
+    SELECT c.claim_id, j.desired_state, j.capability_id,
            o.deadline <= clock_timestamp() AS deadline_expired
     FROM elitea_runtime.execution_claims AS c
     JOIN elitea_runtime.execution_jobs AS j
@@ -286,6 +287,7 @@ WITH authority AS MATERIALIZED (
 SELECT COALESCE((SELECT cursor FROM updated_state LIMIT 1), 0),
        COALESCE((SELECT claim_id FROM authority LIMIT 1), ''),
        COALESCE((SELECT desired_state FROM authority LIMIT 1), ''),
+       COALESCE((SELECT capability_id FROM authority LIMIT 1), ''),
        COALESCE((SELECT deadline_expired FROM authority LIMIT 1), FALSE),
        EXISTS (SELECT 1 FROM terminal_output)`,
 			frame.EventID,
@@ -309,18 +311,20 @@ SELECT COALESCE((SELECT cursor FROM updated_state LIMIT 1), 0),
 			r.retention.maxProgressAge.Milliseconds(),
 			r.retention.maxProgressEvents,
 			r.retention.maxProgressBytes,
-		).Scan(&cursor, &authorityClaimID, &desiredState, &deadlineExpired, &terminalPresent)
+		).Scan(&cursor, &authorityClaimID, &desiredState, &capabilityID, &deadlineExpired, &terminalPresent)
 		if err != nil {
 			return fmt.Errorf("append durable node event: %w", err)
 		}
 		if cursor > 0 {
-			if err := r.activity.projectNodeEvent(
-				ctx,
-				tx,
-				projectionProjectID,
-				frame,
-			); err != nil {
-				return err
+			if capabilityID == executiondomain.IndexIngestCapability {
+				if err := r.activity.projectNodeEvent(
+					ctx,
+					tx,
+					projectionProjectID,
+					frame,
+				); err != nil {
+					return err
+				}
 			}
 			if err := r.agentTrace.projectAgentTraceDelta(
 				ctx,
@@ -330,7 +334,7 @@ SELECT COALESCE((SELECT cursor FROM updated_state LIMIT 1), 0),
 			); err != nil {
 				return err
 			}
-			if persistTaskRestamp {
+			if capabilityID == executiondomain.IndexIngestCapability && persistTaskRestamp {
 				if err := persistCurrentIndexMetaTaskRestampIntent(
 					ctx,
 					tx,

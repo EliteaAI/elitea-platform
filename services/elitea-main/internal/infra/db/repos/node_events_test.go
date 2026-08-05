@@ -8,6 +8,7 @@ import (
 	"time"
 
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
 )
@@ -18,7 +19,7 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 		{err: pgx.ErrNoRows},
 		{values: []any{"claim-node-1"}},
 		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
-		{values: []any{int64(17), "claim-node-1", "RUNNING", false, false}},
+		{values: []any{int64(17), "claim-node-1", "RUNNING", executiondomain.IndexIngestCapability, false, false}},
 	}}
 	store := &scriptedStore{scriptedExecutor: executor}
 	repository, err := newNodeEventsRepository(store)
@@ -27,6 +28,8 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 	}
 	agentTrace := &recordingCurrentAgentTraceProjector{}
 	repository.agentTrace = agentTrace
+	activity := &recordingNodeEventActivityProjector{}
+	repository.activity = activity
 	outcome, err := repository.ProjectNodeEvent(context.Background(), frame)
 	if err != nil {
 		t.Fatal(err)
@@ -37,6 +40,9 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 	if agentTrace.calls != 1 || agentTrace.projectID != 42 ||
 		string(agentTrace.frame.BrowserData) != string(frame.BrowserData) {
 		t.Fatalf("agent trace projector did not share the durable event transaction: %+v", agentTrace)
+	}
+	if activity.calls != 1 {
+		t.Fatalf("index Activity projector calls = %d, want 1", activity.calls)
 	}
 	if len(executor.rowCalls) != 4 {
 		t.Fatalf("unexpected node event query count: %d", len(executor.rowCalls))
@@ -50,6 +56,7 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 		"'agent.execute.application.v1'",
 		"'agent.execute.adhoc.v1'",
 		"c.initial_output_watermark = $13",
+		"j.capability_id",
 		"FOR UPDATE OF j, o, c",
 	} {
 		if !strings.Contains(lockQuery.sql, evidence) {
@@ -74,6 +81,29 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 	}
 }
 
+type recordingNodeEventActivityProjector struct {
+	calls int
+}
+
+func (p *recordingNodeEventActivityProjector) projectNodeEvent(
+	context.Context,
+	sqlExecutor,
+	int64,
+	outputapp.NodeEventFrame,
+) error {
+	p.calls++
+	return nil
+}
+
+func (*recordingNodeEventActivityProjector) projectTerminal(
+	context.Context,
+	sqlExecutor,
+	int64,
+	currentIndexActivityTerminal,
+) error {
+	return nil
+}
+
 type recordingCurrentAgentTraceProjector struct {
 	calls     int
 	projectID int64
@@ -90,6 +120,51 @@ func (p *recordingCurrentAgentTraceProjector) projectAgentTraceDelta(
 	p.projectID = projectID
 	p.frame = frame
 	return nil
+}
+
+func TestNodeEventsRepositoryDoesNotInterpretNestedAgentToolEventAsIndexActivity(t *testing.T) {
+	frame := testNodeEventFrame()
+	frame.BrowserData = []byte(`{
+		"type":"agent_tool_start",
+		"response_metadata":{
+			"tool_name":"reload-sse-pov",
+			"tool_run_id":"child-call-1",
+			"metadata":{
+				"parent_agent_name":"Elitea",
+				"parent_agent_call_id":"root-call-1",
+				"parent_agent_path":["Elitea","reload-sse-pov"],
+				"sibling_ordinal":0
+			}
+		}
+	}`)
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{err: pgx.ErrNoRows},
+		{values: []any{"claim-node-1"}},
+		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
+		{values: []any{int64(17), "claim-node-1", "RUNNING", executiondomain.AgentAdhocCapability, false, false}},
+	}}
+	repository, err := newNodeEventsRepository(&scriptedStore{scriptedExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity := &recordingNodeEventActivityProjector{}
+	agentTrace := &recordingCurrentAgentTraceProjector{}
+	repository.activity = activity
+	repository.agentTrace = agentTrace
+
+	outcome, err := repository.ProjectNodeEvent(context.Background(), frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Inserted || outcome.Cursor != 17 || outcome.CommittedSequence != 1 {
+		t.Fatalf("unexpected nested agent event projection: %+v", outcome)
+	}
+	if activity.calls != 0 {
+		t.Fatalf("agent event reached index Activity projector %d times", activity.calls)
+	}
+	if agentTrace.calls != 1 || string(agentTrace.frame.BrowserData) != string(frame.BrowserData) {
+		t.Fatalf("nested agent event did not reach agent trace projector: %+v", agentTrace)
+	}
 }
 
 func TestNodeEventsRepositoryReplaysIdenticalEventAndRejectsDifferentBytes(t *testing.T) {
@@ -172,7 +247,7 @@ func TestNodeEventsRepositoryPersistsTaskRestampWithAuthenticatedAdmissionIdenti
 		{err: pgx.ErrNoRows},
 		{values: []any{"claim-node-1"}},
 		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
-		{values: []any{int64(17), "claim-node-1", "RUNNING", false, false}},
+		{values: []any{int64(17), "claim-node-1", "RUNNING", executiondomain.IndexIngestCapability, false, false}},
 		{values: []any{true, true}},
 	}}
 	store := &scriptedStore{scriptedExecutor: executor}
@@ -220,7 +295,7 @@ func TestNodeEventsRepositoryRollsBackProgressWhenTaskRestampLosesAdmissionAutho
 		{err: pgx.ErrNoRows},
 		{values: []any{"claim-node-1"}},
 		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
-		{values: []any{int64(17), "claim-node-1", "RUNNING", false, false}},
+		{values: []any{int64(17), "claim-node-1", "RUNNING", executiondomain.IndexIngestCapability, false, false}},
 		{values: []any{false, false}},
 	}}
 	store := &scriptedStore{scriptedExecutor: executor}

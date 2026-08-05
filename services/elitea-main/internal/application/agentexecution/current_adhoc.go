@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strconv"
@@ -101,7 +102,7 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 	}
 	target, err := service.adhocResolver.ResolveCurrentAdhoc(ctx, request)
 	if err != nil {
-		return CurrentApplicationStartOutcome{}, err
+		return CurrentApplicationStartOutcome{}, fmt.Errorf("resolve current ad-hoc target: %w", err)
 	}
 	if request.ProjectID > math.MaxInt32 || request.ActorUserID > math.MaxInt32 ||
 		target.TargetParticipantID <= 0 || target.TargetParticipantID > math.MaxInt32 ||
@@ -111,7 +112,7 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 	}
 	snapshot, err := currentAdhocSnapshot(request.LLMSettings, target)
 	if err != nil {
-		return CurrentApplicationStartOutcome{}, err
+		return CurrentApplicationStartOutcome{}, fmt.Errorf("build current ad-hoc snapshot: %w", err)
 	}
 	frozen, err := service.freezer.FreezeCurrentApplicationVersion(
 		ctx,
@@ -121,11 +122,11 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 		},
 	)
 	if err != nil {
-		return CurrentApplicationStartOutcome{}, err
+		return CurrentApplicationStartOutcome{}, fmt.Errorf("freeze current ad-hoc snapshot: %w", err)
 	}
 	input, err := currentAdhocInput(request, target, frozen)
 	if err != nil {
-		return CurrentApplicationStartOutcome{}, err
+		return CurrentApplicationStartOutcome{}, fmt.Errorf("build current ad-hoc execution input: %w", err)
 	}
 	questionItemID := currentTurnUUID(request.QuestionID, "question-item")
 	responseMessageID := currentTurnUUID(request.QuestionID, "response-message")

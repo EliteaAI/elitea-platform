@@ -19,8 +19,9 @@ import (
 const maxCurrentAgentUserInputBytes = 256 * 1024
 
 var (
-	ErrInvalidCurrentAgentStart     = errors.New("invalid current agent start")
-	ErrUnsupportedCurrentAgentStart = errors.New("current agent start is not supported by the admitted parity slice")
+	ErrInvalidCurrentAgentStart                = errors.New("invalid current agent start")
+	ErrUnsupportedCurrentAgentStart            = errors.New("current agent start is not supported by the admitted parity slice")
+	ErrCurrentAgentRegenerationStillFinalizing = errors.New("current agent response is still being finalized")
 )
 
 // CurrentApplicationTurn is the immutable current-chat side of one durable

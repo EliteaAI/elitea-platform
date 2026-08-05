@@ -339,9 +339,14 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 		t.Fatalf("first target=%+v", first)
 	}
 	var tools []map[string]any
-	if err := json.Unmarshal([]byte(first.ToolsJson), &tools); err != nil || len(tools) != 1 ||
+	if err := json.Unmarshal([]byte(first.ToolsJson), &tools); err != nil || len(tools) != 2 ||
 		tools[0]["id"] != float64(51) || tools[0]["project_id"] != float64(1) ||
-		tools[0]["type"] != "aha" {
+		tools[0]["type"] != "aha" || tools[1]["type"] != "application" ||
+		tools[1]["id"] != nil || tools[1]["name"] != "leaf-agent" ||
+		tools[1]["toolkit_name"] != "leaf-agent" || tools[1]["participant_id"] != float64(30) ||
+		tools[1]["project_id"] != float64(1) ||
+		tools[1]["settings"].(map[string]any)["application_id"] != float64(31) ||
+		tools[1]["settings"].(map[string]any)["application_version_id"] != float64(41) {
 		t.Fatalf("tools=%s error=%v", first.ToolsJson, err)
 	}
 
@@ -398,6 +403,123 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	}
 }
 
+func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipants(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	resolve := sqlcgen.ResolveCurrentAdhocTurnParams{
+		ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+		QuestionID:       mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000038"),
+		ConversationUuid: mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000032"),
+	}
+	tests := []struct {
+		name    string
+		apply   string
+		restore string
+	}{
+		{
+			name: "cross project child",
+			apply: `UPDATE chat_participants
+SET entity_meta = jsonb_set(entity_meta, '{project_id}', '2'::jsonb)
+WHERE id = 30`,
+			restore: `UPDATE chat_participants
+SET entity_meta = jsonb_set(entity_meta, '{project_id}', '1'::jsonb)
+WHERE id = 30`,
+		},
+		{
+			name:    "pipeline child",
+			apply:   `UPDATE application_versions SET agent_type = 'pipeline' WHERE id = 41`,
+			restore: `UPDATE application_versions SET agent_type = 'agent' WHERE id = 41`,
+		},
+		{
+			name: "participant projects a pipeline",
+			apply: `UPDATE chat_participants
+SET meta = jsonb_set(meta::jsonb, '{agent_type}', '"pipeline"'::jsonb)::json
+WHERE id = 30`,
+			restore: `UPDATE chat_participants
+SET meta = jsonb_set(meta::jsonb, '{agent_type}', '"agent"'::jsonb)::json
+WHERE id = 30`,
+		},
+		{
+			name: "child internal tools",
+			apply: `UPDATE application_versions
+SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
+WHERE id = 41`,
+			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
+		},
+		{
+			name: "nested child agent",
+			apply: `WITH child_tool AS (
+    INSERT INTO elitea_tools (
+        id, type, name, description, settings, author_id, meta
+    ) VALUES (
+        52, 'application', 'grandchild', 'Nested child',
+        '{"application_id":31,"application_version_id":41}'::jsonb,
+        11, '{}'::jsonb
+    )
+    RETURNING id
+)
+INSERT INTO entity_tool_mapping (
+    tool_id, entity_id, entity_version_id, entity_type, selected_tools
+)
+SELECT child_tool.id, 31, 41, 'agent', '[]'::jsonb FROM child_tool`,
+			restore: `WITH removed_mapping AS (
+    DELETE FROM entity_tool_mapping WHERE tool_id = 52
+)
+DELETE FROM elitea_tools WHERE id = 52`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := tx.Exec(t.Context(), test.apply); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := queries.ResolveCurrentAdhocTurn(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("resolve error=%v", err)
+			}
+			_, err := queries.InsertCurrentAdhocTurn(
+				t.Context(),
+				sqlcgen.InsertCurrentAdhocTurnParams{
+					ActorUserID: 11, TargetParticipantID: 23,
+					ConversationUuid: resolve.ConversationUuid, ProjectID: 1,
+					QuestionID: resolve.QuestionID, QuestionMeta: []byte(`{}`),
+					QuestionItemID: mustCurrentPGUUID(
+						t,
+						"30000000-0000-4000-8000-000000000038",
+					),
+					UserInput: "must fall back",
+					ResponseMessageID: mustCurrentPGUUID(
+						t,
+						"40000000-0000-4000-8000-000000000038",
+					),
+					ExecutionGeneration: "20000000-0000-4000-8000-000000000038",
+					ExecutionID:         "execution-adhoc-unsupported",
+				},
+			)
+			if !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("insert error=%v", err)
+			}
+			if _, err := tx.Exec(t.Context(), test.restore); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if _, err := queries.ResolveCurrentAdhocTurn(t.Context(), resolve); err != nil {
+		t.Fatalf("bounded leaf application remained rejected after restoring fixtures: %v", err)
+	}
+}
+
 func TestPostgresCurrentRegenerationResolvesOwnershipAndAtomicallyReusesResponse(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
@@ -420,6 +542,15 @@ func TestPostgresCurrentRegenerationResolvesOwnershipAndAtomicallyReusesResponse
 		"30000000-0000-4000-8000-000000000031", responseID,
 		"regenerate this", "execution-original",
 	)
+	pending, err := queries.ResolveCurrentRegeneration(
+		t.Context(),
+		sqlcgen.ResolveCurrentRegenerationParams{
+			ActorUserID: 11, ProjectID: 1, ResponseMessageID: response,
+		},
+	)
+	if err != nil || !pending.ResponseIsStreaming {
+		t.Fatalf("resolve streaming response: binding=%+v error=%v", pending, err)
+	}
 	completePostgresCurrentApplicationTurn(t, tx, response, "discarded answer")
 	if _, err := tx.Exec(t.Context(), `
 INSERT INTO chat_message_trace_step (
@@ -440,7 +571,7 @@ WHERE uuid = $1`, response); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if binding.RegenerationKind != "application" || binding.TargetParticipantID != 21 ||
+	if binding.ResponseIsStreaming || binding.RegenerationKind != "application" || binding.TargetParticipantID != 21 ||
 		binding.QuestionID != mustCurrentPGUUID(t, questionID) ||
 		binding.ConversationUuid != conversationID || binding.UserInput != "regenerate this" {
 		t.Fatalf("binding=%+v", binding)
@@ -733,13 +864,16 @@ INSERT INTO p_1.chat_conversations (
 );
 INSERT INTO p_1.chat_participants (id, uuid, entity_name, entity_meta, meta) VALUES
     (23, 'a0000000-0000-4000-8000-000000000032', 'dummy', '{}'::jsonb, '{"name":"EliteA"}'::json),
-    (24, 'b0000000-0000-4000-8000-000000000032', 'toolkit', '{"id":51,"project_id":1}'::jsonb, '{"name":"product"}'::json);
+    (24, 'b0000000-0000-4000-8000-000000000032', 'toolkit', '{"id":51,"project_id":1}'::jsonb, '{"name":"product"}'::json),
+    (30, 'c0000000-0000-4000-8000-000000000032', 'application', '{"id":31,"project_id":1}'::jsonb,
+     '{"name":"leaf-agent","description":"Read-only child agent","agent_type":"agent"}'::json);
 INSERT INTO p_1.chat_participant_mapping (
     conversation_id, participant_id, entity_settings
 ) VALUES
     (2, 20, '{"llm_settings":{"model_name":"saved","model_project_id":1,"max_tokens":1024}}'::jsonb),
     (2, 23, '{}'::jsonb),
-    (2, 24, '{}'::jsonb);`); err != nil {
+    (2, 24, '{}'::jsonb),
+    (2, 30, '{"version_id":41,"variables":[],"agent_type":"agent"}'::jsonb);`); err != nil {
 		t.Fatal(err)
 	}
 }

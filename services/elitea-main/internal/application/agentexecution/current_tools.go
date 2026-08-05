@@ -123,11 +123,20 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 		}
 		toolType, ok := tool["type"].(string)
 		if !ok || toolType == "" || len(toolType) > configurationapp.MaxCurrentToolkitSettingsIdentifier ||
-			strings.ContainsAny(toolType, "\x00\r\n") || toolType == "application" {
-			// Nested application orchestration has separate cycle, depth, child
-			// dispatch and result-reconciliation contracts. Do not silently run it
-			// as a regular toolkit before that parity slice is admitted.
+			strings.ContainsAny(toolType, "\x00\r\n") {
 			return nil, ErrUnsupportedCurrentAgentStart
+		}
+		if toolType == "application" {
+			frozen, ok := freezeCurrentAdhocApplicationReference(
+				tool,
+				request.ProjectID,
+				request.ActorUserID,
+			)
+			if !ok {
+				return nil, ErrUnsupportedCurrentAgentStart
+			}
+			tools[index] = frozen
+			continue
 		}
 		toolID, ok := positiveCurrentAgentJSONInteger(tool["id"])
 		if !ok {
@@ -187,6 +196,74 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 		return nil, ErrUnsupportedCurrentAgentStart
 	}
 	return encoded, nil
+}
+
+// freezeCurrentAdhocApplicationReference admits only the current same-project
+// leaf-agent reference emitted by ResolveCurrentAdhocTurn. The child application
+// remains SDK-owned and is fetched by its application/version identity;
+// no child configuration or credential material is copied into the command.
+func freezeCurrentAdhocApplicationReference(
+	tool map[string]any,
+	projectID int32,
+	actorUserID int32,
+) (map[string]any, bool) {
+	toolID, hasToolID := tool["id"]
+	if len(tool) != 11 || !hasToolID || toolID != nil {
+		return nil, false
+	}
+	name, validName := boundedCurrentAgentReferenceString(tool["name"], false)
+	toolkitName, validToolkitName := boundedCurrentAgentReferenceString(tool["toolkit_name"], false)
+	description, validDescription := boundedCurrentAgentReferenceString(tool["description"], true)
+	agentType, validAgentType := boundedCurrentAgentReferenceString(tool["agent_type"], false)
+	createdAt, validCreatedAt := boundedCurrentAgentReferenceString(tool["created_at"], false)
+	authorID, validAuthorID := positiveCurrentAgentJSONInteger(tool["author_id"])
+	participantID, validParticipantID := positiveCurrentAgentJSONInteger(tool["participant_id"])
+	toolProjectID, validProjectID := positiveCurrentAgentJSONInteger(tool["project_id"])
+	settings, validSettings := tool["settings"].(map[string]any)
+	if !validName || !validToolkitName || name != toolkitName || !validDescription ||
+		!validAgentType || strings.EqualFold(agentType, "pipeline") || !validCreatedAt ||
+		!validAuthorID || authorID != int64(actorUserID) || !validParticipantID ||
+		!validProjectID || toolProjectID != int64(projectID) || !validSettings ||
+		len(settings) != 4 || !emptyCurrentAgentJSONArray(settings["variables"]) ||
+		!emptyCurrentAgentJSONArray(settings["selected_tools"]) {
+		return nil, false
+	}
+	applicationID, validApplicationID := positiveCurrentAgentJSONInteger(settings["application_id"])
+	versionID, validVersionID := positiveCurrentAgentJSONInteger(settings["application_version_id"])
+	if !validApplicationID || !validVersionID {
+		return nil, false
+	}
+
+	return map[string]any{
+		"type":           "application",
+		"name":           name,
+		"description":    description,
+		"author_id":      authorID,
+		"participant_id": participantID,
+		"project_id":     toolProjectID,
+		"settings": map[string]any{
+			"variables":              []any{},
+			"application_id":         applicationID,
+			"selected_tools":         []any{},
+			"application_version_id": versionID,
+		},
+		"id":           nil,
+		"toolkit_name": toolkitName,
+		"agent_type":   agentType,
+		"created_at":   createdAt,
+	}, true
+}
+
+func boundedCurrentAgentReferenceString(value any, allowEmpty bool) (string, bool) {
+	text, ok := value.(string)
+	return text, ok && (allowEmpty || text != "") &&
+		len(text) <= configurationapp.MaxCurrentToolkitSettingsIdentifier &&
+		!strings.ContainsAny(text, "\x00\r\n")
+}
+
+func emptyCurrentAgentJSONArray(value any) bool {
+	items, ok := value.([]any)
+	return ok && len(items) == 0
 }
 
 func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
