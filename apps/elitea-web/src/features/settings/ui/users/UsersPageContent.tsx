@@ -281,7 +281,7 @@ function UsersPagePagination({
   return (
     <Box sx={usersPageStyles.pagination}>
       <Typography variant="bodySmall" color="text.secondary">
-        {t('shared.ui.settings.users.paginationInfo', `Showing ${startRow}–${endRow} of ${total}`)}
+        {t('shared.ui.settings.users.paginationInfo', `Showing ${startRow}–${endRow} of ${total}`, { startRow, endRow, total })}
       </Typography>
       <Box sx={usersPageStyles.pageSizeSelectContainer}>
         <Typography variant="bodySmall" sx={{ mr: 1 }}>

@@ -210,7 +210,7 @@ export function CreatePersonalTokenPage() {
                       color="text.secondary"
                       sx={styles.helperText}
                     >
-                      {t('entities.token.form.charLimit', `Maximum character limit reached (${MAX_TOKEN_NAME_LENGTH})`)}
+                      {t('entities.token.form.charLimit', `Maximum character limit reached (${MAX_TOKEN_NAME_LENGTH})`, { maxLength: MAX_TOKEN_NAME_LENGTH })}
                     </Typography>
                   )}
                 </Box>

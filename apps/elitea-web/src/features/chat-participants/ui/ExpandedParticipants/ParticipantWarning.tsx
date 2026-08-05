@@ -99,7 +99,7 @@ function resolveRemoteMcpExpired(mcpLoginSlot: ReactNode | undefined): ReactNode
   if (mcpLoginSlot) {
     return (
       <>
-        {t('chat-participants.warning.remoteMcpExpired', 'Remote MCP session expired. ')}
+        {t('chat-participants.warning.remoteMcpExpiredPrefix', 'Remote MCP session expired. ')}
         <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
           {t('chat-participants.warning.login', 'Login')}
         </Typography>{' '}
@@ -114,7 +114,7 @@ function resolveSpOAuthExpired(sharepointLoginSlot: ReactNode | undefined): Reac
   if (sharepointLoginSlot) {
     return (
       <>
-        {t('chat-participants.warning.sharepointExpired', 'SharePoint OAuth session expired. ')}
+        {t('chat-participants.warning.sharepointExpiredPrefix', 'SharePoint OAuth session expired. ')}
         <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
           {t('chat-participants.warning.login', 'Login')}
         </Typography>{' '}
@@ -159,7 +159,7 @@ function resolveConfigIssues(
     const typeText = getParticipantTypeText(participant, isToolkitParticipant);
     return (
       <>
-        {t('chat-participants.warning.misconfigured', 'Misconfiguration errors found. ')}
+        {t('chat-participants.warning.misconfiguredPrefix', 'Misconfiguration errors found. ')}
         <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={handleEditClick}>
           {t('chat-participants.warning.checkThe', `Check the ${typeText}`, { type: typeText })}
         </Typography>

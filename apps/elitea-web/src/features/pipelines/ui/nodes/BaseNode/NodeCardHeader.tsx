@@ -131,6 +131,7 @@ function findDuplicateMessage(
     return t(
       'pipelines.flowEditor.nodeCardHeader.duplicateToolName',
       `The name conflicts with an existing toolkit name "${foundToolName}", please input a new name!`,
+      { toolName: foundToolName },
     );
   }
 
