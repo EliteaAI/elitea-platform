@@ -93,6 +93,39 @@ func (f *fakeBudgetChecker) TryAlertCooldown(_ context.Context, _, _ string, _ i
 	return false, nil
 }
 
+// blockingBudgetChecker implements BudgetChecker for
+// TestUpdateUsage_CheckBudgetOffCriticalPath (FIX #27, github issue #15). The
+// FIRST CheckBudget call — the request-path admission gate in h.checkBudget —
+// returns Allow immediately, so the provider is dispatched normally. Every
+// SUBSEQUENT CheckBudget call — the billing goroutine's pre-increment
+// snapshot and trySoftAlert's post-increment read — blocks on unblock until
+// the test closes it, proving neither can delay the HTTP handler.
+type blockingBudgetChecker struct {
+	checkCalls  atomic.Int64
+	updateCalls atomic.Int64
+	unblock     chan struct{}
+	updated     chan struct{}
+	once        sync.Once
+}
+
+func (b *blockingBudgetChecker) CheckBudget(_ context.Context, _ int, _, _ string, _, _ int64) (failmode.Decision, error) {
+	if b.checkCalls.Add(1) == 1 {
+		return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
+	}
+	<-b.unblock
+	return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
+}
+
+func (b *blockingBudgetChecker) UpdateUsage(_ context.Context, _ int, _, _, _ string, _, _, _ int64) error {
+	b.updateCalls.Add(1)
+	b.once.Do(func() { close(b.updated) })
+	return nil
+}
+
+func (b *blockingBudgetChecker) TryAlertCooldown(_ context.Context, _, _ string, _ int64) (bool, error) {
+	return false, nil
+}
+
 // getLastUpdateCostNano returns lastUpdateCostNano under the mutex.
 func (f *fakeBudgetChecker) getLastUpdateCostNano() int64 {
 	f.mu.Lock()
@@ -345,6 +378,180 @@ func TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked(t *testing.T) {
 	}
 	if got := gate.getLastUpdateProjectID(); got != 42 {
 		t.Errorf("UpdateUsage projectID = %d, want 42", got)
+	}
+}
+
+// TestUpdateUsage_CheckBudgetOffCriticalPath is the regression test for FIX
+// #27 (github issue #15): "Synchronous budget read on the request goroutine
+// adds up to 10s client-visible latency". Before this fix, updateUsage called
+// budgetGate.CheckBudget SYNCHRONOUSLY on the request goroutine — a
+// pre-increment snapshot needed only for the soft-alert crossing check —
+// bounded solely by billingCtxTimeout (10s). Because writeJSON never sets
+// Content-Length, the chunked-encoding terminator is withheld until the
+// handler returns, so a slow CheckBudget was fully client-visible latency
+// even though FIX #18 claimed billing was already off the critical path.
+//
+// This test injects a BudgetChecker whose CheckBudget call blocks forever
+// after the first (admission) call, and asserts the HTTP handler still
+// returns promptly. It then releases the block and asserts billing
+// (UpdateUsage) still eventually happens.
+func TestUpdateUsage_CheckBudgetOffCriticalPath(t *testing.T) {
+	gate := &blockingBudgetChecker{unblock: make(chan struct{}), updated: make(chan struct{})}
+	router := &trackingRouter{}
+	router.chatResp = &schemas.BifrostChatResponse{
+		ID:    "cmpl-ok",
+		Model: "openai/gpt-4o",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 20},
+	}
+	calc := &fakeCostEstimator{totalNano: 1_500_000}
+	h := NewHandler(router, nil, nil, WithBudgetGate(gate, calc))
+
+	rec := httptest.NewRecorder()
+	handlerDone := make(chan struct{})
+	go func() {
+		h.Chat(rec, chatReqWithProject(t, "42", false))
+		close(handlerDone)
+	}()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("handler did not return within 1s — CheckBudget appears to be blocking the request goroutine")
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !router.called.Load() {
+		t.Error("provider was NOT called despite Allow verdict")
+	}
+	if gate.updateCalls.Load() != 0 {
+		t.Error("UpdateUsage ran before CheckBudget was unblocked — billing must not have completed synchronously")
+	}
+
+	// Release the blocked pre-increment CheckBudget call; billing should proceed
+	// on the detached goroutine.
+	close(gate.unblock)
+
+	select {
+	case <-gate.updated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for billing (UpdateUsage) to complete after CheckBudget unblocked")
+	}
+	if got := gate.updateCalls.Load(); got != 1 {
+		t.Errorf("UpdateUsage called %d times, want 1", got)
+	}
+
+	// Drain fully so the trySoftAlert goroutine (which also calls the
+	// now-unblocked CheckBudget) finishes before the test exits.
+	h.DrainBilling()
+}
+
+// deadlineCapturingBudgetChecker implements BudgetChecker for
+// TestUpdateUsage_PreSnapshotDoesNotShrinkUpdateUsageDeadline. It records the
+// context deadline observed by the pre-increment CheckBudget call (call #2 —
+// call #1 is the fast request-path admission check) and by UpdateUsage, and
+// sleeps for delay before returning from call #2 to simulate a slow/degraded
+// budget-store read.
+type deadlineCapturingBudgetChecker struct {
+	delay      time.Duration
+	checkCalls atomic.Int64
+
+	mu                  sync.Mutex
+	preSnapshotDeadline time.Time
+	updateUsageDeadline time.Time
+
+	once    sync.Once
+	updated chan struct{}
+}
+
+func (d *deadlineCapturingBudgetChecker) CheckBudget(ctx context.Context, _ int, _, _ string, _, _ int64) (failmode.Decision, error) {
+	n := d.checkCalls.Add(1)
+	if n == 1 {
+		// Request-path admission check — return immediately.
+		return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
+	}
+	if n == 2 {
+		// Pre-increment snapshot: simulate a slow/degraded budget-store read.
+		time.Sleep(d.delay)
+		dl, _ := ctx.Deadline()
+		d.mu.Lock()
+		d.preSnapshotDeadline = dl
+		d.mu.Unlock()
+	}
+	return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
+}
+
+func (d *deadlineCapturingBudgetChecker) UpdateUsage(ctx context.Context, _ int, _, _, _ string, _, _, _ int64) error {
+	dl, _ := ctx.Deadline()
+	d.mu.Lock()
+	d.updateUsageDeadline = dl
+	d.mu.Unlock()
+	d.once.Do(func() { close(d.updated) })
+	return nil
+}
+
+func (d *deadlineCapturingBudgetChecker) TryAlertCooldown(_ context.Context, _, _ string, _ int64) (bool, error) {
+	return false, nil
+}
+
+// TestUpdateUsage_PreSnapshotDoesNotShrinkUpdateUsageDeadline guards against a
+// regression introduced (and fixed) alongside FIX #27: spawnBillingGoroutine
+// must give the pre-increment CheckBudget snapshot its OWN timeout budget,
+// separate from the one passed to UpdateUsage. If the two shared a single
+// context, a slow/degraded pre-snapshot read would eat into the money-
+// critical UpdateUsage call's deadline, silently under-billing under DB/NATS
+// degradation.
+//
+// The test injects a checker that sleeps `delay` inside the pre-snapshot
+// CheckBudget call and records the deadline of every context it observes. If
+// UpdateUsage's context were the SAME one CheckBudget used (bug), both
+// deadlines would be set at the same moment and therefore be (near-)equal
+// regardless of the sleep. With independent budgets (fix), UpdateUsage's
+// context is created AFTER the sleep, so its deadline is later than the
+// pre-snapshot's by approximately `delay`.
+func TestUpdateUsage_PreSnapshotDoesNotShrinkUpdateUsageDeadline(t *testing.T) {
+	const delay = 300 * time.Millisecond
+
+	gate := &deadlineCapturingBudgetChecker{delay: delay, updated: make(chan struct{})}
+	router := &trackingRouter{}
+	router.chatResp = &schemas.BifrostChatResponse{
+		ID:    "cmpl-ok",
+		Model: "openai/gpt-4o",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 20},
+	}
+	calc := &fakeCostEstimator{totalNano: 1_500_000}
+	h := NewHandler(router, nil, nil, WithBudgetGate(gate, calc))
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "42", false))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case <-gate.updated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for UpdateUsage")
+	}
+	h.DrainBilling()
+
+	gate.mu.Lock()
+	preDL, updDL := gate.preSnapshotDeadline, gate.updateUsageDeadline
+	gate.mu.Unlock()
+
+	if preDL.IsZero() {
+		t.Fatal("pre-snapshot CheckBudget deadline was not captured")
+	}
+	if updDL.IsZero() {
+		t.Fatal("UpdateUsage deadline was not captured")
+	}
+
+	gap := updDL.Sub(preDL)
+	if gap < delay/2 {
+		t.Errorf("UpdateUsage deadline is only %v after the pre-snapshot's (delay injected was %v); "+
+			"want UpdateUsage to have its own fresh budget starting after the slow pre-snapshot read, "+
+			"not a deadline shared with (and shrunk by) it", gap, delay)
 	}
 }
 
