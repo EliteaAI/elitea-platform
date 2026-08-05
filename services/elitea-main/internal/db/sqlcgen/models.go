@@ -578,6 +578,18 @@ type EliteaRuntimeScheduledOccurrence struct {
 	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
+type EliteaStorageAttachmentChunk struct {
+	ProjectID      int64              `db:"project_id" json:"project_id"`
+	ConversationID string             `db:"conversation_id" json:"conversation_id"`
+	FileID         string             `db:"file_id" json:"file_id"`
+	ChunkIndex     int32              `db:"chunk_index" json:"chunk_index"`
+	TotalChunks    int32              `db:"total_chunks" json:"total_chunks"`
+	FileName       string             `db:"file_name" json:"file_name"`
+	ContentType    string             `db:"content_type" json:"content_type"`
+	Bytes          []byte             `db:"bytes" json:"bytes"`
+	ReceivedAt     pgtype.Timestamptz `db:"received_at" json:"received_at"`
+}
+
 type EliteaStorageBucket struct {
 	ID            int64              `db:"id" json:"id"`
 	ProjectID     int64              `db:"project_id" json:"project_id"`

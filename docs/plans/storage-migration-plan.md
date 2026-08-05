@@ -2850,6 +2850,126 @@ byte path.
 ```
 cd services/elitea-main && go test ./internal/api/v2/... -race -run TestArtifactAttachment -v > /tmp/s20a.log 2>&1; rc=$?; cat /tmp/s20a.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s20a.log && ! grep -q -- '--- SKIP' /tmp/s20a.log
 ```
+(Minor, non-blocking: `grep -qc` combines `-q`, which exits after the first
+match, with `-c`, whose count is then never read by anything — harmless
+here since the intent was only ever "at least one PASS," which `-q` alone
+already gives, but noted for the same reason every other stage's Verify
+quirks get noted.)
+
+**Local-disk chunk buffering does not port — Postgres does, per this plan's
+own ADR-0016 standing constraint.** Legacy disk-buffers each chunk under
+`{tempdir}/elitea_chunks/{file_id}/chunk_{index:06d}` and detects
+completeness by counting files on disk. Direct-porting that to elitea-main
+would silently break under any deployment with more than one replica and no
+sticky session (the norm per ADR-0016, not an edge case) — chunk N and
+chunk N+1 of the same upload can land on two different pods, and the second
+pod's local disk has never seen the first chunk. `migrations/shared/
+0059_attachment_chunks.sql` makes Postgres the shared buffer instead: one
+row per chunk (`elitea_storage.attachment_chunks`, PK `(project_id,
+conversation_id, file_id, chunk_index)`), `COUNT(*)` in place of a directory
+listing, a retried `chunk_index` overwriting (`ON CONFLICT DO UPDATE`, not
+`DO NOTHING`) rather than double-counting — the same idempotent-per-index
+behavior legacy gets for free from filesystem semantics. No claim/lock
+guards the merge step: if two concurrent requests both observe "all chunks
+present" (the race window is the last two chunks of one upload landing on
+different replicas near-simultaneously), both read the identical committed
+rows, both merge and `Put` the identical bytes to the identical
+deterministic key (last-writer-wins, not a torn write), and both call
+`DeleteChunks` (idempotent — the second call just deletes zero rows).
+Redundant work on that rare race, never corrupted output — accepted rather
+than adding a lock, the same trade-off S14's sweeper already makes for its
+own duplicate-tick idempotency.
+
+**Bytes go through the S6/S9 metadata tables, not a bare `ObjectStore.Put`
+with no row.** A simpler design would skip `elitea_storage.buckets`/
+`objects` entirely and just `Put` bytes at a fixed key — rejected because it
+would silently drop two things legacy has that this plan's earlier stages
+already built machinery for: S14's retention sweep (legacy's
+`chat_bucket_retention_days`, 365 days by default) never applies to an
+object with no metadata row and no stamped `expires_at`, and the object's
+bytes never count toward `SumProjectBytes`/S12's quota. Reusing
+`ArtifactBucketsRepository`/`ArtifactObjectsRepository` for a
+project-scoped, lazily-created `"system"`-type bucket (name from
+`elitea_storage.project_storage_policy.attachment_bucket`, default
+`chat-attachments`) gets both back at the cost of one extra get-or-create
+round trip per upload.
+
+**Import cycle discovered, and why it points at an unexported local
+interface rather than a repos-package refactor.** `internal/infra/db/repos`
+already has its own `conversations.go` (pre-S20a, implementing
+`conversations.Repository` for `chat_conversations`/`chat_participants`/etc.
+by returning `conversations.Conversation`/`conversations.ListResponse`
+wire-shape DTOs directly — the `Repository` interface's own return types
+force this direction). `internal/api/v2/conversations` importing
+`internal/infra/db/repos` directly for S20a's byte path would therefore be
+`repos → conversations → repos`, an import cycle Go rejects outright — found
+immediately on the first `go build`, not by inspection. Fixed the only way
+that doesn't touch the pre-existing direction: `attachments.go` defines its
+own `AttachmentStore` interface using plain types only (no `repos.*` types
+anywhere in its signature), and `internal/api/attachment_store.go` — which,
+unlike `conversations`, can import both packages freely — supplies the
+concrete `attachmentRepoAdapter` wrapping the real
+`ArtifactBucketsRepository`/`ArtifactObjectsRepository`/
+`AttachmentChunksRepository` and translating between the two type
+vocabularies. `router.go` wires it: `v2convs.NewHandler(cfg.ConvsRepo).
+WithPool(cfg.Pool).WithObjectStore(cfg.ObjectStore).
+WithAttachmentStore(newAttachmentStore(cfg.Pool))` — the first `WithPool`
+call also newly wires a pool into `convHandler` at all; it had never been
+called before S20a (`grants.go`'s equivalent registration for other
+handlers already did this, `conversations` had not), so three of its own
+pre-existing pool-dependent methods (unrelated to attachments) start
+receiving a real pool for the first time as an incidental side effect of
+this stage's own wiring need.
+
+**One legacy DB write deliberately not ported, flagged as an open question
+— same treatment S13/S14/S18 give their own external-ownership gaps.**
+Legacy also inserts a `chat_messages_attachment` row (schema
+`c.POSTGRES_TENANT_SCHEMA`, a polymorphic child of `message_items`) so a
+chat message renders its attachments inline. That table is absent from this
+service's current migration baseline
+(`internal/db/schema/current_agent_chat_baseline.sql` has
+`chat_conversations`/`chat_message_items`/`chat_messages_text`/
+`chat_messages_context` — no `chat_messages_attachment`) — and unlike
+`centry.project`/`centry.notifications` (externally-owned tables this
+service already references with an established "stub it in integration
+tests, never migrate it" convention), there is no existing "current
+baseline" doc establishing who owns this table's DDL today. Inventing a
+migration for it risks colliding with whatever process — legacy's own
+Alembic history, almost certainly — already owns it in the real shared
+database. Left for a human owner to answer: does Go take over migration
+ownership of `chat_messages_attachment`, is it provisioned by a shared
+process this service should simply start writing to, or does the chat UI's
+attachment rendering move onto `elitea_storage.objects` as a later,
+separate, consumer-side change (out of this plan's scope per "Any change to
+consumer code")? Until answered, an uploaded attachment's bytes are durable
+and downloadable through the generic artifact API, but do not yet appear
+inline in the chat transcript the way a legacy attachment does.
+
+**A live wire-contract discrepancy found in legacy itself, not ported.**
+Legacy's Pydantic contract names the overwrite flag `overwrite_attachments`,
+but both call sites in the actual frontend hook
+(`attachmentUpload.hook.ts`'s `uploadSmallFile`/`uploadChunk`) send the
+field as `overwrite` instead — meaning `overwrite_attachments` silently
+never receives a value from any real client today, and legacy's own
+default (`False`, i.e. duplicate-filename rejection) is what actually
+governs in practice regardless of what a caller intends. This stage's Go
+implementation does not read either field at all: `finalizeAttachment`
+always upserts via `elitea_storage.objects`' own `UpsertObject` (an
+`ON CONFLICT ... DO UPDATE`, not a create-only insert), so a same-key
+re-upload always succeeds and overwrites — closer to "always overwrite"
+than to either of legacy's two candidate flag names' `False` default.
+Recorded here rather than silently reproduced, since porting a bug that was
+itself already dead code in every real caller would only be faithful to
+something no client actually exercises.
+
+**Full verify sweep green:** `gofmt`, `go build`, `go vet`, `task lint`, the
+literal Verify command above (10 `--- PASS`, 0 `--- SKIP`, handler-level
+against in-memory fakes — no infra dependency, matching the Verify
+command's own "must not SKIP" requirement), a new real-Postgres integration
+test for `AttachmentChunksRepository` (retry-overwrites-not-doubles,
+per-`(project,conversation,file)` isolation for a client-chosen `file_id`),
+and a full workspace `task test` with every emulator + a real Postgres
+attached (103 packages, zero failures).
 
 **S20b — Icons.** `UploadIcon` writes to `ICONS_DATA_DIR` and returns
 `/icons/{projectID}/{filename}`, but nothing serves `/icons/*` — no route, no

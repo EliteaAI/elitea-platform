@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
@@ -93,8 +95,10 @@ type Repository interface {
 }
 
 type Handler struct {
-	repo Repository
-	pool any
+	repo        Repository
+	pool        any
+	store       storage.ObjectStore
+	attachments AttachmentStore
 }
 
 func NewHandler(repo Repository) *Handler {
@@ -103,6 +107,24 @@ func NewHandler(repo Repository) *Handler {
 
 func (h *Handler) WithPool(pool any) *Handler {
 	h.pool = pool
+	return h
+}
+
+// WithObjectStore wires the S20a chat-attachment byte path — see
+// attachments.go. Left nil, AddAttachments falls back to its pre-S20a
+// JSON-only behavior for a multipart request too (writeAttachmentBytes
+// reports a 500 rather than silently accepting bytes it can't store).
+func (h *Handler) WithObjectStore(store storage.ObjectStore) *Handler {
+	h.store = store
+	return h
+}
+
+// WithAttachmentStore wires S20a's Postgres metadata dependency — see
+// attachments.go's AttachmentStore doc comment for why this is a
+// locally-defined interface rather than a direct internal/infra/db/repos
+// import (an import cycle).
+func (h *Handler) WithAttachmentStore(store AttachmentStore) *Handler {
+	h.attachments = store
 	return h
 }
 
@@ -756,7 +778,19 @@ func (h *Handler) UpdateAttachmentStorage(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// AddAttachments serves two different resource types at the one legacy URL,
+// exactly like legacy itself does (legacy/plugins/elitea_core/api/v2/
+// attachments.py's PromptLibAPI.post handles both a plain multipart upload
+// and a chunked one at the same route, distinguishing by form fields, not a
+// separate path): a JSON body updates chat_conversations.meta (pre-existing,
+// unchanged below); a multipart/form-data body is S20a's byte path,
+// writeAttachmentBytes.
 func (h *Handler) AddAttachments(w http.ResponseWriter, r *http.Request) {
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mediaType == "multipart/form-data" {
+		h.writeAttachmentBytes(w, r)
+		return
+	}
+
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
 	var body map[string]any

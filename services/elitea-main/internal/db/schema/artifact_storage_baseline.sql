@@ -77,3 +77,17 @@ CREATE TABLE elitea_storage.transfer_grants (
     CONSTRAINT grants_method_valid CHECK (method IN ('GET','PUT'))
 );
 CREATE INDEX grants_expiry ON elitea_storage.transfer_grants (expires_at);
+
+-- 0059_attachment_chunks.sql (S20a).
+CREATE TABLE elitea_storage.attachment_chunks (
+    project_id      BIGINT      NOT NULL,
+    conversation_id TEXT        NOT NULL,
+    file_id         TEXT        NOT NULL,
+    chunk_index     INTEGER     NOT NULL,
+    total_chunks    INTEGER     NOT NULL,
+    file_name       TEXT        NOT NULL,
+    content_type    TEXT        NOT NULL DEFAULT '',
+    bytes           BYTEA       NOT NULL,
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, conversation_id, file_id, chunk_index)
+);

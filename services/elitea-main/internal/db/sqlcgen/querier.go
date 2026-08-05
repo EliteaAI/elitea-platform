@@ -35,6 +35,7 @@ type Querier interface {
 	CompleteScheduledOccurrence(ctx context.Context, arg CompleteScheduledOccurrenceParams) (int64, error)
 	CountActiveRuntimeExecutionsUpTo(ctx context.Context, arg CountActiveRuntimeExecutionsUpToParams) (int64, error)
 	CountArtifactBucketObjects(ctx context.Context, bucketID int64) (int64, error)
+	CountAttachmentChunks(ctx context.Context, arg CountAttachmentChunksParams) (int64, error)
 	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
 	CountCurrentConfigurations(ctx context.Context, arg CountCurrentConfigurationsParams) (int64, error)
 	CountCurrentNotifications(ctx context.Context, arg CountCurrentNotificationsParams) (int64, error)
@@ -52,6 +53,7 @@ type Querier interface {
 	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
 	DeleteArtifactObjectRows(ctx context.Context, ids []int64) (int64, error)
 	DeleteArtifactObjects(ctx context.Context, arg DeleteArtifactObjectsParams) (int64, error)
+	DeleteAttachmentChunks(ctx context.Context, arg DeleteAttachmentChunksParams) (int64, error)
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeleteCurrentNotification(ctx context.Context, arg DeleteCurrentNotificationParams) (int64, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
@@ -160,6 +162,10 @@ type Querier interface {
 	// own project_id column, a bare BIGINT with no local FK) — the set of
 	// known projects is defined operationally as "has at least one bucket."
 	ListArtifactProjectIDsWithBuckets(ctx context.Context) ([]int64, error)
+	// Read by the merge step once CountAttachmentChunks reaches total_chunks —
+	// ORDER BY chunk_index reconstructs the original byte stream regardless of
+	// arrival order, matching legacy's merge_chunks reading 0..total_chunks-1.
+	ListAttachmentChunksOrdered(ctx context.Context, arg ListAttachmentChunksOrderedParams) ([]ListAttachmentChunksOrderedRow, error)
 	ListClaimableScheduledOccurrences(ctx context.Context, arg ListClaimableScheduledOccurrencesParams) ([]ListClaimableScheduledOccurrencesRow, error)
 	// This deliberately projects only the six fields exposed by nested
 	// configuration options. The same bounded query is run first in the current
@@ -264,6 +270,12 @@ type Querier interface {
 	UpdateArtifactBucketTags(ctx context.Context, arg UpdateArtifactBucketTagsParams) (EliteaStorageBucket, error)
 	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)
 	UpsertArtifactObject(ctx context.Context, arg UpsertArtifactObjectParams) (EliteaStorageObject, error)
+	// ON CONFLICT DO UPDATE, not DO NOTHING: a retried chunk_index (client
+	// timeout, network retry) must overwrite the previous bytes for that index,
+	// matching legacy's own local-disk behavior (writing to the same filename
+	// twice replaces it) — never double-counted, since the primary key already
+	// de-duplicates by chunk_index.
+	UpsertAttachmentChunk(ctx context.Context, arg UpsertAttachmentChunkParams) error
 	// The project transaction establishes the authorized p_<project_id>
 	// search_path before this statement runs. The public PgVector bootstrap
 	// configuration is never copied into this tenant row: only the current vault

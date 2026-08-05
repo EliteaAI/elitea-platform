@@ -693,7 +693,15 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Conversations
 				if cfg.ConvsRepo != nil {
-					convHandler := v2convs.NewHandler(cfg.ConvsRepo)
+					// S20a: chat attachment byte path — WithPool/WithObjectStore/
+					// WithAttachmentStore are no-ops (nil) when cfg.Pool/
+					// cfg.ObjectStore are unset, so AddAttachments' JSON-metadata
+					// branch keeps working exactly as before wherever storage isn't
+					// wired (matching newArtifactHandler's own degrade convention).
+					convHandler := v2convs.NewHandler(cfg.ConvsRepo).
+						WithPool(cfg.Pool).
+						WithObjectStore(cfg.ObjectStore).
+						WithAttachmentStore(newAttachmentStore(cfg.Pool))
 					r.Get("/conversations/prompt_lib/{projectID}", convHandler.List)
 					r.Post("/conversations/prompt_lib/{projectID}", convHandler.Create)
 					r.Get("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Get)
