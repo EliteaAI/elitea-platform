@@ -41,13 +41,10 @@
  *   Pure rotation arithmetic lives in scripts/lib/mutation-rotation.mjs.
  */
 
-import { createHash } from 'node:crypto';
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -72,7 +69,6 @@ const vitestConfig = join(root, 'vitest.config.ts');
 // ---------------------------------------------------------------------------
 // Pool definition — mirrors vitest.config.ts coverage.include / exclude
 // ---------------------------------------------------------------------------
-const POOL_GLOBS = ['src/shared/**', 'src/entities/**'];
 
 // Exact patterns from vitest.config.ts coverage.exclude, translated to
 // simple predicates so we don't need a glob library:
@@ -298,33 +294,6 @@ function findTestFile(sourceRel) {
     if (existsSync(c)) return c;
   }
   return null;
-}
-
-// ---------------------------------------------------------------------------
-// Run a single mutant: returns true if killed, false if survived
-// ---------------------------------------------------------------------------
-function runMutant(mutantSource, testFile, tempDir, mutantId) {
-  const tempSource = join(tempDir, `mutant-${mutantId}.ts`);
-  writeFileSync(tempSource, mutantSource, 'utf8');
-
-  // We tell vitest to run only the specific test file.
-  // The mutant is injected via a setup file that overrides the module.
-  // Simpler approach: write a wrapper setup file that monkey-patches the
-  // require/import — but ESM doesn't allow import interception easily.
-  //
-  // Better approach: write the mutated source to a temp path that has the
-  // SAME absolute path as the original by temporarily renaming the original.
-  // This is safe because we're running sequentially (one mutant at a time).
-  const originalPath = join(root, mutantSource.startsWith(root) ? '' : '', testFile.replace(testFile, ''));
-
-  // Actually: find original source absolute path from the mutant source text
-  // We have the source rel from the parent scope. Use a temp file at the original path.
-  // Pass tempSource path via env var and use a vitest setup file that swaps imports.
-  //
-  // Simplest correct approach that doesn't require ESM interception:
-  // Temporarily swap out the source file with the mutant, run vitest, swap back.
-  // This is atomic from vitest's perspective and requires no module interception.
-  return tempSource; // actual swap happens in runMutantForFile below
 }
 
 // ---------------------------------------------------------------------------
