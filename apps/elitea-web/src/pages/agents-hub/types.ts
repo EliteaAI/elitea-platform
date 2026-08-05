@@ -27,7 +27,7 @@ export interface AuthorData {
   username?: string;
 }
 
-export interface VersionDetails {
+interface VersionDetails {
   id: string;
   author?: AuthorData;
   icon_meta?: Record<string, unknown> | null;
@@ -37,25 +37,6 @@ export interface VersionDetails {
   llm_settings?: Record<string, unknown>;
   agent_type?: string;
   variables?: Record<string, unknown>;
-}
-
-export interface CategoryItem {
-  key: string;
-  label: string;
-  icon: string | null;
-  category: string[];
-  value: ApplicationData;
-}
-
-/* ── Context ──────────────────────────────────────────────────────────── */
-
-export interface AgentHubContextValue {
-  updateApplicationInState: (
-    applicationId: string,
-    updateFn: (app: ApplicationData) => ApplicationData,
-  ) => void;
-  addToMyLiked: (application: ApplicationData) => void;
-  removeFromMyLiked: (applicationId: string) => void;
 }
 
 /* ── Strategy enum ────────────────────────────────────────────────────── */

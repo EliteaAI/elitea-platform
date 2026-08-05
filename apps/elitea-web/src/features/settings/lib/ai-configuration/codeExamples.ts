@@ -15,7 +15,3 @@ export const CODE_EXAMPLE_LABELS: Record<string, string> = {
   [CODE_EXAMPLE_TYPES.PYTHON]: 'Python',
 };
 
-export const DEFAULT_SETTINGS_LAYOUT = {
-  STACK: 'stack',
-  INLINE: 'inline',
-} as const;

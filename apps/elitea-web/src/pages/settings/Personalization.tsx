@@ -51,7 +51,7 @@ async function updateAuthorPayload(payload: {
   });
 }
 
-export interface PersonalizationProps {
+interface PersonalizationProps {
   /** Currently-selected project id — threaded down from the route. */
   projectId: string;
 }

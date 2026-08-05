@@ -25,7 +25,15 @@ export interface UseCodePreviewResult {
   editorLanguage: string;
   handleLanguageChange: (language: string) => void;
   handleCopy: () => Promise<void>;
-  handleDownload: () => Promise<void>;
+  /*
+   * [#71] Was declared `() => Promise<void>`, but `handleDownload` builds a
+   * blob and clicks an anchor synchronously — no await anywhere in it. The
+   * mismatch went unnoticed because nothing referenced this interface;
+   * annotating `useCodePreview`'s return type with it surfaced the error.
+   * Corrected to match the implementation rather than the reverse: making the
+   * function async would change what callers can do with its result.
+   */
+  handleDownload: () => void;
   fileName: string;
 }
 
@@ -34,7 +42,7 @@ export interface UseCodePreviewResult {
  * @param projectId - Currently-selected project id — threaded down from the
  *   route. Only its truthiness is used (mirrors the previous `!project` gate).
  */
-export function useCodePreview(model: Record<string, unknown> | null, projectId: string) {
+export function useCodePreview(model: Record<string, unknown> | null, projectId: string): UseCodePreviewResult {
   const [selectedLanguage, setSelectedLanguage] = useState<string>(DEFAULT_LANGUAGE);
 
   const baseApiUrl = useMemo(() => {

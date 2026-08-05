@@ -13,7 +13,7 @@ import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
 
-import AttachmentButton from './AttachmentButton';
+import { AttachmentButton } from './AttachmentButton';
 import type { MenuItemDef, SubmenuKey } from './PlusChatButton.helpers';
 
 export interface AttachmentsPanelProps {

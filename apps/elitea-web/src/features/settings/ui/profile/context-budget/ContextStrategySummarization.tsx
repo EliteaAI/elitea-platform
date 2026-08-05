@@ -27,11 +27,11 @@ interface ContextFormData {
   summary_llm_settings: SummaryLlmSettings;
 }
 
-export interface ContextStrategySummarizationErrors {
+interface ContextStrategySummarizationErrors {
   summary_llm_settings?: Record<string, string> | undefined;
 }
 
-export interface ContextStrategySummarizationProps {
+interface ContextStrategySummarizationProps {
   formData: ContextFormData;
   errors: ContextStrategySummarizationErrors;
   handleInputChange: (

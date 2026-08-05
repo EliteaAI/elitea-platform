@@ -12,7 +12,7 @@ import CodePreviewHeader from './CodePreviewHeader';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { CSSProperties } from 'react';
 
-export interface CodePreviewProps {
+interface CodePreviewProps {
   model: Record<string, unknown> | null;
   models: readonly Record<string, unknown>[];
   selectedModel: Record<string, unknown> | null;

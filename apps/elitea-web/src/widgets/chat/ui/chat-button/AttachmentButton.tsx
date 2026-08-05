@@ -171,5 +171,3 @@ export const AttachmentButton = memo(
 );
 
 AttachmentButton.displayName = 'AttachmentButton';
-
-export default AttachmentButton;

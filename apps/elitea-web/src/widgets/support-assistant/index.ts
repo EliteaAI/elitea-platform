@@ -16,3 +16,17 @@
  */
 export { useGetSupportAssistantConfigQuery } from './api/supportAssistantConfigApi';
 export { useEliteaAssistantRef, SupportAssistantProvider } from './lib/SupportAssistantContext';
+export type { EliteaAssistantInstance } from './lib/SupportAssistantContext';
+/*
+ * The widget itself was missing from this barrel — an omission, not a
+ * deliberate exclusion: the doc comment above describes the unit as building
+ * "the public API", and every other widget slice exports its widget component.
+ * Leaving it off is what made knip (#71) report the file as unused. Wiring it
+ * into `AppShell` remains the W-shell unit's job (that component's own doc
+ * comment lists `SupportAssistantWidget` under what it deliberately dropped),
+ * and mounting it today would render nothing anyway — the real
+ * `@eliteaai/elitea-assistant` overlay is not a dependency of this app, so the
+ * widget is still the no-op passthrough shell described above.
+ */
+export { SupportAssistantWidget } from './ui/SupportAssistantWidget';
+export type { SupportAssistantWidgetProps } from './ui/SupportAssistantWidget';

@@ -191,5 +191,3 @@ const bodySx: SxProps<Theme> = {
   py: '0.75rem',
   flex: 1,
 };
-
-export default ResourceCard;

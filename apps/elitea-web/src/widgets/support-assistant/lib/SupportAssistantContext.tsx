@@ -28,7 +28,14 @@ export interface EliteaAssistantInstance {
  */
 const EliteaAssistantContext = createContext<MutableRefObject<EliteaAssistantInstance | null> | null>(null);
 
-export { EliteaAssistantContext };
+/*
+ * Deliberately NOT exported: the baseline's own barrel
+ * (`[fsd]/widgets/support-assistant/lib/context/index.js`) exposes only
+ * `EliteaAssistantProvider` + `useEliteaAssistantRef`, never the raw context
+ * object. `SupportAssistantProvider` and `useEliteaAssistantRef` below are the
+ * whole public surface; a direct `useContext(EliteaAssistantContext)` by a
+ * consumer would bypass the null-check contract the hook documents.
+ */
 
 /**
  * Context provider that supplies the assistant instance ref.

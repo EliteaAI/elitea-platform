@@ -166,5 +166,3 @@ export const SendButton = memo(
 );
 
 SendButton.displayName = 'SendButton';
-
-export default SendButton;

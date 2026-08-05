@@ -10,7 +10,7 @@ import type { Theme } from '@mui/material/styles';
 import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
 import { t } from '@/shared/ui/lib/t';
 
-export interface CodePreviewContentProps {
+interface CodePreviewContentProps {
   codeExample: string;
   editorLanguage: string;
   modelName?: string;

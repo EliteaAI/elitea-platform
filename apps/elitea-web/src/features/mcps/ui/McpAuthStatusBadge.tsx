@@ -112,7 +112,7 @@ function resolveAuthStatusButtonLabel(hasLoggedInToMcp: boolean, isRunning: bool
  * unit's file scope to add. Pure/exported so it's independently testable
  * against a pathname string without touching `window`.
  */
-export const CREATE_MCP_PATH = '/mcps/create';
+const CREATE_MCP_PATH = '/mcps/create';
 
 export function isOnCreateMcpRoute(pathname: string): boolean {
   return pathname.startsWith(CREATE_MCP_PATH);

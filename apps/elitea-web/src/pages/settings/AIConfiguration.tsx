@@ -16,11 +16,33 @@ import Box from '@mui/material/Box';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
 
+import { isPublicProject } from '@/entities/project';
+import { getConfig } from '@/shared/config';
 import { t } from '@/shared/ui/lib/t';
 
 import { aiConfigurationFeature } from '@/features/settings';
 
-const { ConfigurationsPanel, OpenAITemplate, useConfigurationsBySection } = aiConfigurationFeature;
+const {
+  ConfigurationsPanel,
+  OpenAITemplate,
+  ProjectAIConfiguration,
+  useConfigurationsBySection,
+  useModelsQuery,
+} = aiConfigurationFeature;
+
+/**
+ * `userApiUrl` — the baseline reads `state.user.api_url` from Redux
+ * (`ModelConfiguration.jsx:27,243`). This app has no user slice; the same
+ * value is `shared/config`'s `vite_server_url` (`VITE_SERVER_URL`), which is
+ * what the baseline's `api_url` is populated from. `ProjectAIConfiguration`
+ * itself renders the "Not configured" fallback when this is empty, so a
+ * failed/absent config resolves to the baseline's own empty-state string
+ * rather than throwing.
+ */
+function useUserApiUrl(): string {
+  const configResult = getConfig();
+  return configResult.status === 'ok' ? configResult.config.vite_server_url : '';
+}
 
 export interface AIConfigurationProps {
   /** Currently-selected project id — threaded down from the route. */
@@ -32,6 +54,22 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
   const { data: configurationsBySection, isLoading } = useConfigurationsBySection(projectId);
   const theme = useTheme();
   const styles = getStyles(theme);
+
+  const userApiUrl = useUserApiUrl();
+  const configResult = getConfig();
+  const includeShared =
+    configResult.status === 'ok' && !isPublicProject(projectId, configResult.config.vite_public_project_id);
+  /**
+   * Baseline passes `model.project_id` — the project owning the model the user
+   * has picked in `ModelConfiguration.jsx`'s own selector. That per-model
+   * selection state (`useModelOptions`/`useModelConfiguration`) is not ported
+   * to this page yet (see #71's parity follow-up), so this uses the project's
+   * configured default LLM model instead, which is what the selector is seeded
+   * with on mount in the baseline. Same `useModelsQuery(projectId, 'llm', …)`
+   * call `ConfigurationsPanel` already makes, so it de-dupes on the shared
+   * React Query cache key rather than firing a second request.
+   */
+  const modelProjectId = useModelsQuery(projectId, 'llm', includeShared).data?.default_model_project_id;
 
   const tabs = [
     { label: t('ai-configuration.tabs.configurations', 'Configurations') },
@@ -59,6 +97,20 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
           />
         ))}
       </Tabs>
+
+      {/*
+        Baseline `ModelConfiguration.jsx:243` renders `<ProjectConfiguration>`
+        immediately above `<ConfigurationsPanel>`, inside the configurations
+        tab only (the OpenAI-Template tab has its own chrome). Same placement
+        here.
+      */}
+      {activeTab === 0 && (
+        <ProjectAIConfiguration
+          userApiUrl={userApiUrl}
+          projectId={projectId}
+          modelProjectId={modelProjectId}
+        />
+      )}
 
       {/* Tab content */}
       <Box sx={styles.tabPanel}>

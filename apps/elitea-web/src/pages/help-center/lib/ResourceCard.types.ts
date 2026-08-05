@@ -6,7 +6,7 @@
 import type { ReactNode } from 'react';
 
 /** Named color schemes matching the `resourceCard` palette tokens. */
-export type ResourceColorScheme = 'blue' | 'orange' | 'purple' | 'green' | 'pink';
+type ResourceColorScheme = 'blue' | 'orange' | 'purple' | 'green' | 'pink';
 
 /** Configuration entry for a single resource card. */
 export interface ResourceCardConfig {

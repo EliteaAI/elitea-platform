@@ -208,5 +208,3 @@ export const PlusChatSubmenu = memo(
 );
 
 PlusChatSubmenu.displayName = 'PlusChatSubmenu';
-
-export default PlusChatSubmenu;

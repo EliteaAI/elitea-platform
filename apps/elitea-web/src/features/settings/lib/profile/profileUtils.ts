@@ -1,6 +1,6 @@
 import * as yup from 'yup';
 
-import { DEFAULT_CONTEXT_STRATEGY, VALIDATION_LIMITS } from './context-budget/constants';
+import { DEFAULT_CONTEXT_STRATEGY, SEPARATOR, VALIDATION_LIMITS } from './context-budget/constants';
 
 export const PROFILE_INITIAL_VALUES = {
   persona: 'generic',
@@ -159,19 +159,34 @@ export function deserializeProfileFormData(formValues: Record<string, unknown>):
   };
 }
 
-export function createContextStrategyFormData(formikValues: Record<string, unknown>): Record<string, unknown> {
-  const s = formikValues.summary_llm_settings as Record<string, unknown> | undefined;
+/**
+ * Reshape the flat Formik profile values into the nested `formData` prop
+ * `ContextStrategySummarization` takes. Baseline:
+ * `pages/UserSettings/profileUtils.js:97`.
+ *
+ * [#71] Signature tightened from `(Record<string, unknown>) =>
+ * Record<string, unknown>` to the real `ProfileFormValues` shapes when its
+ * first caller was wired up: the old signature erased every field type, so the
+ * consumer could not accept the result without a cast.
+ */
+export function createContextStrategyFormData(formikValues: ProfileFormValues): {
+  enabled: boolean;
+  max_context_tokens: number;
+  preserve_recent_messages: number;
+  enable_summarization: boolean;
+  summary_llm_settings: ProfileFormValues['summary_llm_settings'];
+} {
   return {
     enabled: formikValues.context_enabled,
     max_context_tokens: formikValues.max_context_tokens,
     preserve_recent_messages: formikValues.preserve_recent_messages,
     enable_summarization: formikValues.enable_summarization,
-    summary_llm_settings: s,
+    summary_llm_settings: formikValues.summary_llm_settings,
   };
 }
 
 export function parseModelValue(value: string): { modelName: string; modelProjectId: number | null } {
-  const parts = value.split('$$$');
+  const parts = value.split(SEPARATOR);
   return {
     modelName: parts[0] ?? '',
     modelProjectId: parts[1] ? Number(parts[1]) : null,

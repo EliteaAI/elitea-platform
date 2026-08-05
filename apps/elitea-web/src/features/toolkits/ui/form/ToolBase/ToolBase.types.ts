@@ -81,7 +81,7 @@ export interface ToolBaseSlots extends ToolBasePropertySlots {
  * assignable to each of its constituent types, so no adapter object needs
  * building at the call site.
  */
-export interface ToolBaseCoreProps {
+interface ToolBaseCoreProps {
   readonly editToolDetail?: EditToolDetail | undefined;
   readonly setEditToolDetail?: SetEditToolDetail | undefined;
   readonly editField?: EditToolField | undefined;

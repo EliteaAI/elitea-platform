@@ -9,7 +9,7 @@ import { AccordionConstants } from '@/shared/lib/constants';
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 import { useFormikContext } from 'formik';
 
-import type { ProfileFormValues } from '@/features/settings/lib/profile/profileUtils';
+import { createContextStrategyFormData, type ProfileFormValues } from '@/features/settings/lib/profile/profileUtils';
 import ContextStrategySummarization from './context-budget/ContextStrategySummarization';
 import { handleConvertToNumberChange } from '@/features/settings/lib/profile/context-budget/validation';
 
@@ -27,16 +27,14 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
 
   // The modelList prop is available for future model selection in summarization.
 
-  const contextFormData = useMemo(
-    () => ({
-      enabled: values.context_enabled,
-      max_context_tokens: values.max_context_tokens,
-      preserve_recent_messages: values.preserve_recent_messages,
-      enable_summarization: values.enable_summarization,
-      summary_llm_settings: values.summary_llm_settings,
-    }),
-    [values],
-  );
+  /*
+   * [#71] Was an inline object literal duplicating
+   * `createContextStrategyFormData` field-for-field, which left the real helper
+   * with no callers. Calling it is what the baseline does at the equivalent
+   * spot (`pages/UserSettings/components/ProfileSummarization.jsx:22`,
+   * `useMemo(() => createContextStrategyFormData(values), [values])`).
+   */
+  const contextFormData = useMemo(() => createContextStrategyFormData(values), [values]);
 
   const contextErrors = useMemo(
     () => ({

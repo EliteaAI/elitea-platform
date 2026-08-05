@@ -58,5 +58,3 @@ const styles = {
     wordBreak: 'break-word',
   },
 };
-
-export default AgentConversationStarterItem;

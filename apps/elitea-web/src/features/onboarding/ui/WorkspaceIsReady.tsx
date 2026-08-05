@@ -13,7 +13,7 @@ import { BaseBtn } from '@/shared/ui/BaseBtn';
 import ChatWelcomeImage from '@/assets/onboarding/welcome/chat-welcome.png';
 
 /** Props for {@link WorkspaceIsReady}. */
-export interface WorkspaceIsReadyProps {
+interface WorkspaceIsReadyProps {
   onJumpIn: () => void;
 }
 

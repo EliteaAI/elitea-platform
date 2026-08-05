@@ -28,7 +28,7 @@
  * produces them yet — see `UnavailablePanel`'s doc for why those two tabs
  * have no data source.
  */
-export type EntityKind = 'agent' | 'pipeline' | 'toolkit' | 'MCP';
+type EntityKind = 'agent' | 'pipeline' | 'toolkit' | 'MCP';
 
 export interface UserPublicListItem {
   readonly id: string;

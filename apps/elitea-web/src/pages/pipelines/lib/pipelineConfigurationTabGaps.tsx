@@ -48,7 +48,7 @@ import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 const gapContainerSx: SxProps<Theme> = { padding: '1.5rem', height: '100%', boxSizing: 'border-box' };
 
 /** `ConfigurationTab`'s required `slots.renderConfigurationForm` — see this module's own doc comment for why the real agent-domain panels can't be reached from here. */
-export function renderPipelineConfigurationFormGap(): ReactNode {
+function renderPipelineConfigurationFormGap(): ReactNode {
   return (
     <Box
       data-testid="edit-pipeline-configuration-form-gap"
@@ -66,7 +66,7 @@ export function renderPipelineConfigurationFormGap(): ReactNode {
 }
 
 /** `ConfigurationTab`'s required `slots.renderChat` — see this module's own doc comment for why the real `features/chat` chat box can't be reached from here (that slice does not exist yet). */
-export function renderPipelineChatGap(): ReactNode {
+function renderPipelineChatGap(): ReactNode {
   return (
     <Box
       data-testid="edit-pipeline-chat-gap"

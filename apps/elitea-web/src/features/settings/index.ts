@@ -29,13 +29,15 @@ import { ProfileValidationSchema, deserializeProfileFormData, serializeProfileFo
 export type { ProfileFormValues } from './lib/profile/profileUtils';
 
 import { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION } from './lib/environment/environment.constants';
-import { buildFieldDefinition, validateFieldValue } from './lib/environment/environmentField.helpers';
+import { buildFieldDefinition, parseFieldValue, validateFieldValue } from './lib/environment/environmentField.helpers';
 import { EnvironmentFieldRow } from './ui/environment/EnvironmentFieldRow';
 export type { EnvironmentFieldDefinition } from './lib/environment/environmentField.helpers';
 
 import ConfigurationsPanel from './ui/ai-configuration/ConfigurationsPanel';
 import OpenAITemplate from './ui/ai-configuration/OpenAITemplate';
+import ProjectAIConfiguration from './ui/ai-configuration/ProjectAIConfiguration';
 import { useConfigurationsBySection } from './lib/ai-configuration/useConfigurationsBySection';
+import { useModelsQuery } from './api/ai-configuration/api';
 
 /** Users tab (`pages/settings/Users.tsx`). */
 export const usersFeature = { useUsersActions, UsersPageContent };
@@ -56,7 +58,13 @@ export const projectContextFeature = { ProjectContextBody, ProjectContextToasts,
 export const profileFeature = { useDefaultModel, ProfileFormContent, ProfileValidationSchema, deserializeProfileFormData, serializeProfileFormData };
 
 /** Environment tab (`pages/settings/Environment.tsx`). */
-export const environmentFeature = { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, validateFieldValue, EnvironmentFieldRow };
+export const environmentFeature = { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, parseFieldValue, validateFieldValue, EnvironmentFieldRow };
 
 /** AI-configuration tab (`pages/settings/AIConfiguration.tsx`). */
-export const aiConfigurationFeature = { ConfigurationsPanel, OpenAITemplate, useConfigurationsBySection };
+export const aiConfigurationFeature = {
+  ConfigurationsPanel,
+  OpenAITemplate,
+  ProjectAIConfiguration,
+  useConfigurationsBySection,
+  useModelsQuery,
+};

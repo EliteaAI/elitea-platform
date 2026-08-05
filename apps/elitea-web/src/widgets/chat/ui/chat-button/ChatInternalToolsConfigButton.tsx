@@ -175,5 +175,3 @@ export const ChatInternalToolsConfigButton = memo(
 );
 
 ChatInternalToolsConfigButton.displayName = 'ChatInternalToolsConfigButton';
-
-export default ChatInternalToolsConfigButton;

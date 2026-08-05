@@ -103,7 +103,7 @@ function selectIsPublicProject(projectId: string): boolean {
   return isPublicProject(projectId, config.config.vite_public_project_id);
 }
 
-export function PersonalTokensPage() {
+function PersonalTokensPage() {
   const navigate = useNavigate();
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
   const routeContext: unknown = useRouteContext({ strict: false });

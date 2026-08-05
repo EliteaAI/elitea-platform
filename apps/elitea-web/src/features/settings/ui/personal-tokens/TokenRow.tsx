@@ -71,7 +71,7 @@ export const ExpiryCell = memo(function ExpiryCell({
 
 /* ── delete confirmation ───────────────────────────────────────────────── */
 
-export function DeleteTokenConfirm({
+function DeleteTokenConfirm({
   open,
   tokenName,
   onClose,

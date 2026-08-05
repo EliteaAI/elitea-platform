@@ -56,7 +56,7 @@ function useSupportAssistantEnabled(options?: { enabled?: boolean }): boolean {
  * dependency, so this component renders its children without the
  * floating overlay until the dependency is added.
  */
-const SupportAssistantWidget = memo(({ children }: SupportAssistantWidgetProps): ReactNode => {
+export const SupportAssistantWidget = memo(({ children }: SupportAssistantWidgetProps): ReactNode => {
   const assistantRef = useRef<null | { toggle: () => void }>(null);
   const assistantEnabled = useSupportAssistantEnabled();
 
@@ -94,5 +94,3 @@ const SupportAssistantWidget = memo(({ children }: SupportAssistantWidgetProps):
 });
 
 SupportAssistantWidget.displayName = 'SupportAssistantWidget';
-
-export default SupportAssistantWidget;

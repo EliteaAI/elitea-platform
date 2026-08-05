@@ -7,7 +7,7 @@ import { memo } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-export interface InteractiveTourSpotlightProps {
+interface InteractiveTourSpotlightProps {
   targetRect: DOMRect | null;
   borderRadius?: string | undefined;
 }

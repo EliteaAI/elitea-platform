@@ -21,7 +21,7 @@
  *   (apps/elitea-ui/src/common/utils.jsx:691-705), which does
  *   `new Date(expiration).getTime()`.
  */
-export type TokenExpirationMeasure = 'days' | 'weeks' | 'hours' | 'minutes';
+type TokenExpirationMeasure = 'days' | 'weeks' | 'hours' | 'minutes';
 
 /** The CREATE-REQUEST `expires` shape. `null` means "never expires". */
 export type TokenExpirationRequest = null | { readonly measure: TokenExpirationMeasure; readonly value: number };

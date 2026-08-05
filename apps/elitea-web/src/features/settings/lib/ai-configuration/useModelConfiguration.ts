@@ -9,7 +9,7 @@ import type { ModelInfo } from '@/entities/credential';
 
 import { removeDuplicateModels } from './modelConfiguration.helpers';
 
-export interface ModelState {
+interface ModelState {
   configuration_uid: string;
   model_name: string;
   configuration_name: string;

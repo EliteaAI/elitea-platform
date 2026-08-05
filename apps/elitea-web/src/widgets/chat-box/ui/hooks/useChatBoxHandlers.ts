@@ -56,13 +56,27 @@ import type {
   UseChatBoxHandlersResult,
 } from './useChatBoxHandlers.helpers';
 
+/*
+ * [#71] `UpdatedMessageItem` and `UploadedAttachmentOutcome` were dropped from
+ * this re-export list. The issue's triage flagged `UploadedAttachmentOutcome`
+ * as appearing twice — an `interface` in `useChatBoxHandlers.helpers.ts:37` and
+ * a `type` here — and asked whether the two shapes agree before deleting
+ * either. They are not two shapes: there is one declaration, in the helpers
+ * module, and this block merely re-exported it, which is why knip listed it
+ * under both files. Nothing to reconcile, no merge artifact.
+ *
+ * `UploadedAttachmentOutcome` is internal to the helpers module (it only names
+ * the element type of `ChatBoxHandlerDeps.uploadAttachments`'s resolved value,
+ * and a caller builds that object literal structurally), so it is no longer
+ * exported there either. `UpdatedMessageItem` is still exported by the helpers
+ * module — `buildRegeneratePayload` takes it — it just has no consumer for the
+ * re-export.
+ */
 export type {
   ChatBoxHandlerDeps,
   HitlInterruptAction,
   SendQuestionParams,
   SendResult,
-  UpdatedMessageItem,
-  UploadedAttachmentOutcome,
   UseChatBoxHandlersResult,
 } from './useChatBoxHandlers.helpers';
 

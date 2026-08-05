@@ -38,7 +38,7 @@ export interface FileReaderInputHandle {
 }
 
 /** One MCP sub-tool entry, as read off `MentionableTool.settings.available_mcp_tools` for the "/" mention tools-phase dropdown. `description` mirrors the baseline's own `item.description` (`useInstructionsMention.hooks.js:278-291`) — dropped in an earlier port pass; restored here so `resolveAvailableTools` below has a real field to read instead of a hardcoded `''`. */
-export interface MentionableMcpTool {
+interface MentionableMcpTool {
   readonly value?: string | undefined;
   readonly label?: string | undefined;
   readonly description?: string | undefined;

@@ -36,7 +36,7 @@ import ParticipantActions from '../ParticipantActions/ParticipantActions';
 // Props
 // ---------------------------------------------------------------------------
 
-export interface CollapsedParticipantsListProps {
+interface CollapsedParticipantsListProps {
   participants: Record<string, unknown>[];
   activeParticipantId?: string;
   disabledEdit?: boolean;

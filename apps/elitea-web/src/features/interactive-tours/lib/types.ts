@@ -28,7 +28,7 @@ export interface TourStep {
 /**
  * The `keepExploring` items rendered in the tour-complete card.
  */
-export interface KeepExploringItem {
+interface KeepExploringItem {
   label: string;
   tourId: string;
   path?: string;

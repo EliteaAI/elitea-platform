@@ -18,7 +18,7 @@ const ICON_TYPE_KEYS: Record<string, readonly string[]> = {
   PGVECTOR: ['pgvector', 'postgresql', 'postgres'],
 };
 
-export const CONFIGURATION_TYPE_GROUPS = {
+const CONFIGURATION_TYPE_GROUPS = {
   OpenAI: {
     label: 'OpenAI',
     types: ['open_ai', 'openai', 'gpt', 'codex mini', 'embedding-ada'],
@@ -221,19 +221,3 @@ export const sortConfigurationsByDisplayName = (
   return nameA.localeCompare(nameB);
 };
 
-/**
- * Build model options for a Select component from configurations.
- */
-export const createConfigurationOptions = (
-  configurations: readonly Record<string, unknown>[],
-  iconRenderer?: (projectId: string) => React.ReactNode,
-) => {
-  return (
-    configurations
-      ?.map((config) => ({
-        value: `${String((config.name as string) ?? '')}<<>>${String((config.project_id as string) ?? '')}`,
-        label: (config.display_name as string | undefined) || (config.name as string) || '',
-        icon: iconRenderer ? iconRenderer(config.project_id as string) : undefined,
-      })) || []
-  );
-};

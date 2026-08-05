@@ -76,7 +76,7 @@ type FormValues = z.infer<typeof validationSchema>;
 
 /* ── page ─────────────────────────────────────────────────────────────── */
 
-export function CreatePersonalTokenPage() {
+function CreatePersonalTokenPage() {
   const navigate = useNavigate();
   const [showDialog, setShowDialog] = useState(false);
   const [generatedToken, setGeneratedToken] = useState<{

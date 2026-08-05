@@ -15,6 +15,22 @@ import { usePermissionList } from '@/shared/api/generated/auth/auth';
 import type { Permission } from '@/shared/api/generated/model';
 import { PERMISSIONS } from '@/shared/lib/permissions';
 import { useConfigurationNavigation } from '@/features/settings/lib/ai-configuration/useConfigurationNavigation';
+/*
+ * [#71] These two replace this file's own former `getGroupLabel`/`sortByName`,
+ * which were ad-hoc reimplementations of them. The baseline calls exactly these
+ * two helpers from its own ConfigurationSection.jsx (`ConfigurationHelpers
+ * .getConfigurationGroup` at :40, `.sortConfigurationsByDisplayName` at :50 and
+ * :61), so using them here is both the dedup and the closer parity. Grouping is
+ * behaviour-identical (same third-party keyword list, same OpenAI/Anthropic
+ * type lists, same fallback); sorting now goes through
+ * `getConfigurationDisplayName`, whose longer name-priority chain is ported
+ * verbatim from the baseline's configuration.helpers.js:40-52 and is a superset
+ * of the four keys the local copy looked at.
+ */
+import {
+  getConfigurationGroup,
+  sortConfigurationsByDisplayName,
+} from '@/features/settings/lib/ai-configuration/configuration.helpers';
 
 import ConfigurationCard from './ConfigurationCard';
 
@@ -29,7 +45,7 @@ export interface AdditionalDefaultSetting {
   onChange: (value: string) => void;
 }
 
-export interface ConfigurationSectionProps {
+interface ConfigurationSectionProps {
   title: string;
   configurations: readonly Record<string, unknown>[];
   /** Currently-selected project id — gates edit permission
@@ -46,41 +62,6 @@ export interface ConfigurationSectionProps {
   groupTheModelsByProvider?: boolean;
 }
 
-function getGroupLabel(
-  name: string | undefined,
-  type: string | undefined,
-  label: string | undefined,
-): string {
-  const configKey = (name || type || '').toLowerCase();
-  const labelKey = (label || '').toLowerCase();
-
-  const thirdPartyKeywords = ['azure', 'bedrock', 'vertex', 'vertexai', 'dial', 'ai_dial', 'ollama', 'hugging', 'model-router', 'postgres'];
-
-  if (thirdPartyKeywords.some((k) => configKey.includes(k) || labelKey.includes(k))) {
-    return 'Other LLM Providers';
-  }
-
-  const openaiTypes = ['open_ai', 'openai', 'gpt', 'codex mini', 'embedding-ada'];
-  if (openaiTypes.some((t) => t.toLowerCase() === configKey || configKey.includes(t.toLowerCase())) || (labelKey && openaiTypes.some((t) => labelKey.includes(t.toLowerCase())))) {
-    return 'OpenAI';
-  }
-
-  const anthropicTypes = ['claude', 'anthropic', 'opus', 'haiku'];
-  if (anthropicTypes.some((t) => t.toLowerCase() === configKey || configKey.includes(t.toLowerCase())) || (labelKey && anthropicTypes.some((t) => labelKey.includes(t.toLowerCase())))) {
-    return 'Anthropic';
-  }
-
-  return 'Other LLM Providers';
-}
-
-function sortByName(a: Record<string, unknown>, b: Record<string, unknown>): number {
-  const aData = a.data as Record<string, unknown> | undefined;
-  const bData = b.data as Record<string, unknown> | undefined;
-  const nameA = ((a.label as string) || (aData?.name as string) || (a.name as string) || (a.type as string) || '').toLowerCase();
-  const nameB = ((b.label as string) || (bData?.name as string) || (b.name as string) || (b.type as string) || '').toLowerCase();
-  return nameA.localeCompare(nameB);
-}
-
 /**
  * Groups configurations by provider label and sorts each group.
  */
@@ -90,7 +71,7 @@ function groupConfigurationsByProvider(
 ): Record<string, Record<string, unknown>[]> | null {
   const groups: Record<string, Record<string, unknown>[]> = {};
   for (const config of configurations) {
-    const groupLabel = getGroupLabel(
+    const groupLabel = getConfigurationGroup(
       config.name as string | undefined,
       config.type as string | undefined,
       config.label as string | undefined,
@@ -189,12 +170,12 @@ export default memo(function ConfigurationSection({
 
   const groupedConfigurations = useMemo(() => {
     if (!groupTheModelsByProvider || !configurations?.length) return null;
-    return groupConfigurationsByProvider(configurations, sortByName);
+    return groupConfigurationsByProvider(configurations, sortConfigurationsByDisplayName);
   }, [configurations, groupTheModelsByProvider]);
 
   const sortedConfigurations = useMemo(() => {
     if (groupTheModelsByProvider) return configurations;
-    return [...(configurations || [])].sort(sortByName);
+    return [...(configurations || [])].sort(sortConfigurationsByDisplayName);
   }, [configurations, groupTheModelsByProvider]);
 
   if (isLoading) {

@@ -32,7 +32,7 @@ import { t } from '@/shared/i18n';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { usePermissionSet } from '@/widgets/sidebar';
 
-const { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, validateFieldValue, EnvironmentFieldRow } = environmentFeature;
+const { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, parseFieldValue, validateFieldValue, EnvironmentFieldRow } = environmentFeature;
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 
@@ -50,21 +50,18 @@ function isPublicProject(projectId: string): boolean {
   return isPublicProjectSelector(projectId, config.config.vite_public_project_id);
 }
 
-/**
- * Coerce a raw (always-string) draft value to the field's declared type —
- * mirrors `environmentField.helpers.ts`'s `parseFieldValue` (old-app
- * parity: `EnvironmentFieldHelpers.parseFieldValue`). Duplicated locally,
- * not imported: `pages/` may only reach `features/settings` through its
- * curated barrel (`no-deep-slice-import`), which does not currently
- * re-export `parseFieldValue` (see this unit's fix report for the barrel
- * follow-up).
+/*
+ * [#71] The local duplicate of `parseFieldValue` that used to live here is
+ * gone. Its own comment named the reason it existed — `pages/` may only reach
+ * `features/settings` through the curated barrel (`no-deep-slice-import`),
+ * "which does not currently re-export `parseFieldValue` (see this unit's fix
+ * report for the barrel follow-up)". That follow-up is now done:
+ * `environmentFeature` re-exports it, so this page uses the one canonical
+ * implementation, which is also the one the baseline calls
+ * (`EnvironmentFieldHelpers.parseFieldValue`, EnvironmentSection.jsx:122).
+ * Leaving the copy in place was what made knip report the real helper as an
+ * unused export.
  */
-function parseFieldValue(value: string, type: EnvironmentFieldDefinition['type']): string | number | boolean {
-  if (type === 'integer') return parseInt(value, 10);
-  if (type === 'number') return parseFloat(value);
-  if (type === 'boolean') return value === 'true';
-  return String(value ?? '').trim();
-}
 
 /** Extract a human-readable message from a save/restore failure. */
 function extractErrorMessage(err: unknown, fallback: string): string {

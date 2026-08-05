@@ -269,7 +269,39 @@
     "src/features/chat-messages/ui/chat-box/ApplicationAnswer.tsx",
     "src/features/chat-messages/ui/chat-box/ChatMessageList.tsx",
     "src/features/chat-messages/ui/chat-continue/ChatContinue.tsx",
-    "src/features/chat-messages/ui/attachments/MessageAttachmentList.tsx"
+    "src/features/chat-messages/ui/attachments/MessageAttachmentList.tsx",
+    // [#71] The AI-configuration `ModelConfiguration` layer. The baseline's
+    // `pages/settings/AIConfiguration.jsx` renders
+    // `ai-configuration/Configuration/ModelConfiguration.jsx`, which this app
+    // never ported — its two leaf children were ported and stranded instead
+    // (`ProjectAIConfiguration`/`FieldWithCopy`, now wired into
+    // `pages/settings/AIConfiguration.tsx` by this change;
+    // `ModelCapabilitiesSection`, still blocked, see `ignoreFiles` below).
+    // These three exports are the same layer's helpers, each with a real
+    // baseline caller inside the un-ported component or hook:
+    //   `getModelCapabilities`   <- ModelConfiguration.jsx:158
+    //   `buildConfigurationData` <- useModelConfiguration.hooks.jsx:237
+    //   `createOptions`          <- useModelConfiguration.hooks.jsx:159 (the
+    //                               `useModelOptions` option-builder; the
+    //                               baseline keeps it as an internal
+    //                               `useCallback`, this port hoisted it to a
+    //                               module-level export)
+    // They are correct ported code waiting on the composition layer, not dead
+    // code, and deleting them would throw away the port. Tracked in #80.
+    // REMOVE these two entries when that layer lands.
+    "src/features/settings/lib/ai-configuration/modelConfiguration.helpers.ts",
+    "src/features/settings/lib/ai-configuration/useModelConfiguration.ts",
+    // [#71] `profileUtils.ts`'s `parseModelValue` splits a `name$$$projectId`
+    // select value (via this unit's own `SEPARATOR`). Its baseline caller is
+    // `pages/UserSettings/components/ProfileSummarization.jsx:61` — the
+    // summarization model *selector*, which this app has not built:
+    // `features/settings/ui/profile/ProfileSummarization.tsx` still takes the
+    // `modelList` prop as `_modelList` with its own comment saying the prop is
+    // "available for future model selection in summarization". Its sibling
+    // `createContextStrategyFormData` had the same status until this change
+    // wired it up; this one has no call site to wire it into yet. REMOVE this
+    // entry when the model selector lands.
+    "src/features/settings/lib/profile/profileUtils.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [
@@ -303,17 +335,44 @@
     "src/features/chat-participants/hooks/chat/useChangeParticipantSettings.ts",
     "src/features/chat-participants/hooks/chat/useMCPParticipantStatusMonitor.ts",
     "src/features/chat-participants/lib/context/ParticipantStatusRunner.tsx",
+    // [#71] Not dead code, and NOT the "superseded C4 residue" the issue's
+    // triage guessed it was: `ParticipantStatusRunner.tsx` (the entry directly
+    // above) imports `deriveParticipantContext`/`deriveParticipantFlags`/
+    // `buildStatusObject` from it at line 30 — the two files are one unit,
+    // split only to stay under the §3.5 file-length budget. It reports as an
+    // unused FILE purely because its sole importer is itself deliberately
+    // unwired and listed here. Delete both together or neither.
+    "src/features/chat-participants/lib/context/ParticipantStatusRunner.helpers.ts",
     "src/features/chat-participants/lib/hooks/useAddNewParticipants.ts",
     "src/features/chat-participants/ui/chat-modal/AddNewUserModal.tsx",
     "src/features/chat-participants/ui/chat-modal/UserSearchSelect.tsx",
-    "src/features/chat-participants/ui/CollapsedParticipants/CollapsedParticipantsDropdown.tsx",
-    "src/features/chat-participants/ui/CollapsedParticipants/CollapsedParticipantsList.tsx",
-    "src/features/chat-participants/ui/ExpandedParticipants/ExpandedParticipantsList.tsx",
+    // NOTE: `CollapsedParticipants/CollapsedParticipantsDropdown.tsx`,
+    // `CollapsedParticipants/CollapsedParticipantsList.tsx` and
+    // `ExpandedParticipants/ExpandedParticipantsList.tsx` were REMOVED from
+    // this list (knip's own "Remove from ignoreFiles" configuration hints):
+    // all three now have real consumers. `ParticipantsLayout.CollapsedStrip.tsx`
+    // renders `CollapsedParticipantsDropdown`, which in turn renders
+    // `CollapsedParticipantsList`; `ExpandedParticipants/ParticipantSection.tsx`
+    // renders `ExpandedParticipantsList`. Same "pinned ahead, consumer lands,
+    // remove the entry" lifecycle as the ignoreDependencies notes below.
     "src/features/chat-participants/ui/ExpandedParticipants/ParticipantsAccordion.tsx",
     "src/features/chat-participants/ui/ExpandedParticipants/UserParticipantItem.tsx",
     "src/features/chat-participants/ui/UsersParticipantDropdown/DropdownFooter.tsx",
     "src/features/chat-participants/ui/UsersParticipantDropdown/index.tsx",
-    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx"
+    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx",
+    // [#71] A correct, complete port of the baseline's
+    // `ai-configuration/Configuration/ModelCapabilitiesSection.jsx`, held back
+    // by a genuine missing dependency rather than by being dead. Its sibling
+    // `ProjectAIConfiguration.tsx`/`FieldWithCopy.tsx` WERE wired into
+    // `pages/settings/AIConfiguration.tsx` by this same change; this one could
+    // not be, because the baseline feeds it
+    // `getModelCapabilities(options, model.configuration_uid, model.model_name)`
+    // and `options` comes from `useModelOptions` — a hook this app never
+    // ported, along with the per-model selection state
+    // (`ModelConfiguration.jsx`'s own selector) that supplies `model`.
+    // Porting that is real feature work, tracked in #80. REMOVE this entry
+    // when `useModelOptions` lands and the chips are rendered.
+    "src/features/settings/ui/ai-configuration/ModelCapabilitiesSection.tsx"
   ],
   "ignoreDependencies": [
     // Genuinely still unused: pinned ahead of a Wave-2 consumer that hasn't
@@ -328,7 +387,21 @@
     "@axe-core/playwright",
     "@lhci/cli",
     "@swc/core",
-    "dependency-cruiser"
+    "dependency-cruiser",
+    // NOT a real package — a knip false positive, and the ONLY entry here
+    // that is one. knip's vitest plugin maps `test.coverage.provider: "X"` to
+    // a dependency named `@vitest/coverage-X`. Our vitest.config.ts sets
+    // `provider: "custom"`, which is vitest's documented escape hatch: the
+    // implementation comes from the sibling `customProviderModule` key
+    // (`./scripts/vitest-coverage-v8-provider.mjs`), not from a package.
+    // `@vitest/coverage-custom` does not exist on the npm registry (404), so
+    // it cannot be added to package.json the way the four REAL unlisted deps
+    // from this same knip run were (`istanbul-lib-coverage`/
+    // `istanbul-lib-report`/`istanbul-reports`/`ast-v8-to-istanbul`, now
+    // explicit devDependencies). The real provider module's own imports —
+    // `@vitest/coverage-v8` and `ast-v8-to-istanbul` — are both declared.
+    // REMOVE this entry if knip ever learns to honour `customProviderModule`.
+    "@vitest/coverage-custom"
     // [Wave-2 batch 2] `react-hook-form`/`@hookform/resolvers`/
     // `@xyflow/react`/`@mui/x-date-pickers`/`recharts` REMOVED from this
     // list: this batch (agents/pipelines/toolkits + analytics) built all 5

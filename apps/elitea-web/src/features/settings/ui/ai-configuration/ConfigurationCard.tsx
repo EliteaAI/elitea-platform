@@ -71,7 +71,7 @@ const ProviderIcon = memo(({ iconType }: { iconType: string }) => {
 
 ProviderIcon.displayName = 'ProviderIcon';
 
-export interface ConfigurationCardProps {
+interface ConfigurationCardProps {
   configuration: Record<string, unknown>;
   /** Currently-selected project id — compared against the configuration's
    * own `project_id` by `isConfigurationEditable` (old app: `useSelectedProjectId()`
