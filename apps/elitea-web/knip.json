@@ -388,6 +388,11 @@
     "@lhci/cli",
     "@swc/core",
     "dependency-cruiser",
+    // Consumed by scripts/mutate-spotcheck.mjs via createRequire() (CommonJS
+    // interop for ESM scripts — knip cannot trace dynamic require() calls).
+    // Remove when/if the script switches to a static import shim.
+    "@babel/generator",
+    "@babel/parser",
     // NOT a real package — a knip false positive, and the ONLY entry here
     // that is one. knip's vitest plugin maps `test.coverage.provider: "X"` to
     // a dependency named `@vitest/coverage-X`. Our vitest.config.ts sets

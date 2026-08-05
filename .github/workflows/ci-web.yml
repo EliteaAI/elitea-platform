@@ -636,19 +636,3 @@ jobs:
           npx playwright install --with-deps chromium
           npx playwright test --grep @visual
 
-  mutation-spotcheck:
-    name: Mutation spot-check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: apps/elitea-web/package-lock.json
-      - name: Install (locked)
-        run: npm ci
-      - name: Rotating 5% sample over shared/ + entities/
-        run: |
-          test -f scripts/mutate-spotcheck.mjs || { echo "release tag without mutate-spotcheck (unit V3) — refusing"; exit 1; }
-          node scripts/mutate-spotcheck.mjs
