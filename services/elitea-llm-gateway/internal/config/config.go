@@ -217,11 +217,14 @@ func millisOr(key string, def, max time.Duration) time.Duration {
 	if err != nil || n < 0 {
 		return def
 	}
-	d := time.Duration(n) * time.Millisecond
-	if d > max {
+	// Clamp on the INTEGER, before the multiply. n * time.Millisecond overflows
+	// int64 for absurd values and wraps negative, which would sail past a
+	// post-multiply `d > max` check and silently DISABLE the mechanism instead
+	// of capping it.
+	if int64(n) > int64(max/time.Millisecond) {
 		return max
 	}
-	return d
+	return time.Duration(n) * time.Millisecond
 }
 
 // csvOr splits a comma-separated env var into trimmed, non-empty entries.

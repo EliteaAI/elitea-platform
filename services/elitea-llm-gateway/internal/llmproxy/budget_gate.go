@@ -29,6 +29,11 @@ import (
 // goroutine forever.
 const billingCtxTimeout = 10 * time.Second
 
+// budgetGateTimeout bounds the pre-LLM admission read. It exists because the
+// streaming path passes a context.WithoutCancel-derived context (issue #9): the
+// gate must stay bounded even when nothing upstream can cancel it.
+const budgetGateTimeout = 10 * time.Second
+
 // budgetScopeProject is the scope string used for project-level budget checks.
 const budgetScopeProject = "project"
 
@@ -178,7 +183,15 @@ func (h *Handler) checkBudget(
 	}
 	effectiveCostNano := reqCostNano + prevInflight
 
-	dec, err := h.budgetGate.CheckBudget(ctx, pid, budgetScopeProject, scopeID, periodStart, effectiveCostNano)
+	// Bound the admission read. Streaming requests now hand this function a
+	// context that is deliberately decoupled from the client (issue #9), so it
+	// has neither a deadline nor a cancellation path: without this timeout a
+	// stalled Postgres pool would park the handler goroutine forever, where it
+	// previously unwound on client hangup. Fail-closed semantics are preserved
+	// — a timeout surfaces as the existing 503 branch below.
+	gateCtx, gateCancel := context.WithTimeout(ctx, budgetGateTimeout)
+	dec, err := h.budgetGate.CheckBudget(gateCtx, pid, budgetScopeProject, scopeID, periodStart, effectiveCostNano)
+	gateCancel()
 	if err != nil {
 		// A hard error from the gate is unexpected (the gate is designed to
 		// degrade gracefully); treat it as a 503 to avoid silently bypassing
@@ -270,19 +283,25 @@ func identityProjectFromCtx(ctx context.Context) string {
 //
 // The caller supplies the usage from the response; tokens default to 0 when
 // the response carries no usage field (e.g. streaming partial responses).
+// It returns true when a billing goroutine was actually spawned for a non-zero
+// cost. Callers that must NOT lose spend silently (the stream drain, which may
+// be settling recovered provider usage while a graceful shutdown is refusing
+// new billing goroutines) use this to meter the drop instead of returning as if
+// billed. A false return therefore means one of: governance not wired,
+// unresolvable project, zero cost, or the increment was refused.
 func (h *Handler) updateUsage(
 	ctx context.Context,
 	provider string,
 	model string,
 	inputTokens, outputTokens int64,
 	projectIDStr string,
-) {
+) bool {
 	if h.budgetGate == nil || h.costCalc == nil {
-		return
+		return false
 	}
 	pid := parseProjectID(projectIDStr)
 	if pid < 0 {
-		return
+		return false
 	}
 	scopeID := strconv.Itoa(pid)
 	now := time.Now()
@@ -297,10 +316,10 @@ func (h *Handler) updateUsage(
 
 	actualCost := h.costCalc.Cost(costCtx, provider, model, inputTokens, outputTokens)
 	if actualCost.TotalNanoUSD <= 0 {
-		return // nothing to bill
+		return false // nothing to bill
 	}
 
-	h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, actualCost.TotalNanoUSD)
+	return h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, actualCost.TotalNanoUSD)
 }
 
 // updateUsageDirect bills a pre-computed costNano amount (nano-USD) for the
@@ -314,20 +333,20 @@ func (h *Handler) updateUsageDirect(
 	ctx context.Context,
 	projectIDStr string,
 	costNano int64,
-) {
+) bool {
 	if h.budgetGate == nil || costNano <= 0 {
-		return
+		return false
 	}
 	pid := parseProjectID(projectIDStr)
 	if pid < 0 {
-		return
+		return false
 	}
 	scopeID := strconv.Itoa(pid)
 	now := time.Now()
 	periodStart := billingPeriodStart(now)
 	periodEnd := billingPeriodEnd(now)
 
-	h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, costNano)
+	return h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, costNano)
 }
 
 // spawnBillingGoroutine is the shared inner billing path: it guards against
@@ -342,12 +361,15 @@ func (h *Handler) updateUsageDirect(
 // to billingCtxTimeout of client-visible latency when the budget store was slow.
 //
 // Callers must have already validated costNano > 0.
+// It returns false when the goroutine was NOT spawned (drain in progress), so a
+// caller holding known, provider-reported spend can meter the drop rather than
+// letting it vanish into a log line.
 func (h *Handler) spawnBillingGoroutine(
 	pid int,
 	scopeID string,
 	periodStart, periodEnd int64,
 	costNano int64,
-) {
+) bool {
 	eventID := uuid.NewString()
 
 	// Fix round-3 #2: guard against Add-after-Wait (billingClosing already set
@@ -360,7 +382,7 @@ func (h *Handler) spawnBillingGoroutine(
 		}
 		h.logger.Warn("budget gate: billing goroutine skipped (drain in progress); spend may be under-counted",
 			"project_id", pid, "cost_nano", costNano, "event_id", eventID)
-		return
+		return false
 	}
 	h.billingWg.Add(1)
 	go func() {
@@ -407,6 +429,7 @@ func (h *Handler) spawnBillingGoroutine(
 		}
 		h.trySoftAlert(billCtx, pid, scopeID, periodStart, costNano, preDec)
 	}()
+	return true
 }
 
 // trySoftAlert fires the 80% soft-alert ONLY when the running counter has

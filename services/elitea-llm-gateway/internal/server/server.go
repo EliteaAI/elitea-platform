@@ -46,6 +46,10 @@ type NATSClient interface {
 	// PublishSoftAlertEvent emits budget.soft_alert onto gateway.events.*
 	// (spec §8.3); satisfies llmproxy.AlertEventPublisher.
 	PublishSoftAlertEvent(ctx context.Context, projectID string, event []byte) error
+	// PublishOpsEvent emits operator-only events (budget.unbilled_stream,
+	// issue #9) onto gateway.events.ops.*; satisfies llmproxy.OpsEventPublisher.
+	// Separate from the soft-alert publisher because that one is tenant-facing.
+	PublishOpsEvent(ctx context.Context, event []byte) error
 	OnBreakerStateChange(fn func(from, to gobreaker.State))
 	BreakerState() gobreaker.State
 	// BudgetSubject builds the counter subject for a scope/period key. It must

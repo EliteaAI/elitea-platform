@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,6 +36,8 @@ func TestMainWiring(t *testing.T) {
 		{"llmproxy.WithAlertEventPublisher(", "budget.soft_alert is never published to gateway.events.* — the 80% alert would be invisible to subscribers (spec §8.3)"},
 		{"llmproxy.WithStreamGrace(", "the stream-disconnect grace period is never configured — a client that disconnects mid-stream is billed nothing and the hard budget is bypassable (issue #9)"},
 		{"llmproxy.WithStreamDrainLimit(", "abandoned-stream drains are unbounded — a disconnect storm holds unbounded goroutines and provider sockets (issue #9)"},
+		{"handler.StopStreamGrace(", "phase 1 of shutdown is missing — the stream grace would extend the pod's termination window (issue #9)"},
+		{"llmproxy.WithOpsEventPublisher(", "budget.unbilled_stream is never published — a stream the gateway could not bill would be invisible to operators (issue #9)"},
 		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
 		{"drainForShutdown(", "in-flight billing + persist goroutines must be drained before pool.Close() or spend is dropped / a pool races"},
 		{"srv.Shutdown(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
@@ -129,5 +132,38 @@ func TestDrainForShutdown_NilGovStore(t *testing.T) {
 
 	if len(order) != 1 || order[0] != "billing" {
 		t.Fatalf("with a nil gov store, only billing should drain; got %v", order)
+	}
+}
+
+// TestShutdownOrdering is the ordering half of the wiring gate: it is not
+// enough that StopStreamGrace, srv.Shutdown and drainForShutdown are all
+// called — they must run in that order.
+//
+// Getting this wrong is not cosmetic. With drainForShutdown before
+// srv.Shutdown, billingClosing is set while SSE handlers are still live, so a
+// detached drain that HAS recovered the provider's authoritative usage trailer
+// gets its increment refused and the spend is dropped — silently, on every
+// rolling deploy. That is exactly what the gateway-review probe reproduced
+// (231000 nano-USD lost, 0 UpdateUsage calls, 0 loss events).
+func TestShutdownOrdering(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	body := string(src)
+
+	stop := strings.Index(body, "handler.StopStreamGrace()")
+	shutdown := strings.Index(body, "srv.Shutdown(")
+	drain := strings.Index(body, "drainForShutdown(handler")
+
+	if stop < 0 || shutdown < 0 || drain < 0 {
+		t.Fatalf("shutdown calls missing: StopStreamGrace=%d srv.Shutdown=%d drainForShutdown=%d",
+			stop, shutdown, drain)
+	}
+	if stop >= shutdown || shutdown >= drain {
+		t.Errorf("shutdown order is StopStreamGrace@%d, srv.Shutdown@%d, drainForShutdown@%d; "+
+			"want StopStreamGrace < srv.Shutdown < drainForShutdown. Draining billing before the "+
+			"HTTP drain refuses the increment for any stream still settling, dropping recovered spend.",
+			stop, shutdown, drain)
 	}
 }

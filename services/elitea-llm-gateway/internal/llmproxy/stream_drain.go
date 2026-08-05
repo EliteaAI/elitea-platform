@@ -41,6 +41,7 @@ package llmproxy
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"time"
 
@@ -62,12 +63,35 @@ const (
 	// bound is a resource amplifier pointed at both us and the provider.
 	DefaultStreamDrainLimit = 256
 
+	// SaturatedStreamGrace is the (much shorter) grace given to a drain that
+	// could not take a slot from the bounded pool. Saturation must NOT mean
+	// "bill nothing": the resource being protected is a provider socket that is
+	// about to close anyway, and the common late-disconnect case delivers its
+	// trailer within a few hundred milliseconds. Cutting straight to grace=0
+	// would fail OPEN — destroying a recoverable trailer — which is the very
+	// bypass issue #9 exists to close (gateway-review blocker 2, human decision
+	// 2026-08-05).
+	SaturatedStreamGrace = 500 * time.Millisecond
+
+	// drainPerProjectDivisor derives the per-project slot cap from the global
+	// limit. Without a per-project bound the pool is a shared fate: one tenant
+	// disconnecting in a storm starves every other tenant's drains down to the
+	// saturated grace. Derived rather than a second env knob so operators have
+	// one number to reason about.
+	drainPerProjectDivisor = 8
+
 	// drainHardTimeout bounds the wait AFTER the provider context is cancelled.
 	// Cancellation makes bifrost close the socket and `defer CloseStream`, so
 	// the channel closes promptly in every normal case; this is the backstop
 	// for a wedged provider, and it caps how long a drain can run in total
 	// (grace + drainHardTimeout).
 	drainHardTimeout = 10 * time.Second
+
+	// drainShutdownTimeout replaces drainHardTimeout once graceful shutdown has
+	// started: a wedged provider must not hold the pod's termination grace for
+	// grace+drainHardTimeout when we have already stopped waiting for its
+	// trailer (gateway-review).
+	drainShutdownTimeout = 1 * time.Second
 )
 
 // Exit reasons for a stream that produced no authoritative usage. Emitted as
@@ -79,6 +103,12 @@ const (
 	lossReasonProviderError    = "provider_error"      // mid-stream BifrostError chunk
 	lossReasonBeginStreamFail  = "begin_stream_failed" // ResponseWriter could not start SSE
 	lossReasonCleanCloseNoTrai = "no_trailer_on_clean_close"
+	// lossReasonBillingRefused: the authoritative usage WAS recovered but the
+	// billing increment was refused (billing drain already in progress), so
+	// real, known spend was dropped. Distinct from the no-usage reasons above
+	// because it is a gateway-side loss, not a provider-side one — alarm on it
+	// separately.
+	lossReasonBillingRefused = "billing_refused"
 )
 
 // nextChunk reads the next chunk from a stream channel while also watching the
@@ -93,27 +123,41 @@ const (
 // (bifrost: 120 s by default). Watching the request context bounds that to the
 // disconnect itself, and makes the disconnect path deterministic instead of
 // dependent on write timing.
+type streamExit int
+
+const (
+	streamExitChunk    streamExit = iota // a chunk was delivered
+	streamExitChanDone                   // the provider closed the channel
+	streamExitClient                     // the client went away
+)
+
 func nextChunk(
 	ch chan *schemas.BifrostStreamChunk,
 	clientGone <-chan struct{},
-) (chunk *schemas.BifrostStreamChunk, more bool) {
+) (*schemas.BifrostStreamChunk, streamExit) {
 	select {
 	case c, ok := <-ch:
-		return c, ok
+		if !ok {
+			// A closed channel wins even when the client also vanished: the
+			// provider genuinely finished, so this is a clean completion. Left
+			// to select's random choice the two would be indistinguishable and
+			// a completed stream could be mislabelled a disconnect (and burn a
+			// drain slot for an already-closed channel).
+			return nil, streamExitChanDone
+		}
+		return c, streamExitChunk
 	case <-clientGone:
-		return nil, false
-	}
-}
-
-// isClientGone reports whether the client's request context is already done. It
-// disambiguates the two nextChunk exits: a closed provider channel (clean) from
-// a vanished client (early).
-func isClientGone(clientGone <-chan struct{}) bool {
-	select {
-	case <-clientGone:
-		return true
-	default:
-		return false
+		// Re-check the channel: if the producer closed while we were being
+		// woken, prefer the clean exit for the same reason.
+		select {
+		case c, ok := <-ch:
+			if !ok {
+				return nil, streamExitChanDone
+			}
+			return c, streamExitChunk
+		default:
+			return nil, streamExitClient
+		}
 	}
 }
 
@@ -338,26 +382,34 @@ func (s *streamSettler) settleEarly(reason string) {
 	}
 
 	grace := s.h.streamGrace
-	release := func() {}
 	outcome := ""
+	slotHeld := false
 
 	switch {
 	case grace <= 0:
 		// Mechanism disabled by configuration (LLM_STREAM_GRACE_MS=0).
 		outcome = drainOutcomeDisabled
-	case s.h.billingClosing.Load() != 0:
+	case s.h.drainsClosing.Load() != 0:
 		// Shutting down: never hold the pod's termination grace hostage to a
 		// provider trailer.
 		grace = 0
 		outcome = drainOutcomeShuttingDown
-	case !s.h.acquireDrainSlot():
-		grace = 0
+	case !s.h.drainLimit.acquire(s.projectID):
+		// Saturated. Do NOT drop to grace=0: that fails open, destroying a
+		// trailer that is often milliseconds away, which is the bypass this
+		// whole mechanism exists to close. Take the short grace instead
+		// (human decision 2026-08-05, gateway-review blocker 2).
+		if grace > SaturatedStreamGrace {
+			grace = SaturatedStreamGrace
+		}
 		outcome = drainOutcomeSaturated
-		s.h.logger.Warn("stream drain saturated; abandoning stream without waiting for provider usage",
+		inUse, total, per := s.h.drainLimit.snapshot()
+		s.h.logger.Warn("stream drain pool saturated; falling back to the short grace",
 			"loop", s.loop, "provider", s.provider, "model", s.model,
-			"project_id", s.projectID, "limit", cap(s.h.drainSlots))
+			"project_id", s.projectID, "grace", grace,
+			"in_use", inUse, "limit", total, "per_project_limit", per)
 	default:
-		release = s.h.releaseDrainSlot
+		slotHeld = true
 	}
 
 	if grace <= 0 {
@@ -366,26 +418,36 @@ func (s *streamSettler) settleEarly(reason string) {
 		s.sc.cancel()
 	}
 
-	// Track the drain like any other billing goroutine so DrainBilling waits
-	// for it (same Add-after-Wait guard as spawnBillingGoroutine). When we are
-	// already closing, the drain runs untracked — it was just cancelled, so it
-	// exits promptly and has nothing to bill.
-	tracked := s.h.billingClosing.Load() == 0
+	// Track the drain on drainWg — NOT billingWg — so DrainBilling can wait for
+	// drains to settle before it closes billing (same Add-after-Wait guard
+	// shape as spawnBillingGoroutine, against drainsClosing). A drain spawned
+	// after phase 1 runs untracked: it was just cancelled, so it exits
+	// promptly, and its report() still bills while billing remains open.
+	tracked := s.h.drainsClosing.Load() == 0
 	if tracked {
-		s.h.billingWg.Add(1)
+		s.h.drainWg.Add(1)
 	}
 	go func() {
 		defer func() {
 			if tracked {
-				s.h.billingWg.Done()
+				s.h.drainWg.Done()
 			}
 		}()
-		defer release()
+		if slotHeld {
+			defer s.h.drainLimit.release(s.projectID)
+		}
 		defer s.sc.cancel() // backstop: idempotent
 
 		drained := s.drain(grace)
-		if outcome == "" {
-			outcome = drained
+		if outcome == "" || outcome == drainOutcomeSaturated {
+			// A saturated drain still reports what actually happened when the
+			// short grace was not enough, so operators can tell "we were full"
+			// from "full AND we lost the trailer".
+			if outcome == drainOutcomeSaturated && drained != drainOutcomeChannelClosed {
+				outcome = drainOutcomeSaturated + "/" + drained
+			} else if outcome == "" {
+				outcome = drained
+			}
 		}
 		s.sc.cancel() // release the provider socket before the billing round-trip
 		s.report(reason, outcome)
@@ -407,11 +469,20 @@ func (s *streamSettler) drain(grace time.Duration) string {
 	defer hard.Stop()
 
 	closingC := s.h.drainClosing
+	graceExpired := false
 
 	for {
 		select {
 		case chunk, ok := <-s.ch:
 			if !ok {
+				// Distinguish "the producer finished inside the grace" from
+				// "we cut it off and it then unwound": both close the channel,
+				// but only the first means the grace was sufficient. Collapsing
+				// them would make grace_expired unreportable and hide a grace
+				// that is too short for real traffic.
+				if graceExpired {
+					return drainOutcomeGraceExpired
+				}
 				return drainOutcomeChannelClosed
 			}
 			s.observe(chunk)
@@ -419,11 +490,15 @@ func (s *streamSettler) drain(grace time.Duration) string {
 			// Grace elapsed with no trailer: stop paying for generation the
 			// client abandoned. Keep reading until the producer unwinds.
 			graceC = nil
+			graceExpired = true
 			s.sc.cancel()
 		case <-closingC:
-			// Graceful shutdown started while we were waiting.
+			// Graceful shutdown started while we were waiting. Shrink the hard
+			// backstop too: a wedged provider must cost the pod's termination
+			// grace at most drainShutdownTimeout, not the full grace+backstop.
 			closingC = nil // a closed channel stays ready; do not spin on it
 			graceC = nil
+			hard.Reset(drainShutdownTimeout)
 			s.sc.cancel()
 		case <-hard.C:
 			s.h.logger.Warn("stream drain: provider channel never closed after cancellation; abandoning",
@@ -438,7 +513,20 @@ func (s *streamSettler) drain(grace time.Duration) string {
 // There is no third option — an estimate never reaches this path.
 func (s *streamSettler) report(reason, outcome string) {
 	if s.gotUsage {
-		s.h.updateUsage(s.ctx, s.provider, s.model, s.in, s.out, s.projectID)
+		// We recovered the authoritative numbers — but the increment can still
+		// be refused (graceful shutdown already set billingClosing). If that
+		// happens the spend is gone, and it must NOT disappear as a lone WARN:
+		// it is exactly the loss this event exists to make alarmable
+		// (gateway-review blocker 1, reproduced on the deploy path).
+		if s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID) {
+			return
+		}
+		s.h.logger.Warn(s.loop+": provider usage recovered but the billing increment was refused; spend dropped",
+			"provider", s.provider, "model", s.model, "project_id", s.projectID,
+			"reason", reason, "drain_outcome", outcome,
+			"input_tokens", s.in, "output_tokens", s.out)
+		s.h.publishUnbilledStreamEvent(s.projectID, s.provider, s.model,
+			lossReasonBillingRefused, outcome, s.observedOutBytes)
 		return
 	}
 	s.h.logger.Warn(s.loop+": stream ended with no provider usage; response unbilled",
@@ -448,31 +536,75 @@ func (s *streamSettler) report(reason, outcome string) {
 	s.h.publishUnbilledStreamEvent(s.projectID, s.provider, s.model, reason, outcome, s.observedOutBytes)
 }
 
-// acquireDrainSlot takes a slot from the bounded drain pool. It never blocks: a
-// caller that cannot get a slot abandons the stream immediately rather than
-// queueing (queueing would hold the provider socket open anyway, which is the
-// resource we are protecting).
-func (h *Handler) acquireDrainSlot() bool {
-	if h.drainSlots == nil {
+// drainLimiter bounds concurrent abandoned-stream drains both globally and per
+// project. Each in-flight drain holds a goroutine AND an open provider socket,
+// so the global bound protects the pod; the per-project bound stops one tenant
+// from consuming the whole pool and degrading everyone else's billing to the
+// saturated grace (gateway-review blocker 2).
+type drainLimiter struct {
+	mu         sync.Mutex
+	total      int
+	inUse      int
+	perProject int
+	byProject  map[string]int
+}
+
+// newDrainLimiter builds a limiter for n concurrent drains. n <= 0 returns nil,
+// meaning unbounded (unit-test construction).
+func newDrainLimiter(n int) *drainLimiter {
+	if n <= 0 {
+		return nil
+	}
+	per := n / drainPerProjectDivisor
+	if per < 1 {
+		per = 1
+	}
+	return &drainLimiter{total: n, perProject: per, byProject: make(map[string]int)}
+}
+
+// acquire takes a slot for projectID. It never blocks: a caller that cannot get
+// one falls back to the saturated grace rather than queueing, because queueing
+// would hold the provider socket open anyway — the resource the bound protects.
+func (l *drainLimiter) acquire(projectID string) bool {
+	if l == nil {
 		return true
 	}
-	select {
-	case h.drainSlots <- struct{}{}:
-		return true
-	default:
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.inUse >= l.total || l.byProject[projectID] >= l.perProject {
 		return false
+	}
+	l.inUse++
+	l.byProject[projectID]++
+	return true
+}
+
+// release returns a slot. Releasing a project down to zero drops its map entry
+// so the map cannot grow without bound across projects.
+func (l *drainLimiter) release(projectID string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.inUse > 0 {
+		l.inUse--
+	}
+	if n := l.byProject[projectID]; n <= 1 {
+		delete(l.byProject, projectID)
+	} else {
+		l.byProject[projectID] = n - 1
 	}
 }
 
-// releaseDrainSlot returns a slot to the bounded drain pool.
-func (h *Handler) releaseDrainSlot() {
-	if h.drainSlots == nil {
-		return
+// snapshot reports current usage (tests and future gauges).
+func (l *drainLimiter) snapshot() (inUse, total, perProject int) {
+	if l == nil {
+		return 0, 0, 0
 	}
-	select {
-	case <-h.drainSlots:
-	default:
-	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inUse, l.total, l.perProject
 }
 
 // unbilledStreamPayload is the budget.unbilled_stream event body. It is the
@@ -494,11 +626,22 @@ type unbilledStreamPayload struct {
 // (issue #9 acceptance criterion: "the loss is explicitly metered and alarmed").
 // Best-effort: a publish failure is logged, never fatal — the WARN log remains.
 func (h *Handler) publishUnbilledStreamEvent(projectID, provider, model, reason, outcome string, outBytes int64) {
-	if h.alertEvents == nil || projectID == "" {
+	if h.opsEvents == nil {
 		return
 	}
+	// Normalise the identity exactly like the billing path does: projectID
+	// comes from a header, and every sibling money/event path routes it through
+	// parseProjectID before use. An unresolvable project has no budget row and
+	// nothing to attribute, so there is nothing to publish.
+	pid := parseProjectID(projectID)
+	if pid < 0 {
+		h.logger.Warn("unbilled-stream event: unresolvable project id; loss not attributable",
+			"project_id", projectID, "provider", provider, "model", model, "reason", reason)
+		return
+	}
+	scopeID := strconv.Itoa(pid)
 	payload, err := json.Marshal(unbilledStreamPayload{
-		ProjectID:           projectID,
+		ProjectID:           scopeID,
 		Provider:            provider,
 		Model:               model,
 		Reason:              reason,
@@ -522,7 +665,7 @@ func (h *Handler) publishUnbilledStreamEvent(projectID, provider, model, reason,
 	// Detached context: the request context is cancelled by now, by design.
 	pubCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	if err := h.alertEvents.PublishSoftAlertEvent(pubCtx, projectID, env); err != nil {
-		h.logger.Warn("unbilled-stream event: publish failed", "project_id", projectID, "err", err)
+	if err := h.opsEvents.PublishOpsEvent(pubCtx, env); err != nil {
+		h.logger.Warn("unbilled-stream event: publish failed", "project_id", scopeID, "err", err)
 	}
 }

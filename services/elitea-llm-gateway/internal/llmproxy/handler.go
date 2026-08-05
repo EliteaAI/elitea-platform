@@ -58,6 +58,13 @@ type Handler struct {
 	// 80% soft alert fires (spec §8.3). nil = publishing disabled.
 	alertEvents AlertEventPublisher
 
+	// opsEvents publishes operator-only events (budget.unbilled_stream) onto
+	// gateway.events.ops.*. Deliberately NOT alertEvents: the loss record must
+	// not reach the tenant-facing project channel, where it would tell a
+	// project in real time which of its streams went unbilled (gateway-review).
+	// nil = publishing disabled (the WARN log remains).
+	opsEvents OpsEventPublisher
+
 	// inflightNano is a per-project in-process reservation counter (Fix round-3
 	// #7). When N concurrent requests pass admission before any async increment
 	// lands, each one adds its estimated cost here so checkBudget can bound the
@@ -73,11 +80,20 @@ type Handler struct {
 	// and an early exit bills nothing. Set via WithStreamGrace.
 	streamGrace time.Duration
 
-	// drainSlots bounds the number of concurrently-detained streams: each drain
-	// holds a goroutine and an open provider socket for up to streamGrace.
-	// nil = unbounded (unit-test construction only); production wiring always
-	// sets a limit via WithStreamDrainLimit.
-	drainSlots chan struct{}
+	// drainLimit bounds concurrently-detained streams globally AND per project:
+	// each drain holds a goroutine and an open provider socket for up to
+	// streamGrace. nil = unbounded (unit-test construction only); production
+	// wiring always sets a limit via WithStreamDrainLimit.
+	drainLimit *drainLimiter
+
+	// drainWg tracks detached stream drains, SEPARATELY from billingWg. The two
+	// must be waited on in order: drains have to settle (and spawn their
+	// billing goroutines) BEFORE billing is closed, or a drain that recovered
+	// an authoritative trailer has its increment refused — the deploy-time
+	// spend loss found in review. drainsClosing is the Add-after-Wait guard for
+	// this group, set by StopStreamGrace.
+	drainWg       sync.WaitGroup
+	drainsClosing atomic.Int32
 
 	// drainClosing is closed by DrainBilling so a detached drain stops waiting
 	// for a provider trailer once graceful shutdown starts — the pod's
@@ -150,6 +166,13 @@ func WithAlertEventPublisher(p AlertEventPublisher) HandlerOption {
 	return func(h *Handler) { h.alertEvents = p }
 }
 
+// WithOpsEventPublisher wires the operator-only gateway.events.ops.* publisher
+// used for budget.unbilled_stream (issue #9). nil is a no-op (the loss still
+// logs at WARN; nothing is published).
+func WithOpsEventPublisher(p OpsEventPublisher) HandlerOption {
+	return func(h *Handler) { h.opsEvents = p }
+}
+
 // WithStreamGrace sets how long an early-exiting stream may keep its provider
 // stream alive waiting for the authoritative usage trailer (issue #9). The
 // value is clamped to [0, MaxStreamGrace]; 0 disables the mechanism entirely
@@ -172,11 +195,7 @@ func WithStreamGrace(d time.Duration) HandlerOption {
 // composition root always passes a positive limit.
 func WithStreamDrainLimit(n int) HandlerOption {
 	return func(h *Handler) {
-		if n <= 0 {
-			h.drainSlots = nil
-			return
-		}
-		h.drainSlots = make(chan struct{}, n)
+		h.drainLimit = newDrainLimiter(n)
 	}
 }
 
@@ -197,7 +216,7 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 		// stream rather than silently dropping it. Production overrides the
 		// duration and the concurrency bound from config.
 		streamGrace:  DefaultStreamGrace,
-		drainSlots:   make(chan struct{}, DefaultStreamDrainLimit),
+		drainLimit:   newDrainLimiter(DefaultStreamDrainLimit),
 		drainClosing: make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -206,27 +225,56 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 	return h
 }
 
-// DrainBilling marks the handler as draining (no new billing goroutines will
-// be spawned) and blocks until all in-flight async billing goroutines complete.
+// StopStreamGrace is PHASE 1 of the shutdown sequence: it tells every in-flight
+// stream drain to stop waiting for a provider usage trailer, WITHOUT closing
+// billing. Streams that already hold (or are about to hold) authoritative usage
+// can still bill.
 //
-// Call this BEFORE govStore.Drain() during graceful shutdown so billing
-// goroutines that call UpdateUsage finish before the governance store drains
-// its own persist goroutines, preventing Add-after-Wait on persistWg.
+// It exists because the two things DrainBilling used to do have opposite timing
+// requirements (gateway-review blocker 1). "Stop waiting for trailers" must
+// happen EARLY, before srv.Shutdown, so the stream grace cannot extend the
+// pod's termination window. "Refuse new billing goroutines and wait" must
+// happen LATE, after srv.Shutdown has quiesced the HTTP surface — otherwise
+// billingClosing is set while SSE handlers are still live, and a drain that
+// successfully recovered a trailer has its increment refused and its spend
+// dropped on every rolling deploy.
 //
-// Sequence mandated by the design:
-//  1. handler.DrainBilling() — waits for updateUsage goroutines.
-//  2. govStore.Drain()       — waits for PersistOutageDelta goroutines.
-//  3. srv.Shutdown()         — closes HTTP, bifrost, NATS.
-func (h *Handler) DrainBilling() {
-	h.billingClosing.Store(1)
-	// Tell in-flight stream drains to stop waiting for a provider trailer: a
-	// stream that has already lost its client must not extend the pod's
-	// termination grace by up to streamGrace (issue #9).
+// Safe to call more than once.
+func (h *Handler) StopStreamGrace() {
+	h.drainsClosing.Store(1)
 	h.drainClosingOnce.Do(func() {
 		if h.drainClosing != nil {
 			close(h.drainClosing)
 		}
 	})
+}
+
+// DrainBilling is PHASE 2: it marks the handler as draining (no new billing
+// goroutines will be spawned) and blocks until all in-flight async billing
+// goroutines — including detached stream drains — complete.
+//
+// Call StopStreamGrace() first and srv.Shutdown() in between; see
+// drainForShutdown in the composition root, whose ordering TestMainWiring
+// asserts. Calling DrainBilling alone is still correct, just less forgiving:
+// any stream still settling at that moment has its spend refused (and metered
+// as billing_refused).
+//
+// Sequence mandated by the design:
+//  1. handler.StopStreamGrace() — drains stop waiting for provider trailers.
+//  2. srv.Shutdown()            — HTTP surface quiesces; live streams settle.
+//  3. handler.DrainBilling()    — waits for updateUsage/drain goroutines.
+//  4. govStore.Drain()          — waits for PersistOutageDelta goroutines.
+func (h *Handler) DrainBilling() {
+	// Idempotent: a caller that skipped phase 1 still gets the old semantics.
+	h.StopStreamGrace()
+
+	// Wait for stream drains BEFORE closing billing. They have already been
+	// told to stop waiting for trailers, so this is bounded by
+	// drainShutdownTimeout — and it is what lets a drain holding recovered
+	// provider usage spawn its billing goroutine instead of being refused.
+	h.drainWg.Wait()
+
+	h.billingClosing.Store(1)
 	h.billingWg.Wait()
 }
 
@@ -740,6 +788,15 @@ func (h *Handler) streamOpenAI(
 		return
 	}
 	s := h.newChatSettler("streamOpenAI", ctx, sc, provider, model, ch)
+	// A panic below would otherwise leak the provider stream forever: with the
+	// context decoupled from the request (issue #9), nothing else will ever
+	// cancel it. Only fires when the stream was never settled, so it cannot
+	// kill a drain that legitimately owns the context.
+	defer func() {
+		if !s.settled {
+			s.sc.cancel()
+		}
+	}()
 	sw, err := h.beginStream(w)
 	if err != nil {
 		// The provider stream is already open; it must be drained (and billed)
@@ -748,16 +805,16 @@ func (h *Handler) streamOpenAI(
 		return
 	}
 	for {
-		chunk, more := nextChunk(ch, clientGone)
-		if !more {
-			if chunk == nil && isClientGone(clientGone) {
-				// The client vanished while the provider was silent. Without
-				// this the loop would park here until the provider's own idle
-				// timeout, because the provider stream no longer dies with the
-				// request (issue #9).
-				s.settleEarly(lossReasonClientGone)
-				return
-			}
+		chunk, exit := nextChunk(ch, clientGone)
+		if exit == streamExitClient {
+			// The client vanished while the provider was silent. Without this
+			// the loop would park here until the provider's own idle timeout,
+			// because the provider stream no longer dies with the request
+			// (issue #9).
+			s.settleEarly(lossReasonClientGone)
+			return
+		}
+		if exit == streamExitChanDone {
 			break
 		}
 		if chunk == nil {
@@ -821,18 +878,27 @@ func (h *Handler) streamResponses(
 		return
 	}
 	s := h.newResponsesSettler("streamResponses", ctx, sc, provider, model, ch)
+	// A panic below would otherwise leak the provider stream forever: with the
+	// context decoupled from the request (issue #9), nothing else will ever
+	// cancel it. Only fires when the stream was never settled, so it cannot
+	// kill a drain that legitimately owns the context.
+	defer func() {
+		if !s.settled {
+			s.sc.cancel()
+		}
+	}()
 	sw, err := h.beginStream(w)
 	if err != nil {
 		s.settleEarly(lossReasonBeginStreamFail)
 		return
 	}
 	for {
-		chunk, more := nextChunk(ch, clientGone)
-		if !more {
-			if chunk == nil && isClientGone(clientGone) {
-				s.settleEarly(lossReasonClientGone)
-				return
-			}
+		chunk, exit := nextChunk(ch, clientGone)
+		if exit == streamExitClient {
+			s.settleEarly(lossReasonClientGone)
+			return
+		}
+		if exit == streamExitChanDone {
 			break
 		}
 		if chunk == nil {
@@ -902,18 +968,27 @@ func (h *Handler) streamAnthropic(
 		return
 	}
 	s := h.newResponsesSettler("streamAnthropic", ctx, sc, provider, model, ch)
+	// A panic below would otherwise leak the provider stream forever: with the
+	// context decoupled from the request (issue #9), nothing else will ever
+	// cancel it. Only fires when the stream was never settled, so it cannot
+	// kill a drain that legitimately owns the context.
+	defer func() {
+		if !s.settled {
+			s.sc.cancel()
+		}
+	}()
 	sw, err := h.beginStream(w)
 	if err != nil {
 		s.settleEarly(lossReasonBeginStreamFail)
 		return
 	}
 	for {
-		chunk, more := nextChunk(ch, clientGone)
-		if !more {
-			if chunk == nil && isClientGone(clientGone) {
-				s.settleEarly(lossReasonClientGone)
-				return
-			}
+		chunk, exit := nextChunk(ch, clientGone)
+		if exit == streamExitClient {
+			s.settleEarly(lossReasonClientGone)
+			return
+		}
+		if exit == streamExitChanDone {
 			break
 		}
 		if chunk == nil {

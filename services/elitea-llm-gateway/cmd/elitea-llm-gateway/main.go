@@ -171,6 +171,10 @@ func main() {
 	// still logs but nothing is published.
 	if nc != nil {
 		budgetOpts = append(budgetOpts, llmproxy.WithAlertEventPublisher(nc))
+		// budget.unbilled_stream rides the same connection but a DIFFERENT,
+		// operator-only subject: a tenant must not be told in real time which
+		// of its streams the gateway failed to bill (gateway-review).
+		budgetOpts = append(budgetOpts, llmproxy.WithOpsEventPublisher(nc))
 	}
 
 	// Mount the /llm dialect surface over the embedded bifrost/core client.
@@ -214,18 +218,28 @@ func main() {
 		slog.Info("shutdown signal received")
 	}
 
-	// Fix round-3 #1/#2: drain billing goroutines before the governance store
-	// drains its persist goroutines, and both before srv.Shutdown closes the
-	// pool. Extracted into drainForShutdown so the WIRING is unit-testable — a
-	// unit test of Drain() in isolation does NOT catch a future removal of this
-	// call (that "built-but-not-wired" gap recurred three times in review).
-	drainForShutdown(handler, govStore)
+	// Phase 1 (issue #9 / gateway-review): tell in-flight stream drains to stop
+	// waiting for provider usage trailers BEFORE the HTTP drain, so the stream
+	// grace can never extend the pod's termination window. Billing stays OPEN.
+	handler.StopStreamGrace()
 
 	// Drain in-flight streams (§9.5: ≥150s ceiling applied inside Shutdown).
+	// This must run BEFORE the billing drain: SSE handlers are still live here,
+	// and a stream that settles during this window — including a drain that
+	// just recovered an authoritative usage trailer — must still be able to
+	// bill. Draining billing first set billingClosing while handlers were
+	// running, so recovered spend was refused and dropped on every deploy.
 	if err := srv.Shutdown(context.Background()); err != nil {
 		slog.Error("gateway shutdown error", "err", err)
 		os.Exit(1)
 	}
+
+	// Fix round-3 #1/#2: drain billing goroutines before the governance store
+	// drains its persist goroutines, and both before the pool closes.
+	// Extracted into drainForShutdown so the WIRING is unit-testable — a unit
+	// test of Drain() in isolation does NOT catch a future removal of this call
+	// (that "built-but-not-wired" gap recurred three times in review).
+	drainForShutdown(handler, govStore)
 }
 
 // buildGovernance assembles the full governance engine (failmode primitives +
@@ -349,8 +363,9 @@ type govDrainer interface{ Drain() }
 //  1. billing goroutines (they may still call the store's UpdateUsage), then
 //  2. the governance store's persist goroutines.
 //
-// Must run BEFORE srv.Shutdown() closes the DB pool. gov may be nil when budget
-// enforcement is disabled.
+// Must run AFTER srv.Shutdown() (so streams settling in the HTTP drain window
+// can still bill — issue #9 / gateway-review) and BEFORE the deferred
+// pool.Close(). gov may be nil when budget enforcement is disabled.
 func drainForShutdown(h billingDrainer, gov govDrainer) {
 	if h != nil {
 		h.DrainBilling()

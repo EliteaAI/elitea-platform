@@ -14,6 +14,7 @@ func TestFromEnvDefaults(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_ENDPOINT", "GATEWAY_NATS_URL",
 		"LLM_BUDGET_EXPECTED_REPLICAS", "LLM_BUDGET_CB_FAILURE_THRESHOLD",
 		"LLM_BUDGET_CB_OPEN_DURATION_SEC",
+		"LLM_STREAM_GRACE_MS", "LLM_STREAM_DRAIN_MAX_INFLIGHT",
 	} {
 		t.Setenv(k, "")
 	}
@@ -62,6 +63,48 @@ func TestFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.CBOpenDuration != DefaultCBOpenDuration {
 		t.Errorf("CBOpenDuration = %v, want %v", cfg.CBOpenDuration, DefaultCBOpenDuration)
+	}
+}
+
+// TestStreamGraceFromEnv covers the issue-#9 knobs. LLM_STREAM_GRACE_MS is the
+// one env var in this package whose "0" is MEANINGFUL — it disables
+// disconnect-billing rather than meaning "unset" — so it needs its own coverage:
+// a refactor that routed it through the ordinary intOr helper would silently
+// re-enable the mechanism (or, with the old overflow bug, silently disable it).
+func TestStreamGraceFromEnv(t *testing.T) {
+	cases := []struct {
+		name     string
+		grace    string
+		limit    string
+		want     time.Duration
+		wantSlot int
+	}{
+		{"unset", "", "", DefaultStreamGrace, DefaultStreamDrainLimit},
+		{"explicit zero disables", "0", "", 0, DefaultStreamDrainLimit},
+		{"valid override", "1200", "64", 1200 * time.Millisecond, 64},
+		{"clamped to max", "60000", "", MaxStreamGrace, DefaultStreamDrainLimit},
+		{"exactly max", "15000", "", MaxStreamGrace, DefaultStreamDrainLimit},
+		// Overflow: n*time.Millisecond wraps negative, which must NOT slip past
+		// the clamp and disable the mechanism.
+		{"overflow clamps to max", "9223372036854", "", MaxStreamGrace, DefaultStreamDrainLimit},
+		{"negative falls back", "-1", "", DefaultStreamGrace, DefaultStreamDrainLimit},
+		{"garbage falls back", "abc", "", DefaultStreamGrace, DefaultStreamDrainLimit},
+		{"duration string falls back", "5s", "", DefaultStreamGrace, DefaultStreamDrainLimit},
+		{"invalid limit falls back", "", "0", DefaultStreamGrace, DefaultStreamDrainLimit},
+		{"negative limit falls back", "", "-4", DefaultStreamGrace, DefaultStreamDrainLimit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LLM_STREAM_GRACE_MS", tc.grace)
+			t.Setenv("LLM_STREAM_DRAIN_MAX_INFLIGHT", tc.limit)
+			cfg := FromEnv()
+			if cfg.StreamGrace != tc.want {
+				t.Errorf("StreamGrace = %v, want %v", cfg.StreamGrace, tc.want)
+			}
+			if cfg.StreamDrainLimit != tc.wantSlot {
+				t.Errorf("StreamDrainLimit = %d, want %d", cfg.StreamDrainLimit, tc.wantSlot)
+			}
+		})
 	}
 }
 
