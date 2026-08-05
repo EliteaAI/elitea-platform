@@ -50,10 +50,28 @@ func TestPostgresNodeEventTaskRestampIntentRetryAndTenantAuthority(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	// index_ingest_jobs_meta_initialization_shape (migration 0051) only
+	// permits index_meta_initialized_at IS NOT NULL together with status =
+	// 'INITIALIZED', a cleared claim/retry state, and
+	// index_meta_initialization_resolved_at exactly equal to
+	// index_meta_initialized_at — setting index_meta_initialized_at alone
+	// violates it. Mirrors ResolveIndexMetaInitialization's shape
+	// (internal/db/queries/runtime_index_ingest.sql): compute one
+	// timestamp via a FROM subquery so both columns get the identical
+	// value, rather than calling clock_timestamp() twice in the SET list
+	// (which are independently volatile and would not compare equal).
 	if tag, err := pool.Exec(ctx, `
-UPDATE elitea_runtime.index_ingest_jobs
-SET index_meta_initialized_at = clock_timestamp()
-WHERE execution_id = $1 AND generation = 1`,
+UPDATE elitea_runtime.index_ingest_jobs AS i
+SET index_meta_initialized_at = authority.initialized_at,
+    index_meta_initialization_status = 'INITIALIZED',
+    index_meta_initialization_claim_token = NULL,
+    index_meta_initialization_claim_expires_at = NULL,
+    index_meta_initialization_next_attempt_at = NULL,
+    index_meta_initialization_last_error_code = NULL,
+    index_meta_initialization_resolved_at = authority.initialized_at,
+    index_meta_initialization_failed_at = NULL
+FROM (SELECT clock_timestamp() AS initialized_at) AS authority
+WHERE i.execution_id = $1 AND i.generation = 1`,
 		admitted.ExecutionID,
 	); err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("open initialized metadata gate: tag=%v err=%v", tag, err)
