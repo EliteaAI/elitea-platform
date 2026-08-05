@@ -17,19 +17,31 @@
  * section name alone instead of the id). A real, reduced title, not a
  * placeholder: every branch produces a genuine value old-app users would
  * recognise, just without the id-in-title fallback.
+ *
+ * The old app's OTHER pathname-readable signal, `params.tab` (e.g.
+ * `Toolkits: ${params.tab} - ${projectName}`), IS reproduced, generically,
+ * for every section below whose route tree actually has a `$tab` segment
+ * (`/agents`, `/pipelines`, `/toolkits`, `/mcps`, `/credentials`,
+ * `/skills`, `/apps`, `/user-public` — each has a real `routes/_shell/
+ * <section>/$tab.tsx`) — the exact same pathname-splitting technique
+ * `settingsTitle` below already uses for `/settings/$tab.tsx`. `hasTab:
+ * true` marks those sections; `/chat` (keyed by `conversationId`, not a
+ * tab), `/agents-hub`, `/artifacts`, and `/help-center` (no `$tab` route at
+ * all) are left without it, matching the old app (which never branches on
+ * `params.tab` for those four either).
  */
-const SECTION_BY_PREFIX: ReadonlyArray<{ prefix: string; label: string }> = [
+const SECTION_BY_PREFIX: ReadonlyArray<{ prefix: string; label: string; hasTab?: true }> = [
   { prefix: '/chat', label: 'Chat' },
   { prefix: '/agents-hub', label: 'Agent HUB' },
-  { prefix: '/agents', label: 'Agents' },
-  { prefix: '/pipelines', label: 'Pipelines' },
-  { prefix: '/toolkits', label: 'Toolkits' },
-  { prefix: '/mcps', label: 'MCPs' },
-  { prefix: '/credentials', label: 'Credentials' },
+  { prefix: '/agents', label: 'Agents', hasTab: true },
+  { prefix: '/pipelines', label: 'Pipelines', hasTab: true },
+  { prefix: '/toolkits', label: 'Toolkits', hasTab: true },
+  { prefix: '/mcps', label: 'MCPs', hasTab: true },
+  { prefix: '/credentials', label: 'Credentials', hasTab: true },
   { prefix: '/artifacts', label: 'Artifacts' },
-  { prefix: '/user-public', label: 'User public' },
-  { prefix: '/skills', label: 'Skills' },
-  { prefix: '/apps', label: 'Applications' },
+  { prefix: '/user-public', label: 'User public', hasTab: true },
+  { prefix: '/skills', label: 'Skills', hasTab: true },
+  { prefix: '/apps', label: 'Applications', hasTab: true },
   { prefix: '/help-center', label: 'Help Center' },
 ];
 
@@ -64,5 +76,12 @@ export function derivePageTitle(pathname: string, searchName: string, projectNam
   const section = SECTION_BY_PREFIX.find((entry) => pathname.startsWith(entry.prefix));
   if (!section) return project;
 
-  return searchName ? `${section.label}: ${searchName} - ${project}` : `${section.label} - ${project}`;
+  if (searchName) return `${section.label}: ${searchName} - ${project}`;
+
+  if (section.hasTab) {
+    const tab = pathname.replace(new RegExp(`^${section.prefix}/?`), '').split('/')[0];
+    if (tab) return `${section.label}: ${tab} - ${project}`;
+  }
+
+  return `${section.label} - ${project}`;
 }

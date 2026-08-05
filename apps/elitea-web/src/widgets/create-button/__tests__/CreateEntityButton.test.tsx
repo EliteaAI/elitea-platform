@@ -1,12 +1,68 @@
+import type { ReactElement, ReactNode } from 'react';
+
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+} from '@tanstack/react-router';
+import CssBaseline from '@mui/material/CssBaseline';
+import { ThemeProvider } from '@mui/material/styles';
 import userEvent from '@testing-library/user-event';
-import { screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useChatSessionStore } from '@/entities/conversation';
+import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 import { resetConfigForTests } from '@/shared/config/get-config';
 import { PERMISSIONS } from '@/shared/lib/permissions';
 
 import { CreateEntityButton } from '../ui/CreateEntityButton';
 import { renderAtPath } from './testRouter';
+
+const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
+
+/**
+ * `renderAtPath` (`./testRouter`) builds its router with NO explicit
+ * `context` option — every test that needs a resolved `personal_project_id`
+ * (R4's `isPersonalSpaceBlocked`) needs a router that actually carries one.
+ * A local variant, not a `testRouter.tsx` edit: this widget's file-scope
+ * fence covers this cluster's 5 files plus their paired `*.test.ts(x)`
+ * files, and `testRouter.tsx` is neither. Mirrors
+ * `features/toolkits/lib/hooks/useSelectedProjectId.test.tsx`'s
+ * `renderWithRouterContext` (`context: { auth }` passed straight to
+ * `createRouter`) plus `./testRouter`'s own `router.load()`-before-render
+ * step.
+ */
+async function renderAtPathWithPersonalProject(
+  pathname: string,
+  ui: ReactNode,
+  personalProjectId: string | undefined,
+) {
+  const rootRoute = createRootRoute();
+  const testRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: pathname.replace(/^\//, ''),
+    component: () => ui as ReactElement,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([testRoute]),
+    history: createMemoryHistory({ initialEntries: [pathname] }),
+    context: { auth: { getUser: () => ({ personal_project_id: personalProjectId }) } },
+  });
+  await router.load();
+  const result = render(
+    <ThemeProvider
+      theme={theme}
+      defaultMode={DEFAULT_COLOR_SCHEME}
+    >
+      <CssBaseline />
+      <RouterProvider router={router} />
+    </ThemeProvider>,
+  );
+  return { ...result, router };
+}
 
 beforeEach(() => {
   resetConfigForTests();
@@ -19,6 +75,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   resetConfigForTests();
   delete (globalThis as { elitea_ui_config?: unknown }).elitea_ui_config;
+  useChatSessionStore.setState({ isCreatingNewConversation: false });
 });
 
 /** `PERMISSIONS` nests 1-3 levels deep (e.g. `chat.canvas.create`) — collects every leaf string regardless of depth. */
@@ -145,12 +202,18 @@ describe('CreateEntityButton', () => {
     (globalThis as { elitea_ui_config?: Record<string, unknown> }).elitea_ui_config = {
       allow_project_own_llms: false,
     };
-    await renderAtPath(
+    // A resolved personal project id is supplied so this stays isolated to
+    // the own-LLMs gate specifically — without it, R4's
+    // `isPersonalSpaceBlocked` gate would ALSO fire for "public project, no
+    // personal project resolved" and this assertion would be testing two
+    // gates' combined polarity instead of one.
+    await renderAtPathWithPersonalProject(
       '/settings/model-configuration',
       <CreateEntityButton
         permissions={allPermissions}
         projectId="11"
       />,
+      'priv-1',
     );
     expect(screen.getByTestId('sidebar-create-button')).not.toBeDisabled();
   });
@@ -164,5 +227,107 @@ describe('CreateEntityButton', () => {
       />,
     );
     expect(screen.getByTestId('sidebar-create-button')).not.toBeDisabled();
+  });
+
+  // R1 — collapsed/simple-route trigger must open the dropdown, not navigate directly.
+  it('R1: collapsed mode clicking the trigger opens the dropdown instead of navigating directly', async () => {
+    const user = userEvent.setup();
+    const { router } = await renderAtPath(
+      '/agents',
+      <CreateEntityButton
+        permissions={allPermissions}
+        collapsed
+      />,
+    );
+    const before = router.state.location.pathname;
+    await user.click(screen.getByTestId('sidebar-create-button'));
+    // The dropdown opened (all 13 entities reachable) instead of firing a
+    // direct navigation against `activeKind` — this is the ONLY way to
+    // reach the entity picker while collapsed (no chevron exists here).
+    expect(screen.getByRole('menuitem', { name: 'Chat' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Agent' })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe(before);
+  });
+
+  it('R1: on a simple route (expanded sidebar), clicking the trigger opens the dropdown instead of navigating directly', async () => {
+    const user = userEvent.setup();
+    const { router } = await renderAtPath('/onboarding', <CreateEntityButton permissions={allPermissions} />);
+    const before = router.state.location.pathname;
+    await user.click(screen.getByTestId('sidebar-create-button'));
+    expect(screen.getByRole('menuitem', { name: 'Chat' })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe(before);
+  });
+
+  it('R1: the dropdown opened from the collapsed/simple trigger still navigates once an entity is chosen', async () => {
+    const user = userEvent.setup();
+    const { router } = await renderAtPath(
+      '/agents',
+      <CreateEntityButton
+        permissions={allPermissions}
+        collapsed
+      />,
+    );
+    await user.click(screen.getByTestId('sidebar-create-button'));
+    await user.click(screen.getByRole('menuitem', { name: 'Pipeline' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/pipelines/create'));
+  });
+
+  // R2 — the create-chat action must be disabled while a conversation creation is already in flight.
+  it('R2: disables the trigger when isCreatingNewConversation is true and the active kind is chat', async () => {
+    useChatSessionStore.setState({ isCreatingNewConversation: true });
+    await renderAtPath('/chat', <CreateEntityButton permissions={allPermissions} />);
+    expect(screen.getByTestId('sidebar-create-button')).toBeDisabled();
+  });
+
+  it('R2: does NOT disable the trigger for isCreatingNewConversation when the active kind is not chat', async () => {
+    useChatSessionStore.setState({ isCreatingNewConversation: true });
+    await renderAtPath('/agents', <CreateEntityButton permissions={allPermissions} />);
+    expect(screen.getByTestId('sidebar-create-button')).not.toBeDisabled();
+  });
+
+  // R4 — "no personal project / viewing public project" disable gate.
+  it('R4: disables the trigger when no personal project is resolved and the selected project is the public one', async () => {
+    await renderAtPathWithPersonalProject(
+      '/agents',
+      <CreateEntityButton
+        permissions={allPermissions}
+        projectId="11"
+      />,
+      undefined,
+    );
+    expect(screen.getByTestId('sidebar-create-button')).toBeDisabled();
+  });
+
+  it('R4: does NOT disable the trigger when a personal project id IS resolved, even on the public project', async () => {
+    await renderAtPathWithPersonalProject(
+      '/agents',
+      <CreateEntityButton
+        permissions={allPermissions}
+        projectId="11"
+      />,
+      'priv-1',
+    );
+    expect(screen.getByTestId('sidebar-create-button')).not.toBeDisabled();
+  });
+
+  it('R4: does NOT disable the trigger for the personal-space gate when the selected project is NOT the public one', async () => {
+    await renderAtPathWithPersonalProject(
+      '/agents',
+      <CreateEntityButton
+        permissions={allPermissions}
+        projectId="42"
+      />,
+      undefined,
+    );
+    expect(screen.getByTestId('sidebar-create-button')).not.toBeDisabled();
+  });
+
+  // R6 — the own-LLMs gate's polarity when no project id has resolved yet.
+  it('R6: disables the own-LLMs gate when allow_project_own_llms=false and NO project id has resolved yet', async () => {
+    (globalThis as { elitea_ui_config?: Record<string, unknown> }).elitea_ui_config = {
+      allow_project_own_llms: false,
+    };
+    await renderAtPath('/settings/model-configuration', <CreateEntityButton permissions={allPermissions} />);
+    expect(screen.getByTestId('sidebar-create-button')).toBeDisabled();
   });
 });

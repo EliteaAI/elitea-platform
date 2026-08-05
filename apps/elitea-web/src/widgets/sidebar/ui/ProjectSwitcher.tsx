@@ -6,6 +6,7 @@ import ClickAwayListener from '@mui/material/ClickAwayListener';
 import Paper from '@mui/material/Paper';
 import Popper from '@mui/material/Popper';
 import type { Theme } from '@mui/material/styles';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
 import type { Project } from '@/entities/project';
@@ -29,11 +30,19 @@ export interface ProjectSwitcherProps {
  * uploaded project-icon image, no "private project" second pin, no
  * `AlertDialog` confirmation before switching mid-edit) are in
  * `../lib/projectOptions.ts` and `../index.ts`.
+ *
+ * R4: the trigger is wrapped in a `Tooltip` showing the selected project's
+ * name (or the same "No projects" fallback the expanded text block already
+ * uses) exactly when `collapsed`, matching `customRenderProject`
+ * (`SidebarProjectSelect.jsx:25-63`)'s `StyledTooltip` — otherwise a
+ * collapsed sidebar leaves no way to tell which project is active without
+ * expanding it.
  */
 export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collapsed = false }: ProjectSwitcherProps): ReactNode {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLElement | null>(null);
   const selected = projects.find((project) => String(project.id) === selectedProjectId);
+  const selectedName = selected?.name ?? t('widgets.sidebar.projectSwitcher.none', 'No projects');
 
   const close = useCallback(() => setOpen(false), []);
   const toggle = useCallback(() => setOpen((value) => !value), []);
@@ -48,53 +57,60 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
   return (
     <ClickAwayListener onClickAway={close}>
       <Box sx={{ position: 'relative' }}>
-        <Box
-          component="button"
-          type="button"
-          ref={anchorRef}
-          onClick={toggle}
-          sx={(theme: Theme) => ({
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: collapsed ? 'center' : 'flex-start',
-            gap: '0.5rem',
-            padding: '0.5rem 1rem',
-            cursor: 'pointer',
-            minHeight: '3.5rem',
-            width: '100%',
-            border: 'none',
-            background: 'transparent',
-            textAlign: 'left',
-            boxSizing: 'border-box',
-            '&:hover': { backgroundColor: theme.vars.palette.background.button.drawerMenu.hover },
-          })}
+        <Tooltip
+          title={collapsed ? selectedName : ''}
+          placement="right"
+          enterDelay={500}
+          enterNextDelay={500}
         >
-          <ProjectAvatar
-            projectName={selected?.name}
-            size="1.5rem"
-          />
-          {!collapsed && (
-            <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
-              <Typography
-                variant="labelSmall"
-                sx={(theme: Theme) => ({ color: theme.vars.palette.text.metrics })}
-              >
-                {t('widgets.sidebar.projectSwitcher.label', 'Project:')}
-              </Typography>
-              <Typography
-                variant="labelSmall"
-                sx={{
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  maxWidth: '7.5rem',
-                }}
-              >
-                {selected?.name ?? t('widgets.sidebar.projectSwitcher.none', 'No projects')}
-              </Typography>
-            </Box>
-          )}
-        </Box>
+          <Box
+            component="button"
+            type="button"
+            ref={anchorRef}
+            onClick={toggle}
+            sx={(theme: Theme) => ({
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: collapsed ? 'center' : 'flex-start',
+              gap: '0.5rem',
+              padding: '0.5rem 1rem',
+              cursor: 'pointer',
+              minHeight: '3.5rem',
+              width: '100%',
+              border: 'none',
+              background: 'transparent',
+              textAlign: 'left',
+              boxSizing: 'border-box',
+              '&:hover': { backgroundColor: theme.vars.palette.background.button.drawerMenu.hover },
+            })}
+          >
+            <ProjectAvatar
+              projectName={selected?.name}
+              size="1.5rem"
+            />
+            {!collapsed && (
+              <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+                <Typography
+                  variant="labelSmall"
+                  sx={(theme: Theme) => ({ color: theme.vars.palette.text.metrics })}
+                >
+                  {t('widgets.sidebar.projectSwitcher.label', 'Project:')}
+                </Typography>
+                <Typography
+                  variant="labelSmall"
+                  sx={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    maxWidth: '7.5rem',
+                  }}
+                >
+                  {selectedName}
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </Tooltip>
 
         <Popper
           open={open && projects.length > 0}

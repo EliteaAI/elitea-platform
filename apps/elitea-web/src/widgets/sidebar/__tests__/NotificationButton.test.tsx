@@ -136,6 +136,15 @@ describe('NotificationButton — trigger + unread badge', () => {
     server.use(http.get(LIST_PATH, () => HttpResponse.json({ rows: [], total: 0 })));
     const socketClient = createTestSocketClient();
     await renderNotificationButton({ personalProjectId: '7', socketClient });
+    // Let the on-mount badge query genuinely SETTLE before firing the push
+    // — `total: 0` renders identically to the component's own pre-settle
+    // initial state, so asserting "no dot" alone (without first flushing
+    // the query's own pending promise chain) proves nothing about whether
+    // the query has actually resolved yet; a push fired before it settles
+    // would legitimately race against that query's own (also `total: 0`)
+    // response landing right after it, same as production (`data`'s
+    // effect is always authoritative — see `NotificationButton.tsx`).
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await waitFor(() => expect(screen.queryByTestId('sidebar-notification-unread-dot')).toBeNull());
     socketClient.simulateServerEvent('notifications_notify', undefined);
     expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
@@ -145,6 +154,46 @@ describe('NotificationButton — trigger + unread badge', () => {
     server.use(http.get(LIST_PATH, () => HttpResponse.json({ rows: [], total: 1 })));
     await renderNotificationButton({ personalProjectId: '7' });
     expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
+  });
+
+  /**
+   * R2 regression: a live push must not permanently ratchet the dot "on".
+   * The old app recomputes `hasMessages` from EVERY fresh query response
+   * (`NotificationButton.jsx:60-64`) — a live push only sets it `true`
+   * optimistically in between. Reproduces the real-world trigger: a push
+   * arrives, then "Mark all as read" invalidates + refetches the same
+   * badge query, which reports `total: 0` again — the dot must clear.
+   */
+  it('clears the unread dot once a fresh query response reports total: 0, even after a live push set it optimistically (no one-way ratchet)', async () => {
+    server.use(
+      http.get(LIST_PATH, ({ request }) => {
+        const limit = new URL(request.url).searchParams.get('limit');
+        // Badge query (pageSize: 1) always reports 0 unread; popover query
+        // (pageSize: 5) returns one unseen row so "Mark all as read" is
+        // enabled and its mutation has something to invalidate/refetch.
+        if (limit === '1') return HttpResponse.json({ rows: [], total: 0 });
+        return HttpResponse.json({ rows: [wireNotification({ id: 1, is_seen: false })], total: 1 });
+      }),
+    );
+    server.use(http.put(LIST_PATH, () => HttpResponse.json({})));
+
+    const socketClient = createTestSocketClient();
+    const user = userEvent.setup();
+    await renderNotificationButton({ personalProjectId: '7', socketClient });
+
+    // Let the on-mount badge query genuinely settle first (see the "flips
+    // the badge on immediately" test above for why this matters).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => expect(screen.queryByTestId('sidebar-notification-unread-dot')).toBeNull());
+
+    socketClient.simulateServerEvent('notifications_notify', undefined);
+    expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
+
+    await user.click(screen.getByTestId('sidebar-notification-button'));
+    const markAllButton = await screen.findByText('Mark all as read');
+    await user.click(markAllButton);
+
+    await waitFor(() => expect(screen.queryByTestId('sidebar-notification-unread-dot')).toBeNull());
   });
 });
 

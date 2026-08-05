@@ -47,6 +47,48 @@ describe('ProjectSwitcher', () => {
     expect(screen.queryByText('Project:')).not.toBeInTheDocument();
   });
 
+  /** R4 regression: `customRenderProject`'s `StyledTooltip` (`SidebarProjectSelect.jsx:25-63`). */
+  it('R4: collapsed mode shows the selected project name in a hover tooltip', async () => {
+    const user = userEvent.setup();
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+        collapsed
+      />,
+    );
+    await user.hover(screen.getByRole('button'));
+    const tooltip = await screen.findByRole('tooltip', undefined, { timeout: 2000 });
+    expect(tooltip).toHaveTextContent('Acme');
+  });
+
+  it('R4: collapsed mode falls back to "No projects" in the tooltip when the list is empty', async () => {
+    const user = userEvent.setup();
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={[]}
+        selectedProjectId={undefined}
+        onSelect={vi.fn()}
+        collapsed
+      />,
+    );
+    await user.hover(screen.getByRole('button'));
+    const tooltip = await screen.findByRole('tooltip', undefined, { timeout: 2000 });
+    expect(tooltip).toHaveTextContent('No projects');
+  });
+
+  it('R4: expanded mode shows no tooltip (title is already visible inline)', () => {
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  });
+
   it('opens the dropdown on click and lists every project', async () => {
     const user = userEvent.setup();
     renderWithTheme(

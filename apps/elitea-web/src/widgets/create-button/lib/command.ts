@@ -71,6 +71,23 @@ export function hasCreatePermission(kind: CreateEntityKind, permissions: Readonl
 }
 
 /**
+ * Permission gate for the MAIN button specifically (old app:
+ * `hasPermissionForSelectedOption`, `CreateEntityButton.jsx:219-234`) —
+ * deliberately more permissive than {@link hasCreatePermission} for
+ * `bucket`: "For buckets, if user can access the Artifacts page, they
+ * should be able to create buckets ... This is a more practical approach"
+ * (old app comment, verbatim rationale). The dropdown-item gate
+ * (`getHasPermissionForDropdownItem` in the old app) does NOT get this
+ * bypass — it still requires the real bucket-create permission — so the two
+ * gates diverge for Bucket by old-app design; callers must keep using
+ * {@link hasCreatePermission} (not this function) for the dropdown items.
+ */
+export function hasMainButtonCreatePermission(kind: CreateEntityKind, permissions: ReadonlySet<string>): boolean {
+  if (kind === 'bucket') return true;
+  return hasCreatePermission(kind, permissions);
+}
+
+/**
  * Per-kind destination + search params, as a function of whether the
  * current page is itself a `/create` page (`replace`). A lookup table
  * (rather than a `switch`) keeps this well under the §3.5 cyclomatic-

@@ -4,6 +4,7 @@ import {
   currentEntityFromPathname,
   defaultEntityKind,
   hasCreatePermission,
+  hasMainButtonCreatePermission,
   isSimpleCreateRoute,
   resolveCreateCommand,
 } from '../lib/command';
@@ -109,6 +110,26 @@ describe('hasCreatePermission', () => {
     const chatPerms = CREATE_ENTITY_PERMISSIONS.chat ?? [];
     expect(chatPerms.length).toBeGreaterThan(1);
     expect(hasCreatePermission('chat', new Set([chatPerms[1] as string]))).toBe(true);
+  });
+});
+
+describe('hasMainButtonCreatePermission (R5)', () => {
+  it('grants Bucket unconditionally, even with zero permissions held — the old app\'s deliberate Artifacts-page-access bypass', () => {
+    expect(hasMainButtonCreatePermission('bucket', new Set())).toBe(true);
+  });
+
+  it('does NOT extend the bucket bypass to the plain hasCreatePermission used by the dropdown items', () => {
+    // The old app's two gates diverge for Bucket by design
+    // (`hasPermissionForSelectedOption` vs `getHasPermissionForDropdownItem`)
+    // — `hasCreatePermission` must stay the strict one.
+    expect(hasCreatePermission('bucket', new Set())).toBe(false);
+  });
+
+  it('still gates every other entity kind exactly like hasCreatePermission', () => {
+    expect(hasMainButtonCreatePermission('agent', new Set())).toBe(false);
+    const [firstAgentPermission] = CREATE_ENTITY_PERMISSIONS.agent ?? [];
+    expect(firstAgentPermission).toBeDefined();
+    expect(hasMainButtonCreatePermission('agent', new Set([firstAgentPermission as string]))).toBe(true);
   });
 });
 

@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import { useEffect } from 'react';
 
 import { useBlocker } from '@tanstack/react-router';
-import { useQueryClient } from '@tanstack/react-query';
 
 import { BaseModal } from '@/shared/ui/BaseModal';
 import { t } from '@/shared/i18n';
@@ -33,6 +32,17 @@ import { useNavBlockerStore } from '../model/navBlocker.store';
  * allowlist existed to avoid blocking on genuinely safe pages, which today
  * never set the flags in the first place, so the allowlist has no
  * observable effect yet either way).
+ *
+ * `UnsavedDialog.jsx`'s `blockerFn` DOES reproduce one piece exactly,
+ * though: it only blocks when `currentLocation.pathname !==
+ * nextLocation.pathname` — a same-pathname navigation (e.g. a search-param
+ * update on the route the user is already on) is explicitly let through
+ * even while blockable/streaming. TanStack Router's `shouldBlockFn` args
+ * (`ShouldBlockFnArgs`, `useBlocker.d.ts`) carry `current`/`next` each with
+ * their own `pathname`, so that same pathname-equality check applies here
+ * unchanged — this is live today via `processes/chat/model/
+ * useStreamingNavBlocker.ts` setting `isStreaming` on the real `/chat`
+ * route, which declares several search-only params.
  */
 export function NavBlockerDialog(): ReactNode {
   const isBlockNav = useNavBlockerStore((state) => state.isBlockNav);
@@ -40,10 +50,9 @@ export function NavBlockerDialog(): ReactNode {
   const warningMessage = useNavBlockerStore((state) => state.warningMessage);
   const setBlockNav = useNavBlockerStore((state) => state.setBlockNav);
   const setStreamingBlockNav = useNavBlockerStore((state) => state.setStreamingBlockNav);
-  const queryClient = useQueryClient();
 
   const { status, proceed, reset } = useBlocker({
-    shouldBlockFn: () => isBlockNav || isStreaming,
+    shouldBlockFn: ({ current, next }) => (isBlockNav || isStreaming) && current.pathname !== next.pathname,
     withResolver: true,
   });
 
@@ -56,9 +65,18 @@ export function NavBlockerDialog(): ReactNode {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [isBlockNav, isStreaming]);
 
+  // Old app: `useNavBlocker.js`'s `resetApiState` has every real reset
+  // dispatch commented out — it's a complete no-op (`console.debug` only)
+  // — and `UnsavedDialog.jsx`'s `confirmNavigate` only even calls it when
+  // `isResetApiState` (a Redux flag defaulting `false`, set by no landed
+  // reducer path) is true. Net effect: confirming a blocked navigation in
+  // the old app never clears cached API/query data. Reproduced faithfully
+  // by NOT touching the query cache here at all, rather than an
+  // unconditional `queryClient.clear()` this widget sits under every page
+  // and would otherwise force an app-wide refetch/loading flash on every
+  // confirmed nav-away.
   const handleConfirm = (): void => {
     proceed?.();
-    queryClient.clear();
     setBlockNav(false);
     setStreamingBlockNav(false, 'prompt');
   };
