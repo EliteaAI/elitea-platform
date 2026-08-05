@@ -306,9 +306,15 @@
     "src/features/chat-participants/lib/hooks/useAddNewParticipants.ts",
     "src/features/chat-participants/ui/chat-modal/AddNewUserModal.tsx",
     "src/features/chat-participants/ui/chat-modal/UserSearchSelect.tsx",
-    "src/features/chat-participants/ui/CollapsedParticipants/CollapsedParticipantsDropdown.tsx",
-    "src/features/chat-participants/ui/CollapsedParticipants/CollapsedParticipantsList.tsx",
-    "src/features/chat-participants/ui/ExpandedParticipants/ExpandedParticipantsList.tsx",
+    // NOTE: `CollapsedParticipants/CollapsedParticipantsDropdown.tsx`,
+    // `CollapsedParticipants/CollapsedParticipantsList.tsx` and
+    // `ExpandedParticipants/ExpandedParticipantsList.tsx` were REMOVED from
+    // this list (knip's own "Remove from ignoreFiles" configuration hints):
+    // all three now have real consumers. `ParticipantsLayout.CollapsedStrip.tsx`
+    // renders `CollapsedParticipantsDropdown`, which in turn renders
+    // `CollapsedParticipantsList`; `ExpandedParticipants/ParticipantSection.tsx`
+    // renders `ExpandedParticipantsList`. Same "pinned ahead, consumer lands,
+    // remove the entry" lifecycle as the ignoreDependencies notes below.
     "src/features/chat-participants/ui/ExpandedParticipants/ParticipantsAccordion.tsx",
     "src/features/chat-participants/ui/ExpandedParticipants/UserParticipantItem.tsx",
     "src/features/chat-participants/ui/UsersParticipantDropdown/DropdownFooter.tsx",
@@ -328,7 +334,21 @@
     "@axe-core/playwright",
     "@lhci/cli",
     "@swc/core",
-    "dependency-cruiser"
+    "dependency-cruiser",
+    // NOT a real package — a knip false positive, and the ONLY entry here
+    // that is one. knip's vitest plugin maps `test.coverage.provider: "X"` to
+    // a dependency named `@vitest/coverage-X`. Our vitest.config.ts sets
+    // `provider: "custom"`, which is vitest's documented escape hatch: the
+    // implementation comes from the sibling `customProviderModule` key
+    // (`./scripts/vitest-coverage-v8-provider.mjs`), not from a package.
+    // `@vitest/coverage-custom` does not exist on the npm registry (404), so
+    // it cannot be added to package.json the way the four REAL unlisted deps
+    // from this same knip run were (`istanbul-lib-coverage`/
+    // `istanbul-lib-report`/`istanbul-reports`/`ast-v8-to-istanbul`, now
+    // explicit devDependencies). The real provider module's own imports —
+    // `@vitest/coverage-v8` and `ast-v8-to-istanbul` — are both declared.
+    // REMOVE this entry if knip ever learns to honour `customProviderModule`.
+    "@vitest/coverage-custom"
     // [Wave-2 batch 2] `react-hook-form`/`@hookform/resolvers`/
     // `@xyflow/react`/`@mui/x-date-pickers`/`recharts` REMOVED from this
     // list: this batch (agents/pipelines/toolkits + analytics) built all 5
