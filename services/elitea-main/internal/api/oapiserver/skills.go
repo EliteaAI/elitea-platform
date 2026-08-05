@@ -27,7 +27,7 @@ func (s *Server) ListSkills(w http.ResponseWriter, r *http.Request, projectId ge
 		pageSize = 100
 	}
 
-	resp, err := s.skillsRepo.List(r.Context(), projectId, page, pageSize)
+	resp, err := s.skillsRepo.List(r.Context(), projectId, skills.ListParams{Page: page, PageSize: pageSize})
 	if err != nil {
 		apierr.Write(w, err)
 		return

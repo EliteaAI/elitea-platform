@@ -441,9 +441,9 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 					r.Delete("/skill/{mode}/{projectID}/{skillID}", skillHandler.Delete)
 					r.Patch("/skill_default_version/{mode}/{projectID}/{skillID}", skillHandler.Update)
 					r.Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.List)
-					r.Post("/skill_import/{mode}/{projectID}", skillHandler.Create)
-					r.Get("/skill_export/{mode}/{projectID}/{skillID}", skillHandler.Get)
-					r.Get("/skill_export/{mode}/{projectID}/{skillID}/{versionID}", skillHandler.Get)
+					r.Post("/skill_import/{mode}/{projectID}", skillHandler.Import)
+					r.Get("/skill_export/{mode}/{projectID}/{skillID}", skillHandler.Export)
+					r.Get("/skill_export/{mode}/{projectID}/{skillID}/{versionID}", skillHandler.Export)
 				}
 
 				// Toolkits
@@ -593,8 +593,13 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				if cfg.Predictor != nil {
 					predictHandler := v2predict.NewHandler(cfg.Predictor, cfg.LLMService)
 					r.Post("/generate_application_draft/prompt_lib/{projectID}", predictHandler.Predict)
-					r.Post("/generate_skill_draft/prompt_lib/{projectID}", predictHandler.Predict)
 					r.Post("/generate_project_context_draft/prompt_lib/{projectID}", predictHandler.Predict)
+
+					// Skill draft generation needs its own response shape
+					// ({name, description, instructions, tags}), not the
+					// generic predict envelope — see v2skills.DraftHandler.
+					skillDraftHandler := v2skills.NewDraftHandler(cfg.Predictor)
+					r.Post("/generate_skill_draft/prompt_lib/{projectID}", skillDraftHandler.GenerateDraft)
 				}
 
 				// Fork
