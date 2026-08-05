@@ -81,11 +81,20 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   every drain on the shutdown path was skipped (reproduced: 0 increments, 5/5).
   *Decision:* split `Server.Shutdown` into `ShutdownHTTP` (HTTP + core, NATS
   stays UP) and `Close` (NATS), and run
-  `StopStreamGrace → ShutdownHTTP → DrainBilling → govStore.Drain → Close`.
+  `ShutdownHTTP → StopStreamGrace → DrainBilling → govStore.Drain → Close`.
   Billing is open and NATS is live throughout the window in which streams
   actually settle. A failed HTTP shutdown no longer aborts the drains.
   `terminationGracePeriodSeconds` is raised to 180 so the post-HTTP phases have
-  headroom over the 150 s drain budget. `TestShutdownSequence` asserts the
+  headroom over the 150 s drain budget.
+  **StopStreamGrace MUST NOT be hoisted above ShutdownHTTP** (round 3): it both
+  sets `drainsClosing` and closes the `drainClosing` channel, so running it
+  first gives every stream disconnecting during the ~150 s HTTP drain `grace=0`
+  and cuts every parked drain — turning disconnect billing OFF for the whole
+  duration of every rolling deploy, i.e. reopening the issue-#9 bypass. That
+  regression shipped once and was invisible to a test whose SSE loop observed
+  the usage chunk before the failing write, so the drain never participated.
+  Drains are detached goroutines, not HTTP requests, so leaving the grace armed
+  does not extend `ShutdownHTTP` at all. `TestShutdownSequence` asserts the
   ORDER BY EXECUTING it — the previous textual guard compared source positions
   and could not see the `os.Exit` between two calls.
 - **[human decision] 2026-08-05 — (superseded by the entry above) Shutdown is a

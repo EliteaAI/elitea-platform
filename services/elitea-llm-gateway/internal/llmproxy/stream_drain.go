@@ -621,6 +621,18 @@ func newDrainLimiter(n int) *drainLimiter {
 	return &drainLimiter{total: n, perProject: per, byProject: make(map[string]int)}
 }
 
+// effectiveDrainGrace reports the grace a NEW drain would receive right now:
+// the configured value while the gateway is serving, 0 once shutdown has
+// disarmed it. Exposed so the arm/disarm boundary is directly assertable —
+// hoisting the disarm ahead of the HTTP drain silently disabled disconnect
+// billing for the entire deploy window and no test could see it (round 3).
+func (h *Handler) effectiveDrainGrace() time.Duration {
+	if h.streamGrace <= 0 || h.drainsClosing.Load() != 0 {
+		return 0
+	}
+	return h.streamGrace
+}
+
 // acquire takes a slot for projectID. It never blocks: a caller that cannot get
 // one falls back to the saturated grace rather than queueing, because queueing
 // would hold the provider socket open anyway — the resource the bound protects.

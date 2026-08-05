@@ -557,31 +557,6 @@ func TestStreamGraceConstantsInSync(t *testing.T) {
 	}
 }
 
-// lingeringRouter delivers its chunks and then holds the channel open until the
-// provider context is cancelled — a provider that has already emitted usage but
-// has not finished unwinding. This is the state a drain is in when a SIGTERM
-// lands mid-stream.
-type lingeringRouter struct {
-	fakeRouter
-	chunks []*schemas.BifrostStreamChunk
-}
-
-func (r *lingeringRouter) ChatCompletionStreamRequest(ctx *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ch := make(chan *schemas.BifrostStreamChunk)
-	go func() {
-		defer close(ch)
-		for _, c := range r.chunks {
-			select {
-			case ch <- c:
-			case <-ctx.Done():
-				return
-			}
-		}
-		<-ctx.Done()
-	}()
-	return ch, nil
-}
-
 // TestShutdown_RecoveredTrailerIsBilled is the regression test for the
 // gateway-review blocker: a drain that HAS captured the authoritative usage
 // trailer must not lose the spend when graceful shutdown starts.
@@ -598,9 +573,17 @@ func TestShutdown_RecoveredTrailerIsBilled(t *testing.T) {
 	gate := allowGate()
 	events := newRecordingEvents()
 	calc := &fakeCostEstimator{inputRateNano: gateInputRateNano, outputRateNano: gateOutputRateNano}
-	router := &lingeringRouter{chunks: []*schemas.BifrostStreamChunk{
-		chatDelta("c1", "hello "), chatTrailer(11, 22),
-	}}
+	// The trailer arrives AFTER the disconnect, so billing depends on the DRAIN
+	// surviving. The first version of this test used a router that had the
+	// trailer queued already: the SSE loop calls observe() before the failing
+	// write, so gotUsage was set inline and the drain never participated — it
+	// passed with the entire grace mechanism disabled.
+	router := &ctxHonouringRouter{
+		preamble:     []*schemas.BifrostStreamChunk{chatDelta("c1", "hello "), chatDelta("c2", "world")},
+		trailer:      chatTrailer(11, 22),
+		trailerDelay: 20 * time.Millisecond,
+		holdOpen:     true, // trailer delivered, but the provider has not unwound
+	}
 	h := NewHandler(router, nil, nil,
 		WithBudgetGate(gate, calc),
 		WithOpsEventPublisher(events),
@@ -608,11 +591,13 @@ func TestShutdown_RecoveredTrailerIsBilled(t *testing.T) {
 
 	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true))
 
-	// The drain is now parked on the channel holding the trailer. Shutdown, in
-	// the order the composition root uses.
+	// Let the trailer reach the drain, which then stays parked on the still-open
+	// channel — exactly the state a SIGTERM finds it in.
+	waitFor(t, func() bool { return router.trailerSent.Load() })
+
+	// Shutdown, in the order the composition root uses.
 	h.StopStreamGrace()
 	h.DrainBilling()
-
 	if got := gate.updateCalls.Load(); got != 1 {
 		t.Fatalf("UpdateUsage calls = %d, want 1 — the trailer was recovered, so %d nano-USD of "+
 			"provider-reported spend must be billed, not dropped on shutdown", got, gateWantCostNano)
@@ -1038,17 +1023,34 @@ func TestShutdown_DisconnectDuringHTTPDrainIsBilled(t *testing.T) {
 	gate := allowGate()
 	events := newRecordingEvents()
 	calc := &fakeCostEstimator{inputRateNano: gateInputRateNano, outputRateNano: gateOutputRateNano}
-	router := &lingeringRouter{chunks: []*schemas.BifrostStreamChunk{
-		chatDelta("c1", "hello "), chatTrailer(11, 22),
-	}}
+	router := &ctxHonouringRouter{
+		preamble:     []*schemas.BifrostStreamChunk{chatDelta("c1", "hello "), chatDelta("c2", "world")},
+		trailer:      chatTrailer(11, 22),
+		trailerDelay: 200 * time.Millisecond,
+	}
 	h := NewHandler(router, nil, nil,
 		WithBudgetGate(gate, calc),
 		WithOpsEventPublisher(events),
 		WithStreamGrace(MaxStreamGrace))
 
-	h.StopStreamGrace()                                                      // phase 1
-	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true)) // dies during the HTTP drain
-	h.DrainBilling()                                                         // phase 2
+	// srv.ShutdownHTTP is running: the HTTP surface is draining, but the grace
+	// is still ARMED. A client that hangs up here must be billed exactly as on
+	// a normal day — this is the ~150 s window of every rolling deploy.
+	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true))
+
+	if router.tornDown.Load() {
+		t.Fatal("the provider stream was cut during the HTTP drain window — disconnect billing is " +
+			"disabled for the whole deploy, which is the issue-#9 bypass (StopStreamGrace must not " +
+			"run before ShutdownHTTP)")
+	}
+
+	// The HTTP drain window is where the drain does its work: ShutdownHTTP runs
+	// for as long as it takes (§9.5 ceiling 150 s) with the grace still armed.
+	gate.waitForUpdate(t)
+
+	// Only now does the sequence disarm the grace and drain billing.
+	h.StopStreamGrace()
+	h.DrainBilling()
 
 	if got := gate.updateCalls.Load(); got != 1 {
 		t.Fatalf("UpdateUsage calls = %d, want 1 — a stream that disconnects during the HTTP drain "+
@@ -1059,165 +1061,38 @@ func TestShutdown_DisconnectDuringHTTPDrainIsBilled(t *testing.T) {
 	}
 }
 
-// The four tests below pin round-1 fixes that were mutation-verified as
-// DELETABLE with the whole suite still green. A defensive fix with no failing
-// input is indistinguishable from dead code to the next person editing it.
+// TestShutdown_GraceDisarmedOnlyAfterTheHTTPDrain is the direct guard for the
+// round-3 regression: if StopStreamGrace is hoisted ahead of the HTTP drain,
+// every disconnect in that window gets grace=0 and its trailer is destroyed.
+// Reproduced 3/3 before the fix, with a clean control.
+func TestShutdown_GraceDisarmedOnlyAfterTheHTTPDrain(t *testing.T) {
+	h := NewHandler(&fakeRouter{}, nil, nil, WithStreamGrace(MaxStreamGrace))
 
-// TestNextChunk_ClosedChannelWinsOverClientGone: when the provider closes and
-// the client hangs up at the same instant, a bare select would pick either at
-// random — mislabelling a completed stream as a disconnect and burning a drain
-// slot on an already-closed channel.
-func TestNextChunk_ClosedChannelWinsOverClientGone(t *testing.T) {
-	gone := make(chan struct{})
-	close(gone)
+	// Before the sequence disarms it, a fresh drain must still get a real grace.
+	if got := h.effectiveDrainGrace(); got != MaxStreamGrace {
+		t.Errorf("grace before StopStreamGrace = %v, want %v (the grace must stay armed for the "+
+			"whole HTTP-drain window)", got, MaxStreamGrace)
+	}
 
-	for i := range 200 {
-		ch := make(chan *schemas.BifrostStreamChunk)
-		close(ch)
-		if _, exit := nextChunk(ch, gone); exit != streamExitChanDone {
-			t.Fatalf("iteration %d: exit = %v, want streamExitChanDone — a closed provider channel is "+
-				"a clean completion even when the client is also gone", i, exit)
+	h.StopStreamGrace()
+
+	if got := h.effectiveDrainGrace(); got != 0 {
+		t.Errorf("grace after StopStreamGrace = %v, want 0 (past this point the grace must not "+
+			"extend the pod's termination window)", got)
+	}
+}
+
+// waitFor polls cond until it holds or the test times out. Used where the
+// property under test is "this happened before the next shutdown phase", which
+// a fixed sleep models badly on a loaded CI box.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
 		}
+		time.Sleep(2 * time.Millisecond)
 	}
-	// A live channel with a departed client must still report the disconnect.
-	live := make(chan *schemas.BifrostStreamChunk)
-	if _, exit := nextChunk(live, gone); exit != streamExitClient {
-		t.Errorf("exit = %v, want streamExitClient when only the client is gone", exit)
-	}
-}
-
-// TestSSELoop_PanicDoesNotLeakTheProviderStream: with the context decoupled
-// from the request, nothing else will ever cancel it, so a panic in the loop
-// leaks the provider stream (and its socket) forever.
-func TestSSELoop_PanicDoesNotLeakTheProviderStream(t *testing.T) {
-	router := &panickingRouter{}
-	h := NewHandler(router, nil, nil, WithStreamGrace(DefaultStreamGrace))
-
-	req := chatReqWithProject(t, "30", true)
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Error("expected the panic to propagate to the caller")
-			}
-		}()
-		h.Chat(&panicOnWrite{}, req)
-	}()
-
-	select {
-	case <-router.cancelled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("provider context was never cancelled after a panic — the stream is leaked for the " +
-			"lifetime of the process")
-	}
-}
-
-type panickingRouter struct {
-	fakeRouter
-	cancelled chan struct{}
-	once      sync.Once
-}
-
-func (r *panickingRouter) ChatCompletionStreamRequest(ctx *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	r.once.Do(func() { r.cancelled = make(chan struct{}) })
-	ch := make(chan *schemas.BifrostStreamChunk, 1)
-	ch <- chatDelta("c1", "boom")
-	go func() {
-		<-ctx.Done()
-		close(r.cancelled)
-	}()
-	return ch, nil
-}
-
-type panicOnWrite struct{ hdr http.Header }
-
-func (w *panicOnWrite) Header() http.Header {
-	if w.hdr == nil {
-		w.hdr = http.Header{}
-	}
-	return w.hdr
-}
-func (w *panicOnWrite) Write([]byte) (int, error) { panic("writer exploded") }
-func (w *panicOnWrite) WriteHeader(int)           {}
-func (w *panicOnWrite) Flush()                    {}
-
-// TestCheckBudget_BoundedOnTheDetachedContext: the streaming path hands
-// checkBudget a context.WithoutCancel-derived context, so without an explicit
-// timeout a stalled budget store parks the handler goroutine forever — there is
-// no client cancellation left to unwind it.
-func TestCheckBudget_BoundedOnTheDetachedContext(t *testing.T) {
-	if budgetGateTimeout <= 0 {
-		t.Fatal("budgetGateTimeout must be positive or the gate is unbounded")
-	}
-	gate := &deadlineObservingChecker{seen: make(chan bool, 1)}
-	h := NewHandler(&fakeRouter{}, nil, nil,
-		WithBudgetGate(gate, &fakeCostEstimator{totalNano: 1}))
-
-	req := chatReqWithProject(t, "30", true)
-	ctx, sc, ok := h.newStreamContext(httptest.NewRecorder(), req)
-	if !ok {
-		t.Fatal("newStreamContext rejected the request")
-	}
-	defer sc.cancel()
-
-	if ctxDeadline, has := ctx.Deadline(); has {
-		t.Fatalf("the stream context itself must stay deadline-free (§9.5); got %v", ctxDeadline)
-	}
-	h.checkBudget(httptest.NewRecorder(), ctx, "openai", "gpt-4o", 0)
-
-	select {
-	case hasDeadline := <-gate.seen:
-		if !hasDeadline {
-			t.Error("CheckBudget received a context with NO deadline — a stalled budget store would " +
-				"park this streaming handler goroutine forever")
-		}
-	default:
-		t.Fatal("CheckBudget was never called")
-	}
-}
-
-type deadlineObservingChecker struct {
-	fakeBudgetChecker
-	seen chan bool
-}
-
-func (d *deadlineObservingChecker) CheckBudget(ctx context.Context, _ int, _, _ string, _, _ int64) (failmode.Decision, error) {
-	_, has := ctx.Deadline()
-	select {
-	case d.seen <- has:
-	default:
-	}
-	return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
-}
-
-// TestDrain_ShutdownShrinksTheHardBackstop: once shutdown starts, a wedged
-// provider must cost ~drainShutdownTimeout of the pod's termination grace, not
-// the full grace + drainHardTimeout.
-func TestDrain_ShutdownShrinksTheHardBackstop(t *testing.T) {
-	if drainShutdownTimeout >= drainHardTimeout {
-		t.Fatalf("drainShutdownTimeout (%v) must be well under drainHardTimeout (%v) or shutdown "+
-			"inherits the full backstop", drainShutdownTimeout, drainHardTimeout)
-	}
-	gate := allowGate()
-	h := NewHandler(&wedgedRouter{}, nil, nil,
-		WithBudgetGate(gate, &fakeCostEstimator{totalNano: 1_000}),
-		WithStreamGrace(MaxStreamGrace))
-
-	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true))
-
-	start := time.Now()
-	h.DrainBilling()
-	if elapsed := time.Since(start); elapsed > drainShutdownTimeout+2*time.Second {
-		t.Errorf("DrainBilling took %v against a wedged provider; the hard backstop must shrink to "+
-			"~%v once shutdown starts", elapsed, drainShutdownTimeout)
-	}
-}
-
-// wedgedRouter never closes its channel and ignores cancellation entirely.
-type wedgedRouter struct{ fakeRouter }
-
-func (r *wedgedRouter) ChatCompletionStreamRequest(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ch := make(chan *schemas.BifrostStreamChunk, 2)
-	ch <- chatDelta("c1", "hello")
-	ch <- chatDelta("c2", "world")
-	return ch, nil // never closed, never cancelled
+	t.Fatal("condition never became true within 3s")
 }

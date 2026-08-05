@@ -47,6 +47,11 @@ type ctxHonouringRouter struct {
 	preamble     []*schemas.BifrostStreamChunk
 	trailer      *schemas.BifrostStreamChunk
 	trailerDelay time.Duration
+	// holdOpen keeps the channel open after the trailer is sent, until the
+	// context is cancelled — a provider that has delivered its usage but has
+	// not finished unwinding. That is the state a drain is in when a SIGTERM
+	// lands on it.
+	holdOpen bool
 
 	// tornDown records that the provider context died before the trailer could
 	// be sent — i.e. the gateway destroyed the authoritative usage record.
@@ -81,6 +86,10 @@ func (r *ctxHonouringRouter) stream(ctx *schemas.BifrostContext) chan *schemas.B
 			r.trailerSent.Store(true)
 		case <-ctx.Done():
 			r.tornDown.Store(true)
+			return
+		}
+		if r.holdOpen {
+			<-ctx.Done()
 		}
 	}()
 	return ch

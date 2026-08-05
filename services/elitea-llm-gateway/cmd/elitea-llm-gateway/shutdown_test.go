@@ -49,8 +49,9 @@ func (r *recordingLifecycle) sequence() string {
 // TestShutdownSequence pins the ONE ordering in which no spend is lost.
 //
 // Every constraint here was learned from a live defect:
-//   - StopStreamGrace first, or the stream grace extends the pod's termination
-//     window (issue #9).
+//   - StopStreamGrace AFTER ShutdownHTTP, never before: it disarms the stream
+//     grace, so hoisting it turns disconnect billing off for the entire HTTP
+//     drain window — the issue-#9 bypass, on every deploy (round 3, reproduced).
 //   - ShutdownHTTP before the billing drain, or billingClosing is set while SSE
 //     handlers are still live and a drain holding a recovered usage trailer has
 //     its increment refused (review round 1, reproduced).
@@ -62,7 +63,7 @@ func TestShutdownSequence(t *testing.T) {
 	if err := shutdownSequence(context.Background(), r, r, r, r); err != nil {
 		t.Fatalf("shutdownSequence: %v", err)
 	}
-	const want = "StopStreamGrace -> ShutdownHTTP -> DrainBilling -> govDrain -> Close"
+	const want = "ShutdownHTTP -> StopStreamGrace -> DrainBilling -> govDrain -> Close"
 	if got := r.sequence(); got != want {
 		t.Errorf("shutdown sequence =\n  %s\nwant\n  %s", got, want)
 	}
@@ -79,7 +80,7 @@ func TestShutdownSequence_DrainsRunEvenWhenHTTPShutdownFails(t *testing.T) {
 	if err == nil {
 		t.Error("shutdownSequence swallowed the HTTP shutdown error; the caller must still see it")
 	}
-	const want = "StopStreamGrace -> ShutdownHTTP -> DrainBilling -> govDrain -> Close"
+	const want = "ShutdownHTTP -> StopStreamGrace -> DrainBilling -> govDrain -> Close"
 	if got := r.sequence(); got != want {
 		t.Errorf("after a failed HTTP shutdown the sequence =\n  %s\nwant\n  %s\n"+
 			"(the billing and governance drains MUST still run — a timed-out drain is when "+

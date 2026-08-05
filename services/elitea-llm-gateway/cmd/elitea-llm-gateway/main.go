@@ -208,11 +208,16 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 
+	// A serve error must NOT skip the shutdown sequence: in-flight streams may
+	// still hold recovered provider usage, and exiting straight from here drops
+	// it (and leaks the NATS client). Record the failure, run the sequence, then
+	// exit non-zero.
+	failed := false
 	select {
 	case err := <-errCh:
 		if err != nil {
 			slog.Error("gateway server error", "err", err)
-			os.Exit(1)
+			failed = true
 		}
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
@@ -220,6 +225,9 @@ func main() {
 
 	if err := shutdownSequence(context.Background(), handler, srv, handler, govStore); err != nil {
 		slog.Error("gateway shutdown error", "err", err)
+		failed = true
+	}
+	if failed {
 		os.Exit(1)
 	}
 }
@@ -238,15 +246,24 @@ type (
 
 // shutdownSequence runs the ONE ordering in which no spend is lost:
 //
-//  1. StopStreamGrace  — in-flight stream drains stop waiting for provider
-//     usage trailers, so the stream grace cannot extend the pod's termination
-//     window. Billing stays OPEN.
-//  2. ShutdownHTTP     — the request surface quiesces and live SSE streams
-//     settle. Billing is still open and NATS is still up, so a drain that
-//     recovers a usage trailer in this window can actually bill it.
+//  1. ShutdownHTTP     — the request surface quiesces and live SSE streams
+//     settle. Billing is open, NATS is up, AND the stream grace is still armed,
+//     so a client that disconnects during the drain is billed exactly as it
+//     would be on a normal day.
+//  2. StopStreamGrace  — only now do in-flight drains stop waiting for provider
+//     usage trailers, so the grace cannot extend the pod's termination window
+//     past this point. Billing stays OPEN.
 //  3. drainForShutdown — billing goroutines, then the governance store's
 //     persist goroutines.
 //  4. Close            — NATS last, once no further increment can be issued.
+//
+// StopStreamGrace MUST NOT be hoisted above ShutdownHTTP. It both sets
+// drainsClosing and closes the drainClosing channel, so running it first gives
+// every stream that disconnects during the ~150 s HTTP drain grace=0 and cuts
+// every parked drain — turning disconnect billing OFF for the whole duration of
+// every rolling deploy, which is precisely the issue-#9 bypass. That regression
+// shipped once (review round 3) and was invisible to a test that observed the
+// usage chunk before the failing write, so the drain never participated.
 //
 // Every step earned its place from a reproduced money loss; see
 // DECISIONS.md 2026-08-05. A failed HTTP shutdown does NOT abort the sequence:
@@ -259,13 +276,15 @@ func shutdownSequence(
 	h billingDrainer,
 	gov govDrainer,
 ) error {
-	if grace != nil {
-		grace.StopStreamGrace()
-	}
 	var err error
 	if srv != nil {
-		// §9.5: ≥150s ceiling applied inside ShutdownHTTP.
+		// §9.5: ≥150s ceiling applied inside ShutdownHTTP. The grace stays
+		// armed throughout: drains are detached goroutines, not HTTP requests,
+		// so they do not extend this call.
 		err = srv.ShutdownHTTP(ctx)
+	}
+	if grace != nil {
+		grace.StopStreamGrace()
 	}
 	drainForShutdown(h, gov)
 	if srv != nil {
