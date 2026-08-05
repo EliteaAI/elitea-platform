@@ -62,21 +62,26 @@ type DomainEvent struct {
 	Action     string `json:"action"`
 }
 
-// SoftAlertPayload is the normative soft-alert event body (design §8.3):
-// "{event_type, org_id, project_id, scope, threshold_pct, accumulated_cost,
-// limit, timestamp}". The gateway publishes it on gateway.events.* when
-// accumulated_cost/limit crosses the configured threshold (default 80%). Cost
-// fields are USD (the human-facing denomination), not the int64 nano-USD used
-// on the enforcement counter path. ProjectID is also the top-level key the
-// webhook dispatcher reads to fan out per-project webhooks, so it is included
-// both in this typed payload and via the enclosing event's routing subject.
+// SoftAlertPayload is the soft-alert event body published by elitea-llm-gateway
+// on gateway.events.project.<id>.events (design §8.3). The normative contract
+// is implemented in services/elitea-llm-gateway/internal/llmproxy/budget_gate.go
+// (softAlertPayload struct). Subscribers receive it within a softAlertEnvelope
+// (type, source, payload, timestamp). All cost values are int64 nano-USD to
+// maintain parity with the NATS governance counters and avoid floating-point
+// precision loss.
 type SoftAlertPayload struct {
-	EventType       string  `json:"event_type"`
-	OrgID           string  `json:"org_id"`
-	ProjectID       string  `json:"project_id"`
-	Scope           string  `json:"scope"`
-	ThresholdPct    int     `json:"threshold_pct"`
-	AccumulatedCost float64 `json:"accumulated_cost"`
-	Limit           float64 `json:"limit"`
-	Timestamp       string  `json:"timestamp"`
+	ProjectID          string `json:"project_id"`
+	Scope              string `json:"scope"`
+	PeriodStartUnix    int64  `json:"period_start_unix"`
+	CostJustBilledNano int64  `json:"cost_just_billed_nano"`
+
+	// Deprecated/historical fields from an earlier design (issue #16):
+	// These fields were in the original spec but never implemented in the gateway.
+	// Kept as reference for context. DO NOT use these in new code.
+	// EventType       string  `json:"event_type"`         // now in envelope.Type
+	// OrgID           string  `json:"org_id"`              // never emitted by gateway
+	// ThresholdPct    int     `json:"threshold_pct"`       // implicit in business logic
+	// AccumulatedCost float64 `json:"accumulated_cost"`   // changed to CostJustBilledNano (int64)
+	// Limit           float64 `json:"limit"`               // never emitted by gateway
+	// Timestamp       string  `json:"timestamp"`           // now in envelope.Timestamp (time.Time)
 }
