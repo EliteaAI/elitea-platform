@@ -1,0 +1,34 @@
+name: CI — Web mutation spot-check
+
+on:
+  schedule:
+    - cron: "47 8 * * 3"   # Wednesdays 08:47 UTC
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apps/elitea-web
+
+jobs:
+  mutation-spotcheck:
+    name: Mutation spot-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Rotating 5% sample over shared/ + entities/
+        run: |
+          test -f scripts/mutate-spotcheck.mjs || { echo "release tag without mutate-spotcheck (unit V3) — refusing"; exit 1; }
+          node scripts/mutate-spotcheck.mjs
