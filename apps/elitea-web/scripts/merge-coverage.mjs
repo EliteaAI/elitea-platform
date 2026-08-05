@@ -55,6 +55,16 @@ async function main() {
   const context = createContext({ dir: outputDir, coverageMap });
 
   const reportsToRender = [
+    // istanbul-reports' own `json` reporter writes a real, complete
+    // coverage-final.json (path/statementMap/fnMap/branchMap/s/f/b per
+    // file, via JSON.stringify on each FileCoverage instance) — the file
+    // downstream gate checks (gate-mutator-coverage etc.) and the
+    // coverage-validation job's own re-run of this script expect. A prior
+    // version of this script hand-wrote an abbreviated {path,s,b,f} object
+    // here instead, which istanbul-lib-coverage's own CoverageMap.merge()
+    // rejects as invalid ("missing keys") — exactly what coverage-validation
+    // hit when it re-loaded coverage-merge's uploaded artifact.
+    { type: 'json' },
     { type: 'json-summary' },
     { type: 'lcovonly', options: { file: 'lcov.info' } },
     { type: 'html' },
@@ -66,20 +76,6 @@ async function main() {
     console.log(`  Writing ${reportDef.type} report to ${reportDef.options?.file ?? 'context.dir'}...`);
     await report.execute(context);
   }
-  // Also emit coverage-final.json for downstream gate checks that require
-  // the istanbul-lib-coverage map format (gate-mutator-coverage etc.).
-  const finalJsonPath = path.join(outputDir, 'coverage-final.json');
-  const finalData = {};
-  for (const [file, cov] of Object.entries(coverageMap.data)) {
-    finalData[file] = {
-      path: cov.path,
-      s: cov.s || {},
-      b: cov.b || {},
-      f: cov.f || {},
-    };
-  }
-  await fs.writeFile(finalJsonPath, JSON.stringify(finalData, null, 2), 'utf8');
-  console.log(`  Writing coverage-final.json to ${finalJsonPath}...`);
   // Verify report files were actually written
   const files = await fs.readdir(outputDir);
   console.log(`  Report files in ${outputDir}: ${files.join(', ')}`);
@@ -178,6 +174,13 @@ async function findCoverageFiles() {
     }
   }
 
+  // Directories never worth descending into while hunting for shard files:
+  // vendored/build output can ship its own stray coverage-final.json (e.g.
+  // node_modules/tsconfig-paths-webpack-plugin ships one from its own test
+  // suite) that would otherwise silently get merged in as if it were one of
+  // our shards, polluting — or, worse, entirely displacing — the real data.
+  const SKIP_DIR_NAMES = new Set(['node_modules', '.git', 'dist', 'storybook-static']);
+
   async function walk(dir) {
     let entries;
     try {
@@ -189,6 +192,16 @@ async function findCoverageFiles() {
     for (const entry of entries) {
       const entryPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        if (SKIP_DIR_NAMES.has(entry.name)) continue;
+        // Never descend into our own output directory while looking for
+        // *fresh* shards: on a rerun it may still hold a coverage-final.json
+        // from a PRIOR merge, and folding that stale aggregate in alongside
+        // real new shards would double-count hits for any file both cover.
+        // (The coverage-validation job's own re-run — where outputDir holds
+        // exactly one file, the artifact downloaded from coverage-merge, and
+        // no other shard exists anywhere — is handled as an explicit
+        // fallback below, not through this walk.)
+        if (entryPath === outputDir) continue;
         await walk(entryPath);
       } else if (entry.isFile() && entry.name === 'coverage-final.json') {
         files.push(entryPath);
@@ -201,7 +214,25 @@ async function findCoverageFiles() {
   }
 
   if (files.length === 0) {
-    console.log('No coverage shard artifacts found in:', roots.join(', '));
+    // Fallback: no fresh per-shard files anywhere, but a previously-merged
+    // coverage-final.json already sits in our own output directory (this is
+    // exactly the coverage-validation job's shape: it downloads
+    // coverage-merge's "elitea-web-coverage" artifact straight into
+    // outputDir, then re-runs this script to enforce thresholds against it).
+    // Load it directly rather than reporting "nothing found" — this is a
+    // validation-only rerun of already-merged data, not a fresh merge.
+    const priorMerge = path.join(outputDir, 'coverage-final.json');
+    if (
+      await fs
+        .access(priorMerge)
+        .then(() => true)
+        .catch(() => false)
+    ) {
+      console.log('No fresh shard files found; falling back to the previously-merged', priorMerge);
+      files.push(priorMerge);
+    } else {
+      console.log('No coverage shard artifacts found in:', roots.join(', '));
+    }
   }
 
   return files;
