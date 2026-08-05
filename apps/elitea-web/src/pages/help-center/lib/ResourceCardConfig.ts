@@ -10,6 +10,9 @@
  * These values match the old `resources/index.jsx` baseline exactly.
  * They are the source-of-truth when the admin config endpoints are not
  * available or return empty.
+ *
+ * See `./useResourcesConfig.ts` for the full explanation of the API gap
+ * and exactly what unblocks it.
  */
 
 import type { ResourceCardConfig } from './ResourceCard.types';

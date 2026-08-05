@@ -1,4 +1,4 @@
-/* oxlint-disable eslint/no-restricted-globals -- Wave-2 backend-gap: spec §6.5 — the OpenAPI spec only declares ?category, but the handler accepts page/pageSize/statuses/agents_type/trend_start_period/sort_by/sort_order/my_liked; we pass them through as raw query params via global fetch. REMOVER: when spec is updated and typed client is generated. */
+/* oxlint-disable eslint/no-restricted-globals -- Wave-2 backend-gap: spec §6.5 — the OpenAPI spec only declares ?category, and (contrary to this rule's original wording) the handler reads ONLY that one param; page/pageSize/statuses/agents_type/trend_start_period/sort_by/sort_order/my_liked are sent for forward-compat/documented intent but are silently ignored server-side today (see the module doc comment below). REMOVER: when spec is updated and typed client is generated. */
 /**
  * Agent Hub data hook — local port of the old Redux-based `useAgentHubData`.
  *
@@ -10,6 +10,46 @@
  * trending/my-liked (which need additional params not yet in the OpenAPI
  * spec — a documented backend gap, spec §6.5).
  *
+ * ── Confirmed, disclosed backend defects (adversarial-review fixes,
+ *    cluster A13-agents-hub, findings 5 & 6) — NOT fixable from this file ──
+ *
+ * `PublicApplications` (`internal/api/v2/eliteacore/handler.go`, the
+ * handler behind `GET /elitea_core/public_applications/prompt_lib`) was
+ * read directly to confirm both of these:
+ *
+ *  1. It parses exactly ONE query param, `category` — `page`, `pageSize`,
+ *     `statuses`, `sort_by`, `sort_order`, and `my_liked` are all silently
+ *     ignored. So `fetchMyLiked`'s `my_liked: 'true'` has zero effect: every
+ *     user gets the identical generic list under a section labelled "My
+ *     Liked" (finding 5), and `fetchTrending`'s `sort_by: 'likes'` /
+ *     `sort_order: 'desc'` also have zero effect (finding 6) — the SQL is
+ *     hardcoded to `ORDER BY a.id DESC`. Worse for "Trending": the response
+ *     shape the handler emits per row (`project_id`, `id`, `name`,
+ *     `description`, `version_id`, `version_name`, `agent_type`, `meta`)
+ *     carries no `likes`/`is_liked` field AT ALL — not on this list
+ *     endpoint, not on the per-agent detail endpoint either — so there is
+ *     no data anywhere in this API surface a client could sort or filter on
+ *     to approximate either feature honestly. Params are still sent (kept
+ *     for wire-shape/intent parity, same convention
+ *     `features/analytics/api/useAnalytics.ts` documents for its own
+ *     backend-ignores-these-params case) so the client is already correct
+ *     the moment the handler is fixed.
+ *  2. The SQL hardcodes `LIMIT 50` regardless of the requested `pageSize`
+ *     (`ALL_AGENTS_LIMIT` below is sent but has no effect) — the same class
+ *     of hardcoded-truncation defect already confirmed in unit A1
+ *     (`pages/agents/Latest.tsx`'s own doc comment). Every bucket this hook
+ *     produces (bulk-categorized, Trending, and My Liked alike) is capped
+ *     at 50 rows total, full stop — there is no "load more" request that
+ *     could reach row 51; `AgentCategorySection`'s "Show more" only reveals
+ *     more of what's already in memory (same precedent as `Latest.tsx`).
+ *
+ * Fixing either defect requires changing `PublicApplications` in
+ * `services/elitea-main/internal/api/v2/eliteacore/handler.go` — outside
+ * this cluster's (`apps/elitea-web`) file scope. My Liked additionally
+ * needs the handler to join `centry`/`p_*`'s `social_likes` table filtered
+ * by the current user, and Trending needs a real `likes` count to sort by
+ * (neither exists in this schema today per the same read).
+ *
  * @public Wave-2 unit A13 surface.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -17,6 +57,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   useGetAgentCategories,
 } from '@/shared/api/generated/applications/applications';
+import { getConfig } from '@/shared/config';
 import type { ApplicationData } from './types';
 
 import {
@@ -28,17 +69,33 @@ import {
 import { buildAllCategories, getCategoryForApplication } from './helpers';
 
 /**
- * Public project ID constant (shared across wave-2).
+ * Public project id — per-deployment `VITE_PUBLIC_PROJECT_ID` runtime
+ * config, read via `shared/config`'s `getConfig()` (adversarial-review fix,
+ * cluster A13-agents-hub, finding 7: this was hardcoded to the literal
+ * `'1'`, so any deployment whose real public project id differs queried the
+ * wrong project's `agent_categories` and got zero categories back). Same
+ * `getConfig()` convention every other `PUBLIC_PROJECT_ID` consumer in this
+ * codebase uses — see e.g. `pages/agents/lib/isPublicAgentsProject.ts`.
+ * `App.tsx` (unit R2) renders `MissingEnvPage` instead of mounting any route
+ * when config status is `'missing'`, so by the time this hook runs config
+ * is always `'ok'` — the `'1'` fallback below is unreachable in practice
+ * and exists only so this stays a total function instead of throwing.
  */
-const PUBLIC_PROJECT_ID = '1';
+function resolvePublicProjectId(): string {
+  const config = getConfig();
+  return config.status === 'ok' ? config.config.vite_public_project_id : '1';
+}
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
 
 /**
  * Fetch a flat list of all published applications.
- * Backend gap: the OpenAPI spec only declares ?category, but the handler
- * accepts page, pageSize, statuses, agents_type, trend_start_period,
- * sort_by, sort_order, my_liked — we pass them through as query params.
+ * Backend gap: the OpenAPI spec only declares ?category, and the handler
+ * reads only that one param — page, pageSize, statuses, agents_type,
+ * trend_start_period, sort_by, sort_order, my_liked are all sent (for
+ * forward-compat / documented intent) but silently ignored server-side
+ * today. See this module's top-of-file doc comment for the full,
+ * confirmed defect writeup.
  */
 async function fetchAllApplications(params: Record<string, string>): Promise<{ rows: ApplicationData[]; total: number }> {
   const qs = new URLSearchParams(params);
@@ -51,8 +108,9 @@ async function fetchAllApplications(params: Record<string, string>): Promise<{ r
 /* ── Hook ─────────────────────────────────────────────────────────────── */
 
 export function useAgentHubData(_selectedTagNames: string[]) {
+  const publicProjectId = resolvePublicProjectId();
   const { data: categoriesData, isFetching: isFetchingCategories } = useGetAgentCategories(
-    PUBLIC_PROJECT_ID,
+    publicProjectId,
     { query: { enabled: true } },
   );
 

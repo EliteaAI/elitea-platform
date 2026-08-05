@@ -3,13 +3,14 @@
  *
  * Ported from `apps/elitea-ui/src/[fsd]/pages/resources/ui/ResourceVersionInfo.jsx`.
  *
- * In the full-featured version this queries system info and plugin versions
- * from the admin API. Per Key Decision #2 the admin endpoints lack OpenAPI
- * specs, so this renders a minimal static header with a copy-to-clipboard
- * button for the local version info (always empty in the prototype).
- *
- * TODO: wire into `useGetSystemInfoQuery` and `useGetResourcesConfigQuery`
- * once the Go endpoints are documented in the OpenAPI spec.
+ * The baseline derives `versionLabel` and `plugins` internally from
+ * `configValues`/`systemInfo` API responses; this component instead takes
+ * the already-derived `versionLabel` string and `plugins` list as props, so
+ * it stays a pure presentational component regardless of where that data
+ * comes from. Today `HelpCenterPage` sources both from
+ * `../lib/useResourcesConfig` — see that hook's module doc for why they are
+ * currently always empty (backend OpenAPI gap, issue #26 Key Decision #2)
+ * and what unblocks them.
  */
 import { memo, type ReactNode } from 'react';
 
@@ -22,10 +23,14 @@ import Typography from '@mui/material/Typography';
 import { CopyToClipboardButton } from '@/shared/ui/CopyToClipboardButton';
 import { InfoIcon } from '@/shared/ui/icons/info-icon';
 
-/** Props consumed by ResourceVersionInfo — currently empty (static render). */
+import type { ResourcesConfigPlugin } from '../lib/useResourcesConfig';
+
+/** Props consumed by ResourceVersionInfo. */
 export interface ResourceVersionInfoProps {
-  /** Optional custom version label. Defaults to the empty string. */
+  /** Pre-formatted "Version: X (date)" label. Defaults to the empty string (bar hidden). */
   versionLabel?: string;
+  /** Per-plugin versions shown in the info-icon tooltip. Defaults to none. */
+  plugins?: ReadonlyArray<ResourcesConfigPlugin>;
 }
 
 /** Theme-aware sx values for the version info header. */
@@ -73,10 +78,19 @@ const tooltipContentSx: SxProps<Theme> = {
   padding: '0.125rem',
 };
 
+const tooltipRowSx: SxProps<Theme> = {
+  display: 'flex',
+  gap: '0.25rem',
+  alignItems: 'baseline',
+};
+
+/** Placeholder for a plugin with no reported version — matches the baseline's `'—'` fallback. */
+const NO_VERSION_PLACEHOLDER = '—';
+
 /**
  * Header bar showing the "Help Center" title and optional version info.
  */
-const ResourceVersionInfo = memo(({ versionLabel = '' }: ResourceVersionInfoProps): ReactNode => {
+const ResourceVersionInfo = memo(({ versionLabel = '', plugins = [] }: ResourceVersionInfoProps): ReactNode => {
   const versionInfoText = versionLabel || '';
   const hasVersion = versionInfoText.length > 0;
 
@@ -100,14 +114,26 @@ const ResourceVersionInfo = memo(({ versionLabel = '' }: ResourceVersionInfoProp
             <Tooltip
               placement="bottom-end"
               title={
-                versionInfoText ? (
+                plugins.length > 0 ? (
                   <Box sx={tooltipContentSx}>
-                    <Typography variant="bodySmall">{versionInfoText}</Typography>
+                    {plugins.map(plugin => (
+                      <Box
+                        key={plugin.name}
+                        sx={tooltipRowSx}
+                      >
+                        <Typography variant="bodySmall">
+                          {plugin.name}: {plugin.version || NO_VERSION_PLACEHOLDER}
+                        </Typography>
+                      </Box>
+                    ))}
                   </Box>
                 ) : null
               }
             >
-              <Box sx={infoIconSx}>
+              <Box
+                sx={infoIconSx}
+                data-testid="resource-version-info-icon"
+              >
                 <Box
                   component={InfoIcon}
                   sx={infoIconSvgSx}

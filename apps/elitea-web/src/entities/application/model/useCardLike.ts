@@ -6,40 +6,64 @@
  * card-surface like button.
  *
  * @public Wave-2 surface: consumed by pages/agents-hub/ui/AgentHubLike.
+ *
+ * ── Adversarial-review fix (cluster A13-agents-hub, finding 1) ──────────
+ * Previously `toggleLike` only flipped the local zustand flags — it never
+ * called the server, so a like never persisted and reloading (or another
+ * device/session) never reflected it. `toggleLike` now calls the REAL
+ * generated `likeApplication`/`unlikeApplication` functions
+ * (`shared/api/generated/social/social.ts`,
+ * `POST`/`DELETE /social/like/prompt_lib/{projectId}/application/{applicationId}`,
+ * `internal/api/v2/social/handler.go:239-304`) and reverts the optimistic
+ * local update if the call fails, so the UI never claims a like persisted
+ * when it didn't.
+ *
+ * The plain async functions are called directly (not the generated
+ * `useLikeApplication`/`useUnlikeApplication` hooks): despite the
+ * "Like"/"Unlike" naming those are orval-generated as `useQuery`-shaped
+ * hooks (auto-fetch-on-mount), not mutations — wrong shape for a
+ * click-triggered action. Calling the underlying `likeApplication`/
+ * `unlikeApplication` async functions imperatively inside the click
+ * handler is the correct fit, and is still the exact same
+ * manifest-registered endpoint/transport (`eliteaFetch`) the hooks use.
+ *
+ * **Known, disclosed, NOT-fixable-from-here backend defect:** the
+ * generated client's own doc comment on `likeApplication`
+ * (`social.ts:930-945`) records that `centry.social_likes`'s real migrated
+ * shape does not match the columns the Go handler inserts into, so this
+ * endpoint is currently expected to 500 on every real call. That is a
+ * `services/elitea-main` defect, entirely outside this cluster's file
+ * scope (routing/persistence, not `apps/elitea-web`). This file's job is
+ * only to call the real, correct endpoint and handle failure honestly
+ * (revert the optimistic UI) — it cannot make the backend table shape
+ * correct.
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 
 import { create } from 'zustand';
+
+import { likeApplication, unlikeApplication } from '@/shared/api/generated/social/social';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 
 /* ── Store ──────────────────────────────────────────────────────────── */
 
 interface LikeState {
   likedStates: Record<string, boolean>;
   likeCounts: Record<string, number>;
-  toggleLike: (id: string) => void;
   setLikeState: (id: string, liked: boolean) => void;
-  incrementCount: (id: string) => void;
-  decrementCount: (id: string) => void;
+  setLikeCount: (id: string, count: number) => void;
 }
 
 const useLikeStore = create<LikeState>(set => ({
   likedStates: {},
   likeCounts: {},
-  toggleLike: id =>
-    set(state => ({
-      likedStates: { ...state.likedStates, [id]: !state.likedStates[id] },
-    })),
   setLikeState: (id, liked) =>
     set(state => ({
       likedStates: { ...state.likedStates, [id]: liked },
     })),
-  incrementCount: id =>
+  setLikeCount: (id, count) =>
     set(state => ({
-      likeCounts: { ...state.likeCounts, [id]: (state.likeCounts[id] || 0) + 1 },
-    })),
-  decrementCount: id =>
-    set(state => ({
-      likeCounts: { ...state.likeCounts, [id]: Math.max(0, (state.likeCounts[id] || 0) - 1) },
+      likeCounts: { ...state.likeCounts, [id]: count },
     })),
 }));
 
@@ -47,6 +71,16 @@ const useLikeStore = create<LikeState>(set => ({
 
 export interface UseCardLikeOptions {
   applicationId: string;
+  /**
+   * Owning project id — for every public agents-hub card this is always the
+   * public project (`ApplicationData.project_id`, "Always the public
+   * project id" per `PublicApplicationSummary`'s own NOTE(W2)), passed by
+   * the caller rather than looked up here because the like endpoint is
+   * project-scoped (`POST /social/like/prompt_lib/{projectId}/application/
+   * {applicationId}`) and this entity hook has no business knowing which
+   * project a given card belongs to.
+   */
+  projectId: string;
   initialLiked?: boolean;
   initialCount?: number;
   onLikeSuccess?: (applicationId: string, isLiked: boolean, likeCount: number) => void;
@@ -54,50 +88,58 @@ export interface UseCardLikeOptions {
 
 export function useCardLike({
   applicationId,
+  projectId,
   initialLiked = false,
   initialCount = 0,
   onLikeSuccess,
 }: UseCardLikeOptions) {
-  const { likedStates, likeCounts, setLikeState, incrementCount, decrementCount } = useLikeStore();
+  const likedStates = useLikeStore(state => state.likedStates);
+  const likeCounts = useLikeStore(state => state.likeCounts);
+  const setLikeState = useLikeStore(state => state.setLikeState);
+  const setLikeCount = useLikeStore(state => state.setLikeCount);
+
   const isLiked = likedStates[applicationId] ?? initialLiked;
   const likeCount = likeCounts[applicationId] ?? initialCount;
   const [isToggling, setIsToggling] = useState(false);
-  const prevLikedRef = useRef(isLiked);
-
-  // Keep prevLikedRef in sync to detect actual changes
-  if (prevLikedRef.current !== isLiked) {
-    prevLikedRef.current = isLiked;
-  }
 
   const toggleLike = useCallback(async () => {
     if (isToggling) return;
     setIsToggling(true);
-    const newLiked = !isLiked;
+
+    const wasLiked = isLiked;
+    const newLiked = !wasLiked;
+    const previousCount = likeCount;
+    const newCount = newLiked ? previousCount + 1 : Math.max(0, previousCount - 1);
+
+    // Optimistic update — reverted below if the server call fails.
     setLikeState(applicationId, newLiked);
-    if (newLiked) {
-      incrementCount(applicationId);
-    } else {
-      decrementCount(applicationId);
-    }
-    onLikeSuccess?.(
-      applicationId,
-      newLiked,
-      newLiked ? likeCount + 1 : Math.max(0, likeCount - 1),
-    );
-    setIsToggling(false);
-  }, [isLiked, isToggling, applicationId, setLikeState, incrementCount, decrementCount, onLikeSuccess, likeCount]);
+    setLikeCount(applicationId, newCount);
 
-  const updateServerState = useCallback(
-    (liked: boolean, newCount: number) => {
-      setLikeState(applicationId, liked);
-      if (newCount > likeCount) {
-        incrementCount(applicationId);
-      } else if (newCount < likeCount) {
-        decrementCount(applicationId);
+    const numericApplicationId = Number(applicationId);
+    try {
+      if (!Number.isFinite(numericApplicationId)) {
+        throw new TypeError(
+          `useCardLike: applicationId "${applicationId}" is not numeric — /social/like/prompt_lib requires a numeric path segment`,
+        );
       }
-    },
-    [applicationId, setLikeState, incrementCount, decrementCount, likeCount],
-  );
+      if (newLiked) {
+        await likeApplication(projectId, numericApplicationId);
+      } else {
+        await unlikeApplication(projectId, numericApplicationId);
+      }
+      onLikeSuccess?.(applicationId, newLiked, newCount);
+    } catch (error) {
+      // Revert the optimistic update — the like did not actually persist
+      // (see this file's module doc comment for the known backend defect).
+      setLikeState(applicationId, wasLiked);
+      setLikeCount(applicationId, previousCount);
+      // Only the documented API-failure path is swallowed; anything else
+      // (a programmer error, e.g. the NaN guard above) still surfaces.
+      if (!(error instanceof EliteaApiError)) throw error;
+    } finally {
+      setIsToggling(false);
+    }
+  }, [isToggling, isLiked, likeCount, applicationId, projectId, setLikeState, setLikeCount, onLikeSuccess]);
 
-  return { isLiked, likeCount, isToggling, toggleLike, updateServerState };
+  return { isLiked, likeCount, isToggling, toggleLike };
 }

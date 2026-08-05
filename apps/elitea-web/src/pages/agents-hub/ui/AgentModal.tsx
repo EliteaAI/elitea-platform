@@ -6,11 +6,30 @@
  *
  * Deviations:
  *  - No tour IDs.
- *  - No Redux dispatch / chat context — "Start conversation" is a no-op
- *    (slot-injection callback; cross-feature imports forbidden).
  *  - No CopyLinkToEntityButton / AuthorContainer — simplified.
+ *  - "Start conversation" / conversation-starter clicks: no direct Redux
+ *    dispatch / `processes/chat` import (`pages/` may not import
+ *    `processes/` — `.dependency-cruiser.cjs`'s
+ *    `LAYERS_ABOVE.pages = ['app', 'processes']`). Adversarial-review fix
+ *    (cluster A13-agents-hub, finding 3) turned the PREVIOUS bare no-op
+ *    into an actual slot: an optional `onStartConversation` prop is called
+ *    when supplied; otherwise this falls back to a plain SPA navigation to
+ *    `/chat` (same disclosed pattern `pages/onboarding/Onboarding.tsx`'s
+ *    `handleJumpIn` and `widgets/sidebar/ui/NotificationButton.tsx`'s
+ *    `handleClick` already use for the identical "can't reach
+ *    `processes/chat` from here" constraint) — real, observable navigation
+ *    instead of nothing happening. Both paths now always close the modal
+ *    (the starter-pill path previously did not). Pre-selecting THIS agent
+ *    for the new conversation still needs work outside this cluster's file
+ *    scope: `routes/_shell/chat.tsx`'s `validateSearch` would need an
+ *    `agentId`/`starter` param added to `pickParams(...)`, and
+ *    `processes/chat`'s `ChatWithEditors` would need to read it and seed a
+ *    new conversation with this public agent (old-app parity:
+ *    `actions.setSelectedAgentInfo` + `navigate(Chat, {state})}`) — wire a
+ *    real `onStartConversation` callback down from wherever a route
+ *    eventually mounts `<AgentHub/>` once that lands.
  */
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -24,6 +43,8 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import CloseIcon from '@mui/icons-material/Close';
 
+import { useNavigate } from '@tanstack/react-router';
+
 const IconButtonAny = IconButton as React.ComponentType<
   React.ComponentProps<typeof IconButton> & { variant?: string }
 >;
@@ -31,17 +52,56 @@ const IconButtonAny = IconButton as React.ComponentType<
 import { AgentConversationStarters } from './AgentConversationStarters';
 import AgentHubLike from './AgentHubLike';
 import { AgentWelcomeMessage } from './AgentWelcomeMessage';
+import { useAgentVersionDetail } from '../useAgentVersionDetail';
 import type { ApplicationData, AuthorData } from '../types';
+
+/** Small-height layout threshold (baseline: `AgentModal.jsx`'s `window.innerHeight <= 390`). */
+const SMALL_HEIGHT_BREAKPOINT_PX = 390;
+
+/** Narrows the opaque `ConversationStarters` wire array (`zod.unknown()[]` — see `conversationStarters.zod.ts`'s own NOTE(W2)) down to the `string[]` the UI actually renders, dropping any non-string entry instead of casting through it. */
+function toStringArray(value: unknown[] | undefined): string[] {
+  if (!value) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
 
 export interface AgentModalProps {
   open: boolean;
   onClose: () => void;
   agent: ApplicationData;
+  /**
+   * Real chat-launch injection point (see this file's module doc comment
+   * for why it defaults instead of dispatching into `processes/chat`
+   * directly). Called with the selected agent and, for a starter-pill
+   * click, the starter text.
+   */
+  onStartConversation?: ((agent: ApplicationData, starter?: string) => void) | undefined;
 }
 
-const AgentModal = memo(({ open, onClose, agent }: AgentModalProps) => {
+const AgentModal = memo(({ open, onClose, agent, onStartConversation }: AgentModalProps) => {
+  const navigate = useNavigate();
   const [, setShowContext] = useState(false);
-  const [isSmallHeight] = useState(window.innerHeight <= 390);
+  const [isSmallHeight, setIsSmallHeight] = useState(() => window.innerHeight <= SMALL_HEIGHT_BREAKPOINT_PX);
+
+  // Adversarial-review fix (cluster A13-agents-hub, finding 11): the
+  // baseline (`AgentModal.jsx`'s `checkHeight` + resize listener) keeps
+  // this live across a resize; the previous port computed it once at mount
+  // and never updated it.
+  useEffect(() => {
+    const checkHeight = (): void => setIsSmallHeight(window.innerHeight <= SMALL_HEIGHT_BREAKPOINT_PX);
+    window.addEventListener('resize', checkHeight);
+    return () => window.removeEventListener('resize', checkHeight);
+  }, []);
+
+  // Adversarial-review fix (cluster A13-agents-hub, finding 2): fetch the
+  // agent's real version detail so Welcome Message / Conversation Starters
+  // below can render actual data instead of always falling back to their
+  // empty state.
+  const { versionDetails } = useAgentVersionDetail(agent.id, agent.version_name);
+  const welcomeMessage = versionDetails?.welcome_message || agent.welcome_message || '';
+  const conversationStarters = useMemo(
+    () => (versionDetails?.conversation_starters?.length ? toStringArray(versionDetails.conversation_starters) : (agent.conversation_starters ?? [])),
+    [versionDetails?.conversation_starters, agent.conversation_starters],
+  );
 
   const name = useMemo(() => agent?.name || 'Untitled Agent', [agent?.name]);
   const description = useMemo(
@@ -54,10 +114,28 @@ const AgentModal = memo(({ open, onClose, agent }: AgentModalProps) => {
     return !authors?.length ? (author?.id ? [author] : []) : authors;
   }, [agent]);
 
+  const launchConversation = useCallback(
+    (starter?: string) => {
+      if (onStartConversation) {
+        onStartConversation(agent, starter);
+      } else {
+        void navigate({ to: '/chat' });
+      }
+      onClose();
+    },
+    [agent, onClose, onStartConversation, navigate],
+  );
+
   const handleStartConversation = useCallback(() => {
-    // Slot-injection callback: no cross-feature imports into processes/chat.
-    onClose();
-  }, [onClose]);
+    launchConversation();
+  }, [launchConversation]);
+
+  const handleSelectStarter = useCallback(
+    (starter: string) => {
+      launchConversation(starter);
+    },
+    [launchConversation],
+  );
 
   return (
     <Dialog
@@ -108,9 +186,10 @@ const AgentModal = memo(({ open, onClose, agent }: AgentModalProps) => {
             </Typography>
             <Box sx={sectionsContainerSx(isSmallHeight)}>
               <AgentConversationStarters
-                conversation_starters={agent?.conversation_starters || []}
+                conversation_starters={conversationStarters}
+                onSelectStarter={handleSelectStarter}
               />
-              <AgentWelcomeMessage welcome_message={agent?.welcome_message || ''} />
+              <AgentWelcomeMessage welcome_message={welcomeMessage} />
             </Box>
           </Box>
         </DialogContent>

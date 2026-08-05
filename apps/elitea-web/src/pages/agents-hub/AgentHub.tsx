@@ -8,24 +8,80 @@
  *  - No Redux — uses zustand-based `useAgentHubData`.
  *  - No AgentHubContext — state updates go directly through hooks.
  *  - Route wiring is out of scope.
+ *
+ * ── Adversarial-review fixes (cluster A13-agents-hub) ────────────────────
+ *  - Finding 8: the `?agentId=` deep link (the `/agents-hub` route already
+ *    declares/validates it — `routes/_shell/agents-hub.tsx`'s
+ *    `validateSearch: pickParams('agentId')`) is read again and auto-opens
+ *    that agent's modal once it shows up in the already-fetched hub data.
+ *    Unlike the baseline (which opens the modal with a bare `{id: agentId}`
+ *    stub and lets `AgentModal` hydrate it), this looks the id up in
+ *    `applicationsByTag` — which already carries the full `ApplicationData`
+ *    (including `version_name`, which `AgentModal`'s version-detail fetch
+ *    needs, per finding 2's fix) — so no extra undocumented endpoint call
+ *    is needed. If the id never shows up (e.g. it fell outside the
+ *    backend's hardcoded 50-row cap — see `useAgentHubData.ts`'s own doc
+ *    comment on findings 5/6), the modal simply never opens; there is no
+ *    other agent-by-id lookup in this API surface to fall back to.
+ *  - Finding 9: the search box + category-filter chips (dropped entirely
+ *    in the port) are restored using `shared/ui/CategoryFilter` — the same
+ *    chrome component `pages/credentials/CredentialsTypesPanel.tsx` and
+ *    `features/toolkits/ui/ToolkitTypeSelector.tsx` already use. This
+ *    turns `selectedTagNames`/`useAgentHubData`'s `filteredByTag` (real
+ *    logic that was simply never triggered — its setter was dropped from
+ *    the `useState` destructure) into a live code path.
+ *    NOT using `shared/ui/GroupedCategory` alongside it (the pattern
+ *    `pages/credentials/CredentialTypeSelector.tsx` establishes): that
+ *    component's `renderCategory` is typed against `shared/ui/
+ *    CategoryItemCard`'s generic `CategoryItem` (`{key, label, icon,
+ *    onClick}`), which has no slot for the full `ApplicationData`
+ *    `AgentCard`/`AgentHubLike` need (icon, authors, live like state) —
+ *    converting to that shape would drop exactly the data findings 1/4
+ *    already fixed. `AgentCategorySection` already does its own
+ *    "given a category + `ApplicationData[]`, render cards + show more"
+ *    grouping, so only `CategoryFilter`'s chrome (title/search/chips
+ *    wrapping arbitrary `children`) is reused here, not the whole
+ *    `GroupedCategory` contract.
  */
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react';
 
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { useSearch } from '@tanstack/react-router';
+
+import { t } from '@/shared/i18n';
+import { CategoryFilter } from '@/shared/ui/CategoryFilter';
+import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
+
 import { useAgentHubData } from './useAgentHubData';
 import { AgentCategorySection, AgentModal } from './ui';
+import { filterApplicationsByQuery } from './helpers';
+import { OTHER_CATEGORY } from './constants';
 import type { ApplicationData } from './types';
 
 export interface AgentHubProps {
   // Intentionally empty — route props are handled at the route layer.
 }
 
+/**
+ * `/agents-hub`'s `validateSearch` (`routes/_shell/agents-hub.tsx`)
+ * declares only `agentId` — read loosely per this codebase's established
+ * `useSearch({ strict: false }) as <Search>` convention (see e.g.
+ * `pages/agents/EditApplication.tsx`) rather than `{ from: routeId }`,
+ * since a page must not depend on which route file mounts it.
+ */
+interface AgentHubSearch {
+  agentId?: string;
+}
+
 const AgentHub = memo(() => {
-  const [selectedTagNames] = useState<string[]>([]);
+  const search = useSearch({ strict: false }) as AgentHubSearch;
+  const [selectedTagNames, setSelectedTagNames] = useState<string[]>([]);
+  const [query, setQuery] = useState('');
   const [selectedApplication, setSelectedApplication] = useState<ApplicationData | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [hasOpenedDeepLink, setHasOpenedDeepLink] = useState(false);
 
   const {
     allCategories,
@@ -53,6 +109,50 @@ const AgentHub = memo(() => {
     [],
   );
 
+  const handleSelectCategory = useCallback((category: string) => {
+    setSelectedTagNames(prev =>
+      prev.includes(category) ? prev.filter(name => name !== category) : [...prev, category],
+    );
+  }, []);
+
+  const handleSearchChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    setQuery(event.target.value);
+  }, []);
+
+  // Finding 8: auto-open the deep-linked agent's modal once it shows up in
+  // the already-fetched hub data (see this file's own module doc comment).
+  useEffect(() => {
+    if (!search.agentId || hasOpenedDeepLink) return;
+    const match = Object.values(applicationsByTag)
+      .flat()
+      .find(app => app.id === search.agentId);
+    if (!match) return;
+    setSelectedApplication(match);
+    setIsModalOpen(true);
+    setHasOpenedDeepLink(true);
+  }, [search.agentId, hasOpenedDeepLink, applicationsByTag]);
+
+  const visibleCategories = useMemo(
+    () => allCategories.filter(cat => cat !== OTHER_CATEGORY),
+    [allCategories],
+  );
+
+  // Finding 9: search-box text filtering, applied client-side on top of
+  // whatever `useAgentHubData`'s own tag-selection filtering already
+  // returned in `applicationsByTag`.
+  const visibleItemsByCategory = useMemo(() => {
+    const result: Record<string, ApplicationData[]> = {};
+    visibleCategories.forEach(category => {
+      result[category] = filterApplicationsByQuery(applicationsByTag[category] || [], query);
+    });
+    return result;
+  }, [visibleCategories, applicationsByTag, query]);
+
+  const hasAnyVisibleItems = useMemo(
+    () => Object.values(visibleItemsByCategory).some(items => items.length > 0),
+    [visibleItemsByCategory],
+  );
+
   const renderCategory = useCallback(
     (category: string, items: ApplicationData[]) => (
       <AgentCategorySection
@@ -76,16 +176,39 @@ const AgentHub = memo(() => {
       flexDirection: 'column',
       height: '100%',
     },
+    sections: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '2rem',
+      width: '100%',
+    },
   };
 
   return (
     <Box sx={styles.workspace}>
-      {allCategories
-        .filter(cat => cat !== 'Other') // Skip empty "Other" category
-        .map(category => {
-          const items = applicationsByTag[category] || [];
-          return items.length > 0 ? renderCategory(category, items) : null;
-        })}
+      <CategoryFilter
+        title={t('agentsHub.title', 'Welcome to Agent HUB')}
+        searchPlaceholder={t('agentsHub.searchPlaceholder', 'Search for agents')}
+        searchQuery={query}
+        onSearchChange={handleSearchChange}
+        allCategories={visibleCategories}
+        selectedCategories={selectedTagNames}
+        onSelectCategory={handleSelectCategory}
+      >
+        {hasAnyVisibleItems ? (
+          <Box sx={styles.sections}>
+            {visibleCategories.map(category => {
+              const items = visibleItemsByCategory[category] || [];
+              return items.length > 0 ? renderCategory(category, items) : null;
+            })}
+          </Box>
+        ) : (
+          <NoResultsMessage
+            title={t('agentsHub.noResults.title', 'No agents found')}
+            description={t('agentsHub.noResults.description', 'Try adjusting your search terms')}
+          />
+        )}
+      </CategoryFilter>
       {selectedApplication && (
         <AgentModal
           open={isModalOpen}

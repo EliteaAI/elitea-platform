@@ -5,7 +5,11 @@
  *
  * Deviations:
  *  - Uses `useCardLike` from entities/application/model instead of the old
- *    Redux-based `Like` component and AgentHubContext.
+ *    Redux-based `Like` component and AgentHubContext. `useCardLike` now
+ *    calls the real `/social/like` endpoint (adversarial-review fix,
+ *    cluster A13-agents-hub, finding 1) — see that hook's own doc comment
+ *    for the disclosed, out-of-this-cluster's-scope backend defect that
+ *    still makes the call 500 today.
  *  - Uses heart icons from shared/ui/icons.
  *  - No tour IDs.
  */
@@ -27,12 +31,12 @@ export interface AgentHubLikeProps {
 const AgentHubLike = memo(({ data }: AgentHubLikeProps) => {
   const { isLiked, likeCount, toggleLike } = useCardLike({
     applicationId: data.id,
+    // `project_id` is always the public project on every agents-hub card
+    // (see `useCardLike`'s own `projectId` doc comment) — read straight off
+    // the card's own data rather than re-deriving it here.
+    projectId: data.project_id,
     initialLiked: data.is_liked ?? false,
     initialCount: data.likes ?? 0,
-    onLikeSuccess: (_id, _liked, _count) => {
-      // Optimistic updates handled by useCardLike internally.
-      // In a full implementation, this would call the server API.
-    },
   });
 
   return (

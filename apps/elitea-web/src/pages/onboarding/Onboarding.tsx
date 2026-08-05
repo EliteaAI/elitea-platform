@@ -22,6 +22,15 @@
  * 4. **No route wiring.**  The `handleJumpIn` navigates to `RouteDefinitions.Chat`.
  *    Out of scope — the page can be mounted by a future route.  Uses
  *    `window.history.back()` for back and `window.location` for jump-in.
+ *    The back button's visibility mirrors the `user.personal_project_id`
+ *    half of the old app's guard (see change 9); the other half —
+ *    `location.state?.from` — has no equivalent here: this page reads no
+ *    router state, and `src/routes/_shell/onboarding.tsx` (a different
+ *    unit's file, outside `src/pages/onboarding/`) doesn't mount this
+ *    component yet, so there's no router context to read from regardless.
+ *    **Follow-up outside this cluster:** once that route mounts
+ *    `Onboarding`, add a second condition using its location state (e.g.
+ *    `useRouterState().location.state`), matching `location.state?.from`.
  *
  * 5. **Logo.**  Uses the new-app icon component `@/shared/ui/icons/logo-icon`.
  *
@@ -32,18 +41,40 @@
  * 7. **Removed import:** `ChunkHelpers` — the old app used it for
  *    `lazyWithRetry`.  We inline the OnboardingTour import instead.
  *
+ * 8. **Theme tokens (R-T7).**  Every colour now reads `theme.vars.palette.*`
+ *    (live CSS var, repaints on scheme change), not `theme.palette.*` (frozen
+ *    to the default scheme); `background.onboarding{,Body}`/`boxShadow.onboarding`
+ *    are typed on `Palette`/`TypeBackground`, so the old unsafe casts are
+ *    gone too. Footer shimmer gradient's fix: see its own `sx` comment.
+ *
+ * 9. **Welcome/loading guard restored.**  Re-added `!user.personal_project_id
+ *    && user.id` on the Welcome screen and the `!user.id` loading branch
+ *    (local spinner; old app's `LoadingPage` is out of scope). Both extra
+ *    conditions are dead with today's static `MOCK_USER`, by design.
+ *
+ * 10. **Resume-on-refresh restored.**  Re-added the effect that restarts the
+ *    progress/polling intervals on mount when the tour is already showing
+ *    and the project isn't ready (e.g. a refresh mid-onboarding) — see that
+ *    effect's own comment.
+ *
+ * 11. **Poll stub resolves instead of no-op-ing forever.**  See the comment
+ *    inside `startProgressAndPolling` — the old no-op, plus
+ *    `MOCK_USER.personal_project_id` being a `const`, left the wizard's 3rd
+ *    screen unreachable through any user action.
+ *
  * @public Wave-2 unit A13 surface: consumers mount this page behind a route.
  */
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import { Box, IconButton, LinearProgress, Typography } from '@mui/material';
+import { Box, CircularProgress, IconButton, LinearProgress, Typography } from '@mui/material';
 
 import { FIRST_ELITEA_TOUR_ID, markTourPending } from '@/features/interactive-tours';
 import { OnboardingTour, Welcome, WorkspaceIsReady } from '@/features/onboarding';
-import { LogoIcon } from '@/shared/ui/icons/logo-icon';
+import { t } from '@/shared/i18n';
 import { createStorage } from '@/shared/lib/storage';
+import { LogoIcon } from '@/shared/ui/icons/logo-icon';
 
 /** Placeholder user — the real user model will come from the auth provider. */
 const MOCK_USER = {
@@ -56,6 +87,11 @@ const MOCK_USER = {
 const ONBOARDING_STORAGE_KEY = 'onboarding_state';
 const sessionStore = createStorage('session');
 
+/** Progress bar cap/step; also doubles as the poll stub's readiness check
+ *  (change 11 in the file doc comment). */
+const PROGRESS_CAP = 95;
+const PROGRESS_STEP = 95 / 150;
+
 const Onboarding = memo(() => {
   // Disclosed, not silently dropped: useTrackEvent is unavailable in the new
   // app — no analytics infra yet.
@@ -67,6 +103,9 @@ const Onboarding = memo(() => {
   const hasClickedGetStarted = sessionStore.get(ONBOARDING_STORAGE_KEY) === 'true';
   const [showTour, setShowTour] = useState(hasClickedGetStarted || !!MOCK_USER.personal_project_id);
   const [progress, setProgress] = useState(5);
+  // Mirrors `progress` so the 5s polling interval can read the latest value
+  // without itself becoming an impure state-updater side effect.
+  const progressRef = useRef(5);
 
   const onClearIntervals = useCallback(() => {
     if (progressIntervalIdRef.current !== null) {
@@ -82,9 +121,17 @@ const Onboarding = memo(() => {
   const handlePersonalProjectReady = useCallback(
     ({ _shouldRefreshProjects = false }: { _shouldRefreshProjects?: boolean } = {}) => {
       void _shouldRefreshProjects; // Disclosed: getProjectList() not available yet
-      // Disclosed: markTourPending may be unavailable if interactive-tours is not fully wired
-      if (typeof markTourPending === 'function') {
-        markTourPending(FIRST_ELITEA_TOUR_ID);
+      // Disclosed: markTourPending may be unavailable if interactive-tours is not fully wired.
+      // A failure here (e.g. a storage write throwing — Safari private
+      // browsing, quota exceeded) must not abort the state transition below:
+      // this is a best-effort UI hint, not a precondition for "workspace is
+      // ready" actually being ready.
+      try {
+        if (typeof markTourPending === 'function') {
+          markTourPending(FIRST_ELITEA_TOUR_ID);
+        }
+      } catch {
+        // Handled (§3.6): see comment above — best-effort only.
       }
       onClearIntervals();
       setShowTour(true);
@@ -94,24 +141,44 @@ const Onboarding = memo(() => {
     [onClearIntervals],
   );
 
+  // Starts the progress/polling intervals if not already running. Shared by
+  // `handleShowTour` and the resume-on-refresh effect below, so a fresh
+  // click and a reload mid-onboarding start the exact same intervals.
+  const startProgressAndPolling = useCallback(() => {
+    if (progressIntervalIdRef.current === null) {
+      progressIntervalIdRef.current = setInterval(() => {
+        setProgress(prev => {
+          const next = prev < PROGRESS_CAP ? prev + PROGRESS_STEP : prev;
+          progressRef.current = next;
+          return next;
+        });
+      }, 1000);
+    }
+    if (queryStatusIntervalIdRef.current === null) {
+      // Mock "poll until ready" (change 11): the real app polls
+      // `useLazyAuthorDetailsQuery` every 5s until the server reports
+      // `personal_project_id` (no auth backend to poll yet — change 1). This
+      // resolves once the progress bar hits its cap instead, so "workspace
+      // is ready" is reachable via a live click-and-wait, not a dead no-op.
+      queryStatusIntervalIdRef.current = setInterval(() => {
+        if (progressRef.current >= PROGRESS_CAP) {
+          handlePersonalProjectReady({ _shouldRefreshProjects: true });
+        }
+      }, 5000);
+    }
+  }, [handlePersonalProjectReady]);
+
   const handleShowTour = useCallback(() => {
     // Disclosed, not silently dropped: useTrackEvent('onboarding_click_get_started')
     // is called by the old page here — analytics gap.
     sessionStore.set(ONBOARDING_STORAGE_KEY, 'true');
 
     if (!MOCK_USER.personal_project_id) {
-      progressIntervalIdRef.current = setInterval(() => {
-        setProgress(prev => (prev < 95 ? prev + 95 / 150 : prev));
-      }, 1000);
-      // Polling for personal_project_id — stubbed.  In the real app this calls
-      // useLazyAuthorDetailsQuery().unwrap() every 5 s.
-      queryStatusIntervalIdRef.current = setInterval(() => {
-        // No-op: mock user never gets a personal_project_id.
-      }, 5000);
+      startProgressAndPolling();
     }
 
     setShowTour(true);
-  }, []);
+  }, [startProgressAndPolling]);
 
   const handleJumpIn = () => {
     // Disclosed, not silently dropped: useTrackEvent('onboarding_jump_in') is
@@ -126,6 +193,18 @@ const Onboarding = memo(() => {
       onClearIntervals();
     };
   }, [onClearIntervals]);
+
+  // Resume progress/polling after a refresh mid-onboarding (change 10):
+  // sessionStorage still has ONBOARDING_STORAGE_KEY, so `showTour` starts
+  // `true` on this mount, but `handleShowTour` never ran in THIS mount to
+  // start the intervals — without this effect they'd stall forever after a
+  // reload. `startProgressAndPolling` no-ops if already running, so this
+  // can't double-start them right after `handleShowTour` itself starts them.
+  useEffect(() => {
+    if (!MOCK_USER.personal_project_id && showTour && !thePrivateProjectIsReady) {
+      startProgressAndPolling();
+    }
+  }, [showTour, thePrivateProjectIsReady, startProgressAndPolling]);
 
   // When personal_project_id is already set, skip to tour immediately.
   useEffect(() => {
@@ -146,17 +225,19 @@ const Onboarding = memo(() => {
         alignItems: 'center',
         justifyContent: 'center',
         overflow: 'auto',
-        background: theme.palette.background.default,
+        background: theme.vars.palette.background.default,
         position: 'relative',
       })}
     >
-      <IconButton
-        onClick={() => window.history.back()}
-        sx={styles.backButton}
-        aria-label="Go back"
-      >
-        <ArrowBackIcon />
-      </IconButton>
+      {!!MOCK_USER.personal_project_id && (
+        <IconButton
+          onClick={() => window.history.back()}
+          sx={styles.backButton}
+          aria-label="Go back"
+        >
+          <ArrowBackIcon />
+        </IconButton>
+      )}
       <Box sx={styles.body}>
         <Box sx={styles.logo}>
           <LogoIcon />
@@ -168,11 +249,8 @@ const Onboarding = memo(() => {
             width: '100%',
             padding: '1px',
             borderRadius: '1.5rem',
-            background:
-              (theme.palette.background as unknown as Record<string, unknown>).onboarding ??
-              'rgba(0,0,0,0.1)',
-            boxShadow:
-              (theme.palette.boxShadow as unknown as Record<string, unknown>).onboarding ?? 'none',
+            background: theme.vars.palette.background.onboarding,
+            boxShadow: theme.vars.palette.boxShadow.onboarding,
           })}
         >
           <Box
@@ -185,16 +263,21 @@ const Onboarding = memo(() => {
               display: 'flex',
               flexDirection: 'column' as const,
               alignItems: 'center',
-              background:
-                (theme.palette.background as unknown as Record<string, unknown>).onboardingBody
-                  ? undefined
-                  : 'background.default',
+              background: theme.vars.palette.background.onboardingBody,
             })}
           >
-            {!showTour && (
-              <Welcome name={MOCK_USER.name} onShowTour={handleShowTour} />
+            {!showTour && !MOCK_USER.personal_project_id && MOCK_USER.id && (
+              <Welcome
+                name={MOCK_USER.name || MOCK_USER.email}
+                onShowTour={handleShowTour}
+              />
             )}
             {showTour && <OnboardingTour />}
+            {!MOCK_USER.id && (
+              <Box sx={styles.loadingContainer}>
+                <CircularProgress aria-label={t('pages.onboarding.loadingAriaLabel', 'Loading…')} />
+              </Box>
+            )}
           </Box>
         </Box>
         {showTour && !thePrivateProjectIsReady && (
@@ -202,11 +285,14 @@ const Onboarding = memo(() => {
             <Box sx={styles.footerHead}>
               <Typography
                 sx={theme => {
-                  const baseColor = theme.palette.text.secondary;
+                  const baseColor = theme.vars.palette.text.secondary;
                   return {
                     color: baseColor,
                     fontWeight: 600,
-                    background: `linear-gradient(90deg, ${baseColor}55 0%, ${baseColor} 21.15%, ${baseColor}44 100%)`,
+                    // `baseColor` is now a `var(--el-...)` ref (change 8), so
+                    // the old `${baseColor}55` hex-alpha suffix is invalid
+                    // CSS here; `transparent` stands in as the faded stop.
+                    background: `linear-gradient(90deg, transparent 0%, ${baseColor} 21.15%, transparent 100%)`,
                     backgroundSize: '200% 100%',
                     backgroundClip: 'text',
                     WebkitBackgroundClip: 'text',
@@ -228,7 +314,7 @@ const Onboarding = memo(() => {
               </Typography>
               <Typography
                 sx={theme => ({
-                  color: theme.palette.text.secondary,
+                  color: theme.vars.palette.text.secondary,
                 })}
                 variant="bodySmall"
               >
@@ -242,7 +328,7 @@ const Onboarding = memo(() => {
                 sx={theme => ({
                   height: '0.375rem',
                   borderRadius: '0.1875rem',
-                  backgroundColor: theme.palette.border.lines,
+                  backgroundColor: theme.vars.palette.border.lines,
                   '& .MuiLinearProgress-bar': {
                     borderRadius: '0.1875rem',
                   },
@@ -297,6 +383,15 @@ const styles = {
   },
   progressContainer: {
     width: '100%',
+  },
+  /** Stand-in for the old app's `pages/LoadingPage.jsx` — out of this unit's
+   *  `pages/onboarding` scope, and the new app has no shared equivalent yet. */
+  loadingContainer: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 };
 

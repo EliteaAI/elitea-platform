@@ -3,14 +3,10 @@
  *
  * Ported from `apps/elitea-ui/src/[fsd]/pages/resources/index.jsx`.
  *
- * KEY DECISION #2 (issue #26): the Go endpoints
- * `GET /admin/system_info/prompt_lib` and
- * `GET /admin/plugin_config_values/prompt_lib/resources` exist but lack
- * OpenAPI specs in the new app. We use hardcoded fallback config values
- * from `lib/ResourceCardConfig.ts` (all enabled, default titles/descriptions,
- * no links). No fake network calls are made.
- *
- * API gap documented at `lib/ResourceCardConfig.ts` header.
+ * Admin-configured data (per-card enabled flags + links, version label,
+ * plugin list) comes from `useResourcesConfig()` — see that hook's module
+ * doc for the backend API gap (issue #26 Key Decision #2) that currently
+ * keeps every card's links and the version bar empty.
  */
 import { memo, useMemo, type ReactNode } from 'react';
 
@@ -23,6 +19,7 @@ import Typography from '@mui/material/Typography';
 import { RESOURCES_TOUR_TARGET_IDS } from '@/features/interactive-tours';
 
 import { RESOURCE_CARD_CONFIGS } from './lib/ResourceCardConfig';
+import { useResourcesConfig } from './lib/useResourcesConfig';
 import ResourceCard from './ui/ResourceCard';
 import ResourceVersionInfo from './ui/ResourceVersionInfo';
 
@@ -30,29 +27,23 @@ import ResourceVersionInfo from './ui/ResourceVersionInfo';
  * Per-card link shape used when the admin config API is available.
  * Mirrors the shape consumed by the old `resources/index.jsx`.
  */
-interface ResourceLink {
+export interface ResourceLink {
   title: string;
   url?: string;
 }
 
 /**
- * All resource-cards are enabled by default (hardcoded fallback per
- * Key Decision #2). This mirrors the old app's `filter(config =>
- * configValues[config.enabledKey] !== false)` when the API is absent.
+ * Resolves a card's links from the admin config values. Reads
+ * `configValues[config.linksKey]` and returns it when it is an array of
+ * link entries — exported so its parsing logic (which config values a
+ * card's links come from) can be regression-tested independently of
+ * whether a real config source is wired up yet (see `useResourcesConfig`).
  */
-const DEFAULT_CONFIG_VALUES: Record<string, unknown> = Object.fromEntries(
-  RESOURCE_CARD_CONFIGS.map((c): [string, boolean] => [c.enabledKey, true]),
-);
-
-/**
- * Resolves a card's links from the (absent) API values.
- * With hardcoded fallback this always returns an empty array.
- */
-function resolveLinks(
+export function resolveLinks(
   config: (typeof RESOURCE_CARD_CONFIGS)[number],
-  _configValues: Record<string, unknown>,
+  configValues: Record<string, unknown>,
 ): ReadonlyArray<ResourceLink> {
-  const raw = _configValues[config.linksKey];
+  const raw = configValues[config.linksKey];
   if (Array.isArray(raw)) return raw as ReadonlyArray<ResourceLink>;
   return [];
 }
@@ -117,9 +108,7 @@ const linkUndefinedSx: SxProps<Theme> = (t: Theme): SystemStyleObject<Theme> => 
  * a responsive grid of ResourceCard components.
  */
 const HelpCenterPage = memo((): ReactNode => {
-  // In a fully-featured implementation these would come from RTK Query
-  // hooks. Per Key Decision #2 we use empty/fallback values here.
-  const configValues = DEFAULT_CONFIG_VALUES;
+  const { configValues, versionLabel, plugins } = useResourcesConfig();
 
   const visibleCards = useMemo(
     () =>
@@ -134,7 +123,10 @@ const HelpCenterPage = memo((): ReactNode => {
       data-tour={RESOURCES_TOUR_TARGET_IDS.page}
       sx={pageSx}
     >
-      <ResourceVersionInfo />
+      <ResourceVersionInfo
+        versionLabel={versionLabel}
+        plugins={plugins}
+      />
 
       <Box sx={contentSx}>
         <Box sx={introSx}>

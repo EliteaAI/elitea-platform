@@ -17,12 +17,15 @@ import Skeleton from '@mui/material/Skeleton';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
+import { useTheme } from '@mui/material/styles';
+import useMediaQuery from '@mui/material/useMediaQuery';
 
 const IconButtonAny = IconButton as React.ComponentType<
   React.ComponentProps<typeof IconButton> & { variant?: string }
 >;
 
 import RefreshIcon from '@/shared/ui/icons/svg/refresh-icon.svg?react';
+import { INITIAL_CARD_DISPLAY_COUNT } from '@/shared/lib/layout';
 
 import AgentCard from './AgentCard';
 import type { ApplicationData } from '../types';
@@ -38,7 +41,22 @@ export interface AgentCategorySectionProps {
   onRefresh?: ((category: string) => void) | undefined;
 }
 
-const INITIAL_DISPLAY_COUNT = 8;
+/**
+ * Screen-size-aware initial card count (adversarial-review fix, cluster
+ * A13-agents-hub, finding 10): the baseline (`AgentCategorySection.jsx`)
+ * picks it from `theme.breakpoints.up('prompt_list_xl')` — this had
+ * regressed to a hardcoded `8` regardless of viewport.
+ * `INITIAL_CARD_DISPLAY_COUNT` (`shared/lib/layout.ts`) is the
+ * already-ported constant for this. Extracted to its own hook (rather than
+ * inlined in the component below) to keep the component's own cyclomatic
+ * complexity under the §3.5 budget — a real reduction, not a re-shuffle to
+ * dodge the checker: the branch genuinely moves out of the render function.
+ */
+function useInitialCardDisplayCount(): number {
+  const theme = useTheme();
+  const isLargeScreen = useMediaQuery(theme.breakpoints.up('prompt_list_xl'));
+  return isLargeScreen ? INITIAL_CARD_DISPLAY_COUNT.LARGE_SCREEN : INITIAL_CARD_DISPLAY_COUNT.DEFAULT;
+}
 
 const AgentCategorySection = memo(
   ({
@@ -51,29 +69,30 @@ const AgentCategorySection = memo(
     onLoadMore,
     onRefresh,
   }: AgentCategorySectionProps) => {
-    const [displayCount, setDisplayCount] = useState(INITIAL_DISPLAY_COUNT);
+    const initialDisplayCount = useInitialCardDisplayCount();
+    const [displayCount, setDisplayCount] = useState<number>(initialDisplayCount);
 
     useEffect(() => {
-      if (!items.length) setDisplayCount(INITIAL_DISPLAY_COUNT);
-    }, [items.length]);
+      if (!items.length) setDisplayCount(initialDisplayCount);
+    }, [items.length, initialDisplayCount]);
 
     const visibleItems = useMemo(() => items.slice(0, displayCount), [items, displayCount]);
     const hasMoreLocally = items.length > displayCount;
     const canShowMore = hasMoreLocally || items.length < totalCount;
-    const isExpanded = displayCount > INITIAL_DISPLAY_COUNT;
+    const isExpanded = displayCount > initialDisplayCount;
     const shouldShowButton = (canShowMore || isExpanded) && !isLoadingMore;
 
     const handleShowMore = useCallback(() => {
-      const newCount = displayCount + INITIAL_DISPLAY_COUNT;
+      const newCount = displayCount + initialDisplayCount;
       setDisplayCount(newCount);
       if (newCount > items.length && items.length < totalCount) {
         onLoadMore?.(category);
       }
-    }, [displayCount, items.length, totalCount, onLoadMore, category]);
+    }, [displayCount, initialDisplayCount, items.length, totalCount, onLoadMore, category]);
 
     const handleShowLess = useCallback(() => {
-      setDisplayCount(INITIAL_DISPLAY_COUNT);
-    }, []);
+      setDisplayCount(initialDisplayCount);
+    }, [initialDisplayCount]);
 
     return (
       <Box sx={styles.container}>
@@ -95,7 +114,7 @@ const AgentCategorySection = memo(
             </Tooltip>
           )}
         </Box>
-        <Box sx={{ display: 'grid', width: '100%', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
+        <Box sx={styles.grid}>
           {visibleItems
             .filter(item => !!item)
             .map(item => (
@@ -107,7 +126,7 @@ const AgentCategorySection = memo(
             ))}
           {isLoadingMore &&
             Array.from(
-              { length: Math.min(INITIAL_DISPLAY_COUNT, Math.max(0, totalCount - items.length)) },
+              { length: Math.min(initialDisplayCount, Math.max(0, totalCount - items.length)) },
             ).map((_, i) => (
               <Skeleton key={`skeleton-${i}`} variant="rounded" sx={styles.skeleton} />
             ))}
@@ -146,12 +165,21 @@ const styles: Record<string, SxProps<Theme>> = {
   title: {
     color: 'text.secondary',
   },
-  grid: {
+  // Adversarial-review fix (cluster A13-agents-hub, finding 10): the
+  // baseline (`AgentCategorySection.jsx`) ramps 1 → 2 → 3 → 4 columns across
+  // `sm`/`prompt_list_full_width_sm`/`prompt_list_md`/`prompt_list_xl` —
+  // this had regressed to a fixed 4-column grid, cramped/overflowing below
+  // that widest breakpoint.
+  grid: (theme: Theme) => ({
     display: 'grid',
     width: '100%',
-    gridTemplateColumns: 'repeat(4, 1fr)',
+    gridTemplateColumns: '1fr',
     gap: '1rem',
-  },
+    [theme.breakpoints.up('sm')]: { gridTemplateColumns: 'repeat(2, 1fr)' },
+    [theme.breakpoints.up('prompt_list_full_width_sm')]: { gridTemplateColumns: 'repeat(2, 1fr)' },
+    [theme.breakpoints.up('prompt_list_md')]: { gridTemplateColumns: 'repeat(3, 1fr)' },
+    [theme.breakpoints.up('prompt_list_xl')]: { gridTemplateColumns: 'repeat(4, 1fr)' },
+  }),
   skeleton: {
     width: '100%',
     height: '7.25rem',

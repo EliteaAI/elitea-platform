@@ -3,9 +3,16 @@
  *
  * Ported from `apps/elitea-ui/src/[fsd]/pages/resources/ui/ResourceCard.jsx`.
  *
- * The old app imports `getCardGradientBorderBefore` and `getCardGradientStyles`
- * from `@/utils/cardStyles` (Unit A6). Per Key Decision #1 we use local
- * reimplementation from `./cardGradient.ts`.
+ * The old app composes `getCardGradientStyles(palette, { enableHover: false
+ * })` (from `@/utils/cardStyles`, Unit A6) with a per-`colorScheme`
+ * `background.resourceCard.<scheme>.{card,borderGradient}` token override
+ * (`resourceCardStyles.card` in the baseline). `cardSx` below inlines that
+ * same composition directly against `theme.vars.palette.background.
+ * resourceCard[scheme]` rather than calling into `./cardGradient.ts` (a
+ * separate local reimplementation kept for possible future reuse but not a
+ * type-safe fit here — see the NOTE below) — both the scheme-specific
+ * background/border-gradient AND `enableHover: false` (cards are static,
+ * non-interactive) are preserved from the baseline.
  *
  * NOTE: sx values are defined inline to avoid TS2769 "No overload matches"
  * errors that occur when passing object property lookups (SxProps<Theme> |
@@ -60,19 +67,42 @@ export function ResourceCard({ title, description, icon, colorScheme, tourTarget
 
 ResourceCard.displayName = 'ResourceCard';
 
-function cardSx(_scheme: ColorScheme): SxProps<Theme> {
+/**
+ * Card container styles — background and `::before` border-gradient are
+ * resolved from the per-`scheme` `background.resourceCard.<scheme>` tokens
+ * (falling back to the generic card-gradient tokens only if a scheme entry
+ * were ever missing), matching the baseline's `resourceCardStyles.card`.
+ *
+ * Deliberately has NO `&:hover` rule: the baseline calls
+ * `getCardGradientStyles(palette, { enableHover: false })` for these cards
+ * (they are static informational panels, not clickable), so a hover state
+ * here would make a non-interactive card look interactive.
+ *
+ * Exported (alongside the default component) so its per-scheme resolution
+ * and hover-free shape can be regression-tested directly, the same way
+ * `features/apps/lib/cardGradient.ts`'s `cardGradientSx` is tested. For the
+ * same reason as that helper, this is deliberately NOT annotated
+ * `: SxProps<Theme>` — that's a union type (including an array branch and a
+ * bare-function branch), and both a JSX `sx={...}` consumer's overload
+ * resolution AND a test file's field access (`cardSx('blue').background`)
+ * need the concrete object-literal type TypeScript infers here, not the
+ * widened union.
+ */
+export function cardSx(scheme: ColorScheme) {
   return {
     position: 'relative',
     borderRadius: '0.75rem',
     border: 'none',
-    background: (t: Theme) => t.vars.palette.background?.card?.gradientDark ?? 'transparent',
+    background: (t: Theme) =>
+      t.vars.palette.background.resourceCard[scheme].card ?? t.vars.palette.background?.card?.gradientDark ?? 'transparent',
     '&::before': {
       content: '""',
       position: 'absolute',
       inset: '0',
       borderRadius: 'inherit', /* oxlint-disable elitea/ad-hoc-radius -- 'inherit' is CSS keyword, not ad-hoc */
       padding: '0.0625rem',
-      background: (t: Theme) => t.vars.palette.border?.cardsOutlinesGradient ?? 'transparent',
+      background: (t: Theme) =>
+        t.vars.palette.background.resourceCard[scheme].borderGradient ?? t.vars.palette.border?.cardsOutlinesGradient ?? 'transparent',
       mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)', /* oxlint-disable elitea/no-raw-color -- #fff is transparent mask color */
       maskComposite: 'exclude',
       WebkitMaskComposite: 'xor',
@@ -84,13 +114,6 @@ function cardSx(_scheme: ColorScheme): SxProps<Theme> {
     minWidth: '23.75rem',
     maxWidth: '31.25rem',
     minHeight: '14.25rem',
-    '&:hover': {
-      background: (t: Theme) => t.vars.palette.background?.card?.hover ?? 'transparent',
-      '&::before': {
-        background: (t: Theme) => t.vars.palette.background?.card?.hoverBorderGradient ?? 'transparent',
-      },
-      boxShadow: (t: Theme) => t.vars.palette.background?.card?.hoverShadow ?? 'none',
-    },
   };
 }
 
