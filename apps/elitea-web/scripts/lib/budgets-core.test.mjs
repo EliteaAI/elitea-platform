@@ -1,6 +1,9 @@
+import { existsSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
+  BUDGET_WAIVERS,
   DEFAULT_LIMITS,
   checkComponents,
   checkFile,
@@ -256,7 +259,6 @@ describe('budget waivers', () => {
     ['src/features/chat-messages/ui/canvas/CanvasEditor.tsx', 'file-length'],
     ['src/features/chat-messages/ui/canvas/Canvas.tsx', 'component-props'],
     ['src/features/chat-messages/ui/canvas/CanvasEditHeader.tsx', 'component-props'],
-    ['src/features/chat-messages/ui/chat-box/ChatMessageWrapper.tsx', 'component-props'],
     ['src/features/chat-messages/ui/playback/PlaybackChatBox.tsx', 'use-effects'],
     ['src/features/chat-messages/index.ts', 'slice-public-api'],
   ])('hasBudgetWaiver(%s, %s) -> true', (file, rule) => {
@@ -283,15 +285,9 @@ describe('budget waivers', () => {
     ).toBe(false); // leading / makes the key mismatch
   });
 
-  it.each([
-    ['Canvas.tsx', 'component-props'],
-    ['ChatMessageWrapper.tsx', 'component-props'],
-  ])('checkComponents(%s, with component-props breach) with waiver -> no findings', (_rel, _rule) => {
-    const files = {
-      'Canvas.tsx': 'src/features/chat-messages/ui/canvas/Canvas.tsx',
-      'ChatMessageWrapper.tsx': 'src/features/chat-messages/ui/chat-box/ChatMessageWrapper.tsx',
-    };
-    expect(checkComponents(files[_rel], parseSource(files[_rel], component(13, 1, 1)))).toEqual([]);
+  it('checkComponents(Canvas.tsx, with component-props breach) with waiver -> no findings', () => {
+    const file = 'src/features/chat-messages/ui/canvas/Canvas.tsx';
+    expect(checkComponents(file, parseSource(file, component(13, 1, 1)))).toEqual([]);
   });
 
   it('checkComponents(CanvasEditor.tsx, with useEffects breach) with waiver -> no findings', () => {
@@ -320,5 +316,9 @@ describe('budget waivers', () => {
       Array.from({ length: 60 }, (_, i) => `export const x${i} = ${i};`).join('\n'),
     );
     expect(checkSlicePublicApi('src/features/chat-messages/index.ts', ast)).toEqual([]);
+  });
+
+  it.each(Object.keys(BUDGET_WAIVERS))('waived file %s still exists on disk', (file) => {
+    expect(existsSync(file)).toBe(true);
   });
 });
