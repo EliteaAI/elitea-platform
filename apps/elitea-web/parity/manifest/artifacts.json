@@ -216,17 +216,17 @@
       "id": "API-129",
       "domain": "artifacts",
       "kind": "integration",
-      "priority": "must",
-      "title": "Endpoint GET /artifacts/s3/?{params} (bucketList)",
+      "priority": "waived",
+      "title": "Endpoint GET /artifacts/buckets/{projectId} (listBuckets)",
       "source": [
         "apps/elitea-ui/src/api/artifacts.js:22-44"
       ],
       "acceptance": [
         "GIVEN the user performs the bucket list operation",
         "WHEN the client issues the request",
-        "THEN it targets GET /artifacts/s3/?{params} with the same parameters, body shape and semantics as the baseline",
+        "THEN it targets GET /artifacts/buckets/{projectId}, the ADR-0016 successor to the retired pseudo-S3 bucket listing",
         "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen",
-        "AND the request goes to the UN-PREFIXED /artifacts/s3/ path — deliberately not under the /api/v2 base path, because the deployment routes /artifacts/ straight to the backend; this exact un-prefixed shape is a real routing fact and must be preserved"
+        "AND the request is made under the /api/v2 base path; the baseline's deliberately un-prefixed pseudo-S3 route is retired and must not be called"
       ],
       "verify": {
         "type": "vitest",
@@ -239,7 +239,12 @@
         "file": "src/features/artifacts/index.ts",
         "min": 88
       },
-      "waiver": null
+      "waiver": {
+        "reason": "W-011: ADR-0016 retired the legacy artifact wire contract, so this item is re-pointed at its successor operation rather than reproduced bug-for-bug. The baseline endpoint no longer exists in the platform contract — spec-artifact-storage §3.3 deliberately drops the /artifacts/s3 pseudo-S3 proxy, ?format=json and the S3 XML dialect, and §4.1 defines the replacement surface under /api/v2/artifacts/ — so the original acceptance text could not be satisfied by any implementation. The capability itself is carried forward, not dropped: the item keeps status todo and elitea-web still owes it against the successor operation. ADR-0016 is status In Review, not Approved — flagged for operator veto.",
+        "decidedBy": "Alexander Kharkevich (issue #70 decision, 2026-08-05) on ADR-0016 + spec-artifact-storage §3.3/§4.1, implemented by the storage migration S1–S16 in ad807da",
+        "date": "2026-08-05",
+        "replacesBehaviour": "baseline called GET /artifacts/s3/?project_id={projectId}&format=json — an un-prefixed pseudo-S3 bucket listing bypassing the /api/v2 base path — replaced by listBuckets at GET /api/v2/artifacts/buckets/{projectID}"
+      }
     },
     {
       "id": "API-130",
@@ -273,15 +278,16 @@
       "id": "API-131",
       "domain": "artifacts",
       "kind": "integration",
-      "priority": "must",
-      "title": "Endpoint PUT /artifacts/buckets/default/{projectId} (editBucket)",
+      "priority": "waived",
+      "title": "Endpoint PATCH /artifacts/buckets/{projectId}/{bucket} (updateBucket)",
       "source": [
         "apps/elitea-ui/src/api/artifacts.js:54-62"
       ],
       "acceptance": [
         "GIVEN the user performs the edit bucket operation",
         "WHEN the client issues the request",
-        "THEN it targets PUT /artifacts/buckets/default/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "THEN it targets PATCH /artifacts/buckets/{projectId}/{bucket}, the ADR-0016 successor to the retired whole-bucket update endpoint, sending only the fields being changed",
+        "AND the bucket is addressed as a path segment rather than carried in the request body",
         "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
       ],
       "verify": {
@@ -295,7 +301,12 @@
         "file": "src/features/artifacts/index.ts",
         "min": 88
       },
-      "waiver": null
+      "waiver": {
+        "reason": "W-011: ADR-0016 retired the legacy artifact wire contract, so this item is re-pointed at its successor operation rather than reproduced bug-for-bug. The baseline endpoint no longer exists in the platform contract — spec-artifact-storage §3.3 deliberately drops the /artifacts/s3 pseudo-S3 proxy, ?format=json and the S3 XML dialect, and §4.1 defines the replacement surface under /api/v2/artifacts/ — so the original acceptance text could not be satisfied by any implementation. The capability itself is carried forward, not dropped: the item keeps status todo and elitea-web still owes it against the successor operation. ADR-0016 is status In Review, not Approved — flagged for operator veto.",
+        "decidedBy": "Alexander Kharkevich (issue #70 decision, 2026-08-05) on ADR-0016 + spec-artifact-storage §3.3/§4.1, implemented by the storage migration S1–S16 in ad807da",
+        "date": "2026-08-05",
+        "replacesBehaviour": "baseline called PUT /artifacts/buckets/default/{projectId} with the bucket named in the request body (a retention update, per spec-artifact-storage §3.3), replaced by updateBucket at PATCH /api/v2/artifacts/buckets/{projectID}/{bucket}, which takes pin state, retention and tags as independent optional fields"
+      }
     },
     {
       "id": "API-132",
@@ -357,17 +368,17 @@
       "id": "API-134",
       "domain": "artifacts",
       "kind": "integration",
-      "priority": "must",
-      "title": "Endpoint GET /artifacts/s3/{bucket}?{params} (artifactList)",
+      "priority": "waived",
+      "title": "Endpoint GET /artifacts/objects/{projectId}/{bucket} (listObjects)",
       "source": [
         "apps/elitea-ui/src/api/artifacts.js:79-101"
       ],
       "acceptance": [
         "GIVEN the user performs the artifact list operation",
         "WHEN the client issues the request",
-        "THEN it targets GET /artifacts/s3/{bucket}?{params} with the same parameters, body shape and semantics as the baseline",
+        "THEN it targets GET /artifacts/objects/{projectId}/{bucket}, the ADR-0016 successor to the retired pseudo-S3 object listing",
         "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen",
-        "AND the request goes to the UN-PREFIXED /artifacts/s3/ path — deliberately not under the /api/v2 base path, because the deployment routes /artifacts/ straight to the backend; this exact un-prefixed shape is a real routing fact and must be preserved"
+        "AND the request is made under the /api/v2 base path; the baseline's deliberately un-prefixed pseudo-S3 route is retired and must not be called"
       ],
       "verify": {
         "type": "vitest",
@@ -380,21 +391,26 @@
         "file": "src/features/artifacts/index.ts",
         "min": 88
       },
-      "waiver": null
+      "waiver": {
+        "reason": "W-011: ADR-0016 retired the legacy artifact wire contract, so this item is re-pointed at its successor operation rather than reproduced bug-for-bug. The baseline endpoint no longer exists in the platform contract — spec-artifact-storage §3.3 deliberately drops the /artifacts/s3 pseudo-S3 proxy, ?format=json and the S3 XML dialect, and §4.1 defines the replacement surface under /api/v2/artifacts/ — so the original acceptance text could not be satisfied by any implementation. The capability itself is carried forward, not dropped: the item keeps status todo and elitea-web still owes it against the successor operation. ADR-0016 is status In Review, not Approved — flagged for operator veto.",
+        "decidedBy": "Alexander Kharkevich (issue #70 decision, 2026-08-05) on ADR-0016 + spec-artifact-storage §3.3/§4.1, implemented by the storage migration S1–S16 in ad807da",
+        "date": "2026-08-05",
+        "replacesBehaviour": "baseline called GET /artifacts/s3/{bucket}?project_id={projectId}&format=json — an un-prefixed pseudo-S3 object listing bypassing the /api/v2 base path — replaced by listObjects at GET /api/v2/artifacts/objects/{projectID}/{bucket}, which adds prefix, delimiter, limit and cursor pagination"
+      }
     },
     {
       "id": "API-135",
       "domain": "artifacts",
       "kind": "integration",
-      "priority": "must",
-      "title": "Endpoint POST /artifacts/artifacts/default/{projectId}/{bucket} (createArtifact)",
+      "priority": "waived",
+      "title": "Endpoint POST /artifacts/objects/{projectId}/{bucket} (uploadObject)",
       "source": [
         "apps/elitea-ui/src/api/artifacts.js:102-123"
       ],
       "acceptance": [
         "GIVEN the user performs the create artifact operation",
         "WHEN the client issues the request",
-        "THEN it targets POST /artifacts/artifacts/default/{projectId}/{bucket} with the same parameters, body shape and semantics as the baseline",
+        "THEN it targets POST /artifacts/objects/{projectId}/{bucket} as a streaming multipart upload carrying the file field, the ADR-0016 successor to the retired upload endpoint",
         "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
       ],
       "verify": {
@@ -408,21 +424,26 @@
         "file": "src/features/artifacts/index.ts",
         "min": 88
       },
-      "waiver": null
+      "waiver": {
+        "reason": "W-011: ADR-0016 retired the legacy artifact wire contract, so this item is re-pointed at its successor operation rather than reproduced bug-for-bug. The baseline endpoint no longer exists in the platform contract — spec-artifact-storage §3.3 deliberately drops the /artifacts/s3 pseudo-S3 proxy, ?format=json and the S3 XML dialect, and §4.1 defines the replacement surface under /api/v2/artifacts/ — so the original acceptance text could not be satisfied by any implementation. The capability itself is carried forward, not dropped: the item keeps status todo and elitea-web still owes it against the successor operation. ADR-0016 is status In Review, not Approved — flagged for operator veto.",
+        "decidedBy": "Alexander Kharkevich (issue #70 decision, 2026-08-05) on ADR-0016 + spec-artifact-storage §3.3/§4.1, implemented by the storage migration S1–S16 in ad807da",
+        "date": "2026-08-05",
+        "replacesBehaviour": "baseline called POST /artifacts/artifacts/default/{projectId}/{bucket} with a buffered multipart form carrying the file field and an overwrite_attachments flag, replaced by uploadObject at POST /api/v2/artifacts/objects/{projectID}/{bucket} (streaming multipart, field file)"
+      }
     },
     {
       "id": "API-136",
       "domain": "artifacts",
       "kind": "integration",
-      "priority": "must",
-      "title": "Endpoint DELETE /artifacts/artifact/default/{projectId}/{bucket} (deleteArtifact)",
+      "priority": "waived",
+      "title": "Endpoint DELETE /artifacts/objects/{projectId}/{bucket}/{key} (deleteObject)",
       "source": [
         "apps/elitea-ui/src/api/artifacts.js:124-133"
       ],
       "acceptance": [
         "GIVEN the user performs the delete artifact operation",
         "WHEN the client issues the request",
-        "THEN it targets DELETE /artifacts/artifact/default/{projectId}/{bucket} with the same parameters, body shape and semantics as the baseline",
+        "THEN it targets DELETE /artifacts/objects/{projectId}/{bucket}/{key}, addressing the object by key path segment rather than by a filename query parameter",
         "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
       ],
       "verify": {
@@ -436,21 +457,27 @@
         "file": "src/features/artifacts/index.ts",
         "min": 88
       },
-      "waiver": null
+      "waiver": {
+        "reason": "W-011: ADR-0016 retired the legacy artifact wire contract, so this item is re-pointed at its successor operation rather than reproduced bug-for-bug. The baseline endpoint no longer exists in the platform contract — spec-artifact-storage §3.3 deliberately drops the /artifacts/s3 pseudo-S3 proxy, ?format=json and the S3 XML dialect, and §4.1 defines the replacement surface under /api/v2/artifacts/ — so the original acceptance text could not be satisfied by any implementation. The capability itself is carried forward, not dropped: the item keeps status todo and elitea-web still owes it against the successor operation. ADR-0016 is status In Review, not Approved — flagged for operator veto.",
+        "decidedBy": "Alexander Kharkevich (issue #70 decision, 2026-08-05) on ADR-0016 + spec-artifact-storage §3.3/§4.1, implemented by the storage migration S1–S16 in ad807da",
+        "date": "2026-08-05",
+        "replacesBehaviour": "baseline called DELETE /artifacts/artifact/default/{projectId}/{bucket} with the object named in a filename query parameter alongside integration_id and is_local (per-project bring-your-own-credentials parameters that spec-artifact-storage §3.3 records as a no-op), replaced by deleteObject at DELETE /api/v2/artifacts/objects/{projectID}/{bucket}/{key}"
+      }
     },
     {
       "id": "API-137",
       "domain": "artifacts",
       "kind": "integration",
-      "priority": "must",
-      "title": "Endpoint DELETE /artifacts/artifacts/default/{projectId}/{bucket}?{expr} (deleteArtifacts) [dynamic path template]",
+      "priority": "waived",
+      "title": "Endpoint POST /artifacts/objects/{projectId}/{bucket}:batchDelete (batchDeleteObjects)",
       "source": [
         "apps/elitea-ui/src/api/artifacts.js:134-166"
       ],
       "acceptance": [
         "GIVEN the user performs the delete artifacts operation",
         "WHEN the client issues the request",
-        "THEN it targets DELETE /artifacts/artifacts/default/{projectId}/{bucket}?{expr} with the same parameters, body shape and semantics as the baseline",
+        "THEN it targets POST /artifacts/objects/{projectId}/{bucket}:batchDelete, carrying every key in the request body and receiving per-key results",
+        "AND the baseline's client-side chunking of the deletion into several sequential requests is not reproduced: it existed only to keep a query string under a length limit, and the successor operation takes every key in one request",
         "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
       ],
       "verify": {
@@ -464,7 +491,12 @@
         "file": "src/features/artifacts/index.ts",
         "min": 88
       },
-      "waiver": null
+      "waiver": {
+        "reason": "W-011: ADR-0016 retired the legacy artifact wire contract, so this item is re-pointed at its successor operation rather than reproduced bug-for-bug. The baseline endpoint no longer exists in the platform contract — spec-artifact-storage §3.3 deliberately drops the /artifacts/s3 pseudo-S3 proxy, ?format=json and the S3 XML dialect, and §4.1 defines the replacement surface under /api/v2/artifacts/ — so the original acceptance text could not be satisfied by any implementation. The capability itself is carried forward, not dropped: the item keeps status todo and elitea-web still owes it against the successor operation. ADR-0016 is status In Review, not Approved — flagged for operator veto.",
+        "decidedBy": "Alexander Kharkevich (issue #70 decision, 2026-08-05) on ADR-0016 + spec-artifact-storage §3.3/§4.1, implemented by the storage migration S1–S16 in ad807da",
+        "date": "2026-08-05",
+        "replacesBehaviour": "baseline called DELETE /artifacts/artifacts/default/{projectId}/{bucket}?fname[]=... repeatedly, chunking the key list client-side to keep the path and query under 1500 characters and stopping at the first failure, replaced by batchDeleteObjects at POST /api/v2/artifacts/objects/{projectID}/{bucket}:batchDelete with per-key results"
+      }
     },
     {
       "id": "XPORT-001",
