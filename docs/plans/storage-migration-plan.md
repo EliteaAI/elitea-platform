@@ -1960,6 +1960,85 @@ cd services/elitea-main && \
   test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s15b.log
 ```
 
+**Design decisions made during implementation, not fully pinned down by the
+plan text above:** the grant's storage key is always the grant ID itself
+(never a caller-derived name) — this is what lets `looksLikeGrantID` reject
+an obviously-malformed `grantID` path parameter before it ever reaches a
+`::uuid`-casting query. `display_name` is accepted per the schema but has no
+effect for exactly that reason. TTL is fixed at 15 minutes with no
+per-request override, since `CreateTransferGrantRequest` has no TTL field —
+the plan's "maximum 60" is dead text with nothing to cap. Only `sha256` is
+accepted as `digest_alg`; commit streams the object through a hasher exactly
+once (`io.Copy` into `sha256.New()`), matching the plan's explicit
+"there is no shortcut" instruction. Any commit-time rejection (size, digest,
+media type, quota) deletes the uploaded object outright rather than leaving
+it orphaned for the S14 sweeper to eventually collect — a failed grant commit
+should not require a sweep cycle to clean up. `GET` grants are not
+single-use (only `PUT` grants consume); `CommitTransferGrant` rejects a `GET`
+grant with 400, since there is nothing to verify or commit for a read.
+`DigestMismatch` and `MediaTypeMismatch` were added as new `Error.code` enum
+values — 409 was already used for `AlreadyExists`, but ADR-0016 and this
+plan both treat digest and media-type failures as distinct, typed outcomes a
+caller should be able to switch on, not a generic conflict.
+
+**Two blocking defects found and fixed by a Workflow adversarial-review pass
+(plan-compliance + bug-hunt + test-integrity reviewers) run before
+committing, not by the original test suite:**
+
+1. The first-draft media-type check was `info.ContentType != "" &&
+   info.ContentType != grant.ContentType` — the `!= ""` guard let a backend
+   that reports no `ContentType` at all silently bypass verification
+   entirely, contradicting this section's own explicit "mandatory, not
+   defensive" requirement one paragraph up. One reviewer reproduced it with a
+   throwaway test before any fix existed. Fixed by removing the guard: an
+   empty backend-reported `ContentType` now correctly mismatches against any
+   non-empty `grant.ContentType` and returns 409. Regression test:
+   `TestArtifactGrantCommitWithEmptyBackendContentTypeReturns409`. Fixing
+   this also required updating `internal/api`'s router-level test doubles
+   (`alwaysSucceedsArtifactStore.Get` and
+   `alwaysSucceedsArtifactRepo.GetTransferGrant` in
+   `artifact_rbac_test_doubles_test.go`), which had previously relied on the
+   now-removed bypass to make their fixed grant/store pairing agree.
+2. `CommitTransferGrant` never checked S12's project storage quota
+   (`GetProjectStoragePolicy`/`SumProjectBytes`/`max_total_bytes`) — a
+   transfer grant could commit an object that pushed a project's total past
+   its configured limit, a control `UploadObject` already enforces on the
+   exact same metadata. Fixed by adding the identical
+   check-after-write/roll-back-on-violation block `UploadObject` already
+   uses (`objects.go`), placed after `UpsertObject` and before
+   `MarkTransferGrantConsumed`. Regression test:
+   `TestArtifactGrantCommitExceedingProjectQuotaReturns413AndRollsBack`.
+
+Both regression tests were confirmed to actually catch their bug (not just
+pass vacuously) by temporarily reverting each fix in isolation and observing
+the corresponding test fail, then restoring the fix.
+
+**Minor findings from the same pass, also fixed:** `store.Delete`'s error was
+silently discarded on every rejection path, risking an untracked orphan
+object invisible to the S14 sweeper if the physical delete itself failed —
+folded into a new `rejectCommit` helper that surfaces a failed cleanup
+delete's error in the response's `details` field instead of swallowing it.
+The full object was always read and hashed before the `max_bytes` check ran,
+even though `info.Size` is available immediately after `Get` — added an
+early size short-circuit before `io.Copy`. The OpenAPI spec's
+`commitTransferGrant` responses omitted 412 and 413 entirely and its 409
+description inaccurately implied it covered size mismatches — corrected to
+list 412 (expired grant) and 413 (`max_bytes` or quota) separately, with 409
+scoped to digest/media-type mismatch and already-consumed. Added table-driven
+coverage for `parseGrantDigest`'s hex-decode-failure and wrong-length
+branches, and for `looksLikeGrantID`'s per-character dash-position and
+hex-charset checks — both had only ever been exercised by their "obviously
+malformed" case, not their specific failure branches.
+
+**Known, accepted gap:** the Postgres integration tests for
+`ArtifactTransferGrantsRepository` exercise create/fetch/scope/single-use
+against a real database but never a grant row whose `bucket_id` violates the
+`buckets` foreign key or whose `method` violates
+`grants_method_valid` — both are enforced by the schema (migration 0057) and
+by the handler's own validation before a grant is ever created, so a
+constraint-violation path only exists as defense-in-depth against a bug that
+would already be caught elsewhere.
+
 ---
 
 ## S16 — Native multipart upload

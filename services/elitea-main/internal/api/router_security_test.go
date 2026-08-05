@@ -113,7 +113,6 @@ type artifactRoutePermission struct {
 	method     string
 	path       string
 	permission string
-	isGrant    bool // grant routes stay 501 regardless of authorization (S15 not implemented yet)
 }
 
 var artifactRoutePermissions = []artifactRoutePermission{
@@ -128,8 +127,8 @@ var artifactRoutePermissions = []artifactRoutePermission{
 	{method: http.MethodGet, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionView},
 	{method: http.MethodHead, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionView},
 	{method: http.MethodDelete, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionDelete},
-	{method: http.MethodPost, path: "/api/v2/artifacts/grants/1/reports", permission: artifactPermissionCreate, isGrant: true},
-	{method: http.MethodPost, path: "/api/v2/artifacts/grants/1/abc123:commit", permission: artifactPermissionCreate, isGrant: true},
+	{method: http.MethodPost, path: "/api/v2/artifacts/grants/1/reports", permission: artifactPermissionCreate},
+	{method: http.MethodPost, path: "/api/v2/artifacts/grants/1/abc123:commit", permission: artifactPermissionCreate},
 }
 
 // allArtifactPermissions is used where a test wants authorization to be a
@@ -288,13 +287,19 @@ func TestArtifactRoutesSucceedWithExactRequiredPermission(t *testing.T) {
 	}
 }
 
-// TestArtifactGrantRoutesRemainNotImplementedWithCreatePermission proves S11's
-// explicit carve-out: the two transfer-grant routes are excluded from the 2xx
-// check above and correctly still return 501 (NotImplemented), even when the
-// caller holds the create permission the S11 mapping assigns them — S15,
-// which replaces notImplementedArtifact for these two routes, has not run
-// yet. This is asserted directly rather than left untested.
-func TestArtifactGrantRoutesRemainNotImplementedWithCreatePermission(t *testing.T) {
+// TestArtifactGrantRoutesResolveThroughRealHandlerWhenConfigured is S15's
+// router-level check the plan text explicitly asks for: internal/api/v2/
+// artifacts's own tests (grants_test.go) exercise CreateTransferGrant/
+// CommitTransferGrant directly and never touch the mounted route, so only a
+// test in this package can prove router.go's stub replacement actually
+// happened — a handler-level Verify command passing here would mean
+// nothing about whether the routes are still wired to notImplementedArtifact.
+// Both routes need the create permission per the S11 mapping (see
+// artifactRoutePermissions); grant creation returns 200 with a real grant_id
+// (not NotImplemented), and committing that exact grant_id — a genuine,
+// syntactically valid UUID the fake handler chain accepts unconditionally —
+// returns 200, not 501, proving CommitTransferGrant is reachable too.
+func TestArtifactGrantRoutesResolveThroughRealHandlerWhenConfigured(t *testing.T) {
 	t.Setenv("AUTH_DEV_MODE", "true")
 
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
@@ -304,29 +309,34 @@ func TestArtifactGrantRoutesRemainNotImplementedWithCreatePermission(t *testing.
 		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
 	})
 
-	for _, rp := range artifactRoutePermissions {
-		if !rp.isGrant {
-			continue
-		}
-		t.Run(rp.method+" "+rp.path, func(t *testing.T) {
-			req := httptest.NewRequest(rp.method, rp.path, nil)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-			if rec.Code != http.StatusNotImplemented {
-				t.Fatalf("status = %d, want %d (S15 not implemented yet); body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
-			}
-			var envelope struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-				t.Fatalf("response body is not the typed error envelope: %v (body=%s)", err, rec.Body.String())
-			}
-			if envelope.Error.Code != "NotImplemented" {
-				t.Fatalf("error.code = %q, want NotImplemented; body=%s", envelope.Error.Code, rec.Body.String())
-			}
-		})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/reports", strings.NewReader(`{"method":"PUT","content_type":"image/png","max_bytes":1024}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	if createRec.Code == http.StatusNotImplemented {
+		t.Fatalf("createTransferGrant route still resolves to the S7 stub; body=%s", createRec.Body.String())
+	}
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create grant: status = %d, want 200; body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		GrantID string `json:"grant_id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create grant response: %v (body=%s)", err, createRec.Body.String())
+	}
+	if created.GrantID == "" {
+		t.Fatal("expected a non-empty grant_id")
+	}
+
+	commitReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+created.GrantID+":commit", nil)
+	commitRec := httptest.NewRecorder()
+	router.ServeHTTP(commitRec, commitReq)
+	if commitRec.Code == http.StatusNotImplemented {
+		t.Fatalf("commitTransferGrant route still resolves to the S7 stub; body=%s", commitRec.Body.String())
+	}
+	if commitRec.Code != http.StatusOK {
+		t.Fatalf("commit grant: status = %d, want 200; body=%s", commitRec.Code, commitRec.Body.String())
 	}
 }
 

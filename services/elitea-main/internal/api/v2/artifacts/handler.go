@@ -63,6 +63,15 @@ type Repository interface {
 	UpsertObject(ctx context.Context, input repos.NewObjectInput) (repos.ObjectRow, error)
 	DeleteObjects(ctx context.Context, bucketID int64, keys []string) error
 	SumProjectBytes(ctx context.Context, projectID int64) (int64, error)
+	// CreateTransferGrant, GetTransferGrant, MarkTransferGrantConsumed, and
+	// GetBucketByID are S15's additions, backing grants.go. GetBucketByID
+	// (added for S14's sweeper) resolves a grant's bucket_id back to a
+	// bucket name — a grant row has no bucket name of its own, only the
+	// internal database id.
+	CreateTransferGrant(ctx context.Context, input repos.NewTransferGrantInput) (repos.TransferGrantRow, error)
+	GetTransferGrant(ctx context.Context, id string, projectID int64) (repos.TransferGrantRow, error)
+	MarkTransferGrantConsumed(ctx context.Context, id string) error
+	GetBucketByID(ctx context.Context, id int64) (repos.BucketRow, error)
 }
 
 type Handler struct {

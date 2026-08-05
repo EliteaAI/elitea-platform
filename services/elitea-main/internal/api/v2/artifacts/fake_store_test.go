@@ -26,6 +26,13 @@ type fakeStore struct {
 	// handler passes the multipart part straight through to Put rather than
 	// buffering it first.
 	firstPutReadAt time.Time
+
+	// presign, when true, makes PresignGet/PresignPut succeed and
+	// Capabilities report Presign — S15's grants_test.go sets this to
+	// exercise CreateTransferGrant's real-presign branch; every other test
+	// in this package relies on the false default (facade fallback /
+	// ErrNotSupported), unchanged from before S15.
+	presign bool
 }
 
 // firstReadRecorder wraps an io.Reader and calls onFirstRead exactly once,
@@ -154,12 +161,18 @@ func (s *fakeStore) List(_ context.Context, q storage.ListQuery) (storage.ListPa
 	return page, nil
 }
 
-func (s *fakeStore) PresignGet(context.Context, storage.ObjectRef, time.Duration) (string, error) {
-	return "", storage.ErrNotSupported
+func (s *fakeStore) PresignGet(_ context.Context, ref storage.ObjectRef, _ time.Duration) (string, error) {
+	if !s.presign {
+		return "", storage.ErrNotSupported
+	}
+	return "https://presigned.example.test/get/" + ref.Key(), nil
 }
 
-func (s *fakeStore) PresignPut(context.Context, storage.ObjectRef, time.Duration, storage.PutOptions) (string, error) {
-	return "", storage.ErrNotSupported
+func (s *fakeStore) PresignPut(_ context.Context, ref storage.ObjectRef, _ time.Duration, _ storage.PutOptions) (string, error) {
+	if !s.presign {
+		return "", storage.ErrNotSupported
+	}
+	return "https://presigned.example.test/put/" + ref.Key(), nil
 }
 
 func (s *fakeStore) StartMultipart(context.Context, storage.ObjectRef, storage.PutOptions) (storage.UploadID, error) {
@@ -179,7 +192,7 @@ func (s *fakeStore) AbortMultipart(context.Context, storage.ObjectRef, storage.U
 }
 
 func (s *fakeStore) Capabilities() storage.Capabilities {
-	return storage.Capabilities{}
+	return storage.Capabilities{Presign: s.presign}
 }
 
 var _ storage.ObjectStore = (*fakeStore)(nil)

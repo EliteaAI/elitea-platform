@@ -187,6 +187,7 @@ func notImplementedArtifact(w http.ResponseWriter, r *http.Request) {
 type artifactRepoAdapter struct {
 	*dbrepos.ArtifactBucketsRepository
 	*dbrepos.ArtifactObjectsRepository
+	*dbrepos.ArtifactTransferGrantsRepository
 }
 
 // newArtifactHandler builds the S6/S1-backed artifacts.Handler when
@@ -207,7 +208,11 @@ func newArtifactHandler(cfg RouterConfig) (h *v2artifacts.Handler, ok bool) {
 	if err != nil {
 		return nil, false
 	}
-	return v2artifacts.NewHandler(artifactRepoAdapter{bucketsRepo, objectsRepo}, cfg.ObjectStore), true
+	grantsRepo, err := dbrepos.NewArtifactTransferGrantsRepository(cfg.Pool)
+	if err != nil {
+		return nil, false
+	}
+	return v2artifacts.NewHandler(artifactRepoAdapter{bucketsRepo, objectsRepo, grantsRepo}, cfg.ObjectStore), true
 }
 
 // Permission strings from the existing configuration.artifacts.artifacts
@@ -248,11 +253,13 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 
 	listBuckets, createBucket, getBucket, updateBucket, deleteBucket := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+	createTransferGrant, commitTransferGrant := notImplementedArtifact, notImplementedArtifact
 	if deps.Handler != nil {
 		listBuckets, createBucket, getBucket, updateBucket, deleteBucket =
 			deps.Handler.ListBuckets, deps.Handler.CreateBucket, deps.Handler.GetBucket, deps.Handler.UpdateBucket, deps.Handler.DeleteBucket
 		listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject =
 			deps.Handler.ListObjects, deps.Handler.UploadObject, deps.Handler.BatchDeleteObjects, deps.Handler.DownloadObject, deps.Handler.StatObject, deps.Handler.DeleteObject
+		createTransferGrant, commitTransferGrant = deps.Handler.CreateTransferGrant, deps.Handler.CommitTransferGrant
 	}
 
 	r.Group(func(r chi.Router) {
@@ -274,11 +281,11 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 			r.With(view).Head("/objects/{projectID}/{bucket}/*", statObject)
 			r.With(del).Delete("/objects/{projectID}/{bucket}/*", deleteObject)
 
-			// Transfer grants — S15 replaces these two. create for both: grant
-			// creation is explicitly create per S11; commit is the write half
-			// of the same grant lifecycle and the plan does not distinguish it.
-			r.With(create).Post("/grants/{projectID}/{bucket}", notImplementedArtifact)
-			r.With(create).Post("/grants/{projectID}/{grantID}:commit", notImplementedArtifact)
+			// Transfer grants — S15. create for both: grant creation is
+			// explicitly create per S11; commit is the write half of the same
+			// grant lifecycle and the plan does not distinguish it.
+			r.With(create).Post("/grants/{projectID}/{bucket}", createTransferGrant)
+			r.With(create).Post("/grants/{projectID}/{grantID}:commit", commitTransferGrant)
 		})
 	})
 }

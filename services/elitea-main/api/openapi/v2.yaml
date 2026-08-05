@@ -1672,6 +1672,8 @@ components:
                 - PreconditionFailed
                 - NotImplemented
                 - Internal
+                - DigestMismatch
+                - MediaTypeMismatch
             message: { type: string }
             details:
               type: object
@@ -4685,8 +4687,10 @@ paths:
       description: >
         Verifies size, digest, and media type against the grant row (S15).
         Media type verification is mandatory — ContentType is not part of
-        the signed presigned-PUT payload. A digest mismatch deletes the
-        uploaded object and returns 409.
+        the signed presigned-PUT payload. A digest or media-type mismatch
+        deletes the uploaded object and returns 409; an object that exceeds
+        the grant's max_bytes, or a commit that would push the project past
+        its storage quota, deletes the uploaded object and returns 413.
       tags: [artifacts]
       responses:
         '200':
@@ -4699,9 +4703,19 @@ paths:
         '403': { $ref: '#/components/responses/403' }
         '404': { $ref: '#/components/responses/404' }
         '409':
+          description: Digest or media-type mismatch, or the grant was already consumed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '412':
+          description: The grant has expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
           description: >
-            Size, digest, or media-type mismatch, or the grant was already
-            consumed
+            Uploaded object exceeds the grant's max_bytes, or committing it
+            would exceed the project's storage quota
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

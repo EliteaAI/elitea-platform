@@ -94,6 +94,8 @@ func statusForCode(code string) int {
 		return http.StatusForbidden
 	case "NotImplemented":
 		return http.StatusNotImplemented
+	case "DigestMismatch", "MediaTypeMismatch":
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

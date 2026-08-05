@@ -122,6 +122,41 @@ func (alwaysSucceedsArtifactRepo) SumProjectBytes(context.Context, int64) (int64
 	return 0, nil
 }
 
+func (alwaysSucceedsArtifactRepo) GetBucketByID(_ context.Context, id int64) (repos.BucketRow, error) {
+	now := time.Now()
+	return repos.BucketRow{
+		ID: id, ProjectID: 1, Name: "reports", DisplayName: "reports", BucketType: "local",
+		Tags: json.RawMessage(`{}`), CreatedAt: now, UpdatedAt: now,
+	}, nil
+}
+
+func (alwaysSucceedsArtifactRepo) CreateTransferGrant(_ context.Context, input repos.NewTransferGrantInput) (repos.TransferGrantRow, error) {
+	return repos.TransferGrantRow{
+		ID: input.ID, ProjectID: input.ProjectID, BucketID: input.BucketID, Key: input.Key,
+		Method: input.Method, ContentType: input.ContentType, MaxBytes: input.MaxBytes,
+		DigestAlg: input.DigestAlg, Digest: input.Digest, ExpiresAt: input.ExpiresAt, CreatedAt: time.Now(),
+	}, nil
+}
+
+// GetTransferGrant returns a fixed PUT grant with no digest declared. Its
+// ContentType matches alwaysSucceedsArtifactStore.Get's fixed ContentType
+// (both "application/octet-stream") so CommitTransferGrant's mandatory
+// media-type check passes and its digest check (skipped when the grant
+// declared none) is a no-op, letting the router-level "succeeds with exact
+// permission" tests exercise a genuine 200 without needing a real upload to
+// have happened first.
+func (alwaysSucceedsArtifactRepo) GetTransferGrant(_ context.Context, id string, projectID int64) (repos.TransferGrantRow, error) {
+	return repos.TransferGrantRow{
+		ID: id, ProjectID: projectID, BucketID: 1, Key: id, Method: "PUT",
+		ContentType: "application/octet-stream", MaxBytes: 1 << 20,
+		ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now(),
+	}, nil
+}
+
+func (alwaysSucceedsArtifactRepo) MarkTransferGrantConsumed(context.Context, string) error {
+	return nil
+}
+
 var _ v2artifacts.Repository = alwaysSucceedsArtifactRepo{}
 
 // alwaysSucceedsArtifactStore satisfies storage.ObjectStore, returning an
@@ -135,7 +170,9 @@ func (alwaysSucceedsArtifactStore) Put(_ context.Context, ref storage.ObjectRef,
 }
 
 func (alwaysSucceedsArtifactStore) Get(_ context.Context, ref storage.ObjectRef, _ *storage.ByteRange) (io.ReadCloser, storage.ObjectInfo, error) {
-	return io.NopCloser(strings.NewReader("")), storage.ObjectInfo{Key: ref.Key(), LastModified: time.Now()}, nil
+	return io.NopCloser(strings.NewReader("")), storage.ObjectInfo{
+		Key: ref.Key(), ContentType: "application/octet-stream", LastModified: time.Now(),
+	}, nil
 }
 
 func (alwaysSucceedsArtifactStore) Stat(_ context.Context, ref storage.ObjectRef) (storage.ObjectInfo, error) {

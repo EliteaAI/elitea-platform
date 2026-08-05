@@ -40,6 +40,11 @@ type Querier interface {
 	CountCurrentNotifications(ctx context.Context, arg CountCurrentNotificationsParams) (int64, error)
 	CountCurrentSharedConfigurations(ctx context.Context, arg CountCurrentSharedConfigurationsParams) (int64, error)
 	CreateArtifactBucket(ctx context.Context, arg CreateArtifactBucketParams) (EliteaStorageBucket, error)
+	// id::text/RETURNING id::text: transfer_grants.id is a native uuid column;
+	// casting to text on both sides keeps the Go-side type a plain string,
+	// matching this codebase's established convention (e.g.
+	// InsertArtifactBucketExpiryNotification, S14) rather than pgtype.UUID.
+	CreateArtifactTransferGrant(ctx context.Context, arg CreateArtifactTransferGrantParams) (CreateArtifactTransferGrantRow, error)
 	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
 	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
@@ -79,6 +84,11 @@ type Querier interface {
 	// docs/plans/storage-migration-plan.md S14's note on this open question.
 	GetArtifactBucketOwningProjectUserID(ctx context.Context, id int32) (int32, error)
 	GetArtifactProjectStoragePolicy(ctx context.Context, projectID int64) (EliteaStorageProjectStoragePolicy, error)
+	// Scoped by project_id, not just id: grant IDs are unguessable UUIDs, but
+	// every other artifact route requires a matching {projectID}, and this one
+	// should not be the exception that lets a caller commit a grant belonging
+	// to a project they only guessed the ID for.
+	GetArtifactTransferGrant(ctx context.Context, arg GetArtifactTransferGrantParams) (GetArtifactTransferGrantRow, error)
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
@@ -180,6 +190,12 @@ type Querier interface {
 	MarkAgentExecutionDispatched(ctx context.Context, arg MarkAgentExecutionDispatchedParams) (int64, error)
 	MarkAgentExecutionPublished(ctx context.Context, arg MarkAgentExecutionPublishedParams) (int64, error)
 	MarkArtifactBucketNotified(ctx context.Context, id int64) (int64, error)
+	// consumed_at IS NULL in the WHERE clause, not just the SET, is the actual
+	// single-use enforcement: 0 rows affected means either the grant does not
+	// exist or was already consumed. The caller (commitTransferGrant) has
+	// already fetched the row by this point, so 0 rows here unambiguously means
+	// "already consumed" — see repository.go's MarkTransferGrantConsumed.
+	MarkArtifactTransferGrantConsumed(ctx context.Context, id string) (int64, error)
 	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
 	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)

@@ -30,6 +30,9 @@ type fakeRepo struct {
 	// rollback path (upload, observe SumProjectBytes grow, delete, observe
 	// it shrink) through the real handler rather than a seeded number.
 	objects map[string]fakeObjectRecord
+	// grants backs CreateTransferGrant/GetTransferGrant/MarkTransferGrantConsumed
+	// (S15), keyed by grant ID.
+	grants map[string]repos.TransferGrantRow
 }
 
 type fakeObjectRecord struct {
@@ -50,6 +53,7 @@ func newFakeRepo() *fakeRepo {
 		sizes:    make(map[int64]int64),
 		counts:   make(map[int64]int64),
 		objects:  make(map[string]fakeObjectRecord),
+		grants:   make(map[string]repos.TransferGrantRow),
 	}
 }
 
@@ -245,6 +249,54 @@ func (r *fakeRepo) SumProjectBytes(_ context.Context, projectID int64) (int64, e
 		}
 	}
 	return total, nil
+}
+
+func (r *fakeRepo) GetBucketByID(_ context.Context, id int64) (repos.BucketRow, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.buckets[id]
+	if !ok {
+		return repos.BucketRow{}, storage.ErrNotFound
+	}
+	return b, nil
+}
+
+func (r *fakeRepo) CreateTransferGrant(_ context.Context, input repos.NewTransferGrantInput) (repos.TransferGrantRow, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row := repos.TransferGrantRow{
+		ID: input.ID, ProjectID: input.ProjectID, BucketID: input.BucketID, Key: input.Key,
+		Method: input.Method, ContentType: input.ContentType, MaxBytes: input.MaxBytes,
+		DigestAlg: input.DigestAlg, Digest: input.Digest, ExpiresAt: input.ExpiresAt, CreatedAt: time.Now(),
+	}
+	r.grants[row.ID] = row
+	return row, nil
+}
+
+func (r *fakeRepo) GetTransferGrant(_ context.Context, id string, projectID int64) (repos.TransferGrantRow, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row, ok := r.grants[id]
+	if !ok || row.ProjectID != projectID {
+		return repos.TransferGrantRow{}, storage.ErrNotFound
+	}
+	return row, nil
+}
+
+// MarkTransferGrantConsumed mirrors the real repository's single-use
+// enforcement: an already-consumed (or unknown) id returns
+// storage.ErrAlreadyExists.
+func (r *fakeRepo) MarkTransferGrantConsumed(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	row, ok := r.grants[id]
+	if !ok || row.ConsumedAt != nil {
+		return storage.ErrAlreadyExists
+	}
+	now := time.Now()
+	row.ConsumedAt = &now
+	r.grants[id] = row
+	return nil
 }
 
 var _ artifacts.Repository = (*fakeRepo)(nil)
