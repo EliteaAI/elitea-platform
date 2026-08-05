@@ -35,7 +35,7 @@ import { parse } from '@babel/parser';
  * File-level budget waivers for Wave 2 code — pre-existing budget breaches
  * documented in the module JSDoc above. Remove waivers as refactoring lands.
  */
-const BUDGET_WAIVERS = Object.freeze({
+export const BUDGET_WAIVERS = Object.freeze({
   'src/features/chat-messages/ui/canvas/CanvasEditor.tsx': ['file-length', 'use-effects'],
   'src/features/chat-messages/ui/canvas/Canvas.tsx': ['component-props', 'hook-deps'],
   'src/features/chat-messages/ui/canvas/CanvasEditHeader.tsx': ['component-props'],
