@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 )
 
@@ -250,6 +251,50 @@ func TestArtifactLimitUploadRecordsObjectMetadata(t *testing.T) {
 		t.Errorf("CountBucketObjects = %d, want 1", count)
 	}
 }
+
+// TestArtifactRetentionUploadStampsObjectExpiryFromBucket proves S14 item 1's
+// object-side half: an object uploaded into a bucket with retention
+// configured gets the bucket's own expires_at, not a nil one — the bucket
+// side of this (computeExpiresAt on create/retention-update) already existed
+// from S8; only the upload path was missing it before S14.
+func TestArtifactRetentionUploadStampsObjectExpiryFromBucket(t *testing.T) {
+	repo := newFakeRepo()
+	bucket, err := repo.CreateBucket(t.Context(), repos.NewBucketInput{
+		ProjectID: 1, Name: "reports", DisplayName: "reports", BucketType: "local",
+		RetentionDays: int32Ptr(30),
+		ExpiresAt:     timePtr(time.Now().Add(30 * 24 * time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("seed CreateBucket: %v", err)
+	}
+	if bucket.ExpiresAt == nil {
+		t.Fatal("seeded bucket has a nil ExpiresAt; test fixture is broken")
+	}
+	store := newFakeStore()
+	h := artifacts.NewHandler(repo, store)
+	r := newObjectTestRouter(h)
+
+	req := newUploadRequest(t, "/objects/1/reports", "expiring.bin", []byte("x"))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+
+	record, ok := repo.objects[fakeObjectKey(bucket.ID, "expiring.bin")]
+	if !ok {
+		t.Fatal("expected UpsertObject to have recorded expiring.bin")
+	}
+	if record.expiresAt == nil {
+		t.Fatal("uploaded object has a nil ExpiresAt, want the bucket's expires_at")
+	}
+	if !record.expiresAt.Equal(*bucket.ExpiresAt) {
+		t.Errorf("object ExpiresAt = %v, want the bucket's %v", *record.expiresAt, *bucket.ExpiresAt)
+	}
+}
+
+func int32Ptr(v int32) *int32        { return &v }
+func timePtr(t time.Time) *time.Time { return &t }
 
 // TestArtifactLimitDeleteRemovesObjectMetadata proves the other half of the
 // same gap-fix: deleting an object (single or batch) removes its metadata

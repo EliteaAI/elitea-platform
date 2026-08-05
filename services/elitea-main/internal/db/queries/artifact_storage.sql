@@ -11,6 +11,17 @@ SELECT id, project_id, name, display_name, bucket_type, is_pinned, tags,
 FROM elitea_storage.buckets
 WHERE project_id = $1 AND name = $2 AND deleted_at IS NULL;
 
+-- name: GetArtifactBucketByID :one
+-- ListExpiredArtifactObjects (below) has no request-bound project scope — it
+-- scans elitea_storage.objects across every project, which only carries
+-- bucket_id, not project_id/name. The retention sweeper (S14) uses this to
+-- resolve the (project_id, bucket name) a physical ObjectRef needs before it
+-- can delete an expired object's bytes from the ObjectStore backend.
+SELECT id, project_id, name, display_name, bucket_type, is_pinned, tags,
+       retention_days, expires_at, notified_at, created_at, updated_at, deleted_at
+FROM elitea_storage.buckets
+WHERE id = $1 AND deleted_at IS NULL;
+
 -- name: CreateArtifactBucket :one
 INSERT INTO elitea_storage.buckets (
     project_id, name, display_name, bucket_type, retention_days, expires_at
@@ -21,8 +32,13 @@ RETURNING id, project_id, name, display_name, bucket_type, is_pinned, tags,
     retention_days, expires_at, notified_at, created_at, updated_at, deleted_at;
 
 -- name: UpdateArtifactBucketRetention :one
+-- notified_at resets to NULL on every retention change: a bucket already
+-- notified once for an earlier expires_at must be eligible for a fresh
+-- notification against whatever new expires_at this update just set,
+-- otherwise ListArtifactBucketsNeedingExpiryNotice's `notified_at IS NULL`
+-- filter would permanently exclude it after the first notice.
 UPDATE elitea_storage.buckets
-SET retention_days = $2, expires_at = $3, updated_at = now()
+SET retention_days = $2, expires_at = $3, notified_at = NULL, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, project_id, name, display_name, bucket_type, is_pinned, tags,
     retention_days, expires_at, notified_at, created_at, updated_at, deleted_at;
@@ -127,3 +143,20 @@ LIMIT $2;
 
 -- name: DeleteArtifactObjectRows :execrows
 DELETE FROM elitea_storage.objects WHERE id = ANY(sqlc.arg('ids')::bigint[]);
+
+-- name: GetArtifactBucketOwningProjectUserID :one
+-- elitea_storage.buckets has no user-identifying column of its own (S8 never
+-- captured a creating user) — the retention sweeper (S14) resolves a
+-- notification recipient via centry.project.owner_id instead, the only
+-- existing project->user mapping that needs no new schema. See
+-- docs/plans/storage-migration-plan.md S14's note on this open question.
+SELECT owner_id FROM centry.project WHERE id = $1;
+
+-- name: InsertArtifactBucketExpiryNotification :execrows
+INSERT INTO centry.notifications (
+    uuid, is_seen, project_id, user_id, meta, event_type
+) VALUES (
+    sqlc.arg('notification_uuid')::text::uuid, FALSE,
+    sqlc.arg('project_id')::integer, sqlc.arg('user_id')::integer,
+    sqlc.arg('meta')::jsonb, 'artifact_bucket_expiring'
+) ON CONFLICT (uuid) DO NOTHING;

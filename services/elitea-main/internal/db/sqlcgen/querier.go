@@ -66,6 +66,18 @@ type Querier interface {
 	GetAgentExecutionAdmissionByIdempotency(ctx context.Context, arg GetAgentExecutionAdmissionByIdempotencyParams) (GetAgentExecutionAdmissionByIdempotencyRow, error)
 	GetAgentExecutionTerminalNodeEvent(ctx context.Context, arg GetAgentExecutionTerminalNodeEventParams) (GetAgentExecutionTerminalNodeEventRow, error)
 	GetArtifactBucket(ctx context.Context, arg GetArtifactBucketParams) (EliteaStorageBucket, error)
+	// ListExpiredArtifactObjects (below) has no request-bound project scope — it
+	// scans elitea_storage.objects across every project, which only carries
+	// bucket_id, not project_id/name. The retention sweeper (S14) uses this to
+	// resolve the (project_id, bucket name) a physical ObjectRef needs before it
+	// can delete an expired object's bytes from the ObjectStore backend.
+	GetArtifactBucketByID(ctx context.Context, id int64) (EliteaStorageBucket, error)
+	// elitea_storage.buckets has no user-identifying column of its own (S8 never
+	// captured a creating user) — the retention sweeper (S14) resolves a
+	// notification recipient via centry.project.owner_id instead, the only
+	// existing project->user mapping that needs no new schema. See
+	// docs/plans/storage-migration-plan.md S14's note on this open question.
+	GetArtifactBucketOwningProjectUserID(ctx context.Context, id int32) (int32, error)
 	GetArtifactProjectStoragePolicy(ctx context.Context, projectID int64) (EliteaStorageProjectStoragePolicy, error)
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
@@ -97,6 +109,7 @@ type Querier interface {
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
 	InsertAgentExecutionBinding(ctx context.Context, arg InsertAgentExecutionBindingParams) error
 	InsertAgentExecutionJob(ctx context.Context, arg InsertAgentExecutionJobParams) (string, error)
+	InsertArtifactBucketExpiryNotification(ctx context.Context, arg InsertArtifactBucketExpiryNotificationParams) (int64, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
 	InsertCurrentIndexScheduleNotification(ctx context.Context, arg InsertCurrentIndexScheduleNotificationParams) (int64, error)
@@ -201,6 +214,11 @@ type Querier interface {
 	SumArtifactProjectBytes(ctx context.Context, projectID int64) (int64, error)
 	SupersedeScheduledJobRevision(ctx context.Context, arg SupersedeScheduledJobRevisionParams) error
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
+	// notified_at resets to NULL on every retention change: a bucket already
+	// notified once for an earlier expires_at must be eligible for a fresh
+	// notification against whatever new expires_at this update just set,
+	// otherwise ListArtifactBucketsNeedingExpiryNotice's `notified_at IS NULL`
+	// filter would permanently exclude it after the first notice.
 	UpdateArtifactBucketRetention(ctx context.Context, arg UpdateArtifactBucketRetentionParams) (EliteaStorageBucket, error)
 	UpdateArtifactBucketTags(ctx context.Context, arg UpdateArtifactBucketTagsParams) (EliteaStorageBucket, error)
 	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)

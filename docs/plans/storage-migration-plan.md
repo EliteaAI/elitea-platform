@@ -1753,6 +1753,115 @@ cd services/elitea-main && \
   test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s14b.log && ! grep -q -- '--- SKIP' /tmp/s14b.log
 ```
 
+**S6 already anticipated every repository method items 2 and 4 need**
+(`ListExpiredObjects`, `DeleteObjectRows`, `ListBucketsNeedingExpiryNotice`,
+`MarkBucketNotified` all already existed, each already documenting "the
+retention sweeper (S14) is this method's only caller"). One gap remained:
+`ObjectRow` carries only `bucket_id`, not `project_id`/bucket name, so a
+sweep across every project (no request-bound scope) had no way to build a
+physical `ObjectRef` for an expired object. Added `GetArtifactBucketByID` (a
+new sqlc query + `ArtifactBucketsRepository.GetBucketByID`) to resolve it.
+
+**The sweeper Handler follows the `schedulingapp.Job` pattern
+(`currentIndexScheduleDueWork`'s shape), not the simpler self-ticking
+`publisherRunner` pattern `execution_replay_retention.go` also uses in this
+codebase** — both are real, pre-existing patterns; the plan's explicit
+"Follow the shape in `current_index_schedule_due_work*.go`" instruction
+picks the former. It's registered into the **same** registry/scheduler
+instance the index-scheduling job already uses (a second `schedulingapp.Job`
+argument to the same `schedulingapp.NewRegistry` call), not an independent
+scheduler with its own instance ID/lease/pool — the plan's "add the
+retention-sweeper Job to that same chain" wording. **Consequence, stated
+plainly:** the sweeper only runs when `IndexSchedulingEnabled` (and by
+extension `IndexIngestDispatchEnabled` and the whole optional
+`runtimecomposition` runtime) is enabled. A deployment running artifact
+storage without that optional runtime gets no automatic sweeping — the
+S8/S9 upload/retention paths still stamp `expires_at` correctly regardless,
+but nothing deletes past it. Building an independent scheduler subsystem
+just for this stage was judged out of proportion; flagged here as an open
+question for a human owner rather than silently accepted.
+
+**Composition-level test, honestly scoped.** No test anywhere in this
+codebase invokes `runtimecomposition.New(...)`'s full dependency graph
+end-to-end (Redis, gRPC TLS, signing keys, five Postgres pools — confirmed
+by grep, none exists). Building one from scratch for this one assertion was
+judged disproportionate. Instead, the index-job and retention-job
+`schedulingapp.Job{...}` construction was extracted into
+`scheduledJobs(...)` and the `schedulingapp.NewRegistry(...)` call into
+`scheduledJobRegistry(...)` (`internal/runtimecomposition/
+scheduled_job_registry.go`) — `New()` calls both, and
+`TestArtifactRetentionScheduledJobsIncludesBothIndexAndSweepJobs` calls the
+exact same functions directly, asserting via the newly-exported
+`Registry.RegisteredJobs()` that both job IDs are present. This catches "a
+correctly implemented, unit-tested Handler that never reaches the registry"
+— exactly the gap class this stage's plan text calls out — provided `New()`
+keeps routing through these two functions rather than reconstructing the
+job list inline again. It does not catch "`New()` stops calling
+`scheduledJobs()` at all"; a full end-to-end test would, but at a cost this
+stage's scope did not justify.
+
+**The `user_id` open question (S14 item 4) is resolved via
+`centry.project.owner_id`** — option (b) from the plan text ("find and
+reuse an existing project-membership enumeration"), not option (a) (S8's
+`CreateBucket` was not changed to record a creating user; that remains a
+schema change this plan does not make). New query
+`GetArtifactBucketOwningProjectUserID` reads `centry.project.owner_id`
+directly; no new schema. This notifies the project's single owner, not
+every project member (`auth_core__project_user_role` would give the full
+member list, if that's ever wanted instead).
+
+**`UpdateArtifactBucketRetention` now resets `notified_at` to `NULL`** —
+found while implementing the notification path: without this, a bucket
+already notified once, whose retention is later extended (a new
+`expires_at`), would never be eligible for a fresh notification, since
+`ListArtifactBucketsNeedingExpiryNotice`'s `notified_at IS NULL` filter
+would permanently exclude it. The notification UUID is derived from
+`(bucketID, expiresAt)`, not `bucketID` alone, for the same reason: stable
+across a retried tick within one cycle, distinct across cycles, so a
+renotification under a new `expires_at` doesn't silently collide with (and
+get dropped by) the earlier notification's `ON CONFLICT (uuid) DO NOTHING`.
+
+**Multipart-abort lifecycle rule (item 5): S3 and GCS get the call; Azure
+does not, deliberately.** `PutBucketLifecycleConfiguration`
+(S3)/`Bucket.Update(Lifecycle)` (GCS) are **not** called from `New()` —
+first-draft did that, then broke `cmd/elitea-main`'s
+`TestArtifactNewObjectStoreDispatchesPerBackend`, whose GCS subtest's own
+comment ("this asserts a concrete type rather than tolerating a credential
+error") documents a deliberate pre-existing invariant: `New()` must stay a
+cheap, non-network-dialing constructor. Extracted into a
+`ConfigureRetentionLifecycle(ctx) error` method on each backend instead,
+called explicitly from `main.go` right after `objectStoreReadinessProbe`
+via an optional-interface check (`azure.Backend` doesn't implement it, so
+`main.go` skips it via a type assertion, not a special case). Confirmed
+empirically: RustFS both accepts and round-trips the S3 rule (a live
+`GetBucketLifecycleConfiguration` after `ConfigureRetentionLifecycle`
+reports it — see `s3/lifecycle_test.go`); fake-gcs-server accepts the GCS
+call without erroring but does **not** persist it
+(`Bucket.Attrs().Lifecycle` stays empty afterward) — a known emulator
+limitation, not evidence against real GCS, and not independently
+verifiable in this stack. Azure gets no call at all: the data-plane SDK
+already used here has none (lifecycle policies are an Azure Resource
+Manager/management-plane resource, a different SDK needing a subscription
+ID, resource group, and storage-account resource ID `azure.Config` does not
+carry), and Azurite exposes no ARM endpoint — architecturally untestable
+here, not just an emulator gap. Azure's own default ~7-day
+uncommitted-block garbage collection already delivers the same outcome
+with zero explicit configuration, which is why this was judged not worth
+the added configuration surface.
+
+**Out-of-scope discovery, not fixed here:** running `internal/infra/db/repos`'s
+Postgres integration tests against a real database (not part of this
+stage's own surface) surfaced 7 pre-existing failures unrelated to this
+plan — confirmed via `git log` that the affected files were last touched by
+unrelated indexing/CI commits. Root cause for at least one:
+`configuration_validation_postgres_integration_test.go`'s `centry.project`
+stub declares `create_success`/`suspended` `NOT NULL` with no `DEFAULT`,
+but `TestTenantBoundariesRejectMissingLegacySchema` inserts a row omitting
+both columns. Invisible in CI since `ci-go.yml` never sets
+`ELITEA_TEST_DATABASE_URL` or runs a Postgres service for this job, so
+these tests always skip in the pipeline. Flagged as a follow-up task rather
+than fixed inline — unrelated to artifact storage.
+
 ---
 
 ## S15 — Presigned transfer grants

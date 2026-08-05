@@ -80,6 +80,7 @@ type NewBucketInput struct {
 type artifactBucketQueries interface {
 	ListArtifactBuckets(context.Context, int64) ([]sqlcgen.EliteaStorageBucket, error)
 	GetArtifactBucket(context.Context, sqlcgen.GetArtifactBucketParams) (sqlcgen.EliteaStorageBucket, error)
+	GetArtifactBucketByID(context.Context, int64) (sqlcgen.EliteaStorageBucket, error)
 	CreateArtifactBucket(context.Context, sqlcgen.CreateArtifactBucketParams) (sqlcgen.EliteaStorageBucket, error)
 	UpdateArtifactBucketRetention(context.Context, sqlcgen.UpdateArtifactBucketRetentionParams) (sqlcgen.EliteaStorageBucket, error)
 	SetArtifactBucketPinned(context.Context, sqlcgen.SetArtifactBucketPinnedParams) (sqlcgen.EliteaStorageBucket, error)
@@ -139,6 +140,21 @@ func (r *ArtifactBucketsRepository) GetBucket(ctx context.Context, projectID int
 
 // CreateBucket maps a unique-violation (23505, the project_id+name partial
 // unique index) to storage.ErrAlreadyExists.
+// GetBucketByID looks up a bucket by its primary key, without a request-bound
+// projectID — the retention sweeper (S14) is this method's only caller,
+// since ListExpiredObjects scans across every project and only has a
+// bucket_id to resolve back to (project_id, name) for a physical ObjectRef.
+func (r *ArtifactBucketsRepository) GetBucketByID(ctx context.Context, id int64) (BucketRow, error) {
+	row, err := r.queries.GetArtifactBucketByID(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return BucketRow{}, storage.ErrNotFound
+	}
+	if err != nil {
+		return BucketRow{}, fmt.Errorf("get artifact bucket by id: %w", err)
+	}
+	return bucketRowFromModel(row), nil
+}
+
 func (r *ArtifactBucketsRepository) CreateBucket(ctx context.Context, input NewBucketInput) (BucketRow, error) {
 	row, err := r.queries.CreateArtifactBucket(ctx, sqlcgen.CreateArtifactBucketParams{
 		ProjectID:     input.ProjectID,

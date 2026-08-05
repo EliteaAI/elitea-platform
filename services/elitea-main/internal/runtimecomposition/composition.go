@@ -80,6 +80,13 @@ type Dependencies struct {
 	ProjectSystemTokenSource         ProjectSystemTokenSource
 	PermissionResolver               auth.PermissionResolver
 	Logger                           *slog.Logger
+
+	// ObjectStore backs the artifact retention sweeper (S14) — required only
+	// when IndexSchedulingEnabled, since that is the only scheduler this
+	// runtime graph owns. See artifact_retention_sweep.go's package doc for
+	// why the sweeper's own availability is coupled to this flag rather than
+	// gated independently.
+	ObjectStore storage.ObjectStore
 }
 
 func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtime, error) {
@@ -103,6 +110,11 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		dependencies.ProjectSystemTokenSource == nil {
 		return nil, errors.New(
 			"runtime index scheduling project-system token source is required",
+		)
+	}
+	if config.IndexSchedulingEnabled && dependencies.ObjectStore == nil {
+		return nil, errors.New(
+			"runtime index scheduling artifact object store is required",
 		)
 	}
 	if config.IndexIngestDispatchEnabled &&
@@ -967,6 +979,39 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 					scheduleErr,
 				)
 			}
+
+			// The retention sweeper (S14) piggybacks on this same registry
+			// rather than owning an independent scheduler instance — see
+			// artifact_retention_sweep.go's package doc for the tradeoff
+			// this implies (sweeping is only live when index scheduling is).
+			artifactBuckets, artifactBucketsErr := repos.NewArtifactBucketsRepository(dependencies.AdmissionPool)
+			if artifactBucketsErr != nil {
+				return nil, fmt.Errorf("construct artifact buckets repository: %w", artifactBucketsErr)
+			}
+			artifactObjects, artifactObjectsErr := repos.NewArtifactObjectsRepository(dependencies.AdmissionPool)
+			if artifactObjectsErr != nil {
+				return nil, fmt.Errorf("construct artifact objects repository: %w", artifactObjectsErr)
+			}
+			artifactNotifications, artifactNotificationsErr := repos.NewArtifactRetentionNotificationRepository(dependencies.AdmissionPool)
+			if artifactNotificationsErr != nil {
+				return nil, fmt.Errorf("construct artifact retention notification repository: %w", artifactNotificationsErr)
+			}
+			retentionSweep, retentionSweepErr := newArtifactRetentionSweep(
+				artifactObjects, artifactBuckets, artifactNotifications, dependencies.ObjectStore,
+			)
+			if retentionSweepErr != nil {
+				return nil, fmt.Errorf("construct artifact retention sweep: %w", retentionSweepErr)
+			}
+			retentionSchedule, retentionScheduleErr := schedulingapp.ParseCron(
+				artifactRetentionSweepCadence,
+			)
+			if retentionScheduleErr != nil {
+				return nil, fmt.Errorf(
+					"parse artifact retention sweep cadence: %w",
+					retentionScheduleErr,
+				)
+			}
+
 			// One scan observes all projects and may cover the same due index
 			// occurrence as an older scan. Claiming scan occurrences in
 			// parallel only makes the product runner's overlap guard release
@@ -980,16 +1025,9 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 				PageSize:        1,
 				MaxPagesPerTick: 4,
 			}
-			registry, registryErr := schedulingapp.NewRegistry(
+			registry, registryErr := scheduledJobRegistry(
 				schedulerConfig.LeaseDuration,
-				schedulingapp.Job{
-					ID:       currentIndexScheduleCapability,
-					Revision: currentIndexScheduleRevision,
-					Mode:     schedulingapp.ModeDurableAdmission,
-					Schedule: schedule,
-					Timeout:  currentIndexScheduleHandlerTimeout,
-					Handler:  indexDueWork,
-				},
+				scheduledJobs(indexDueWork, retentionSweep, schedule, retentionSchedule)...,
 			)
 			if registryErr != nil {
 				return nil, fmt.Errorf(

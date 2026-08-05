@@ -135,6 +135,55 @@ func (q *Queries) GetArtifactBucket(ctx context.Context, arg GetArtifactBucketPa
 	return i, err
 }
 
+const getArtifactBucketByID = `-- name: GetArtifactBucketByID :one
+SELECT id, project_id, name, display_name, bucket_type, is_pinned, tags,
+       retention_days, expires_at, notified_at, created_at, updated_at, deleted_at
+FROM elitea_storage.buckets
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+// ListExpiredArtifactObjects (below) has no request-bound project scope — it
+// scans elitea_storage.objects across every project, which only carries
+// bucket_id, not project_id/name. The retention sweeper (S14) uses this to
+// resolve the (project_id, bucket name) a physical ObjectRef needs before it
+// can delete an expired object's bytes from the ObjectStore backend.
+func (q *Queries) GetArtifactBucketByID(ctx context.Context, id int64) (EliteaStorageBucket, error) {
+	row := q.db.QueryRow(ctx, getArtifactBucketByID, id)
+	var i EliteaStorageBucket
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Name,
+		&i.DisplayName,
+		&i.BucketType,
+		&i.IsPinned,
+		&i.Tags,
+		&i.RetentionDays,
+		&i.ExpiresAt,
+		&i.NotifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getArtifactBucketOwningProjectUserID = `-- name: GetArtifactBucketOwningProjectUserID :one
+SELECT owner_id FROM centry.project WHERE id = $1
+`
+
+// elitea_storage.buckets has no user-identifying column of its own (S8 never
+// captured a creating user) — the retention sweeper (S14) resolves a
+// notification recipient via centry.project.owner_id instead, the only
+// existing project->user mapping that needs no new schema. See
+// docs/plans/storage-migration-plan.md S14's note on this open question.
+func (q *Queries) GetArtifactBucketOwningProjectUserID(ctx context.Context, id int32) (int32, error) {
+	row := q.db.QueryRow(ctx, getArtifactBucketOwningProjectUserID, id)
+	var owner_id int32
+	err := row.Scan(&owner_id)
+	return owner_id, err
+}
+
 const getArtifactProjectStoragePolicy = `-- name: GetArtifactProjectStoragePolicy :one
 SELECT project_id, max_object_bytes, max_total_bytes, retention_default_days,
        retention_max_days, attachment_bucket, updated_at
@@ -155,6 +204,36 @@ func (q *Queries) GetArtifactProjectStoragePolicy(ctx context.Context, projectID
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertArtifactBucketExpiryNotification = `-- name: InsertArtifactBucketExpiryNotification :execrows
+INSERT INTO centry.notifications (
+    uuid, is_seen, project_id, user_id, meta, event_type
+) VALUES (
+    $1::text::uuid, FALSE,
+    $2::integer, $3::integer,
+    $4::jsonb, 'artifact_bucket_expiring'
+) ON CONFLICT (uuid) DO NOTHING
+`
+
+type InsertArtifactBucketExpiryNotificationParams struct {
+	NotificationUuid string `db:"notification_uuid" json:"notification_uuid"`
+	ProjectID        int32  `db:"project_id" json:"project_id"`
+	UserID           int32  `db:"user_id" json:"user_id"`
+	Meta             []byte `db:"meta" json:"meta"`
+}
+
+func (q *Queries) InsertArtifactBucketExpiryNotification(ctx context.Context, arg InsertArtifactBucketExpiryNotificationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertArtifactBucketExpiryNotification,
+		arg.NotificationUuid,
+		arg.ProjectID,
+		arg.UserID,
+		arg.Meta,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listArtifactBuckets = `-- name: ListArtifactBuckets :many
@@ -436,7 +515,7 @@ func (q *Queries) SumArtifactProjectBytes(ctx context.Context, projectID int64) 
 
 const updateArtifactBucketRetention = `-- name: UpdateArtifactBucketRetention :one
 UPDATE elitea_storage.buckets
-SET retention_days = $2, expires_at = $3, updated_at = now()
+SET retention_days = $2, expires_at = $3, notified_at = NULL, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, project_id, name, display_name, bucket_type, is_pinned, tags,
     retention_days, expires_at, notified_at, created_at, updated_at, deleted_at
@@ -448,6 +527,11 @@ type UpdateArtifactBucketRetentionParams struct {
 	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 }
 
+// notified_at resets to NULL on every retention change: a bucket already
+// notified once for an earlier expires_at must be eligible for a fresh
+// notification against whatever new expires_at this update just set,
+// otherwise ListArtifactBucketsNeedingExpiryNotice's `notified_at IS NULL`
+// filter would permanently exclude it after the first notice.
 func (q *Queries) UpdateArtifactBucketRetention(ctx context.Context, arg UpdateArtifactBucketRetentionParams) (EliteaStorageBucket, error) {
 	row := q.db.QueryRow(ctx, updateArtifactBucketRetention, arg.ID, arg.RetentionDays, arg.ExpiresAt)
 	var i EliteaStorageBucket

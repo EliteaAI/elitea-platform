@@ -69,3 +69,11 @@ func (r *Registry) registeredJobs() []RegisteredJob {
 	}
 	return append([]RegisteredJob(nil), r.registered...)
 }
+
+// RegisteredJobs exposes the frozen job set for callers outside this
+// package — composition-root tests use it to assert a job was actually
+// wired into a running registry, not just that its Handler passes an
+// isolated unit test.
+func (r *Registry) RegisteredJobs() []RegisteredJob {
+	return r.registeredJobs()
+}

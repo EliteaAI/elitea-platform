@@ -368,7 +368,20 @@ func (b *Backend) CompleteMultipart(ctx context.Context, ref storage.ObjectRef, 
 // AbortMultipart is a no-op: Azure has no explicit abort API for staged
 // blocks. Uncommitted blocks are automatically garbage-collected roughly a
 // week after their last staging call regardless of any explicit action —
-// this is also what S14's coarse provider-native lifecycle rule configures.
+// this is the deliberate resolution S14's coarse provider-native lifecycle
+// rule reached for this backend, not an oversight. Unlike S3/GCS, the data
+// used elsewhere in this backend (github.com/Azure/azure-sdk-for-go/sdk/
+// storage/azblob, azure.Config's Account/Key/ContainerName/Endpoint) has no
+// blob-lifecycle-management call at all — lifecycle policies are an Azure
+// Resource Manager (management-plane) resource, reached through a
+// different SDK (armstorage.ManagementPoliciesClient) that needs a
+// subscription ID, resource group, and storage-account resource ID this
+// Config does not carry, and Azurite (this stack's Azure emulator) exposes
+// no ARM endpoint at all — architecturally untestable here, not just an
+// emulator gap. Since the default GC already delivers the desired
+// behavior, adding that management-plane dependency purely to make it
+// explicit was judged not worth the added configuration surface. See
+// docs/plans/storage-migration-plan.md's S14 section for this tradeoff.
 func (b *Backend) AbortMultipart(ctx context.Context, ref storage.ObjectRef, id storage.UploadID) error {
 	return nil
 }

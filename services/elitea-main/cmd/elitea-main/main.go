@@ -96,6 +96,9 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err := objectStoreReadinessProbe(ctx, objectStore); err != nil {
 		return fmt.Errorf("object store readiness probe: %w", err)
 	}
+	if err := configureObjectStoreRetentionLifecycle(ctx, objectStore); err != nil {
+		return fmt.Errorf("configure object store retention lifecycle: %w", err)
+	}
 
 	// The unversioned legacy bootstrap exists only for an empty local developer
 	// database. Production shared/tenant histories are owned by elitea-migrate.
@@ -490,6 +493,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ProjectSystemTokenSource:         formGraph,
 			PermissionResolver:               legacyrbac.NewPostgresResolver(pool),
 			Logger:                           logger,
+			ObjectStore:                      objectStore,
 		})
 		if err != nil {
 			return fmt.Errorf("compose optional runtime: %w", err)
@@ -817,6 +821,25 @@ func objectStoreReadinessProbe(ctx context.Context, store storage.ObjectStore) e
 		return err
 	}
 	return nil
+}
+
+// retentionLifecycleConfigurer is satisfied by s3.Backend and gcs.Backend —
+// see their ConfigureRetentionLifecycle doc comments for why this is a
+// separate, optional step here rather than folded into newObjectStore/New()
+// itself (New() must stay a cheap, non-network-dialing constructor).
+// azure.Backend does not implement it: Azure's own default ~7-day
+// uncommitted-block GC already delivers the same outcome with no explicit
+// call, see azure/backend.go's AbortMultipart doc comment.
+type retentionLifecycleConfigurer interface {
+	ConfigureRetentionLifecycle(ctx context.Context) error
+}
+
+func configureObjectStoreRetentionLifecycle(ctx context.Context, store storage.ObjectStore) error {
+	configurer, ok := store.(retentionLifecycleConfigurer)
+	if !ok {
+		return nil
+	}
+	return configurer.ConfigureRetentionLifecycle(ctx)
 }
 
 type poolChecker struct {

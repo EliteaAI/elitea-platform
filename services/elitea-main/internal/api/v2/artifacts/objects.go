@@ -380,6 +380,7 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 		Key:        info.Key,
 		ByteLength: info.Size,
 		MediaType:  contentType,
+		ExpiresAt:  bucketRow.ExpiresAt,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "Internal", "record object metadata: "+err.Error())
 		return

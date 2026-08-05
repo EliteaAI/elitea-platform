@@ -88,6 +88,47 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 	}, nil
 }
 
+// ConfigureRetentionLifecycle sets a coarse, one-time, provider-native
+// bucket lifecycle rule aborting incomplete multipart uploads left dangling
+// by a crashed/abandoned client after 7 days (actual object/bucket
+// retention stays a Go-owned ledger — internal/runtimecomposition's
+// artifact retention sweep — not a provider lifecycle rule; this is the one
+// deliberate exception). This backend's own Capabilities().NativeMultipart
+// is false — Put uses GCS's JSON-API resumable upload, not the XML-API
+// multipart upload this lifecycle action targets — so today this is
+// defense-in-depth against a mechanism this backend does not itself
+// create, not an active leak closed. Kept for parity with S3/Azure and in
+// case that changes.
+//
+// Deliberately not called from New(): New() must stay a cheap,
+// non-network-dialing constructor — cmd/elitea-main's
+// TestArtifactNewObjectStoreDispatchesPerBackend asserts exactly that for
+// every backend. This is a separate, explicit startup step, alongside
+// main.go's own objectStoreReadinessProbe, not folded into construction.
+//
+// Empirically confirmed against fake-gcs-server (this stack's GCS
+// emulator): the call succeeds without error, but the rule does not
+// actually round-trip (Bucket.Attrs().Lifecycle stays empty afterward) — a
+// known emulator limitation, not evidence the rule is a no-op against real
+// GCS. Returning an error here on a real failure (e.g. the service account
+// lacking storage.buckets.update) is intentional, matching this backend's
+// fail-closed posture elsewhere.
+func (b *Backend) ConfigureRetentionLifecycle(ctx context.Context) error {
+	if _, err := b.client.Bucket(b.bucket).Update(ctx, gcstorage.BucketAttrsToUpdate{
+		Lifecycle: &gcstorage.Lifecycle{
+			Rules: []gcstorage.LifecycleRule{
+				{
+					Action:    gcstorage.LifecycleAction{Type: gcstorage.AbortIncompleteMPUAction},
+					Condition: gcstorage.LifecycleCondition{AgeInDays: 7},
+				},
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("storage/gcs: configure incomplete-multipart-upload lifecycle rule: %w", err)
+	}
+	return nil
+}
+
 func (b *Backend) Capabilities() storage.Capabilities {
 	return storage.Capabilities{Presign: b.hasSigningMaterial, NativeMultipart: false, ServerSideCopy: true}
 }

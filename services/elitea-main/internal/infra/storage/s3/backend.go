@@ -89,6 +89,42 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 	}, nil
 }
 
+// ConfigureRetentionLifecycle sets a coarse, one-time, provider-native
+// bucket lifecycle rule aborting incomplete multipart uploads left dangling
+// by a crashed/abandoned client after 7 days (S3 bills for their storage
+// indefinitely otherwise; the retention sweeper — internal/runtimecomposition
+// — has no way to discover them at all, since they are not objects; actual
+// object/bucket retention stays a Go-owned ledger, not a provider lifecycle
+// rule — this is the one deliberate exception).
+//
+// Deliberately not called from New(): New() must stay a cheap,
+// non-network-dialing constructor — cmd/elitea-main's
+// TestArtifactNewObjectStoreDispatchesPerBackend asserts exactly that for
+// every backend. This is a separate, explicit startup step, alongside
+// main.go's own objectStoreReadinessProbe, not folded into construction.
+// Confirmed empirically against RustFS (this stack's S3 emulator): the rule
+// sets and round-trips correctly (see lifecycle_test.go).
+func (b *Backend) ConfigureRetentionLifecycle(ctx context.Context) error {
+	if _, err := b.client.PutBucketLifecycleConfiguration(ctx, &s3.PutBucketLifecycleConfigurationInput{
+		Bucket: aws.String(b.bucket),
+		LifecycleConfiguration: &types.BucketLifecycleConfiguration{
+			Rules: []types.LifecycleRule{
+				{
+					ID:     aws.String("elitea-abort-incomplete-multipart-uploads"),
+					Status: types.ExpirationStatusEnabled,
+					Filter: &types.LifecycleRuleFilter{Prefix: aws.String("")},
+					AbortIncompleteMultipartUpload: &types.AbortIncompleteMultipartUpload{
+						DaysAfterInitiation: aws.Int32(7),
+					},
+				},
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("storage/s3: configure incomplete-multipart-upload lifecycle rule: %w", err)
+	}
+	return nil
+}
+
 func (b *Backend) Capabilities() storage.Capabilities {
 	return storage.Capabilities{Presign: true, NativeMultipart: true, ServerSideCopy: true}
 }

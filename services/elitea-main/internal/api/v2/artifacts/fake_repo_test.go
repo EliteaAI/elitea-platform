@@ -36,6 +36,7 @@ type fakeObjectRecord struct {
 	bucketID   int64
 	key        string
 	byteLength int64
+	expiresAt  *time.Time
 }
 
 func fakeObjectKey(bucketID int64, key string) string {
@@ -213,11 +214,11 @@ func (r *fakeRepo) UpsertObject(_ context.Context, input repos.NewObjectInput) (
 	defer r.mu.Unlock()
 	now := time.Now()
 	r.objects[fakeObjectKey(input.BucketID, input.Key)] = fakeObjectRecord{
-		bucketID: input.BucketID, key: input.Key, byteLength: input.ByteLength,
+		bucketID: input.BucketID, key: input.Key, byteLength: input.ByteLength, expiresAt: input.ExpiresAt,
 	}
 	return repos.ObjectRow{
 		BucketID: input.BucketID, Key: input.Key, ByteLength: input.ByteLength,
-		MediaType: input.MediaType, CreatedAt: now, UpdatedAt: now,
+		MediaType: input.MediaType, ExpiresAt: input.ExpiresAt, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
