@@ -81,6 +81,9 @@ env:
   # Per-object upload size cap (bytes). Empty means "no override" — the
   # handler falls back to its own default (S12).
   ARTIFACT_MAX_OBJECT_BYTES: ""
+  # Chat attachment bucket retention, in days (S20a). Empty means "no
+  # override" — the handler falls back to its own default (365 days).
+  ARTIFACT_ATTACHMENT_RETENTION_DAYS: ""
 
 # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
 # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
