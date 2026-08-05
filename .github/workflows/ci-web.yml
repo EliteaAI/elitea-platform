@@ -25,6 +25,13 @@ on:
       - ".github/workflows/ci-web.yml"
     tags:
       - "v*"
+  schedule:
+    # mutation-spotcheck (V3): weekly Wednesday 08:47 UTC. Different day/minute
+    # from ci-contract.yml's "23 6 * * 1" to avoid GitHub Actions queue congestion.
+    # Auto-expires after 7 days of no pushes (GitHub keeps scheduled workflows
+    # inactive if the default branch has no recent activity).
+    - cron: "47 8 * * 3"
+  workflow_dispatch: # ad-hoc trigger — no confirmation prompt needed
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -638,6 +645,12 @@ jobs:
 
   mutation-spotcheck:
     name: Mutation spot-check
+    # Mutation runtime is too long for PR CI (spec §6.7). Run weekly (schedule),
+    # on release tags, and on manual dispatch only — never on an ordinary PR.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
