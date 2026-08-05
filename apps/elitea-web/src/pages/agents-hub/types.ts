@@ -27,7 +27,7 @@ export interface AuthorData {
   username?: string;
 }
 
-export interface VersionDetails {
+interface VersionDetails {
   id: string;
   author?: AuthorData;
   icon_meta?: Record<string, unknown> | null;

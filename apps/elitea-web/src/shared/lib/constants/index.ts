@@ -10,7 +10,7 @@ export const AccordionConstants = {
 } as const;
 
 /** LLM model settings defaults from `[fsd]/shared/lib/constants/llmSettings.constants.js`. */
-export const REASONING_EFFORT_VALUES = {
+const REASONING_EFFORT_VALUES = {
   Low: 'low',
   Medium: 'medium',
   High: 'high',

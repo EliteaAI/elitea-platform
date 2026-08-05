@@ -79,7 +79,7 @@ function isPersonalProjectIdContext(value: unknown): value is PersonalProjectIdC
 }
 
 /** Pure extraction, mirrors `TokensTable.tsx`'s `selectPersonalProjectId`. */
-export function selectPersonalProjectId(context: unknown): string | undefined {
+function selectPersonalProjectId(context: unknown): string | undefined {
   if (!isPersonalProjectIdContext(context)) return undefined;
   return context.auth?.getUser?.()?.personal_project_id;
 }

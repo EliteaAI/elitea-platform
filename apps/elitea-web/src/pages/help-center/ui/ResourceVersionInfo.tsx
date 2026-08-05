@@ -26,7 +26,7 @@ import { InfoIcon } from '@/shared/ui/icons/info-icon';
 import type { ResourcesConfigPlugin } from '../lib/useResourcesConfig';
 
 /** Props consumed by ResourceVersionInfo. */
-export interface ResourceVersionInfoProps {
+interface ResourceVersionInfoProps {
   /** Pre-formatted "Version: X (date)" label. Defaults to the empty string (bar hidden). */
   versionLabel?: string;
   /** Per-plugin versions shown in the info-icon tooltip. Defaults to none. */

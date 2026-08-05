@@ -55,4 +55,3 @@ const tourCardStyles = (): SxProps<Theme> => ({
 });
 
 export default memo(TourCard);
-export type { TourCardProps };

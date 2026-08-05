@@ -17,7 +17,7 @@ import { BaseBtn } from '@/shared/ui/BaseBtn';
 import ChatWelcomeImage from '@/assets/onboarding/welcome/chat-welcome.png';
 
 /** Props for {@link Welcome}. */
-export interface WelcomeProps {
+interface WelcomeProps {
   name?: string;
   onShowTour: () => void;
 }

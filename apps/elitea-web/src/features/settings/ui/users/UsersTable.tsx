@@ -23,14 +23,14 @@ import { EditUsersButton } from '@/shared/ui/settings/EditUsersButton';
 import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
 import { t } from '@/shared/ui/lib/t';
 
-export interface UsersTablePaginationProps {
+interface UsersTablePaginationProps {
   total?: number;
   rowsPerPage?: number;
   page?: number;
   onSelectPage?: (selected: boolean) => void;
 }
 
-export interface UsersTableSortingProps {
+interface UsersTableSortingProps {
   onSort?: (field: string, direction: 'asc' | 'desc') => void;
   sortField?: string;
   sortDirection?: 'asc' | 'desc';

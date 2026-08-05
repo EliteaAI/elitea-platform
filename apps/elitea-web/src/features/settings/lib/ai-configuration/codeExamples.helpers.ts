@@ -31,7 +31,7 @@ export const getEditorLanguage = (codeType: string): string => {
   }
 };
 
-export const generateCurlExample = (
+const generateCurlExample = (
   apiUrl: string,
   modelName: string,
   authToken: string,
@@ -58,7 +58,7 @@ export const generateCurlExample = (
   }'`;
 };
 
-export const generateNodejsExample = (
+const generateNodejsExample = (
   apiUrl: string,
   modelName: string,
   authToken: string,
@@ -94,7 +94,7 @@ async function main() {
 main();`;
 };
 
-export const generatePythonExample = (
+const generatePythonExample = (
   apiUrl: string,
   modelName: string,
   authToken: string,

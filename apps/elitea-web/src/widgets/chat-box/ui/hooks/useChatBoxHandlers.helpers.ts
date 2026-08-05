@@ -34,7 +34,7 @@ export interface SendQuestionParams {
   readonly userIds?: readonly string[];
 }
 /** One uploaded attachment's outcome (structurally matches `entities/conversation`'s `UploadedAttachment`). */
-export interface UploadedAttachmentOutcome { readonly filepath?: string | undefined; readonly sanitizedName: string; }
+interface UploadedAttachmentOutcome { readonly filepath?: string | undefined; readonly sanitizedName: string; }
 /** Runtime dependencies injected by the composition root — plain values + function signatures, no React state/effects owned here. */
 export interface ChatBoxHandlerDeps {
   /** Typed exactly as `SocketClient['emit']` so an invalid event name is a compile error. */

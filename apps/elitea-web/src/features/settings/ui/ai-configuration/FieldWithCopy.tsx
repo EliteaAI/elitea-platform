@@ -13,7 +13,7 @@ import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/ui/lib/t';
 
-export interface FieldWithCopyProps {
+interface FieldWithCopyProps {
   label: string;
   value: string;
 }

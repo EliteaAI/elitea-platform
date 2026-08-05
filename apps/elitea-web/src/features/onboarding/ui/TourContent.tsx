@@ -18,7 +18,7 @@ import { onboardingTips } from '@/features/onboarding/lib/constants/onboardingTi
 import { Markdown } from '@/shared/ui/Markdown';
 
 /** Props for {@link TourContent}. */
-export interface TourContentProps {
+interface TourContentProps {
   currentStep: number;
   onNext: () => void;
   onPrevious: () => void;

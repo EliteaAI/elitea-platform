@@ -18,7 +18,7 @@ import type { ProfileFormValues } from '@/features/settings/lib/profile/profileU
 import { ProfileBasicAccordion } from './ProfileBasicAccordion';
 
 /** Personality options — copied from old-app `common/constants.js`. */
-export const PERSONA_OPTIONS: Array<{ label: string; value: string; description: string }> = [
+const PERSONA_OPTIONS: Array<{ label: string; value: string; description: string }> = [
   { label: 'Generic', value: 'generic', description: 'Balanced, professional assistant' },
   { label: 'QA', value: 'qa', description: 'Precise, technical, testing-focused' },
   { label: 'Nerdy', value: 'nerdy', description: 'Technical deep-dives, detailed explanations' },

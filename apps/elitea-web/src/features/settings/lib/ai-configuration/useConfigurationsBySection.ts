@@ -22,7 +22,7 @@ const SECTIONS = [
   'ai_credentials',
 ] as const;
 
-export type Section = (typeof SECTIONS)[number];
+type Section = (typeof SECTIONS)[number];
 
 /** Map of section-name → flat list of configurations. */
 export type ConfigurationsBySection = Record<Section, ConfigurationItem[]>;

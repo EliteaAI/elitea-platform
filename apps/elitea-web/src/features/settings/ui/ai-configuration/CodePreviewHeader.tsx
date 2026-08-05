@@ -14,7 +14,7 @@ import { CODE_EXAMPLE_LABELS } from '@/features/settings/lib/ai-configuration/co
 import { t } from '@/shared/ui/lib/t';
 import type { SingleSelectOption } from '@/shared/ui/SingleSelectMenuItem';
 
-export interface CodePreviewHeaderProps {
+interface CodePreviewHeaderProps {
   selectedLanguage: string;
   onLanguageChange: (language: string) => void;
   models: readonly Record<string, unknown>[];

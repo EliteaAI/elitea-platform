@@ -45,13 +45,13 @@ import { isUserMessage } from '../lib/convertMessagesToChatHistory';
  * the server, plus the two sync-only fields the baseline reads off it
  * (`apps/elitea-ui/src/hooks/chat/useSyncChatMessage.js:94,141,171`).
  */
-export interface IncomingMessageGroupSync extends MessageGroupWire {
+interface IncomingMessageGroupSync extends MessageGroupWire {
   readonly context_analytics?: unknown;
   readonly reply_to_first_message_item_uuid?: string;
 }
 
 /** The active conversation state this hook merges an incoming message_group into. */
-export interface ChatConversationForSync {
+interface ChatConversationForSync {
   readonly id?: string | number;
   readonly chat_history?: readonly ChatMessage[];
   readonly participants?: readonly MessageParticipantWire[];
@@ -155,7 +155,7 @@ function convertIncomingMessageGroup(
  * sync, or any other message this conversation doesn't track) — the caller
  * leaves state untouched in that case.
  */
-export function mergeMessageGroupIntoChatHistory(
+function mergeMessageGroupIntoChatHistory(
   chatHistory: readonly ChatMessage[],
   participants: readonly MessageParticipantWire[] | undefined,
   messageGroup: IncomingMessageGroupSync,

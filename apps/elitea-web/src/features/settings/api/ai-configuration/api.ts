@@ -45,7 +45,7 @@ export const EMPTY_MODELS_RESPONSE: ModelsApiResponse = {
  * @param section — one of: `llm`, `embedding`, `vectorstorage`, `image_generation`, `asr`, `tts`.
  * @param includeShared — include shared (public-project) models.
  */
-export async function fetchModels(
+async function fetchModels(
   projectId: string,
   section: string,
   includeShared: boolean,
@@ -98,7 +98,7 @@ export interface SetProjectDefaultModelParams {
  * Ported from `apps/elitea-ui/src/api/configurations.js`'s
  * `setProjectDefaultModel` RTK Query mutation.
  */
-export async function setProjectDefaultModel(
+async function setProjectDefaultModel(
   projectId: string,
   params: SetProjectDefaultModelParams,
 ): Promise<ModelsApiResponse> {

@@ -252,7 +252,7 @@ const ENTITY_SECTIONS: EntitySectionDef[] = [
 // Props
 // ---------------------------------------------------------------------------
 
-export interface CollapsedParticipantsDropdownProps {
+interface CollapsedParticipantsDropdownProps {
   participants: Record<string, unknown>[];
   activeParticipantId?: string;
   disabledEdit?: boolean;

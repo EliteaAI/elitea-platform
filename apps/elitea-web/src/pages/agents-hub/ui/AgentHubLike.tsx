@@ -24,7 +24,7 @@ import { useCardLike } from '@/entities/application';
 
 import type { ApplicationData } from '../types';
 
-export interface AgentHubLikeProps {
+interface AgentHubLikeProps {
   data: ApplicationData;
 }
 

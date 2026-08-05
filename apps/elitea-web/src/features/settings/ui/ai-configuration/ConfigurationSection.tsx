@@ -29,7 +29,7 @@ export interface AdditionalDefaultSetting {
   onChange: (value: string) => void;
 }
 
-export interface ConfigurationSectionProps {
+interface ConfigurationSectionProps {
   title: string;
   configurations: readonly Record<string, unknown>[];
   /** Currently-selected project id — gates edit permission

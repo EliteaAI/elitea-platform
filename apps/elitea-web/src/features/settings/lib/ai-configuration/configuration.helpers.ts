@@ -18,7 +18,7 @@ const ICON_TYPE_KEYS: Record<string, readonly string[]> = {
   PGVECTOR: ['pgvector', 'postgresql', 'postgres'],
 };
 
-export const CONFIGURATION_TYPE_GROUPS = {
+const CONFIGURATION_TYPE_GROUPS = {
   OpenAI: {
     label: 'OpenAI',
     types: ['open_ai', 'openai', 'gpt', 'codex mini', 'embedding-ada'],
