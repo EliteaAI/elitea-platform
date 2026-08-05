@@ -6,46 +6,77 @@
  * endpoints.manifest.json` for every `tool`/`toolkit` operation, and read
  * `shared/api/generated/toolkits/toolkits.ts` +
  * `shared/api/generated/applications/applications.ts` directly — not
- * assumed). Of the baseline's 14 exported RTK Query hooks, exactly THREE
- * have a real generated-client-backed endpoint anywhere in this worktree:
+ * assumed). Of the baseline's 14 exported RTK Query hooks, FOUR have a real
+ * endpoint anywhere in this worktree:
  *
- *   - `useToolkitTypesQuery`     -> `useListToolkits`          (real)
- *   - `useToolkitsListQuery`     -> `useListToolkitInstances`  (real)
- *   - `useToolkitDeleteMutation` -> `useDeleteApplicationTool` (real — filed
- *     under the generated client's "applications" tag even though the
- *     baseline groups it with toolkits; both hit the SAME
- *     `DELETE /elitea_core/tool/prompt_lib/{project_id}/{tool_id}` path)
+ *   - `useToolkitTypesQuery`     -> `useListToolkits`          (real,
+ *     generated-client-backed)
+ *   - `useToolkitsListQuery`     -> `useListToolkitInstances`  (real,
+ *     generated-client-backed)
+ *   - `useToolkitDeleteMutation` -> `useDeleteApplicationTool` (real,
+ *     generated-client-backed — filed under the generated client's
+ *     "applications" tag even though the baseline groups it with toolkits;
+ *     both hit the SAME `DELETE /elitea_core/tool/prompt_lib/{project_id}/
+ *     {tool_id}` path)
+ *   - `toolkitsDetails`          -> `useToolkitDetail` (below) — real,
+ *     HANDWRITTEN (not generated-client-backed; no orval hook exists for
+ *     this one). CORRECTION to an earlier, FALSE claim this comment used to
+ *     make ("no GET-single endpoint exists anywhere"): it does.
+ *     `services/elitea-main/internal/api/router.go:460` registers
+ *     `GET /tool/prompt_lib/{projectID}/{toolkitID} -> toolkitHandler.Get`,
+ *     whose `GetToolkit` repo method (`internal/api/v2/toolkits/
+ *     handler.go:940-970`) returns the exact single-toolkit record the
+ *     baseline's `toolkitsDetails` endpoint used. This same endpoint is
+ *     already registered in `shared/api/endpoints.manifest.json` as
+ *     `toolkits.getIndexSchedule` (`source: "handwritten"`) and already
+ *     called the same way — `eliteaFetch` against the literal path, no
+ *     generated hook — by this very slice's sibling file `features/
+ *     toolkits/indexes/api/indexesApi.ts`'s `getIndexSchedule`.
+ *     `useToolkitDetail` below now calls it directly instead of
+ *     approximating it by paging through the toolkit-instance list and
+ *     doing a client-side `.find()`, which silently failed to resolve any
+ *     toolkit past the first page.
  *
- * The remaining 11 baseline exports — `toolkitsDetails`, `toolkitCreate`,
- * `toolkitEdit`, `toolkitFork`, `toolkitExport`, `toolkitTest`,
- * `mcpSyncTools`, `discoverMcpTools`, `toolkitAssociate`, `validateToolkit`,
+ * The remaining 10 baseline exports — `toolkitCreate`, `toolkitEdit`,
+ * `toolkitFork`, `toolkitExport`, `toolkitTest`, `mcpSyncTools`,
+ * `discoverMcpTools`, `toolkitAssociate`, `validateToolkit`,
  * `toolkitAvailableTools`, `listToolkitTypes` — have NO generated endpoint
  * anywhere (confirmed: `grep -n '"operationId"' endpoints.manifest.json`
  * lists only `toolkits.listToolkits`, `toolkits.listToolkitInstances`, and
  * `applications.deleteApplicationTool` under either tag; no
- * create/update/get-single/export/test/mcp_sync/discover/associate/
- * validate/available-tools/toolkit_types operation exists at all).
+ * create/update/export/test/mcp_sync/discover/associate/
+ * validate/available-tools/toolkit_types GENERATED operation exists).
  * `features/agents/api/useValidateToolkit.ts` (unit A1e) already found this
  * for just the validator endpoint; this file's own research (unit A4g)
  * found the same gap spans nearly the entire toolkit CRUD write surface.
+ * NOTE: since `toolkitsDetails` turned out to have a real, handwritten
+ * (not generated-client) endpoint despite this file's own earlier
+ * "exhaustive" claim to the contrary, these 10 remaining stubs should be
+ * re-verified against `router.go:456-500`'s registered handlers before
+ * being trusted as genuine backend gaps rather than missed manifest
+ * entries — that re-verification is out of scope for this fix (unit A4g's
+ * own file-set does not cover the callers of those 10 stubs) and is
+ * flagged here, not silently done.
  *
  * Consistent with the established convention for exactly this situation
  * (`useValidateToolkit`'s injected `useValidateToolkitQuery`,
  * `entities/application-form`'s injected `ApplicationValidator.useValidate`),
- * every one of the 11 gaps is exposed here as a TYPE ONLY — the shape a real
- * generated hook would need to satisfy — for a caller in this same unit
- * (`SaveToolkitButton`/`CreateToolkitButton`/`ToolkitEditor`/
+ * every one of the 10 remaining gaps is exposed here as a TYPE ONLY — the
+ * shape a real generated hook would need to satisfy — for a caller in this
+ * same unit (`SaveToolkitButton`/`CreateToolkitButton`/`ToolkitEditor`/
  * `CreateToolkitToolTabBar`) to accept as an injected `deps` prop. No fake
  * network call is invented for any of them; each call site's own doc
  * comment repeats the specific gap it works around.
  *
- * `useToolkitDetail` below is NOT a baseline export — it fills the
- * `toolkitsDetails` gap (no GET-single endpoint exists) by finding the
- * matching row inside the real `useListToolkitInstances` collection
- * client-side. `ToolkitInstance` (`shared/api/generated/model/
- * toolkitInstance.zod.ts`) carries `type`/`name`/`description`/`settings`/
- * `meta` — the same fields the baseline's single-item GET response carried
- * — so this is a faithful, non-invented substitute, not a fabricated shape.
+ * `useToolkitDetail` below is NOT a baseline export by that name, but it IS
+ * the real, direct replacement for the baseline's `toolkitsDetails` query —
+ * see the correction above. It calls `GET /elitea_core/tool/prompt_lib/
+ * {projectId}/{toolkitId}` via `eliteaFetch` (the same handwritten-endpoint
+ * pattern `indexesApi.ts`'s `getIndexSchedule` already uses) and returns
+ * the single-toolkit row directly, typed as `ToolkitInstance` — the real
+ * response carries additional fields (`toolkit_name`/`author`/`agent_type`/
+ * `online`) `ToolkitInstance` doesn't declare, which is fine: they're extra
+ * properties on a non-literal value, not a mismatch.
  *
  * The baseline's two dead, already-commented-out blocks (`toolkitToolTest`
  * mutation — its own comment says it was "replaced with socket
@@ -56,11 +87,12 @@
  * solution", it has no caller in this unit's owned files, and it has no
  * generated endpoint either.
  */
-import { useCallback, useMemo } from 'react';
+import { useCallback } from 'react';
 
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { getDeleteApplicationToolQueryOptions } from '@/shared/api/generated/applications/applications';
+import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { useListToolkitInstances, useListToolkits } from '@/shared/api/generated/toolkits/toolkits';
 import type { ToolkitInstance } from '@/shared/api/generated/model';
 
@@ -128,7 +160,7 @@ export function useToolkitsList({ projectId, page, pageSize }: UseToolkitsListPa
   return { rows: data?.rows ?? [], total: data?.total ?? 0, isFetching: query.isFetching, isError: query.isError, refetch };
 }
 
-/* ── derived: single-toolkit "detail" (no GET-single endpoint — see module doc comment) ── */
+/* ── real: single-toolkit detail (GET /elitea_core/tool/prompt_lib/{projectId}/{toolkitId}) ── */
 
 export interface UseToolkitDetailParams {
   readonly projectId: string | undefined;
@@ -141,20 +173,36 @@ export interface UseToolkitDetailResult {
   readonly isError: boolean;
 }
 
-const MAX_DETAIL_LOOKUP_PAGE_SIZE = 200;
+const TOOLKIT_DETAIL_QUERY_ROOT = ['toolkits', 'detail'] as const;
 
 /**
- * Finds `toolkitId`'s row inside the real toolkit-instance list — see the
- * module doc comment for why there is no separate GET-single call to make.
- * `MAX_DETAIL_LOOKUP_PAGE_SIZE` is a pragmatic single-page fetch, not real
- * pagination; a project with more toolkit instances than this would need a
- * real GET-single endpoint to resolve correctly, which is exactly the gap
- * being disclosed, not silently worked around further.
+ * `GET /elitea_core/tool/prompt_lib/{projectId}/{toolkitId}` — the baseline
+ * `toolkitsDetails` endpoint's direct equivalent (see module doc comment's
+ * correction). Handwritten, not generated-client-backed (no orval hook
+ * exists for this operation — same situation `indexesApi.ts`'s
+ * `getIndexSchedule` is already in for the identical path), so this calls
+ * `eliteaFetch` directly rather than an `useXxx` generated hook.
+ * `eliteaFetch<T>` always resolves the mutator's own `{data, status,
+ * headers}` envelope (mutator.ts's documented contract) regardless of
+ * whether the backend's own response body is itself enveloped — the Go
+ * handler (`toolkitHandler.Get`) writes the single-toolkit row directly at
+ * the top level, so `envelope.data` IS that row.
  */
+async function fetchToolkitDetail(projectId: string, toolkitId: string, signal?: AbortSignal): Promise<ToolkitInstance> {
+  const envelope = await eliteaFetch<{ data: ToolkitInstance }>(
+    `/elitea_core/tool/prompt_lib/${projectId}/${toolkitId}`,
+    signal ? { signal } : {},
+  );
+  return envelope.data;
+}
+
 export function useToolkitDetail({ projectId, toolkitId }: UseToolkitDetailParams): UseToolkitDetailResult {
-  const { rows, isFetching, isError } = useToolkitsList({ projectId, page: 0, pageSize: MAX_DETAIL_LOOKUP_PAGE_SIZE });
-  const detail = useMemo(() => rows.find((row) => row.id === toolkitId), [rows, toolkitId]);
-  return { detail, isFetching, isError };
+  const query = useQuery({
+    queryKey: [...TOOLKIT_DETAIL_QUERY_ROOT, projectId, toolkitId],
+    queryFn: ({ signal }) => fetchToolkitDetail(projectId as string, toolkitId as string, signal),
+    enabled: projectId !== undefined && toolkitId !== undefined,
+  });
+  return { detail: query.data, isFetching: query.isFetching, isError: query.isError };
 }
 
 /* ── real: delete ──────────────────────────────────────────────────────────── */

@@ -2,11 +2,11 @@
  * Ported from `apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/
  * useGetCurrentMCPSchemas.hooks.js` (48 lines, Wave-2 unit A4b).
  *
- * REAL, DISCLOSED GAP: the baseline calls `useLazyToolkitTypesQuery`
- * with `params: { mcp: true }` — a SERVER-SIDE filtered variant that
- * returns only MCP-shaped toolkit-type schemas. The generated
- * `useListToolkits` (`shared/api/generated/toolkits/toolkits.ts`) takes
- * only a `projectId` — grepped its full signature (both overloads): no
+ * REAL, DISCLOSED GAP + CLIENT-SIDE MITIGATION (R1 fix): the baseline calls
+ * `useLazyToolkitTypesQuery` with `params: { mcp: true }` — a SERVER-SIDE
+ * filtered variant that returns only MCP-shaped toolkit-type schemas. The
+ * generated `useListToolkits` (`shared/api/generated/toolkits/toolkits.ts`)
+ * takes only a `projectId` — grepped its full signature (both overloads): no
  * query-parameter argument at all, so there is no way to ask the real
  * backend for an MCP-only subset. `entities/toolkit`'s own
  * `mergeMcpToolkitTypeSchemas`/`nonMcpToolkitTypeSchemas` (which DO encode
@@ -14,13 +14,14 @@
  * re-exported from its public `index.ts` (§3.5 budget; no cross-slice
  * caller has justified spending a slot on them yet) — so this hook cannot
  * legally reach them either (R-L3: a slice is entered through its
- * `index.ts` only). This hook therefore returns the SAME full, unfiltered
- * toolkit-type schema map `useGetCurrentToolkitSchemas` returns; a caller
- * that needs the MCP-only subset must filter it client-side (or that
- * filtering promotion gap should be revisited once a concrete caller
- * lands — matching this session's "disclose, don't invent" discipline for
- * backend gaps, e.g. the mission brief's own ListModels/toolkit-validation
- * entries).
+ * `index.ts` only). Rather than leave the caller to filter (or, worse,
+ * silently hand back the full unfiltered catalogue — the regression this
+ * fix closes), this hook now applies the SAME client-side "mcp-flavoured"
+ * predicate `features/agents/api/useToolMenuItems.ts` already established
+ * for the identical backend gap (`isMcpFlavouredKey` there): a key equal to
+ * `'mcp'`, a `type: 'mcp'` value, or a key ending in `'mcp'`. This is the
+ * best available approximation of the baseline's server-side `mcp: true`
+ * filter given the real endpoint shape, not a full parity restoration.
  *
  * DEVIATION FROM BASELINE (mechanism): the baseline hand-rolls its own
  * "fetch once, track via refs, dedupe via a module-level Map" logic on top
@@ -49,6 +50,16 @@ export interface UseGetCurrentMCPSchemasResult {
   readonly refetch: () => void;
 }
 
+/** Local duplicate of `features/agents/api/useToolMenuItems.ts`'s `isMcpFlavouredKey` — see module doc comment for why it can't be imported (R-L3, §3.5 budget). */
+function isMcpFlavouredKey(key: string, value: Readonly<Record<string, unknown>>): boolean {
+  return key.toLowerCase() === 'mcp' || value['type'] === 'mcp' || key.toLowerCase().endsWith('mcp');
+}
+
+/** Filters a full toolkit-type schema map down to the mcp-flavoured subset — the client-side stand-in for the baseline's server-side `params: { mcp: true }` filter (see module doc comment). */
+function mcpFlavouredToolkitTypeSchemas(schemas: ToolkitTypeSchemaMap): ToolkitTypeSchemaMap {
+  return Object.fromEntries(Object.entries(schemas).filter(([key, value]) => isMcpFlavouredKey(key, value)));
+}
+
 export function useGetCurrentMCPSchemas(params: UseGetCurrentMCPSchemasParams = {}): UseGetCurrentMCPSchemasResult {
   const { isMCP = false } = params;
   const projectId = useSelectedProjectId();
@@ -57,7 +68,8 @@ export function useGetCurrentMCPSchemas(params: UseGetCurrentMCPSchemasParams = 
   // `.data.data`'s declared type includes the error-envelope variant — never
   // actually reachable here, since `eliteaFetch` throws instead of resolving
   // with it (mutator.ts's §3.6 unwrap contract).
-  const mcpSchemas = query.data?.data as ToolkitTypeSchemaMap | undefined;
+  const rawSchemas = query.data?.data as ToolkitTypeSchemaMap | undefined;
+  const mcpSchemas = rawSchemas ? mcpFlavouredToolkitTypeSchemas(rawSchemas) : undefined;
 
   return {
     mcpSchemas,

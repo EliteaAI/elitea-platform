@@ -4,6 +4,8 @@ import Box from '@mui/material/Box';
 
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 
+import { NameDescriptionInput } from '../NameDescriptionInput';
+
 import { isMainPassField, isSectionOrToolsField, pickSchemaFields, resolveRequired, schemaEntries } from './ToolBase.fields';
 import { ToolActionsSelector } from './ToolActionsSelector';
 import { ToolBaseProperty } from './ToolBaseProperty';
@@ -104,7 +106,28 @@ export interface ToolBaseConfigurationBodyProps {
   readonly disabled: boolean | undefined;
 }
 
-/** The name/description slot's resolved argument bag + gating — split out of `ToolBaseConfigurationBody` to keep it under the §3.5 complexity budget. */
+/**
+ * The name/description slot's resolved argument bag + gating — split out of
+ * `ToolBaseConfigurationBody` to keep it under the §3.5 complexity budget.
+ *
+ * R2 fix: `slots?.renderNameDescriptionInput` remains a caller OVERRIDE
+ * (still exercised by `ToolBase.test.tsx`), but when no slot is supplied
+ * this now renders the real, now-landed `../NameDescriptionInput.tsx`
+ * directly — matching the baseline, which rendered
+ * `ToolkitForm.NameDescriptionInput` inline, unconditionally
+ * (`ToolBase.jsx:225-245`). Previously this fell straight through to `null`
+ * whenever no slot was supplied, which is what the live composition root
+ * (`ToolkitForm.hooks.ts`, no `slots` concept) always does — every typed
+ * toolkit's config form was missing its Name/Description fields entirely.
+ * Two small adapters bridge the real component's own, independently-typed
+ * contract: `editField` there is `(field: 'name'|'description', value:
+ * string) => void` (a `EditToolField` call with a plain, unprefixed field
+ * name already satisfies this — `'name'`/`'description'` are themselves
+ * valid top-level `editToolDetail` paths, not `settings.*` ones); `toolErrors`
+ * there is `Record<string, boolean|undefined>`, narrower than this file's
+ * own `boolean|string`-valued `ToolErrors`, so only the two keys it reads
+ * are forwarded, coerced to `boolean`.
+ */
 function resolveNameDescriptionSlot(
   editToolDetail: EditToolDetail,
   passParams: PropertyPassParams,
@@ -115,24 +138,47 @@ function resolveNameDescriptionSlot(
 ): ReactNode {
   if (presentation.hideNameDescriptionInput) return null;
   const configurationTitle = (passParams.settings['elitea_title'] as string | undefined) || (passParams.settings['configuration_title'] as string | undefined) || '';
+
+  if (slots?.renderNameDescriptionInput) {
+    return (
+      slots.renderNameDescriptionInput({
+        type: editToolDetail.type ?? '',
+        name: editToolDetail.name ?? '',
+        toolkitName: editToolDetail.toolkit_name ?? '',
+        description: editToolDetail.description ?? '',
+        editField: passParams.editField,
+        showValidation: passParams.formState.showValidation,
+        toolErrors: passParams.formState.toolErrors,
+        showOnlyRequiredFields: presentation.showOnlyRequiredFields,
+        showOnlyConfigurationFields: presentation.showOnlyConfigurationFields,
+        showNameFieldForcedly: presentation.showNameFieldForcedly,
+        showToolkitIcon: presentation.showToolkitIcon,
+        hideNameInput: presentation.hideNameInput,
+        configurationTitle,
+        isMCP: behavior.isMCP,
+        disabled: Boolean(disabled),
+      }) ?? null
+    );
+  }
+
   return (
-    slots?.renderNameDescriptionInput?.({
-      type: editToolDetail.type ?? '',
-      name: editToolDetail.name ?? '',
-      toolkitName: editToolDetail.toolkit_name ?? '',
-      description: editToolDetail.description ?? '',
-      editField: passParams.editField,
-      showValidation: passParams.formState.showValidation,
-      toolErrors: passParams.formState.toolErrors,
-      showOnlyRequiredFields: presentation.showOnlyRequiredFields,
-      showOnlyConfigurationFields: presentation.showOnlyConfigurationFields,
-      showNameFieldForcedly: presentation.showNameFieldForcedly,
-      showToolkitIcon: presentation.showToolkitIcon,
-      hideNameInput: presentation.hideNameInput,
-      configurationTitle,
-      isMCP: behavior.isMCP,
-      disabled: Boolean(disabled),
-    }) ?? null
+    <NameDescriptionInput
+      type={editToolDetail.type}
+      name={editToolDetail.name}
+      toolkitName={editToolDetail.toolkit_name}
+      description={editToolDetail.description}
+      editField={(field, value) => passParams.editField(field, value)}
+      showValidation={passParams.formState.showValidation}
+      toolErrors={{ name: Boolean(passParams.formState.toolErrors['name']), description: Boolean(passParams.formState.toolErrors['description']) }}
+      showOnlyRequiredFields={presentation.showOnlyRequiredFields}
+      showOnlyConfigurationFields={presentation.showOnlyConfigurationFields}
+      showNameFieldForcedly={presentation.showNameFieldForcedly}
+      showToolkitIcon={presentation.showToolkitIcon}
+      hideNameInput={presentation.hideNameInput}
+      configuration_title={configurationTitle}
+      isMCP={behavior.isMCP}
+      disabled={Boolean(disabled)}
+    />
   );
 }
 

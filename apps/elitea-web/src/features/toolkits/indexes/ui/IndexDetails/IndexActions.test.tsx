@@ -138,6 +138,22 @@ describe('IndexActions — edit view', () => {
     expect(switchInput).toBeDisabled();
   });
 
+  it('falls back to the hardcoded schedule default, not the raw scheduler bucket, when neither a per-user nor a -1 schedule exists', async () => {
+    // Baseline (`IndexActions.jsx:71-75`): `schedules?.[userId] ??
+    // schedules?.[-1] ?? {cron: default, enabled: false, credentials: null}`
+    // — only two real candidates before the hardcoded default. Seed a
+    // `toolkitScheduler` bucket whose `schedules` map has neither key, with
+    // a stray top-level `enabled: true` on the bucket itself (the shape the
+    // pre-fix `?? entryByUser` fallback would incorrectly read `.enabled`
+    // off, instead of falling through to the hardcoded `false` default).
+    useIndexesStore.setState({
+      toolkitScheduler: { 'my-index': { enabled: true, schedules: { 7: { enabled: true, cron: '0 0 * * 1' } } } },
+    });
+    renderActions({ view: 'edit', activeView: 'configuration' });
+    const switchInput = await screen.findByRole('switch');
+    expect(switchInput).not.toBeChecked();
+  });
+
   it('toggling the schedule switch PATCHes updateIndexSchedule with the flipped enabled flag', async () => {
     const user = userEvent.setup();
     let capturedBody: unknown;

@@ -9,6 +9,7 @@ import {
   ToolkitEditorBody,
   ToolkitEditorSaveButton,
   emptyContentSx,
+  resolveToolkitFormDisabled,
   resolveToolkitName,
   useToolkitEditorState,
 } from './ToolkitEditorParts';
@@ -68,10 +69,15 @@ export type { ToolkitEditorDeps, ToolkitEditorParticipant, ToolkitEditorProps, T
  *    does not exist as a landed slice, and `entities/project`'s public API
  *    (`isPublicProject`/`isSuspendedProject`/`sortProjectsByName`) has no
  *    "does the current user have write access to the public project"
- *    check. `disabled` therefore reduces to `isPublic` alone (edit mode
- *    always locks a public-project toolkit) rather than the baseline's
- *    `isPublic && !hasPublicProjectAccess` — a conservative default (never
- *    LESS locked than the baseline), not an invented permission model.
+ *    check. Rather than dropping the baseline's `isPublic &&
+ *    !hasPublicProjectAccess` formula outright, `deps.hasPublicProjectAccess`
+ *    (optional, see `ToolkitEditorDeps`'s own doc comment) is the injection
+ *    point a future caller with a real permission source can supply — same
+ *    "inject the actual capability" convention `deps.checkBeforeSave`
+ *    already uses. Omitted (every caller today), `disabled` reduces to
+ *    `isPublic` alone (edit mode always locks a public-project toolkit) —
+ *    a conservative default (never LESS locked than the baseline), not an
+ *    invented permission model.
  *  - GA event tracking (`useTrackEvent`, baseline lines 5,30,71-79) —
  *    dropped outright, same documented gap `AgentEditor.tsx`'s own doc
  *    comment gives (no analytics-event SDK exists anywhere in this app).
@@ -155,7 +161,7 @@ export function ToolkitEditor({ toolkit, isVisible, onCloseToolkitEditor, onTool
         onChangeToolDetail={handleChangeToolDetail}
         formInitialValues={formInitialValues}
         setFormInitialValues={setFormInitialValues}
-        disabled={isPublic}
+        disabled={resolveToolkitFormDisabled(isPublic, deps.hasPublicProjectAccess)}
         projectId={scopedProjectId}
         revertCredentialsRef={revertCredentialsRef}
         onValidationStateChange={setValidationState}

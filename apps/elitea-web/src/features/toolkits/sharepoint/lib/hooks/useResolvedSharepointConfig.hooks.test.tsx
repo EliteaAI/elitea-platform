@@ -1,5 +1,5 @@
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -127,6 +127,51 @@ describe('useResolvedSharepointConfig', () => {
       expect(JSON.parse(text)).toMatchObject({ siteUrl: 'https://private.sharepoint.com' });
     });
   });
+
+  it(
+    'skips the fetch when eliteaTitle is an empty string ' +
+      '(baseline: `{ skip: !eliteaTitle || !credProjectId }` — falsy, not undefined-only)',
+    async () => {
+      let requestCount = 0;
+      server.use(
+        http.get('*/api/v2/configurations/configurations/*', () => {
+          requestCount += 1;
+          return HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 });
+        }),
+      );
+
+      renderProbe({ elitea_title: '' }, 'proj-1');
+
+      // Give an (incorrectly fired) fetch a chance to land before asserting it didn't.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(requestCount).toBe(0);
+    },
+  );
+
+  it(
+    'skips the fetch when the resolved credProjectId is an empty string ' +
+      '(baseline: `{ skip: !eliteaTitle || !credProjectId }` — an empty personal_project_id must also skip)',
+    async () => {
+      let requestCount = 0;
+      server.use(
+        http.get('*/api/v2/configurations/configurations/*', () => {
+          requestCount += 1;
+          return HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 });
+        }),
+      );
+
+      renderProbe({ elitea_title: 'Private SP', private: true }, 'proj-1', '');
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(requestCount).toBe(0);
+    },
+  );
 
   it('resolves an unmatched elitea_title to no config (spConfig stays null)', async () => {
     server.use(

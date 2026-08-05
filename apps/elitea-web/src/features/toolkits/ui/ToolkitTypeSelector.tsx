@@ -1,5 +1,10 @@
 import { type ChangeEvent, type ReactNode, useCallback, useMemo, useState } from 'react';
 
+import Box from '@mui/material/Box';
+import Link from '@mui/material/Link';
+import Typography from '@mui/material/Typography';
+import type { SxProps, Theme } from '@mui/material/styles';
+
 import { ToolInitialValues } from '@/entities/toolkit';
 import type { ToolkitTypeSchemaMap } from '@/entities/toolkit';
 import { t } from '@/shared/i18n';
@@ -164,6 +169,47 @@ function resolveSearchPlaceholder(isApplication: boolean, isMCP: boolean): strin
   return !isMCP ? t('toolkits.toolkitTypeSelector.searchToolkit', 'Search toolkits') : t('toolkits.toolkitTypeSelector.searchMcp', 'Search MCPs');
 }
 
+/** Baseline: `ToolkitTypeSelector.jsx:178`'s literal doc URL, unchanged. */
+const MCP_CREATION_DOCS_URL = 'https://docs.elitea.ai/integrations/mcp/create-and-use-server-stdio';
+
+const mcpEmptyStateContainerSx: SxProps<Theme> = { display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '12.5rem', textAlign: 'center' };
+const mcpEmptyStateLinkSx: SxProps<Theme> = { textDecoration: 'underline', '&:hover': { cursor: 'pointer', textDecoration: 'underline' } };
+
+/**
+ * `ToolkitTypeSelector.jsx:165-190`'s MCP-specific `EmptyPlaceholder` —
+ * distinct from the generic "no results, try adjusting your search terms"
+ * message (reserved for the non-MCP / genuinely-no-match case below): when
+ * there are zero local MCP toolkit types to show, this points the user at
+ * the docs page that explains how to create one, rather than telling them
+ * to adjust a search that has nothing to search over. Baseline rendered
+ * this via `Category.GroupedCategory`'s `allowEmptyCategory={isMCP}` +
+ * `renderCategory`'s own `EmptyPlaceholder` slot; this port has no matching
+ * grouped-category component (see the module doc comment's own disclosed
+ * `Category.GroupedCategory` deviation), so it is rendered as a sibling
+ * branch of the plain "no items" case instead.
+ */
+function McpNoLocalServersMessage(): ReactNode {
+  return (
+    <Box sx={mcpEmptyStateContainerSx}>
+      <Typography
+        variant="bodyMedium"
+        color="text.primary"
+      >
+        {t('toolkits.toolkitTypeSelector.mcpEmptyStatePrefix', 'Still no local MCP available. Follow creation guides in our ')}
+        <Link
+          href={MCP_CREATION_DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          sx={mcpEmptyStateLinkSx}
+        >
+          {t('toolkits.toolkitTypeSelector.mcpEmptyStateLinkText', 'Documentation')}
+        </Link>
+        {t('toolkits.toolkitTypeSelector.mcpEmptyStateSuffix', '.')}
+      </Typography>
+    </Box>
+  );
+}
+
 export function ToolkitTypeSelector({ onSelectTool, setFormikInitialValues, isMCP = false, isApplication = false }: ToolkitTypeSelectorProps): ReactNode {
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -205,6 +251,8 @@ export function ToolkitTypeSelector({ onSelectTool, setFormikInitialValues, isMC
           items={filteredItems}
           showCategory={false}
         />
+      ) : isMCP ? (
+        <McpNoLocalServersMessage />
       ) : (
         <NoResultsMessage
           title={noResultsTitle}

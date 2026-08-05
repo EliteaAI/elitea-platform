@@ -166,7 +166,7 @@ describe('useToolkitChat', () => {
     expect(box.current?.selectedModel).toEqual({ name: 'gpt-4o-mini', default: true });
   });
 
-  it('onSelectModel updates selectedModel and resets llmSettings to the static default', async () => {
+  it('onSelectModel updates selectedModel and resets llmSettings to the model-appropriate defaults (no top_k, no reasoning_effort for a non-reasoning model) (R2 regression guard)', async () => {
     const { box } = renderToolkitChat(baseParams());
     await waitFor(() => expect(box.current).toBeDefined());
 
@@ -180,7 +180,26 @@ describe('useToolkitChat', () => {
     });
 
     await waitFor(() => expect(box.current?.selectedModel).toEqual({ name: 'gpt-4' }));
-    expect(box.current?.llmSettings).toEqual({ temperature: 0.6, max_tokens: -1, top_k: 40 });
+    expect(box.current?.llmSettings).toEqual({ temperature: 0.6, max_tokens: -1 });
+  });
+
+  it('onSelectModel includes reasoning_effort (never top_k) when the newly-selected model supports reasoning (R2 regression guard)', async () => {
+    const { box } = renderToolkitChat(baseParams());
+    await waitFor(() => expect(box.current).toBeDefined());
+
+    act(() => {
+      box.current?.onSelectModel({ name: 'o1', supports_reasoning: true });
+    });
+
+    await waitFor(() => expect(box.current?.selectedModel).toEqual({ name: 'o1', supports_reasoning: true }));
+    expect(box.current?.llmSettings).toEqual({ temperature: 0.6, max_tokens: -1, reasoning_effort: 'medium' });
+  });
+
+  it('seeds the initial llmSettings from defaultModel (reasoning_effort present when the initial default model supports reasoning) (R2 regression guard)', async () => {
+    const { box } = renderToolkitChat(baseParams({ defaultModel: { name: 'o1', default: true, supports_reasoning: true } }));
+    await waitFor(() => expect(box.current).toBeDefined());
+
+    expect(box.current?.llmSettings).toEqual({ temperature: 0.6, max_tokens: -1, reasoning_effort: 'medium' });
   });
 
   it('handleClearActiveConversation clears the active conversation and unlocks progressing-history recovery', async () => {

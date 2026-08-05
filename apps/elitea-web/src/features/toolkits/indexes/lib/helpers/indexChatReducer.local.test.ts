@@ -120,6 +120,20 @@ describe('generateChatMessageBasedOnResponse', () => {
     expect(finish).toHaveBeenCalledWith(IndexStatuses.success);
   });
 
+  it('chunk with an empty-string content falls back to response_metadata.message (|| not ??, matches baseline)', () => {
+    const history: IndexChatMessage[] = [
+      { id: 'm1', role: 'assistant', content: '', created_at: 1, participant_id: 'system', isLoading: true, isStreaming: true },
+    ];
+    const result = generateChatMessageBasedOnResponse({
+      message: { message_id: 'm1', type: 'chunk', content: '', response_metadata: { message: 'fallback text' } },
+      chatHistory: history,
+      onFinish,
+    });
+    // Pre-fix (`??`): '' is neither null nor undefined, so it would be kept
+    // as-is and this would be '' instead of the fallback text.
+    expect(result[0]?.content).toBe('fallback text');
+  });
+
   it('agent_tool_error marks the action errored and finishes with fail', () => {
     const finish = vi.fn();
     const history: IndexChatMessage[] = [

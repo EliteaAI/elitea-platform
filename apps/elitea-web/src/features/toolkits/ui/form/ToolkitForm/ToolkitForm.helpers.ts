@@ -30,6 +30,32 @@ export function updateDetailByPath(detail: ToolkitFormEditDetail, path: string, 
   return { ...detail, [head]: updateDetailByPath(existingChild, rest.join('.'), value, replace) };
 }
 
+/**
+ * [R1] `editField`'s auto-select dirty-suppression — baseline: `ToolkitForm.jsx:
+ * 286-291`, fired when a child selector auto-picks a fallback value on the
+ * user's behalf (`options: { isAutoSelect: true }`, e.g. a shared
+ * credential/embedding-model default). The baseline's `resetForm({ values:
+ * updatedValues })` sets BOTH Formik's `values` AND `initialValues` to the
+ * same object, which is what keeps Formik's own `dirty` flag `false` after
+ * an auto-correction. This app has no ambient Formik context (see
+ * `ToolkitForm.tsx`'s own module doc comment, redesign 1) — `onResetForm`
+ * is the explicit-prop equivalent a caller wires up to the same effect. A
+ * no-op (not called at all) when `options.isAutoSelect` is unset, matching
+ * every normal, user-driven field edit. Extracted out of `editField`'s own
+ * body (rather than inlined) purely to stay under the §3.5 complexity
+ * budget (12).
+ */
+export function applyAutoSelectFormReset(
+  options: { readonly isAutoSelect?: boolean } | undefined,
+  formValues: Readonly<Record<string, unknown>>,
+  field: string,
+  value: unknown,
+  onResetForm: ((values: Readonly<Record<string, unknown>>) => void) | undefined,
+): void {
+  if (!options?.isAutoSelect) return;
+  onResetForm?.(updateDetailByPath(formValues, field, value));
+}
+
 /** `ToolkitForm.jsx:569`'s `excludedFields`: only the `mcp` type excludes its own discovery-config fields. */
 export function resolveExcludedFields(toolType: string): readonly string[] {
   return toolType === 'mcp' ? ['discovery_mode', 'discovery_interval'] : [];

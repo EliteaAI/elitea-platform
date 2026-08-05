@@ -21,32 +21,73 @@
  *  - `ChatParticipantType` (`common/constants.js:950-958`) -> the same
  *    `shared/lib/chat.ts` catalogue (unit S3 already ported this exact
  *    object verbatim).
- *  - `DEFAULT_MAX_TOKENS`/`DEFAULT_TEMPERATURE`
- *    (`[fsd]/shared/lib/constants/llmSettings.constants.js:7-8`, values
- *    `-1`/`0.6`) — this two-constant file has NOT been ported to this app's
- *    `shared/lib/**` yet (grepped, zero hits); real, disclosed gap, kept as
- *    local literals with their exact baseline values rather than invented
- *    or rounded.
+ *  - `DEFAULT_MAX_TOKENS`/`DEFAULT_TEMPERATURE`/`DEFAULT_REASONING_EFFORT`
+ *    (`[fsd]/shared/lib/constants/llmSettings.constants.js:7-10`, values
+ *    `-1`/`0.6`/`'medium'` — the last is `REASONING_EFFORT_VALUES.Medium`)
+ *    — this constants file has NOT been ported to this app's `shared/lib/**`
+ *    yet (grepped, zero hits); real, disclosed gap, kept as local literals
+ *    with their exact baseline values rather than invented or rounded.
+ *
+ * `generateLlmSettings` below is a local re-implementation of
+ * `[fsd]/shared/lib/utils/llmSettings.utils.js`'s `generateLLMSettings`
+ * (model-specific LLM-settings defaulting) — that whole util file has no
+ * port anywhere else in this app either (independently reconfirmed by two
+ * OTHER already-landed files: `entities/application-form/model/
+ * initialValues.ts` and `features/agents/ui/generate-agent-modal/
+ * useAgentDraftApproval.ts`, both citing the exact same gap for their own
+ * callers). Matches the baseline function's real shape exactly: `{max_tokens,
+ * temperature}` always, plus `reasoning_effort` ONLY when
+ * `model.supports_reasoning` is true — and, notably, NEVER a `top_k` field
+ * (the baseline's `generateLLMSettings` has no such field at all; a static
+ * `top_k: 40` previously injected into every `llm_settings` payload
+ * regardless of model was a real, unrequested behaviour change — R2 fix).
  */
 import { ChatParticipantType } from '@/shared/lib/chat';
 
-/** `[fsd]/shared/lib/constants/llmSettings.constants.js:7-8` — not yet ported to `shared/lib/**`; kept local until it is. */
+/** `[fsd]/shared/lib/constants/llmSettings.constants.js:7-10` — not yet ported to `shared/lib/**`; kept local until it is. */
 const DEFAULT_MAX_TOKENS = -1;
 const DEFAULT_TEMPERATURE = 0.6;
+/** `REASONING_EFFORT_VALUES.Medium` (`llmSettings.constants.js:1-5`) — the baseline's `DEFAULT_REASONING_EFFORT`. */
+const DEFAULT_REASONING_EFFORT = 'medium';
 
 export interface DefaultLlmSettings {
   readonly temperature: number;
   readonly max_tokens: number;
-  readonly top_k: number;
-  /** LLM settings are a JS object in the baseline — callers (e.g. `useToolkitChat.hooks.ts`'s `onSetLLMSettings`) may merge in extra provider-specific keys beyond these three. */
+  readonly reasoning_effort?: string;
+  /** LLM settings are a JS object in the baseline — callers (e.g. `useToolkitChat.hooks.ts`'s `onSetLLMSettings`) may merge in extra provider-specific keys beyond these. */
   readonly [key: string]: unknown;
 }
 
+/** Baseline fallback shape (`generateLLMSettings(null)`): no model selected yet, so no `reasoning_effort` either. Never carries a `top_k` field — see module doc comment. */
 export const DEFAULT_LLM_SETTINGS: DefaultLlmSettings = {
   temperature: DEFAULT_TEMPERATURE,
   max_tokens: DEFAULT_MAX_TOKENS,
-  top_k: 40,
 };
+
+/** The one field `generateLlmSettings` actually reads off a model — kept minimal/structural rather than importing `ToolkitChatModel` (would create a circular import with `../hooks/useToolkitChat.types.ts`, which already imports FROM this file). */
+export interface LlmSettingsModelLike {
+  readonly supports_reasoning?: boolean;
+}
+
+/**
+ * `generateLLMSettings(model)` (baseline: `llmSettings.utils.js:24-44`,
+ * `includeModelInfo`/`existingSettings` unused by this app's ONE caller —
+ * `useToolkitChat.hooks.ts` always calls this with just a model, matching
+ * the baseline's own `onSelectModel`/initial-`useState` call sites, which
+ * never pass those two optional params either). Adds `reasoning_effort`
+ * (defaulted to `DEFAULT_REASONING_EFFORT`) ONLY when `model.supports_reasoning`
+ * is true; never adds `top_k`.
+ */
+export function generateLlmSettings(model: LlmSettingsModelLike | null | undefined): DefaultLlmSettings {
+  const base: DefaultLlmSettings = {
+    max_tokens: DEFAULT_MAX_TOKENS,
+    temperature: DEFAULT_TEMPERATURE,
+  };
+  if (model?.supports_reasoning) {
+    return { ...base, reasoning_effort: DEFAULT_REASONING_EFFORT };
+  }
+  return base;
+}
 
 export interface ToolkitConversationValues {
   readonly type?: string;

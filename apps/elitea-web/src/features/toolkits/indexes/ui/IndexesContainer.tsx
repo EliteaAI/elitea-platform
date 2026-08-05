@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -107,6 +107,23 @@ export function IndexesContainer(props: IndexesContainerProps): ReactNode {
   const { data: serverIndexes, isLoading, isFetching, refetch } = useIndexesListQuery({ toolkitId, projectId });
   const indexesList = serverIndexes ?? EMPTY_INDEX_LIST;
 
+  // The baseline's `indexesList` (its Redux-mirrored `selectIndexesList`) is
+  // ALREADY the temp/patch-overlaid array — `addTempLocalIndex`/
+  // `updateIndexDepMeta` mutate that same Redux `data` field directly (see
+  // `indexesStore.ts`'s own doc comment). Both effects below search that
+  // baseline `indexesList`, so they must search this same overlay here too,
+  // not the raw `serverIndexes`-derived `indexesList` above — otherwise a
+  // locally-tracked `tempIndex` (visible in the sidebar via `indexesWithStub`
+  // below) is invisible to the URL-select/auto-select matchers.
+  // `useMemo`, not a bare call: `mergeIndexesOverlay` allocates a new array
+  // every call, and a fresh identity every render would fire both effects on
+  // every render — same "changes every render" `react-hooks/exhaustive-deps`
+  // concern `EMPTY_INDEX_LIST`'s own comment above already documents.
+  const overlaidIndexesList = useMemo(
+    () => mergeIndexesOverlay(indexesList, tempIndexes, indexPatches),
+    [indexesList, tempIndexes, indexPatches],
+  );
+
   const [currentIndex, setCurrentIndex] = useState<IndexRow | null>(null);
   const [deleteIndexModal, setDeleteIndexModal] = useState(false);
   const [indexNotFoundOpen, setIndexNotFoundOpen] = useState(false);
@@ -116,7 +133,7 @@ export function IndexesContainer(props: IndexesContainerProps): ReactNode {
   useEffect(() => {
     if (!indexNameFromUrl || isLoading || isFetching || hasSelectedFromUrlRef.current) return;
 
-    const targetIndex = indexesList.find((idx) => idx.metadata['collection'] === indexNameFromUrl);
+    const targetIndex = overlaidIndexesList.find((idx) => idx.metadata['collection'] === indexNameFromUrl);
     hasSelectedFromUrlRef.current = true;
 
     if (targetIndex) {
@@ -140,7 +157,7 @@ export function IndexesContainer(props: IndexesContainerProps): ReactNode {
     } else {
       setIndexNotFoundOpen(true);
     }
-  }, [indexNameFromUrl, indexesList, isLoading, isFetching]);
+  }, [indexNameFromUrl, overlaidIndexesList, isLoading, isFetching]);
 
   useEffect(() => {
     if (isLoading || isFetching || indexNameFromUrl) return;
@@ -151,13 +168,13 @@ export function IndexesContainer(props: IndexesContainerProps): ReactNode {
     }
 
     const reindexing = (currentIndex?.metadata['history'] as readonly unknown[] | undefined)?.length ?? 0;
-    const firstValidIndex = indexesList.find((idx) => idx.metadata['indexed'] !== undefined);
-    const reindexingCurrentIndex = indexesList.find((idx) => idx.id === currentIndex?.id);
+    const firstValidIndex = overlaidIndexesList.find((idx) => idx.metadata['indexed'] !== undefined);
+    const reindexingCurrentIndex = overlaidIndexesList.find((idx) => idx.id === currentIndex?.id);
 
     if (firstValidIndex) setCurrentIndex(firstValidIndex);
     if (reindexingCurrentIndex && reindexing >= 1) setCurrentIndex(reindexingCurrentIndex);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [indexesList, isLoading, isFetching, indexNameFromUrl]);
+  }, [overlaidIndexesList, isLoading, isFetching, indexNameFromUrl]);
 
   const view = currentIndex?.id === NEW_INDEX_ID ? IndexViewsEnum.create : IndexViewsEnum.edit;
 

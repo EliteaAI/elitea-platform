@@ -87,9 +87,18 @@ function selectPropertyKeys(
   const llmModelProps = keys.filter((key) => properties[key]?.configuration_model === 'llm' || key === 'llm_model');
   const embeddingModelProps = keys.filter((key) => properties[key]?.configuration_model === 'embedding' || key === 'embedding_model');
   const imageGenerationModelProps = keys.filter((key) => properties[key]?.configuration_model === 'image_generation' || key === 'image_generation_model');
-  const toolkitProps = keys.filter((key) => properties[key]?.toolkit_types !== undefined);
-  const agentProps = keys.filter((key) => properties[key]?.agent_tags !== undefined);
-  const pipelineProps = keys.filter((key) => properties[key]?.pipeline_tags !== undefined);
+  // Truthy checks, NOT `!== undefined` — matching the baseline exactly
+  // (`toolkitSchemaUtils.js:43-45`: `properties[key].toolkit_types` /
+  // `.agent_tags` / `.pipeline_tags`, plain JS truthiness) and the Go
+  // backend's own `currentToolkitSchemaTruthy` categorization helper
+  // (`current_toolkit_settings.go:355`/`:845`). A property carrying an
+  // explicit falsy marker (`toolkit_types: null`/`0`/`''`/`false`) must NOT
+  // be classified as a toolkit/agent/pipeline reference field (R2
+  // regression guard) — `!== undefined` would wrongly treat that falsy
+  // marker as "present".
+  const toolkitProps = keys.filter((key) => Boolean(properties[key]?.toolkit_types));
+  const agentProps = keys.filter((key) => Boolean(properties[key]?.agent_tags));
+  const pipelineProps = keys.filter((key) => Boolean(properties[key]?.pipeline_tags));
   const configProps = keys.filter((key) => properties[key] !== undefined && isConfigProperty(properties[key], configKeys));
   const claimed = new Set([...configProps, ...llmModelProps, ...embeddingModelProps, ...imageGenerationModelProps, ...toolkitProps, ...agentProps, ...pipelineProps]);
   const nonConfigProps = keys.filter((key) => !claimed.has(key));

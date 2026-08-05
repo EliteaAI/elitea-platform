@@ -16,6 +16,7 @@ import { resetConfigForTests } from '@/shared/config/get-config';
 import { server } from '@/test/setup';
 
 import { createTestQueryClient } from '../__tests__/testUtils';
+import { resolveToolkitFormDisabled } from './ToolkitEditorParts';
 import { ToolkitEditor } from './ToolkitEditor';
 import type { ToolkitEditorDeps, ToolkitEditorParticipant, ToolkitEditorProps, ToolkitEditorShellProps } from './ToolkitEditor';
 
@@ -132,8 +133,8 @@ describe('ToolkitEditor', () => {
 
   it('edit mode: fetches the real toolkit detail by id and shows its name as the title', async () => {
     server.use(
-      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () =>
-        HttpResponse.json({ rows: [{ id: 'tk-1', type: 'github', name: 'My GitHub', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }], total: 1 }),
+      http.get('/api/v2/elitea_core/tool/prompt_lib/:projectId/:toolkitId', () =>
+        HttpResponse.json({ id: 'tk-1', type: 'github', name: 'My GitHub', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }),
       ),
       http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: 'GitHub' } } })),
     );
@@ -144,7 +145,9 @@ describe('ToolkitEditor', () => {
 
   it('edit mode: calls onCloseToolkitEditor and deps.onEditorClosed when the shell closes', async () => {
     server.use(
-      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [], total: 0 })),
+      http.get('/api/v2/elitea_core/tool/prompt_lib/:projectId/:toolkitId', () =>
+        HttpResponse.json({ id: 'tk-1', type: 'github', name: '', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }),
+      ),
       http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({})),
     );
     const onCloseToolkitEditor = vi.fn();
@@ -163,5 +166,39 @@ describe('ToolkitEditor', () => {
     renderEditor({ isCreating: true, isMCP: true });
 
     expect(await screen.findByText('New MCP')).toBeInTheDocument();
+  });
+});
+
+/**
+ * [R3 regression] Baseline: `ToolkitEditor.jsx:303`'s `disabled={isPublic &&
+ * !hasPublicProjectAccess}` — editing a public-project toolkit from chat is
+ * locked only for users who LACK explicit public-project access; a user who
+ * HAS it can still edit. Before this fix, `ToolkitEditorParts.tsx`/
+ * `ToolkitEditor.tsx` had no `hasPublicProjectAccess` counterpart anywhere
+ * (`disabled: isPublic` was passed straight through, unconditionally, with
+ * no override mechanism reachable at all) — a public-project toolkit was
+ * locked for EVERY user, including ones who previously had explicit
+ * public-project write access. `resolveToolkitFormDisabled` is the exact
+ * function `ToolkitEditor.tsx` calls at its one real call site
+ * (`disabled={resolveToolkitFormDisabled(isPublic, deps.hasPublicProjectAccess)}`),
+ * so this directly regression-tests the restored formula (confirmed by
+ * reverting the fix locally and re-running: the import itself doesn't
+ * exist pre-fix, so this whole suite fails to even compile/import against
+ * the pre-fix file).
+ */
+describe('resolveToolkitFormDisabled', () => {
+  it('is false for a non-public toolkit, regardless of hasPublicProjectAccess', () => {
+    expect(resolveToolkitFormDisabled(false, false)).toBe(false);
+    expect(resolveToolkitFormDisabled(false, true)).toBe(false);
+    expect(resolveToolkitFormDisabled(false, undefined)).toBe(false);
+  });
+
+  it('is true for a public toolkit when the user has no public-project access (baseline default, conservative)', () => {
+    expect(resolveToolkitFormDisabled(true, false)).toBe(true);
+    expect(resolveToolkitFormDisabled(true, undefined)).toBe(true);
+  });
+
+  it('is false for a public toolkit when the user HAS explicit public-project access — the restored baseline override', () => {
+    expect(resolveToolkitFormDisabled(true, true)).toBe(false);
   });
 });

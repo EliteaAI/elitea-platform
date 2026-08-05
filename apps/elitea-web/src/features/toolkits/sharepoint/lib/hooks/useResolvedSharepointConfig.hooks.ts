@@ -91,7 +91,12 @@ export function useResolvedSharepointConfig(
   const [items, setItems] = useState<readonly ConfigurationWire[] | undefined>(undefined);
 
   useEffect(() => {
-    if (eliteaTitle === undefined || credProjectId === undefined) {
+    // Baseline (`useResolvedSharepointConfig.hooks.js:16`): RTK Query's
+    // `{ skip: !eliteaTitle || !credProjectId }` — falsy, not nullish-only.
+    // An empty-string `eliteaTitle`/`credProjectId` must also skip the
+    // fetch (an empty `credProjectId` would otherwise build an invalid
+    // `/configurations/configurations/` URL).
+    if (!eliteaTitle || !credProjectId) {
       setItems(undefined);
       return;
     }

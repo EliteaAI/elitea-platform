@@ -88,6 +88,35 @@ describe('convertToolkitSchema', () => {
     expect(result.properties.cred).toMatchObject({ type: 'configuration', section: 'ai_credentials' });
   });
 
+  it('does NOT tag a property carrying an explicit falsy toolkit_types marker as a toolkit_reference (R2 regression guard)', () => {
+    // Matches the baseline's plain-JS-truthiness filter
+    // (`toolkitSchemaUtils.js:43`: `properties[key].toolkit_types`) and the
+    // Go backend's own `currentToolkitSchemaTruthy` categorization — an
+    // explicit falsy marker (null here) must NOT route the field to the
+    // toolkit-picker component; it must keep its real JSON-Schema type.
+    const result = convertToolkitSchema({
+      properties: { tool_ref: { type: 'string', toolkit_types: null } },
+    });
+    expect(result.properties.tool_ref).toEqual({ type: 'string', toolkit_types: null });
+    expect(result.properties.tool_ref?.type).not.toBe('toolkit_reference');
+  });
+
+  it('does NOT tag a property carrying an explicit falsy agent_tags marker as an agent_reference (R2 regression guard)', () => {
+    const result = convertToolkitSchema({
+      properties: { agent_ref: { type: 'string', agent_tags: '' } },
+    });
+    expect(result.properties.agent_ref).toEqual({ type: 'string', agent_tags: '' });
+    expect(result.properties.agent_ref?.type).not.toBe('agent_reference');
+  });
+
+  it('does NOT tag a property carrying an explicit falsy pipeline_tags marker as a pipeline_reference (R2 regression guard)', () => {
+    const result = convertToolkitSchema({
+      properties: { pipeline_ref: { type: 'string', pipeline_tags: false } },
+    });
+    expect(result.properties.pipeline_ref).toEqual({ type: 'string', pipeline_tags: false });
+    expect(result.properties.pipeline_ref?.type).not.toBe('pipeline_reference');
+  });
+
   it('leaves an ordinary property untouched (still a plain copy)', () => {
     const result = convertToolkitSchema({ properties: { name: { type: 'string' } } });
     expect(result.properties.name).toEqual({ type: 'string' });

@@ -2,11 +2,29 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ChatParticipantType } from '@/shared/lib/chat';
 
-import { DEFAULT_LLM_SETTINGS, createToolkitConversationWithParticipant, findToolkitParticipant } from './toolkitConversation.helpers';
+import { DEFAULT_LLM_SETTINGS, createToolkitConversationWithParticipant, findToolkitParticipant, generateLlmSettings } from './toolkitConversation.helpers';
 
 describe('DEFAULT_LLM_SETTINGS', () => {
-  it('matches the baseline literal values (llmSettings.constants.js:7-8, top_k hardcoded 40)', () => {
-    expect(DEFAULT_LLM_SETTINGS).toEqual({ temperature: 0.6, max_tokens: -1, top_k: 40 });
+  it('matches the baseline literal values (llmSettings.constants.js:7-8) and never carries a top_k field (R2 regression guard)', () => {
+    expect(DEFAULT_LLM_SETTINGS).toEqual({ temperature: 0.6, max_tokens: -1 });
+    expect(DEFAULT_LLM_SETTINGS).not.toHaveProperty('top_k');
+  });
+});
+
+describe('generateLlmSettings', () => {
+  it('returns just max_tokens/temperature (no top_k) for a model that does not support reasoning (R2 regression guard)', () => {
+    expect(generateLlmSettings({ supports_reasoning: false })).toEqual({ temperature: 0.6, max_tokens: -1 });
+  });
+
+  it('returns the same defaults, without reasoning_effort, for a null/undefined model', () => {
+    expect(generateLlmSettings(null)).toEqual({ temperature: 0.6, max_tokens: -1 });
+    expect(generateLlmSettings(undefined)).toEqual({ temperature: 0.6, max_tokens: -1 });
+  });
+
+  it('adds reasoning_effort (defaulted to medium) when the model supports reasoning, and still never adds top_k (R2 regression guard)', () => {
+    const settings = generateLlmSettings({ supports_reasoning: true });
+    expect(settings).toEqual({ temperature: 0.6, max_tokens: -1, reasoning_effort: 'medium' });
+    expect(settings).not.toHaveProperty('top_k');
   });
 });
 
@@ -89,8 +107,10 @@ describe('createToolkitConversationWithParticipant', () => {
     expect(addParticipantArg.participants[0]?.entity_settings).toMatchObject({
       repo: 'x',
       toolkit_type: 'github',
-      llm_settings: { model_name: 'gpt-4o-mini', model_project_id: 'p1', temperature: 0.6, max_tokens: -1, top_k: 40 },
+      llm_settings: { model_name: 'gpt-4o-mini', model_project_id: 'p1', temperature: 0.6, max_tokens: -1 },
     });
+    const llmSettingsArg = addParticipantArg.participants[0]?.entity_settings['llm_settings'] as Record<string, unknown> | undefined;
+    expect(llmSettingsArg).not.toHaveProperty('top_k');
 
     expect(result?.id).toBe('conv-1');
     expect(result?.participants).toHaveLength(2);

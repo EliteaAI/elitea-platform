@@ -140,6 +140,26 @@ describe('IndexChat', () => {
     expect(clipboardWriteText).toHaveBeenCalledWith('hello world');
   });
 
+  it('onCopyToClipboard reads a messageItems entry content out of item_details.content, matching the baseline (real wire shape never puts content directly on the item)', async () => {
+    const user = userEvent.setup();
+    const historyWithItems: Message[] = [
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: 'top-level content, ignored while messageItems is populated',
+        createdAt: '2024-01-01T00:00:00Z',
+        messageItems: [{ id: 1, item_details: { content: 'from item_details' } }],
+      },
+    ];
+    const { findByText, clipboardWriteText } = renderChat({ chatHistory: historyWithItems });
+    await user.click(await findByText('copy-m2'));
+    // Pre-fix, `getMessageItemContent` only ever read a top-level
+    // `item.content` (never present on the real wire shape), so every item
+    // mapped to '', `.filter(Boolean)` dropped them all, and this would
+    // have been called with '' instead of the real text.
+    expect(clipboardWriteText).toHaveBeenCalledWith('from item_details');
+  });
+
   it('renders the message-list wrapper as a bordered/rounded card, matching the baseline ChatBodyContainer', async () => {
     const { findByText } = renderChat();
     const countSpan = await findByText('count:1');

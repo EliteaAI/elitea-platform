@@ -70,17 +70,33 @@ describe('useToolkitsList', () => {
 });
 
 describe('useToolkitDetail', () => {
-  it('finds the matching row inside the real list response by id', async () => {
+  it('calls the real GET-single endpoint directly, not the paginated list', async () => {
+    let listRequestCount = 0;
+    let detailRequestedProjectId: string | undefined;
+    let detailRequestedToolkitId: string | undefined;
     server.use(
-      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () =>
-        HttpResponse.json({
-          rows: [
-            { id: 'tk-1', type: 'github', name: 'a', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 },
-            { id: 'tk-2', type: 'jira', name: 'b', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 },
-          ],
-          total: 2,
-        }),
-      ),
+      // A regression here (silently reverting to the list-based approximation)
+      // would fail this test: the mock below only serves the GET-single path,
+      // and separately counts hits against the list endpoint to prove it is
+      // never called.
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => {
+        listRequestCount += 1;
+        return HttpResponse.json({ rows: [], total: 0 });
+      }),
+      http.get('/api/v2/elitea_core/tool/prompt_lib/:projectId/:toolkitId', ({ params }) => {
+        detailRequestedProjectId = params['projectId'] as string;
+        detailRequestedToolkitId = params['toolkitId'] as string;
+        return HttpResponse.json({
+          id: 'tk-2',
+          type: 'jira',
+          name: 'b',
+          description: '',
+          settings: {},
+          meta: {},
+          created_at: '2026-01-01T00:00:00Z',
+          author_id: 1,
+        });
+      }),
     );
 
     const { result } = renderHookWithProviders(() => useToolkitDetail({ projectId: 'proj-1', toolkitId: 'tk-2' }));
@@ -88,19 +104,44 @@ describe('useToolkitDetail', () => {
     await waitFor(() => expect(result.current.isFetching).toBe(false));
     expect(result.current.detail?.id).toBe('tk-2');
     expect(result.current.detail?.type).toBe('jira');
+    expect(detailRequestedProjectId).toBe('proj-1');
+    expect(detailRequestedToolkitId).toBe('tk-2');
+    expect(listRequestCount).toBe(0);
   });
 
-  it('resolves undefined when no row matches the requested id', async () => {
+  it('resolves a toolkit whose id would not appear on the first page of the instance list', async () => {
+    // Regression guard for the "200-row page cap" bug: a toolkit past
+    // MAX_DETAIL_LOOKUP_PAGE_SIZE (200) in the old list-scan approach would
+    // never be found because the client-side .find() only searched page 0.
+    // The GET-single endpoint has no such limit — it resolves by id directly.
     server.use(
-      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () =>
-        HttpResponse.json({ rows: [{ id: 'tk-1', type: 'github', name: 'a', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }], total: 1 }),
+      http.get('/api/v2/elitea_core/tool/prompt_lib/:projectId/:toolkitId', ({ params }) =>
+        HttpResponse.json({
+          id: params['toolkitId'] as string,
+          type: 'confluence',
+          name: 'row-201',
+          description: '',
+          settings: {},
+          meta: {},
+          created_at: '2026-01-01T00:00:00Z',
+          author_id: 1,
+        }),
       ),
     );
 
-    const { result } = renderHookWithProviders(() => useToolkitDetail({ projectId: 'proj-1', toolkitId: 'missing' }));
+    const { result } = renderHookWithProviders(() => useToolkitDetail({ projectId: 'proj-1', toolkitId: 'tk-201' }));
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.detail?.id).toBe('tk-201');
+    expect(result.current.isError).toBe(false);
+  });
+
+  it('resolves undefined and does not fetch while projectId or toolkitId is missing', async () => {
+    const { result } = renderHookWithProviders(() => useToolkitDetail({ projectId: 'proj-1', toolkitId: undefined }));
 
     await waitFor(() => expect(result.current.isFetching).toBe(false));
     expect(result.current.detail).toBeUndefined();
+    expect(result.current.isError).toBe(false);
   });
 });
 

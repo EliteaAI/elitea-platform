@@ -97,7 +97,15 @@ export interface IndexActionsProps {
 function resolveScheduleData(toolkitScheduler: Readonly<Record<string, ScheduleEntry>>, indexName: string, currentUserId: string | number | undefined): ScheduleEntry {
   const entryByUser = toolkitScheduler[indexName];
   const schedules = entryByUser?.['schedules'] as Record<string | number, ScheduleEntry> | undefined;
-  const schedule = schedules?.[currentUserId ?? -1] ?? schedules?.[-1] ?? entryByUser;
+  // No `?? entryByUser` fallback here — matches the baseline exactly
+  // (`IndexActions.jsx:71-75`): only the per-user and `-1`-default schedules
+  // are real candidates; anything else falls straight to the hardcoded
+  // default below. The raw `entryByUser` bucket has shape `{schedules:
+  // {...}}`, not a `ScheduleEntry` — treating it as one when neither
+  // per-user nor `-1` exists would read `.cron`/`.enabled`/`.credentials`
+  // off a value that never carries them, silently diverging from the
+  // baseline's always-safe default in that case.
+  const schedule = schedules?.[currentUserId ?? -1] ?? schedules?.[-1];
   return schedule ?? { cron: IndexCronDefault, enabled: false, credentials: null };
 }
 

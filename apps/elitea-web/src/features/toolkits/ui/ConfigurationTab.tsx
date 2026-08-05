@@ -34,7 +34,20 @@ export interface ToolkitRunHistoryRenderProps {
  */
 export interface ToolkitDetailState {
   readonly editToolDetail: ToolkitFormEditDetail | null;
-  readonly onChangeToolDetail: (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null) => void;
+  /**
+   * The optional second `options` argument mirrors `ToolkitForm`'s own
+   * `onChangeToolDetail` contract (`ToolkitForm.types.ts`): `{ isAutoSelect:
+   * true }` is fired when a child selector auto-picks a fallback value on
+   * the user's behalf (e.g. a shared credential/embedding-model default) and
+   * must NOT flip `isToolDirty` — baseline: `pages/Toolkits/
+   * ConfigurationTab.jsx`'s own `onChangeToolDetail` (`if
+   * (!options?.isAutoSelect) setIsToolDirty(...)`). This type only declares
+   * the contract; the actual state owner (this prop's real caller, `pages/
+   * toolkits/EditToolkit.tsx` — outside this slice's own files) is
+   * responsible for honouring it, same as `ToolkitForm`'s own `editField`
+   * forwards `options` through unchanged rather than swallowing it.
+   */
+  readonly onChangeToolDetail: (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null, options?: { readonly isAutoSelect?: boolean }) => void;
   readonly isToolDirty?: boolean;
 }
 

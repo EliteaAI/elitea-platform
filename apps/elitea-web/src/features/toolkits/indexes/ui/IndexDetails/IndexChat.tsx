@@ -145,9 +145,17 @@ const chatBodyContainerSx: SxProps<Theme> = {
 };
 
 function getMessageItemContent(item: unknown): string {
-  if (!item || typeof item !== 'object' || !('content' in item)) return '';
-  const content = (item as { content?: unknown }).content;
-  return typeof content === 'string' ? content : '';
+  if (!item || typeof item !== 'object') return '';
+  // Matches the baseline's `item.content || item.item_details?.content ||
+  // ''` (`IndexChat.jsx:44`): the real wire shape (`entities/message`'s
+  // `MessageItemWire`) never puts `content` directly on a message item —
+  // only inside `item_details.content` — so falling through to
+  // `item_details?.content` here is REQUIRED, not a defensive extra, for
+  // every History-tab message that carries `messageItems`.
+  const typed = item as { content?: unknown; item_details?: { content?: unknown } };
+  if (typeof typed.content === 'string' && typed.content) return typed.content;
+  const detailsContent = typed.item_details?.content;
+  return typeof detailsContent === 'string' ? detailsContent : '';
 }
 
 function getMessageContentForCopy(message: ChatDisplayMessage | undefined): string {
