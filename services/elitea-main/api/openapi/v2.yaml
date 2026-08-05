@@ -1703,7 +1703,28 @@ components:
             message: { type: string }
             details:
               type: object
-              additionalProperties: true
+              properties:
+                cleanup_error:
+                  type: string
+                  description: >-
+                    The only diagnostic key any artifact handler emits. Set
+                    solely by rejectCommit
+                    (internal/api/v2/artifacts/grants.go:333-343), when a
+                    commitTransferGrant verification failure (TooLarge /
+                    MediaTypeMismatch / DigestMismatch / QuotaExceeded — its
+                    five call sites at grants.go:438, 450, 462, 468, 504) is
+                    followed by a FAILED cleanup delete of the just-uploaded
+                    object; the value is that delete's error string. Every
+                    other error response goes through writeError
+                    (internal/api/v2/artifacts/handler.go:100-104), which
+                    emits code+message only and no details member at all.
+              description: >
+                Closed set — one optional key. Not an open map: `details` is
+                populated at exactly one site in the service
+                (internal/api/v2/artifacts/grants.go:339), so it is typed
+                here rather than carrying an x-elitea-passthrough marker.
+                Widen this schema, do not re-open it, if a future handler
+                adds a second diagnostic key.
       description: >
         The artifact API's error envelope. Distinct from the legacy
         ErrorResponse ({"error": "message"} — a plain string) used by every
@@ -1733,6 +1754,21 @@ components:
         tags:
           type: object
           additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): caller-owned opaque JSON, round-tripped verbatim. The
+            handler never parses it: Bucket.Tags is json.RawMessage, not a
+            typed struct (internal/api/v2/artifacts/handler.go:31), and
+            bucketFromRow copies row.Tags straight through, substituting `{}`
+            only when the column is empty
+            (internal/api/v2/artifacts/handler.go:124-140). The repository is
+            equally opaque — BucketRow.Tags is json.RawMessage
+            (internal/infra/db/repos/artifact_buckets.go:30) filled by a
+            direct cast off the sqlc row
+            (internal/infra/db/repos/artifact_buckets.go:46) — and the column
+            is a bare JSONB with no shape constraint
+            (migrations/shared/0057_artifact_storage.sql:10). No key in this
+            map is read by any Go code, so there is no closed set to
+            enumerate; the shape is whatever the client last wrote.
         retention_days:
           type: integer
           nullable: true
@@ -1785,6 +1821,20 @@ components:
         tags:
           type: object
           additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): write side of the same opaque blob as Bucket.tags. The
+            update handler decodes the body into map[string]json.RawMessage
+            and, on `tags` being present at all, hands the raw bytes to the
+            repository without unmarshalling or validating them
+            (internal/api/v2/artifacts/handler.go:291-292 and 320-321); the
+            repository
+            takes json.RawMessage and writes it wholesale, defaulting only an
+            empty value to `{}`
+            (internal/infra/db/repos/artifact_buckets.go:207-224). Storage is
+            an unconstrained JSONB column
+            (migrations/shared/0057_artifact_storage.sql:10). Semantics are
+            replace-whole-map, not merge. No key is interpreted server-side,
+            so there is no closed set to type.
       description: >
         Every field is optional and independently settable — a caller may
         send any subset (S8).
@@ -2045,14 +2095,25 @@ components:
           type: object
           additionalProperties: true
           x-elitea-passthrough: >-
-            NOTE(W2): `map[string]any` field on the Skill struct
-            (internal/api/v2/skills/handler.go), but with the wired Pg
-            repository it is NEVER populated in any response — the INSERT
-            persists only name/description and hardcodes meta '{}'
-            (repos/skills.go), so Config always decodes to its zero value.
-            Declared as a passthrough object (not removed) because the
-            struct field and wire slot are real; see the schema description
-            for the discarded-on-write detail.
+            NOTE(W2): `Config map[string]any` on the Skill struct
+            (internal/api/v2/skills/handler.go:36) — an untyped map that is
+            NEVER populated by the wired Pg repository, so it has no
+            observable shape to type. The SELECT list shared by Get/List
+            reads id/name/description/owner_id/created_at plus the joined
+            base version and its tags, and does not project the skills
+            table's `meta` column at all
+            (internal/infra/db/repos/skills.go:29-32); the INSERT persists
+            only name/description and hardcodes meta '{}'
+            (internal/infra/db/repos/skills.go:169-172). The column itself is
+            an unconstrained JSONB
+            (internal/infra/db/migrations/001_initial.sql:128-137, `meta
+            JSONB DEFAULT '{}'` at :136). Config is therefore always its zero
+            value and, being `json:"config,omitempty"`, is omitted from every
+            response body. Kept as a declared passthrough rather than typed
+            because there is no closed key set to enumerate — nothing writes
+            it; kept rather than deleted because the struct field and wire
+            slot are real. Type it (or drop it) if #37's multi-version work
+            gives `meta` a real projection.
         is_default: { type: boolean }
         instructions:
           type: string
@@ -2110,11 +2171,20 @@ components:
           type: object
           additionalProperties: true
           x-elitea-passthrough: >-
-            NOTE(W2): decoded into Skill.Config map[string]any
-            (internal/api/v2/skills/handler.go) but DISCARDED by the wired
-            repository — the INSERT persists only name and description and
-            hardcodes meta '{}' (repos/skills.go); config never round-trips
-            into the response.
+            NOTE(W2): accepted on the wire and then dropped on the floor —
+            it has no server-side shape to type. Both Create and Update
+            decode the body into `createRequest`
+            (internal/api/v2/skills/handler.go:163-164 and 181-182), and
+            that struct declares only name/description/instructions/tags/
+            versions — it has NO config field
+            (internal/api/v2/skills/handler.go:57-63), so encoding/json
+            discards this member at decode time. Nothing downstream could
+            persist it either: the INSERT writes name/description and
+            hardcodes meta '{}'
+            (internal/infra/db/repos/skills.go:169-172). Declared as a
+            passthrough (not removed) because the frontend still sends the
+            member and OpenAPI-level rejection would be a breaking change;
+            see Skill.config for the read side.
         is_default:
           type: boolean
           description: Accepted but NOT persisted (repos/skills.go).
@@ -2133,7 +2203,8 @@ components:
             precedence over the flat instructions/tags fields above when both
             are present.
       description: >
-        Decoded into the Skill struct (internal/api/v2/skills/handler.go).
+        Decoded into the `createRequest` struct
+        (internal/api/v2/skills/handler.go:57-63), not the Skill struct;
         name/description persist onto the skills row; instructions/tags (from
         either the flat fields or versions[0]) upsert the base skill_versions
         row and its tag associations in the same transaction
