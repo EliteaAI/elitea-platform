@@ -88,6 +88,7 @@ type artifactBucketQueries interface {
 	SoftDeleteArtifactBucket(context.Context, int64) (int64, error)
 	ListArtifactBucketsNeedingExpiryNotice(context.Context, sqlcgen.ListArtifactBucketsNeedingExpiryNoticeParams) ([]sqlcgen.EliteaStorageBucket, error)
 	MarkArtifactBucketNotified(context.Context, int64) (int64, error)
+	ListArtifactProjectIDsWithBuckets(context.Context) ([]int64, error)
 }
 
 // ArtifactBucketsRepository is the metadata store for elitea_storage.buckets
@@ -252,6 +253,20 @@ func (r *ArtifactBucketsRepository) ListBucketsNeedingExpiryNotice(ctx context.C
 		result[i] = bucketRowFromModel(row)
 	}
 	return result, nil
+}
+
+// ListProjectIDsWithBuckets enumerates every project that owns at least one
+// non-deleted bucket — S18's per-project byte-usage gauge needs this to
+// know which projects to call SumProjectBytes for on each retention sweeper
+// tick. This service has no "projects" table of its own to enumerate
+// instead; "has a bucket" is the operational definition of a known project
+// here.
+func (r *ArtifactBucketsRepository) ListProjectIDsWithBuckets(ctx context.Context) ([]int64, error) {
+	ids, err := r.queries.ListArtifactProjectIDsWithBuckets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list artifact project ids with buckets: %w", err)
+	}
+	return ids, nil
 }
 
 func (r *ArtifactBucketsRepository) MarkBucketNotified(ctx context.Context, bucketID int64) error {

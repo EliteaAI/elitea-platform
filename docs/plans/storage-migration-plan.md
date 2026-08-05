@@ -2540,6 +2540,78 @@ only the histogram, would still satisfy a bare nonzero-match check):
 cd services/elitea-main && go test ./internal/infra/storage/... -race -run TestArtifactObservability -v > /tmp/s18.log 2>&1; rc=$?; cat /tmp/s18.log; test $rc -eq 0 && test "$(grep -c -- '--- PASS' /tmp/s18.log)" -ge 4
 ```
 
+**Implemented as a decorator, not scattered call sites.** `internal/infra/storage/instrumented.go`'s
+`instrumentedStore` implements every `ObjectStore` method, wrapping a real
+backend and recording duration/error/bytes metrics plus the delete audit log
+at the one choke point every Put/Get/Delete/... call passes through —
+`cmd/elitea-main/storage_factory.go`'s `newObjectStore` now always returns
+`storage.Instrument(store, cfg.Backend)`, so "instrument every method" and
+"log every delete" are true by construction, not by remembering to call
+something at each of the 13 `ObjectStore` methods' call sites. A mirrored
+`errors.Unwrap`-style `Unwrap() ObjectStore` method lets tests (and any
+future caller) reach the concrete backend through the wrapper.
+
+**Verify-scope-vs-acceptance-criteria gap, same pattern as S14/S16.** The
+literal Verify command only exercises `internal/infra/storage/...`, but 2 of
+the 4 acceptance criteria concern code that has to live elsewhere: the
+per-project gauge is sourced from the S14 sweeper's tick
+(`internal/runtimecomposition`), and "every grant issuance" is emitted from
+the S15/S16 grants handler (`internal/api/v2/artifacts`). Resolved the same
+way S14's sweeper resolved its own version of this gap: centralized the two
+testable primitives — `storage.RecordProjectByteUsage` and `storage.LogAudit`
+— as small, exported, directly-testable functions in `internal/infra/storage`
+itself, called from both real sites (`artifact_retention_sweep.go`'s new
+`updateProjectByteUsageGauges`, `grants.go`'s post-`CreateTransferGrant` call).
+Both the shared primitives (tested in `internal/infra/storage`, satisfying the
+literal Verify command) and their real call sites (tested in their own
+packages' existing suites, which still pass) have coverage.
+
+**OTel test harness: the global delegation "only once" constraint.**
+`observability.go`'s instruments are package-level vars created in `init()`,
+against whatever `MeterProvider` is the OTel global default at that point (a
+no-op stub — this codebase constructs no explicit provider anywhere,
+following `internal/api/middleware/otel.go`'s existing house pattern).
+Read `go.opentelemetry.io/otel/internal/global/state.go` directly to confirm
+the test-time re-plumbing actually works: `otel.SetMeterProvider` delegates
+every previously-created instrument to the provider passed on its *first*
+call only (guarded by a package-level `sync.Once` — a second call in the
+same test binary changes what a future `otel.Meter(...)` returns but does
+**not** re-delegate the already-delegated instruments). So
+`internal/infra/storage/observability_test.go`'s `setupTestMeterProvider`
+installs one `sdkmetric.NewMeterProvider(sdkmetric.WithReader(...))` exactly
+once, guarded by its own `sync.Once`, shared across every
+`TestArtifactObservability*` test in the package. Individual tests disambiguate
+their own recorded data points within that shared `ManualReader` state by
+attribute value — a unique `backend` string (`t.Name()`) for the per-operation
+instruments, a unique `project_id` constant for the gauge — rather than by
+isolated readers, since isolated readers are exactly what the "only once"
+constraint rules out.
+
+**New sqlc query empirically verified against real Postgres, not just the
+sweeper's fakes.** `ListArtifactProjectIDsWithBuckets` (used by the sweeper's
+`updateProjectByteUsageGauges` to know which projects to gauge) has both a
+fake-repo unit test (`artifact_retention_sweep_test.go`, exercising the
+sweeper's own call pattern) and a real-Postgres integration test
+(`TestArtifactBucketsRepositoryListsProjectIDsWithBuckets`, new in
+`internal/infra/db/repos/artifact_buckets_postgres_integration_test.go`),
+covering the `DISTINCT project_id ... WHERE deleted_at IS NULL` query itself:
+one project with two buckets returns once, a project whose only bucket is
+soft-deleted is excluded, a project with no buckets never appears — run
+against a throwaway `pgvector/pgvector:0.8.5-pg18-trixie` container (matching
+`ci-go.yml`'s `integration` job image) via
+`ELITEA_TEST_DATABASE_URL`, migrations applied through the existing
+`applyPostgresIntegrationMigrations` helper, database torn down in
+`t.Cleanup`.
+
+**Per-user direction: proceed through the remaining stages (S19, S20a/b/c)
+without waiting for a per-stage go-ahead, then run one comprehensive
+multi-agent adversarial review across the whole feature once it's fully
+implemented, rather than the per-stage Workflow review S15-S17 each got.**
+S18 itself still got its own full local verify sweep (`gofmt`, `go build`,
+`go vet`, `task lint`, the literal Verify command above, full workspace
+`task test`, plus the Postgres-integration run above) before being committed
+— only the *adversarial* review pass moved to the end.
+
 ---
 
 ## S19 — API conformance suite

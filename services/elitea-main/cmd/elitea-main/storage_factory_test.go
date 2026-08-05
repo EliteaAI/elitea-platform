@@ -10,6 +10,19 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/s3"
 )
 
+// unwrapObjectStore undoes storage.Instrument's wrapping (S18) so a test can
+// assert something about the concrete backend newObjectStore actually
+// dispatched to, through the instrumentation layer every returned store now
+// carries.
+func unwrapObjectStore(t *testing.T, store storage.ObjectStore) storage.ObjectStore {
+	t.Helper()
+	u, ok := store.(interface{ Unwrap() storage.ObjectStore })
+	if !ok {
+		t.Fatalf("newObjectStore returned %T, want something implementing Unwrap() (storage.Instrument-wrapped, S18)", store)
+	}
+	return u.Unwrap()
+}
+
 func TestArtifactNewObjectStoreDispatchesPerBackend(t *testing.T) {
 	ctx := context.Background()
 
@@ -21,8 +34,8 @@ func TestArtifactNewObjectStoreDispatchesPerBackend(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newObjectStore(s3) returned %v, want nil", err)
 		}
-		if _, ok := store.(*s3.Backend); !ok {
-			t.Fatalf("newObjectStore(s3) returned %T, want *s3.Backend", store)
+		if _, ok := unwrapObjectStore(t, store).(*s3.Backend); !ok {
+			t.Fatalf("newObjectStore(s3) unwrapped to %T, want *s3.Backend", store)
 		}
 	})
 
@@ -36,8 +49,8 @@ func TestArtifactNewObjectStoreDispatchesPerBackend(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newObjectStore(azure) returned %v, want nil", err)
 		}
-		if _, ok := store.(*azure.Backend); !ok {
-			t.Fatalf("newObjectStore(azure) returned %T, want *azure.Backend", store)
+		if _, ok := unwrapObjectStore(t, store).(*azure.Backend); !ok {
+			t.Fatalf("newObjectStore(azure) unwrapped to %T, want *azure.Backend", store)
 		}
 	})
 
@@ -53,8 +66,8 @@ func TestArtifactNewObjectStoreDispatchesPerBackend(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newObjectStore(gcs) returned %v, want nil", err)
 		}
-		if _, ok := store.(*gcs.Backend); !ok {
-			t.Fatalf("newObjectStore(gcs) returned %T, want *gcs.Backend", store)
+		if _, ok := unwrapObjectStore(t, store).(*gcs.Backend); !ok {
+			t.Fatalf("newObjectStore(gcs) unwrapped to %T, want *gcs.Backend", store)
 		}
 	})
 
@@ -63,4 +76,24 @@ func TestArtifactNewObjectStoreDispatchesPerBackend(t *testing.T) {
 			t.Fatal("newObjectStore(filesystem) returned nil error, want an error")
 		}
 	})
+}
+
+// TestArtifactNewObjectStoreIsInstrumented is a regression test for S18:
+// every store this factory returns must carry storage.Instrument's
+// wrapping, not just the s3-specific case unwrapObjectStore's helper
+// happens to exercise above — this is what actually makes "instrument every
+// ObjectStore method" true for the one and only production construction
+// path (cmd/elitea-main/main.go), not just true for the storage package's
+// own direct unit tests.
+func TestArtifactNewObjectStoreIsInstrumented(t *testing.T) {
+	store, err := newObjectStore(context.Background(), storage.Config{
+		Backend: "s3",
+		S3:      storage.S3Config{Region: "us-east-1", Bucket: "b"},
+	})
+	if err != nil {
+		t.Fatalf("newObjectStore: %v", err)
+	}
+	if _, ok := store.(interface{ Unwrap() storage.ObjectStore }); !ok {
+		t.Fatalf("newObjectStore returned %T, want an storage.Instrument-wrapped store (S18)", store)
+	}
 }

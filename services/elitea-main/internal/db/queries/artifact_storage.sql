@@ -78,6 +78,18 @@ UPDATE elitea_storage.buckets
 SET notified_at = now()
 WHERE id = $1;
 
+-- name: ListArtifactProjectIDsWithBuckets :many
+-- Required by S18's per-project byte-usage gauge: the retention sweeper
+-- (S14) needs to enumerate every project that owns at least one non-deleted
+-- bucket before it can call SumArtifactProjectBytes per project. This
+-- service owns no "projects" table of its own (see elitea_storage.buckets'
+-- own project_id column, a bare BIGINT with no local FK) — the set of
+-- known projects is defined operationally as "has at least one bucket."
+SELECT DISTINCT project_id
+FROM elitea_storage.buckets
+WHERE deleted_at IS NULL
+ORDER BY project_id;
+
 -- name: UpsertArtifactObject :one
 INSERT INTO elitea_storage.objects (
     bucket_id, key, byte_length, media_type, digest_alg, digest,

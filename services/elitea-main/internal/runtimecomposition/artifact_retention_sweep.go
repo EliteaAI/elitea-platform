@@ -28,17 +28,22 @@ var errArtifactRetentionSweepInvalidOccurrence = errors.New("invalid artifact re
 // artifactRetentionObjectsRepository is the S6 dependency slice this handler
 // needs from ArtifactObjectsRepository — see S14's plan text on why deletion
 // closes the metadata-cleanup gap S8/S12 deliberately deferred.
+// SumProjectBytes is S18's addition, backing the per-project byte-usage
+// gauge.
 type artifactRetentionObjectsRepository interface {
 	ListExpiredObjects(ctx context.Context, olderThan time.Time, limit int32) ([]repos.ObjectRow, error)
 	DeleteObjectRows(ctx context.Context, ids []int64) error
+	SumProjectBytes(ctx context.Context, projectID int64) (int64, error)
 }
 
 // artifactRetentionBucketsRepository is the S6 dependency slice this handler
-// needs from ArtifactBucketsRepository.
+// needs from ArtifactBucketsRepository. ListProjectIDsWithBuckets is S18's
+// addition, backing the per-project byte-usage gauge.
 type artifactRetentionBucketsRepository interface {
 	GetBucketByID(ctx context.Context, id int64) (repos.BucketRow, error)
 	ListBucketsNeedingExpiryNotice(ctx context.Context, within time.Duration, limit int32) ([]repos.BucketRow, error)
 	MarkBucketNotified(ctx context.Context, bucketID int64) error
+	ListProjectIDsWithBuckets(ctx context.Context) ([]int64, error)
 }
 
 // artifactRetentionNotifier is the S14 notification dependency —
@@ -97,6 +102,9 @@ func (s *artifactRetentionSweep) Execute(
 		return "", err
 	}
 	if err := s.notifyExpiringBuckets(ctx); err != nil {
+		return "", err
+	}
+	if err := s.updateProjectByteUsageGauges(ctx); err != nil {
 		return "", err
 	}
 	return schedulingapp.OutcomeLocalCompleted, nil
@@ -224,6 +232,29 @@ func (s *artifactRetentionSweep) deleteExpiredBucketGroup(ctx context.Context, b
 	if len(result.Failed) > 0 {
 		first := result.Failed[0]
 		return fmt.Errorf("delete batch for bucket %d: %d object(s) failed (first: %s: %v)", bucket.ID, len(result.Failed), first.Key, first.Err)
+	}
+	return nil
+}
+
+// updateProjectByteUsageGauges refreshes S18's per-project byte-usage gauge
+// for every project known to own a bucket, sourced from the metadata table
+// (SumProjectBytes) — deliberately called once per sweeper tick, here, and
+// nowhere on a per-request path. A failure to list projects or sum one
+// project's bytes fails the whole tick (matching sweepExpiredObjects'/
+// notifyExpiringBuckets' own error handling above) rather than silently
+// skipping a project's gauge update, which would leave a stale reading with
+// no indication it stopped refreshing.
+func (s *artifactRetentionSweep) updateProjectByteUsageGauges(ctx context.Context) error {
+	projectIDs, err := s.buckets.ListProjectIDsWithBuckets(ctx)
+	if err != nil {
+		return fmt.Errorf("list artifact project ids with buckets: %w", err)
+	}
+	for _, projectID := range projectIDs {
+		total, err := s.objects.SumProjectBytes(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("sum artifact project bytes for project %d: %w", projectID, err)
+		}
+		storage.RecordProjectByteUsage(ctx, projectID, total)
 	}
 	return nil
 }

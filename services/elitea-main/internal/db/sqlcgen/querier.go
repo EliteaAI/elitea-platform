@@ -153,6 +153,13 @@ type Querier interface {
 	ListArtifactBuckets(ctx context.Context, projectID int64) ([]EliteaStorageBucket, error)
 	ListArtifactBucketsNeedingExpiryNotice(ctx context.Context, arg ListArtifactBucketsNeedingExpiryNoticeParams) ([]EliteaStorageBucket, error)
 	ListArtifactObjects(ctx context.Context, arg ListArtifactObjectsParams) ([]EliteaStorageObject, error)
+	// Required by S18's per-project byte-usage gauge: the retention sweeper
+	// (S14) needs to enumerate every project that owns at least one non-deleted
+	// bucket before it can call SumArtifactProjectBytes per project. This
+	// service owns no "projects" table of its own (see elitea_storage.buckets'
+	// own project_id column, a bare BIGINT with no local FK) — the set of
+	// known projects is defined operationally as "has at least one bucket."
+	ListArtifactProjectIDsWithBuckets(ctx context.Context) ([]int64, error)
 	ListClaimableScheduledOccurrences(ctx context.Context, arg ListClaimableScheduledOccurrencesParams) ([]ListClaimableScheduledOccurrencesRow, error)
 	// This deliberately projects only the six fields exposed by nested
 	// configuration options. The same bounded query is run first in the current

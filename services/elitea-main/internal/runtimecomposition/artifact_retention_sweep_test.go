@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -201,6 +202,35 @@ func TestArtifactRetentionSweepNotifiesExpiringBucketsAndMarksThemNotified(t *te
 	}
 }
 
+// TestArtifactRetentionSweepUpdatesProjectByteUsageGaugeForEveryKnownProject
+// proves S18's per-project byte-usage gauge is refreshed on the sweeper
+// tick, for every project that owns a bucket — not zero of them, not just
+// the first. The gauge's own recorded value is asserted directly against
+// the real OTel instrument in internal/infra/storage's own test suite
+// (TestArtifactObservability*, S18's Verify command target); this test's
+// job is proving the SWEEPER side actually calls SumProjectBytes for the
+// right project set on every tick, which is the part storage's own tests
+// cannot see.
+func TestArtifactRetentionSweepUpdatesProjectByteUsageGaugeForEveryKnownProject(t *testing.T) {
+	sweep, objects, buckets, _, _ := newArtifactRetentionSweepFixture(t)
+	buckets.seed(repos.BucketRow{ID: 1, ProjectID: 100, Name: "reports"})
+	buckets.seed(repos.BucketRow{ID: 2, ProjectID: 200, Name: "exports"})
+	objects.seedProjectBytes(100, 4096)
+	objects.seedProjectBytes(200, 8192)
+
+	outcome, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now()))
+	if err != nil || outcome != schedulingapp.OutcomeLocalCompleted {
+		t.Fatalf("outcome=%q error=%v", outcome, err)
+	}
+
+	got := append([]int64(nil), objects.sumProjectBytesCalls...)
+	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	want := []int64{100, 200}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("SumProjectBytes calls = %v, want %v", got, want)
+	}
+}
+
 func itoa(i int) string {
 	if i == 0 {
 		return "0"
@@ -228,6 +258,31 @@ type artifactRetentionFakeObjectsRepo struct {
 	objects         []repos.ObjectRow
 	listCalls       int
 	deleteRowsCalls int
+	// projectBytes and sumProjectBytesCalls back S18's SumProjectBytes —
+	// set directly via seedProjectBytes rather than derived from objects
+	// above: real SumProjectBytes joins through buckets to resolve
+	// project_id (elitea_storage.objects has no project_id column of its
+	// own, only bucket_id), a relationship this fake's sibling
+	// artifactRetentionFakeBucketsRepo owns, not this one — deriving it
+	// here would couple two independently-seeded fakes for no test value.
+	projectBytes         map[int64]int64
+	sumProjectBytesCalls []int64
+}
+
+func (r *artifactRetentionFakeObjectsRepo) seedProjectBytes(projectID, bytes int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.projectBytes == nil {
+		r.projectBytes = map[int64]int64{}
+	}
+	r.projectBytes[projectID] = bytes
+}
+
+func (r *artifactRetentionFakeObjectsRepo) SumProjectBytes(_ context.Context, projectID int64) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sumProjectBytesCalls = append(r.sumProjectBytesCalls, projectID)
+	return r.projectBytes[projectID], nil
 }
 
 func (r *artifactRetentionFakeObjectsRepo) seed(obj repos.ObjectRow) {
@@ -320,6 +375,25 @@ func (r *artifactRetentionFakeBucketsRepo) MarkBucketNotified(_ context.Context,
 	defer r.mu.Unlock()
 	r.markedNotified = append(r.markedNotified, bucketID)
 	return nil
+}
+
+// ListProjectIDsWithBuckets (S18) derives the distinct project set from
+// r.buckets — unlike SumProjectBytes on the sibling objects fake, this one
+// genuinely can be derived correctly, since every seeded BucketRow already
+// carries its own ProjectID.
+func (r *artifactRetentionFakeBucketsRepo) ListProjectIDsWithBuckets(_ context.Context) ([]int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, b := range r.buckets {
+		if !seen[b.ProjectID] {
+			seen[b.ProjectID] = true
+			ids = append(ids, b.ProjectID)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids, nil
 }
 
 type artifactRetentionNotifyCall struct {

@@ -245,6 +245,12 @@ func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S18: "every grant issuance" — the one audit line this handler is
+	// responsible for, covering both the single-shot and native-multipart
+	// paths above (they share this one success point, so one call here
+	// covers both, matching how they share the rest of this handler).
+	storage.LogAudit(r.Context(), "grant_issued", bucket, grantID, projectIDStr, "success")
+
 	writeJSON(w, http.StatusOK, transferGrantResponse{
 		GrantID:     grantID,
 		URL:         url,

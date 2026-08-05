@@ -229,3 +229,34 @@ func TestArtifactBucketsRepositoryMarksBucketNotifiedMissingReturnsNotFound(t *t
 		t.Fatalf("MarkBucketNotified(missing) err = %v, want ErrNotFound", err)
 	}
 }
+
+// S18: ListProjectIDsWithBuckets backs the retention sweeper's per-project
+// byte-usage gauge — it must return each project exactly once even when a
+// project owns multiple buckets, must exclude a project whose only bucket is
+// soft-deleted, and must exclude a project with no buckets at all.
+func TestArtifactBucketsRepositoryListsProjectIDsWithBuckets(t *testing.T) {
+	repo := newArtifactBucketsTestRepo(t)
+	ctx := context.Background()
+
+	mustCreateArtifactBucket(t, repo, 100, "reports")
+	mustCreateArtifactBucket(t, repo, 100, "exports")
+	mustCreateArtifactBucket(t, repo, 200, "reports")
+	deletedOnly := mustCreateArtifactBucket(t, repo, 300, "reports")
+	if err := repo.SoftDeleteBucket(ctx, deletedOnly.ID); err != nil {
+		t.Fatalf("SoftDeleteBucket: %v", err)
+	}
+
+	got, err := repo.ListProjectIDsWithBuckets(ctx)
+	if err != nil {
+		t.Fatalf("ListProjectIDsWithBuckets: %v", err)
+	}
+	want := []int64{100, 200}
+	if len(got) != len(want) {
+		t.Fatalf("ListProjectIDsWithBuckets = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ListProjectIDsWithBuckets = %v, want %v", got, want)
+		}
+	}
+}

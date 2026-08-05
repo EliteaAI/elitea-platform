@@ -376,6 +376,39 @@ func (q *Queries) ListArtifactObjects(ctx context.Context, arg ListArtifactObjec
 	return items, nil
 }
 
+const listArtifactProjectIDsWithBuckets = `-- name: ListArtifactProjectIDsWithBuckets :many
+SELECT DISTINCT project_id
+FROM elitea_storage.buckets
+WHERE deleted_at IS NULL
+ORDER BY project_id
+`
+
+// Required by S18's per-project byte-usage gauge: the retention sweeper
+// (S14) needs to enumerate every project that owns at least one non-deleted
+// bucket before it can call SumArtifactProjectBytes per project. This
+// service owns no "projects" table of its own (see elitea_storage.buckets'
+// own project_id column, a bare BIGINT with no local FK) — the set of
+// known projects is defined operationally as "has at least one bucket."
+func (q *Queries) ListArtifactProjectIDsWithBuckets(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listArtifactProjectIDsWithBuckets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var project_id int64
+		if err := rows.Scan(&project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpiredArtifactObjects = `-- name: ListExpiredArtifactObjects :many
 SELECT id, bucket_id, key, byte_length, media_type, digest_alg, digest,
        classification, scan_state, expires_at, created_at, updated_at
