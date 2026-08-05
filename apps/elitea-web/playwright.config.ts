@@ -15,6 +15,9 @@
  */
 import { defineConfig, devices } from '@playwright/test';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const STORAGE_STATE = {
   member: path.join(__dirname, '.playwright-state', 'member.json'),
@@ -40,6 +43,9 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
+    launchOptions: {
+      args: ['--disable-web-security', '--allow-insecure-localhost', '--no-sandbox'],
+    },
   },
 
   projects: [
@@ -47,6 +53,7 @@ export default defineConfig({
     {
       name: 'setup',
       testMatch: /auth\.setup\.ts/,
+      use: { ...devices['Desktop Chrome'] },
     },
 
     // ── chromium ──────────────────────────────────────────────────────────

@@ -47,27 +47,43 @@ async function performOidcLogin(
   email: string,
   storageStatePath: string,
 ): Promise<void> {
-  // Navigate to the app root — elitea-main should redirect unauthenticated
-  // requests to the OIDC authorize endpoint.
-  await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded' });
+  // Navigate directly to the OIDC login endpoint — elitea-main redirects to
+  // the mock's authorize page (the SPA doesn't do an automatic server redirect).
+  // elitea-main is configured with OIDC_ISSUER_URL=http://oidc-mock:9400, which
+  // causes it to redirect to http://oidc-mock:9400/oauth2/authorize. The browser
+  // cannot resolve that container hostname, so we navigate to the login endpoint
+  // with waitUntil:'commit' which resolves as soon as the server sends a 302.
+  // We then extract the Location header URL and rewrite oidc-mock → localhost.
+  const loginResponse = await page.request.get(BASE_URL + '/forward-auth/auth_oidc/login', {
+    maxRedirects: 0,
+  }).catch(() => null);
 
-  // Wait for the redirect to the OIDC mock's authorize page.
+  const authorizeURL = loginResponse?.headers()['location']?.replace('oidc-mock:9400', 'localhost:9400')
+    ?? (BASE_URL + '/forward-auth/auth_oidc/login');
+
+  await page.goto(authorizeURL, { waitUntil: 'domcontentloaded' });
+
+  // Wait for the OIDC mock's authorize page.
   await page.waitForURL(/localhost:9400|oidc-mock/, { timeout: 15_000 });
 
   // oidc-provider-mock authorize form: fill Subject (the user's email) and submit.
   // The field label is "Subject" per the mock's default template.
   await page.getByLabel('Subject').fill(email);
-  await page.getByRole('button', { name: 'Authorize' }).click();
+  await page.getByRole('button', { name: 'Authorize', exact: true }).click();
 
   // The mock redirects back through elitea-main's callback handler, which sets
   // the session cookie and ultimately lands the user on the app.
   await page.waitForURL(BASE_URL + '/**', { timeout: 15_000 });
 
-  // Verify we're actually authenticated — the app shell should be visible.
-  // The sidebar is the most reliable shell indicator.
-  await expect(page.getByTestId('sidebar-toggle').or(page.getByTestId('sidebar-collapse-toggle'))).toBeVisible({
-    timeout: 10_000,
-  });
+  // Verify session is valid by calling the session info endpoint directly.
+  // The SPA router context is not yet wired to a session store (Wave-2 gap),
+  // so we cannot rely on sidebar-toggle rendering; instead, /forward-auth/info
+  // confirms the server-side cookie round-trip succeeded.
+  const infoResponse = await page.request.get(BASE_URL + '/forward-auth/info');
+  const infoBody = await infoResponse.json() as { authenticated?: boolean };
+  if (!infoBody.authenticated) {
+    throw new Error(`OIDC session not authenticated for ${email}; info: ${JSON.stringify(infoBody)}`);
+  }
 
   // Save the authenticated state (cookies + localStorage).
   await page.context().storageState({ path: storageStatePath });

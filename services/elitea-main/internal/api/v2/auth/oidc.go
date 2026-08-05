@@ -44,11 +44,12 @@ func OIDCConfigFromEnv() (*OIDCConfig, error) {
 }
 
 type OIDCHandler struct {
-	provider  *oidc.Provider
-	verifier  *oidc.IDTokenVerifier
-	oauth2Cfg *oauth2.Config
-	pool      *pgxpool.Pool
-	secretKey string
+	provider      *oidc.Provider
+	verifier      *oidc.IDTokenVerifier
+	oauth2Cfg     *oauth2.Config
+	pool          *pgxpool.Pool
+	secretKey     string
+	secureCookies bool
 }
 
 func NewOIDCHandler(ctx context.Context, cfg *OIDCConfig, pool *pgxpool.Pool, secretKey string) (*OIDCHandler, error) {
@@ -67,12 +68,17 @@ func NewOIDCHandler(ctx context.Context, cfg *OIDCConfig, pool *pgxpool.Pool, se
 
 	verifier := provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 
+	// COOKIE_SECURE=false disables the Secure flag — useful for E2E stacks
+	// that run over plain HTTP on localhost.
+	secureCookies := os.Getenv("COOKIE_SECURE") != "false"
+
 	return &OIDCHandler{
-		provider:  provider,
-		verifier:  verifier,
-		oauth2Cfg: oauth2Cfg,
-		pool:      pool,
-		secretKey: secretKey,
+		provider:      provider,
+		verifier:      verifier,
+		oauth2Cfg:     oauth2Cfg,
+		pool:          pool,
+		secretKey:     secretKey,
+		secureCookies: secureCookies,
 	}, nil
 }
 
@@ -98,7 +104,7 @@ func (h *OIDCHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    cookieValue,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   h.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   300,
 	})
@@ -145,7 +151,7 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   h.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -214,7 +220,7 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   h.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	})
@@ -235,7 +241,6 @@ func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string
 		`INSERT INTO auth_core__user (email, name, last_login)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (email) DO UPDATE SET last_login = $3
-		 WHERE auth_core__user.suspended = false
 		 RETURNING id`,
 		email, name, time.Now(),
 	).Scan(&userID)

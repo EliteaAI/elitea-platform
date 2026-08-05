@@ -103,6 +103,7 @@ services:
       OIDC_CLIENT_ID: "elitea-e2e-client"
       OIDC_CLIENT_SECRET: "elitea-e2e-secret"
       OIDC_REDIRECT_URI: "http://localhost:${E2E_PORT:-8082}/forward-auth/auth_oidc/callback"
+      COOKIE_SECURE: "false"
       # Object storage: point at the local rustfs S3-compatible store
       STORAGE_BACKEND: "s3"
       STORAGE_CONTAINER: "elitea-artifacts"

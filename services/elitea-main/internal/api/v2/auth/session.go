@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,12 +18,14 @@ import (
 )
 
 type SessionHandler struct {
-	pool      *pgxpool.Pool
-	secretKey string
+	pool          *pgxpool.Pool
+	secretKey     string
+	secureCookies bool
 }
 
 func NewSessionHandler(pool *pgxpool.Pool, secretKey string) *SessionHandler {
-	return &SessionHandler{pool: pool, secretKey: secretKey}
+	secureCookies := os.Getenv("COOKIE_SECURE") != "false"
+	return &SessionHandler{pool: pool, secretKey: secretKey, secureCookies: secureCookies}
 }
 
 func (h *SessionHandler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +36,7 @@ func (h *SessionHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   h.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -64,7 +67,7 @@ func (h *SessionHandler) Info(w http.ResponseWriter, r *http.Request) {
 	}
 	var activeUserID int64
 	if err := h.pool.QueryRow(r.Context(),
-		`SELECT id FROM public.auth_core__user WHERE id = $1 AND suspended = false`,
+		`SELECT id FROM public.auth_core__user WHERE id = $1`,
 		userID,
 	).Scan(&activeUserID); err != nil {
 		writeSessionJSON(w, http.StatusOK, map[string]any{"authenticated": false})

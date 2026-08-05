@@ -1,10 +1,11 @@
 import { RouterProvider } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { getConfig, MissingEnvPage } from '@/shared/config';
 
 import { AppProviders } from './providers';
 import { createAppRouter } from './router';
+import { sessionAuthContext, useSessionStore } from './session-store';
 
 /**
  * App shell (spec §9.3 units F1/F3/R1/R2).
@@ -51,6 +52,14 @@ import { createAppRouter } from './router';
 export function App() {
   const config = getConfig();
   const [router] = useState(() => createAppRouter());
+  const fetchSession = useSessionStore((state) => state.fetchSession);
+
+  useEffect(() => {
+    void fetchSession().then(() => {
+      // Re-run all active beforeLoad guards now that the session is known.
+      void router.invalidate();
+    });
+  }, [fetchSession, router]);
 
   if (config.status === 'missing') {
     return <MissingEnvPage missing={config.missing} />;
@@ -58,7 +67,7 @@ export function App() {
 
   return (
     <AppProviders>
-      <RouterProvider router={router} />
+      <RouterProvider router={router} context={{ auth: sessionAuthContext }} />
     </AppProviders>
   );
 }
