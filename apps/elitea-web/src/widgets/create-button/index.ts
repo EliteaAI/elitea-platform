@@ -16,11 +16,23 @@
  *    bug).
  *  - No `dispatch(artifactActions.setBucket(null))` — there is no Redux
  *    slice to clear; the create-bucket page owns its own initial state.
- *  - `isCreatingNewConversation` (chat feature) is not read — no chat
- *    feature slice exists yet to read it from; the button is never
- *    disabled for that reason (parity gap, will self-resolve once a chat
- *    unit lands a queryable "creating" flag the button can read via a
- *    prop, without this widget needing to import `features/chat-input`).
+ *  - The old app's fork/import wizard (`entities/import-wizard/**`, opened
+ *    from this button per `parity/GRAPH.md:93`) is still NOT ported — the
+ *    button has no "import"/"fork" affordance at all. This was originally
+ *    disclosed as blocked on missing `jszip`/`uuid`/a flow editor; those
+ *    three are now all available (`jszip` is a direct dependency,
+ *    `crypto.randomUUID()` is this codebase's standing `uuid` substitute,
+ *    and `features/pipelines` exports a ready-to-compose `PipelineEditor`),
+ *    so the blocker is stale, but actually wiring the wizard up is a
+ *    substantial feature-composition change (build `entities/import-wizard`
+ *    from the old app's 22-file tree, then compose it here) — out of scope
+ *    for this widget's own file set.
+ *
+ * `isCreatingNewConversation` (chat feature) IS now read, via
+ * `entities/conversation`'s `useChatSessionStore` — see
+ * `ui/CreateEntityButton.tsx`'s `shouldDisableCreatingChat`. This closes
+ * the gap this header used to disclose here (a chat unit has since landed
+ * the queryable "creating" flag).
  */
 export { CreateEntityButton } from './ui/CreateEntityButton';
 export type { CreateEntityButtonProps } from './ui/CreateEntityButton';

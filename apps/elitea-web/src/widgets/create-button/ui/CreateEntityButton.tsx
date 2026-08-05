@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 
-import { useNavigate, useRouterState } from '@tanstack/react-router';
+import { useNavigate, useRouteContext, useRouterState } from '@tanstack/react-router';
 
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import Box from '@mui/material/Box';
@@ -11,13 +11,20 @@ import Popper from '@mui/material/Popper';
 import type { Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
+import { useChatSessionStore } from '@/entities/conversation';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { PlusIcon } from '@/shared/ui/icons/plus-icon';
 import { t } from '@/shared/i18n';
 import { getConfig } from '@/shared/config';
 
 import { createEntityOptions, type CreateEntityKind, type CreateEntityOption } from '../lib/constants';
-import { currentEntityFromPathname, defaultEntityKind, hasCreatePermission, resolveCreateCommand } from '../lib/command';
+import {
+  currentEntityFromPathname,
+  defaultEntityKind,
+  hasCreatePermission,
+  hasMainButtonCreatePermission,
+  resolveCreateCommand,
+} from '../lib/command';
 
 export interface CreateEntityButtonProps {
   /** SHELL-010-style permission gating, computed by the caller (Sidebar) from `usePermissionList`. */
@@ -35,11 +42,63 @@ function ownLlmsDisabled(): boolean {
   return result.config.allow_project_own_llms === false;
 }
 
+/**
+ * `projectId === undefined` (no project resolved yet) must NOT early-return
+ * `false` here: the old app's own check is a loose `projectId !=
+ * PUBLIC_PROJECT_ID` (`CreateEntityButton.jsx:79-85`), and `undefined !=
+ * <a defined id>` is `true` in JS — an unresolved project counts as "not
+ * the public project" and therefore still contributes to disabling the
+ * button, the OPPOSITE polarity from returning early with `false`.
+ */
 function isOwnLlmsBlocked(activeKind: CreateEntityKind, projectId: string | undefined): boolean {
-  if (activeKind !== 'configuration' || projectId === undefined) return false;
+  if (activeKind !== 'configuration') return false;
+  if (!ownLlmsDisabled()) return false;
   const configResult = getConfig();
   const publicProjectId = configResult.status === 'ok' ? configResult.config.vite_public_project_id : undefined;
-  return ownLlmsDisabled() && projectId !== publicProjectId;
+  return projectId !== publicProjectId;
+}
+
+/**
+ * `personal_project_id` from the TanStack Router root context's
+ * `auth.getUser()` (`src/app/router-context.ts`'s `AuthUser.
+ * personal_project_id` — outside this cluster's file scope, read
+ * structurally rather than imported, per `no-upward-from-features`). Same
+ * seam `features/settings/ui/personal-tokens/TokensTable.tsx` and
+ * `features/toolkits/lib/hooks/useSelectedProjectId.ts` already use, so
+ * this self-resolves once R2 replaces the stub context — no change needed
+ * here or in the `Sidebar`/`SidebarBody` caller.
+ */
+interface PersonalProjectIdContext {
+  readonly auth?: {
+    readonly getUser?: () => { readonly personal_project_id?: string } | undefined;
+  };
+}
+
+function isPersonalProjectIdContext(value: unknown): value is PersonalProjectIdContext {
+  return typeof value === 'object' && value !== null;
+}
+
+/** Pure extraction, mirrors `TokensTable.tsx`'s `selectPersonalProjectId`. */
+export function selectPersonalProjectId(context: unknown): string | undefined {
+  if (!isPersonalProjectIdContext(context)) return undefined;
+  return context.auth?.getUser?.()?.personal_project_id;
+}
+
+/**
+ * SHELL "no personal project / viewing public project" gate (old app:
+ * `useDisablePersonalSpace` — `!privateProjectId && selectedProjectId ==
+ * PUBLIC_PROJECT_ID`, `CreateEntityButton.jsx:77` +
+ * `useDisablePersonalSpace.hooks.js`). Unlike {@link isOwnLlmsBlocked},
+ * `projectId === undefined` here DOES early-return `false`: the old app's
+ * loose `selectedProjectId == PUBLIC_PROJECT_ID` is `false` when
+ * `selectedProjectId` is `undefined` (loose `==` against a defined,
+ * non-null value), so an unresolved project does not trip this gate.
+ */
+function isPersonalSpaceBlocked(projectId: string | undefined, personalProjectId: string | undefined): boolean {
+  if (projectId === undefined || personalProjectId) return false;
+  const configResult = getConfig();
+  const publicProjectId = configResult.status === 'ok' ? configResult.config.vite_public_project_id : undefined;
+  return projectId === publicProjectId;
 }
 
 interface TriggerProps {
@@ -63,12 +122,22 @@ function CreateEntityTrigger({
   onToggleMenu,
 }: TriggerProps): ReactNode {
   if (isSimple) {
+    // [R1 fix] The old app's `showSimpleButton` branch renders exactly ONE
+    // button, and its `onClick` is `handleOpenMenu` (`CreateEntityButton.
+    // jsx:308`) — it ONLY ever opens the 13-item dropdown, never navigates
+    // directly. There is no separate chevron in this branch (that only
+    // exists in the split-button branch below), so `onToggleMenu` here is
+    // the ONLY way to reach the dropdown while simple/collapsed — wiring
+    // this to `onMainClick` instead (as a prior version of this file did)
+    // makes the entity picker completely unreachable whenever the sidebar
+    // is collapsed, and fires a direct navigation against a possibly-stale
+    // `activeKind` on every simple/unrecognised route.
     return (
       <BaseBtn
         variant="special"
         disabled={disabled}
         startIcon={<PlusIcon />}
-        onClick={onMainClick}
+        onClick={onToggleMenu}
         data-testid="sidebar-create-button"
         sx={{ width: '100%', ...(collapsed ? { minWidth: '1.75rem', width: '1.75rem' } : {}) }}
       >
@@ -188,6 +257,8 @@ function CreateEntityDropdown({ open, anchorEl, collapsed, options, activeKind, 
 export function CreateEntityButton({ permissions, collapsed = false, projectId }: CreateEntityButtonProps): ReactNode {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
+  const routeContext: unknown = useRouteContext({ strict: false });
+  const personalProjectId = selectPersonalProjectId(routeContext);
   const [selectedKind, setSelectedKind] = useState<CreateEntityKind>(() => defaultEntityKind(pathname));
   const [menuOpen, setMenuOpen] = useState(false);
   const anchorRef = useRef<HTMLElement | null>(null);
@@ -201,6 +272,15 @@ export function CreateEntityButton({ permissions, collapsed = false, projectId }
   const isSimple = collapsed || currentLabel === undefined;
   const activeKind = currentEntityFromPathname(pathname) ?? selectedKind;
   const isSystemPromptsPage = pathname.includes('/settings/prompts');
+  // [R2 fix] Old app: `shouldDisableCreatingChat = selectedOption === 'Chat'
+  // && isCreatingNewConversation` (`CreateEntityButton.jsx:52-55`) — guards
+  // against a duplicate/concurrent create-chat click while one is already
+  // in flight. `isCreatingNewConversation` now has a real, queryable source
+  // (`entities/conversation`'s `useChatSessionStore`, written by
+  // `useSelectConversation.js`'s port) since this unit's original "no chat
+  // feature slice exists yet" disclaimer was written.
+  const isCreatingNewConversation = useChatSessionStore((state) => state.isCreatingNewConversation);
+  const shouldDisableCreatingChat = activeKind === 'chat' && isCreatingNewConversation;
 
   const runCommand = useCallback(
     (kind: CreateEntityKind) => {
@@ -227,8 +307,16 @@ export function CreateEntityButton({ permissions, collapsed = false, projectId }
   const toggleMenu = useCallback(() => setMenuOpen((open) => !open), []);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
 
+  // [R5 fix] `hasMainButtonCreatePermission` (not the plain
+  // `hasCreatePermission` the dropdown items below still use) — the old
+  // app's own two gates diverge for Bucket by design, see that function's
+  // doc comment in `lib/command.ts`.
   const disabled =
-    !hasCreatePermission(activeKind, permissions) || isSystemPromptsPage || isOwnLlmsBlocked(activeKind, projectId);
+    !hasMainButtonCreatePermission(activeKind, permissions) ||
+    isSystemPromptsPage ||
+    isOwnLlmsBlocked(activeKind, projectId) ||
+    isPersonalSpaceBlocked(projectId, personalProjectId) ||
+    shouldDisableCreatingChat;
 
   return (
     <ClickAwayListener onClickAway={closeMenu}>

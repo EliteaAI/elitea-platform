@@ -37,7 +37,6 @@
  *    (no "notifications" REST tag; only the `notifications_notify` SOCKET
  *    event exists, S5), and the notification LIST panel
  *    (`[fsd]/widgets/Notifications/ui`) is outside this unit's owned paths.
- *  - `AgentHubButton` — see `SidebarFooter.tsx`'s header.
  */
 export { Sidebar, SIDE_BAR_WIDTH_PX, COLLAPSED_SIDE_BAR_WIDTH_PX } from './ui/Sidebar';
 export type { SidebarProps } from './ui/Sidebar';

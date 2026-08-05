@@ -110,7 +110,7 @@ export function NotificationButton(): ReactNode {
   const socketClient = useContext(SocketClientContext);
 
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
-  const [socketUnread, setSocketUnread] = useState(false);
+  const [hasUnread, setHasUnread] = useState(false);
 
   // Badge-only signal: the real API has no dedicated "count only" param
   // (`features/notifications/api/notifications.ts`'s `ListNotificationsParams`
@@ -118,18 +118,42 @@ export function NotificationButton(): ReactNode {
   // real, already-supported params) plus reading the response's own `total`
   // field is the faithful equivalent of the old app's
   // `only_new: true, only_total: true, pageSize: 1` query shape.
-  const { data } = useNotificationsList(
+  const { data, dataUpdatedAt } = useNotificationsList(
     { projectId: personalProjectId ?? '', pageSize: 1, params: { only_new: true } },
     { enabled: !!personalProjectId },
   );
-  const hasUnread = socketUnread || (data?.total ?? 0) > 0;
+
+  // Old app: `useEffect(() => { if (data !== undefined) setHasMessages(!!data
+  // ?.total); }, [data])` (`NotificationButton.jsx:60-64`) — every fresh
+  // query response is AUTHORITATIVE and can flip the dot back off (e.g.
+  // after "mark all as read" invalidates and refetches this same query,
+  // `features/notifications/api/useNotifications.ts`'s
+  // `NOTIFICATIONS_QUERY_ROOT` invalidation). The socket handler below only
+  // ever sets this `true` OPTIMISTICALLY between refetches — reproduced
+  // as-is, not `socketUnread || data-derived` (that OR'd shape is a one-way
+  // ratchet: once a live push flips it `true`, no later "actually 0 now"
+  // response could ever flip it back).
+  //
+  // `dataUpdatedAt` (also in the deps, alongside `data` itself) matters:
+  // TanStack Query's default `structuralSharing` keeps `data`'s object
+  // reference stable across a refetch that resolves to an unchanged value
+  // (e.g. `{ rows: [], total: 0 }` again, right after a push already set
+  // this optimistically `true`) — RTK Query, the old app's client, has no
+  // such structural-sharing reuse and hands back a fresh reference on every
+  // fetch. Depending on `data` alone would silently reintroduce the exact
+  // one-way-ratchet bug this fix exists to close, in the very common case
+  // where the "authoritative" refetch confirms the same total the previous
+  // fetch already had. `dataUpdatedAt` changes on every settle regardless.
+  useEffect(() => {
+    if (data !== undefined) setHasUnread(!!data.total);
+  }, [data, dataUpdatedAt]);
 
   // Live push (old app: `useSocket(sioEvents.notifications_notify,
   // onNotificationEvent)`, unconditional — not gated on personal_project_id
   // either, reproduced as-is). No-ops when no provider is mounted yet.
   useEffect(() => {
     if (!socketClient) return undefined;
-    const handleNotify = (): void => setSocketUnread(true);
+    const handleNotify = (): void => setHasUnread(true);
     socketClient.on('notifications_notify', handleNotify);
     return () => socketClient.off('notifications_notify', handleNotify);
   }, [socketClient]);

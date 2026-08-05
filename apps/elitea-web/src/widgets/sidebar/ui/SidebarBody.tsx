@@ -18,7 +18,7 @@ import { SkillIcon } from '@/shared/ui/icons/skill-icon';
 import { ToolIcon } from '@/shared/ui/icons/tool-icon';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutlined';
 
-import { navSections, selectedNavItem, visibleNavSections, type NavItemValue } from '../lib/navSections';
+import { computeIsSelectedProjectPublic, navSections, selectedNavItem, visibleNavSections, type NavItemValue } from '../lib/navSections';
 import { NotificationButton } from './NotificationButton';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { SidebarFooter } from './SidebarFooter';
@@ -82,6 +82,11 @@ export interface SidebarBodyProps {
  * it (`SidebarBody.jsx:233`: inside the sticky-top header row, next to the
  * logo/toggle button) and why it stays here anyway (this unit's file scope
  * is this file + the new widget only, not `SidebarHeader.tsx`).
+ *
+ * `sections` also gates `skills` on the selected project being the public
+ * project (`../lib/navSections.ts`'s `computeIsSelectedProjectPublic`) —
+ * see that file's header for why `mcps`' equivalent gate is deliberately
+ * NOT wired here yet.
  */
 export function SidebarBody({
   collapsed,
@@ -93,7 +98,13 @@ export function SidebarBody({
 }: SidebarBodyProps): ReactNode {
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
 
-  const sections = useMemo(() => visibleNavSections(navSections(), permissions), [permissions]);
+  const sections = useMemo(
+    () =>
+      visibleNavSections(navSections(), permissions, {
+        isSelectedProjectPublic: computeIsSelectedProjectPublic(selectedProjectId),
+      }),
+    [permissions, selectedProjectId],
+  );
 
   return (
     <Box

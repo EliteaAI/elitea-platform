@@ -4,13 +4,31 @@
  * (lines 93-199) + `lib/constants/sidebar.constants.js`'s
  * `RouteToSideBarItemMap`.
  *
- * `mcps`/`skills` visibility gates (`useIsMcpVisible`, "hide skills on the
- * public project") are old-app hooks this widget cannot reach (they live in
- * `[fsd]/shared/lib/hooks`, not ported into this app's `shared/lib` by any
- * landed Wave-1 unit) — both items are therefore always shown, gated ONLY by
- * `PERMISSION_GROUPS` same as every other entry. Documented, not silently
- * dropped.
+ * `skills`' visibility gate ("hide skills on the public project", old app's
+ * `isSelectedProjectPublic`) is wired below via `computeIsSelectedProjectPublic`
+ * — `entities/project`'s `isPublicProject` selector plus `shared/config`'s
+ * `getConfig()` are both legitimately-downward imports from a widget (same
+ * reasoning `pages/agents/lib/isPublicAgentsProject.ts` already documents
+ * for the identical two-line body), and neither needs a React hook (`getConfig`
+ * is a plain memoized sync read), so this stays a pure function callable
+ * straight from `SidebarBody`'s existing `useMemo`.
+ *
+ * `mcps`' visibility gate (`useIsMcpVisible`, reading the real
+ * `PlatformSettings.mcp_enabled` flag) is NOT wired here: unlike the skills
+ * gate, the hook that provides it (`features/toolkits/api/useIsMcpVisible.ts`
+ * / `features/agents/api/useIsMcpVisible.ts`) is a live `useGetPlatformSettings`
+ * TanStack Query call with no accompanying mock in this repo's test fixtures
+ * (`src/test/msw/handlers/**` has no `/elitea_core/platform_settings/
+ * prompt_lib` handler) — wiring it here would need either a new global
+ * handler there or per-test mocks added to every existing test that renders
+ * this widget's tree, including `widgets/app-shell/__tests__/
+ * AppShell.test.tsx`, which is outside this cluster's file scope. Disclosed
+ * as a follow-up rather than silently left as "cannot reach" (which is no
+ * longer accurate — it CAN be reached, wiring it safely just needs a change
+ * outside this file's ownership fence).
  */
+import { isPublicProject } from '@/entities/project';
+import { getConfig } from '@/shared/config';
 import { PERMISSION_GROUPS } from '@/shared/lib/permissions';
 
 export type NavItemValue =
@@ -66,19 +84,40 @@ function requiredPermissionsFor(value: NavItemValue): readonly string[] | undefi
   return undefined;
 }
 
-/** SHELL-010: filters sections/items by the caller's permission set; empty sections are dropped entirely (old app: `.filter(section => section.length > 0)`). */
+export interface VisibleNavSectionsOptions {
+  /** Old app: `isSelectedProjectPublic` — hides `skills` on the public project, in addition to the `PERMISSION_GROUPS` check. Defaults to `false` (skills shown) for callers that don't pass it. */
+  readonly isSelectedProjectPublic?: boolean;
+}
+
+/** SHELL-010: filters sections/items by the caller's permission set (plus the `skills`/public-project gate); empty sections are dropped entirely (old app: `.filter(section => section.length > 0)`). */
 export function visibleNavSections(
   sections: readonly NavSection[],
   permissions: ReadonlySet<string>,
+  options: VisibleNavSectionsOptions = {},
 ): readonly NavSection[] {
+  const { isSelectedProjectPublic = false } = options;
   return sections
     .map((section) => ({
       items: section.items.filter((item) => {
+        if (item.value === 'skills' && isSelectedProjectPublic) return false;
         const required = requiredPermissionsFor(item.value);
         return !required || required.length === 0 || required.some((permission) => permissions.has(permission));
       }),
     }))
     .filter((section) => section.items.length > 0);
+}
+
+/**
+ * Old app: `projectId == PUBLIC_PROJECT_ID` (`SidebarBody.jsx`'s
+ * `isSelectedProjectPublic`, via `common/constants.js`'s
+ * `PUBLIC_PROJECT_ID = +VITE_PUBLIC_PROJECT_ID`). `undefined` (no project
+ * selected yet, or the runtime config isn't resolved) is never "public".
+ */
+export function computeIsSelectedProjectPublic(selectedProjectId: string | undefined): boolean {
+  if (selectedProjectId === undefined) return false;
+  const config = getConfig();
+  if (config.status !== 'ok') return false;
+  return isPublicProject(selectedProjectId, config.config.vite_public_project_id);
 }
 
 /** SidebarBody's `selectedItem` useMemo — which nav item (if any) matches the current pathname. `/agents-hub` deliberately matches nothing (old app: explicit early return for `RouteDefinitions.AgentHub`). */

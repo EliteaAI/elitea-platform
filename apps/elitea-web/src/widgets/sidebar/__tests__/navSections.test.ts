@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { resetConfigForTests } from '@/shared/config/get-config';
 import { PERMISSION_GROUPS } from '@/shared/lib/permissions';
 
-import { navSections, selectedNavItem, visibleNavSections } from '../lib/navSections';
+import { computeIsSelectedProjectPublic, navSections, selectedNavItem, visibleNavSections } from '../lib/navSections';
 
 describe('navSections (SHELL-001..009)', () => {
   it('lists exactly the 9 items across 3 groups, in old-app order', () => {
@@ -56,6 +57,48 @@ describe('visibleNavSections (SHELL-010)', () => {
   it('grants a gated item when its permission is held', () => {
     const visible = visibleNavSections(navSections(), new Set(PERMISSION_GROUPS.chat));
     expect(visible.flatMap((s) => s.items.map((i) => i.value))).toContain('chat');
+  });
+
+  it('R3: hides "skills" when isSelectedProjectPublic is true, in addition to the permission check', () => {
+    const all = new Set(Object.values(PERMISSION_GROUPS).flat());
+    const visible = visibleNavSections(navSections(), all, { isSelectedProjectPublic: true });
+    const values = visible.flatMap((section) => section.items.map((item) => item.value));
+    expect(values).not.toContain('skills');
+    // Ungated/unrelated siblings still survive.
+    expect(values).toContain('toolkits');
+  });
+
+  it('R3: shows "skills" when isSelectedProjectPublic is false (default) even with no options passed', () => {
+    const all = new Set(Object.values(PERMISSION_GROUPS).flat());
+    const visible = visibleNavSections(navSections(), all);
+    const values = visible.flatMap((section) => section.items.map((item) => item.value));
+    expect(values).toContain('skills');
+  });
+});
+
+describe('computeIsSelectedProjectPublic (R3)', () => {
+  beforeEach(() => {
+    resetConfigForTests();
+    vi.stubEnv('VITE_SERVER_URL', 'https://elitea.example');
+    vi.stubEnv('VITE_BASE_URI', '/app/');
+    vi.stubEnv('VITE_PUBLIC_PROJECT_ID', '11');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetConfigForTests();
+  });
+
+  it('is true when the selected project id matches the runtime public project id', () => {
+    expect(computeIsSelectedProjectPublic('11')).toBe(true);
+  });
+
+  it('is false when the selected project id differs from the public project id', () => {
+    expect(computeIsSelectedProjectPublic('2')).toBe(false);
+  });
+
+  it('is false when no project is selected', () => {
+    expect(computeIsSelectedProjectPublic(undefined)).toBe(false);
   });
 });
 

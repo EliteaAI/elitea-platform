@@ -35,17 +35,32 @@ const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
  * WHOLE program — this local test router's own JSX included — type-check
  * against the real app-wide route tree, regardless of what this file's own
  * `routeTree` actually contains at runtime.
+ *
+ * `options.initialPath` (default `/`) lets a test mount `ui` at an
+ * arbitrary starting pathname — e.g. `/onboarding` (also a REAL registered
+ * pattern, `routes/_shell/onboarding.tsx`) for AppShell's onboarding-page
+ * chrome regression coverage — without needing a THIRD hard-coded route:
+ * the "main" route's own `path` is just that string instead of the literal
+ * `'/'`. `createRoute`'s `path` accepts a plain runtime `string` here (not
+ * a literal-typed one) for the same reason this function has no explicit
+ * return-type annotation below.
+ *
+ * The returned `queryClient` (the exact instance passed to
+ * `QueryClientProvider`) lets a test seed/inspect cache state directly —
+ * e.g. NavBlockerDialog's R3 regression coverage, which needs to prove a
+ * confirmed navigation does NOT wipe it.
  */
 // No explicit return-type annotation (deliberate): `ReturnType<typeof
 // createRouter>` resolves against the generic's DEFAULT type arguments,
 // which do not structurally match THIS call's specific route-tree
 // instantiation under `exactOptionalPropertyTypes` — letting TS infer the
 // precise type from the function body avoids that mismatch.
-export async function renderWithNavigation(ui: ReactNode) {
+export async function renderWithNavigation(ui: ReactNode, options?: { initialPath?: string }) {
+  const initialPath = options?.initialPath ?? '/';
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
   const homeRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: '/',
+    path: initialPath,
     component: () => (
       <>
         {ui as ReactElement}
@@ -60,7 +75,7 @@ export async function renderWithNavigation(ui: ReactNode) {
   });
   const router = createRouter({
     routeTree: rootRoute.addChildren([homeRoute, elsewhereRoute]),
-    history: createMemoryHistory({ initialEntries: ['/'] }),
+    history: createMemoryHistory({ initialEntries: [initialPath] }),
   });
   await router.load();
 
@@ -77,5 +92,5 @@ export async function renderWithNavigation(ui: ReactNode) {
       </QueryClientProvider>
     </ThemeProvider>,
   );
-  return { ...result, router };
+  return { ...result, router, queryClient };
 }

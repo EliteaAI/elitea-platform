@@ -96,4 +96,25 @@ describe('Sidebar', () => {
     await renderSidebar();
     expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('href', '/agents');
   });
+
+  it('R3: hides "Skills" when the selected project is the public project', async () => {
+    // `projects[0]` (id 11) matches `VITE_PUBLIC_PROJECT_ID=11` stubbed above.
+    await renderAtPath(
+      '/agents',
+      <Sidebar
+        permissions={allPermissions}
+        projects={projects}
+        selectedProjectId="11"
+        onSelectProject={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Skills')).not.toBeInTheDocument();
+    // Unrelated siblings stay visible.
+    expect(screen.getByText('Toolkits')).toBeInTheDocument();
+  });
+
+  it('R3: shows "Skills" when the selected project is not the public project', async () => {
+    await renderSidebar();
+    expect(screen.getByText('Skills')).toBeInTheDocument();
+  });
 });
