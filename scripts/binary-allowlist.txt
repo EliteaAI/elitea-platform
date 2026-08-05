@@ -12,3 +12,8 @@ testdata/proto/runtime/v1/**/*.pb
 # Wave-2 onboarding tour screenshots — legitimate UI asset images for interactive tours.
 apps/elitea-web/src/assets/onboarding/tips/*.png
 apps/elitea-web/src/assets/onboarding/welcome/chat-welcome.png
+
+# Wave-2 maintenance splash entry (A15) — same image as the onboarding welcome
+# screen above, duplicated locally since this Vite entry point can't import
+# across the src/entries/ boundary; imported by MaintenancePage.tsx.
+apps/elitea-web/src/entries/maintenance/assets/chat-welcome.png
