@@ -2695,6 +2695,132 @@ nonzero count — a real implementation with table-driven subtests (e.g. the
 cd services/elitea-main && go test ./tests/contract/ -race -run TestArtifact -v > /tmp/s19.log 2>&1; rc=$?; cat /tmp/s19.log; test $rc -eq 0 && test "$(grep -c -- '--- PASS' /tmp/s19.log)" -ge 11 && ! grep -q 'CONTRACT_AUTH_TOKEN not set' /tmp/s19.log
 ```
 
+**TestMain restructured as a two-gate, not one.** `tests/contract/contract_test.go`'s
+old `TestMain` called `os.Exit(0)` before `m.Run()` whenever `CONTRACT_AUTH_TOKEN`
+was unset — the default everywhere except `ci-contract.yml`'s weekly/dispatch
+job — which would have silently gated the new self-contained `TestArtifact*`
+suite shut too, on every PR, with no failure or skip reported at all (exit 0
+for the wrong reason, the same class of hollow-verify this plan calls out
+repeatedly). Fixed by converting the 8 legacy-parity tests
+(`TestApplicationsList`, `TestHealthz`, `TestPredict`, ...) to each call a new
+`requireLegacyParityCredentials(t)` helper (`t.Skip` when `authToken == ""`)
+instead, and moving `setupArtifactSuite()`'s build/teardown into `TestMain`
+itself, wrapping `m.Run()` — the right place for whole-binary setup/teardown
+shared across many independent top-level test functions, as opposed to
+per-test `t.Cleanup`.
+
+**Harness: real router, real Postgres, real S3-compatible backend — built
+once, shared by every `TestArtifact*` test.** `tests/contract/artifact_harness_test.go`
+builds an ephemeral Postgres database (the same `CREATE DATABASE`-per-run +
+embedded-shared-migrations pattern every Postgres-integration package in this
+repo reimplements, no shared testutil exists — see
+`internal/runtimecomposition/artifact_retention_sweep_postgres_integration_test.go`,
+the closest existing precedent, reused almost verbatim including its
+`centry.project`/`centry.notifications` stub) and a real S3 backend against
+RustFS (the same emulator + bucket-self-provisioning pattern
+`internal/infra/storage/conformance`'s `setupS3` already established),
+wrapped in S18's `storage.Instrument(...)` — the real production construction
+path, not a bypass of it. `internal/api.NewRouter(api.RouterConfig{Pool,
+ObjectStore, ArtifactPermissionResolver})` with `AUTH_DEV_MODE=true` builds
+the actual production router: every request goes through the real
+auth/RBAC/handler chain exactly like `internal/api/router_security_test.go`'s
+S11 tests do, via a package-local `artifactPermissiveResolver` that grants
+every artifact permission unconditionally — S19 is testing the artifact API's
+own contract (response shapes, status codes, the error envelope), not RBAC
+enforcement, which S11's router-level tests already cover exhaustively for
+every one of these routes. Wrapped in `httptest.NewServer(router)` so tests
+drive it with real HTTP round trips, matching the "against a running Go
+service" framing literally. Every test gets its own project ID
+(`nextArtifactProjectID`, seeded from `time.Now().UnixMilli()` — not a fixed
+literal, and not `UnixNano()` either: a project ID must match
+`^[1-9][0-9]{0,17}$`, at most 18 digits, and `UnixNano()` is already 19 as of
+2026) so 11 independent scenarios can safely share one Postgres database and
+one physical RustFS bucket without cross-test interference, without paying
+for 11 separate ephemeral databases.
+
+**Two real, previously-undetected production defects found — both fixed,
+both in the codebase since S3/S9, both invisible to the existing S4
+conformance suite until this stage actually asserted on the thing they
+break.** `s3.Backend.Put` and `azure.Backend.Put`'s non-seekable-body path —
+the one every real HTTP multipart-form upload actually takes, since S9's
+`UploadObject` always passes a `*multipart.Part` with `ContentLength: -1` —
+always returned `ObjectInfo{Size: 0}`. Neither SDK's streaming-upload
+response carries a size/content-length field to read it from
+(`transfermanager.UploadObjectOutput` and `blockblob.CommitBlockListResponse`
+were both read directly to confirm neither has one), and nothing populated
+`Size` from the actual bytes transferred. In production, this meant every
+object ever uploaded through the real HTTP upload path silently reported
+`size_bytes: 0` to the caller **and** recorded `byte_length: 0` into
+`elitea_storage.objects` (`UpsertObject` reads `info.Size` directly) —
+zeroing every size aggregate (`SumBucketBytes`, `SumProjectBytes`, S12's
+quota checks, S18's own per-project gauge) for real uploads, the same class
+of defect S12 found in the metadata-*write* path itself, this time in the
+size *value* written down that path. The existing S4 conformance suite has a
+case exactly named for this (`NonSeekableBodyRoundTripsMatchingDigest`) but
+only ever asserted round-trip digest correctness via a fresh `Get` call
+afterward — `Get`'s `ObjectInfo.Size` comes from an independent, already-correct
+backend response (a real `Content-Length`/`GetObject` response), so that
+assertion passed regardless of what `Put` itself returned, and never caught
+this. Fixed both backends with a `countingReader` wrapping the streamed body
+before it reaches the SDK's uploader, reporting the actual bytes read as
+`Size`; strengthened the existing conformance case to assert on `Put`'s own
+returned `Size`, not just the later round trip, closing the coverage gap
+that let this hide. GCS's `Put` was already correct — `storage.Writer.Attrs().Size`
+is populated by the GCS client's own internal accounting.
+
+**One acceptance-criterion case relocated, not dropped: the control-character
+key-rejection scenario cannot be driven through the upload path.** A raw
+control byte (`\x01`) embedded in a multipart `Content-Disposition` filename
+fails Go's own `mime.ParseMediaType` before `UploadObject` ever reaches
+`storage.NewObjectRef` — surfacing as `InvalidArgument` (the
+Content-Disposition parse failure), a different, earlier, equally-defensive
+400, not the `InvalidKey` this case is meant to exercise. The `..` and
+leading-slash cases both reach `storage.NewObjectRef` fine through the same
+upload path (`mime.ParseMediaType` tolerates those bytes) and were left as
+originally designed. The control-character case moved to
+`TestArtifactKeyRejection`'s download-path subtest instead — a raw URL path
+with no MIME header parsing in between, reaching `validateKey` directly and
+returning the expected `InvalidKey`.
+
+**Media-type-mismatch commit rejection verified empirically, not assumed
+unreachable.** `s3.Backend.PresignPut` signs `Content-Type` as part of the
+presigned URL when the grant declares one, which could plausibly mean an
+S3-compatible backend rejects any PUT whose actual `Content-Type` header
+doesn't match what was signed — closing off the one realistic way to
+reproduce `finalizeGrantCommit`'s "uploaded object's media type does not
+match the grant" check (`MediaTypeMismatch`) through the presigned-URL path
+at all. Rather than assume, `TestArtifactGrantCommitMediaTypeMismatchReturns409`
+sends the presigned PUT with no `Content-Type` header at all — the exact
+"out-of-band presigned PUT" scenario `finalizeGrantCommit`'s own doc comment
+names — with a `t.Skip` fallback (not a hard failure) documenting the
+alternative if the backend had rejected it. Run against real RustFS: the PUT
+succeeds, the stored object reports an empty `Content-Type`, and the commit
+correctly 409s with `MediaTypeMismatch` — confirmed reachable, not a
+documented gap.
+
+**`legacy_url` removed from `ci-contract.yml`'s `workflow_dispatch` input**,
+per this stage's own instruction that diffing against a specific legacy
+instance is "no longer meaningful." Narrowly scoped: only the *input* is
+removed (the weekly/dispatch `contract` job's `CONTRACT_LEGACY_URL` env var
+now reads a fixed default instead of an overridable input) — the
+legacy-parity comparison tests themselves (`TestApplicationsList`,
+`TestSkillsList`, ..., none of them artifact-related) are untouched;
+retiring that whole mechanism for unrelated endpoints is out of this
+stage's scope. The `compile` job (previously "Compile & Skip-Run," now
+"Compile & Run") gained the same Postgres service container +
+`docker-compose.storage-test.yml` RustFS/Azurite/fake-gcs-server emulator
+steps `ci-go.yml`'s own `test` job already has, so the new `TestArtifact*`
+suite actually runs — not just compiles-and-skips — on every PR touching
+`tests/contract/**` or `api/openapi/**`.
+
+**Per-stage adversarial Workflow review deferred to one comprehensive pass
+after S20, per the same explicit user direction S18 recorded** — this
+stage still got its own full local verify sweep (`gofmt`, `go build`,
+`go vet`, `task lint`, the literal Verify command above, a strengthened
+run of the S4 conformance suite confirming both `Put` fixes, and a full
+workspace `task test` with every emulator + a real Postgres attached, 103
+packages, zero failures) before being committed.
+
 ---
 
 ## S20 — Adjacent planes

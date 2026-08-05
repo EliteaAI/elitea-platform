@@ -430,8 +430,20 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 		if _, ok := body.(io.ReadSeeker); ok {
 			t.Fatal("io.NopCloser body unexpectedly still satisfies io.ReadSeeker")
 		}
-		if _, err := store.Put(ctx, ref, body, storage.PutOptions{ContentLength: int64(len(content))}); err != nil {
+		putInfo, err := store.Put(ctx, ref, body, storage.PutOptions{ContentLength: int64(len(content))})
+		if err != nil {
 			t.Fatalf("Put(non-seekable body): %v", err)
+		}
+		// Put's own returned ObjectInfo.Size, not a subsequent Get/Stat's —
+		// those derive Size from an independent, already-correct backend
+		// response and would pass even if Put itself always reported 0. S19
+		// found exactly that: s3 and azure's non-seekable Put path (the one
+		// every real multipart-form upload actually takes — see S9's
+		// UploadObject, which always passes ContentLength: -1) silently
+		// dropped Size on the floor because neither SDK's streaming-upload
+		// response carries a size field to read it from.
+		if putInfo.Size != int64(len(content)) {
+			t.Fatalf("Put(non-seekable body) returned Size=%d, want %d", putInfo.Size, len(content))
 		}
 
 		got, _, err := store.Get(ctx, ref, nil)

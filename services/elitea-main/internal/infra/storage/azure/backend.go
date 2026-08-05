@@ -129,16 +129,39 @@ func (b *Backend) Put(ctx context.Context, ref storage.ObjectRef, body io.Reader
 		}
 		uploadOpts.Metadata = meta
 	}
-	resp, err := blobClient.UploadStream(ctx, body, uploadOpts)
+	// UploadStreamResponse (a block-list commit response) carries no
+	// size/content-length field at all — confirmed by reading the SDK's own
+	// response type. The actual number of bytes read from body is counted
+	// here instead, the only source of truth available for a streamed,
+	// size-unknown body. Same defect S19's conformance suite found in the
+	// S3 backend's non-seekable Put path — see its own doc comment for the
+	// full story (every real multipart-form upload was silently reporting
+	// size_bytes: 0 and recording byte_length 0 into elitea_storage.objects).
+	counted := &countingReader{r: body}
+	resp, err := blobClient.UploadStream(ctx, counted, uploadOpts)
 	if err != nil {
 		return storage.ObjectInfo{}, mapAzureError(err, "put object")
 	}
 	return storage.ObjectInfo{
 		Key:          ref.Key(),
+		Size:         counted.n,
 		ContentType:  opts.ContentType,
 		ETag:         derefETagString(resp.ETag),
 		LastModified: derefTime(resp.LastModified),
 	}, nil
+}
+
+// countingReader tallies bytes read from an underlying, size-unknown
+// io.Reader — see Put's non-seekable-body upload above.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func (b *Backend) Get(ctx context.Context, ref storage.ObjectRef, rng *storage.ByteRange) (io.ReadCloser, storage.ObjectInfo, error) {

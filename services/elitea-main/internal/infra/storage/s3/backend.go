@@ -168,11 +168,23 @@ func (b *Backend) Put(ctx context.Context, ref storage.ObjectRef, body io.Reader
 	// Non-seekable bodies (S9 passes a *multipart.Part) fail SigV4's
 	// RewindStream before the request reaches the network, over plain HTTP —
 	// route them through the transfer manager's multipart uploader instead
-	// of PutObject.
+	// of PutObject. UploadObjectOutput carries no size/content-length field
+	// at all (confirmed by reading the SDK's own struct — checksums, ETag,
+	// upload ID, parts, nothing byte-count-shaped), so the actual number of
+	// bytes read from body is counted here instead — the only source of
+	// truth available once ContentLength was unknown going in. Found
+	// empirically by S19's conformance suite: every real multipart-form
+	// upload through the production UploadObject handler (objects.go always
+	// passes ContentLength: -1) was silently reporting size_bytes: 0 to
+	// callers and recording byte_length 0 into elitea_storage.objects,
+	// zeroing every size aggregate for every object actually uploaded this
+	// way — the same class of defect S12 found in the metadata-write path
+	// itself, this time in the size value written down that path.
+	counted := &countingReader{r: body}
 	uploadInput := &transfermanager.UploadObjectInput{
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(key),
-		Body:   body,
+		Body:   counted,
 	}
 	if opts.ContentType != "" {
 		uploadInput.ContentType = aws.String(opts.ContentType)
@@ -186,9 +198,23 @@ func (b *Backend) Put(ctx context.Context, ref storage.ObjectRef, body io.Reader
 	}
 	return storage.ObjectInfo{
 		Key:         ref.Key(),
+		Size:        counted.n,
 		ContentType: opts.ContentType,
 		ETag:        strings.Trim(aws.ToString(out.ETag), `"`),
 	}, nil
+}
+
+// countingReader tallies bytes read from an underlying, size-unknown
+// io.Reader — see Put's non-seekable-body path above.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func seekableSize(s io.ReadSeeker) (int64, error) {
