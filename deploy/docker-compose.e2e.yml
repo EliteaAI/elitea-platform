@@ -1,0 +1,75 @@
+# E2E-only compose override (issue #60, unit V1).
+# Layer on top of deploy/docker-compose.yml — never edit docker-compose.yml itself:
+#   podman compose -f deploy/docker-compose.yml -f deploy/docker-compose.e2e.yml up -d --wait
+#
+# What this adds:
+#  1. oidc-provider-mock  — ephemeral, hermetic OIDC for E2E (no network egress risk)
+#  2. elitea-web          — the new UI being tested (issue #60 spec: this is the first
+#                           compose entry that wires it into a runnable stack)
+#  3. env overrides on elitea-main to point OIDC at the mock and app URL at elitea-web
+#  4. traefik rule override to route /app traffic to elitea-web instead of elitea-ui
+
+services:
+  # ── 1. Ephemeral OIDC mock ─────────────────────────────────────────────────
+  # https://github.com/geigerzaehler/oidc-provider-mock
+  # - Accepts any client_id / client_secret (no registration needed)
+  # - Users provisioned via PUT /users/{email} with a JSON claims body
+  # - Authorize screen: fill "Subject" field + click "Authorize" (no password)
+  oidc-mock:
+    image: ghcr.io/geigerzaehler/oidc-provider-mock:latest
+    ports:
+      - "9400:9400"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9400/.well-known/openid-configuration')\""]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # ── 2. elitea-web (the new UI; this is its first compose entry anywhere) ───
+  elitea-web:
+    build:
+      context: ..
+      dockerfile: apps/elitea-web/Containerfile
+    image: ghcr.io/eliteaai/elitea-web:e2e
+    environment:
+      VITE_SERVER_URL: "/api/v2"
+      VITE_BASE_URI: "/app/"
+      VITE_SOCKET_SERVER: ""
+      VITE_SOCKET_PATH: "/socket.io"
+      VITE_PUBLIC_PROJECT_ID: "1"
+    depends_on:
+      - elitea-main
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/app/ || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── 3. Override elitea-main OIDC env to point at the mock ─────────────────
+  elitea-main:
+    environment:
+      OIDC_ISSUER_URL: "http://oidc-mock:9400"
+      # Any fixed values work — the mock doesn't validate client credentials.
+      OIDC_CLIENT_ID: "elitea-e2e-client"
+      OIDC_CLIENT_SECRET: "elitea-e2e-secret"
+      # Traefik is the public entry. Port is 8082 locally (E2E_PORT env), 8080 in CI.
+      OIDC_REDIRECT_URI: "http://localhost:${E2E_PORT:-8082}/forward-auth/auth_oidc/callback"
+    depends_on:
+      oidc-mock:
+        condition: service_healthy
+
+  # ── 4. Traefik: re-wire /app to elitea-web instead of elitea-ui ───────────
+  # Done via a config-override volume mount so we don't edit deploy/traefik/dynamic.yml.
+  traefik:
+    # Use port 8082 locally to avoid conflict with the centry legacy stack on 8080.
+    # In CI (ubuntu-latest) 8080 is free so the CI job can set PORT_PREFIX env or
+    # just use the default. The PLAYWRIGHT_BASE_URL env tells Playwright which port.
+    ports:
+      - "${E2E_PORT:-8082}:80"
+    volumes:
+      - ./traefik/dynamic.e2e.yml:/etc/traefik/dynamic.yml:ro
+    depends_on:
+      elitea-web:
+        condition: service_healthy

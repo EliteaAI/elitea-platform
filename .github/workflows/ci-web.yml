@@ -566,7 +566,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Bake elitea-web (build only, push happens in publish.yml)
         working-directory: .
-        run: docker buildx bake --set '*.platform=linux/amd64' elitea-web
+        run: docker buildx bake elitea-web
 
   parity:
     name: Parity (uictl routes + manifest)
@@ -600,10 +600,19 @@ jobs:
 
   e2e:
     name: E2E
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Non-blocking on PRs; blocking on release tags and manual dispatch (§6.6/§7.6).
+    # Previously this job ran on every PR because it had no `if:` guard — fixed here
+    # (issue #60 "CI gap" section).
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # E2E needs Docker + docker-compose for the stack.
+    # GitHub-hosted ubuntu-latest has Docker and docker compose (v2 plugin) pre-installed.
     steps:
       - uses: actions/checkout@v7
+        with:
+          # elitea-web's Containerfile copies from apps/elitea-web/ using repo-root context,
+          # so a full checkout (not shallow) is needed to build the image.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -611,17 +620,52 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Playwright against the real stack
-        # On a release tag this MUST exist (unit V1) — a missing suite fails
-        # the release, it does not skip.
+      - name: Set up Docker Buildx (for elitea-web image build)
+        uses: docker/setup-buildx-action@v3
+      - name: Bring up E2E stack
+        # e2e-stack.sh up runs:
+        #   docker compose -f deploy/docker-compose.yml
+        #                  -f deploy/docker-compose.e2e.yml up -d --wait
+        # The script auto-detects `docker compose` (CI) vs `podman compose` (local).
+        # COMPOSE_BIN override ensures docker compose is used on ubuntu-latest.
+        # E2E_PORT=8080 is free on ubuntu-latest (no centry stack); 8082 is the local default.
+        env:
+          COMPOSE_BIN: docker compose
+          E2E_PORT: "8080"
         run: |
           test -d e2e || { echo "release tag without an e2e suite (unit V1) — refusing"; exit 1; }
-          npx playwright install --with-deps chromium webkit
-          npm run e2e
+          bash scripts/e2e-stack.sh up
+      - name: Seed E2E users
+        env:
+          COMPOSE_BIN: docker compose
+          E2E_PORT: "8080"
+        run: bash scripts/e2e-stack.sh seed
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+      - name: Playwright against the real stack
+        # webServer in playwright.config.ts has reuseExistingServer: !CI, so
+        # Playwright will use the already-running stack from the seed step above.
+        # The stack teardown is handled by the job's cleanup step below.
+        env:
+          CI: "true"
+          E2E_PORT: "8080"
+          PLAYWRIGHT_BASE_URL: "http://localhost:8080"
+        run: npm run e2e
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: apps/elitea-web/playwright-results/
+          retention-days: 14
+      - name: Tear down E2E stack
+        if: always()
+        env:
+          COMPOSE_BIN: docker compose
+        run: bash scripts/e2e-stack.sh down
 
   visual:
     name: Visual regression
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -638,3 +682,19 @@ jobs:
           npx playwright install --with-deps chromium
           npx playwright test --grep @visual
 
+  mutation-spotcheck:
+    name: Mutation spot-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Rotating 5% sample over shared/ + entities/
+        run: |
+          test -f scripts/mutate-spotcheck.mjs || { echo "release tag without mutate-spotcheck (unit V3) — refusing"; exit 1; }
+          node scripts/mutate-spotcheck.mjs

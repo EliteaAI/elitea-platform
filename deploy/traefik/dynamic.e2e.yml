@@ -1,0 +1,45 @@
+# E2E-only traefik dynamic config (issue #60).
+# Replaces deploy/traefik/dynamic.yml at runtime — mounted by docker-compose.e2e.yml.
+# Only change from the original: the `app` router service → elitea-web (not elitea-ui),
+# and the `root-redirect` router service → elitea-web.
+http:
+  routers:
+    api:
+      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`)"
+      service: elitea-main
+      entryPoints:
+        - web
+    app:
+      rule: "PathPrefix(`/app`)"
+      service: elitea-web
+      entryPoints:
+        - web
+    root-redirect:
+      rule: "Path(`/`)"
+      service: elitea-web
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-app
+      priority: 1
+
+  middlewares:
+    redirect-to-app:
+      redirectRegex:
+        regex: "^(https?://[^/]*)/$"
+        replacement: "${1}/app/"
+        permanent: false
+
+  services:
+    elitea-main:
+      loadBalancer:
+        servers:
+          - url: "http://elitea-main:8080"
+    elitea-web:
+      loadBalancer:
+        servers:
+          - url: "http://elitea-web:80"
+    elitea-ui:
+      loadBalancer:
+        servers:
+          - url: "http://elitea-ui:80"
