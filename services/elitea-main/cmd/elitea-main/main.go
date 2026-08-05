@@ -27,6 +27,7 @@ import (
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
@@ -215,6 +216,28 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 		authReadiness = formGraph
 		logger.Info("production Form authentication enabled")
+	}
+
+	// Wire OIDC browser-session authentication when OIDC_ISSUER_URL is set.
+	// SessionHandler and OIDCHandler are independent of the FormGraph path and
+	// can coexist with it (both populate RouterConfig.Auth).
+	var oidcSessionHandler *v2auth.SessionHandler
+	var oidcOIDCHandler *v2auth.OIDCHandler
+	oidcCfg, err := v2auth.OIDCConfigFromEnv()
+	if err != nil {
+		return fmt.Errorf("load OIDC configuration: %w", err)
+	}
+	if oidcCfg != nil {
+		appSecretKey := os.Getenv("APPLICATION_SECRET_KEY")
+		if appSecretKey == "" {
+			return errors.New("APPLICATION_SECRET_KEY is required when OIDC_ISSUER_URL is set")
+		}
+		oidcSessionHandler = v2auth.NewSessionHandler(pool, appSecretKey)
+		oidcOIDCHandler, err = v2auth.NewOIDCHandler(ctx, oidcCfg, pool, appSecretKey)
+		if err != nil {
+			return fmt.Errorf("initialize OIDC handler: %w", err)
+		}
+		logger.Info("OIDC authentication enabled", "issuer", oidcCfg.IssuerURL)
 	}
 
 	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
@@ -690,10 +713,14 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
 		},
-		AuthValidator:                 gatewayAuthValidator,
-		PrincipalValidator:            gatewayPrincipalValidator,
-		Auth:                          api.AuthDeps{ForwardedIdentityVerifier: gatewayForwardedIdentityVerifier},
-		SessionSecret:                 gatewaySessionSecret,
+		AuthValidator:      gatewayAuthValidator,
+		PrincipalValidator: gatewayPrincipalValidator,
+		SessionSecret:      gatewaySessionSecret,
+		Auth: api.AuthDeps{
+			ForwardedIdentityVerifier: gatewayForwardedIdentityVerifier,
+			SessionHandler:            oidcSessionHandler,
+			OIDCHandler:               oidcOIDCHandler,
+		},
 		ProductionAuth:                productionAuth,
 		ProductionRuntime:             productionRuntime,
 		CurrentProjectInfo:            currentProjectInfo,
