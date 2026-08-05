@@ -1,5 +1,12 @@
 import type { Bucket } from './types';
 
+/** Internal buckets the backend manages for itself — never shown in the user-facing bucket list. Ported from apps/elitea-ui/src/common/artifactConstants.js:8-13. */
+export const SYSTEM_BUCKET_NAMES = ['tasks', 'reports'] as const;
+
+export function isSystemBucket(bucketName: string): boolean {
+  return (SYSTEM_BUCKET_NAMES as readonly string[]).includes(bucketName);
+}
+
 /** Pinned buckets first, then alphabetical by name — the common list-ordering pattern. */
 export function sortBucketsPinnedFirst(buckets: readonly Bucket[]): Bucket[] {
   return [...buckets].sort((a, b) => {

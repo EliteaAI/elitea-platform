@@ -1,6 +1,7 @@
 package agentexecution
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,10 +16,32 @@ import (
 )
 
 type currentStartUseCaseStub struct {
-	request agentexecutionapp.CurrentApplicationStartRequest
-	outcome agentexecutionapp.CurrentApplicationStartOutcome
-	err     error
-	calls   int
+	request             agentexecutionapp.CurrentApplicationStartRequest
+	adhocRequest        agentexecutionapp.CurrentAdhocStartRequest
+	regenerationRequest agentexecutionapp.CurrentRegenerationRequest
+	outcome             agentexecutionapp.CurrentApplicationStartOutcome
+	err                 error
+	calls               int
+	adhocCalls          int
+	regenerationCalls   int
+}
+
+func (stub *currentStartUseCaseStub) RegenerateCurrentAgent(
+	_ context.Context,
+	request agentexecutionapp.CurrentRegenerationRequest,
+) (agentexecutionapp.CurrentApplicationStartOutcome, error) {
+	stub.regenerationCalls++
+	stub.regenerationRequest = request
+	return stub.outcome, stub.err
+}
+
+func (stub *currentStartUseCaseStub) StartCurrentAdhoc(
+	_ context.Context,
+	request agentexecutionapp.CurrentAdhocStartRequest,
+) (agentexecutionapp.CurrentApplicationStartOutcome, error) {
+	stub.adhocCalls++
+	stub.adhocRequest = request
+	return stub.outcome, stub.err
 }
 
 func (stub *currentStartUseCaseStub) StartCurrentApplication(
@@ -103,6 +126,97 @@ func TestCurrentApplicationStartRoutePreservesPathRBACAndResponseContract(t *tes
 		body["response_message_id"] != "response-1" ||
 		body["events_url"] != "/api/v2/executions/7/execution-1/events" {
 		t.Fatalf("response=%+v error=%v", body, err)
+	}
+}
+
+func TestCurrentApplicationStartRouteAdmitsBoundedAdhocMainChatTurn(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-adhoc", CommandID: "command-adhoc",
+		ResponseMessageID: "response-adhoc", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentAdhocStartRequest(validCurrentAdhocStartBody()))
+
+	if response.Code != http.StatusOK || useCase.calls != 0 || useCase.adhocCalls != 1 ||
+		useCase.adhocRequest.ProjectID != 7 || useCase.adhocRequest.ActorUserID != 11 ||
+		useCase.adhocRequest.TargetParticipantID != 0 ||
+		useCase.adhocRequest.UserInput != "hello from main chat" ||
+		!bytes.Equal(useCase.adhocRequest.LLMSettings, []byte(`{"model_name":"model","model_project_id":7}`)) {
+		t.Fatalf("status=%d app_calls=%d adhoc_calls=%d request=%+v body=%s",
+			response.Code, useCase.calls, useCase.adhocCalls, useCase.adhocRequest, response.Body.String())
+	}
+}
+
+func TestCurrentRegenerationRoutePreservesPathRBACAndResponseIdentity(t *testing.T) {
+	if CurrentRegenerationPath != "/api/v2/elitea_core/regenerate/prompt_lib/{projectID}/{responseMessageID}" ||
+		CurrentRegenerationPermission != "models.chat.conversations.regenerate" ||
+		CurrentRegenerationContract != "agent.regenerate.v1" {
+		t.Fatalf("regeneration contract drifted: path=%q permission=%q contract=%q",
+			CurrentRegenerationPath, CurrentRegenerationPermission, CurrentRegenerationContract)
+	}
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-regenerate", CommandID: "command-regenerate",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	permissions := currentStartPermissionResolverFunc(func(
+		_ context.Context,
+		_ auth.User,
+		mode,
+		projectID string,
+	) (auth.PermissionResolution, error) {
+		if mode != auth.PermissionModeDefault || projectID != "7" {
+			t.Fatalf("permission mode=%q project=%q", mode, projectID)
+		}
+		return auth.PermissionResolution{
+			UserID: 11, Permissions: []string{CurrentRegenerationPermission},
+		}, nil
+	})
+	route := newCurrentStartRoute(t, useCase, permissions)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentRegenerationRequest(validCurrentRegenerationBody()))
+
+	request := useCase.regenerationRequest
+	if response.Code != http.StatusOK || useCase.regenerationCalls != 1 ||
+		request.ProjectID != 7 || request.ActorUserID != 11 ||
+		request.ConversationUUID != "8bc66e50-46c4-4e2c-94ec-daec6c596ac0" ||
+		request.QuestionID != "ee92ccbd-3312-4c72-b20b-fddf224e7c0e" ||
+		request.ResponseMessageID != "30e0913e-10d4-43db-b8d0-c7b79480935a" ||
+		request.RegenerationID != "9fba0a08-5049-42bb-9019-c2f3df686010" ||
+		request.RequestedParticipantID != 21 ||
+		!bytes.Equal(request.LLMSettings, []byte(`{"model_name":"model","model_project_id":7}`)) {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.regenerationCalls, request, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil ||
+		body["execution_id"] != "execution-regenerate" ||
+		body["response_message_id"] != "30e0913e-10d4-43db-b8d0-c7b79480935a" ||
+		body["events_url"] != "/api/v2/executions/7/execution-regenerate/events" {
+		t.Fatalf("response=%+v error=%v", body, err)
+	}
+}
+
+func TestCurrentRegenerationRouteRejectsEditedItemsBeforeUseCase(t *testing.T) {
+	useCase := &currentStartUseCaseStub{}
+	route := newCurrentStartRoute(t, useCase, currentStartPermissionResolverFunc(func(
+		context.Context, auth.User, string, string,
+	) (auth.PermissionResolution, error) {
+		return auth.PermissionResolution{
+			UserID: 11, Permissions: []string{CurrentRegenerationPermission},
+		}, nil
+	}))
+	body := strings.Replace(
+		validCurrentRegenerationBody(),
+		`"updated_items":[]`,
+		`"updated_items":[{"uuid":"item","content":"edited"}]`,
+		1,
+	)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentRegenerationRequest(body))
+	if response.Code != http.StatusUnprocessableEntity || useCase.regenerationCalls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", response.Code, useCase.regenerationCalls, response.Body.String())
 	}
 }
 
@@ -198,6 +312,55 @@ func currentStartRequest(body string) *http.Request {
 	return request
 }
 
+func currentAdhocStartRequest(body string) *http.Request {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/messages/prompt_lib/7/8bc66e50-46c4-4e2c-94ec-daec6c596ac0?execution_contract="+CurrentAdhocStartContract,
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = "10.0.0.8:43120"
+	return request
+}
+
+func currentRegenerationRequest(body string) *http.Request {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/regenerate/prompt_lib/7/30e0913e-10d4-43db-b8d0-c7b79480935a?execution_contract="+CurrentRegenerationContract,
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = "10.0.0.8:43120"
+	return request
+}
+
+func validCurrentRegenerationBody() string {
+	return `{
+  "payload":{
+    "user_input":"hello again",
+    "llm_settings":{"model_name":"model","model_project_id":7},
+    "attachments_info":[],
+    "mcp_tokens":{}
+  },
+  "project_id":7,
+  "participant_id":21,
+  "conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+  "question_id":"ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+  "message_id":"30e0913e-10d4-43db-b8d0-c7b79480935a",
+  "stream_id":"30e0913e-10d4-43db-b8d0-c7b79480935a",
+  "regeneration_id":"9fba0a08-5049-42bb-9019-c2f3df686010",
+  "updated_items":[]
+}`
+}
+
 func validCurrentStartBody() string {
 	return `{"payload":{"user_input":"hello"},"project_id":7,"participant_id":21,"conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0","question_id":"ee92ccbd-3312-4c72-b20b-fddf224e7c0e","interaction_uuid":"31df012a-300d-4722-9be2-521d987c63a8","attachments_info":[],"mcp_tokens":{}}`
+}
+
+func validCurrentAdhocStartBody() string {
+	return `{"payload":{"user_input":"hello from main chat"},"project_id":7,"conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0","question_id":"ee92ccbd-3312-4c72-b20b-fddf224e7c0e","interaction_uuid":"31df012a-300d-4722-9be2-521d987c63a8","attachments_info":[],"llm_settings":{"model_name":"model","model_project_id":7},"mcp_tokens":{}}`
 }

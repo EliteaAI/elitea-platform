@@ -1,0 +1,36 @@
+/** Type definitions for LLM Model Selector widget. */
+
+export interface LLMModel {
+  id: string;
+  name: string;
+  display_name?: string;
+  shared?: boolean;
+  supports_vision?: boolean;
+  supports_reasoning?: boolean;
+  max_output_tokens?: number;
+}
+
+export interface LLMSettingsValues {
+  temperature?: number;
+  max_tokens?: number | string;
+  reasoning_effort?: string;
+  steps_limit?: number;
+  webhook_secret?: string;
+}
+
+export interface LLMModelSelectorProps {
+  selectedModel?: LLMModel | null;
+  onSelectModel?: (model: LLMModel) => void;
+  models?: LLMModel[];
+  disabled?: boolean;
+  onClickSettings?: () => void;
+  llmSettings?: LLMSettingsValues;
+  onSetLLMSettings?: (settings: LLMSettingsValues) => void;
+  showWebhookSecret?: boolean;
+  showStepsLimit?: boolean;
+  showSettingsEntry?: boolean;
+  modelTooltip?: string;
+  settingsTooltip?: string;
+  onResetToDefaults?: () => void;
+  dataTourTargetId?: string;
+}

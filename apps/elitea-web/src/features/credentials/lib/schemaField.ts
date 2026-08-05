@@ -1,0 +1,134 @@
+/**
+ * lib/schemaField.ts — classifies one `ConfigSchemaNode` property into a
+ * form-widget kind, and computes its initial value (unit A7).
+ *
+ * DISCLOSED SIMPLIFICATION: the baseline's per-type credential form is
+ * rendered by the toolkits domain's generic JSON-schema form machinery
+ * (`features/toolkits/ui/form/ToolBase/**`, `common/getToolInitialValueBySchema.js`,
+ * `ToolBaseHelpers.isSecretField`) — all in the toolkits slice (unit A4),
+ * out of this unit's ownership fence (R-L1: sibling `features/*` slices do
+ * not import each other; `features/credentials` may not reach into
+ * `features/toolkits`). This file is a NEW, narrower, credentials-scoped
+ * reimplementation covering the field kinds this domain's credential
+ * "data" schemas actually use (string/secret/boolean/number/enum) — not a
+ * port of A4's full recursive object/array-field renderer. A credential
+ * type whose schema needs nested objects or arrays will render those
+ * sub-properties as a best-effort flat string field rather than the
+ * baseline's dedicated `CommonObjectField`/`CommonArrayField` widgets.
+ */
+import type { ConfigSchemaNode } from '../api/configurations';
+
+export type SchemaFieldKind = 'secret' | 'boolean' | 'number' | 'enum' | 'string';
+
+const SECRET_NAME_RE = /password|secret|token|api_key|apikey|private_key|access_key/i;
+
+/**
+ * Type-guards one array entry of a schema's `anyOf`/`oneOf` list. Those
+ * fields aren't declared on `ConfigSchemaNode` (they're read through its
+ * `[key: string]: unknown` index signature — adding them to the interface
+ * itself is a change to `../api/configurations.ts`, outside this cluster's
+ * file scope per this unit's fence), so narrow at the point of use instead
+ * of widening the shared type. Mirrors the baseline's own untyped duck-typed
+ * read (`schemas.some(schema => schema.format === 'password' || ...)`).
+ */
+function asSchemaNode(value: unknown): ConfigSchemaNode | undefined {
+  return typeof value === 'object' && value !== null ? (value as ConfigSchemaNode) : undefined;
+}
+
+function asSchemaNodeArray(value: unknown): readonly ConfigSchemaNode[] {
+  if (!Array.isArray(value)) return [];
+  const nodes: ConfigSchemaNode[] = [];
+  for (const entry of value) {
+    const node = asSchemaNode(entry);
+    if (node) nodes.push(node);
+  }
+  return nodes;
+}
+
+/**
+ * True when one of `property`'s `anyOf`/`oneOf` branches itself carries a
+ * `format: 'password'`/`secret: true` marker — the standard Pydantic
+ * `Optional[SecretStr]` shape (`anyOf: [{type: 'string', format:
+ * 'password'}, {type: 'null'}]`). This is the nested-schema check
+ * `ToolBaseHelpers.isSecretField` performs (baseline:
+ * `fullSchema.anyOf || fullSchema.oneOf`, then `.some(...)`) — checked here
+ * as the union of BOTH keywords (not "anyOf if present, else oneOf" like
+ * the baseline) so a schema that happens to use `oneOf` alongside an
+ * unrelated `anyOf` is never under-classified; being more inclusive here
+ * only ever routes a field to the masked widget, never away from it.
+ */
+function hasNestedSecretMarker(property: ConfigSchemaNode | undefined): boolean {
+  const branches = [...asSchemaNodeArray(property?.anyOf), ...asSchemaNodeArray(property?.oneOf)];
+  return branches.some((branch) => branch.format === 'password' || branch.secret === true);
+}
+
+/**
+ * A field is secret-shaped when the schema says so explicitly
+ * (`format: 'password'` or `secret: true` — both real markers this
+ * domain's schemas use, per `toolBase.helpers.js`'s `isSecretField`), when
+ * one of its `anyOf`/`oneOf` branches carries either marker (the
+ * `Optional[SecretStr]` shape — see `hasNestedSecretMarker`), OR its
+ * property key matches a common secret-naming convention. This is the
+ * local stand-in for the toolkits domain's `ToolBaseHelpers.isSecretField`
+ * (see this module's doc comment).
+ */
+export function isLikelySecretField(key: string, property: ConfigSchemaNode | undefined): boolean {
+  if (property?.format === 'password') return true;
+  if (property?.secret === true) return true;
+  if (hasNestedSecretMarker(property)) return true;
+  return SECRET_NAME_RE.test(key);
+}
+
+export function classifySchemaField(key: string, property: ConfigSchemaNode | undefined): SchemaFieldKind {
+  if (isLikelySecretField(key, property)) return 'secret';
+  if (property?.type === 'boolean') return 'boolean';
+  if (property?.type === 'number' || property?.type === 'integer') return 'number';
+  if (Array.isArray(property?.enum) && property.enum.length > 0) return 'enum';
+  return 'string';
+}
+
+/**
+ * Best-effort port of `getToolInitialValueBySchema`'s per-property default
+ * resolution: the schema's own `default`, else a type-appropriate empty
+ * value.
+ *
+ * SECURITY: a secret-shaped field (per `isLikelySecretField` — anything
+ * `classifySchemaField` would route to the masked `SecretManagementInput`)
+ * MUST NOT be pre-filled from the schema's own `default`, checked before
+ * the generic `default` branch below. This mirrors the baseline's
+ * `getToolInitialValueBySchema.js`'s `getPropValue`, which special-cases
+ * `format === 'password'` to unconditionally `return null` regardless of
+ * `effectiveDefault`. Widened here to every `isLikelySecretField` marker
+ * (not just the literal `format: 'password'` case the baseline special-
+ * cases) so this stays internally consistent with `classifySchemaField`:
+ * every field the UI renders as masked must also always start empty,
+ * whatever marker — `format`, `secret: true`, a nested `anyOf`/`oneOf`
+ * branch, or the key-name heuristic — triggered that classification. A
+ * credential type whose schema ships a non-null `default` on such a field
+ * (e.g. a placeholder API key) never leaks it into the initial form state.
+ */
+export function initialValueForSchemaField(key: string, property: ConfigSchemaNode | undefined): unknown {
+  if (isLikelySecretField(key, property)) return '';
+  if (property?.default !== undefined) return property.default;
+  if (property?.type === 'boolean') return false;
+  // number/integer/string/undefined all default to an empty string — an
+  // empty numeric input is represented as `''`, not `0` or `NaN` (matches
+  // `CommonNumberField`'s own `value: number | null` contract at the
+  // `null` end, and avoids seeding a spurious `0` into a brand-new form).
+  return '';
+}
+
+/**
+ * Builds the initial `data` object for a newly-selected credential type —
+ * one entry per schema property, defaulted per `initialValueForSchemaField`.
+ * Hidden properties (`metadata.hidden`) are still included (the baseline
+ * only hides them from the FORM, not from the submitted payload).
+ */
+export function initialDataForSchema(schema: ConfigSchemaNode | undefined): Record<string, unknown> {
+  const properties = schema?.properties ?? {};
+  const result: Record<string, unknown> = {};
+  for (const [key, property] of Object.entries(properties)) {
+    result[key] = initialValueForSchemaField(key, property);
+  }
+  return result;
+}

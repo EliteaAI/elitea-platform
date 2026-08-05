@@ -124,13 +124,42 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	}
 	if admission.CurrentTurn != nil {
 		turn := admission.CurrentTurn
-		if turn.Validate() != nil ||
+		if admission.CurrentAdhocTurn != nil ||
+			admission.CurrentRegenerateTurn != nil ||
+			admission.Record.Job.CapabilityID != executiondomain.AgentApplicationCapability ||
+			turn.Validate() != nil ||
 			turn.ProjectID > math.MaxInt32 ||
 			turn.TargetParticipantID > math.MaxInt32 ||
 			turn.ApplicationID > math.MaxInt32 || turn.ApplicationVersionID > math.MaxInt32 ||
 			turn.ProjectID != resourceProjectIDUnchecked(admission.Record.Job.ResourceProjectID) ||
 			turn.ResponseMessageID != admission.Binding.ClientMessageID ||
 			turn.ConversationUUID != admission.Binding.ClientStreamID {
+			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
+		}
+	}
+	if admission.CurrentAdhocTurn != nil {
+		turn := admission.CurrentAdhocTurn
+		if admission.CurrentRegenerateTurn != nil ||
+			admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability ||
+			turn.Validate() != nil || turn.ProjectID > math.MaxInt32 ||
+			turn.TargetParticipantID > math.MaxInt32 ||
+			turn.ProjectID != resourceProjectIDUnchecked(admission.Record.Job.ResourceProjectID) ||
+			turn.ResponseMessageID != admission.Binding.ClientMessageID ||
+			turn.ConversationUUID != admission.Binding.ClientStreamID {
+			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
+		}
+	}
+	if admission.CurrentRegenerateTurn != nil {
+		turn := admission.CurrentRegenerateTurn
+		if turn.Validate() != nil || turn.ProjectID > math.MaxInt32 ||
+			turn.TargetParticipantID > math.MaxInt32 ||
+			turn.ApplicationID > math.MaxInt32 || turn.ApplicationVersionID > math.MaxInt32 ||
+			turn.ProjectID != resourceProjectIDUnchecked(admission.Record.Job.ResourceProjectID) ||
+			turn.ResponseMessageID != admission.Binding.ClientMessageID ||
+			turn.ConversationUUID != admission.Binding.ClientStreamID ||
+			turn.ExecutionGeneration != admission.Binding.ClientExecutionGeneration ||
+			(turn.Kind == agentexecutionapp.CurrentRegenerationApplication && admission.Record.Job.CapabilityID != executiondomain.AgentApplicationCapability) ||
+			(turn.Kind == agentexecutionapp.CurrentRegenerationAdhoc && admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability) {
 			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
 		}
 	}
@@ -181,15 +210,31 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		}
 	}()
 	txQueries := sqlcgen.New(tx)
+	currentProjectID := int64(0)
 	if admission.CurrentTurn != nil {
+		currentProjectID = admission.CurrentTurn.ProjectID
+	} else if admission.CurrentAdhocTurn != nil {
+		currentProjectID = admission.CurrentAdhocTurn.ProjectID
+	} else if admission.CurrentRegenerateTurn != nil {
+		currentProjectID = admission.CurrentRegenerateTurn.ProjectID
+	}
+	if currentProjectID > 0 {
 		if err := tenant.BindProject(
 			ctx,
 			tx,
-			tenant.Project{ID: admission.CurrentTurn.ProjectID},
+			tenant.Project{ID: currentProjectID},
 		); err != nil {
 			return executionapp.AdmissionOutcome{}, fmt.Errorf("bind current agent project: %w", err)
 		}
-		conversationUUID, err := currentPGUUID(admission.CurrentTurn.ConversationUUID)
+		conversationID := ""
+		if admission.CurrentTurn != nil {
+			conversationID = admission.CurrentTurn.ConversationUUID
+		} else if admission.CurrentAdhocTurn != nil {
+			conversationID = admission.CurrentAdhocTurn.ConversationUUID
+		} else {
+			conversationID = admission.CurrentRegenerateTurn.ConversationUUID
+		}
+		conversationUUID, err := currentPGUUID(conversationID)
 		if err != nil {
 			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
 		}
@@ -349,11 +394,29 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		return executionapp.AdmissionOutcome{}, fmt.Errorf("insert agent execution binding: %w", err)
 	}
 	if admission.CurrentTurn != nil {
-		if err := insertInitialCurrentApplicationTurn(
+		if err := insertCurrentApplicationTurn(
 			ctx,
 			txQueries,
 			admission.Record.Job.ID,
 			*admission.CurrentTurn,
+		); err != nil {
+			return executionapp.AdmissionOutcome{}, err
+		}
+	} else if admission.CurrentAdhocTurn != nil {
+		if err := insertCurrentAdhocTurn(
+			ctx,
+			txQueries,
+			admission.Record.Job.ID,
+			*admission.CurrentAdhocTurn,
+		); err != nil {
+			return executionapp.AdmissionOutcome{}, err
+		}
+	} else if admission.CurrentRegenerateTurn != nil {
+		if err := resetCurrentAgentResponse(
+			ctx,
+			txQueries,
+			admission.Record.Job.ID,
+			*admission.CurrentRegenerateTurn,
 		); err != nil {
 			return executionapp.AdmissionOutcome{}, err
 		}
@@ -388,7 +451,49 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	}, nil
 }
 
-func insertInitialCurrentApplicationTurn(
+func resetCurrentAgentResponse(
+	ctx context.Context,
+	queries *sqlcgen.Queries,
+	executionID string,
+	turn agentexecutionapp.CurrentRegenerateTurn,
+) error {
+	conversationUUID, err := currentPGUUID(turn.ConversationUUID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	questionID, err := currentPGUUID(turn.QuestionID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	responseMessageID, err := currentPGUUID(turn.ResponseMessageID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	row, err := queries.ResetCurrentAgentResponse(
+		ctx,
+		sqlcgen.ResetCurrentAgentResponseParams{
+			ActorUserID: turn.ActorUserID, TargetParticipantID: int32(turn.TargetParticipantID),
+			ConversationUuid: conversationUUID, QuestionID: questionID,
+			ResponseMessageID: responseMessageID, RegenerationKind: string(turn.Kind),
+			ApplicationID:        int32(turn.ApplicationID),
+			ApplicationVersionID: int32(turn.ApplicationVersionID),
+			ExecutionGeneration:  turn.ExecutionGeneration, ExecutionID: executionID,
+			ProjectID: int32(turn.ProjectID),
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+	}
+	if err != nil {
+		return fmt.Errorf("reset current agent response: %w", err)
+	}
+	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
+		return errors.New("current agent regeneration returned an invalid response binding")
+	}
+	return nil
+}
+
+func insertCurrentApplicationTurn(
 	ctx context.Context,
 	queries *sqlcgen.Queries,
 	executionID string,
@@ -410,9 +515,9 @@ func insertInitialCurrentApplicationTurn(
 	if err != nil {
 		return executionapp.ErrInvalidAdmission
 	}
-	row, err := queries.InsertInitialCurrentApplicationTurn(
+	row, err := queries.InsertCurrentApplicationTurn(
 		ctx,
-		sqlcgen.InsertInitialCurrentApplicationTurnParams{
+		sqlcgen.InsertCurrentApplicationTurnParams{
 			ActorUserID:          turn.ActorUserID,
 			TargetParticipantID:  int32(turn.TargetParticipantID),
 			ApplicationVersionID: int32(turn.ApplicationVersionID),
@@ -436,6 +541,51 @@ func insertInitialCurrentApplicationTurn(
 	}
 	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
 		return errors.New("current agent chat turn returned an invalid response binding")
+	}
+	return nil
+}
+
+func insertCurrentAdhocTurn(
+	ctx context.Context,
+	queries *sqlcgen.Queries,
+	executionID string,
+	turn agentexecutionapp.CurrentAdhocTurn,
+) error {
+	conversationUUID, err := currentPGUUID(turn.ConversationUUID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	questionID, err := currentPGUUID(turn.QuestionID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	questionItemID, err := currentPGUUID(turn.QuestionItemID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	responseMessageID, err := currentPGUUID(turn.ResponseMessageID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	row, err := queries.InsertCurrentAdhocTurn(
+		ctx,
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: turn.ActorUserID, TargetParticipantID: int32(turn.TargetParticipantID),
+			ConversationUuid: conversationUUID, ProjectID: int32(turn.ProjectID),
+			QuestionID: questionID, QuestionMeta: append([]byte(nil), turn.QuestionMeta...),
+			QuestionItemID: questionItemID, UserInput: turn.UserInput,
+			ResponseMessageID: responseMessageID, ExecutionGeneration: turn.QuestionID,
+			ExecutionID: executionID,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+	}
+	if err != nil {
+		return fmt.Errorf("insert current ad-hoc agent chat turn: %w", err)
+	}
+	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
+		return errors.New("current ad-hoc agent chat turn returned an invalid response binding")
 	}
 	return nil
 }

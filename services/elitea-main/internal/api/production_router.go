@@ -111,6 +111,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	}
 	if cfg.CurrentAgentStart != nil {
 		r.Method(http.MethodPost, agentexecutionapi.CurrentApplicationStartPath, cfg.CurrentAgentStart)
+		r.Method(http.MethodPost, agentexecutionapi.CurrentRegenerationPath, cfg.CurrentAgentStart)
 	}
 	if cfg.CurrentIndexCancel != nil {
 		r.Method(http.MethodDelete, indexingapi.CurrentIndexCancelPath, cfg.CurrentIndexCancel)

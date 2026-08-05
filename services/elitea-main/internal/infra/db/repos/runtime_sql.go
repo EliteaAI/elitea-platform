@@ -73,11 +73,25 @@ func (e pgxExecutor) GetCurrentAgentTraceBinding(
 	return sqlcgen.New(e.queryer).GetCurrentAgentTraceBinding(ctx, arg)
 }
 
-func (e pgxExecutor) ResolveInitialCurrentApplicationTurn(
+func (e pgxExecutor) ResolveCurrentApplicationTurn(
 	ctx context.Context,
-	arg sqlcgen.ResolveInitialCurrentApplicationTurnParams,
-) (sqlcgen.ResolveInitialCurrentApplicationTurnRow, error) {
-	return sqlcgen.New(e.queryer).ResolveInitialCurrentApplicationTurn(ctx, arg)
+	arg sqlcgen.ResolveCurrentApplicationTurnParams,
+) (sqlcgen.ResolveCurrentApplicationTurnRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentApplicationTurn(ctx, arg)
+}
+
+func (e pgxExecutor) ResolveCurrentAdhocTurn(
+	ctx context.Context,
+	arg sqlcgen.ResolveCurrentAdhocTurnParams,
+) (sqlcgen.ResolveCurrentAdhocTurnRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentAdhocTurn(ctx, arg)
+}
+
+func (e pgxExecutor) ResolveCurrentRegeneration(
+	ctx context.Context,
+	arg sqlcgen.ResolveCurrentRegenerationParams,
+) (sqlcgen.ResolveCurrentRegenerationRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentRegeneration(ctx, arg)
 }
 
 type sharedStore interface {

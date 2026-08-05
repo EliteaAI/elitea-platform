@@ -49,9 +49,22 @@ export type HttpFailure =
   | { kind: 'network'; url: string; message: string; cause: unknown }
   | { kind: 'aborted'; url: string };
 
-/** @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2. */
+/**
+ * @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2.
+ * `headers` is the real `Response.headers` (not re-derived/synthesised) —
+ * `eliteaFetch` (S4's mutator) needs it verbatim to build the
+ * `{data, status, headers}` envelope orval's generated types declare for
+ * every operation (`includeHttpResponseReturnType` defaults to `true` in
+ * orval 8.23.0's `@orval/fetch` generator, confirmed by reading
+ * `node_modules/@orval/fetch/dist/index.mjs`; `orval.config.ts` does not
+ * override it). With a custom mutator configured, orval's own generated
+ * code never builds this envelope itself — it fully delegates to the
+ * mutator (`return eliteaFetch<T>(url, options)`, no wrapping) — so the
+ * envelope has to be constructed somewhere on this side of the boundary,
+ * and `headers` only exists on the raw `Response`, not before this point.
+ */
 export type HttpResult<T> =
-  | { ok: true; status: number; data: T }
+  | { ok: true; status: number; data: T; headers: Headers }
   | { ok: false; error: HttpFailure };
 
 /** @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2. */
@@ -62,7 +75,7 @@ export interface HttpRequestOptions {
   /** react-query passes its per-query `signal` straight through here (§5.4). */
   signal?: AbortSignal;
   headers?: Readonly<Record<string, string>>;
-  /** JSON-serialized once (replayable); pass a string to send it verbatim. */
+  /** JSON-serialized once (replayable); pass a string to send it verbatim. `FormData`/`Blob`/`URLSearchParams`/`ArrayBuffer` also pass through unchanged (their own Content-Type, e.g. multipart, is left for `fetch` to set). */
   body?: unknown;
   query?: Readonly<Record<string, string | number | boolean | undefined>>;
 }
@@ -138,12 +151,33 @@ function buildUrl(base: string, path: string, query?: HttpRequestOptions['query'
   return url.toString();
 }
 
-function serializeBody(method: HttpMethod, body: unknown, url: string): string | undefined {
+/** True for the `BodyInit` variants `fetch` already knows how to send verbatim, with their own Content-Type — JSON-stringifying any of these silently discards the payload (`JSON.stringify(new FormData())` is `"{}"`, no throw). */
+function isPreEncodedBody(body: unknown): body is FormData | Blob | URLSearchParams | ArrayBuffer {
+  return body instanceof FormData || body instanceof Blob || body instanceof URLSearchParams || body instanceof ArrayBuffer;
+}
+
+/**
+ * BUG FIX, found while porting Wave-2 unit C1 (chat model/store): this used
+ * to `JSON.stringify` every non-string body unconditionally, including
+ * `FormData` — `JSON.stringify(new FormData())` returns `"{}"` (FormData has
+ * no enumerable own properties), so a multipart upload's real payload was
+ * silently replaced with an empty JSON object and no error was ever thrown.
+ * Reproduced live: `shared/api/generated/artifacts/artifacts.ts`'s
+ * `createArtifact` and `shared/api/generated/applications/applications.ts`'s
+ * `uploadApplicationIcon` both build a `FormData` and pass it straight into
+ * `eliteaFetch({ body: formData })` — both were silently sending an empty
+ * body to the server. `FormData`/`Blob`/`URLSearchParams`/`ArrayBuffer` are
+ * passed through unchanged now; `prepare()` below also stops forcing
+ * `Content-Type: application/json` onto them, so `fetch` sets its own
+ * (for `FormData`, `multipart/form-data` with the correct boundary).
+ */
+function serializeBody(method: HttpMethod, body: unknown, url: string): string | FormData | Blob | URLSearchParams | ArrayBuffer | undefined {
   if (body === undefined) return undefined;
   if (method === 'GET' || method === 'HEAD') {
     throw new TypeError(`http: ${method} ${url} cannot carry a request body`);
   }
   if (typeof body === 'string') return body;
+  if (isPreEncodedBody(body)) return body;
   try {
     return JSON.stringify(body);
   } catch (cause) {
@@ -161,7 +195,7 @@ function prepare(cfg: HttpConfig, credentials: RequestCredentials, method: HttpM
   const url = buildUrl(new URL(cfg.baseUrl, window.location.origin).toString(), path, options.query);
   const headers = new Headers(options.headers);
   const body = serializeBody(method, options.body, url);
-  if (body !== undefined && typeof options.body !== 'string' && !headers.has('Content-Type')) {
+  if (body !== undefined && typeof options.body !== 'string' && !isPreEncodedBody(options.body) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
   if (cfg.tracingEnabled === true) headers.set('traceparent', generateTraceparent());
@@ -213,7 +247,7 @@ async function toResult<T>(response: Response): Promise<HttpResult<T>> {
   if (!response.ok) {
     return failure({ kind: 'http', status: response.status, url: response.url, body });
   }
-  return { ok: true, status: response.status, data: body as T };
+  return { ok: true, status: response.status, data: body as T, headers: response.headers };
 }
 
 /* ── factory ─────────────────────────────────────────────────────────────── */

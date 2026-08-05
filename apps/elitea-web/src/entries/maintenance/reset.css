@@ -1,0 +1,33 @@
+/**
+ * Root CSS reset for the maintenance entry point.
+ *
+ * Standalone from the main SPA — this entry builds as a self-contained HTML
+ * file (vite-plugin-singlefile) so it needs its own CSS reset. Mirrors the
+ * MUI CssBaseline scrollbar/caret defaults used by the old Maintenance-UI.
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  caret-color: transparent;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+::-webkit-scrollbar {
+  display: none;
+}
+
+input,
+textarea {
+  caret-color: auto;
+}
+
+/* MUI component targets */
+.MuiButtonBase-root {
+  -webkit-tap-highlight-color: transparent;
+}

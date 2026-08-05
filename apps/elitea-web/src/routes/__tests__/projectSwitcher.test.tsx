@@ -297,10 +297,10 @@ describe('$projectId/$ route priority — RED/GREEN proofs (c), (e)', () => {
   // this returns). `AnyRouter` is the library's own documented escape hatch
   // for exactly this shape of helper.
   function leafRouteId(router: AnyRouter, pathname: string): string {
-    const matches = router.matchRoutes(pathname, {});
+    const matches = router.matchRoutes(pathname, {}) as { routeId?: string }[];
     const last = matches.at(-1);
     if (!last) throw new Error(`no match for ${pathname}`);
-    return last.routeId;
+    return last.routeId!;
   }
 
   it('[RED/GREEN e] /chat resolves to the real /chat route, NOT the splat', () => {
@@ -335,8 +335,8 @@ describe('$projectId/$ route priority — RED/GREEN proofs (c), (e)', () => {
 
   it('the bare root "/" is NOT matched by the splat (out of ROUTE-070 scope)', () => {
     const router = buildRouter('/');
-    const matches = router.matchRoutes('/', {});
-    expect(matches.map((m) => m.routeId)).not.toContain('/$projectId/$');
+    const matches = router.matchRoutes('/', {}) as { routeId?: string }[];
+    expect(matches.map((m) => m.routeId!)).not.toContain('/$projectId/$');
   });
 });
 

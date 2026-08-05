@@ -21,6 +21,33 @@ export const CHUNK_SIZE = 5 * 1024 * 1024;
 
 /* ── row 2a: pure chunk splitter ──────────────────────────────────────────── */
 
+/**
+ * BUG FIX, found while porting Wave-2 unit C1 (chat model/store): the old
+ * app's `useUploadWithProgress.js:154` (this file's own direct baseline)
+ * calls `normalizeFileExtension(file)` — from `[fsd]/entities/attachment/
+ * lib/helpers/attachment.helpers.js:334-347` — BEFORE ever branching into
+ * the small-file/chunked paths below, lowercasing only the file's
+ * extension (`"photo.JPG"` -> `"photo.jpg"`, base name untouched). This
+ * port never carried that step over, so an uppercase-extension upload
+ * reaches the server under a different filename than the old app produced,
+ * silently, with no caller-visible signal. Exact port of the same
+ * substring logic.
+ */
+export function normalizeFileNameExtension(name: string): string {
+  const dotIndex = name.lastIndexOf('.');
+  if (dotIndex === -1 || dotIndex === name.length - 1) return name;
+  const baseName = name.slice(0, dotIndex);
+  const ext = name.slice(dotIndex).toLowerCase();
+  return baseName + ext;
+}
+
+/** File-object form of {@link normalizeFileNameExtension} — same lowercased-extension rewrite, applied to a real `File`'s own name. */
+export function normalizeFileExtension(file: File): File {
+  const normalizedName = normalizeFileNameExtension(file.name);
+  if (normalizedName === file.name) return file;
+  return new File([file], normalizedName, { type: file.type, lastModified: file.lastModified });
+}
+
 /** Exact port of useUploadWithProgress.js:65-76's `createFileChunks`. */
 export function createFileChunks(file: Blob): Blob[] {
   const chunks: Blob[] = [];
@@ -219,7 +246,10 @@ export interface UploadSmallFileParams {
 /** Single-shot upload for files <= CHUNK_SIZE (old: useUploadWithProgress.js:16-63). Fields: `file`, `overwrite_attachments=1`. */
 export async function uploadSmallFile(params: UploadSmallFileParams): Promise<UploadResult<unknown>> {
   const formData = new FormData();
-  formData.append('file', params.file);
+  // See normalizeFileExtension's own doc comment — real `File` callers get
+  // the same lowercased-extension rewrite the old app applied upfront;
+  // a plain non-File `Blob` has no filename to normalize.
+  formData.append('file', params.file instanceof File ? normalizeFileExtension(params.file) : params.file);
   formData.append('overwrite_attachments', '1');
 
   const url = buildAttachmentUploadUrl(params.baseUrl, params.projectId, params.conversationId);
@@ -260,11 +290,18 @@ export interface UploadFileWithProgressParams {
 export async function uploadFileWithProgress(params: UploadFileWithProgressParams): Promise<UploadResult<unknown>> {
   const totalBytes = params.file.size;
   if (totalBytes <= CHUNK_SIZE) {
+    // `params.file`/`params.fileName` are separate fields (unlike the old
+    // app's single `File`) — build a real File carrying the NORMALIZED
+    // name explicitly, rather than relying on `uploadSmallFile`'s own
+    // File-instance check (which would silently no-op for a plain Blob).
+    const namedFile = new File([params.file], normalizeFileNameExtension(params.fileName), {
+      type: params.file.type,
+    });
     return uploadSmallFile({
       baseUrl: params.baseUrl,
       projectId: params.projectId,
       conversationId: params.conversationId,
-      file: params.file,
+      file: namedFile,
       devToken: params.devToken,
       onProgress: params.onProgress,
       signal: params.signal,
@@ -288,7 +325,7 @@ export async function uploadFileWithProgress(params: UploadFileWithProgressParam
       chunkIndex: index,
       totalChunks,
       fileId: params.fileId,
-      fileName: params.fileName,
+      fileName: normalizeFileNameExtension(params.fileName),
       onProgress: (loaded) => params.onProgress?.(bytesBeforeThisChunk + loaded, totalBytes),
       devToken: params.devToken,
       signal: params.signal,

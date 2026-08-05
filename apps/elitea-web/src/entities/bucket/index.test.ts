@@ -14,9 +14,11 @@ import * as entity from './index';
 const PUBLIC_SURFACE = [
   'filterBucketsByQuery',
   'isPinnedBucket',
+  'isSystemBucket',
   'normaliseBucket',
   'normaliseBuckets',
   'sortBucketsPinnedFirst',
+  'SYSTEM_BUCKET_NAMES',
 ] as const;
 
 describe('entities/bucket public surface', () => {

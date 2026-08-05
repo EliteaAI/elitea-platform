@@ -13,12 +13,14 @@ import { MuiDataGrid } from './MuiDataGrid';
 import { MuiDialog } from './MuiDialog';
 import { MuiDrawer } from './MuiDrawer';
 import { MuiFormControl } from './MuiFormControl';
+import { MuiFormControlLabel } from './MuiFormControlLabel';
 import { MuiFormHelperText } from './MuiFormHelperText';
 import { MuiIconButton } from './MuiIconButton';
 import { MuiInput } from './MuiInput';
 import { MuiList } from './MuiList';
 import { MuiMenu } from './MuiMenu';
 import { MuiMenuItem } from './MuiMenuItem';
+import { MuiOutlinedInput } from './MuiOutlinedInput';
 import { MuiPaper } from './MuiPaper';
 import { MuiRadio } from './MuiRadio';
 import { MuiSelect } from './MuiSelect';
@@ -80,12 +82,14 @@ export function muiOverrides(): EliteaComponents {
     MuiDialog,
     MuiDrawer,
     MuiFormControl,
+    MuiFormControlLabel,
     MuiFormHelperText,
     MuiIconButton,
     MuiInput,
     MuiList,
     MuiMenu,
     MuiMenuItem,
+    MuiOutlinedInput,
     MuiPaper,
     MuiRadio,
     MuiSelect,

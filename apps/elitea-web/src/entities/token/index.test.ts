@@ -12,10 +12,22 @@ import * as entity from './index';
  * this slice ahead of its Wave-2 consumers.
  */
 const PUBLIC_SURFACE = [
+  'createToken',
+  'deleteToken',
+  'listTokens',
   'maskedTokenValue',
   'sortTokensByName',
   'tokenExpiryInDays',
   'tokenExpiryStatus',
+  'useCreateTokenMutation',
+  'useDeleteTokenMutation',
+  'useListTokensQuery',
+  'DEFAULT_TOKEN_EXPIRATION_VALUE',
+  'MAX_TOKEN_NAME_LENGTH',
+  'TOKEN_EXPIRATION_OPTIONS',
+  'TOKEN_NAME_PATTERN',
+  'SETTINGS_PREVIEW_LABELS',
+  'SETTINGS_PREVIEW_TYPES',
 ] as const;
 
 describe('entities/token public surface', () => {

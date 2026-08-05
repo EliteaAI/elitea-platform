@@ -55,7 +55,8 @@ async function expectNoCrash(router: ReturnType<typeof mountAt>) {
   await waitFor(() => {
     expect(router.state.status).toBe('idle');
   });
-  const erroredMatch = router.state.matches.find((match) => match.status === 'error');
+  type RM = { status?: string; error?: unknown };
+  const erroredMatch = (router.state.matches as RM[]).find((match) => match.status === 'error');
   expect(erroredMatch, `route errored: ${JSON.stringify(erroredMatch?.error)}`).toBeUndefined();
 }
 

@@ -7,6 +7,7 @@ import {
   ProjectNameStorageKey,
   PublicPermissionStorageKey,
   SoundNotificationsStorageKey,
+  VoiceConfigStorageKey,
 } from './legacy-storage-keys';
 
 describe('legacy (pre-namespace) storage key literals', () => {
@@ -17,5 +18,6 @@ describe('legacy (pre-namespace) storage key literals', () => {
     expect(PermissionStorageKey).toBe('elitea_ui.project_permission');
     expect(SoundNotificationsStorageKey).toBe('elitea_ui.sound_notifications');
     expect(ActiveConversationParticipantKey).toBe('ActiveConversationParticipantKey');
+    expect(VoiceConfigStorageKey).toBe('elitea_voice_config');
   });
 });

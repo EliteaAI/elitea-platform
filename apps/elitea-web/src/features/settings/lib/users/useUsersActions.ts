@@ -1,0 +1,194 @@
+// @ts-nocheck
+/**
+ * useUsersActions — mutations, callbacks, and action configs for UsersPage.
+ * Extracted to keep UsersPage ≤ 400 lines (spec §3.5).
+ */
+import { useMemo, useCallback } from 'react';
+
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+
+import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
+import type { DeleteUserButtonProps } from '@/shared/ui/settings/DeleteUserButton';
+import { useEditUser, useBatchEditUsers, useDeleteUsers } from '@/entities/user';
+import { userCreate, getUserListQueryKey } from '@/shared/api/generated/admin/admin';
+
+export interface UseUsersActionsArgs {
+  projectId: string;
+  selectedUsers: { id: string; name: string; email: string; roles: string[] }[];
+  rolesOptions: { label: string; value: string }[];
+  onDeleteSuccess: () => void;
+  onDeleteError: (error: unknown) => void;
+  onInviteSuccess: () => void;
+  onInviteError: (error: unknown) => void;
+  onEditSuccess: () => void;
+  onEditError: (error: unknown) => void;
+}
+
+export interface UseUsersActionsResult {
+  deleteUserMutation: ReturnType<typeof useDeleteUsers>;
+  editHook: ReturnType<typeof useEditUser>;
+  batchEditHook: ReturnType<typeof useBatchEditUsers>;
+  inviteHook: { inviteUsers: (emails: string[], roles: string[]) => void; isLoading: boolean };
+  handleDelete: () => void;
+  handleBatchRoleSave: (roles: string[]) => void;
+  handleInviteConfirm: (data: { emails: string[]; roles: string[] }) => void;
+  singleAction: { edit: EditUsersButtonProps; delete: Record<string, unknown> } | null;
+  batchAction: { edit: EditUsersButtonProps; delete: Record<string, unknown> } | null;
+  actions: { edit: EditUsersButtonProps | null; delete: Record<string, unknown> } | null;
+}
+
+/**
+ * Invite-users mutation.
+ *
+ * `entities/user` (spec §3.3, ≤20-export budget) does not curate a create/
+ * invite hook — `userCreate` is a live no-op on the Go router today (same
+ * NOTE(W2) as `userUpdate`/`userDelete`, `entities/user/model/types.ts`),
+ * but the UI still needs to fire the real request and react to the real
+ * result rather than fake success (old-app parity: `Users.jsx`'s
+ * `useUserCreateMutation()`). Wrapping the generated `userCreate` fetcher
+ * with `useMutation` locally — rather than adding a new curated export to
+ * `entities/user` — mirrors the same "local, feature-owned hook" call this
+ * cluster already makes for `useHasPermission` (`features/agents/lib/
+ * useHasPermission.ts`'s doc comment): the duplication is a dozen lines,
+ * not worth threading a new entities/user primitive through for from this
+ * fix's scope.
+ */
+function useInviteUsers(projectId: string, onSuccess: () => void, onError: (error: unknown) => void) {
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: ({ emails, roles }: { emails: string[]; roles: string[] }) =>
+      userCreate(projectId, { emails, roles }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: getUserListQueryKey(projectId) });
+      onSuccess();
+    },
+    onError: (error: unknown) => {
+      onError(error);
+    },
+  });
+
+  const inviteUsers = useCallback(
+    (emails: string[], roles: string[]) => {
+      mutation.mutate({ emails, roles });
+    },
+    [mutation],
+  );
+
+  return { inviteUsers, isLoading: mutation.isPending };
+}
+
+export function useUsersActions({
+  projectId,
+  selectedUsers,
+  rolesOptions,
+  onDeleteSuccess,
+  onDeleteError,
+  onInviteSuccess,
+  onInviteError,
+  onEditSuccess,
+  onEditError,
+}: UseUsersActionsArgs): UseUsersActionsResult {
+  const editHook = useEditUser({
+    projectId,
+    onSuccess: onEditSuccess,
+    onError: onEditError,
+  });
+
+  const batchEditHook = useBatchEditUsers({
+    userIds: selectedUsers.map((u) => u.id),
+    projectId,
+    onSuccess: onEditSuccess,
+    onError: onEditError,
+  });
+
+  const deleteUserMutation = useDeleteUsers({
+    userIds: selectedUsers.map((u) => u.id),
+    projectId,
+    onSuccess: onDeleteSuccess,
+    onError: onDeleteError,
+  });
+
+  const inviteHook = useInviteUsers(projectId, onInviteSuccess, onInviteError);
+
+  /* ── callbacks ─────────────────────────────────────────────────────── */
+  const handleDelete = useCallback(() => {
+    const ids = selectedUsers.map((u) => parseInt(u.id, 10));
+    deleteUserMutation.deleteUserIds(ids);
+  }, [selectedUsers, deleteUserMutation]);
+
+  const handleBatchRoleSave = useCallback(
+    (roles: string[]) => {
+      batchEditHook.saveUsers(roles);
+    },
+    [batchEditHook],
+  );
+
+  const handleInviteConfirm = useCallback(
+    (data: { emails: string[]; roles: string[] }) => {
+      inviteHook.inviteUsers(data.emails, data.roles);
+    },
+    [inviteHook],
+  );
+
+  /* ── action configs ────────────────────────────────────────────────── */
+  const singleAction = useMemo(() => {
+    if (selectedUsers.length !== 1) return null;
+    const user = selectedUsers[0]!;
+    const editProps: Record<string, unknown> = {
+      userIds: [user.id],
+      userRoles: Array.from(user.roles),
+      rolesOptions,
+      onConfirm: (roles: string[]) => {
+        editHook.saveUser(user.id, roles);
+      },
+    };
+    if (editHook.isLoading !== undefined) editProps.isLoading = editHook.isLoading;
+    const deleteProps: Record<string, unknown> = {
+      userIds: [user.id],
+      onConfirm: () => {
+        const ids = [parseInt(user.id, 10)];
+        deleteUserMutation.deleteUserIds(ids);
+      },
+    };
+
+    return {
+      edit: editProps as unknown as EditUsersButtonProps,
+      delete: deleteProps as unknown as DeleteUserButtonProps,
+    };
+  }, [selectedUsers, rolesOptions, editHook, deleteUserMutation]);
+
+  const batchAction = useMemo(() => {
+    if (selectedUsers.length < 2) return null;
+    const editProps: Record<string, unknown> = {
+      userIds: selectedUsers.map((u) => u.id),
+      rolesOptions,
+      onConfirm: handleBatchRoleSave,
+    };
+    if (batchEditHook.isLoading !== undefined) editProps.isLoading = batchEditHook.isLoading;
+    const deleteProps: Record<string, unknown> = {
+      userIds: selectedUsers.map((u) => u.id),
+      onConfirm: () => { handleDelete(); },
+    };
+
+    return {
+      edit: editProps as unknown as EditUsersButtonProps,
+      delete: deleteProps as unknown as DeleteUserButtonProps,
+    };
+  }, [selectedUsers, rolesOptions, batchEditHook, handleBatchRoleSave, handleDelete]);
+
+  const actions = batchAction ?? singleAction;
+
+  return {
+    deleteUserMutation,
+    editHook,
+    batchEditHook,
+    inviteHook,
+    handleDelete,
+    handleBatchRoleSave,
+    handleInviteConfirm,
+    singleAction,
+    batchAction,
+    actions,
+  };
+}

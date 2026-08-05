@@ -14,6 +14,11 @@ import * as entity from './index';
 const PUBLIC_SURFACE = [
   'calculateNewLikesCount',
   'filterAppsByQuery',
+  'normaliseApp',
+  'normaliseAppDetail',
+  'normaliseAppPage',
+  'normaliseAppVersionDetail',
+  'normaliseApps',
 ] as const;
 
 describe('entities/app public surface', () => {

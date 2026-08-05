@@ -8,9 +8,9 @@
  */
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 
-import { integrationGuardBeforeLoad } from '../../-guards/integrationGuard';
-import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
+import { integrationGuardBeforeLoad } from '@/routes/-guards/integrationGuard';
+import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
+import { RouteShell } from '@/routes/-ui/RouteShell';
 
 export const Route = createFileRoute('/_shell/settings/create-configuration')({
   beforeLoad: integrationGuardBeforeLoad,

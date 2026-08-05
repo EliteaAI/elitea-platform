@@ -16,6 +16,8 @@ const PUBLIC_SURFACE = [
   'convertTime',
   'isMessageStreaming',
   'isUserMessageRow',
+  'normaliseAssistantMessage',
+  'normaliseUserMessage',
 ] as const;
 
 describe('entities/message public surface', () => {

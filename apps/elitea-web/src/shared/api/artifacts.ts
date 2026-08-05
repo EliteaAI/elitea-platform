@@ -114,7 +114,7 @@ async function toJsonResult(response: Response): Promise<HttpResult<unknown>> {
   if (!response.ok) {
     return { ok: false, error: { kind: 'http', status: response.status, url: response.url, body: data } };
   }
-  return { ok: true, status: response.status, data };
+  return { ok: true, status: response.status, data, headers: response.headers };
 }
 
 async function toBlobResult(response: Response): Promise<HttpResult<Blob>> {
@@ -122,7 +122,7 @@ async function toBlobResult(response: Response): Promise<HttpResult<Blob>> {
     const body = await parseJsonBody(response);
     return { ok: false, error: { kind: 'http', status: response.status, url: response.url, body } };
   }
-  return { ok: true, status: response.status, data: await response.blob() };
+  return { ok: true, status: response.status, data: await response.blob(), headers: response.headers };
 }
 
 /* ── row 1: S3 direct PUT ─────────────────────────────────────────────────── */
@@ -175,7 +175,7 @@ export async function putArtifactToS3(params: PutArtifactToS3Params): Promise<Ht
     const body = await parseJsonBody(response);
     return { ok: false, error: { kind: 'http', status: response.status, url: response.url, body } };
   }
-  return { ok: true, status: response.status, data: undefined };
+  return { ok: true, status: response.status, data: undefined, headers: response.headers };
 }
 
 /* ── row 5: bucket / artifact list (root-level, no /api/v2) ──────────────── */

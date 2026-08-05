@@ -12,7 +12,12 @@ import * as entity from './index';
  * this slice ahead of its Wave-2 consumers.
  */
 const PUBLIC_SURFACE = [
+  'extractUserPage',
   'sortUsersByName',
+  'useBatchEditUsers',
+  'useDeleteUsers',
+  'useEditUser',
+  'useUserListQuery',
   'userHasRole',
   'userInitials',
 ] as const;

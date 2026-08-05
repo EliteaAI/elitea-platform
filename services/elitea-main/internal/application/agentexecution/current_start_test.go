@@ -16,9 +16,15 @@ import (
 )
 
 type currentApplicationResolverStub struct {
-	target CurrentApplicationTarget
-	err    error
-	calls  int
+	target               CurrentApplicationTarget
+	targets              []CurrentApplicationTarget
+	adhocTarget          CurrentAdhocTarget
+	regenerationTarget   CurrentRegenerationTarget
+	err                  error
+	calls                int
+	adhocCalls           int
+	adhocRequests        []CurrentAdhocStartRequest
+	regenerationRequests []CurrentRegenerationResolveRequest
 }
 
 type currentApplicationVersionFreezerStub struct {
@@ -36,15 +42,47 @@ func (stub *currentApplicationVersionFreezerStub) FreezeCurrentApplicationVersio
 	if stub.result != nil {
 		return bytes.Clone(stub.result), stub.err
 	}
+	var version map[string]any
+	if err := json.Unmarshal(request.VersionDetails, &version); err == nil {
+		if settings, ok := version["llm_settings"].(map[string]any); ok {
+			settings["openai_compatible"] = false
+			encoded, marshalErr := json.Marshal(version)
+			if marshalErr == nil {
+				return encoded, stub.err
+			}
+		}
+	}
 	return bytes.Clone(request.VersionDetails), stub.err
 }
 
-func (stub *currentApplicationResolverStub) ResolveInitialCurrentApplication(
+func (stub *currentApplicationResolverStub) ResolveCurrentApplication(
 	_ context.Context,
 	_ CurrentApplicationStartRequest,
 ) (CurrentApplicationTarget, error) {
+	call := stub.calls
 	stub.calls++
+	if call < len(stub.targets) {
+		return stub.targets[call], stub.err
+	}
 	return stub.target, stub.err
+}
+
+func (stub *currentApplicationResolverStub) ResolveCurrentAdhoc(
+	_ context.Context,
+	request CurrentAdhocStartRequest,
+) (CurrentAdhocTarget, error) {
+	stub.adhocCalls++
+	request.LLMSettings = bytes.Clone(request.LLMSettings)
+	stub.adhocRequests = append(stub.adhocRequests, request)
+	return stub.adhocTarget, stub.err
+}
+
+func (stub *currentApplicationResolverStub) ResolveCurrentRegeneration(
+	_ context.Context,
+	request CurrentRegenerationResolveRequest,
+) (CurrentRegenerationTarget, error) {
+	stub.regenerationRequests = append(stub.regenerationRequests, request)
+	return stub.regenerationTarget, stub.err
 }
 
 type currentApplicationAdmissionStub struct {
@@ -59,6 +97,8 @@ func (stub *currentApplicationAdmissionStub) Submit(
 ) (executionapp.AdmissionOutcome, error) {
 	request.Input = proto.Clone(request.Input).(*runtimeAgentInput)
 	request.CurrentTurn = request.CurrentTurn.Clone()
+	request.CurrentAdhocTurn = request.CurrentAdhocTurn.Clone()
+	request.CurrentRegenerateTurn = request.CurrentRegenerateTurn.Clone()
 	stub.requests = append(stub.requests, request)
 	return stub.outcome, stub.err
 }
@@ -72,6 +112,7 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		ApplicationID: 31, ApplicationVersionID: 41,
 		Variables:      json.RawMessage(`[{"name":"region","value":"eu"}]`),
 		VersionDetails: json.RawMessage(`{"id":41,"application_id":31,"agent_type":"agent","instructions":"Be concise","llm_settings":{"model_name":"test"},"meta":{},"tools":[]}`),
+		ChatHistory:    json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"earlier"}],"additional_kwargs":{}}]`),
 	}}
 	admittedAt := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
@@ -79,7 +120,7 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
 	freezer := &currentApplicationVersionFreezerStub{}
-	service, err := NewCurrentApplicationStartService(resolver, freezer, admissions)
+	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, freezer, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +157,8 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		submitted.Input.GetConversationId() != request.ConversationUUID ||
 		submitted.Input.GetExecutionGeneration() != request.QuestionID ||
 		!bytes.Equal(submitted.Input.GetUserInput(), []byte(`"hello"`)) ||
-		!bytes.Equal(submitted.Input.GetLlm(), []byte(`{"kwargs":{}}`)) ||
+		!bytes.Equal(submitted.Input.GetLlm(), []byte(`{"kwargs":{"openai_compatible":false}}`)) ||
+		!bytes.Equal(submitted.Input.GetChatHistory(), resolver.target.ChatHistory) ||
 		!bytes.Equal(submitted.Input.GetMcpTokens(), []byte(`{}`)) {
 		t.Fatalf("agent input drifted: %+v", submitted.Input)
 	}
@@ -128,10 +170,26 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 	}
 }
 
+func TestCurrentApplicationRuntimeLLMBindsDerivedCompatibilityOnly(t *testing.T) {
+	result, err := currentApplicationRuntimeLLM(json.RawMessage(`{
+  "llm_settings":{"model_name":"model","model_project_id":7,"openai_compatible":true,"temperature":0.6}
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(result, []byte(`{"kwargs":{"openai_compatible":true}}`)) {
+		t.Fatalf("runtime llm=%s", result)
+	}
+	if _, err := currentApplicationRuntimeLLM(json.RawMessage(`{"llm_settings":{"model_name":"model"}}`)); !errors.Is(err, ErrUnsupportedCurrentAgentStart) {
+		t.Fatalf("missing derived compatibility error=%v", err)
+	}
+}
+
 func TestCurrentApplicationStartIsDeterministicAcrossIdempotentRetries(t *testing.T) {
 	resolver := &currentApplicationResolverStub{target: CurrentApplicationTarget{
 		ApplicationID: 31, ApplicationVersionID: 41, Variables: json.RawMessage(`[]`),
 		VersionDetails: json.RawMessage(`{"id":41,"application_id":31,"agent_type":"agent","llm_settings":{"model_name":"test"},"meta":{},"tools":[]}`),
+		ChatHistory:    json.RawMessage(`[]`),
 	}}
 	admittedAt := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
@@ -139,6 +197,8 @@ func TestCurrentApplicationStartIsDeterministicAcrossIdempotentRetries(t *testin
 		AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
 	service, err := NewCurrentApplicationStartService(
+		resolver,
+		resolver,
 		resolver,
 		&currentApplicationVersionFreezerStub{},
 		admissions,
@@ -163,13 +223,75 @@ func TestCurrentApplicationStartIsDeterministicAcrossIdempotentRetries(t *testin
 	}
 }
 
+func TestCurrentApplicationStartKeepsStableThreadAndProjectsHistoryAcrossDistinctTurns(t *testing.T) {
+	firstTarget := CurrentApplicationTarget{
+		ApplicationID: 31, ApplicationVersionID: 41, Variables: json.RawMessage(`[]`),
+		VersionDetails: json.RawMessage(`{"id":41,"application_id":31,"agent_type":"agent","llm_settings":{"model_name":"test"},"meta":{},"tools":[]}`),
+		ChatHistory:    json.RawMessage(`[]`),
+	}
+	secondHistory := json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"hello"}],"additional_kwargs":{}},{"role":"assistant","content":[{"type":"text","text":"hi"}],"additional_kwargs":{}}]`)
+	secondTarget := firstTarget
+	secondTarget.ChatHistory = secondHistory
+	resolver := &currentApplicationResolverStub{targets: []CurrentApplicationTarget{firstTarget, secondTarget}}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "execution", CommandID: "command", Created: true,
+		AdmittedAt: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC),
+		Deadline:   time.Date(2026, 8, 3, 12, 1, 0, 0, time.UTC),
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver,
+		resolver,
+		resolver,
+		&currentApplicationVersionFreezerStub{},
+		admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := validCurrentApplicationStartRequest()
+	second := first
+	second.QuestionID = "e35ed323-212a-4b79-a6d4-8fac7cbeb9f6"
+	second.UserInput = "follow up"
+
+	firstOutcome, err := service.StartCurrentApplication(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOutcome, err := service.StartCurrentApplication(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver.calls != 2 || len(admissions.requests) != 2 {
+		t.Fatalf("resolver calls=%d admissions=%d", resolver.calls, len(admissions.requests))
+	}
+	firstAdmission := admissions.requests[0]
+	secondAdmission := admissions.requests[1]
+	if firstAdmission.Input.GetThreadId() != first.ConversationUUID ||
+		secondAdmission.Input.GetThreadId() != first.ConversationUUID ||
+		firstAdmission.Input.GetConversationId() != first.ConversationUUID ||
+		secondAdmission.Input.GetConversationId() != first.ConversationUUID ||
+		!bytes.Equal(firstAdmission.Input.GetChatHistory(), []byte(`[]`)) ||
+		!bytes.Equal(secondAdmission.Input.GetChatHistory(), secondHistory) {
+		t.Fatal("distinct turns did not reuse the conversation thread and current chat history")
+	}
+	if firstAdmission.IdempotencyKey == secondAdmission.IdempotencyKey ||
+		firstAdmission.CurrentTurn.QuestionID == secondAdmission.CurrentTurn.QuestionID ||
+		firstOutcome.ResponseMessageID == secondOutcome.ResponseMessageID ||
+		!bytes.Equal(secondAdmission.Input.GetUserInput(), []byte(`"follow up"`)) {
+		t.Fatal("distinct turns lost their independent execution and message identities")
+	}
+}
+
 func TestCurrentApplicationStartRejectsUnsupportedTargetBeforeAdmission(t *testing.T) {
 	resolver := &currentApplicationResolverStub{target: CurrentApplicationTarget{
 		ApplicationID: 31, ApplicationVersionID: 41, Variables: json.RawMessage(`{}`),
 		VersionDetails: json.RawMessage(`{"id":41}`),
+		ChatHistory:    json.RawMessage(`[]`),
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(
+		resolver,
+		resolver,
 		resolver,
 		&currentApplicationVersionFreezerStub{},
 		admissions,

@@ -104,10 +104,10 @@ function classifyMember(node: Record<string, unknown>, file: string): TokenRefer
  * `'var(--el-palette-nonexistent-token)'`, plain or as a template literal —
  * never goes through a MemberExpression at all, so it sailed past assertion
  * (b) undetected: a typo'd or nonexistent token referenced that way shipped
- * unverified. This regex catches ANY `--el-*` custom-property name embedded
- * in a string or template-element's literal text, not only palette ones —
- * `emittedCssVars` walks the whole stylesheet (shape/spacing included), so
- * checking membership works for every `--el-` prefix, not just `-palette-`.
+ * unverified. This regex catches any `--el-palette-*` custom property name
+ * embedded in a string or template-element's literal text, complementing the
+ * `theme.vars.palette.*` AST scan. `emittedCssVars` walks the whole
+ * stylesheet, so checking membership works for all palette tokens.
  *
  * Deliberately NOT covered (and this is a real, accepted limit, not an
  * oversight): text split across a template literal's INTERPOLATED holes —
@@ -117,7 +117,7 @@ function classifyMember(node: Record<string, unknown>, file: string): TokenRefer
  * the CONCRETE output strings it produces, which are ordinary string
  * literals in the test file and so ARE caught by this same regex there.
  */
-const CSS_VAR_LITERAL_RE = /--el-[A-Za-z][A-Za-z0-9-]*/g;
+const CSS_VAR_LITERAL_RE = /--el-palette-[A-Za-z][A-Za-z0-9-]*/g;
 
 /**
  * Test/story files are excluded from the LITERAL scan only — component

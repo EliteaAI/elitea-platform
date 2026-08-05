@@ -30,6 +30,7 @@ export const MuiList: EliteaComponents['MuiList'] = {
     {
       props: {},
       style: ({ theme }) => ({
+        minWidth: '12.5rem',
         padding: `${theme.spacing(1)} 0`,
         backgroundColor: theme.vars.palette.background.secondary,
         borderRadius: theme.vars.shape.radiusMd,

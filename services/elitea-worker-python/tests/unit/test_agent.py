@@ -372,6 +372,102 @@ def test_sdk_adapter_rejects_an_unrecoverable_random_thread() -> None:
         _adapter(_Client()).execute_application(request.payload)
 
 
+def test_sdk_adapter_submits_projected_history_on_one_checkpoint_thread() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    first = _request().payload
+    second = _request().payload
+    object.__setattr__(first, "chat_history", [])
+    object.__setattr__(
+        second,
+        "chat_history",
+        [
+            {"role": "user", "content": "first turn"},
+            {"role": "assistant", "content": "first response"},
+        ],
+    )
+    object.__setattr__(first, "thread_id", "conversation-1")
+    object.__setattr__(second, "thread_id", "conversation-1")
+    object.__setattr__(first, "conversation_id", "conversation-1")
+    object.__setattr__(second, "conversation_id", "conversation-1")
+    object.__setattr__(first, "user_input", "first turn")
+    object.__setattr__(second, "user_input", "second turn")
+
+    adapter.execute_application(first)
+    adapter.execute_application(second)
+
+    assert len(client.application_executor.calls) == 2
+    first_input, first_config = client.application_executor.calls[0]
+    second_input, second_config = client.application_executor.calls[1]
+    assert first_config["configurable"]["thread_id"] == "conversation-1"
+    assert second_config["configurable"]["thread_id"] == "conversation-1"
+    assert [message.content for message in first_input["messages"]] == ["first turn"]
+    assert [
+        message.get("content") if isinstance(message, dict) else message.content
+        for message in second_input["messages"]
+    ] == ["first turn", "first response", "second turn"]
+
+
+class _CheckpointMemory:
+    def __init__(self, pending_writes) -> None:
+        self.pending_writes = pending_writes
+        self.deleted_threads: list[str] = []
+
+    def get_tuple(self, _config):
+        return SimpleNamespace(pending_writes=self.pending_writes)
+
+    def delete_thread(self, thread_id: str) -> None:
+        self.deleted_threads.append(thread_id)
+
+
+def test_sdk_adapter_repairs_only_an_explicit_failed_checkpoint() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(
+        [("failed-task", "__error__", RuntimeError("redacted"))]
+    )
+    adapter._memory = memory  # type: ignore[attr-defined]
+
+    adapter.execute_adhoc(_request(application=False).payload)
+
+    assert memory.deleted_threads == ["thread-1"]
+    assert len(client.adhoc_executor.calls) == 1
+
+
+def test_sdk_adapter_regeneration_resets_the_exact_thread_before_invoke() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory([])
+    adapter._memory = memory  # type: ignore[attr-defined]
+    payload = _request(application=False).payload
+    object.__setattr__(payload, "is_regenerate", True)
+
+    adapter.execute_adhoc(payload)
+
+    assert memory.deleted_threads == ["thread-1"]
+    assert len(client.adhoc_executor.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "pending_writes",
+    [
+        [],
+        [("paused-task", "__interrupt__", {"type": "hitl"})],
+        [("paused-task", "messages", [])],
+    ],
+)
+def test_sdk_adapter_preserves_clean_pause_checkpoints(pending_writes) -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(pending_writes)
+    adapter._memory = memory  # type: ignore[attr-defined]
+
+    adapter.execute_adhoc(_request(application=False).payload)
+
+    assert memory.deleted_threads == []
+    assert len(client.adhoc_executor.calls) == 1
+
+
 def test_sdk_adapter_rejects_unimplemented_resume_instead_of_drifting() -> None:
     request = _request()
     object.__setattr__(request.payload, "should_continue", True)

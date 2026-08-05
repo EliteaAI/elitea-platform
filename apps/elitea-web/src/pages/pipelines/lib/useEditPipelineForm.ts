@@ -1,0 +1,78 @@
+import { useCallback, useMemo } from 'react';
+
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useForm } from 'react-hook-form';
+
+import {
+  applicationCreationSchema,
+  useSaveApplicationVersion,
+  type ApplicationCreationInput,
+} from '@/entities/application-form';
+import type { ApplicationDetail, ApplicationVersionDetail } from '@/shared/api/generated/model';
+
+import { EMPTY_FORM_VALUES, toFormValues, toVersionDraft } from './editPipelineMappers';
+
+export interface EditPipelineFormState {
+  readonly form: ReturnType<typeof useForm<ApplicationCreationInput>>;
+  readonly handleSave: () => void;
+  readonly isSaving: boolean;
+  /**
+   * The most recent save attempt's failure, if any — old app:
+   * `useSaveVersion.js:113-116`'s `if (error) { toastError(buildErrorMessage(error)); return false; }`,
+   * called from `SaveApplicationButton.jsx`'s `handleSave` on every failed
+   * save (network error, validation error, permission error, conflict).
+   * Reproduced verbatim from `pages/agents/lib/useEditApplicationForm.ts`'s
+   * own `saveError` (Wave-2 unit A1g) — this app has no toast
+   * infrastructure (same disclosed gap `SaveToolkitButton.tsx`/
+   * `SaveNewVersionButton.tsx` already establish); `useSaveApplicationVersion`'s
+   * own `error` state is threaded straight through instead, so the caller
+   * (`EditPipeline.tsx`) can render an inline `role="alert"` banner — the
+   * same pattern that file already uses for its detail-fetch error.
+   * Adversarial-review fix: previously discarded entirely, so a failed save
+   * gave the user zero feedback. Cleared automatically at the start of the
+   * next save attempt (`useSaveApplicationVersion`'s own `setError(undefined)`).
+   */
+  readonly saveError: unknown;
+}
+
+/**
+ * Split out of `EditPipeline.tsx` for the same complexity/line-count budget
+ * reasons as `useEditPipelineData` (this same `lib/` directory) — owns the
+ * RHF instance, the imperative save action, and their shared dependency on
+ * `activeVersion`. Same shape as `pages/agents/lib/useEditApplicationForm.ts`
+ * (Wave-2 unit A1g) — `useSaveApplicationVersion` is the same promoted
+ * `entities/application-form` mutation both domains share (a Pipeline
+ * literally IS an Application row).
+ */
+export function useEditPipelineForm(
+  detail: ApplicationDetail | undefined,
+  activeVersion: ApplicationVersionDetail | undefined,
+  projectId: string | undefined,
+  applicationId: number | undefined,
+): EditPipelineFormState {
+  const defaultValues = useMemo<ApplicationCreationInput>(
+    () => (detail ? toFormValues(detail, activeVersion) : EMPTY_FORM_VALUES),
+    [detail, activeVersion],
+  );
+
+  const form = useForm<ApplicationCreationInput>({
+    resolver: zodResolver(applicationCreationSchema),
+    mode: 'onChange',
+    values: defaultValues,
+  });
+
+  const versionId = activeVersion ? Number(activeVersion.id) : undefined;
+  const { save, isSaving, error: saveError } = useSaveApplicationVersion(projectId, applicationId, versionId);
+
+  const handleSave = useCallback(() => {
+    void form.handleSubmit(async (values) => {
+      if (activeVersion === undefined) return;
+      const conversationStarters = (values.version_details?.conversation_starters ?? []).filter(
+        (entry): entry is string => typeof entry === 'string',
+      );
+      await save(toVersionDraft(activeVersion, conversationStarters));
+    })();
+  }, [form, save, activeVersion]);
+
+  return { form, handleSave, isSaving, saveError };
+}

@@ -18,8 +18,8 @@ const RADIUS_KEYS = new Set([
   'borderEndEndRadius',
 ]);
 
-const ALLOWED_STRING_RE = /^\s*var\(--el-radius-/;
-const TEMPLATE_RADIUS_RE = /border(?:-[a-z]+)*-radius\s*:\s*(?!\s*var\(--el-radius-)[^;{}]*\d/i;
+const ALLOWED_STRING_RE = /^\s*var\(--el-(shape-)?radius/;
+const TEMPLATE_RADIUS_RE = /border(?:-[a-z]+)*-radius\s*:\s*(?!\s*var\(--el-shape-radius)[^;{}]*\d/i;
 
 export const adHocRadius = {
   meta: {

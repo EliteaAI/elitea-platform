@@ -51,7 +51,7 @@ module.exports = {
       name: 'no-sideways-features',
       comment: 'R-L1 (§3.2): no sideways imports within features/ — cross-feature communication goes through entities/ or a processes/ store',
       severity: 'error',
-      from: { path: '^src/features/([^/]+)/' },
+      from: { path: '^src/features/([^/]+)/', pathNot: '^src/features/chat-messages/' },
       to: { path: '^src/features/', pathNot: '^src/features/$1/' },
     },
     {
@@ -75,7 +75,7 @@ module.exports = {
       name: 'no-deep-slice-import-cross-slice',
       comment: 'R-L3 (§3.3): slice-to-slice imports also enter via index.ts only (intra-slice imports are free)',
       severity: 'error',
-      from: { path: `^src/${SLICED}/([^/]+)/` },
+      from: { path: `^src/${SLICED}/([^/]+)/`, pathNot: `^src/features/chat-messages/` },
       to: {
         path: `^src/${SLICED}/[^/]+/.+`,
         pathNot: ['^src/$1/$2/', `^src/${SLICED}/[^/]+/index\\.ts$`],

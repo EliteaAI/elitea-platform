@@ -60,6 +60,33 @@ export interface AppPage {
 }
 
 /**
+ * Wire shape (snake_case) of `PublicApplicationSummary`, mirroring
+ * `shared/api/generated/model/publicApplicationSummary.zod.ts` (NOTE(W2):
+ * internal/api/v2/eliteacore/handler.go:1303-1312). Kept alongside `App` so
+ * `lib/normalise.ts`'s input type is evidenced, not `any`. `meta` is typed
+ * identically to `App.meta` (opaque passthrough) — its wire shape is the
+ * structured, snake_case `VersionMeta` schema, but neither this type nor
+ * `App` ever inspects its sub-fields, so `lib/normalise.ts` passes it
+ * through unchanged rather than reshaping it.
+ */
+export interface AppWire {
+  readonly project_id: string;
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly version_id: string;
+  readonly version_name: string;
+  readonly agent_type: string;
+  readonly meta: Readonly<Record<string, unknown>> | null;
+}
+
+/** Wire shape of `PublicApplicationList` — the `rows`+`total` list envelope. */
+export interface AppPageWire {
+  readonly rows: readonly AppWire[];
+  readonly total: number;
+}
+
+/**
  * Inline duplicate of `ApplicationVersionDetail` (v2.yaml:611-660) — see
  * entities/version's `Version`/`VersionAuthor` for the canonical, more
  * fully-commented definition; duplicated rather than imported per the
@@ -89,6 +116,40 @@ export interface AppVersionDetail {
 }
 
 /**
+ * Wire shape (snake_case) of `ApplicationVersionDetail` as embedded in
+ * `PublicApplicationDetail.version_details`, mirroring
+ * `shared/api/generated/model/applicationVersionDetail.zod.ts`. Every field
+ * below `status` is optional on the wire (NOTE(W2), same source cited on
+ * `AppVersionDetail`) — this type is a straight snake_case mirror of that
+ * one, field-for-field, so `lib/normalise.ts` can map it 1:1 without
+ * inventing or dropping fields. On the `publicApplicationDetail` path
+ * specifically, `variables`, `created_at`, `author` and `is_forked` are
+ * never sent (eliteacore/handler.go:1460-1475) — they're absent, not
+ * `null`, so the optional (`?`) modifier — not a nullable union — is the
+ * correct way to model that.
+ */
+export interface AppVersionDetailWire {
+  readonly id: string;
+  readonly application_id: string;
+  readonly name: string;
+  readonly status: string;
+  readonly created_at?: string;
+  readonly agent_type?: string;
+  readonly instructions?: string;
+  readonly welcome_message?: string;
+  readonly llm_settings?: Readonly<Record<string, unknown>>;
+  readonly meta?: Readonly<Record<string, unknown>> | null;
+  readonly conversation_starters?: readonly unknown[];
+  readonly pipeline_settings?: Readonly<Record<string, unknown>>;
+  readonly author_id?: string;
+  readonly author?: { readonly id: string; readonly email: string; readonly name: string };
+  readonly tools?: readonly unknown[];
+  readonly tags?: readonly unknown[];
+  readonly variables?: readonly { readonly name?: string | null; readonly value?: string | null }[];
+  readonly is_forked?: boolean;
+}
+
+/**
  * `PublicApplicationDetail` (v2.yaml:1107-1119) — the single-app Get
  * response. NOTE(W2): `publicApplicationDetail` omits `variables`,
  * `created_at`, `author` and `is_forked` from its `version_details`
@@ -99,4 +160,12 @@ export interface AppDetail {
   readonly name: string;
   readonly description: string;
   readonly versionDetails: AppVersionDetail;
+}
+
+/** Wire shape of `PublicApplicationDetail` (v2.yaml:1107-1119). */
+export interface AppDetailWire {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly version_details: AppVersionDetailWire;
 }

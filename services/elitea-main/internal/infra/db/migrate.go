@@ -26,7 +26,12 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	// (loaded from a dump) — but ALWAYS run the idempotent gateway migrations
 	// afterwards so the budget/price tables exist regardless.
 	var schemaCount int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`).Scan(&schemaCount)
+	// Tenant schemas are named p_<numeric project id>. Do not use LIKE 'p_%':
+	// its underscore is a wildcard and matches PostgreSQL's pg_catalog and the
+	// public schema, which would skip baseline migrations on a fresh database.
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.schemata WHERE schema_name ~ '^p_[0-9]+$'`).Scan(&schemaCount); err != nil {
+		return fmt.Errorf("migrate: count tenant schemas: %w", err)
+	}
 	if schemaCount > 0 {
 		slog.Info("skipping baseline migrations — existing tenant schemas detected", "count", schemaCount)
 	} else {

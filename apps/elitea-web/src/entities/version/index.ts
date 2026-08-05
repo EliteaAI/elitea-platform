@@ -17,4 +17,10 @@ export {
   selectDefaultVersion,
   sortVersionsForPicker,
 } from './model/selectors';
-export { resolveVersionTags, resolveVersionVariables } from './lib/normalise';
+export {
+  normaliseVersion,
+  normaliseVersionSummaries,
+  normaliseVersionSummary,
+  resolveVersionTags,
+  resolveVersionVariables,
+} from './lib/normalise';

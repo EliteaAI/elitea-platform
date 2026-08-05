@@ -13,19 +13,12 @@
  * "`/settings/secrets` only" row) — declared here so every settings child
  * inherits it, not just `secrets.tsx`.
  */
-import { createFileRoute, Outlet } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
 
-import { pickParams } from '../../-search/params';
+import { pickParams } from '@/routes/-search/params';
+import { SettingsLayout } from './settings-layout';
 
 export const Route = createFileRoute('/_shell/settings')({
   validateSearch: pickParams('createSecret'),
   component: SettingsLayout,
 });
-
-function SettingsLayout() {
-  return (
-    // SettingsDrawer: Wave-2 territory (unit A9). Wave-1 scope is the
-    // layout + Outlet wiring, per task item 6.
-    <Outlet />
-  );
-}

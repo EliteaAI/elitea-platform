@@ -41,7 +41,15 @@ export interface AuthUser {
 export interface AuthContext {
   /** Mirrors `useSelector(state => state.user)` (old app). */
   readonly getUser: () => AuthUser | undefined;
-  /** Mirrors `useSelectedProjectId()` (old app: settings.project.id, falling back to personal_project_id). */
+  /**
+   * Mirrors `useSelectedProjectId()` (old app: `project?.id || (personal_project_id
+   * ? undefined : '')`) — NOT "falls back to `personal_project_id`'s value". When
+   * `project.id` is unset but a personal project exists, the real baseline returns
+   * `undefined` (defer — a personal project exists but isn't the active selection
+   * yet), and only returns `''` when neither is set at all. Whoever implements this
+   * for real (R2) should reproduce that exact two-way branch, not substitute
+   * `personal_project_id` itself.
+   */
   readonly getSelectedProjectId: () => string | undefined;
 }
 

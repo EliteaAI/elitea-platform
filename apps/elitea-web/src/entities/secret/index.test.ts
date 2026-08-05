@@ -13,8 +13,16 @@ import * as entity from './index';
  */
 const PUBLIC_SURFACE = [
   'filterSecretsByName',
+  'listSecrets',
   'isSecretHideable',
   'maskSecretValue',
+  'showSecret',
+  'useCreateSecretMutation',
+  'useDeleteSecretMutation',
+  'useHideSecretMutation',
+  'useListSecretsQuery',
+  'useSecretsActions',
+  'useUpdateSecretMutation',
 ] as const;
 
 describe('entities/secret public surface', () => {

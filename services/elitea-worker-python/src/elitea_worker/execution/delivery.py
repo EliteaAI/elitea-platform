@@ -2289,6 +2289,19 @@ def _emit_agent_internal_failure(
     execution_id: str,
     error: Exception,
 ) -> None:
+    frames: list[dict[str, object]] = []
+    traceback = error.__traceback__
+    while traceback is not None:
+        code = traceback.tb_frame.f_code
+        filename = code.co_filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        frames.append(
+            {
+                "file": filename or "<unknown>",
+                "function": code.co_name,
+                "line": traceback.tb_lineno,
+            }
+        )
+        traceback = traceback.tb_next
     error_type = type(error)
     print(
         json.dumps(
@@ -2298,6 +2311,7 @@ def _emit_agent_internal_failure(
                 "execution_id": execution_id,
                 "exception_module": error_type.__module__,
                 "exception_name": error_type.__name__,
+                "frames": frames[-_INDEX_INTERNAL_FAILURE_FRAME_LIMIT:],
             },
             sort_keys=True,
             separators=(",", ":"),

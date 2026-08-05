@@ -2,6 +2,7 @@
 node_modules/
 dist/
 coverage/
+coverage-shards/
 test-results/
 
 # per-fixture-case configs generated (and normally cleaned) by

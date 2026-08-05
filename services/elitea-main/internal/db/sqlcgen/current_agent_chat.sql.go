@@ -11,7 +11,197 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const insertInitialCurrentApplicationTurn = `-- name: InsertInitialCurrentApplicationTurn :one
+const insertCurrentAdhocTurn = `-- name: InsertCurrentAdhocTurn :one
+WITH resolved AS MATERIALIZED (
+    SELECT conversation.id AS conversation_id,
+           author_participant.id AS author_participant_id,
+           target_participant.id AS target_participant_id
+    FROM chat_conversations AS conversation
+    JOIN chat_participant_mapping AS author_mapping
+      ON author_mapping.conversation_id = conversation.id
+    JOIN chat_participants AS author_participant
+      ON author_participant.id = author_mapping.participant_id
+     AND author_participant.entity_name = 'user'
+     AND (author_participant.entity_meta ->> 'id')::bigint = $1::bigint
+    JOIN chat_participant_mapping AS target_mapping
+      ON target_mapping.conversation_id = conversation.id
+     AND target_mapping.participant_id = $2::integer
+    JOIN chat_participants AS target_participant
+      ON target_participant.id = target_mapping.participant_id
+     AND target_participant.entity_name = 'dummy'
+    WHERE conversation.uuid = $3::uuid
+      AND jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+              CASE
+                  WHEN jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                  THEN COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)
+                  ELSE '[]'::jsonb
+              END
+          ) AS internal_tool(value)
+          WHERE jsonb_typeof(internal_tool.value) <> 'string'
+             OR internal_tool.value #>> '{}' <> 'internal_mcp'
+      )
+      AND COALESCE(
+          conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
+          ''
+      ) = ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM configuration AS project_context
+          WHERE project_context.type = 'project_context'
+            AND project_context.data ->> 'enabled' = 'true'
+            AND COALESCE(project_context.data ->> 'content', '') <> ''
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_participant_mapping AS unsupported_mapping
+          JOIN chat_participants AS unsupported_participant
+            ON unsupported_participant.id = unsupported_mapping.participant_id
+          WHERE unsupported_mapping.conversation_id = conversation.id
+            AND unsupported_participant.entity_name NOT IN ('user', 'dummy', 'toolkit')
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_participant_mapping AS invalid_toolkit_mapping
+          JOIN chat_participants AS invalid_toolkit_participant
+            ON invalid_toolkit_participant.id = invalid_toolkit_mapping.participant_id
+           AND invalid_toolkit_participant.entity_name = 'toolkit'
+          LEFT JOIN elitea_tools AS invalid_toolkit
+            ON invalid_toolkit.id::text = invalid_toolkit_participant.entity_meta ->> 'id'
+          WHERE invalid_toolkit_mapping.conversation_id = conversation.id
+            AND (
+                invalid_toolkit_participant.entity_meta ->> 'project_id'
+                    IS DISTINCT FROM ($4::integer)::text
+                OR invalid_toolkit.id IS NULL
+                OR invalid_toolkit.type IN ('application', 'mcp')
+                OR invalid_toolkit.meta ->> 'mcp' = 'true'
+            )
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_group AS pending_response
+          WHERE pending_response.conversation_id = conversation.id
+            AND pending_response.is_streaming
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_group AS historical_group
+          JOIN chat_message_items AS historical_item
+            ON historical_item.message_group_id = historical_group.id
+          WHERE historical_group.conversation_id = conversation.id
+            AND (
+                historical_item.item_type IN ('attachment_message', 'canvas_message')
+                OR (
+                    historical_item.item_type = 'context_message'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM chat_messages_context AS historical_context
+                        WHERE historical_context.id = historical_item.id
+                          AND historical_context.context_type = 'support_assistant_context'
+                          AND jsonb_typeof(historical_context.context_data) = 'object'
+                          AND historical_context.context_data ->> 'user_id'
+                              = $1::bigint::text
+                          AND historical_context.context_data ->> 'project_id'
+                              = $4::integer::text
+                          AND historical_context.context_data - 'user_id' - 'project_id' = '{}'::jsonb
+                    )
+                )
+            )
+      )
+), question_group AS (
+    INSERT INTO chat_message_group (
+        uuid, author_participant_id, conversation_id, sent_to_id, meta,
+        is_streaming, created_at
+    )
+    SELECT $5::uuid,
+           resolved.author_participant_id,
+           resolved.conversation_id,
+           resolved.target_participant_id,
+           $6::jsonb,
+           FALSE,
+           clock_timestamp()
+    FROM resolved
+    RETURNING id, uuid, conversation_id, sent_to_id
+), question_item AS (
+    INSERT INTO chat_message_items (
+        uuid, item_type, order_index, meta, message_group_id
+    )
+    SELECT $7::uuid,
+           'text_message',
+           0,
+           '{}'::jsonb,
+           question_group.id
+    FROM question_group
+    RETURNING id
+), question_text AS (
+    INSERT INTO chat_messages_text (id, content)
+    SELECT question_item.id, $8::text
+    FROM question_item
+), response_group AS (
+    INSERT INTO chat_message_group (
+        uuid, author_participant_id, conversation_id, reply_to_id, meta,
+        is_streaming, created_at, task_id
+    )
+    SELECT $9::uuid,
+           question_group.sent_to_id,
+           question_group.conversation_id,
+           question_group.id,
+           jsonb_build_object(
+               'execution_generation',
+               $10::text
+           ),
+           TRUE,
+           clock_timestamp() + interval '1 second',
+           $11::text
+    FROM question_group
+    RETURNING id, uuid
+)
+SELECT response_group.id AS response_message_group_id,
+       response_group.uuid AS response_message_id
+FROM response_group
+`
+
+type InsertCurrentAdhocTurnParams struct {
+	ActorUserID         int64       `db:"actor_user_id" json:"actor_user_id"`
+	TargetParticipantID int32       `db:"target_participant_id" json:"target_participant_id"`
+	ConversationUuid    pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ProjectID           int32       `db:"project_id" json:"project_id"`
+	QuestionID          pgtype.UUID `db:"question_id" json:"question_id"`
+	QuestionMeta        []byte      `db:"question_meta" json:"question_meta"`
+	QuestionItemID      pgtype.UUID `db:"question_item_id" json:"question_item_id"`
+	UserInput           string      `db:"user_input" json:"user_input"`
+	ResponseMessageID   pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	ExecutionGeneration string      `db:"execution_generation" json:"execution_generation"`
+	ExecutionID         string      `db:"execution_id" json:"execution_id"`
+}
+
+type InsertCurrentAdhocTurnRow struct {
+	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
+	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+}
+
+func (q *Queries) InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentAdhocTurnParams) (InsertCurrentAdhocTurnRow, error) {
+	row := q.db.QueryRow(ctx, insertCurrentAdhocTurn,
+		arg.ActorUserID,
+		arg.TargetParticipantID,
+		arg.ConversationUuid,
+		arg.ProjectID,
+		arg.QuestionID,
+		arg.QuestionMeta,
+		arg.QuestionItemID,
+		arg.UserInput,
+		arg.ResponseMessageID,
+		arg.ExecutionGeneration,
+		arg.ExecutionID,
+	)
+	var i InsertCurrentAdhocTurnRow
+	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
+	return i, err
+}
+
+const insertCurrentApplicationTurn = `-- name: InsertCurrentApplicationTurn :one
 WITH resolved AS MATERIALIZED (
     SELECT conversation.id AS conversation_id,
            author_participant.id AS author_participant_id,
@@ -38,10 +228,42 @@ WITH resolved AS MATERIALIZED (
       AND (target_participant.entity_meta ->> 'project_id')::integer = $6::integer
       AND application_version.agent_type <> 'pipeline'
       AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+      AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+      AND COALESCE(
+          conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
+          ''
+      ) = ''
       AND NOT EXISTS (
           SELECT 1
-          FROM chat_message_group AS existing_message
-          WHERE existing_message.conversation_id = conversation.id
+          FROM configuration AS project_context
+          WHERE project_context.type = 'project_context'
+            AND COALESCE(project_context.data ->> 'enabled', 'true') = 'true'
+            AND COALESCE(project_context.data ->> 'content', '') <> ''
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_participant_mapping AS toolkit_mapping
+          JOIN chat_participants AS toolkit_participant
+            ON toolkit_participant.id = toolkit_mapping.participant_id
+           AND toolkit_participant.entity_name = 'toolkit'
+          WHERE toolkit_mapping.conversation_id = conversation.id
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_group AS pending_response
+          WHERE pending_response.conversation_id = conversation.id
+            AND pending_response.is_streaming
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_group AS historical_group
+          JOIN chat_message_items AS historical_item
+            ON historical_item.message_group_id = historical_group.id
+          WHERE historical_group.conversation_id = conversation.id
+            AND (
+                historical_item.item_type IN ('attachment_message', 'canvas_message')
+                OR historical_item.item_type = 'context_message'
+            )
       )
 ), question_group AS (
     INSERT INTO chat_message_group (
@@ -96,7 +318,7 @@ SELECT response_group.id AS response_message_group_id,
 FROM response_group
 `
 
-type InsertInitialCurrentApplicationTurnParams struct {
+type InsertCurrentApplicationTurnParams struct {
 	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
 	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
 	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
@@ -112,13 +334,13 @@ type InsertInitialCurrentApplicationTurnParams struct {
 	ExecutionID          string      `db:"execution_id" json:"execution_id"`
 }
 
-type InsertInitialCurrentApplicationTurnRow struct {
+type InsertCurrentApplicationTurnRow struct {
 	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
 	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
 }
 
-func (q *Queries) InsertInitialCurrentApplicationTurn(ctx context.Context, arg InsertInitialCurrentApplicationTurnParams) (InsertInitialCurrentApplicationTurnRow, error) {
-	row := q.db.QueryRow(ctx, insertInitialCurrentApplicationTurn,
+func (q *Queries) InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error) {
+	row := q.db.QueryRow(ctx, insertCurrentApplicationTurn,
 		arg.ActorUserID,
 		arg.TargetParticipantID,
 		arg.ApplicationVersionID,
@@ -133,7 +355,7 @@ func (q *Queries) InsertInitialCurrentApplicationTurn(ctx context.Context, arg I
 		arg.ExecutionGeneration,
 		arg.ExecutionID,
 	)
-	var i InsertInitialCurrentApplicationTurnRow
+	var i InsertCurrentApplicationTurnRow
 	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
 	return i, err
 }
@@ -152,7 +374,385 @@ func (q *Queries) LockCurrentAgentConversation(ctx context.Context, conversation
 	return id, err
 }
 
-const resolveInitialCurrentApplicationTurn = `-- name: ResolveInitialCurrentApplicationTurn :one
+const resetCurrentAgentResponse = `-- name: ResetCurrentAgentResponse :one
+WITH resolved AS MATERIALIZED (
+    SELECT response.id, response.uuid
+    FROM chat_message_group AS response
+    JOIN chat_conversations AS conversation
+      ON conversation.id = response.conversation_id
+    JOIN chat_message_group AS question
+      ON question.id = response.reply_to_id
+     AND question.conversation_id = conversation.id
+    JOIN chat_participants AS question_author
+      ON question_author.id = question.author_participant_id
+     AND question_author.entity_name = 'user'
+    JOIN chat_participants AS response_author
+      ON response_author.id = response.author_participant_id
+     AND response_author.id = $1::integer
+    LEFT JOIN chat_participant_mapping AS application_mapping
+      ON application_mapping.conversation_id = conversation.id
+     AND application_mapping.participant_id = response_author.id
+    LEFT JOIN application_versions AS application_version
+      ON application_version.id = $2::integer
+     AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
+     AND application_version.application_id = $3::integer
+     AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    WHERE conversation.uuid = $4::uuid
+      AND response.uuid = $5::uuid
+      AND question.uuid = $6::uuid
+      AND NOT response.is_streaming
+      AND (
+          conversation.author_id = $7::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = $7::bigint
+      )
+      AND (
+          (
+              $8::text = 'adhoc'
+              AND response_author.entity_name = 'dummy'
+              AND $3::integer = 0
+              AND $2::integer = 0
+          )
+          OR (
+              $8::text = 'application'
+              AND response_author.entity_name = 'application'
+              AND (response_author.entity_meta ->> 'project_id')::integer = $9::integer
+              AND application_version.id IS NOT NULL
+              AND application_version.agent_type <> 'pipeline'
+          )
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_items AS unsupported_question_item
+          WHERE unsupported_question_item.message_group_id = question.id
+            AND unsupported_question_item.item_type <> 'text_message'
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_items AS unsupported_response_item
+          WHERE unsupported_response_item.message_group_id = response.id
+            AND unsupported_response_item.item_type <> 'text_message'
+      )
+    FOR UPDATE OF response
+), removed_trace AS (
+    DELETE FROM chat_message_trace_step AS trace
+    USING resolved
+    WHERE trace.message_group_id = resolved.id
+    RETURNING trace.id
+), removed_items AS (
+    DELETE FROM chat_message_items AS item
+    USING resolved
+    WHERE item.message_group_id = resolved.id
+    RETURNING item.id
+), updated AS (
+    UPDATE chat_message_group AS response
+    SET meta = (
+            response.meta
+            - 'resolved_hitl_interrupt_ids'
+            - 'hitl_interrupts'
+            - 'hitl_interrupt'
+            - 'invoked_skills'
+        ) || jsonb_build_object(
+            'execution_generation', $10::text
+        ),
+        is_streaming = TRUE,
+        task_id = $11::text,
+        updated_at = clock_timestamp()
+    FROM resolved
+    WHERE response.id = resolved.id
+      AND (SELECT count(*) FROM removed_trace) >= 0
+      AND (SELECT count(*) FROM removed_items) >= 0
+    RETURNING response.id, response.uuid
+)
+SELECT updated.id AS response_message_group_id,
+       updated.uuid AS response_message_id
+FROM updated
+`
+
+type ResetCurrentAgentResponseParams struct {
+	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
+	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
+	ApplicationID        int32       `db:"application_id" json:"application_id"`
+	ConversationUuid     pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ResponseMessageID    pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	QuestionID           pgtype.UUID `db:"question_id" json:"question_id"`
+	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
+	RegenerationKind     string      `db:"regeneration_kind" json:"regeneration_kind"`
+	ProjectID            int32       `db:"project_id" json:"project_id"`
+	ExecutionGeneration  string      `db:"execution_generation" json:"execution_generation"`
+	ExecutionID          string      `db:"execution_id" json:"execution_id"`
+}
+
+type ResetCurrentAgentResponseRow struct {
+	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
+	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+}
+
+func (q *Queries) ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error) {
+	row := q.db.QueryRow(ctx, resetCurrentAgentResponse,
+		arg.TargetParticipantID,
+		arg.ApplicationVersionID,
+		arg.ApplicationID,
+		arg.ConversationUuid,
+		arg.ResponseMessageID,
+		arg.QuestionID,
+		arg.ActorUserID,
+		arg.RegenerationKind,
+		arg.ProjectID,
+		arg.ExecutionGeneration,
+		arg.ExecutionID,
+	)
+	var i ResetCurrentAgentResponseRow
+	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
+	return i, err
+}
+
+const resolveCurrentAdhocTurn = `-- name: ResolveCurrentAdhocTurn :one
+SELECT conversation.id AS conversation_id,
+       author_participant.id AS author_participant_id,
+       target_participant.id AS target_participant_id,
+       COALESCE(author_mapping.entity_settings -> 'llm_settings', '{}'::jsonb)::text AS llm_settings_json,
+       (CASE
+           WHEN COALESCE(conversation.meta ->> 'default_instructions', '') = ''
+           THEN COALESCE(conversation.instructions, '')
+           WHEN COALESCE(conversation.instructions, '') = ''
+           THEN conversation.meta ->> 'default_instructions'
+           ELSE conversation.instructions || E'\n\n' || (conversation.meta ->> 'default_instructions')
+       END)::text AS instructions,
+       COALESCE(conversation.meta, '{}'::jsonb)::text AS conversation_meta_json,
+       COALESCE(current_tools.tools, '[]'::jsonb)::text AS tools_json,
+       COALESCE(current_history.chat_history, '[]'::jsonb)::text AS chat_history_json
+FROM chat_conversations AS conversation
+JOIN chat_participant_mapping AS author_mapping
+  ON author_mapping.conversation_id = conversation.id
+JOIN chat_participants AS author_participant
+  ON author_participant.id = author_mapping.participant_id
+ AND author_participant.entity_name = 'user'
+ AND (author_participant.entity_meta ->> 'id')::bigint = $1::bigint
+JOIN chat_participant_mapping AS target_mapping
+  ON target_mapping.conversation_id = conversation.id
+JOIN chat_participants AS target_participant
+  ON target_participant.id = target_mapping.participant_id
+ AND target_participant.entity_name = 'dummy'
+ AND (
+     $2::integer = 0
+     OR target_participant.id = $2::integer
+ )
+LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'id', tool.id,
+                   'type', tool.type,
+                   'name', tool.name,
+                   'description', tool.description,
+                   'author_id', tool.author_id,
+                   'project_id', $3::integer,
+                   'settings', tool.settings,
+                   'meta', tool.meta,
+                   'created_at', tool.created_at,
+                   'toolkit_name', tool.name,
+                   'author', NULL,
+                   'agent_type', NULL,
+                   'online', NULL,
+                   'icon_meta', NULL,
+                   'variables', '[]'::jsonb,
+                   'is_pinned', FALSE,
+                   'indexes_count', NULL
+               )
+               ORDER BY toolkit_mapping.id
+           ) AS tools
+    FROM chat_participant_mapping AS toolkit_mapping
+    JOIN chat_participants AS toolkit_participant
+      ON toolkit_participant.id = toolkit_mapping.participant_id
+     AND toolkit_participant.entity_name = 'toolkit'
+    JOIN elitea_tools AS tool
+      ON tool.id::text = toolkit_participant.entity_meta ->> 'id'
+    WHERE toolkit_mapping.conversation_id = conversation.id
+      AND toolkit_participant.entity_meta ->> 'project_id' = ($3::integer)::text
+) AS current_tools ON TRUE
+LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'role', history_group.role,
+                   'content', history_group.content,
+                   'additional_kwargs', '{}'::jsonb
+               )
+               ORDER BY history_group.created_at, history_group.id
+           ) AS chat_history
+    FROM (
+        SELECT message_group.id,
+               message_group.created_at,
+               CASE
+                   WHEN author.entity_name = 'user' THEN 'user'
+                   ELSE 'assistant'
+               END AS role,
+               jsonb_agg(
+                   jsonb_build_object('type', 'text', 'text', message_text.content)
+                   ORDER BY message_item.order_index, message_item.id
+               ) FILTER (WHERE message_text.content <> '') AS content
+        FROM chat_message_group AS message_group
+        JOIN chat_participants AS author
+          ON author.id = message_group.author_participant_id
+        JOIN chat_message_items AS message_item
+          ON message_item.message_group_id = message_group.id
+         AND message_item.item_type = 'text_message'
+        JOIN chat_messages_text AS message_text
+          ON message_text.id = message_item.id
+        WHERE message_group.conversation_id = conversation.id
+          AND message_group.created_at < COALESCE(
+              (
+                  SELECT current_question.created_at
+                  FROM chat_message_group AS current_question
+                  WHERE current_question.conversation_id = conversation.id
+                    AND current_question.uuid = $4::uuid
+              ),
+              statement_timestamp()
+          )
+        GROUP BY message_group.id, message_group.created_at, author.entity_name
+    ) AS history_group
+    WHERE jsonb_array_length(history_group.content) > 0
+) AS current_history ON TRUE
+WHERE conversation.uuid = $5::uuid
+  AND jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+          CASE
+              WHEN jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+              THEN COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)
+              ELSE '[]'::jsonb
+          END
+      ) AS internal_tool(value)
+      WHERE jsonb_typeof(internal_tool.value) <> 'string'
+         OR internal_tool.value #>> '{}' <> 'internal_mcp'
+  )
+  AND COALESCE(
+      conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
+      ''
+  ) = ''
+  AND NOT EXISTS (
+      SELECT 1
+      FROM configuration AS project_context
+      WHERE project_context.type = 'project_context'
+        AND project_context.data ->> 'enabled' = 'true'
+        AND COALESCE(project_context.data ->> 'content', '') <> ''
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_participant_mapping AS unsupported_mapping
+      JOIN chat_participants AS unsupported_participant
+        ON unsupported_participant.id = unsupported_mapping.participant_id
+      WHERE unsupported_mapping.conversation_id = conversation.id
+        AND unsupported_participant.entity_name NOT IN ('user', 'dummy', 'toolkit')
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_participant_mapping AS invalid_toolkit_mapping
+      JOIN chat_participants AS invalid_toolkit_participant
+        ON invalid_toolkit_participant.id = invalid_toolkit_mapping.participant_id
+       AND invalid_toolkit_participant.entity_name = 'toolkit'
+      LEFT JOIN elitea_tools AS invalid_toolkit
+        ON invalid_toolkit.id::text = invalid_toolkit_participant.entity_meta ->> 'id'
+      WHERE invalid_toolkit_mapping.conversation_id = conversation.id
+        AND (
+            invalid_toolkit_participant.entity_meta ->> 'project_id'
+                IS DISTINCT FROM ($3::integer)::text
+            OR invalid_toolkit.id IS NULL
+            OR invalid_toolkit.type IN ('application', 'mcp')
+            OR invalid_toolkit.meta ->> 'mcp' = 'true'
+        )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_group AS pending_response
+      WHERE pending_response.conversation_id = conversation.id
+        AND pending_response.is_streaming
+        AND NOT EXISTS (
+            SELECT 1
+            FROM chat_message_group AS retried_question
+            WHERE retried_question.id = pending_response.reply_to_id
+              AND retried_question.uuid = $4::uuid
+        )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_group AS historical_group
+      JOIN chat_message_items AS historical_item
+        ON historical_item.message_group_id = historical_group.id
+      WHERE historical_group.conversation_id = conversation.id
+        AND historical_group.created_at < COALESCE(
+            (
+                SELECT current_question.created_at
+                FROM chat_message_group AS current_question
+                WHERE current_question.conversation_id = conversation.id
+                  AND current_question.uuid = $4::uuid
+            ),
+            statement_timestamp()
+        )
+        AND (
+            historical_item.item_type IN ('attachment_message', 'canvas_message')
+            OR (
+                historical_item.item_type = 'context_message'
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM chat_messages_context AS historical_context
+                    WHERE historical_context.id = historical_item.id
+                      AND historical_context.context_type = 'support_assistant_context'
+                      AND jsonb_typeof(historical_context.context_data) = 'object'
+                      AND historical_context.context_data ->> 'user_id'
+                          = $1::bigint::text
+                      AND historical_context.context_data ->> 'project_id'
+                          = $3::integer::text
+                      AND historical_context.context_data - 'user_id' - 'project_id' = '{}'::jsonb
+                )
+            )
+        )
+  )
+ORDER BY target_participant.id
+LIMIT 1
+`
+
+type ResolveCurrentAdhocTurnParams struct {
+	ActorUserID         int64       `db:"actor_user_id" json:"actor_user_id"`
+	TargetParticipantID int32       `db:"target_participant_id" json:"target_participant_id"`
+	ProjectID           int32       `db:"project_id" json:"project_id"`
+	QuestionID          pgtype.UUID `db:"question_id" json:"question_id"`
+	ConversationUuid    pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+}
+
+type ResolveCurrentAdhocTurnRow struct {
+	ConversationID       int32  `db:"conversation_id" json:"conversation_id"`
+	AuthorParticipantID  int32  `db:"author_participant_id" json:"author_participant_id"`
+	TargetParticipantID  int32  `db:"target_participant_id" json:"target_participant_id"`
+	LlmSettingsJson      string `db:"llm_settings_json" json:"llm_settings_json"`
+	Instructions         string `db:"instructions" json:"instructions"`
+	ConversationMetaJson string `db:"conversation_meta_json" json:"conversation_meta_json"`
+	ToolsJson            string `db:"tools_json" json:"tools_json"`
+	ChatHistoryJson      string `db:"chat_history_json" json:"chat_history_json"`
+}
+
+func (q *Queries) ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentAdhocTurn,
+		arg.ActorUserID,
+		arg.TargetParticipantID,
+		arg.ProjectID,
+		arg.QuestionID,
+		arg.ConversationUuid,
+	)
+	var i ResolveCurrentAdhocTurnRow
+	err := row.Scan(
+		&i.ConversationID,
+		&i.AuthorParticipantID,
+		&i.TargetParticipantID,
+		&i.LlmSettingsJson,
+		&i.Instructions,
+		&i.ConversationMetaJson,
+		&i.ToolsJson,
+		&i.ChatHistoryJson,
+	)
+	return i, err
+}
+
+const resolveCurrentApplicationTurn = `-- name: ResolveCurrentApplicationTurn :one
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
        target_participant.id AS target_participant_id,
@@ -160,6 +760,7 @@ SELECT conversation.id AS conversation_id,
        (target_participant.entity_meta ->> 'project_id')::integer AS application_project_id,
        (target_mapping.entity_settings ->> 'version_id')::integer AS application_version_id,
        COALESCE(target_mapping.entity_settings -> 'variables', '[]'::jsonb)::text AS application_variables_json,
+       COALESCE(current_history.chat_history, '[]'::jsonb)::text AS chat_history_json,
        jsonb_build_object(
            'id', application_version.id,
            'application_id', application_version.application_id,
@@ -262,25 +863,115 @@ JOIN chat_participants AS target_participant
 JOIN application_versions AS application_version
   ON application_version.id = (target_mapping.entity_settings ->> 'version_id')::integer
  AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
-WHERE conversation.uuid = $3::uuid
-  AND (target_participant.entity_meta ->> 'project_id')::integer = $4::integer
+LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'role', history_group.role,
+                   'content', history_group.content,
+                   'additional_kwargs', '{}'::jsonb
+               )
+               ORDER BY history_group.created_at, history_group.id
+           ) AS chat_history
+    FROM (
+        SELECT message_group.id,
+               message_group.created_at,
+               CASE
+                   WHEN author.entity_name = 'user' THEN 'user'
+                   ELSE 'assistant'
+               END AS role,
+               jsonb_agg(
+                   jsonb_build_object('type', 'text', 'text', message_text.content)
+                   ORDER BY message_item.order_index, message_item.id
+               ) FILTER (WHERE message_text.content <> '') AS content
+        FROM chat_message_group AS message_group
+        JOIN chat_participants AS author
+          ON author.id = message_group.author_participant_id
+        JOIN chat_message_items AS message_item
+          ON message_item.message_group_id = message_group.id
+         AND message_item.item_type = 'text_message'
+        JOIN chat_messages_text AS message_text
+          ON message_text.id = message_item.id
+        WHERE message_group.conversation_id = conversation.id
+          AND message_group.created_at < COALESCE(
+              (
+                  SELECT current_question.created_at
+                  FROM chat_message_group AS current_question
+                  WHERE current_question.conversation_id = conversation.id
+                    AND current_question.uuid = $3::uuid
+              ),
+              statement_timestamp()
+          )
+        GROUP BY message_group.id, message_group.created_at, author.entity_name
+    ) AS history_group
+    WHERE jsonb_array_length(history_group.content) > 0
+) AS current_history ON TRUE
+WHERE conversation.uuid = $4::uuid
+  AND (target_participant.entity_meta ->> 'project_id')::integer = $5::integer
   AND application_version.agent_type <> 'pipeline'
   AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+  AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+  AND COALESCE(
+      conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
+      ''
+  ) = ''
   AND NOT EXISTS (
       SELECT 1
-      FROM chat_message_group AS existing_message
-      WHERE existing_message.conversation_id = conversation.id
+      FROM configuration AS project_context
+      WHERE project_context.type = 'project_context'
+        AND COALESCE(project_context.data ->> 'enabled', 'true') = 'true'
+        AND COALESCE(project_context.data ->> 'content', '') <> ''
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_participant_mapping AS toolkit_mapping
+      JOIN chat_participants AS toolkit_participant
+        ON toolkit_participant.id = toolkit_mapping.participant_id
+       AND toolkit_participant.entity_name = 'toolkit'
+      WHERE toolkit_mapping.conversation_id = conversation.id
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_group AS pending_response
+      WHERE pending_response.conversation_id = conversation.id
+        AND pending_response.is_streaming
+        AND NOT EXISTS (
+            SELECT 1
+            FROM chat_message_group AS retried_question
+            WHERE retried_question.id = pending_response.reply_to_id
+              AND retried_question.uuid = $3::uuid
+        )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_group AS historical_group
+      JOIN chat_message_items AS historical_item
+        ON historical_item.message_group_id = historical_group.id
+      WHERE historical_group.conversation_id = conversation.id
+        AND historical_group.created_at < COALESCE(
+            (
+                SELECT current_question.created_at
+                FROM chat_message_group AS current_question
+                WHERE current_question.conversation_id = conversation.id
+                  AND current_question.uuid = $3::uuid
+            ),
+            statement_timestamp()
+        )
+        AND (
+            historical_item.item_type IN ('attachment_message', 'canvas_message')
+            OR historical_item.item_type = 'context_message'
+        )
   )
 `
 
-type ResolveInitialCurrentApplicationTurnParams struct {
+type ResolveCurrentApplicationTurnParams struct {
 	ActorUserID         int64       `db:"actor_user_id" json:"actor_user_id"`
 	TargetParticipantID int32       `db:"target_participant_id" json:"target_participant_id"`
+	QuestionID          pgtype.UUID `db:"question_id" json:"question_id"`
 	ConversationUuid    pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
 	ProjectID           int32       `db:"project_id" json:"project_id"`
 }
 
-type ResolveInitialCurrentApplicationTurnRow struct {
+type ResolveCurrentApplicationTurnRow struct {
 	ConversationID                int32  `db:"conversation_id" json:"conversation_id"`
 	AuthorParticipantID           int32  `db:"author_participant_id" json:"author_participant_id"`
 	TargetParticipantID           int32  `db:"target_participant_id" json:"target_participant_id"`
@@ -288,17 +979,19 @@ type ResolveInitialCurrentApplicationTurnRow struct {
 	ApplicationProjectID          int32  `db:"application_project_id" json:"application_project_id"`
 	ApplicationVersionID          int32  `db:"application_version_id" json:"application_version_id"`
 	ApplicationVariablesJson      string `db:"application_variables_json" json:"application_variables_json"`
+	ChatHistoryJson               string `db:"chat_history_json" json:"chat_history_json"`
 	ApplicationVersionDetailsJson string `db:"application_version_details_json" json:"application_version_details_json"`
 }
 
-func (q *Queries) ResolveInitialCurrentApplicationTurn(ctx context.Context, arg ResolveInitialCurrentApplicationTurnParams) (ResolveInitialCurrentApplicationTurnRow, error) {
-	row := q.db.QueryRow(ctx, resolveInitialCurrentApplicationTurn,
+func (q *Queries) ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentApplicationTurn,
 		arg.ActorUserID,
 		arg.TargetParticipantID,
+		arg.QuestionID,
 		arg.ConversationUuid,
 		arg.ProjectID,
 	)
-	var i ResolveInitialCurrentApplicationTurnRow
+	var i ResolveCurrentApplicationTurnRow
 	err := row.Scan(
 		&i.ConversationID,
 		&i.AuthorParticipantID,
@@ -307,7 +1000,98 @@ func (q *Queries) ResolveInitialCurrentApplicationTurn(ctx context.Context, arg 
 		&i.ApplicationProjectID,
 		&i.ApplicationVersionID,
 		&i.ApplicationVariablesJson,
+		&i.ChatHistoryJson,
 		&i.ApplicationVersionDetailsJson,
+	)
+	return i, err
+}
+
+const resolveCurrentRegeneration = `-- name: ResolveCurrentRegeneration :one
+SELECT conversation.uuid AS conversation_uuid,
+       question.uuid AS question_id,
+       response.author_participant_id AS target_participant_id,
+       CASE response_author.entity_name
+           WHEN 'application' THEN 'application'
+           WHEN 'dummy' THEN 'adhoc'
+       END::text AS regeneration_kind,
+       question_text.content::text AS user_input
+FROM chat_message_group AS response
+JOIN chat_conversations AS conversation
+  ON conversation.id = response.conversation_id
+JOIN chat_message_group AS question
+  ON question.id = response.reply_to_id
+ AND question.conversation_id = conversation.id
+JOIN chat_participants AS question_author
+  ON question_author.id = question.author_participant_id
+ AND question_author.entity_name = 'user'
+JOIN chat_participants AS response_author
+  ON response_author.id = response.author_participant_id
+ AND response_author.entity_name IN ('application', 'dummy')
+JOIN chat_participant_mapping AS actor_mapping
+  ON actor_mapping.conversation_id = conversation.id
+JOIN chat_participants AS actor_participant
+  ON actor_participant.id = actor_mapping.participant_id
+ AND actor_participant.entity_name = 'user'
+ AND (actor_participant.entity_meta ->> 'id')::bigint = $1::bigint
+JOIN LATERAL (
+    SELECT text_item.content
+    FROM chat_message_items AS item
+    JOIN chat_messages_text AS text_item ON text_item.id = item.id
+    WHERE item.message_group_id = question.id
+      AND item.item_type = 'text_message'
+    ORDER BY item.order_index DESC, item.id DESC
+    LIMIT 1
+) AS question_text ON TRUE
+WHERE response.uuid = $2::uuid
+  AND NOT response.is_streaming
+  AND (
+      conversation.author_id = $1::bigint
+      OR (question_author.entity_meta ->> 'id')::bigint = $1::bigint
+  )
+  AND (
+      response_author.entity_name = 'dummy'
+      OR (
+          response_author.entity_name = 'application'
+          AND (response_author.entity_meta ->> 'project_id')::integer = $3::integer
+      )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_items AS unsupported_question_item
+      WHERE unsupported_question_item.message_group_id = question.id
+        AND unsupported_question_item.item_type <> 'text_message'
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_items AS unsupported_response_item
+      WHERE unsupported_response_item.message_group_id = response.id
+        AND unsupported_response_item.item_type <> 'text_message'
+  )
+`
+
+type ResolveCurrentRegenerationParams struct {
+	ActorUserID       int64       `db:"actor_user_id" json:"actor_user_id"`
+	ResponseMessageID pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	ProjectID         int32       `db:"project_id" json:"project_id"`
+}
+
+type ResolveCurrentRegenerationRow struct {
+	ConversationUuid    pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	QuestionID          pgtype.UUID `db:"question_id" json:"question_id"`
+	TargetParticipantID int32       `db:"target_participant_id" json:"target_participant_id"`
+	RegenerationKind    string      `db:"regeneration_kind" json:"regeneration_kind"`
+	UserInput           string      `db:"user_input" json:"user_input"`
+}
+
+func (q *Queries) ResolveCurrentRegeneration(ctx context.Context, arg ResolveCurrentRegenerationParams) (ResolveCurrentRegenerationRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentRegeneration, arg.ActorUserID, arg.ResponseMessageID, arg.ProjectID)
+	var i ResolveCurrentRegenerationRow
+	err := row.Scan(
+		&i.ConversationUuid,
+		&i.QuestionID,
+		&i.TargetParticipantID,
+		&i.RegenerationKind,
+		&i.UserInput,
 	)
 	return i, err
 }

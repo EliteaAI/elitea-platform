@@ -20,7 +20,7 @@ const maxCurrentAgentUserInputBytes = 256 * 1024
 
 var (
 	ErrInvalidCurrentAgentStart     = errors.New("invalid current agent start")
-	ErrUnsupportedCurrentAgentStart = errors.New("current agent start is not supported by the initial parity slice")
+	ErrUnsupportedCurrentAgentStart = errors.New("current agent start is not supported by the admitted parity slice")
 )
 
 // CurrentApplicationTurn is the immutable current-chat side of one durable
@@ -67,10 +67,11 @@ type CurrentApplicationTarget struct {
 	ApplicationVersionID int64
 	Variables            json.RawMessage
 	VersionDetails       json.RawMessage
+	ChatHistory          json.RawMessage
 }
 
 type CurrentApplicationResolver interface {
-	ResolveInitialCurrentApplication(
+	ResolveCurrentApplication(
 		context.Context,
 		CurrentApplicationStartRequest,
 	) (CurrentApplicationTarget, error)
@@ -108,21 +109,28 @@ type CurrentApplicationStartOutcome struct {
 }
 
 type CurrentApplicationStartService struct {
-	resolver   CurrentApplicationResolver
-	freezer    CurrentApplicationVersionFreezer
-	admissions admissionSubmitter
+	resolver             CurrentApplicationResolver
+	adhocResolver        CurrentAdhocResolver
+	regenerationResolver CurrentRegenerationResolver
+	freezer              CurrentApplicationVersionFreezer
+	admissions           admissionSubmitter
 }
 
 func NewCurrentApplicationStartService(
 	resolver CurrentApplicationResolver,
+	adhocResolver CurrentAdhocResolver,
+	regenerationResolver CurrentRegenerationResolver,
 	freezer CurrentApplicationVersionFreezer,
 	admissions admissionSubmitter,
 ) (*CurrentApplicationStartService, error) {
-	if resolver == nil || freezer == nil || admissions == nil {
+	if resolver == nil || adhocResolver == nil || regenerationResolver == nil ||
+		freezer == nil || admissions == nil {
 		return nil, errors.New("current application start dependencies are required")
 	}
 	return &CurrentApplicationStartService{
-		resolver: resolver, freezer: freezer, admissions: admissions,
+		resolver: resolver, adhocResolver: adhocResolver,
+		regenerationResolver: regenerationResolver,
+		freezer:              freezer, admissions: admissions,
 	}, nil
 }
 
@@ -133,13 +141,14 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	if err := request.Validate(); err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
-	target, err := service.resolver.ResolveInitialCurrentApplication(ctx, request)
+	target, err := service.resolver.ResolveCurrentApplication(ctx, request)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
 	if request.ProjectID > math.MaxInt32 || request.ActorUserID > math.MaxInt32 ||
 		target.ApplicationID <= 0 || target.ApplicationVersionID <= 0 ||
-		!validJSONArray(target.Variables) || !validJSONObject(target.VersionDetails) {
+		!validJSONArray(target.Variables) || !validJSONObject(target.VersionDetails) ||
+		!validJSONArray(target.ChatHistory) {
 		return CurrentApplicationStartOutcome{}, ErrUnsupportedCurrentAgentStart
 	}
 	frozenVersion, err := service.freezer.FreezeCurrentApplicationVersion(
@@ -214,12 +223,19 @@ func currentApplicationInput(
 	if err != nil {
 		return nil, ErrInvalidCurrentAgentStart
 	}
+	llm, err := currentApplicationRuntimeLLM(target.VersionDetails)
+	if err != nil {
+		return nil, err
+	}
 	threadID := request.ConversationUUID
 	conversationID := request.ConversationUUID
 	executionGeneration := request.QuestionID
 	return &runtimev1.AgentExecutionInputV1{
 		SchemaRevision: "elitea.runtime.agent-execution-input.v1",
-		Llm:            []byte(`{"kwargs":{}}`), ChatHistory: []byte(`[]`),
+		// Current chat history remains authoritative for ordinary turns. The
+		// shared LangGraph checkpoint stores resumable graph state for this stable
+		// thread; it does not replace the current chat-history projection.
+		Llm: llm, ChatHistory: bytes.Clone(target.ChatHistory),
 		UserInput: userInput, ThreadId: &threadID, Tools: []byte(`[]`),
 		Application: application, InternalTools: []byte(`[]`),
 		McpTokens: []byte(`{}`), IgnoredMcpServers: []byte(`[]`),
@@ -230,6 +246,28 @@ func currentApplicationInput(
 		AttachedSkills: []byte(`[]`), InputAttachments: []byte(`[]`),
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
 	}, nil
+}
+
+func currentApplicationRuntimeLLM(versionDetails json.RawMessage) ([]byte, error) {
+	version, err := decodeCurrentApplicationVersion(versionDetails)
+	if err != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	settings, ok := version["llm_settings"].(map[string]any)
+	if !ok || settings == nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	compatible, ok := settings["openai_compatible"].(bool)
+	if !ok {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	result, err := json.Marshal(map[string]any{
+		"kwargs": map[string]any{"openai_compatible": compatible},
+	})
+	if err != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	return result, nil
 }
 
 func validUUID(value string) bool {

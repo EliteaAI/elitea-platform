@@ -17,8 +17,9 @@ import (
 
 const (
 	// MaxCurrentJSONBytes leaves headroom for the execution identity, fence,
-	// digest and protobuf framing under the 64 KiB v1 output-frame/SSE limits.
-	MaxCurrentJSONBytes = 48 * 1024
+	// digest and protobuf framing under the 64 KiB v1 output-frame limit. This
+	// data-plane bound is independent from the 32 KiB Redis command bound.
+	MaxCurrentJSONBytes = 60 * 1024
 	maxSafeStringBytes  = 256
 	maxJSONNesting      = 64
 	maxEventTypeBytes   = 128

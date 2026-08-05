@@ -56,6 +56,7 @@ _CUSTOM_EVENTS: dict[str, tuple[str, frozenset[str]]] = {
     "hitl_interrupt": ("agent_hitl_interrupt", frozenset({"node_name", "message", "available_actions", "routes", "edit_state_key"})),
 }
 _MAX_TRACE_TEXT_BYTES = 128 * 1024
+_CUSTOM_STATE_TRANSCRIPT_FIELDS = ("messages", "chat_history")
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +211,12 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             self._tools[selected] = entry
         self._emit(
             "agent_tool_error" if failed else "agent_tool_end",
-            content=entry["error"] if failed else entry["tool_output"],
+            # Successful tool output already has one established owner in
+            # response_metadata.tool_output. Duplicating the same potentially
+            # large value into content made a 51 KiB current Aha result exceed
+            # the 64 KiB data-plane frame even though the control plane held
+            # only references. Errors retain content for the existing error UI.
+            content=entry["error"] if failed else None,
             response_metadata=entry,
         )
         self._emit_partial(tool_calls={selected: entry})
@@ -235,12 +241,18 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         selected = _run_id(run_id)
         now = _now()
         model = _model_name(serialized, metadata)
-        state = {"timestamp_start": now, "model_name": model, **_hierarchy(metadata)}
+        hierarchy = _hierarchy(metadata)
+        state = {"timestamp_start": now, "model_name": model, **hierarchy}
         with self._lock:
             self._llm[selected] = state
         self._emit(
             "agent_llm_start",
-            response_metadata={"tool_run_id": selected, **state},
+            response_metadata={
+                "tool_name": hierarchy.get("langgraph_node") or "Thinking step",
+                "tool_run_id": selected,
+                "metadata": {"ls_model_name": model, **hierarchy},
+                **state,
+            },
         )
 
     def on_llm_new_token(self, token: str, *, run_id: Any, chunk: Any = None, **kwargs: Any) -> None:
@@ -309,7 +321,48 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         }
         if event_type == "agent_swarm_agent_response":
             payload["chat_project_id"] = self._context.chat_project_id
+        payload = self._bounded_custom_event_payload(event_type, payload)
         self._emit(event_type, response_metadata=payload)
+
+    def _bounded_custom_event_payload(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Drop only redundant transcript copies from an oversized SDK event.
+
+        The current SDK includes its accumulated ``messages`` state in graph
+        transition events. Tool output already has an authoritative owner in
+        ``agent_tool_end``/``partial_message``; copying the entire transcript
+        again makes later turns grow without bound and defers a callback
+        failure until otherwise-successful agent finalization. Preserve the
+        remaining pipeline state byte-for-byte and mark the omitted duplicate
+        fields so consumers can distinguish a bounded projection.
+        """
+
+        if len(self._event_json(event_type, response_metadata=payload)) <= (
+            MAX_CURRENT_NODE_EVENT_JSON_BYTES
+        ):
+            return payload
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            return payload
+        projected_state = dict(state)
+        omitted = [
+            field
+            for field in _CUSTOM_STATE_TRANSCRIPT_FIELDS
+            if field in projected_state
+        ]
+        if not omitted:
+            return payload
+        for field in omitted:
+            projected_state.pop(field, None)
+        projected = dict(payload)
+        projected["state"] = projected_state
+        projected["state_projection"] = {
+            "omitted_duplicate_fields": omitted,
+        }
+        return projected
 
     def _emit_partial(
         self,
@@ -337,7 +390,30 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         thinking: str | None = None,
         response_metadata: dict[str, Any] | None = None,
     ) -> node_event_pb2.NodeEventV1:
-        raw = json.dumps(
+        raw = self._event_json(
+            event_type,
+            content=content,
+            thinking=thinking,
+            response_metadata=response_metadata,
+        )
+        if len(raw) > MAX_CURRENT_NODE_EVENT_JSON_BYTES:
+            raise ResourceExhausted("The agent event exceeds its output limit.")
+        try:
+            event = decode_current_node_event_json(raw)
+        except InvalidCurrentNodeEvent as exc:
+            raise InvalidInput("The agent event is malformed.") from exc
+        self._publish(event)
+        return event
+
+    def _event_json(
+        self,
+        event_type: str,
+        *,
+        content: Any = None,
+        thinking: str | None = None,
+        response_metadata: dict[str, Any] | None = None,
+    ) -> bytes:
+        return json.dumps(
             {
                 "type": event_type,
                 "stream_id": self._context.stream_id,
@@ -354,14 +430,6 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             allow_nan=False,
             separators=(",", ":"),
         ).encode("utf-8")
-        if len(raw) > MAX_CURRENT_NODE_EVENT_JSON_BYTES:
-            raise ResourceExhausted("The agent event exceeds its output limit.")
-        try:
-            event = decode_current_node_event_json(raw)
-        except InvalidCurrentNodeEvent as exc:
-            raise InvalidInput("The agent event is malformed.") from exc
-        self._publish(event)
-        return event
 
     def _guard(self, function, *args) -> None:
         try:
@@ -387,6 +455,12 @@ def _thinking_step(response: Any, run_id: str, state: dict[str, Any]) -> dict[st
     dumped = generation.model_dump() if generation is not None and callable(getattr(generation, "model_dump", None)) else {}
     message = dumped.get("message") if isinstance(dumped.get("message"), dict) else {}
     text, thinking = _message_values(message, dumped.get("text"))
+    if not text:
+        # Current agent callbacks keep tool-call-only model turns visible as an
+        # LLM activity chip. Preserve that outcome without duplicating tool
+        # arguments into the thinking-step/output stream; agent_tool_start owns
+        # the typed inputs and their independent size/security boundary.
+        text = _tool_call_decision_text(message)
     hierarchy = {key: state[key] for key in _HIERARCHY_KEYS if key in state}
     response_metadata = {
         "model_name": state.get("model_name"),
@@ -481,6 +555,27 @@ def _message_values(message: dict[str, Any], fallback: Any = None) -> tuple[str,
     if isinstance(additional, dict) and isinstance(additional.get("thinking"), str):
         thinking_parts.append(additional["thinking"])
     return "\n".join(text_parts), "\n".join(thinking_parts)
+
+
+def _tool_call_decision_text(message: dict[str, Any]) -> str:
+    calls: Any = None
+    additional = message.get("additional_kwargs")
+    if isinstance(additional, dict):
+        calls = additional.get("tool_calls")
+    if not isinstance(calls, list):
+        calls = message.get("tool_calls")
+    if not isinstance(calls, list):
+        return ""
+
+    decisions: list[str] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        name = function.get("name") if isinstance(function, dict) else call.get("name")
+        if isinstance(name, str) and name:
+            decisions.append(f"Planned to call tool '{_bounded_text(name, 'tool')}'")
+    return "\n".join(decisions)
 
 
 def _chunk_values(token: Any, chunk: Any) -> tuple[str, str]:

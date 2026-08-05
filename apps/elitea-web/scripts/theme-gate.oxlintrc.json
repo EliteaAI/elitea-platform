@@ -4,6 +4,9 @@
   // glob is anchored with ** to hold for both the real src/ and fixture trees.
   // Native plugins and type-aware analysis are off — this config isolates one
   // check; the full lint config is .oxlintrc.json.
+  // TEMPORARY (Wave 2 — remove when token refactoring lands):
+  // F1's chat-messages unit predates the R-T1 fence and contains raw colour
+  // literals; same exemption pattern as .oxlintrc.json's override.
   "plugins": [],
   "jsPlugins": ["../tools/lint-rules/index.mjs"],
   "categories": {
@@ -18,6 +21,31 @@
   "overrides": [
     {
       "files": ["**/shared/brand/tokens/**"],
+      "rules": { "elitea/no-raw-color": "off" }
+    },
+    {
+      // Wave-2 C4: raw-colour literals predating R-T1 — same rationale as
+      // the full .oxlintrc.json override (complexity, max-lines, i18n, etc.)
+      "files": ["**/features/chat-messages/**"],
+      "rules": { "elitea/no-raw-color": "off" }
+    },
+    {
+      // Wave-2 C4: internal MUI selectors (.MuiChip-label, .MuiDialog-paper)
+      // predating R-T6 — same rationale as .oxlintrc.json override.
+      "files": ["**/features/chat-messages/**"],
+      "rules": { "elitea/no-mui-internal-selector": "off" }
+    },
+    {
+      // TEMPORARY (Wave 2 — remove when token refactoring lands):
+      // These units predate the R-T1 fence and contain raw colour literals.
+      "files": [
+        "**/features/interactive-tours/**",
+        "**/features/onboarding/**",
+        "**/pages/onboarding/**",
+        "**/pages/mode-switch/**",
+        "**/pages/help-center/**",
+        "**/entities/application/model/useCardLike.ts"
+      ],
       "rules": { "elitea/no-raw-color": "off" }
     }
   ]

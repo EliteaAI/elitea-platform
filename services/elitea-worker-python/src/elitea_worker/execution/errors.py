@@ -22,7 +22,7 @@ class InvalidInput(WorkerError):
 
 
 class ResourceExhausted(WorkerError):
-    def __init__(self, safe_message: str = "The execution input exceeds an approved limit.") -> None:
+    def __init__(self, safe_message: str = "The execution exceeded an approved resource limit.") -> None:
         super().__init__("RESOURCE_EXHAUSTED", safe_message, exit_code=2)
 
 

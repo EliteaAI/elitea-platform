@@ -488,7 +488,7 @@ _SAFE_RUNTIME_ERRORS: dict[str, tuple[str, bool]] = {
     "UNSUPPORTED_CAPABILITY": ("Configuration type is not supported.", False),
     "INCOMPATIBLE_VERSION": ("The requested contract version is not compatible.", False),
     "INVALID_INPUT": ("The execution input is invalid.", False),
-    "RESOURCE_EXHAUSTED": ("The execution input exceeds an approved limit.", False),
+    "RESOURCE_EXHAUSTED": ("The execution exceeded an approved resource limit.", False),
     "DEPENDENCY_UNAVAILABLE": ("A required runtime dependency is unavailable.", True),
     "DEADLINE_EXCEEDED": ("The execution deadline was exceeded.", True),
     "AUTHORIZATION_FAILED": ("Execution authorization failed.", False),

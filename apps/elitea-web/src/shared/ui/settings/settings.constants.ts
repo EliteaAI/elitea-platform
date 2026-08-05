@@ -1,0 +1,14 @@
+/**
+ * Layout constants for the Settings page. Ported from
+ * `apps/elitea-ui/src/[fsd]/features/settings/lib/constants/layout.constants.js`.
+ */
+export const SETTINGS_LAYOUT = {
+  DRAWER_WIDTH: '13.75rem',
+  SIDEBAR_COLLAPSED_WIDTH: '4rem',
+  CONTENT_PADDING: '2rem',
+  HEADER_HEIGHT: '4rem',
+  SECTION_SPACING: '1.5rem',
+  ITEM_HEIGHT: '2.75rem',
+  GROUP_SPACING: '2rem',
+  TRANSITION_DURATION: '0.2s',
+} as const;

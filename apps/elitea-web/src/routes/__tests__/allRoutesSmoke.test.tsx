@@ -136,7 +136,8 @@ describe('all owned route patterns mount without crashing', () => {
       // `router.state.matches` containing an error match rather than a
       // thrown exception from `render()` in some configurations — assert
       // directly that nothing in the resolved match list is errored.
-      const erroredMatch = router.state.matches.find((match) => match.status === 'error');
+      type RM = { status?: string; error?: unknown };
+      const erroredMatch = (router.state.matches as RM[]).find((match) => match.status === 'error');
       expect(erroredMatch, `route at ${path} errored: ${JSON.stringify(erroredMatch?.error)}`).toBeUndefined();
     });
   }
