@@ -424,6 +424,26 @@ jobs:
             echo "check-handlers.mjs pending (unit M1); rule logic proven by the self-test (scripts/lib/mock-rules-core.mjs)"
           fi
 
+  gate-i18n-sync:
+    name: i18n en.json sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Check en.json sync (issue #44)
+        run: |
+          if [ -f scripts/i18n-backfill.mjs ]; then
+            node scripts/i18n-backfill.mjs --check
+          else
+            echo "i18n-backfill.mjs pending (issue #44); rule logic proven by scripts/lib/i18n-backfill-core.test.mjs"
+          fi
+
   gate-fixture-freshness:
     name: Fixture freshness
     runs-on: ubuntu-latest

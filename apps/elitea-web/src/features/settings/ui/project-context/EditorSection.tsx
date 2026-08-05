@@ -121,7 +121,7 @@ export const EditorSection = memo(function EditorSection({
         >
           {MAX_CHARS - content.length}{' '}
           {t('entities.projectContext.content.charactersLeft', 'characters left.')}
-          {limitReached && t('entities.projectContext.content.maxReached', ' You have reached the maximum character limit.')}
+          {limitReached && t('entities.projectContext.content.maxReached', 'You have reached the maximum character limit.')}
         </Typography>
       )}
     </Box>

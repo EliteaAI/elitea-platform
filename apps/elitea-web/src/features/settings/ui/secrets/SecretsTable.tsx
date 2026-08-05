@@ -269,7 +269,7 @@ export const SecretsTable = memo(function SecretsTable({
         />
         <Box sx={styles.pageInfo}>
           <Typography variant="bodySmall" color="text.secondary">
-            {t('entities.secret.table.pageInfo', `Page ${currentPage} of ${totalPages}`)}
+            {t('entities.secret.table.pageInfo', `Page ${currentPage} of ${totalPages}`, { currentPage, totalPages })}
           </Typography>
         </Box>
       </Box>
