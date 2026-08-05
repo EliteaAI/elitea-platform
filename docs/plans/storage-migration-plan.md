@@ -2999,6 +2999,65 @@ happened.
 cd services/elitea-main && go test ./internal/api/v2/eliteacore/ ./internal/api/oapiserver/ -race -run TestArtifactIcon -v > /tmp/s20b.log 2>&1; rc=$?; cat /tmp/s20b.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s20b.log && ! grep -q -- '--- SKIP' /tmp/s20b.log
 ```
 
+**No `elitea_storage.buckets`/`objects` metadata row for icons, unlike S20a's
+attachments.** A deliberate asymmetry, not an oversight: icons have no
+retention or per-project-quota requirement this plan names anywhere (unlike
+chat attachments' legacy `chat_bucket_retention_days`), so there is nothing
+S14's sweeper or S12's quota check would need to see. `iconBucket` is a bare
+`storage.ObjectStore.Put`/`Get`/`Delete` against a fixed `"icons"` bucket
+name (not per-project-policy-configurable like S20a's `attachment_bucket`
+field) keyed `{projectID}/{filename}` via `ObjectRef`'s own project
+namespacing — no Postgres involvement at all beyond what `UploadIcon`/
+`DeleteIcon` already did (clearing `icon_meta` off `application_versions`).
+
+**`DownloadIcon` is a standalone function, not a `*Handler` method — the
+auth-group scoping forced this, not style preference.** `coreHandler` (the
+real `eliteacore.Handler` instance `UploadIcon`/`DeleteIcon` are methods on)
+is constructed *inside* `newPrototypeCompatibilityRouter`'s
+`r.Group(func(r chi.Router) { r.Use(apimw.Auth(...)); ... })` closure — a
+Go closure-scoped local variable, not reachable outside it. The route this
+stage adds must sit *outside* that closure, alongside the two sibling
+static-icon routes (`/app/application_icon/*`, `/app/application_tool_icon/*`)
+already registered unauthenticated a few lines earlier in the same
+function, for the same reason: a browser `<img src="/icons/1/abc.png">`
+request carries no `Authorization` header, so gating this route behind the
+session/token auth middleware would make every uploaded icon unreachable
+again — the exact bug this stage exists to fix, reintroduced a different
+way. `eliteacore.DownloadIcon(store storage.ObjectStore) http.HandlerFunc`
+takes only the one dependency it needs and is constructed directly from
+`cfg.ObjectStore`, entirely independent of `coreHandler`.
+
+**Project ID validation quietly tightened as a side effect of switching to
+`storage.ObjectRef`.** The pre-existing `validIconPathSegment` check (any
+non-empty string without `/`, `\`, or a null byte, ≤255 chars) was written
+for a local-disk directory name and never required `projectID` to be
+numeric. `storage.NewObjectRef` requires `^[1-9][0-9]{0,17}$` — stricter,
+and now the authoritative check (kept `validIconPathSegment` in place too,
+as a cheap early-reject; `NewObjectRef`'s is what actually gates storage
+access). A non-numeric project ID was never a realistic case in practice
+(every other call site in this codebase already assumes a numeric project
+ID — S8/S9/S15/S20a all `strconv.ParseInt` it), so this is treated as a
+tightening that happens to fall out of the migration, not a scope item in
+its own right — flagged here rather than silently absorbed.
+
+**`UploadIcon`'s "no file" branch deliberately checks `h.store == nil` after
+the `FormFile` lookup, not before.** The pre-existing, still-relevant
+`TestUploadIcon` sends no file part at all and expects `{"ok": true, "url":
+""}` regardless of whether storage is configured — a first draft that
+checked `h.store` first broke it, caught immediately by running the
+existing suite before writing anything new. `DeleteIcon` similarly stays
+unconditionally `204` on any outcome (missing icon, unconfigured store,
+invalid path segment) — matching its exact pre-S20b behavior, not
+introducing a new error path for what was always a best-effort operation.
+
+**Full verify sweep green:** `gofmt`, `go build`, `go vet`, `task lint`, the
+literal Verify command above (7 `--- PASS`, 0 `--- SKIP`, handler-level
+against an in-memory fake — no infra dependency), the full pre-existing
+`internal/api/v2/eliteacore` suite (confirming `TestUploadIcon`/
+`TestDefaultIcons`/the three `ProjectIcon` stubs/etc. all still pass
+unchanged), and a full workspace `task test` with every emulator + a real
+Postgres attached (103 packages, zero failures).
+
 **S20c — Result-artifact attestation.** `elitea_runtime.index_result_artifacts`
 is documented as owned by "the future artifact upload data plane".
 `ArtifactVerifier` is a required production dependency, `VerifyDurable` returns

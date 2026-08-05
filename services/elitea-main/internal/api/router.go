@@ -401,6 +401,12 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	r.Handle("/app/application_icon/*", http.StripPrefix("/app/application_icon/", http.FileServer(http.Dir(iconDir))))
 	r.Handle("/app/application_tool_icon/*", http.StripPrefix("/app/application_tool_icon/", http.FileServer(http.Dir(toolIconDir))))
 
+	// S20b: serves what coreHandler.UploadIcon (mounted further below, S9
+	// object-store-backed) writes — public/unauthenticated for the same
+	// reason as the two routes above: a browser <img src="..."> carries no
+	// Authorization header.
+	r.Get("/icons/{projectID}/{filename}", v2core.DownloadIcon(cfg.ObjectStore))
+
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
 	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})
@@ -484,6 +490,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			coreHandler := v2core.NewHandler(
 				cfg.Pool,
 				v2core.WithPermissionResolver(permissionResolver),
+				v2core.WithObjectStore(cfg.ObjectStore),
 			)
 			if cfg.MCPSyncer != nil {
 				coreHandler.SetMCPSyncer(cfg.MCPSyncer)
