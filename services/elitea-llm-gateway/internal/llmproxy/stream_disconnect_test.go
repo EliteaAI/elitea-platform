@@ -303,7 +303,51 @@ func TestStreamDisconnect_MultimodalPayload_BillsZeroNotAnEstimate(t *testing.T)
 // taken, an abandoned stream is cut loose immediately instead of queueing (the
 // slot bounds open provider sockets, so queueing would defeat it) — and the
 // loss is metered with the saturation reason rather than dropped.
-func TestStreamDisconnect_DrainSaturated_MetersLoss(t *testing.T) {
+func TestStreamDisconnect_DrainSaturated_StillRecoversTheTrailer(t *testing.T) {
+	gate := allowGate()
+	events := newRecordingEvents()
+	calc := &fakeCostEstimator{inputRateNano: gateInputRateNano, outputRateNano: gateOutputRateNano}
+	// The trailer lands well inside SaturatedStreamGrace but far outside the
+	// grace=0 the fail-open version used: this test FAILS if saturation ever
+	// goes back to cancelling immediately.
+	router := &ctxHonouringRouter{
+		preamble:     []*schemas.BifrostStreamChunk{chatDelta("c1", "hello "), chatDelta("c2", "world")},
+		trailer:      chatTrailer(11, 22),
+		trailerDelay: 100 * time.Millisecond,
+	}
+	h := NewHandler(router, nil, nil,
+		WithBudgetGate(gate, calc),
+		WithOpsEventPublisher(events),
+		WithStreamGrace(5*time.Second),
+		WithStreamDrainLimit(1))
+
+	// Occupy the only slot (global limit 1 ⇒ per-project limit 1 too).
+	if !h.drainLimit.acquire("99") {
+		t.Fatal("could not take the single drain slot")
+	}
+
+	start := time.Now()
+	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true))
+	gate.waitForUpdate(t)
+	h.DrainBilling()
+
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("saturated drain waited %v — it must fall back to the SHORT grace, not the full one", elapsed)
+	}
+	if got := gate.updateCalls.Load(); got != 1 {
+		t.Fatalf("UpdateUsage calls = %d, want 1 — saturation must fall back to a short grace, never "+
+			"to grace=0: cutting the stream immediately destroys a trailer that was 100ms away and "+
+			"reopens the issue-#9 bypass", got)
+	}
+	if got := gate.getLastUpdateCostNano(); got != gateWantCostNano {
+		t.Errorf("billed %d nano-USD, want %d", got, gateWantCostNano)
+	}
+}
+
+// TestStreamDisconnect_DrainSaturated_MetersLossWhenGraceTooShort: when the
+// short grace is genuinely not enough, the loss is still reported — and tagged
+// so operators can tell "we were full" from "full AND we lost the trailer".
+func TestStreamDisconnect_DrainSaturated_MetersLossWhenGraceTooShort(t *testing.T) {
 	gate := allowGate()
 	events := newRecordingEvents()
 	router := newSilentRouter(chatDelta("c1", "hello"), chatDelta("c2", " world"))
@@ -313,25 +357,24 @@ func TestStreamDisconnect_DrainSaturated_MetersLoss(t *testing.T) {
 		WithStreamGrace(5*time.Second),
 		WithStreamDrainLimit(1))
 
-	// Occupy the only slot (global limit 1 ⇒ per-project limit 1 too).
-	if !h.drainLimit.acquire("30") {
+	if !h.drainLimit.acquire("99") {
 		t.Fatal("could not take the single drain slot")
 	}
 
-	start := time.Now()
-	w := &failAfterWriter{okWrites: 1}
-	h.Chat(w, chatReqWithProject(t, "30", true))
+	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true))
 	events.waitForEvent(t)
 	h.DrainBilling()
 
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("saturated drain waited %v — it must not hold the stream for the full grace", elapsed)
-	}
 	if got := gate.updateCalls.Load(); got != 0 {
 		t.Fatalf("UpdateUsage calls = %d, want 0", got)
 	}
-	if p := events.decodeUnbilled(t); !strings.HasPrefix(p.DrainOutcome, drainOutcomeSaturated) {
+	p := events.decodeUnbilled(t)
+	if !strings.HasPrefix(p.DrainOutcome, drainOutcomeSaturated) {
 		t.Errorf("drain_outcome = %q, want a %q outcome", p.DrainOutcome, drainOutcomeSaturated)
+	}
+	if !strings.Contains(p.DrainOutcome, drainOutcomeGraceExpired) {
+		t.Errorf("drain_outcome = %q, want it to also carry %q — saturation alone does not tell an "+
+			"operator whether the short grace was actually insufficient", p.DrainOutcome, drainOutcomeGraceExpired)
 	}
 }
 
@@ -771,17 +814,53 @@ func TestUnbilledStream_ResponsesDialectCountsObservedBytes(t *testing.T) {
 // TestUnbilledStream_UnresolvableProjectIsNotPublished: the loss event carries a
 // normalised project id, like every other money path. An unattributable loss is
 // logged, not published with a raw header value in the subject.
-func TestUnbilledStream_UnresolvableProjectIsNotPublished(t *testing.T) {
-	events := newRecordingEvents()
-	h := NewHandler(&fakeRouter{}, nil, nil, WithOpsEventPublisher(events))
+func TestUnbilledStream_ProjectIDNormalisation(t *testing.T) {
+	cases := []struct {
+		name      string
+		projectID string
+		wantOut   string // "" = must not publish
+	}{
+		{"unparsable", "not-a-number", ""},
+		{"empty", "", ""},
+		{"zero is not a project", "0", ""},
+		{"negative", "-7", ""},
+		{"injection attempt in the subject token", "42.events.>", ""},
+		{"plain", "42", "42"},
+		{"normalised", "042", "42"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			events := newRecordingEvents()
+			h := NewHandler(&fakeRouter{}, nil, nil, WithOpsEventPublisher(events))
 
-	h.publishUnbilledStreamEvent("not-a-number", "openai", "gpt-4o",
-		lossReasonWriteError, drainOutcomeGraceExpired, 128)
+			h.publishUnbilledStreamEvent(tc.projectID, "openai", "gpt-4o",
+				lossReasonWriteError, drainOutcomeGraceExpired, 128)
 
-	events.mu.Lock()
-	defer events.mu.Unlock()
-	if len(events.events) != 0 {
-		t.Errorf("published %d event(s) for an unresolvable project id; want 0", len(events.events))
+			events.mu.Lock()
+			defer events.mu.Unlock()
+			if tc.wantOut == "" {
+				if len(events.events) != 0 {
+					t.Fatalf("published %d event(s) for project %q; want 0 — an unattributable loss "+
+						"is logged, never published with a raw header value", len(events.events), tc.projectID)
+				}
+				return
+			}
+			if len(events.events) != 1 {
+				t.Fatalf("published %d event(s), want 1", len(events.events))
+			}
+			var env softAlertEnvelope
+			if err := json.Unmarshal(events.events[0], &env); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
+			}
+			var p unbilledStreamPayload
+			if err := json.Unmarshal(env.Payload, &p); err != nil {
+				t.Fatalf("unmarshal payload: %v", err)
+			}
+			if p.ProjectID != tc.wantOut {
+				t.Errorf("project_id = %q, want %q (normalised through parseProjectID like every "+
+					"sibling money path)", p.ProjectID, tc.wantOut)
+			}
+		})
 	}
 }
 
@@ -828,4 +907,317 @@ func TestDrainLimiter_GlobalCap(t *testing.T) {
 	if inUse, total, per := l.snapshot(); inUse != 3 || total != 3 || per != 1 {
 		t.Errorf("snapshot = (%d, %d, %d), want (3, 3, 1)", inUse, total, per)
 	}
+}
+
+// TestAnthropicDialect_PartialUsageIsNotAuthoritative is the regression guard
+// for the silent-underbill defect found in review round 2.
+//
+// bifrost maps Anthropic's message_start to response.created, and that event
+// already carries usage (input_tokens, output_tokens:1). Accepting it made
+// gotUsage true from the FIRST chunk, so a mid-stream disconnect billed
+// "input + 1 token" as authoritative AND suppressed the loss event — an
+// invisible underbill across the whole dialect, strictly worse than the visible
+// loss issue #9 set out to fix. Only the terminal event's usage counts.
+func TestAnthropicDialect_PartialUsageIsNotAuthoritative(t *testing.T) {
+	gate := allowGate()
+	events := newRecordingEvents()
+	calc := &fakeCostEstimator{inputRateNano: gateInputRateNano, outputRateNano: gateOutputRateNano}
+
+	// message_start-shaped: usage present, but on a NON-terminal event.
+	partial := &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCreated,
+		Response: &schemas.BifrostResponsesResponse{
+			ID:    strPtr("resp-start"),
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 5000, OutputTokens: 1},
+		},
+	}}
+	h := NewHandler(newSilentRouter(partial, responsesDelta("hello")), nil, nil,
+		WithBudgetGate(gate, calc),
+		WithOpsEventPublisher(events),
+		WithStreamGrace(50*time.Millisecond))
+
+	h.Messages(&failAfterWriter{okWrites: 1}, messagesStreamReqWithProject(t, "30"))
+	events.waitForEvent(t)
+	h.DrainBilling()
+
+	if got := gate.updateCalls.Load(); got != 0 {
+		t.Fatalf("UpdateUsage calls = %d, want 0 — mid-stream usage is NOT the authoritative trailer; "+
+			"billing it understates output and hides that we did", got)
+	}
+	if p := events.decodeUnbilled(t); p.Reason != lossReasonWriteError {
+		t.Errorf("reason = %q, want %q — the loss must stay visible, not be masked by partial usage",
+			p.Reason, lossReasonWriteError)
+	}
+}
+
+// TestAnthropicDialect_TerminalUsageStillBills is the other half: gating on the
+// terminal event must not stop a real trailer from billing.
+func TestAnthropicDialect_TerminalUsageStillBills(t *testing.T) {
+	gate := allowGate()
+	events := newRecordingEvents()
+	calc := &fakeCostEstimator{inputRateNano: gateInputRateNano, outputRateNano: gateOutputRateNano}
+	h := NewHandler(&closingResponsesRouter{chunks: []*schemas.BifrostStreamChunk{
+		responsesDelta("hello"), responsesTrailer(11, 22),
+	}}, nil, nil,
+		WithBudgetGate(gate, calc),
+		WithOpsEventPublisher(events),
+		WithStreamGrace(2*time.Second))
+
+	h.Messages(&failAfterWriter{okWrites: 1}, messagesStreamReqWithProject(t, "30"))
+	gate.waitForUpdate(t)
+	h.DrainBilling()
+
+	if got := gate.updateCalls.Load(); got != 1 {
+		t.Fatalf("UpdateUsage calls = %d, want 1", got)
+	}
+	if got := gate.getLastUpdateCostNano(); got != gateWantCostNano {
+		t.Errorf("billed %d, want %d", got, gateWantCostNano)
+	}
+}
+
+// closingResponsesRouter emits its chunks and closes, honouring ctx.Done().
+type closingResponsesRouter struct {
+	fakeRouter
+	chunks []*schemas.BifrostStreamChunk
+}
+
+func (r *closingResponsesRouter) ResponsesStreamRequest(ctx *schemas.BifrostContext, _ *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ch := make(chan *schemas.BifrostStreamChunk)
+	go func() {
+		defer close(ch)
+		for _, c := range r.chunks {
+			select {
+			case ch <- c:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch, nil
+}
+
+// TestBillingRefused_OnlyAlarmsOnRealDrops: a handler with no budget gate must
+// not publish billing_refused on every clean stream. That false alarm would
+// desensitise operators to the one signal that detects real issue-#9 loss.
+func TestBillingRefused_OnlyAlarmsOnRealDrops(t *testing.T) {
+	events := newRecordingEvents()
+	// No WithBudgetGate: the composition root produces exactly this whenever
+	// the pool is nil or governance assembly fails.
+	h := NewHandler(&fakeRouter{}, nil, nil, WithOpsEventPublisher(events))
+
+	req := chatReqWithProject(t, "30", true)
+	ctx, sc, ok := h.newStreamContext(httptest.NewRecorder(), req)
+	if !ok {
+		t.Fatal("newStreamContext rejected the request")
+	}
+	defer sc.cancel()
+
+	s := h.newChatSettler("streamOpenAI", ctx, sc, "openai", "gpt-4o", nil)
+	s.in, s.out, s.gotUsage = 11, 22, true
+	s.report(lossReasonCleanCloseNoTrai, drainOutcomeInline)
+
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	if len(events.events) != 0 {
+		t.Errorf("published %d event(s) with no budget gate wired; want 0 — 'nothing to bill' is not "+
+			"a dropped payment and must not raise the loss alarm", len(events.events))
+	}
+}
+
+// TestShutdown_DisconnectDuringHTTPDrainIsBilled covers the window the
+// composition root ACTUALLY creates, which the first version of this guard
+// missed: StopStreamGrace fires first, and the stream then dies during
+// srv.ShutdownHTTP's drain window. Every drain on the shutdown path is born
+// here, so if tracking keys off the phase-1 flag they are all skipped by
+// DrainBilling's wait and billing closes underneath them.
+//
+// The earlier test started the stream BEFORE phase 1 — the one ordering
+// production never produces — so it passed against code that lost the money
+// 5/5 runs in a probe. Ordering matters more than the assertion here.
+func TestShutdown_DisconnectDuringHTTPDrainIsBilled(t *testing.T) {
+	gate := allowGate()
+	events := newRecordingEvents()
+	calc := &fakeCostEstimator{inputRateNano: gateInputRateNano, outputRateNano: gateOutputRateNano}
+	router := &lingeringRouter{chunks: []*schemas.BifrostStreamChunk{
+		chatDelta("c1", "hello "), chatTrailer(11, 22),
+	}}
+	h := NewHandler(router, nil, nil,
+		WithBudgetGate(gate, calc),
+		WithOpsEventPublisher(events),
+		WithStreamGrace(MaxStreamGrace))
+
+	h.StopStreamGrace()                                                      // phase 1
+	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true)) // dies during the HTTP drain
+	h.DrainBilling()                                                         // phase 2
+
+	if got := gate.updateCalls.Load(); got != 1 {
+		t.Fatalf("UpdateUsage calls = %d, want 1 — a stream that disconnects during the HTTP drain "+
+			"still recovers its trailer, and that spend must be billed, not dropped", got)
+	}
+	if got := gate.getLastUpdateCostNano(); got != gateWantCostNano {
+		t.Errorf("billed %d nano-USD, want %d", got, gateWantCostNano)
+	}
+}
+
+// The four tests below pin round-1 fixes that were mutation-verified as
+// DELETABLE with the whole suite still green. A defensive fix with no failing
+// input is indistinguishable from dead code to the next person editing it.
+
+// TestNextChunk_ClosedChannelWinsOverClientGone: when the provider closes and
+// the client hangs up at the same instant, a bare select would pick either at
+// random — mislabelling a completed stream as a disconnect and burning a drain
+// slot on an already-closed channel.
+func TestNextChunk_ClosedChannelWinsOverClientGone(t *testing.T) {
+	gone := make(chan struct{})
+	close(gone)
+
+	for i := range 200 {
+		ch := make(chan *schemas.BifrostStreamChunk)
+		close(ch)
+		if _, exit := nextChunk(ch, gone); exit != streamExitChanDone {
+			t.Fatalf("iteration %d: exit = %v, want streamExitChanDone — a closed provider channel is "+
+				"a clean completion even when the client is also gone", i, exit)
+		}
+	}
+	// A live channel with a departed client must still report the disconnect.
+	live := make(chan *schemas.BifrostStreamChunk)
+	if _, exit := nextChunk(live, gone); exit != streamExitClient {
+		t.Errorf("exit = %v, want streamExitClient when only the client is gone", exit)
+	}
+}
+
+// TestSSELoop_PanicDoesNotLeakTheProviderStream: with the context decoupled
+// from the request, nothing else will ever cancel it, so a panic in the loop
+// leaks the provider stream (and its socket) forever.
+func TestSSELoop_PanicDoesNotLeakTheProviderStream(t *testing.T) {
+	router := &panickingRouter{}
+	h := NewHandler(router, nil, nil, WithStreamGrace(DefaultStreamGrace))
+
+	req := chatReqWithProject(t, "30", true)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected the panic to propagate to the caller")
+			}
+		}()
+		h.Chat(&panicOnWrite{}, req)
+	}()
+
+	select {
+	case <-router.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider context was never cancelled after a panic — the stream is leaked for the " +
+			"lifetime of the process")
+	}
+}
+
+type panickingRouter struct {
+	fakeRouter
+	cancelled chan struct{}
+	once      sync.Once
+}
+
+func (r *panickingRouter) ChatCompletionStreamRequest(ctx *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	r.once.Do(func() { r.cancelled = make(chan struct{}) })
+	ch := make(chan *schemas.BifrostStreamChunk, 1)
+	ch <- chatDelta("c1", "boom")
+	go func() {
+		<-ctx.Done()
+		close(r.cancelled)
+	}()
+	return ch, nil
+}
+
+type panicOnWrite struct{ hdr http.Header }
+
+func (w *panicOnWrite) Header() http.Header {
+	if w.hdr == nil {
+		w.hdr = http.Header{}
+	}
+	return w.hdr
+}
+func (w *panicOnWrite) Write([]byte) (int, error) { panic("writer exploded") }
+func (w *panicOnWrite) WriteHeader(int)           {}
+func (w *panicOnWrite) Flush()                    {}
+
+// TestCheckBudget_BoundedOnTheDetachedContext: the streaming path hands
+// checkBudget a context.WithoutCancel-derived context, so without an explicit
+// timeout a stalled budget store parks the handler goroutine forever — there is
+// no client cancellation left to unwind it.
+func TestCheckBudget_BoundedOnTheDetachedContext(t *testing.T) {
+	if budgetGateTimeout <= 0 {
+		t.Fatal("budgetGateTimeout must be positive or the gate is unbounded")
+	}
+	gate := &deadlineObservingChecker{seen: make(chan bool, 1)}
+	h := NewHandler(&fakeRouter{}, nil, nil,
+		WithBudgetGate(gate, &fakeCostEstimator{totalNano: 1}))
+
+	req := chatReqWithProject(t, "30", true)
+	ctx, sc, ok := h.newStreamContext(httptest.NewRecorder(), req)
+	if !ok {
+		t.Fatal("newStreamContext rejected the request")
+	}
+	defer sc.cancel()
+
+	if ctxDeadline, has := ctx.Deadline(); has {
+		t.Fatalf("the stream context itself must stay deadline-free (§9.5); got %v", ctxDeadline)
+	}
+	h.checkBudget(httptest.NewRecorder(), ctx, "openai", "gpt-4o", 0)
+
+	select {
+	case hasDeadline := <-gate.seen:
+		if !hasDeadline {
+			t.Error("CheckBudget received a context with NO deadline — a stalled budget store would " +
+				"park this streaming handler goroutine forever")
+		}
+	default:
+		t.Fatal("CheckBudget was never called")
+	}
+}
+
+type deadlineObservingChecker struct {
+	fakeBudgetChecker
+	seen chan bool
+}
+
+func (d *deadlineObservingChecker) CheckBudget(ctx context.Context, _ int, _, _ string, _, _ int64) (failmode.Decision, error) {
+	_, has := ctx.Deadline()
+	select {
+	case d.seen <- has:
+	default:
+	}
+	return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
+}
+
+// TestDrain_ShutdownShrinksTheHardBackstop: once shutdown starts, a wedged
+// provider must cost ~drainShutdownTimeout of the pod's termination grace, not
+// the full grace + drainHardTimeout.
+func TestDrain_ShutdownShrinksTheHardBackstop(t *testing.T) {
+	if drainShutdownTimeout >= drainHardTimeout {
+		t.Fatalf("drainShutdownTimeout (%v) must be well under drainHardTimeout (%v) or shutdown "+
+			"inherits the full backstop", drainShutdownTimeout, drainHardTimeout)
+	}
+	gate := allowGate()
+	h := NewHandler(&wedgedRouter{}, nil, nil,
+		WithBudgetGate(gate, &fakeCostEstimator{totalNano: 1_000}),
+		WithStreamGrace(MaxStreamGrace))
+
+	h.Chat(&failAfterWriter{okWrites: 1}, chatReqWithProject(t, "30", true))
+
+	start := time.Now()
+	h.DrainBilling()
+	if elapsed := time.Since(start); elapsed > drainShutdownTimeout+2*time.Second {
+		t.Errorf("DrainBilling took %v against a wedged provider; the hard backstop must shrink to "+
+			"~%v once shutdown starts", elapsed, drainShutdownTimeout)
+	}
+}
+
+// wedgedRouter never closes its channel and ignores cancellation entirely.
+type wedgedRouter struct{ fakeRouter }
+
+func (r *wedgedRouter) ChatCompletionStreamRequest(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ch := make(chan *schemas.BifrostStreamChunk, 2)
+	ch <- chatDelta("c1", "hello")
+	ch <- chatDelta("c2", "world")
+	return ch, nil // never closed, never cancelled
 }

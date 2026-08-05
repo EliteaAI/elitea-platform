@@ -218,28 +218,60 @@ func main() {
 		slog.Info("shutdown signal received")
 	}
 
-	// Phase 1 (issue #9 / gateway-review): tell in-flight stream drains to stop
-	// waiting for provider usage trailers BEFORE the HTTP drain, so the stream
-	// grace can never extend the pod's termination window. Billing stays OPEN.
-	handler.StopStreamGrace()
-
-	// Drain in-flight streams (§9.5: ≥150s ceiling applied inside Shutdown).
-	// This must run BEFORE the billing drain: SSE handlers are still live here,
-	// and a stream that settles during this window — including a drain that
-	// just recovered an authoritative usage trailer — must still be able to
-	// bill. Draining billing first set billingClosing while handlers were
-	// running, so recovered spend was refused and dropped on every deploy.
-	if err := srv.Shutdown(context.Background()); err != nil {
+	if err := shutdownSequence(context.Background(), handler, srv, handler, govStore); err != nil {
 		slog.Error("gateway shutdown error", "err", err)
 		os.Exit(1)
 	}
+}
 
-	// Fix round-3 #1/#2: drain billing goroutines before the governance store
-	// drains its persist goroutines, and both before the pool closes.
-	// Extracted into drainForShutdown so the WIRING is unit-testable — a unit
-	// test of Drain() in isolation does NOT catch a future removal of this call
-	// (that "built-but-not-wired" gap recurred three times in review).
-	drainForShutdown(handler, govStore)
+// The four seams shutdownSequence drives. They are interfaces so the ordering
+// can be asserted by executing it (TestShutdownSequence), not by reading
+// main.go's source — the textual guard that preceded this could not see an
+// os.Exit sitting between two calls, and missed a live regression.
+type (
+	streamGraceStopper interface{ StopStreamGrace() }
+	httpShutdowner     interface {
+		ShutdownHTTP(context.Context) error
+		Close()
+	}
+)
+
+// shutdownSequence runs the ONE ordering in which no spend is lost:
+//
+//  1. StopStreamGrace  — in-flight stream drains stop waiting for provider
+//     usage trailers, so the stream grace cannot extend the pod's termination
+//     window. Billing stays OPEN.
+//  2. ShutdownHTTP     — the request surface quiesces and live SSE streams
+//     settle. Billing is still open and NATS is still up, so a drain that
+//     recovers a usage trailer in this window can actually bill it.
+//  3. drainForShutdown — billing goroutines, then the governance store's
+//     persist goroutines.
+//  4. Close            — NATS last, once no further increment can be issued.
+//
+// Every step earned its place from a reproduced money loss; see
+// DECISIONS.md 2026-08-05. A failed HTTP shutdown does NOT abort the sequence:
+// a drain that timed out is when pending spend is most likely, not least. The
+// error is returned so the caller can still exit non-zero.
+func shutdownSequence(
+	ctx context.Context,
+	grace streamGraceStopper,
+	srv httpShutdowner,
+	h billingDrainer,
+	gov govDrainer,
+) error {
+	if grace != nil {
+		grace.StopStreamGrace()
+	}
+	var err error
+	if srv != nil {
+		// §9.5: ≥150s ceiling applied inside ShutdownHTTP.
+		err = srv.ShutdownHTTP(ctx)
+	}
+	drainForShutdown(h, gov)
+	if srv != nil {
+		srv.Close()
+	}
+	return err
 }
 
 // buildGovernance assembles the full governance engine (failmode primitives +
@@ -363,9 +395,10 @@ type govDrainer interface{ Drain() }
 //  1. billing goroutines (they may still call the store's UpdateUsage), then
 //  2. the governance store's persist goroutines.
 //
-// Must run AFTER srv.Shutdown() (so streams settling in the HTTP drain window
-// can still bill — issue #9 / gateway-review) and BEFORE the deferred
-// pool.Close(). gov may be nil when budget enforcement is disabled.
+// Must run between srv.ShutdownHTTP() (so streams settling in the HTTP drain
+// window can still bill) and srv.Close() (so increments still have a live NATS
+// client) — see shutdownSequence. gov may be nil when budget enforcement is
+// disabled.
 func drainForShutdown(h billingDrainer, gov govDrainer) {
 	if h != nil {
 		h.DrainBilling()

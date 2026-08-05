@@ -213,14 +213,44 @@ func chatUsageFromChunk(c *schemas.BifrostStreamChunk) (int64, int64, bool) {
 	return in, out, true
 }
 
-// responsesUsageFromChunk reads usage from the Responses-API dialect (also the
-// Anthropic /v1/messages framing, which consumes the same chunk stream): the
-// response.completed event carries Response.Usage.
+// isTerminalResponsesEvent reports whether a Responses-API stream event is the
+// one that carries FINAL usage.
+//
+// This gate is load-bearing. bifrost maps Anthropic's message_start to
+// response.created, and message_start already carries usage — input_tokens
+// plus output_tokens:1 (providers/anthropic/anthropic.go:978-982, and the
+// BifrostContextKeyStreamAccumulatedUsage handle registered at :1524 exists
+// precisely so a mid-stream cancel can see it). Accepting usage from any event
+// therefore made gotUsage true from chunk #1 on /llm/v1/messages: a mid-stream
+// disconnect billed "input + 1 output token" AS AUTHORITATIVE and, because
+// gotUsage was set, suppressed the budget.unbilled_stream event entirely.
+// That converts a visible, alarmable loss into an invisible underbill across
+// the whole dialect — strictly worse than the bug issue #9 set out to fix.
+func isTerminalResponsesEvent(t schemas.ResponsesStreamResponseType) bool {
+	switch t {
+	case schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeIncomplete,
+		schemas.ResponsesStreamResponseTypeFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// responsesUsageFromChunk reads FINAL usage from the Responses-API dialect
+// (also the Anthropic /v1/messages framing, which consumes the same chunk
+// stream): only the terminal event's usage is authoritative. Partial,
+// mid-stream usage is deliberately ignored — billing it would understate the
+// output tokens while masking the fact that we did (see
+// isTerminalResponsesEvent).
 func responsesUsageFromChunk(c *schemas.BifrostStreamChunk) (int64, int64, bool) {
 	if c == nil || c.BifrostResponsesStreamResponse == nil {
 		return 0, 0, false
 	}
 	sr := c.BifrostResponsesStreamResponse
+	if !isTerminalResponsesEvent(sr.Type) {
+		return 0, 0, false
+	}
 	if sr.Response == nil || sr.Response.Usage == nil {
 		return 0, 0, false
 	}
@@ -356,7 +386,22 @@ func (s *streamSettler) settleClean() {
 	}
 	s.settled = true
 	s.sc.cancel()
-	s.report(lossReasonCleanCloseNoTrai, drainOutcomeInline)
+	if s.gotUsage {
+		// Billing is already async (spawnBillingGoroutine); nothing blocks here.
+		s.report(lossReasonCleanCloseNoTrai, drainOutcomeInline)
+		return
+	}
+	// The loss path publishes to NATS synchronously (up to the 150ms flush
+	// bound). The client already has its terminal frame, so do not hang the
+	// tail of the request on it — hand it to a tracked goroutine.
+	if !s.h.trackDrain() {
+		s.report(lossReasonCleanCloseNoTrai, drainOutcomeInline)
+		return
+	}
+	go func() {
+		defer s.h.drainWg.Done()
+		s.report(lossReasonCleanCloseNoTrai, drainOutcomeInline)
+	}()
 }
 
 // settleEarly takes ownership of a still-open channel after an early exit and
@@ -419,14 +464,12 @@ func (s *streamSettler) settleEarly(reason string) {
 	}
 
 	// Track the drain on drainWg — NOT billingWg — so DrainBilling can wait for
-	// drains to settle before it closes billing (same Add-after-Wait guard
-	// shape as spawnBillingGoroutine, against drainsClosing). A drain spawned
-	// after phase 1 runs untracked: it was just cancelled, so it exits
-	// promptly, and its report() still bills while billing remains open.
-	tracked := s.h.drainsClosing.Load() == 0
-	if tracked {
-		s.h.drainWg.Add(1)
-	}
+	// drains to settle before it closes billing. Tracking is unconditional
+	// until the drain group actually closes in phase 2: a drain spawned during
+	// the HTTP-drain window (which is EVERY drain on the shutdown path, since
+	// phase 1 runs first) must be waited on, or billing closes underneath it
+	// and its recovered spend is dropped.
+	tracked := s.h.trackDrain()
 	go func() {
 		defer func() {
 			if tracked {
@@ -470,6 +513,7 @@ func (s *streamSettler) drain(grace time.Duration) string {
 
 	closingC := s.h.drainClosing
 	graceExpired := false
+	shutdownCut := false
 
 	for {
 		select {
@@ -480,10 +524,17 @@ func (s *streamSettler) drain(grace time.Duration) string {
 				// but only the first means the grace was sufficient. Collapsing
 				// them would make grace_expired unreportable and hide a grace
 				// that is too short for real traffic.
-				if graceExpired {
+				switch {
+				case shutdownCut:
+					// Truncated by graceful shutdown, not by a short grace.
+					// Collapsing the two would make shutdown truncation and a
+					// too-short grace identical on an operator's dashboard.
+					return drainOutcomeShuttingDown
+				case graceExpired:
 					return drainOutcomeGraceExpired
+				default:
+					return drainOutcomeChannelClosed
 				}
-				return drainOutcomeChannelClosed
 			}
 			s.observe(chunk)
 		case <-graceC:
@@ -498,6 +549,7 @@ func (s *streamSettler) drain(grace time.Duration) string {
 			// grace at most drainShutdownTimeout, not the full grace+backstop.
 			closingC = nil // a closed channel stays ready; do not spin on it
 			graceC = nil
+			shutdownCut = true
 			hard.Reset(drainShutdownTimeout)
 			s.sc.cancel()
 		case <-hard.C:
@@ -518,8 +570,15 @@ func (s *streamSettler) report(reason, outcome string) {
 		// happens the spend is gone, and it must NOT disappear as a lone WARN:
 		// it is exactly the loss this event exists to make alarmable
 		// (gateway-review blocker 1, reproduced on the deploy path).
-		if s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID) {
+		switch s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID) {
+		case billBilled:
 			return
+		case billNotBillable:
+			// Nothing was billable in the first place (no gate wired, no
+			// resolvable project, zero-priced model). Not a loss — do NOT
+			// alarm, or the one signal that detects real loss drowns.
+			return
+		case billRefused:
 		}
 		s.h.logger.Warn(s.loop+": provider usage recovered but the billing increment was refused; spend dropped",
 			"provider", s.provider, "model", s.model, "project_id", s.projectID,

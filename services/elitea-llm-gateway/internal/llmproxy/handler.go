@@ -90,9 +90,21 @@ type Handler struct {
 	// must be waited on in order: drains have to settle (and spawn their
 	// billing goroutines) BEFORE billing is closed, or a drain that recovered
 	// an authoritative trailer has its increment refused — the deploy-time
-	// spend loss found in review. drainsClosing is the Add-after-Wait guard for
-	// this group, set by StopStreamGrace.
-	drainWg       sync.WaitGroup
+	// spend loss found in review.
+	//
+	// drainMu/drainWaiting are the Add-after-Wait guard. They are deliberately
+	// a MUTEX rather than an atomic: the check and the Add must be one step
+	// with respect to DrainBilling's Wait, and drainWaiting must flip in phase
+	// 2 (DrainBilling), NOT in phase 1 (StopStreamGrace). An earlier cut keyed
+	// tracking off the phase-1 flag, which left every drain spawned during the
+	// HTTP-drain window untracked — so Wait() skipped exactly the drains
+	// shutdown was supposed to protect (reproduced: 0 UpdateUsage calls).
+	drainWg      sync.WaitGroup
+	drainMu      sync.Mutex
+	drainWaiting bool
+
+	// drainsClosing tells a NEW drain not to wait out the full grace once
+	// shutdown has begun. It governs the GRACE only — never tracking.
 	drainsClosing atomic.Int32
 
 	// drainClosing is closed by DrainBilling so a detached drain stops waiting
@@ -268,14 +280,31 @@ func (h *Handler) DrainBilling() {
 	// Idempotent: a caller that skipped phase 1 still gets the old semantics.
 	h.StopStreamGrace()
 
-	// Wait for stream drains BEFORE closing billing. They have already been
-	// told to stop waiting for trailers, so this is bounded by
+	// Close the drain group and wait for it BEFORE closing billing. Drains have
+	// already been told to stop waiting for trailers, so this is bounded by
 	// drainShutdownTimeout — and it is what lets a drain holding recovered
 	// provider usage spawn its billing goroutine instead of being refused.
+	h.drainMu.Lock()
+	h.drainWaiting = true
+	h.drainMu.Unlock()
 	h.drainWg.Wait()
 
 	h.billingClosing.Store(1)
 	h.billingWg.Wait()
+}
+
+// trackDrain registers a detached drain with the drain group, atomically with
+// respect to DrainBilling's Wait. Returns false once the group is closed, in
+// which case the caller must run untracked (it has already been cancelled, so
+// it settles promptly).
+func (h *Handler) trackDrain() bool {
+	h.drainMu.Lock()
+	defer h.drainMu.Unlock()
+	if h.drainWaiting {
+		return false
+	}
+	h.drainWg.Add(1)
+	return true
 }
 
 // discard is an io.Writer that drops everything; used for the nil-logger case.

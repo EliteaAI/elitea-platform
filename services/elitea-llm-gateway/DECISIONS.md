@@ -6,6 +6,14 @@ records a decision so it is not re-litigated on every PR. Items marked **[human
 decision]** are risk/policy calls an autonomous agent must NOT change without sign-off.
 
 ## Money
+- **Only the TERMINAL stream event carries authoritative usage.** bifrost maps
+  Anthropic's `message_start` to `response.created`, and that event already
+  carries usage (input tokens, `output_tokens: 1`). Accepting usage from any
+  event made a mid-stream disconnect bill "input + 1 token" as authoritative AND
+  suppress the `budget.unbilled_stream` loss event — an invisible underbill
+  across the whole `/llm/v1/messages` dialect, strictly worse than the visible
+  loss issue #9 set out to fix. `responsesUsageFromChunk` therefore accepts
+  usage only from `response.completed` / `.incomplete` / `.failed`.
 - **int64 nano-USD, no float on the money path.** Rationale: float rounding drift
   across the incr → delta → Postgres write-behind hops corrupts billing; integers
   are exact. Prices are per-1M tokens (a per-1k reading is a 1000× overcharge).
@@ -62,8 +70,26 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   about to close anyway; refusing new streaming admissions instead (fail closed
   at the gate) turns a billing edge case into an availability event, which is
   the worse trade at this severity.
-- **[human decision] 2026-08-05 — Shutdown is a two-phase drain, and a refused
-  billing increment is metered.** *Finding:* `drainForShutdown` ran BEFORE
+- **[human decision] 2026-08-05 — Shutdown is a THREE-phase sequence over a
+  split server lifecycle.** *Finding (round 2):* the two-phase version below was
+  still wrong in sequence. `srv.Shutdown` closed NATS as its last step, so
+  moving the billing drain after it sent every increment to a dead connection
+  (diverted to the outage-delta path, which recovery only sweeps on a breaker
+  CLOSED transition that never fires while NATS is healthy); the `os.Exit(1)` on
+  a shutdown error then sat between the two, skipping the drains exactly when
+  they matter; and drains spawned after phase 1 were left off the wait group, so
+  every drain on the shutdown path was skipped (reproduced: 0 increments, 5/5).
+  *Decision:* split `Server.Shutdown` into `ShutdownHTTP` (HTTP + core, NATS
+  stays UP) and `Close` (NATS), and run
+  `StopStreamGrace → ShutdownHTTP → DrainBilling → govStore.Drain → Close`.
+  Billing is open and NATS is live throughout the window in which streams
+  actually settle. A failed HTTP shutdown no longer aborts the drains.
+  `terminationGracePeriodSeconds` is raised to 180 so the post-HTTP phases have
+  headroom over the 150 s drain budget. `TestShutdownSequence` asserts the
+  ORDER BY EXECUTING it — the previous textual guard compared source positions
+  and could not see the `os.Exit` between two calls.
+- **[human decision] 2026-08-05 — (superseded by the entry above) Shutdown is a
+  two-phase drain, and a refused billing increment is metered.** *Finding:* `drainForShutdown` ran BEFORE
   `srv.Shutdown`, so `billingClosing` was set while SSE handlers were still
   live; a drain that had recovered the authoritative trailer had its increment
   refused and — because usage WAS known — no loss event was emitted either.
@@ -75,7 +101,11 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   increment is refused with usage in hand, publish `budget.unbilled_stream` with
   reason `billing_refused`. *Rationale:* the two halves of the old
   `DrainBilling` had opposite timing requirements; and known spend must never
-  disappear into a lone WARN. `TestShutdownOrdering` pins the ordering.
+  disappear into a lone WARN. The metering half stands; only the ordering was
+  superseded. A refused increment is reported as `billing_refused`, which is
+  raised ONLY for a genuine drop — "no gate wired", "no resolvable project" and
+  "zero-priced model" are `billNotBillable` and stay silent, or the one alarm
+  that detects real loss drowns in noise.
 - **[human decision] 2026-08-05 — `budget.unbilled_stream` is operator-only.**
   It publishes to `gateway.events.ops.budget` via a separate `OpsEventPublisher`
   port, NOT the per-project subject elitea-main relays to project members.

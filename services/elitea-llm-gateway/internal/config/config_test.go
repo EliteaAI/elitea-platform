@@ -84,9 +84,12 @@ func TestStreamGraceFromEnv(t *testing.T) {
 		{"valid override", "1200", "64", 1200 * time.Millisecond, 64},
 		{"clamped to max", "60000", "", MaxStreamGrace, DefaultStreamDrainLimit},
 		{"exactly max", "15000", "", MaxStreamGrace, DefaultStreamDrainLimit},
-		// Overflow: n*time.Millisecond wraps negative, which must NOT slip past
-		// the clamp and disable the mechanism.
-		{"overflow clamps to max", "9223372036854", "", MaxStreamGrace, DefaultStreamDrainLimit},
+		// Overflow: n*time.Millisecond wraps NEGATIVE, which must not slip past
+		// the clamp and disable the mechanism. 9223372036854 ms is still under
+		// MaxInt64 nanoseconds and does NOT overflow, so it proved nothing
+		// about the clamp; these two do (MaxInt64/1e6 ≈ 9223372036854.77).
+		{"overflow clamps to max", "9223372036855", "", MaxStreamGrace, DefaultStreamDrainLimit},
+		{"max int overflow clamps to max", "9223372036854775807", "", MaxStreamGrace, DefaultStreamDrainLimit},
 		{"negative falls back", "-1", "", DefaultStreamGrace, DefaultStreamDrainLimit},
 		{"garbage falls back", "abc", "", DefaultStreamGrace, DefaultStreamDrainLimit},
 		{"duration string falls back", "5s", "", DefaultStreamGrace, DefaultStreamDrainLimit},

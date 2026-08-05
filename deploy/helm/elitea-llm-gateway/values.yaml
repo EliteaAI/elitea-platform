@@ -21,7 +21,12 @@ resources:
 # in-flight streams on every rolling deploy, so terminationGracePeriodSeconds
 # MUST be >=150 and rise together with the gateway's srv.Shutdown() context
 # (GATEWAY_SHUTDOWN_TIMEOUT).
-terminationGracePeriodSeconds: 150
+# 150s of HTTP drain (GATEWAY_SHUTDOWN_TIMEOUT) PLUS headroom for the phases
+# that run after it: the billing drain, the governance persist drain and the
+# NATS close (see shutdownSequence). With no headroom SIGKILL lands the instant
+# the HTTP drain uses its full budget, and the billing drain never executes —
+# silently dropping the very spend the drain exists to preserve.
+terminationGracePeriodSeconds: 180
 
 # preStop hook (§9.5). The primary drain mechanism is the gateway's own
 # SIGTERM-driven graceful shutdown (GATEWAY_SHUTDOWN_TIMEOUT, >=150s); the

@@ -238,13 +238,37 @@ func buildTLSConfig(cfg config.Config) (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
-// Shutdown drains in-flight streams and releases resources.
+// Shutdown drains in-flight streams and releases every resource, HTTP first
+// and NATS last. It is the whole-lifecycle convenience form, kept for callers
+// (and tests) that have no billing drain to interleave.
+//
+// The composition root does NOT use it: it needs to bill between the two
+// halves, so it calls ShutdownHTTP, drains billing, then Close. See
+// shutdownSequence in cmd/elitea-llm-gateway.
 //
 // §9.5: the shutdown context timeout MUST be ≥150s — a harder ceiling on
 // stream drain than terminationGracePeriodSeconds — so provider LLM streams
 // (up to ~120s) are not truncated on rolling deploys. The caller passes a
 // parent ctx; this method applies cfg.ShutdownTimeout on top of it.
 func (s *Server) Shutdown(ctx context.Context) error {
+	err := s.ShutdownHTTP(ctx)
+	s.Close()
+	return err
+}
+
+// ShutdownHTTP quiesces the request-serving surface: it drains in-flight HTTP
+// (including SSE) requests, then releases bifrost's worker goroutines and
+// pooled resources. It deliberately leaves the NATS client OPEN.
+//
+// That split is load-bearing for billing. Streams settle DURING this call, and
+// a stream settling here may have just recovered a provider usage trailer that
+// still has to be billed — which needs a live NATS client. Closing NATS as part
+// of one monolithic Shutdown forced the caller to choose between "bill after
+// handlers quiesce" (increments hit a closed connection and divert to the
+// outage-delta path) and "bill before" (billingClosing set while handlers are
+// live, so recovered spend is refused). Both were shipped and both lost money;
+// splitting the lifecycle is what removes the choice.
+func (s *Server) ShutdownHTTP(ctx context.Context) error {
 	shutCtx, cancel := context.WithTimeout(ctx, s.cfg.ShutdownTimeout)
 	defer cancel()
 
@@ -253,10 +277,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Release bifrost worker goroutines and pooled resources after the HTTP
 	// server has stopped accepting and drained in-flight requests.
 	s.core.Shutdown()
-	// Close the NATS connection last so any in-flight budget increments during
-	// drain still have a live client.
+	return err
+}
+
+// Close releases the NATS client. It MUST run after every billing increment has
+// been issued — i.e. after the handler's billing drain and the governance
+// store's persist drain — so no increment lands on a closed connection.
+// Idempotent enough for the shutdown path (Close is only called once).
+func (s *Server) Close() {
 	if s.nats != nil {
 		s.nats.Close()
 	}
-	return err
 }

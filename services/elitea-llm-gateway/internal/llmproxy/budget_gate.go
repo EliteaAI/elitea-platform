@@ -34,6 +34,16 @@ const billingCtxTimeout = 10 * time.Second
 // gate must stay bounded even when nothing upstream can cancel it.
 const budgetGateTimeout = 10 * time.Second
 
+// billOutcome distinguishes the three ways a billing attempt can end. Only
+// billRefused means real, known spend was dropped and must be alarmed on.
+type billOutcome int
+
+const (
+	billBilled      billOutcome = iota // increment accepted (goroutine spawned)
+	billNotBillable                    // nothing to bill: no gate, no project, or zero cost
+	billRefused                        // billing is closing — a known amount was DROPPED
+)
+
 // budgetScopeProject is the scope string used for project-level budget checks.
 const budgetScopeProject = "project"
 
@@ -283,25 +293,26 @@ func identityProjectFromCtx(ctx context.Context) string {
 //
 // The caller supplies the usage from the response; tokens default to 0 when
 // the response carries no usage field (e.g. streaming partial responses).
-// It returns true when a billing goroutine was actually spawned for a non-zero
-// cost. Callers that must NOT lose spend silently (the stream drain, which may
-// be settling recovered provider usage while a graceful shutdown is refusing
-// new billing goroutines) use this to meter the drop instead of returning as if
-// billed. A false return therefore means one of: governance not wired,
-// unresolvable project, zero cost, or the increment was refused.
+// It reports WHY nothing was billed, not merely that nothing was. The stream
+// drain alarms on a refused increment (real, known spend dropped) and must stay
+// silent for "there was nothing to bill here" — a gateway with no budget gate
+// wired, an unresolvable project, or a zero-priced model. Collapsing the two
+// made every clean stream on an ungoverned deployment publish a
+// billing_refused alarm, desensitising operators to the one signal that
+// detects real loss.
 func (h *Handler) updateUsage(
 	ctx context.Context,
 	provider string,
 	model string,
 	inputTokens, outputTokens int64,
 	projectIDStr string,
-) bool {
+) billOutcome {
 	if h.budgetGate == nil || h.costCalc == nil {
-		return false
+		return billNotBillable
 	}
 	pid := parseProjectID(projectIDStr)
 	if pid < 0 {
-		return false
+		return billNotBillable
 	}
 	scopeID := strconv.Itoa(pid)
 	now := time.Now()
@@ -316,10 +327,13 @@ func (h *Handler) updateUsage(
 
 	actualCost := h.costCalc.Cost(costCtx, provider, model, inputTokens, outputTokens)
 	if actualCost.TotalNanoUSD <= 0 {
-		return false // nothing to bill
+		return billNotBillable // nothing to bill
 	}
 
-	return h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, actualCost.TotalNanoUSD)
+	if h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, actualCost.TotalNanoUSD) {
+		return billBilled
+	}
+	return billRefused
 }
 
 // updateUsageDirect bills a pre-computed costNano amount (nano-USD) for the
@@ -333,20 +347,23 @@ func (h *Handler) updateUsageDirect(
 	ctx context.Context,
 	projectIDStr string,
 	costNano int64,
-) bool {
+) billOutcome {
 	if h.budgetGate == nil || costNano <= 0 {
-		return false
+		return billNotBillable
 	}
 	pid := parseProjectID(projectIDStr)
 	if pid < 0 {
-		return false
+		return billNotBillable
 	}
 	scopeID := strconv.Itoa(pid)
 	now := time.Now()
 	periodStart := billingPeriodStart(now)
 	periodEnd := billingPeriodEnd(now)
 
-	return h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, costNano)
+	if h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, costNano) {
+		return billBilled
+	}
+	return billRefused
 }
 
 // spawnBillingGoroutine is the shared inner billing path: it guards against
