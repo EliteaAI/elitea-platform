@@ -1,0 +1,190 @@
+/**
+ * `useExecutionEvents` — the durable execution-replay SSE stream (issue #93).
+ *
+ * One Go route serves every long-running execution the runtime admits —
+ * index ingest, agent chat, agent regeneration, configuration validation:
+ *
+ *   GET {vite_server_url}/executions/{projectId}/{executionId}/events
+ *   (services/elitea-main/internal/api/router.go's `runtimeEventsPath`,
+ *    handled by internal/api/v2/executions/events.go)
+ *
+ * The SSE `event:` name is the durable replay event type verbatim
+ * (events.go writes `id: <cursor>\nevent: <type>\ndata: <json>`), and the
+ * whole vocabulary is a closed set of five constants in the Go repos layer:
+ *
+ *   execution.node_event              infra/db/repos/node_events.go
+ *   execution.failed                  infra/db/repos/{configuration_validation_results,command_outbox}.go
+ *   execution.replay_reset            infra/db/repos/replay_events.go
+ *   index.ingest.completed            infra/db/repos/index_ingest_results.go
+ *   configuration.validation.completed infra/db/repos/configuration_validation_results.go
+ *
+ * DISCLOSED DEVIATION FROM ISSUE #93's TEXT: the issue names
+ * `chat.stream.chunk`, `chat.stream.done` and an SSE `chat_message_sync`
+ * for the chat surface. Those names exist in the legacy EliteaUI branch's
+ * proof-of-concept, NOT in this repo's Go backend — grepping
+ * `services/**` for them returns nothing, while agent execution is
+ * explicitly routed through the SAME durable replay log as index ingest
+ * (`node_events.go:197,543` gate on `agent.execute.application.v1` /
+ * `agent.execute.adhoc.v1`). This module therefore implements the event
+ * vocabulary the server actually emits. Add names here the day the backend
+ * grows them.
+ *
+ * `execution.node_event`'s `data` is the bounded NodeEvent v1 JSON
+ * (`services/elitea-worker-python/src/elitea_worker/protocol/node_event.py`
+ * — thirteen fields: type, stream_id, message_id, question_id, content,
+ * thinking, response_metadata, references, sio_event, created_at,
+ * parent_message_id, agent_name, execution_generation). That is a superset
+ * of `shared/api/socket/events.ts`'s `streamEnvelopeSchema` — the same
+ * envelope the socket.io `chat_predict` receive path already carries — so
+ * an SSE frame drops straight into the reducers the socket path feeds.
+ */
+import { useMemo } from 'react';
+
+import { getConfig } from '@/shared/config';
+
+import { useEventSource } from './useEventSource';
+
+/** The durable replay event names this app subscribes to. */
+export const EXECUTION_EVENT_NODE = 'execution.node_event';
+export const EXECUTION_EVENT_FAILED = 'execution.failed';
+export const EXECUTION_EVENT_INDEX_INGEST_COMPLETED = 'index.ingest.completed';
+
+/**
+ * A parsed frame body. Deliberately a loose record: every consumer reads it
+ * defensively, exactly as `responseMetadataSchema`'s doc comment in
+ * `shared/api/socket/events.ts` argues for the socket side of the same wire.
+ */
+export type ExecutionEventData = Readonly<Record<string, unknown>>;
+
+/**
+ * `JSON.parse` at a transport boundary, as a value and never a throw (§3.6):
+ * a malformed or non-object frame yields `undefined` and the handler is
+ * skipped, rather than killing the React event handler that called it.
+ */
+export function parseExecutionEventData(event: MessageEvent): ExecutionEventData | undefined {
+  if (typeof event.data !== 'string' || event.data === '') return undefined;
+  try {
+    const parsed: unknown = JSON.parse(event.data);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as ExecutionEventData)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve a server-supplied `events_url` against the configured API origin.
+ *
+ * The agent-execution start endpoint returns an ABSOLUTE PATH it builds
+ * itself (`"/api/v2/executions/" + projectID + "/" + executionID +
+ * "/events"`, `internal/api/v2/agentexecution/current_route.go`) — never a
+ * full URL. When `vite_server_url` is a same-origin prefix (the compose and
+ * dev deployments, where it is literally `/api/v2`) that path is already
+ * correct and must NOT be prefixed again. When `vite_server_url` names a
+ * DIFFERENT ORIGIN, the bare path would resolve against the web origin
+ * instead of the API's, so the origin — and only the origin — is prepended.
+ */
+export function resolveExecutionEventsUrl(serverUrl: string | null, eventsUrl: string | null | undefined): string | null {
+  if (!eventsUrl) return null;
+  if (/^https?:\/\//i.test(eventsUrl)) return eventsUrl;
+  if (serverUrl && /^https?:\/\//i.test(serverUrl)) {
+    try {
+      return new URL(eventsUrl, serverUrl).toString();
+    } catch {
+      // A `vite_server_url` that does not parse is a config problem, not a
+      // reason to lose the stream — fall through to the raw path (§3.6).
+      return eventsUrl;
+    }
+  }
+  return eventsUrl;
+}
+
+/** The three callbacks an execution stream can drive. Shared by both subscription entry points below. */
+export interface ExecutionEventCallbacks {
+  /** One streamed progress frame (NodeEvent v1 — `streamEnvelopeSchema`-compatible). */
+  readonly onNodeEvent?: ((frame: ExecutionEventData) => void) | undefined;
+  /** The index-ingest terminal frame. */
+  readonly onIndexIngestCompleted?: ((frame: ExecutionEventData) => void) | undefined;
+  /** The runtime-failure frame (also emitted on deadline retirement and cancellation). */
+  readonly onFailed?: ((frame: ExecutionEventData) => void) | undefined;
+  /**
+   * The stream failed to OPEN, or dropped — a transport failure, not a
+   * frame. Distinct from `onFailed` (which is the server telling you the
+   * execution itself failed): this fires when there is no stream at all,
+   * e.g. the route is not mounted, the execution belongs to a backend that
+   * serves no replay stream, or the admission gate answered 429.
+   * `EventSource` does not retry after an HTTP status, so a caller that
+   * needs the run to proceed must act here.
+   */
+  readonly onError?: ((event: Event) => void) | undefined;
+}
+
+/**
+ * Subscribe to an execution stream by the `events_url` the START ENDPOINT
+ * returned (issue #93's chat surface). Prefer this over re-deriving the
+ * path: the server owns that shape.
+ *
+ * All three event names are ALWAYS registered, whether or not the caller
+ * passed the matching callback: the registered name set is what
+ * `useEventSource` keys its connection on, so a conditional map would
+ * reopen the HTTP stream whenever a caller's callback appeared or
+ * disappeared. Frames with no callback are parsed and dropped.
+ */
+export function useExecutionEventStream(eventsUrl: string | null | undefined, callbacks: ExecutionEventCallbacks): void {
+  const { onNodeEvent, onIndexIngestCompleted, onFailed, onError } = callbacks;
+  const config = getConfig();
+  const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
+  const url = useMemo(() => resolveExecutionEventsUrl(serverUrl, eventsUrl), [serverUrl, eventsUrl]);
+
+  useEventSource(url, {
+    [EXECUTION_EVENT_NODE]: (event) => {
+      const frame = parseExecutionEventData(event);
+      if (frame) onNodeEvent?.(frame);
+    },
+    [EXECUTION_EVENT_INDEX_INGEST_COMPLETED]: (event) => {
+      const frame = parseExecutionEventData(event);
+      if (frame) onIndexIngestCompleted?.(frame);
+    },
+    [EXECUTION_EVENT_FAILED]: (event) => {
+      const frame = parseExecutionEventData(event);
+      if (frame) onFailed?.(frame);
+    },
+  }, { onError });
+}
+
+export interface UseExecutionEventsParams extends ExecutionEventCallbacks {
+  readonly projectId: string | number | undefined;
+  /** The `task_id`/`execution_id` the start endpoint returned. Undefined ⇒ no stream. */
+  readonly executionId: string | undefined;
+}
+
+/**
+ * Subscribe to one execution's durable event stream.
+ *
+ * All three event names are ALWAYS registered, whether or not the caller
+ * passed the matching callback: the registered name set is what
+ * `useEventSource` keys its connection on, so a conditional map would
+ * reopen the HTTP stream whenever a caller's callback appeared or
+ * disappeared. Frames with no callback are parsed and dropped.
+ */
+export function useExecutionEvents(params: UseExecutionEventsParams): void {
+  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onError } = params;
+  const config = getConfig();
+  const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
+
+  // The index surface starts its run through a route that returns only a
+  // `task_id`, so the path is derived here rather than supplied.
+  const eventsUrl = useMemo(
+    () =>
+      projectId !== undefined && projectId !== '' && executionId && serverUrl
+        ? `${serverUrl}/executions/${String(projectId)}/${executionId}/events`
+        : null,
+    [projectId, executionId, serverUrl],
+  );
+
+  // Already absolute against `vite_server_url` ⇒ `useExecutionEventStream`'s
+  // own resolution is a no-op for it (same-origin prefix returns the path
+  // unchanged; an absolute origin was already baked in above).
+  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onError });
+}

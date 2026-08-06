@@ -15,6 +15,7 @@ import {
   deleteConversation,
   regenerate,
   selectConversation,
+  startAgentExecution,
   stopChatTask,
   unselectConversation,
   useConversationCreateMutation,
@@ -129,6 +130,65 @@ describe('regenerate', () => {
   it('POSTs elitea_core/regenerate/prompt_lib/{projectId}/{id}', async () => {
     server.use(http.post(`${BASE}/elitea_core/regenerate/prompt_lib/7/1`, () => HttpResponse.json({ ok: true })));
     await expect(regenerate({ projectId: 7, id: 1 })).resolves.toEqual({ ok: true });
+  });
+});
+
+describe('regenerate — SSE contract (issue #93)', () => {
+  it('sends execution_contract as a QUERY parameter and keeps it out of the body', async () => {
+    let seenUrl: string | undefined;
+    let seenBody: unknown;
+    server.use(
+      http.post(`${BASE}/elitea_core/regenerate/prompt_lib/7/1`, async ({ request }) => {
+        seenUrl = request.url;
+        seenBody = await request.json();
+        return HttpResponse.json({ events_url: '/api/v2/executions/7/exec-1/events' });
+      }),
+    );
+
+    await expect(regenerate({ projectId: 7, id: 1, executionContract: 'agent.regenerate.v1', question: 'redo' })).resolves.toEqual({
+      events_url: '/api/v2/executions/7/exec-1/events',
+    });
+    expect(new URL(String(seenUrl)).searchParams.get('execution_contract')).toBe('agent.regenerate.v1');
+    expect(seenBody).toEqual({ question: 'redo' });
+  });
+
+  it('omits the query entirely when no contract is requested (pre-#93 behaviour)', async () => {
+    let seenUrl: string | undefined;
+    server.use(
+      http.post(`${BASE}/elitea_core/regenerate/prompt_lib/7/1`, ({ request }) => {
+        seenUrl = request.url;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    await regenerate({ projectId: 7, id: 1 });
+    expect(new URL(String(seenUrl)).search).toBe('');
+  });
+});
+
+describe('startAgentExecution (issue #93)', () => {
+  it('POSTs elitea_core/messages/prompt_lib/{projectId}/{conversationUuid} with the execution contract, returning events_url', async () => {
+    let seenUrl: string | undefined;
+    let seenBody: unknown;
+    server.use(
+      http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, async ({ request }) => {
+        seenUrl = request.url;
+        seenBody = await request.json();
+        return HttpResponse.json({ task_id: 'exec-1', events_url: '/api/v2/executions/7/exec-1/events' });
+      }),
+    );
+
+    await expect(
+      startAgentExecution({ projectId: 7, conversationUuid: 'uuid-1', contract: 'agent.execute.application.v1', body: { question: 'hi' } }),
+    ).resolves.toMatchObject({ events_url: '/api/v2/executions/7/exec-1/events' });
+    expect(new URL(String(seenUrl)).searchParams.get('execution_contract')).toBe('agent.execute.application.v1');
+    expect(seenBody).toEqual({ question: 'hi' });
+  });
+
+  it('rejects when the route rejects the contract — the caller decides to fall back', async () => {
+    server.use(http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () => new HttpResponse(null, { status: 400 })));
+    await expect(
+      startAgentExecution({ projectId: 7, conversationUuid: 'uuid-1', contract: 'nope', body: {} }),
+    ).rejects.toThrow();
   });
 });
 

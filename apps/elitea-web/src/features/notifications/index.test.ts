@@ -19,6 +19,7 @@ const PUBLIC_SURFACE = [
   'useBulkMarkSeenNotifications',
   'useDeleteNotification',
   'useNotificationsList',
+  'useNotificationsSSE',
   'useReadNotification',
   'useSoundNotification',
 ] as const;
@@ -30,7 +31,7 @@ describe('features/notifications public surface', () => {
 
   it('stays within the §3.5 20-symbol budget (type + value exports combined)', () => {
     // ./index.ts source-level export count, hand-counted against the file:
-    // 5 `export type` statements (7 type names) + 10 value exports = 17.
+    // 5 `export type` statements (7 type names) + 11 value exports = 18.
     expect(PUBLIC_SURFACE.length).toBeLessThanOrEqual(20);
   });
 });

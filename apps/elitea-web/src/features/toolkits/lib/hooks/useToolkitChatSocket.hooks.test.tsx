@@ -1,11 +1,13 @@
 import type { ReactNode } from 'react';
 
-import { renderHook } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, renderHook } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SocketClientContext } from '@/shared/api/socket/client';
 import { createTestSocketClient } from '@/shared/api/socket/testing';
 import type { TestSocketClient } from '@/shared/api/socket/testing';
+import { installTestEventSource, type TestEventSourceRegistry } from '@/shared/api/sse/testing';
+import { resetConfigForTests } from '@/shared/config/get-config';
 
 import type { ToolkitChatMessage } from './useToolkitChat.types';
 import { useToolkitChatSocket } from './useToolkitChatSocket.hooks';
@@ -20,6 +22,7 @@ function setup(client: TestSocketClient, overrides: Partial<Parameters<typeof us
   const onRunFinish = vi.fn();
   const onStartTask = vi.fn();
   const onMcpAuthRequired = vi.fn();
+  const onStreamError = vi.fn();
   let chatHistory: ToolkitChatMessage[] = [];
   const setChatHistory = vi.fn((update: (prev: ToolkitChatMessage[]) => ToolkitChatMessage[]) => {
     chatHistory = update(chatHistory);
@@ -37,12 +40,14 @@ function setup(client: TestSocketClient, overrides: Partial<Parameters<typeof us
         activeConversationUuid: undefined,
         projectId: 'proj-1',
         roomEnabled: false,
+        executionId: undefined,
+        onStreamError,
         ...overrides,
       }),
     { wrapper: withSocket(client) },
   );
 
-  return { result, onRunFinish, onStartTask, onMcpAuthRequired, setChatHistory, getChatHistory: () => chatHistory };
+  return { result, onRunFinish, onStartTask, onMcpAuthRequired, onStreamError, setChatHistory, getChatHistory: () => chatHistory };
 }
 
 describe('useToolkitChatSocket', () => {
@@ -96,6 +101,8 @@ describe('useToolkitChatSocket', () => {
           activeConversationUuid: undefined,
           projectId: 'proj-1',
           roomEnabled: false,
+          executionId: undefined,
+          onStreamError: vi.fn(),
         }),
       { wrapper: withSocket(client) },
     );
@@ -121,6 +128,8 @@ describe('useToolkitChatSocket', () => {
           activeConversationUuid: 'uuid-1',
           projectId: 'proj-1',
           roomEnabled,
+          executionId: undefined,
+          onStreamError: vi.fn(),
         }),
       { wrapper: withSocket(client), initialProps: { roomEnabled: false } },
     );
@@ -137,5 +146,131 @@ describe('useToolkitChatSocket', () => {
 
     rerender({ roomEnabled: false });
     expect(client.getEmitted('chat_leave_rooms')).toHaveLength(1);
+  });
+});
+
+describe('useToolkitChatSocket — SSE execution stream (issue #93)', () => {
+  const globals = globalThis as unknown as Record<string, unknown>;
+  let sse: TestEventSourceRegistry;
+
+  beforeEach(() => {
+    sse = installTestEventSource();
+    globals['elitea_ui_config'] = { vite_server_url: '/api/v2', vite_base_uri: '/', vite_public_project_id: 'public-1' };
+    resetConfigForTests();
+  });
+
+  afterEach(() => {
+    sse.restore();
+    delete globals['elitea_ui_config'];
+    resetConfigForTests();
+  });
+
+  it('opens the execution stream only once an executionId exists', () => {
+    const client = createTestSocketClient();
+    setup(client);
+    expect(sse.getSources()).toHaveLength(0);
+
+    setup(client, { executionId: 'exec-1' });
+    expect(sse.getSources()[0]?.url).toBe('/api/v2/executions/proj-1/exec-1/events');
+  });
+
+  it('routes an execution.node_event frame through the same reducer as chat_predict', () => {
+    const client = createTestSocketClient();
+    const { setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+    });
+
+    expect(setChatHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes an mcp_authorization_required node event to onMcpAuthRequired, exactly like the socket path', () => {
+    const client = createTestSocketClient();
+    const { onMcpAuthRequired, setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('execution.node_event', JSON.stringify({ type: 'mcp_authorization_required', message_id: 'm1' }));
+    });
+
+    expect(onMcpAuthRequired).toHaveBeenCalledTimes(1);
+    expect(setChatHistory).not.toHaveBeenCalled();
+  });
+
+  it('drops a node event with no `type` discriminant (not a usable stream envelope)', () => {
+    const client = createTestSocketClient();
+    const { setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('execution.node_event', JSON.stringify({ message_id: 'm1', content: 'orphan' }));
+    });
+
+    expect(setChatHistory).not.toHaveBeenCalled();
+  });
+
+  it('maps index.ingest.completed status onto the index state reported to onRunFinish', () => {
+    const cases: readonly (readonly [string, string])[] = [
+      ['ok', 'completed'],
+      ['partly_indexed', 'partly_indexed'],
+      ['error', 'failed'],
+    ];
+    for (const [status, expected] of cases) {
+      const client = createTestSocketClient();
+      const { onRunFinish } = setup(client, { executionId: 'exec-1' });
+      act(() => {
+        sse.emit('index.ingest.completed', JSON.stringify({ status }));
+      });
+      expect(onRunFinish).toHaveBeenLastCalledWith(expected);
+    }
+  });
+
+  it('settles as completed when the terminal frame carries no status (the artifact-shaped projection)', () => {
+    const client = createTestSocketClient();
+    const { onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('index.ingest.completed', JSON.stringify({ artifact_id: 'a1', media_type: 'application/json' }));
+    });
+
+    expect(onRunFinish).toHaveBeenCalledWith('completed');
+  });
+
+  it('reports execution.failed as a failed run', () => {
+    const client = createTestSocketClient();
+    const { onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('execution.failed', JSON.stringify({ message: 'worker died' }));
+    });
+
+    expect(onRunFinish).toHaveBeenCalledWith('failed');
+  });
+
+  it('ignores every SSE frame while isAuthCheckSession is true', () => {
+    const client = createTestSocketClient();
+    const { onRunFinish, onMcpAuthRequired, setChatHistory } = setup(client, { executionId: 'exec-1', isAuthCheckSession: true });
+
+    act(() => {
+      sse.emit('execution.node_event', JSON.stringify({ type: 'mcp_authorization_required', message_id: 'm1' }));
+      sse.emit('index.ingest.completed', JSON.stringify({ status: 'ok' }));
+      sse.emit('execution.failed', JSON.stringify({ message: 'boom' }));
+    });
+
+    expect(setChatHistory).not.toHaveBeenCalled();
+    expect(onMcpAuthRequired).not.toHaveBeenCalled();
+    expect(onRunFinish).not.toHaveBeenCalled();
+  });
+  it('forwards a stream-open failure to onStreamError — the socket-fallback signal', () => {
+    const client = createTestSocketClient();
+    const { onStreamError, onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.fail();
+    });
+
+    expect(onStreamError).toHaveBeenCalledTimes(1);
+    // A transport failure is NOT an execution failure: the run is about to
+    // be re-dispatched on socket.io, so it must not be reported as failed.
+    expect(onRunFinish).not.toHaveBeenCalled();
   });
 });
