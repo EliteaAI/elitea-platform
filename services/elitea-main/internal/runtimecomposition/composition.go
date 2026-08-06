@@ -81,11 +81,9 @@ type Dependencies struct {
 	PermissionResolver               auth.PermissionResolver
 	Logger                           *slog.Logger
 
-	// ObjectStore backs the artifact retention sweeper (S14) — required only
-	// when IndexSchedulingEnabled, since that is the only scheduler this
-	// runtime graph owns. See artifact_retention_sweep.go's package doc for
-	// why the sweeper's own availability is coupled to this flag rather than
-	// gated independently.
+	// ObjectStore backs the artifact retention sweeper (S14). A nil store
+	// leaves current index scheduling enabled but omits that separate
+	// capability from the shared scheduler registry.
 	ObjectStore storage.ObjectStore
 }
 
@@ -110,11 +108,6 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		dependencies.ProjectSystemTokenSource == nil {
 		return nil, errors.New(
 			"runtime index scheduling project-system token source is required",
-		)
-	}
-	if config.IndexSchedulingEnabled && dependencies.ObjectStore == nil {
-		return nil, errors.New(
-			"runtime index scheduling artifact object store is required",
 		)
 	}
 	if config.IndexIngestDispatchEnabled &&
@@ -477,6 +470,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, fmt.Errorf("construct current agent configuration materializer: %w", targetErr)
 		}
 		agentStart, targetErr = agentexecutionapp.NewCurrentApplicationStartService(
+			agentTargets,
 			agentTargets,
 			agentTargets,
 			agentTargets,
@@ -982,46 +976,49 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 				)
 			}
 
-			// The retention sweeper (S14) piggybacks on this same registry
-			// rather than owning an independent scheduler instance — see
-			// artifact_retention_sweep.go's package doc for the tradeoff
-			// this implies (sweeping is only live when index scheduling is).
-			artifactBuckets, artifactBucketsErr := repos.NewArtifactBucketsRepository(dependencies.AdmissionPool)
-			if artifactBucketsErr != nil {
-				return nil, fmt.Errorf("construct artifact buckets repository: %w", artifactBucketsErr)
-			}
-			artifactObjects, artifactObjectsErr := repos.NewArtifactObjectsRepository(dependencies.AdmissionPool)
-			if artifactObjectsErr != nil {
-				return nil, fmt.Errorf("construct artifact objects repository: %w", artifactObjectsErr)
-			}
-			artifactNotifications, artifactNotificationsErr := repos.NewArtifactRetentionNotificationRepository(dependencies.AdmissionPool)
-			if artifactNotificationsErr != nil {
-				return nil, fmt.Errorf("construct artifact retention notification repository: %w", artifactNotificationsErr)
-			}
-			// S20a: reclaims elitea_storage.attachment_chunks rows left by
-			// abandoned chunked attachment uploads — see
-			// artifactRetentionAttachmentChunksRepository's own doc comment
-			// for why this one dependency is optional (WithAttachmentChunks)
-			// rather than a fifth constructor-required argument.
-			attachmentChunks, attachmentChunksErr := repos.NewAttachmentChunksRepository(dependencies.AdmissionPool)
-			if attachmentChunksErr != nil {
-				return nil, fmt.Errorf("construct attachment chunks repository: %w", attachmentChunksErr)
-			}
-			retentionSweep, retentionSweepErr := newArtifactRetentionSweep(
-				artifactObjects, artifactBuckets, artifactNotifications, dependencies.ObjectStore,
-			)
-			if retentionSweepErr != nil {
-				return nil, fmt.Errorf("construct artifact retention sweep: %w", retentionSweepErr)
-			}
-			retentionSweep = retentionSweep.WithAttachmentChunks(attachmentChunks)
-			retentionSchedule, retentionScheduleErr := schedulingapp.ParseCron(
-				artifactRetentionSweepCadence,
-			)
-			if retentionScheduleErr != nil {
-				return nil, fmt.Errorf(
-					"parse artifact retention sweep cadence: %w",
-					retentionScheduleErr,
+			// The retention sweeper (S14) piggybacks on this registry when the
+			// Go artifacts capability is enabled. Mixed deployments keep the
+			// current Centry artifacts capability authoritative, so a nil store
+			// deliberately omits only this job, not index scheduling itself.
+			var retentionHandler schedulingapp.Handler
+			var retentionSchedule schedulingapp.Schedule
+			if dependencies.ObjectStore != nil {
+				artifactBuckets, artifactBucketsErr := repos.NewArtifactBucketsRepository(dependencies.AdmissionPool)
+				if artifactBucketsErr != nil {
+					return nil, fmt.Errorf("construct artifact buckets repository: %w", artifactBucketsErr)
+				}
+				artifactObjects, artifactObjectsErr := repos.NewArtifactObjectsRepository(dependencies.AdmissionPool)
+				if artifactObjectsErr != nil {
+					return nil, fmt.Errorf("construct artifact objects repository: %w", artifactObjectsErr)
+				}
+				artifactNotifications, artifactNotificationsErr := repos.NewArtifactRetentionNotificationRepository(dependencies.AdmissionPool)
+				if artifactNotificationsErr != nil {
+					return nil, fmt.Errorf("construct artifact retention notification repository: %w", artifactNotificationsErr)
+				}
+				// S20a: reclaims elitea_storage.attachment_chunks rows left by
+				// abandoned chunked attachment uploads — see
+				// artifactRetentionAttachmentChunksRepository's own doc comment.
+				attachmentChunks, attachmentChunksErr := repos.NewAttachmentChunksRepository(dependencies.AdmissionPool)
+				if attachmentChunksErr != nil {
+					return nil, fmt.Errorf("construct attachment chunks repository: %w", attachmentChunksErr)
+				}
+				retentionSweep, retentionSweepErr := newArtifactRetentionSweep(
+					artifactObjects, artifactBuckets, artifactNotifications, dependencies.ObjectStore,
 				)
+				if retentionSweepErr != nil {
+					return nil, fmt.Errorf("construct artifact retention sweep: %w", retentionSweepErr)
+				}
+				retentionHandler = retentionSweep.WithAttachmentChunks(attachmentChunks)
+				parsedRetentionSchedule, retentionScheduleErr := schedulingapp.ParseCron(
+					artifactRetentionSweepCadence,
+				)
+				if retentionScheduleErr != nil {
+					return nil, fmt.Errorf(
+						"parse artifact retention sweep cadence: %w",
+						retentionScheduleErr,
+					)
+				}
+				retentionSchedule = parsedRetentionSchedule
 			}
 
 			// One scan observes all projects and may cover the same due index
@@ -1039,7 +1036,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			}
 			registry, registryErr := scheduledJobRegistry(
 				schedulerConfig.LeaseDuration,
-				scheduledJobs(indexDueWork, retentionSweep, schedule, retentionSchedule)...,
+				scheduledJobs(indexDueWork, retentionHandler, schedule, retentionSchedule)...,
 			)
 			if registryErr != nil {
 				return nil, fmt.Errorf(

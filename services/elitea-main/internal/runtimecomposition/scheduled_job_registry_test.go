@@ -54,6 +54,23 @@ func TestArtifactRetentionScheduledJobsIncludesBothIndexAndSweepJobs(t *testing.
 	}
 }
 
+func TestScheduledJobsKeepsIndexSchedulingWithoutArtifactStore(t *testing.T) {
+	schedule, err := schedulingapp.ParseCron("* * * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := scheduledJobs(stubSchedulingHandler{}, nil, schedule, nil)
+	registry, err := scheduledJobRegistry(currentIndexScheduleLeaseDuration, jobs...)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	registered := registry.RegisteredJobs()
+	if len(registered) != 1 || registered[0].ID != currentIndexScheduleCapability {
+		t.Fatalf("expected only current index scheduling, got %+v", registered)
+	}
+}
+
 type stubSchedulingHandler struct{}
 
 func (stubSchedulingHandler) Execute(context.Context, schedulingapp.Occurrence) (schedulingapp.Outcome, error) {

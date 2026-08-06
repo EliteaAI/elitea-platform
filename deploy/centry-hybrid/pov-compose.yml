@@ -38,6 +38,10 @@ services:
       target: hybrid
     image: ${ELITEA_MAIN_IMAGE:?set ELITEA_MAIN_IMAGE}
     environment:
+      # The current Centry artifacts plugin remains authoritative in the
+      # mixed deployment. It uses Centry's local libcloud store, which is not
+      # an S3/Azure/GCS endpoint that elitea-main can safely share.
+      ELITEA_ARTIFACTS_ENABLED: "false"
       ELITEA_RUNTIME_ENABLED: "true"
       ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED: "true"
       ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED: "true"
@@ -72,6 +76,13 @@ services:
       context: ${ELITEA_PLATFORM_DIR:?set ELITEA_PLATFORM_DIR}
       dockerfile: services/elitea-worker-python/Containerfile
     image: ${ELITEA_INDEXER_WORKER_IMAGE:?set ELITEA_INDEXER_WORKER_IMAGE}
+    environment:
+      # PoV-only, fail-safe snapshot of the current indexer_worker admin
+      # configuration. The wildcard is intentionally broader than the current
+      # `artifact.delete_file` rule so metadata drift cannot bypass approval in
+      # this focused HITL proof. The completed admin port must replace this with
+      # an exact, versioned worker-policy snapshot.
+      ELITEA_SENSITIVE_TOOLS: '{"*":["delete_file"]}'
     volumes:
       - ${ELITEA_AUTH_POV_RUNTIME_DIR:?set ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/indexer-runtime-v2.json:/run/elitea-runtime/indexer-runtime.json:ro
       - ${ELITEA_AUTH_POV_RUNTIME_DIR:?set ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/agent-checkpoint-connection:/run/elitea-runtime/agent-checkpoint-connection:ro

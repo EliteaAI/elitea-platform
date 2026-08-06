@@ -24,6 +24,8 @@ const (
 	CurrentAdhocStartContract         = "agent.execute.adhoc.v1"
 	CurrentRegenerationPath           = "/api/v2/elitea_core/regenerate/prompt_lib/{projectID}/{responseMessageID}"
 	CurrentRegenerationContract       = "agent.regenerate.v1"
+	CurrentContinuationPath           = "/api/v2/elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}"
+	CurrentContinuationContract       = "agent.continue.hitl.v1"
 	CurrentApplicationStartMode       = auth.PermissionModeDefault
 	CurrentApplicationStartPermission = "models.chat.messages.create"
 	CurrentRegenerationPermission     = "models.chat.conversations.regenerate"
@@ -44,6 +46,10 @@ type StartUseCase interface {
 	RegenerateCurrentAgent(
 		context.Context,
 		agentexecutionapp.CurrentRegenerationRequest,
+	) (agentexecutionapp.CurrentApplicationStartOutcome, error)
+	ContinueCurrentAgent(
+		context.Context,
+		agentexecutionapp.CurrentContinuationRequest,
 	) (agentexecutionapp.CurrentApplicationStartOutcome, error)
 }
 
@@ -85,9 +91,22 @@ func NewCurrentApplicationStartRoute(
 		CurrentRegenerationPermission,
 	)(regenerateEndpoint)
 	regenerateEndpoint = apimw.Auth(authConfig)(regenerateEndpoint)
+	continueEndpoint := http.Handler(http.HandlerFunc(handler.Continue))
+	continueEndpoint = apimw.RequireResolvedPermissionsForProject(
+		permissions,
+		CurrentApplicationStartMode,
+		func(request *http.Request) (string, bool) {
+			projectID := chi.URLParam(request, "projectID")
+			_, valid := positiveCanonicalID(projectID)
+			return projectID, valid
+		},
+		CurrentApplicationStartPermission,
+	)(continueEndpoint)
+	continueEndpoint = apimw.Auth(authConfig)(continueEndpoint)
 	router := chi.NewRouter()
 	router.Method(http.MethodPost, CurrentApplicationStartPath, startEndpoint)
 	router.Method(http.MethodPost, CurrentRegenerationPath, regenerateEndpoint)
+	router.Method(http.MethodPost, CurrentContinuationPath, continueEndpoint)
 	return &CurrentApplicationStartRoute{handler: router}, nil
 }
 
@@ -134,6 +153,21 @@ type currentRegenerationBody struct {
 	StreamID         string          `json:"stream_id"`
 	RegenerationID   string          `json:"regeneration_id"`
 	UpdatedItems     json.RawMessage `json:"updated_items"`
+}
+
+type currentContinuationBody struct {
+	ProjectID              int64           `json:"project_id"`
+	ConversationUUID       string          `json:"conversation_uuid"`
+	MessageID              string          `json:"message_id"`
+	ThreadID               string          `json:"thread_id"`
+	HITLResume             bool            `json:"hitl_resume"`
+	HITLAction             string          `json:"hitl_action"`
+	HITLValue              json.RawMessage `json:"hitl_value"`
+	HITLDecisions          json.RawMessage `json:"hitl_decisions"`
+	MCPTokens              json.RawMessage `json:"mcp_tokens"`
+	IgnoredMCPServers      json.RawMessage `json:"ignored_mcp_servers"`
+	UserDeclinedMCPServers json.RawMessage `json:"user_declined_mcp_servers"`
+	UserInput              string          `json:"user_input"`
 }
 
 func (handler *currentApplicationStartHandler) Start(writer http.ResponseWriter, request *http.Request) {
@@ -311,6 +345,79 @@ func (handler *currentApplicationStartHandler) Regenerate(writer http.ResponseWr
 	})
 }
 
+func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWriter, request *http.Request) {
+	projectID, ok := positiveCanonicalID(chi.URLParam(request, "projectID"))
+	conversationID := chi.URLParam(request, "conversationID")
+	if !ok || request.URL.Query().Get("execution_contract") != CurrentContinuationContract {
+		writeError(writer, http.StatusBadRequest, "Invalid agent continuation request")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(writer, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
+	user, ok := auth.UserFromContext(request.Context())
+	if !ok {
+		writeError(writer, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	actorUserID, ok := user.OwningUserID()
+	if !ok {
+		writeError(writer, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(writer, request.Body, maxCurrentApplicationStartBody)
+	var body currentContinuationBody
+	decoder := json.NewDecoder(request.Body)
+	if err := decoder.Decode(&body); err != nil {
+		var maxBytes *http.MaxBytesError
+		if errors.As(err, &maxBytes) {
+			writeError(writer, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeError(writer, http.StatusBadRequest, "Invalid agent continuation request")
+		return
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeError(writer, http.StatusBadRequest, "Invalid agent continuation request")
+		return
+	}
+	if body.ProjectID != projectID || body.ConversationUUID != conversationID ||
+		!body.HITLResume || body.MessageID == "" || !currentRootHITLAction(body.HITLAction) ||
+		!emptyJSONArray(body.HITLDecisions) || !emptyJSONObject(body.MCPTokens) ||
+		!emptyJSONArray(body.IgnoredMCPServers) || !emptyJSONArray(body.UserDeclinedMCPServers) {
+		writeUnsupported(writer)
+		return
+	}
+	value, valid := currentHITLStringValue(body.HITLValue)
+	if !valid {
+		writeUnsupported(writer)
+		return
+	}
+	outcome, err := handler.useCase.ContinueCurrentAgent(
+		request.Context(),
+		agentexecutionapp.CurrentContinuationRequest{
+			ProjectID: projectID, ActorUserID: actorUserID,
+			ConversationUUID: conversationID, ResponseMessageID: body.MessageID,
+			ThreadID: body.ThreadID, Action: body.HITLAction, Value: value,
+		},
+	)
+	if err != nil {
+		slog.Error("current agent continuation failed", "response_message_id", body.MessageID, "err", err)
+		writeStartError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"task_id": outcome.ExecutionID, "execution_id": outcome.ExecutionID,
+		"command_id": outcome.CommandID, "response_message_id": outcome.ResponseMessageID,
+		"events_url": "/api/v2/executions/" + strconv.FormatInt(projectID, 10) + "/" + outcome.ExecutionID + "/events",
+		"created":    outcome.Created,
+	})
+}
+
 func writeStartError(writer http.ResponseWriter, err error) {
 	var capacity *executionapp.AdmissionCapacityError
 	switch {
@@ -325,6 +432,12 @@ func writeStartError(writer http.ResponseWriter, err error) {
 			"error":     "agent_regeneration_pending",
 			"message":   "The previous agent response is still being finalized. Please retry shortly.",
 			"retryable": true,
+		})
+	case errors.Is(err, agentexecutionapp.ErrCurrentAgentHITLAlreadyResolved):
+		writeJSON(writer, http.StatusConflict, map[string]any{
+			"error":     "agent_hitl_already_resolved",
+			"message":   "This agent approval was already resolved. Refresh the conversation before retrying.",
+			"retryable": false,
 		})
 	case errors.Is(err, executionapp.ErrIdempotencyConflict):
 		writeError(writer, http.StatusConflict, "Agent execution request conflicts with an existing turn")
@@ -359,6 +472,26 @@ func absentJSON(raw json.RawMessage) bool {
 func currentJSONObject(raw json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(raw)
 	return json.Valid(trimmed) && len(trimmed) >= 2 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}'
+}
+
+func currentRootHITLAction(action string) bool {
+	switch action {
+	case "approve", "reject", "edit", "block_with_comment":
+		return true
+	default:
+		return false
+	}
+}
+
+func currentHITLStringValue(raw json.RawMessage) (string, bool) {
+	if absentJSON(raw) {
+		return "", true
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return "", false
+	}
+	return value, true
 }
 
 func positiveCanonicalID(raw string) (int64, bool) {

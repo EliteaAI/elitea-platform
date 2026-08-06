@@ -19,11 +19,22 @@ type currentStartUseCaseStub struct {
 	request             agentexecutionapp.CurrentApplicationStartRequest
 	adhocRequest        agentexecutionapp.CurrentAdhocStartRequest
 	regenerationRequest agentexecutionapp.CurrentRegenerationRequest
+	continuationRequest agentexecutionapp.CurrentContinuationRequest
 	outcome             agentexecutionapp.CurrentApplicationStartOutcome
 	err                 error
 	calls               int
 	adhocCalls          int
 	regenerationCalls   int
+	continuationCalls   int
+}
+
+func (stub *currentStartUseCaseStub) ContinueCurrentAgent(
+	_ context.Context,
+	request agentexecutionapp.CurrentContinuationRequest,
+) (agentexecutionapp.CurrentApplicationStartOutcome, error) {
+	stub.continuationCalls++
+	stub.continuationRequest = request
+	return stub.outcome, stub.err
 }
 
 func (stub *currentStartUseCaseStub) RegenerateCurrentAgent(
@@ -198,6 +209,73 @@ func TestCurrentRegenerationRoutePreservesPathRBACAndResponseIdentity(t *testing
 	}
 }
 
+func TestCurrentContinuationRoutePreservesCurrentPathRBACAndResponseIdentity(t *testing.T) {
+	if CurrentContinuationPath != "/api/v2/elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}" ||
+		CurrentContinuationContract != "agent.continue.hitl.v1" {
+		t.Fatalf("continuation contract drifted: path=%q contract=%q", CurrentContinuationPath, CurrentContinuationContract)
+	}
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-continue", CommandID: "command-continue",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentContinuationRequest(validCurrentContinuationBody()))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.ProjectID != 7 || request.ActorUserID != 11 ||
+		request.ConversationUUID != "8bc66e50-46c4-4e2c-94ec-daec6c596ac0" ||
+		request.ResponseMessageID != "30e0913e-10d4-43db-b8d0-c7b79480935a" ||
+		request.ThreadID != "thread-current-1" || request.Action != "edit" ||
+		request.Value != "delete only merged branches" {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s", response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil ||
+		body["execution_id"] != "execution-continue" ||
+		body["response_message_id"] != "30e0913e-10d4-43db-b8d0-c7b79480935a" ||
+		body["events_url"] != "/api/v2/executions/7/execution-continue/events" {
+		t.Fatalf("response=%+v error=%v", body, err)
+	}
+}
+
+func TestCurrentContinuationRouteCarriesBlockWithComment(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-comment", CommandID: "command-comment",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	body := strings.Replace(validCurrentContinuationBody(), `"hitl_action":"edit"`, `"hitl_action":"block_with_comment"`, 1)
+	body = strings.Replace(body, `"hitl_value":"delete only merged branches"`, `"hitl_value":"append data before retrying delete"`, 1)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentContinuationRequest(body))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Action != "block_with_comment" || request.Value != "append data before retrying delete" {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
+func TestCurrentContinuationRouteRejectsParallelAndMCPResumeShapes(t *testing.T) {
+	useCase := &currentStartUseCaseStub{}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	for name, body := range map[string]string{
+		"parallel": strings.Replace(validCurrentContinuationBody(), `"hitl_decisions":[]`, `"hitl_decisions":[{"interrupt_id":"child","action":"approve"}]`, 1),
+		"mcp":      strings.Replace(validCurrentContinuationBody(), `"mcp_tokens":{}`, `"mcp_tokens":{"server":{"access_token":"not-forwarded"}}`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, currentContinuationRequest(body))
+			if response.Code != http.StatusUnprocessableEntity || useCase.continuationCalls != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, useCase.continuationCalls, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestCurrentRegenerationRouteRejectsEditedItemsBeforeUseCase(t *testing.T) {
 	useCase := &currentStartUseCaseStub{}
 	route := newCurrentStartRoute(t, useCase, currentStartPermissionResolverFunc(func(
@@ -368,6 +446,36 @@ func currentRegenerationRequest(body string) *http.Request {
 	request.Header.Set("X-Auth-ID", "11")
 	request.RemoteAddr = "10.0.0.8:43120"
 	return request
+}
+
+func currentContinuationRequest(body string) *http.Request {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/continue_predict/prompt_lib/7/8bc66e50-46c4-4e2c-94ec-daec6c596ac0?execution_contract="+CurrentContinuationContract,
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = "10.0.0.8:43120"
+	return request
+}
+
+func validCurrentContinuationBody() string {
+	return `{
+  "project_id":7,
+  "conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+  "message_id":"30e0913e-10d4-43db-b8d0-c7b79480935a",
+  "thread_id":"thread-current-1",
+  "hitl_resume":true,
+  "hitl_action":"edit",
+  "hitl_value":"delete only merged branches",
+  "hitl_decisions":[],
+  "mcp_tokens":{},
+  "ignored_mcp_servers":[],
+  "user_declined_mcp_servers":[],
+  "user_input":"edit"
+}`
 }
 
 func validCurrentRegenerationBody() string {

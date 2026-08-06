@@ -117,6 +117,8 @@ validate_model() {
     '
       .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM
       == "commands.v1.index.ingest.indexing.shared.2.0"
+      and .services["elitea-main"].environment.ELITEA_ARTIFACTS_ENABLED
+        == "false"
       and .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED
       == "true"
       and .services["elitea-main"].environment.ELITEA_RUNTIME_SCHEDULER_INSTANCE_ID
@@ -135,6 +137,8 @@ validate_model() {
         .source == $runtime and .target == "/run/elitea-runtime/indexer-runtime.json")
       and any(.services["elitea-indexer-worker"].volumes[];
         .source == $checkpoint and .target == "/run/elitea-runtime/agent-checkpoint-connection")
+      and .services["elitea-indexer-worker"].environment.ELITEA_SENSITIVE_TOOLS
+        == "{\"*\":[\"delete_file\"]}"
       and any(.services.pylon_main.volumes[];
         .source == $interface and .target == "/data/configs/runtime_interface_litellm.yml")
       and any(.services.pylon_indexer.volumes[];
@@ -146,6 +150,8 @@ validate_model() {
 
   grep -q 'go-current-notification-events:' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q '/api/v2/notifications/events/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q 'runtime-worker-current-artifacts:' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/artifacts/s3/' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q 'go-current-notifications:' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q '/api/v2/notifications/notifications/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q '/api/v2/notifications/notification/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
@@ -154,6 +160,8 @@ validate_model() {
   grep -q 'agent.execute.adhoc.v1' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q '/api/v2/elitea_core/regenerate/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q 'agent.regenerate.v1' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/elitea_core/continue_predict/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q 'agent.continue.hitl.v1' "$ELITEA_INDEX_ROUTE_FILE"
 
   rm -f "$rendered"
   trap - EXIT

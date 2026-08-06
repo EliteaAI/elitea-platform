@@ -6,6 +6,7 @@ http:
         (PathRegexp(`^/api/v2/elitea_core/messages/prompt_lib/[1-9][0-9]*/[^/]+$`) && Method(`POST`) && Query(`execution_contract`, `agent.execute.application.v1`)) ||
         (PathRegexp(`^/api/v2/elitea_core/messages/prompt_lib/[1-9][0-9]*/[^/]+$`) && Method(`POST`) && Query(`execution_contract`, `agent.execute.adhoc.v1`)) ||
         (PathRegexp(`^/api/v2/elitea_core/regenerate/prompt_lib/[1-9][0-9]*/[^/]+$`) && Method(`POST`) && Query(`execution_contract`, `agent.regenerate.v1`)) ||
+        (PathRegexp(`^/api/v2/elitea_core/continue_predict/prompt_lib/[1-9][0-9]*/[^/]+$`) && Method(`POST`) && Query(`execution_contract`, `agent.continue.hitl.v1`)) ||
         (PathRegexp(`^/api/v2/elitea_core/index_cancel/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[^/]+/[0-9a-f]{32}$`) && Method(`DELETE`)) ||
         (PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/[1-9][0-9]*/[1-9][0-9]*$`) && Method(`GET`)) ||
         (PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[^/]+$`) && Method(`DELETE`)) ||
@@ -61,7 +62,7 @@ http:
         - go-main-forward-auth
       service: current-main
 
-    # SDK 0.9.1 resolves an admitted nested application by reference. Keep the
+    # SDK 0.9.6 resolves an admitted nested application by reference. Keep the
     # current application/version handlers and RBAC semantics during hybrid
     # operation, while making the worker PAT pass through the same trusted
     # forward-auth boundary as the already-supported tools-list lookup.
@@ -70,6 +71,26 @@ http:
         Host(`elitea-gateway`) &&
         ((PathRegexp(`^/api/v2/elitea_core/application/prompt_lib/[1-9][0-9]*/[1-9][0-9]*$`) && Method(`GET`)) ||
         (PathRegexp(`^/api/v2/elitea_core/version/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[1-9][0-9]*$`) && Method(`PATCH`)))
+      priority: 85
+      entryPoints: [websecure]
+      tls: {}
+      middlewares:
+        - strip-caller-auth-context
+        - normalize-runtime-public-authority
+        - go-main-forward-auth
+      service: current-main
+
+    # The pinned SDK artifact toolkit still uses the current Centry artifact
+    # bucket and S3-compatible APIs. Keep those APIs authoritative in the
+    # mixed deployment, but admit only worker-originated requests through the
+    # existing workload-token forward-auth boundary. The unfinished Go object
+    # store remains disabled and browser traffic continues to use the ordinary
+    # current-platform fallback router.
+    runtime-worker-current-artifacts:
+      rule: >-
+        Host(`elitea-gateway`) &&
+        (((PathRegexp(`^/api/v2/artifacts/buckets/[1-9][0-9]*$`) && (Method(`GET`) || Method(`POST`))) ||
+        (PathRegexp(`^/artifacts/s3/[^/]+(/.*)?$`) && (Method(`GET`) || Method(`PUT`) || Method(`DELETE`) || Method(`HEAD`)))))
       priority: 85
       entryPoints: [websecure]
       tls: {}

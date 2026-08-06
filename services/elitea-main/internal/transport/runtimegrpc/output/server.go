@@ -650,7 +650,16 @@ func indexIngestResultDomain(result *runtimev1.IndexIngestResultV1) (outputapp.I
 }
 
 func agentExecutionResultDomain(result *runtimev1.AgentExecutionResultV1) (outputapp.AgentExecutionResult, error) {
-	if result == nil || result.GetTerminalState() != runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_COMPLETED {
+	if result == nil {
+		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	var terminalState outputapp.AgentExecutionTerminalState
+	switch result.GetTerminalState() {
+	case runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_COMPLETED:
+		terminalState = outputapp.AgentExecutionTerminalCompleted
+	case runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_PAUSED_HITL:
+		terminalState = outputapp.AgentExecutionTerminalPausedHITL
+	default:
 		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
 	}
 	bundleDigest, err := digestDomain(result.GetInputBundleDigest())
@@ -675,6 +684,7 @@ func agentExecutionResultDomain(result *runtimev1.AgentExecutionResultV1) (outpu
 		RequestEntryID:          result.GetRequestEntryId(),
 		RequestImmutableVersion: result.GetRequestImmutableVersion(),
 		RequestContentDigest:    requestDigest,
+		TerminalState:           terminalState,
 		ResultArtifact: outputapp.AgentExecutionArtifactReference{
 			ArtifactID:       artifact.GetArtifactId(),
 			ImmutableVersion: artifact.GetImmutableVersion(),

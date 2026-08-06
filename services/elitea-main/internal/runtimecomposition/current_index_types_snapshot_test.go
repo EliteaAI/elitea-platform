@@ -21,7 +21,7 @@ func TestPinnedCurrentIndexTypesSnapshotMatchesCurrentWorkerSDKProjection(
 		t.Fatal(err)
 	}
 	if snapshot.SDKRevision() !=
-		"6bc6dfcb740c8ec4f81c1da7c929f00786221cc6" ||
+		"6155d20acb4a3b00a6085212a75258cc1b3c695a" ||
 		snapshot.EntryCount() != 66 {
 		t.Fatalf(
 			"revision=%q entries=%d",

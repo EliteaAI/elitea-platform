@@ -65,6 +65,8 @@ type Querier interface {
 	// 12-hour local-disk TTL swept by the elitea_core_cleanup_stale_chunks RPC.
 	DeleteStaleAttachmentChunks(ctx context.Context, receivedAt pgtype.Timestamptz) (int64, error)
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
+	FinalizeCurrentAgentFullMessage(ctx context.Context, arg FinalizeCurrentAgentFullMessageParams) (int64, error)
+	FinalizeCurrentAgentHITLPause(ctx context.Context, arg FinalizeCurrentAgentHITLPauseParams) (int64, error)
 	// These unqualified names are intentional. Every query is executed inside a
 	// transaction whose local search_path is derived from the authorized project.
 	// This file projects the existing 16-column tenant table; it does not define a
@@ -151,6 +153,8 @@ type Querier interface {
 	InsertArtifactBucketExpiryNotification(ctx context.Context, arg InsertArtifactBucketExpiryNotificationParams) (int64, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentAdhocTurnParams) (InsertCurrentAdhocTurnRow, error)
+	InsertCurrentAgentTextContent(ctx context.Context, arg InsertCurrentAgentTextContentParams) error
+	InsertCurrentAgentTextItem(ctx context.Context, messageGroupID int64) (int32, error)
 	InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error)
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
 	InsertCurrentIndexScheduleNotification(ctx context.Context, arg InsertCurrentIndexScheduleNotificationParams) (int64, error)
@@ -237,6 +241,7 @@ type Querier interface {
 	LockAgentExecutionPublication(ctx context.Context, arg LockAgentExecutionPublicationParams) (LockAgentExecutionPublicationRow, error)
 	LockCancelledNoAuthorityAgentExecutions(ctx context.Context, arg LockCancelledNoAuthorityAgentExecutionsParams) ([]LockCancelledNoAuthorityAgentExecutionsRow, error)
 	LockCurrentAgentConversation(ctx context.Context, conversationUuid pgtype.UUID) (int32, error)
+	LockCurrentAgentResponseForTerminal(ctx context.Context, arg LockCurrentAgentResponseForTerminalParams) (int32, error)
 	// The unqualified configuration relation is intentional. These queries run
 	// only inside a tenant transaction whose local search_path was derived from an
 	// already authorized positive project identity.
@@ -273,6 +278,7 @@ type Querier interface {
 	ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error)
 	ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error)
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
+	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
 	// This is the exact current projects_get_personal_project_id decision tree:
 	// a named personal project wins only when the user has any project-role
 	// assignment; the system-user email fallback is considered only when that
@@ -282,6 +288,7 @@ type Querier interface {
 	ResolveCurrentTenantContext(ctx context.Context, arg ResolveCurrentTenantContextParams) (ResolveCurrentTenantContextRow, error)
 	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
 	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)
+	ResumeCurrentAgentHITL(ctx context.Context, arg ResumeCurrentAgentHITLParams) (ResumeCurrentAgentHITLRow, error)
 	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
 	SetArtifactBucketPinned(ctx context.Context, arg SetArtifactBucketPinnedParams) (EliteaStorageBucket, error)
 	// Configuration lifecycle internal effects. Unqualified tenant tables are
