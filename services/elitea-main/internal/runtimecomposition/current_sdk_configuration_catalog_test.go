@@ -11,7 +11,7 @@ func TestPinnedCurrentSDKConfigurationCatalogMatchesWorkerRegistry(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const revision = "6155d20acb4a3b00a6085212a75258cc1b3c695a"
+	const revision = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
 	if catalog.SDKRevision() != revision || catalog.CatalogRevision() != revision ||
 		catalog.EntryCount() != 32 {
 		t.Fatalf(

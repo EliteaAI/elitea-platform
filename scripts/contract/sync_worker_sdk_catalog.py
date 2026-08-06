@@ -37,6 +37,10 @@ DEFAULT_CATALOG_EVIDENCE = (
     / "configuration-catalog.json"
 )
 SCHEMA_VERSION = "elitea.worker-sdk-configuration-catalog.v1"
+# The admitted SDK source may advance without changing this content-addressed
+# configuration contract. Keep the last schema-producing revision until the
+# canonical catalog digest changes.
+CATALOG_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
 
 
 class ContractSyncError(RuntimeError):
@@ -134,7 +138,7 @@ def generate_documents(
                 "configuration_type": type_name,
                 "section": section,
                 "schema_id": f"elitea.configuration.{type_name}",
-                "schema_revision": revision,
+                "schema_revision": CATALOG_REVISION,
                 "schema_digest": f"sha256:{schema_digest}",
                 "validation_supported": validation_supported,
                 "connection_check_supported": connection_check_supported,
@@ -145,8 +149,8 @@ def generate_documents(
     catalog_digest = hashlib.sha256(_canonical(canonical_catalog)).hexdigest()
     binding_catalog = {
         "schema_version": SCHEMA_VERSION,
-        "sdk_revision": revision,
-        "catalog_revision": revision,
+        "sdk_revision": CATALOG_REVISION,
+        "catalog_revision": CATALOG_REVISION,
         "catalog_digest": f"sha256:{catalog_digest}",
         "complete": True,
         "entry_count": len(binding_entries),

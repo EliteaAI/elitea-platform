@@ -27,8 +27,10 @@ SDK_SOURCE_ARCHIVE_SHA256 = (
 SDK_PACKAGE_TREE_SHA256 = (
     "1b5d675d087a1b753562274ca0d02603c6396a27e4cb5633d9948ac8613739b7"
 )
-# Configuration schemas are regenerated from this exact admitted SDK source.
-CONFIGURATION_CATALOG_REVISION = SDK_SOURCE_REVISION
+# The configuration catalog has its own compatibility revision. SDK 0.9.6
+# preserves the exact admitted catalog digest, so upgrading the runtime must
+# not invalidate already-admitted configuration-validation envelopes.
+CONFIGURATION_CATALOG_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
 CONFIGURATION_CATALOG_SHA256 = (
     "4a96e3ab8e3842ebf2645a851aeb12e3e2343f28e7d024c1a2960eb4ec254351"
 )
