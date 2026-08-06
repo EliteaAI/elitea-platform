@@ -29,12 +29,16 @@
  * documented precedent for the identical trade-off.
  */
 import {
+  AGENT_EXECUTE_ADHOC_CONTRACT,
+  AGENT_EXECUTE_APPLICATION_CONTRACT,
+  AGENT_REGENERATE_CONTRACT,
   conversationCreate,
   conversationDetails,
   conversationEdit,
   deleteConversation,
   regenerate,
   selectConversation,
+  startAgentExecution,
   stopChatTask,
   unselectConversation,
   useConversationCreateMutation,
@@ -119,6 +123,18 @@ export const conversationApi = {
   select: selectConversation,
   unselect: unselectConversation,
   regenerate,
+  startAgentExecution,
+  /**
+   * The `execution_contract` values the Go agent-execution route admits
+   * (issue #93). Bundled onto this namespace object rather than exported
+   * as three more barrel symbols — §3.5's 20-symbol slice budget is already
+   * exactly met, and these belong to `startAgentExecution` anyway.
+   */
+  contracts: {
+    application: AGENT_EXECUTE_APPLICATION_CONTRACT,
+    adhoc: AGENT_EXECUTE_ADHOC_CONTRACT,
+    regenerate: AGENT_REGENERATE_CONTRACT,
+  },
   stopTask: stopChatTask,
   messageList,
   deleteMessage: deleteMessageFromConversation,

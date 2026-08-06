@@ -22,6 +22,7 @@ import {
   getIndexHistoryConversationDetails,
   getIndexSchedule,
   getIndexesList,
+  startIndexExecution,
   stopIndexingItem,
   updateIndexSchedule,
   useDeleteIndexItemMutation,
@@ -215,5 +216,61 @@ describe('getIndexHistoryConversationDetails / useIndexHistoryConversationDetail
       { wrapper },
     );
     expect(result.current.fetchStatus).toBe('idle');
+  });
+});
+
+describe('startIndexExecution (issue #93)', () => {
+  it('POSTs the GO contract body — toolkit_config + tool_name index_data — with await_response=false and the index.ingest.v1 contract', async () => {
+    let seenUrl: string | undefined;
+    let seenBody: unknown;
+    server.use(
+      http.post(`${BASE}/elitea_core/test_toolkit_tool/prompt_lib/7`, async ({ request }) => {
+        seenUrl = request.url;
+        seenBody = await request.json();
+        return HttpResponse.json({ task_id: 'exec-1' });
+      }),
+    );
+
+    await expect(
+      startIndexExecution({
+        projectId: 7,
+        toolkitId: 'tk-1',
+        toolParams: { index_name: 'docs' },
+        llmModel: 'gpt-4o-mini',
+        llmSettings: { temperature: 0.1 },
+      }),
+    ).resolves.toEqual({ task_id: 'exec-1' });
+
+    const query = new URL(String(seenUrl)).searchParams;
+    expect(query.get('await_response')).toBe('false');
+    expect(query.get('execution_contract')).toBe('index.ingest.v1');
+    // Field-for-field against `currentStartBody` in
+    // services/elitea-main/internal/api/v2/indexing/start_handler.go —
+    // `toolkit_config` and a `tool_name` of exactly `index_data` are what
+    // the handler validates before anything else.
+    expect(seenBody).toEqual({
+      toolkit_config: { toolkit_id: 'tk-1' },
+      tool_name: 'index_data',
+      tool_params: { index_name: 'docs' },
+      llm_model: 'gpt-4o-mini',
+      llm_settings: { temperature: 0.1 },
+    });
+  });
+
+  it('omits llm_model / llm_settings when unset, letting the Go handler apply its own defaults', async () => {
+    let seenBody: unknown;
+    server.use(
+      http.post(`${BASE}/elitea_core/test_toolkit_tool/prompt_lib/7`, async ({ request }) => {
+        seenBody = await request.json();
+        return HttpResponse.json({ task_id: 'exec-1' });
+      }),
+    );
+    await startIndexExecution({ projectId: 7, toolkitId: 'tk-1', toolParams: {} });
+    expect(seenBody).toEqual({ toolkit_config: { toolkit_id: 'tk-1' }, tool_name: 'index_data', tool_params: {} });
+  });
+
+  it('rejects when the route is not mounted — the caller decides to fall back, not this function', async () => {
+    server.use(http.post(`${BASE}/elitea_core/test_toolkit_tool/prompt_lib/7`, () => new HttpResponse(null, { status: 404 })));
+    await expect(startIndexExecution({ projectId: 7, toolkitId: 'tk-1', toolParams: {} })).rejects.toThrow();
   });
 });

@@ -102,6 +102,15 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     setChatHistory((prev) => [...prev, buildOptimisticUserMessage(questionId, question, userParticipant, participantId)]);
     if (!isStreamingNow) setStreamingInfo(questionId);
     // Only emit once a conversation UUID actually exists — baseline: `ChatBox.jsx:928` `if (conversationUuid) { emit(...) }`.
+    //
+    // NOT migrated to SSE (issue #93): the chat surface has no consumer for
+    // the streamed `execution.node_event` envelope — the streaming reducer
+    // the old app fed from `chat_predict` was never ported (`features/
+    // chat-messages` is still unwired). Starting the run over REST here would
+    // suppress this emit, and the answer would never render. The REST layer
+    // is ready (`conversationApi.startAgentExecution` +
+    // `conversationApi.contracts`); wiring it belongs with the unit that
+    // lands that reducer.
     if (resolvedConversationUuid) {
       try {
         emitSocket('chat_predict', { ...payload, conversation_uuid: resolvedConversationUuid, project_id: toProjectIdString(projectId) });
@@ -134,6 +143,12 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
       return prev.map((item) => (item.id !== messageId ? item : regeneratingPatch(item)));
     });
     maybeSetStreamingInfo(setStreamingInfo, questionMessage?.id);
+    // Deliberately sends NO `execution_contract` (issue #93): on the
+    // compose stack that query value is the traefik discriminator that
+    // reroutes this POST from legacy pylon to the Go agent-execution
+    // handler, which requires a body shape (`payload.user_input`, numeric
+    // `project_id`) that `buildRegeneratePayload` does not produce — and
+    // regenerate has no socket fallback to absorb the rejection.
     const payload = buildRegeneratePayload(deps, messageId, questionMessage, updatedItems);
     try {
       await triggerRegenerate(payload as Parameters<typeof conversationApi.regenerate>[0]);

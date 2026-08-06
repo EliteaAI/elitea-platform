@@ -7,9 +7,11 @@ import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { installTestEventSource, type TestEventSourceRegistry } from '@/shared/api/sse/testing';
 import { SocketClientContext } from '@/shared/api/socket/client';
 import { createTestSocketClient } from '@/shared/api/socket/testing';
 import type { TestSocketClient } from '@/shared/api/socket/testing';
+import { resetConfigForTests } from '@/shared/config/get-config';
 import { server } from '@/test/setup';
 import { installWebStorageShim } from '@/test/webstorage';
 
@@ -18,6 +20,7 @@ import { useToolkitChat } from './useToolkitChat.hooks';
 import type { UseToolkitChatParams, UseToolkitChatResult } from './useToolkitChat.types';
 
 const BASE = '/api/v2';
+const globals = globalThis as unknown as Record<string, unknown>;
 
 // A "run finished" streaming message reaching `indexChatReducer.local.ts`'s
 // `applyStreamingUpdate` calls `notifyTaskComplete()`
@@ -144,8 +147,18 @@ function renderToolkitChatWithRerender(
   return { box };
 }
 
+/** `startIndexExecution`'s route (issue #93) — POST test_toolkit_tool. */
+const START_PATH = `${BASE}/elitea_core/test_toolkit_tool/prompt_lib/proj-1`;
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: BASE });
+  // Default for every test that is not ABOUT the SSE dispatch: a backend
+  // that answers without a `task_id`, i.e. the socket.io fallback. Making
+  // that explicit (rather than letting the POST 404 through MSW's
+  // unhandled-request error) is what keeps the fallback assertions below
+  // honest — they must pass because the response says "no execution to
+  // follow", not because the request blew up.
+  server.use(http.post(START_PATH, () => HttpResponse.json({})));
 });
 
 afterEach(() => {
@@ -685,6 +698,205 @@ describe('useToolkitChat', () => {
       // selectedModel is no longer null, so the "adopt defaultModel" effect's own gate stays closed.
       await waitFor(() => expect(box.current).toBeDefined());
       expect(box.current?.selectedModel).toEqual({ name: 'user-picked' });
+    });
+  });
+  /**
+   * Issue #93 — SSE dispatch. The run is started over REST; when the
+   * backend returns a `task_id`, `useToolkitChatSocket` follows that
+   * execution's durable event stream and NOTHING is emitted on socket.io.
+   * When it does not, the socket emit is still the transport.
+   */
+  describe('SSE execution dispatch (REST start + durable event stream)', () => {
+    let sse: TestEventSourceRegistry;
+
+    beforeEach(() => {
+      sse = installTestEventSource();
+      globals['elitea_ui_config'] = { vite_server_url: BASE, vite_base_uri: '/', vite_public_project_id: 'public-1' };
+      resetConfigForTests();
+    });
+
+    afterEach(() => {
+      sse.restore();
+      delete globals['elitea_ui_config'];
+      resetConfigForTests();
+    });
+
+    it('POSTs the GO contract body for an index_data run and follows the returned task_id, without emitting chat_predict', async () => {
+      let startUrl: string | undefined;
+      let startBody: unknown;
+      server.use(
+        http.post(START_PATH, async ({ request }) => {
+          startUrl = request.url;
+          startBody = await request.json();
+          return HttpResponse.json({ task_id: 'exec-1' });
+        }),
+      );
+      const client = createTestSocketClient();
+      const traceNewIndex = vi.fn();
+      const index = { id: 'idx-1', metadata: { state: 'created' } };
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, traceNewIndex }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(1));
+      expect(sse.getSources()[0]?.url).toBe(`${BASE}/executions/proj-1/exec-1/events`);
+      expect(client.getEmitted('chat_predict')).toHaveLength(0);
+      expect(startUrl).toContain('await_response=false');
+      expect(startUrl).toContain('execution_contract=index.ingest.v1');
+      // The Go handler validates `toolkit_config` and `tool_name` before
+      // anything else — the socket predict payload has neither.
+      expect(startBody).toMatchObject({ toolkit_config: { toolkit_id: 'tk-1' }, tool_name: 'index_data' });
+      expect(traceNewIndex).toHaveBeenCalledWith('idx-1', { task_id: 'exec-1' });
+    });
+
+    it('never attempts the REST start for a non-index_data tool — the Go handler admits index_data only', async () => {
+      let started = false;
+      server.use(
+        http.post(START_PATH, () => {
+          started = true;
+          return HttpResponse.json({ task_id: 'exec-1' });
+        }),
+      );
+      const client = createTestSocketClient();
+      const { box } = renderToolkitChat(baseParams({ modes: [] }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleRunTool());
+
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+      expect(started).toBe(false);
+      expect(sse.getSources()).toHaveLength(0);
+    });
+
+    /**
+     * The critical one: `task_id` alone does NOT prove the Go runtime
+     * answered — legacy pylon honours `await_response=false` and returns a
+     * `task_id` of its own while serving no `/executions/…/events` stream.
+     * The stream failing to open is the real discriminator.
+     */
+    it('emits on socket.io after all when the execution stream fails to open (legacy backend returned a task_id)', async () => {
+      server.use(http.post(START_PATH, () => HttpResponse.json({ task_id: 'legacy-task' })));
+      const client = createTestSocketClient();
+      const { box } = renderToolkitChat(baseParams({ modes: [] }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(1));
+      expect(client.getEmitted('chat_predict')).toHaveLength(0);
+
+      act(() => {
+        sse.fail();
+      });
+
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+      const emitted = client.getEmitted('chat_predict')[0]?.payload as { tool_call_input: { tool_name: string } };
+      expect(emitted.tool_call_input.tool_name).toBe('index_data');
+      // And the stream is dropped, so nothing is left following a dead id.
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(0));
+    });
+
+    it('does not re-emit on a stream failure that arrives after the run already settled', async () => {
+      server.use(http.post(START_PATH, () => HttpResponse.json({ task_id: 'exec-1' })));
+      const client = createTestSocketClient();
+      const { box } = renderToolkitChat(baseParams({ modes: [] }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(1));
+      act(() => {
+        sse.emit('index.ingest.completed', JSON.stringify({ status: 'ok' }));
+      });
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+
+      act(() => {
+        sse.fail();
+      });
+      expect(client.getEmitted('chat_predict')).toHaveLength(0);
+    });
+
+    it('routes execution.node_event frames through the same chat reducer the socket path feeds', async () => {
+      server.use(http.post(START_PATH, () => HttpResponse.json({ task_id: 'exec-1' })));
+      const { box } = renderToolkitChat(baseParams({ modes: [] }));
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(1));
+      // `startNewToolkitConversation` clears the welcome message, so the
+      // history is empty until a frame actually lands.
+      await waitFor(() => expect(box.current?.chatHistory).toHaveLength(0));
+
+      act(() => {
+        // The same frame the socket-path test uses, delivered over SSE.
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 'exec-1' } }));
+      });
+
+      await waitFor(() => expect(box.current?.chatHistory.length).toBeGreaterThan(0));
+    });
+
+    it('finishes the run on index.ingest.completed, mapping the server status onto the index state', async () => {
+      server.use(http.post(START_PATH, () => HttpResponse.json({ task_id: 'exec-1' })));
+      const traceNewIndex = vi.fn();
+      const index = { id: 'idx-1', metadata: { state: 'created' } };
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, traceNewIndex }));
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(1));
+
+      act(() => {
+        sse.emit('index.ingest.completed', JSON.stringify({ status: 'partly_indexed', message: 'some docs failed' }));
+      });
+
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+      // Terminal frame ⇒ nothing left to receive ⇒ the stream is closed.
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(0));
+      await waitFor(() => expect(traceNewIndex).toHaveBeenCalledWith('idx-1', { state: 'partly_indexed' }));
+    });
+
+    it('finishes the run as failed on execution.failed', async () => {
+      server.use(http.post(START_PATH, () => HttpResponse.json({ task_id: 'exec-1' })));
+      const traceNewIndex = vi.fn();
+      const index = { id: 'idx-1', metadata: { state: 'created' } };
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, traceNewIndex }));
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(1));
+
+      act(() => {
+        sse.emit('execution.failed', JSON.stringify({ message: 'worker died' }));
+      });
+
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+      await waitFor(() => expect(traceNewIndex).toHaveBeenCalledWith('idx-1', { state: 'failed' }));
+    });
+
+    it('falls back to the socket emit when the start call fails outright (route not mounted)', async () => {
+      server.use(http.post(START_PATH, () => new HttpResponse(null, { status: 404 })));
+      const client = createTestSocketClient();
+      const { box } = renderToolkitChat(baseParams({ modes: [] }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+      expect(sse.getSources()).toHaveLength(0);
+      // The failed start must NOT surface as a run error — the socket path
+      // is carrying the run.
+      expect(String(box.current?.chatHistory.at(-1)?.content)).not.toContain('Failed to execute tool');
+    });
+
+    it('falls back to the socket emit when the response carries no task_id (older backend)', async () => {
+      server.use(http.post(START_PATH, () => HttpResponse.json({ ok: true })));
+      const client = createTestSocketClient();
+      const { box } = renderToolkitChat(baseParams({ modes: [] }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+      expect(sse.getSources()).toHaveLength(0);
     });
   });
 });
