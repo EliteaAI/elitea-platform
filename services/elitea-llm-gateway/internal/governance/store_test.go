@@ -608,6 +608,29 @@ func TestStart_BindsReconcilerContext(t *testing.T) {
 	_ = gs
 }
 
+// TestPing_Healthy: Ping returns nil when the breaker is closed.
+func TestPing_Healthy(t *testing.T) {
+	nc := newFakeNATS()
+	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
+	gs := newStore(nc, db)
+
+	if err := gs.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping should return nil when NATS is healthy, got: %v", err)
+	}
+}
+
+// TestPing_Unhealthy: Ping returns ErrUnavailable when breaker is open.
+func TestPing_Unhealthy(t *testing.T) {
+	nc := newFakeNATS()
+	nc.breakerState = gobreaker.StateOpen
+	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
+	gs := newStore(nc, db)
+
+	if err := gs.Ping(context.Background()); err == nil {
+		t.Fatal("Ping should return error when NATS breaker is open")
+	}
+}
+
 // TestDefaultParams_Sane: DefaultParams must return a non-zero Params.
 func TestDefaultParams_Sane(t *testing.T) {
 	p := DefaultParams()

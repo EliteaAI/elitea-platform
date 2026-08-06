@@ -156,6 +156,12 @@ type RouterConfig struct {
 	CurrentLLMFacade              http.Handler
 	LLMProxy                      http.Handler
 	LLMProjectResolver            apimw.PersonalProjectResolver
+	// GatewayProxy is the mTLS streaming reverse proxy to elitea-llm-gateway-svc
+	// (BF0.9c). When non-nil, it is mounted at /llm with Auth+Project middleware
+	// in the production router. Unlike LLMProxy, setting this does NOT trigger
+	// prototype compatibility mode.
+	GatewayProxy           http.Handler
+	GatewayProjectResolver apimw.PersonalProjectResolver
 }
 
 type RuntimeRoutes struct {

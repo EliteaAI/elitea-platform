@@ -367,7 +367,18 @@ func (g *GovernanceStore) TryAlertCooldown(ctx context.Context, scope, scopeID s
 	return g.nc.TryAlertCooldown(ctx, key)
 }
 
-// natsUnavailable reports whether the NATS circuit breaker is currently open
+// Ping reports whether the GovernanceStore's NATS dependency is reachable. It
+// returns nil when the circuit breaker is closed (healthy) and ErrUnavailable
+// when the breaker is open or half-open. Callers (e.g. /healthz probes) use this
+// to include budget-enforcement health in readiness checks.
+func (g *GovernanceStore) Ping(_ context.Context) error {
+	if g.nc.BreakerState() != gobreaker.StateClosed {
+		return nats.ErrUnavailable
+	}
+	return nil
+}
+
+// NATSUnavailable reports whether the NATS circuit breaker is currently open
 // (i.e., the last several operations failed). Exposed for observability.
 func (g *GovernanceStore) NATSUnavailable() bool {
 	return g.nc.BreakerState() != gobreaker.StateClosed
