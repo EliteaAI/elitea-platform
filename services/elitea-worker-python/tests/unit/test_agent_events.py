@@ -28,6 +28,7 @@ def _callback():
     events = []
     callback = CurrentAgentNodeEventCallback(
         CurrentAgentNodeEventContext(
+            execution_id="execution-1",
             stream_id="conversation-1",
             message_id="message-1",
             execution_generation="generation-1",
@@ -280,6 +281,40 @@ def test_hitl_terminal_keeps_current_shape_and_is_not_a_full_message() -> None:
         "approve",
         "reject",
     ]
+
+
+def test_pipeline_hitl_terminal_uses_execution_identity_when_sdk_omits_one() -> None:
+    callback, events = _callback()
+    payload = _request_payload()
+    interrupt = {
+        "type": "hitl",
+        "node_name": "review",
+        "message": "Review the generated answer.",
+        "available_actions": ["approve", "reject", "edit"],
+        "routes": {
+            "approve": "publish",
+            "reject": "END",
+            "edit": "revise",
+        },
+        "edit_state_key": "answer",
+    }
+
+    terminal = callback.emit_terminal(
+        {
+            "thread_id": "thread-1",
+            "execution_finished": False,
+            "hitl_interrupt": interrupt,
+            "hitl_interrupts": [interrupt],
+        },
+        payload,
+    )
+
+    event = _json(terminal)
+    persisted = event["response_metadata"]["hitl_interrupt"]
+    assert event["type"] == "agent_hitl_interrupt"
+    assert persisted["interrupt_id"] == "execution-1"
+    assert event["response_metadata"]["hitl_interrupts"] == [persisted]
+    assert "interrupt_id" not in interrupt
 
 
 def test_raw_sdk_hitl_custom_event_is_not_a_second_terminal_owner() -> None:
