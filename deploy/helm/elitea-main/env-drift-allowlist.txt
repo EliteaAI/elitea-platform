@@ -56,6 +56,12 @@ GATEWAY_CLIENT_KEY_FILE
 GATEWAY_SERVER_NAME
 GATEWAY_HTTP_ADDR
 GATEWAY_NATS_URL
+# --- BF0.9c: mTLS reverse proxy to elitea-llm-gateway-svc (internal/llmproxy).
+# --- Same cert Secret as above; LLM_GATEWAY_URL is the gateway's ClusterIP URL.
+LLM_GATEWAY_URL
+LLM_GATEWAY_CLIENT_CERT
+LLM_GATEWAY_CLIENT_KEY
+LLM_GATEWAY_CA_FILE
 
 # --- Cutover / parity rollout controls, driven by the migration tooling rather
 # --- than steady-state chart values.
