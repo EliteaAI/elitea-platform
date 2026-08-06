@@ -2225,6 +2225,7 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
         payload = resolved_input.request.payload
         callback = CurrentAgentNodeEventCallback(
             CurrentAgentNodeEventContext(
+                execution_id=command.execution_id,
                 stream_id=command.agent_execution.client_stream_id,
                 message_id=command.agent_execution.client_message_id,
                 execution_generation=(
