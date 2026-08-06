@@ -669,11 +669,31 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		slog.Info("llm gateway proxy enabled", "target", gwURL)
 	}
 
+	// BF0.9c/d: the gateway proxy needs the same production-auth wiring as
+	// every other auth-protected route above, gated on formGraph != nil —
+	// assigning a nil *FormGraph directly to an interface field would produce
+	// a non-nil interface holding a nil pointer, defeating the "not
+	// configured" nil-checks in the auth middleware (#86).
+	var gatewayAuthValidator apimw.TokenValidator
+	var gatewayPrincipalValidator apimw.PrincipalValidator
+	var gatewayForwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
+	var gatewaySessionSecret string
+	if formGraph != nil {
+		gatewayAuthValidator = formGraph
+		gatewayPrincipalValidator = principalValidator
+		gatewayForwardedIdentityVerifier = forwardedIdentityVerifier
+		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
+	}
+
 	r := api.NewRouter(api.RouterConfig{
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
 		},
+		AuthValidator:                 gatewayAuthValidator,
+		PrincipalValidator:            gatewayPrincipalValidator,
+		Auth:                          api.AuthDeps{ForwardedIdentityVerifier: gatewayForwardedIdentityVerifier},
+		SessionSecret:                 gatewaySessionSecret,
 		ProductionAuth:                productionAuth,
 		ProductionRuntime:             productionRuntime,
 		CurrentProjectInfo:            currentProjectInfo,
