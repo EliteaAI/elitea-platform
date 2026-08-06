@@ -22,7 +22,12 @@ import {
   resetSharedAudioContextForTests as resetIndexesAudioContext,
 } from '@/features/toolkits/indexes/lib/helpers/soundNotification.local';
 
-import { useSoundNotification } from './useSoundNotification';
+import {
+  isPageInactive,
+  playCompletionSound,
+  playErrorSound,
+  useSoundNotification,
+} from './useSoundNotification';
 
 installWebStorageShim();
 
@@ -69,6 +74,85 @@ beforeEach(() => {
 afterEach(() => {
   restorePageVisibility();
   vi.unstubAllGlobals();
+});
+
+describe('loadSoundConfig edge cases', () => {
+  it('returns defaults when stored value is corrupt JSON', () => {
+    const store = createStorage('local');
+    store.set('notifications.sound-config', '{not-json!!!');
+    const { result } = renderHook(() => useSoundNotification());
+    expect(result.current.config).toEqual({ enabled: true, volume: 0.5 });
+  });
+
+  it('returns defaults when stored value is null-like JSON', () => {
+    const store = createStorage('local');
+    store.set('notifications.sound-config', 'null');
+    const { result } = renderHook(() => useSoundNotification());
+    expect(result.current.config).toEqual({ enabled: true, volume: 0.5 });
+  });
+
+  it('clamps volume to [0, 1] range', () => {
+    const store = createStorage('local');
+    store.set('notifications.sound-config', JSON.stringify({ enabled: true, volume: 5.0 }));
+    const { result } = renderHook(() => useSoundNotification());
+    expect(result.current.config.volume).toBe(1);
+  });
+
+  it('clamps negative volume to 0', () => {
+    const store = createStorage('local');
+    store.set('notifications.sound-config', JSON.stringify({ enabled: false, volume: -2 }));
+    const { result } = renderHook(() => useSoundNotification());
+    expect(result.current.config.volume).toBe(0);
+  });
+
+  it('falls back to default enabled when stored "enabled" is not boolean', () => {
+    const store = createStorage('local');
+    store.set('notifications.sound-config', JSON.stringify({ enabled: 'yes', volume: 0.5 }));
+    const { result } = renderHook(() => useSoundNotification());
+    expect(result.current.config.enabled).toBe(true);
+  });
+
+  it('falls back to default volume when stored "volume" is not number', () => {
+    const store = createStorage('local');
+    store.set('notifications.sound-config', JSON.stringify({ enabled: false, volume: 'loud' }));
+    const { result } = renderHook(() => useSoundNotification());
+    expect(result.current.config.volume).toBe(0.5);
+  });
+});
+
+describe('playCompletionSound / playErrorSound standalone', () => {
+  it('does not throw when AudioContext is unavailable', () => {
+    vi.stubGlobal('AudioContext', undefined);
+    expect(() => playCompletionSound()).not.toThrow();
+    expect(() => playErrorSound()).not.toThrow();
+  });
+
+  it('does not play sound when config.enabled is false', () => {
+    const store = createStorage('local');
+    store.set('notifications.sound-config', JSON.stringify({ enabled: false, volume: 0.5 }));
+    const audioCtxCtor = installFakeAudioContext();
+    playCompletionSound();
+    expect(audioCtxCtor).not.toHaveBeenCalled();
+  });
+});
+
+describe('isPageInactive', () => {
+  it('returns true when document.hidden is true', () => {
+    Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+    expect(isPageInactive()).toBe(true);
+  });
+
+  it('returns true when document.hasFocus() returns false', () => {
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    expect(isPageInactive()).toBe(true);
+  });
+
+  it('returns false when page is visible and focused', () => {
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    expect(isPageInactive()).toBe(false);
+  });
 });
 
 describe('useSoundNotification', () => {

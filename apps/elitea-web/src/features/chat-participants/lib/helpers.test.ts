@@ -1,0 +1,136 @@
+import { describe, expect, it } from 'vitest';
+
+import { ChatParticipantType } from '../model/constants';
+
+import {
+  canParticipantBeActiveInChat,
+  getChatParticipantUniqueId,
+  getParticipantName,
+  isParticipantOKForChat,
+  isParticipantsEqual,
+  transformParticipant,
+} from './helpers';
+
+describe('getChatParticipantUniqueId', () => {
+  it('returns empty string for undefined', () => {
+    expect(getChatParticipantUniqueId(undefined)).toBe('');
+  });
+
+  it('keys models by model_name and integration_uid', () => {
+    const p = { entity_name: 'llm', entity_meta: { model_name: 'gpt-4', integration_uid: 'uid1', project_id: 'p1' } };
+    expect(getChatParticipantUniqueId(p)).toBe('llm_gpt-4-uid1_p1');
+  });
+
+  it('keys applications by entity_meta.id', () => {
+    const p = { entity_name: 'application', entity_meta: { id: 'a1', project_id: 'p2' } };
+    expect(getChatParticipantUniqueId(p)).toBe('application_a1_p2');
+  });
+
+  it('reclassifies pipeline-type applications', () => {
+    const p = { entity_name: 'application', entity_settings: { agent_type: 'pipeline' }, entity_meta: { id: 'x', project_id: 'p' } };
+    expect(getChatParticipantUniqueId(p)).toBe('pipeline_x_p');
+  });
+
+  it('handles missing entity_meta gracefully', () => {
+    const p = { entity_name: 'toolkit' };
+    expect(getChatParticipantUniqueId(p)).toBe('toolkit__');
+  });
+});
+
+describe('getParticipantName', () => {
+  it('resolves application name from entity_meta', () => {
+    expect(getParticipantName({ entity_name: 'application', entity_meta: { name: 'Bot' } }, 'System')).toBe('Bot');
+  });
+
+  it('resolves model name from entity_meta.model_name', () => {
+    expect(getParticipantName({ entity_name: 'llm', entity_meta: { model_name: 'claude-3' } }, '')).toBe('claude-3');
+  });
+
+  it('resolves user name from meta.user_name', () => {
+    expect(getParticipantName({ entity_name: 'user', meta: { user_name: 'Alice' } }, '')).toBe('Alice');
+  });
+
+  it('resolves dummy to systemSenderName', () => {
+    expect(getParticipantName({ entity_name: 'dummy' }, 'Elitea')).toBe('Elitea');
+  });
+
+  it('returns empty for unknown entity type', () => {
+    expect(getParticipantName({ entity_name: 'unknown_thing' }, 'X')).toBe('');
+  });
+
+  it('returns empty for undefined participant', () => {
+    expect(getParticipantName(undefined, 'X')).toBe('');
+  });
+});
+
+describe('isParticipantOKForChat', () => {
+  it.each(['user', 'toolkit', 'application', 'pipeline'])('%s is OK', (name) => {
+    expect(isParticipantOKForChat({ entity_name: name })).toBe(true);
+  });
+
+  it('models are not OK', () => {
+    expect(isParticipantOKForChat({ entity_name: 'llm' })).toBe(false);
+  });
+});
+
+describe('canParticipantBeActiveInChat', () => {
+  it.each(['user', 'application', 'pipeline'])('%s can be active', (name) => {
+    expect(canParticipantBeActiveInChat({ entity_name: name })).toBe(true);
+  });
+
+  it('toolkits cannot be active', () => {
+    expect(canParticipantBeActiveInChat({ entity_name: 'toolkit' })).toBe(false);
+  });
+});
+
+describe('transformParticipant', () => {
+  it('builds model participant with defaults', () => {
+    const result = transformParticipant(ChatParticipantType.Models, { model_name: 'gpt', integration_uid: 'u1' });
+    expect(result.entity_name).toBe('llm');
+    expect(result.entity_meta).toEqual({ model_name: 'gpt', integration_uid: 'u1' });
+    expect(result.entity_settings?.max_tokens).toBe(4096);
+    expect(result.entity_settings?.temperature).toBe(0.7);
+  });
+
+  it('builds application participant', () => {
+    const result = transformParticipant(ChatParticipantType.Applications, { id: 'a1', name: 'Agent', project_id: 'p1' });
+    expect(result.entity_name).toBe('application');
+    expect(result.entity_meta).toEqual({ id: 'a1', name: 'Agent', project_id: 'p1' });
+  });
+
+  it('reclassifies pipeline-type agent_type to applications entity_name', () => {
+    const result = transformParticipant(ChatParticipantType.Pipelines, { id: 'pp1', name: 'Pipe', agent_type: 'pipeline' });
+    expect(result.entity_name).toBe('application');
+  });
+
+  it('passes through provided variables', () => {
+    const vars = [{ key: 'x', value: '1' }];
+    const result = transformParticipant(ChatParticipantType.Applications, { id: '1' }, vars);
+    expect(result.entity_settings?.variables).toBe(vars);
+  });
+
+  it('extracts icon_meta (empty for toolkits)', () => {
+    const result = transformParticipant(ChatParticipantType.Toolkits, { id: '1', meta: { icon_meta: { url: 'x' } } });
+    expect(result.entity_settings?.icon_meta).toEqual({});
+  });
+});
+
+describe('isParticipantsEqual', () => {
+  it('compares models by entity_name, model_name, and integration_uid', () => {
+    const a = { entity_name: 'llm', entity_meta: { model_name: 'gpt', integration_uid: 'u1' } };
+    const b = transformParticipant(ChatParticipantType.Models, { model_name: 'gpt', integration_uid: 'u1' });
+    expect(isParticipantsEqual(a, b, ChatParticipantType.Models, 'model_name')).toBe(true);
+  });
+
+  it('returns false for different model names', () => {
+    const a = { entity_name: 'llm', entity_meta: { model_name: 'gpt', integration_uid: 'u1' } };
+    const b = transformParticipant(ChatParticipantType.Models, { model_name: 'claude', integration_uid: 'u1' });
+    expect(isParticipantsEqual(a, b, ChatParticipantType.Models, 'model_name')).toBe(false);
+  });
+
+  it('compares non-models by unique id', () => {
+    const a = { entity_name: 'application', entity_meta: { id: 'x', project_id: 'p1' } };
+    const b = transformParticipant(ChatParticipantType.Applications, { id: 'x', project_id: 'p1' });
+    expect(isParticipantsEqual(a, b, ChatParticipantType.Applications, 'id')).toBe(true);
+  });
+});
