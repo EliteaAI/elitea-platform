@@ -11,6 +11,69 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const finalizeCurrentAgentFullMessage = `-- name: FinalizeCurrentAgentFullMessage :execrows
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = (meta - 'hitl_interrupt' - 'hitl_interrupts')
+        || jsonb_build_object(
+            'thread_id', $1::text,
+            'references', $2::jsonb,
+            'is_error', FALSE,
+            'error', '',
+            'invoked_skills', $3::jsonb
+        ),
+    updated_at = clock_timestamp()
+WHERE id = $4::bigint
+`
+
+type FinalizeCurrentAgentFullMessageParams struct {
+	ThreadID       string `db:"thread_id" json:"thread_id"`
+	ReferencesJson []byte `db:"references_json" json:"references_json"`
+	InvokedSkills  []byte `db:"invoked_skills" json:"invoked_skills"`
+	MessageGroupID int64  `db:"message_group_id" json:"message_group_id"`
+}
+
+func (q *Queries) FinalizeCurrentAgentFullMessage(ctx context.Context, arg FinalizeCurrentAgentFullMessageParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finalizeCurrentAgentFullMessage,
+		arg.ThreadID,
+		arg.ReferencesJson,
+		arg.InvokedSkills,
+		arg.MessageGroupID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const finalizeCurrentAgentHITLPause = `-- name: FinalizeCurrentAgentHITLPause :execrows
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = (meta - 'hitl_interrupts')
+        || jsonb_build_object(
+            'thread_id', $1::text,
+            'hitl_interrupt', $2::jsonb,
+            'is_error', FALSE,
+            'error', ''
+        ),
+    updated_at = clock_timestamp()
+WHERE id = $3::bigint
+`
+
+type FinalizeCurrentAgentHITLPauseParams struct {
+	ThreadID       string `db:"thread_id" json:"thread_id"`
+	HitlInterrupt  []byte `db:"hitl_interrupt" json:"hitl_interrupt"`
+	MessageGroupID int64  `db:"message_group_id" json:"message_group_id"`
+}
+
+func (q *Queries) FinalizeCurrentAgentHITLPause(ctx context.Context, arg FinalizeCurrentAgentHITLPauseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finalizeCurrentAgentHITLPause, arg.ThreadID, arg.HitlInterrupt, arg.MessageGroupID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertCurrentAdhocTurn = `-- name: InsertCurrentAdhocTurn :one
 WITH resolved AS MATERIALIZED (
     SELECT conversation.id AS conversation_id,
@@ -240,6 +303,42 @@ func (q *Queries) InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentA
 	return i, err
 }
 
+const insertCurrentAgentTextContent = `-- name: InsertCurrentAgentTextContent :exec
+INSERT INTO chat_messages_text (id, content)
+VALUES ($1::bigint, $2::text)
+`
+
+type InsertCurrentAgentTextContentParams struct {
+	ItemID  int64  `db:"item_id" json:"item_id"`
+	Content string `db:"content" json:"content"`
+}
+
+func (q *Queries) InsertCurrentAgentTextContent(ctx context.Context, arg InsertCurrentAgentTextContentParams) error {
+	_, err := q.db.Exec(ctx, insertCurrentAgentTextContent, arg.ItemID, arg.Content)
+	return err
+}
+
+const insertCurrentAgentTextItem = `-- name: InsertCurrentAgentTextItem :one
+INSERT INTO chat_message_items (
+    uuid, item_type, order_index, meta, message_group_id
+)
+SELECT gen_random_uuid(),
+       'text_message',
+       count(*),
+       '{}'::jsonb,
+       $1::bigint
+FROM chat_message_items
+WHERE message_group_id = $1::bigint
+RETURNING id
+`
+
+func (q *Queries) InsertCurrentAgentTextItem(ctx context.Context, messageGroupID int64) (int32, error) {
+	row := q.db.QueryRow(ctx, insertCurrentAgentTextItem, messageGroupID)
+	var id int32
+	err := row.Scan(&id)
+	return id, err
+}
+
 const insertCurrentApplicationTurn = `-- name: InsertCurrentApplicationTurn :one
 WITH resolved AS MATERIALIZED (
     SELECT conversation.id AS conversation_id,
@@ -408,6 +507,38 @@ FOR UPDATE
 
 func (q *Queries) LockCurrentAgentConversation(ctx context.Context, conversationUuid pgtype.UUID) (int32, error) {
 	row := q.db.QueryRow(ctx, lockCurrentAgentConversation, conversationUuid)
+	var id int32
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockCurrentAgentResponseForTerminal = `-- name: LockCurrentAgentResponseForTerminal :one
+SELECT message_group.id
+FROM chat_message_group AS message_group
+JOIN chat_conversations AS conversation
+  ON conversation.id = message_group.conversation_id
+WHERE message_group.uuid::text = $1::text
+  AND conversation.uuid::text = $2::text
+  AND message_group.task_id = $3::text
+  AND message_group.meta ->> 'execution_generation'
+      = $4::text
+FOR UPDATE OF message_group
+`
+
+type LockCurrentAgentResponseForTerminalParams struct {
+	MessageID           string `db:"message_id" json:"message_id"`
+	ConversationID      string `db:"conversation_id" json:"conversation_id"`
+	ExecutionID         string `db:"execution_id" json:"execution_id"`
+	ExecutionGeneration string `db:"execution_generation" json:"execution_generation"`
+}
+
+func (q *Queries) LockCurrentAgentResponseForTerminal(ctx context.Context, arg LockCurrentAgentResponseForTerminalParams) (int32, error) {
+	row := q.db.QueryRow(ctx, lockCurrentAgentResponseForTerminal,
+		arg.MessageID,
+		arg.ConversationID,
+		arg.ExecutionID,
+		arg.ExecutionGeneration,
+	)
 	var id int32
 	err := row.Scan(&id)
 	return id, err
@@ -1140,6 +1271,114 @@ func (q *Queries) ResolveCurrentApplicationTurn(ctx context.Context, arg Resolve
 	return i, err
 }
 
+const resolveCurrentContinuation = `-- name: ResolveCurrentContinuation :one
+SELECT conversation.uuid AS conversation_uuid,
+       question.uuid AS question_id,
+       response.author_participant_id AS target_participant_id,
+       CASE response_author.entity_name
+           WHEN 'application' THEN 'application'
+           WHEN 'dummy' THEN 'adhoc'
+       END::text AS continuation_kind,
+       question_text.content::text AS user_input,
+       COALESCE(response.meta ->> 'thread_id', '')::text AS thread_id,
+       COALESCE(response.meta ->> 'execution_generation', '')::text AS execution_generation,
+       (response.meta -> 'hitl_interrupt')::text AS hitl_interrupt_json
+FROM chat_message_group AS response
+JOIN chat_conversations AS conversation
+  ON conversation.id = response.conversation_id
+JOIN chat_message_group AS question
+  ON question.id = response.reply_to_id
+ AND question.conversation_id = conversation.id
+JOIN chat_participants AS question_author
+  ON question_author.id = question.author_participant_id
+ AND question_author.entity_name = 'user'
+JOIN chat_participants AS response_author
+  ON response_author.id = response.author_participant_id
+ AND response_author.entity_name IN ('application', 'dummy')
+JOIN chat_participant_mapping AS actor_mapping
+  ON actor_mapping.conversation_id = conversation.id
+JOIN chat_participants AS actor_participant
+  ON actor_participant.id = actor_mapping.participant_id
+ AND actor_participant.entity_name = 'user'
+ AND (actor_participant.entity_meta ->> 'id')::bigint = $1::bigint
+JOIN LATERAL (
+    SELECT text_item.content
+    FROM chat_message_items AS item
+    JOIN chat_messages_text AS text_item ON text_item.id = item.id
+    WHERE item.message_group_id = question.id
+      AND item.item_type = 'text_message'
+    ORDER BY item.order_index DESC, item.id DESC
+    LIMIT 1
+) AS question_text ON TRUE
+WHERE conversation.uuid = $2::uuid
+  AND response.uuid = $3::uuid
+  AND NOT response.is_streaming
+  AND (
+      conversation.author_id = $1::bigint
+      OR (question_author.entity_meta ->> 'id')::bigint = $1::bigint
+  )
+  AND (
+      response_author.entity_name = 'dummy'
+      OR (
+          response_author.entity_name = 'application'
+          AND (response_author.entity_meta ->> 'project_id')::integer = $4::integer
+      )
+  )
+  AND jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
+  AND NOT response.meta ? 'hitl_interrupts'
+  AND COALESCE(response.meta #>> '{hitl_interrupt,interrupt_id}', '') <> ''
+  AND COALESCE(response.meta ->> 'thread_id', '') <> ''
+  AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_each(response.meta -> 'hitl_interrupt') AS interrupt_field(key, value)
+      WHERE interrupt_field.key IN (
+          'child_thread_id', 'parent_agent_call_id', 'parent_agent_path',
+          'via_call_id', '_via_call_id'
+      )
+        AND interrupt_field.value NOT IN ('null'::jsonb, '""'::jsonb)
+  )
+`
+
+type ResolveCurrentContinuationParams struct {
+	ActorUserID       int64       `db:"actor_user_id" json:"actor_user_id"`
+	ConversationUuid  pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ResponseMessageID pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	ProjectID         int32       `db:"project_id" json:"project_id"`
+}
+
+type ResolveCurrentContinuationRow struct {
+	ConversationUuid    pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	QuestionID          pgtype.UUID `db:"question_id" json:"question_id"`
+	TargetParticipantID int32       `db:"target_participant_id" json:"target_participant_id"`
+	ContinuationKind    string      `db:"continuation_kind" json:"continuation_kind"`
+	UserInput           string      `db:"user_input" json:"user_input"`
+	ThreadID            string      `db:"thread_id" json:"thread_id"`
+	ExecutionGeneration string      `db:"execution_generation" json:"execution_generation"`
+	HitlInterruptJson   string      `db:"hitl_interrupt_json" json:"hitl_interrupt_json"`
+}
+
+func (q *Queries) ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentContinuation,
+		arg.ActorUserID,
+		arg.ConversationUuid,
+		arg.ResponseMessageID,
+		arg.ProjectID,
+	)
+	var i ResolveCurrentContinuationRow
+	err := row.Scan(
+		&i.ConversationUuid,
+		&i.QuestionID,
+		&i.TargetParticipantID,
+		&i.ContinuationKind,
+		&i.UserInput,
+		&i.ThreadID,
+		&i.ExecutionGeneration,
+		&i.HitlInterruptJson,
+	)
+	return i, err
+}
+
 const resolveCurrentRegeneration = `-- name: ResolveCurrentRegeneration :one
 SELECT conversation.uuid AS conversation_uuid,
        question.uuid AS question_id,
@@ -1229,5 +1468,133 @@ func (q *Queries) ResolveCurrentRegeneration(ctx context.Context, arg ResolveCur
 		&i.RegenerationKind,
 		&i.UserInput,
 	)
+	return i, err
+}
+
+const resumeCurrentAgentHITL = `-- name: ResumeCurrentAgentHITL :one
+WITH resolved AS MATERIALIZED (
+    SELECT response.id, response.uuid
+    FROM chat_message_group AS response
+    JOIN chat_conversations AS conversation
+      ON conversation.id = response.conversation_id
+    JOIN chat_message_group AS question
+      ON question.id = response.reply_to_id
+     AND question.conversation_id = conversation.id
+    JOIN chat_participants AS question_author
+      ON question_author.id = question.author_participant_id
+     AND question_author.entity_name = 'user'
+    JOIN chat_participants AS response_author
+      ON response_author.id = response.author_participant_id
+     AND response_author.id = $1::integer
+    LEFT JOIN chat_participant_mapping AS application_mapping
+      ON application_mapping.conversation_id = conversation.id
+     AND application_mapping.participant_id = response_author.id
+    LEFT JOIN application_versions AS application_version
+      ON application_version.id = $2::integer
+     AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
+     AND application_version.application_id = $3::integer
+     AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    WHERE conversation.uuid = $4::uuid
+      AND response.uuid = $5::uuid
+      AND question.uuid = $6::uuid
+      AND NOT response.is_streaming
+      AND response.meta ->> 'execution_generation' = $7::text
+      AND response.meta ->> 'thread_id' = $8::text
+      AND jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
+      AND NOT response.meta ? 'hitl_interrupts'
+      AND response.meta #>> '{hitl_interrupt,interrupt_id}' = $9::text
+      AND jsonb_typeof(response.meta #> '{hitl_interrupt,available_actions}') = 'array'
+      AND jsonb_array_length(response.meta #> '{hitl_interrupt,available_actions}') > 0
+      AND (response.meta #> '{hitl_interrupt,available_actions}') ? $10::text
+      AND (
+          conversation.author_id = $11::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = $11::bigint
+      )
+      AND (
+          (
+              $12::text = 'adhoc'
+              AND response_author.entity_name = 'dummy'
+              AND $3::integer = 0
+              AND $2::integer = 0
+          )
+          OR (
+              $12::text = 'application'
+              AND response_author.entity_name = 'application'
+              AND (response_author.entity_meta ->> 'project_id')::integer = $13::integer
+              AND application_version.id IS NOT NULL
+              AND application_version.agent_type <> 'pipeline'
+          )
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_each(response.meta -> 'hitl_interrupt') AS interrupt_field(key, value)
+          WHERE interrupt_field.key IN (
+              'child_thread_id', 'parent_agent_call_id', 'parent_agent_path',
+              'via_call_id', '_via_call_id'
+          )
+            AND interrupt_field.value NOT IN ('null'::jsonb, '""'::jsonb)
+      )
+    FOR UPDATE OF response
+), updated AS (
+    UPDATE chat_message_group AS response
+    SET meta = (response.meta - 'hitl_interrupt' - 'hitl_interrupts')
+            || jsonb_build_object(
+                'resolved_hitl_interrupt_ids',
+                COALESCE(response.meta -> 'resolved_hitl_interrupt_ids', '[]'::jsonb)
+                    || jsonb_build_array($9::text)
+            ),
+        is_streaming = TRUE,
+        task_id = $14::text,
+        updated_at = clock_timestamp()
+    FROM resolved
+    WHERE response.id = resolved.id
+    RETURNING response.id, response.uuid
+)
+SELECT updated.id AS response_message_group_id,
+       updated.uuid AS response_message_id
+FROM updated
+`
+
+type ResumeCurrentAgentHITLParams struct {
+	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
+	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
+	ApplicationID        int32       `db:"application_id" json:"application_id"`
+	ConversationUuid     pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ResponseMessageID    pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	QuestionID           pgtype.UUID `db:"question_id" json:"question_id"`
+	ExecutionGeneration  string      `db:"execution_generation" json:"execution_generation"`
+	ThreadID             string      `db:"thread_id" json:"thread_id"`
+	InterruptID          string      `db:"interrupt_id" json:"interrupt_id"`
+	HitlAction           string      `db:"hitl_action" json:"hitl_action"`
+	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
+	ContinuationKind     string      `db:"continuation_kind" json:"continuation_kind"`
+	ProjectID            int32       `db:"project_id" json:"project_id"`
+	ExecutionID          string      `db:"execution_id" json:"execution_id"`
+}
+
+type ResumeCurrentAgentHITLRow struct {
+	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
+	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+}
+
+func (q *Queries) ResumeCurrentAgentHITL(ctx context.Context, arg ResumeCurrentAgentHITLParams) (ResumeCurrentAgentHITLRow, error) {
+	row := q.db.QueryRow(ctx, resumeCurrentAgentHITL,
+		arg.TargetParticipantID,
+		arg.ApplicationVersionID,
+		arg.ApplicationID,
+		arg.ConversationUuid,
+		arg.ResponseMessageID,
+		arg.QuestionID,
+		arg.ExecutionGeneration,
+		arg.ThreadID,
+		arg.InterruptID,
+		arg.HitlAction,
+		arg.ActorUserID,
+		arg.ContinuationKind,
+		arg.ProjectID,
+		arg.ExecutionID,
+	)
+	var i ResumeCurrentAgentHITLRow
+	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
 	return i, err
 }

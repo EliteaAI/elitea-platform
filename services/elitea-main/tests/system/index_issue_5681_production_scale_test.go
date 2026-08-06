@@ -3403,6 +3403,59 @@ func TestHybridNestedApplicationReferenceRouterIsBounded(t *testing.T) {
 	requireNestedApplicationReferenceRouter(t, string(routeBytes))
 }
 
+func TestHybridCurrentArtifactWorkerRouterIsBounded(t *testing.T) {
+	routePath := filepath.Join(
+		findRepositoryRoot(t),
+		"deploy",
+		"centry-hybrid",
+		"traefik",
+		"index-routes.yml",
+	)
+	routeBytes, err := os.ReadFile(routePath)
+	if err != nil {
+		t.Fatalf("read hybrid gateway route %s: %v", routePath, err)
+	}
+	requireCurrentArtifactWorkerRouter(t, string(routeBytes))
+}
+
+func requireCurrentArtifactWorkerRouter(t *testing.T, route string) {
+	t.Helper()
+	const marker = "    runtime-worker-current-artifacts:\n"
+	routerStart := strings.Index(route, marker)
+	if routerStart < 0 {
+		t.Fatal("gateway route lacks the current-artifact worker router")
+	}
+	router := route[routerStart:]
+	for _, required := range []string{
+		"Host(`elitea-gateway`)",
+		"PathRegexp(`^/api/v2/artifacts/buckets/[1-9][0-9]*$`)",
+		"PathRegexp(`^/artifacts/s3/[^/]+(/.*)?$`)",
+		"Method(`GET`)",
+		"Method(`POST`)",
+		"Method(`PUT`)",
+		"Method(`DELETE`)",
+		"Method(`HEAD`)",
+		"priority: 85",
+		"entryPoints: [websecure]",
+		"tls: {}",
+		"middlewares:\n        - strip-caller-auth-context\n        - normalize-runtime-public-authority\n        - go-main-forward-auth",
+		"service: current-main",
+	} {
+		if !strings.Contains(router, required) {
+			t.Fatalf("current-artifact worker router has an unexpected semantic contract: %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"PathPrefix(",
+		"service: elitea-main",
+		"Method(`PATCH`)",
+	} {
+		if strings.Contains(router, forbidden) {
+			t.Fatalf("current-artifact worker router is broader than required: %q", forbidden)
+		}
+	}
+}
+
 func requireNestedApplicationReferenceRouter(t *testing.T, route string) {
 	t.Helper()
 	applicationRouterStart := strings.Index(
@@ -3413,6 +3466,12 @@ func requireNestedApplicationReferenceRouter(t *testing.T, route string) {
 		t.Fatal("gateway route lacks the nested-application reference router")
 	}
 	applicationRouter := route[applicationRouterStart:]
+	if routerEnd := strings.Index(
+		applicationRouter,
+		"\n    runtime-worker-current-artifacts:\n",
+	); routerEnd >= 0 {
+		applicationRouter = applicationRouter[:routerEnd]
+	}
 	for _, required := range []string{
 		"Host(`elitea-gateway`)",
 		"PathRegexp(`^/api/v2/elitea_core/application/prompt_lib/[1-9][0-9]*/[1-9][0-9]*$`)",

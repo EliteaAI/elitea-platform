@@ -430,11 +430,10 @@ class EliteaSdkAgentAdapter:
 def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
     """Keep partial behavior unreachable instead of silently drifting."""
 
+    hitl_resume = payload.hitl_resume or bool(payload.hitl_decisions)
     if (
         payload.checkpoint_id
-        or payload.should_continue
-        or payload.hitl_resume
-        or payload.hitl_decisions
+        or (payload.should_continue and not hitl_resume)
         or payload.invoked_skills
         or payload.applied_skills
         or payload.attached_skills
@@ -445,9 +444,55 @@ def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
         raise UnsupportedCapability(
             "This agent execution requires a parity path that is not admitted yet."
         )
+    if hitl_resume:
+        _require_root_hitl_resume(payload)
     if not payload.thread_id and not payload.conversation_id:
         raise UnsupportedCapability(
             "A durable agent thread identity is required for this parity path."
+        )
+
+
+def _require_root_hitl_resume(payload: AgentExecutionPayload) -> None:
+    """Admit one checkpoint-bound sensitive-tool decision, not routed fan-out."""
+
+    if not payload.hitl_resume:
+        raise UnsupportedCapability("The HITL resume marker is required.")
+    if not payload.should_continue:
+        raise UnsupportedCapability("The HITL continuation marker is required.")
+    if len(payload.hitl_decisions) != 1:
+        raise UnsupportedCapability(
+            "Exactly one root HITL decision is supported in this execution slice."
+        )
+    decision = payload.hitl_decisions[0]
+    if not isinstance(decision, dict):
+        raise UnsupportedCapability("The root HITL decision is malformed.")
+    interrupt_id = decision.get("interrupt_id")
+    if not isinstance(interrupt_id, str) or not interrupt_id.strip():
+        raise UnsupportedCapability("The root HITL interrupt identity is required.")
+    action = payload.hitl_action or decision.get("action")
+    if action not in {
+        "approve",
+        "reject",
+        "edit",
+        "block_with_comment",
+        "reject_with_comment",
+    }:
+        raise UnsupportedCapability("The root HITL action is not supported.")
+    decision_action = decision.get("action")
+    if decision_action is not None and decision_action != action:
+        raise UnsupportedCapability("The root HITL decision action is inconsistent.")
+    if any(
+        decision.get(key)
+        for key in (
+            "child_thread_id",
+            "parent_agent_call_id",
+            "parent_agent_path",
+            "via_call_id",
+            "_via_call_id",
+        )
+    ):
+        raise UnsupportedCapability(
+            "Nested or parallel HITL resume is not admitted in this execution slice."
         )
 
 
@@ -473,7 +518,14 @@ def _invoke_initial_agent(
     from langchain_core.messages import HumanMessage
 
     messages = deepcopy(payload.chat_history)
-    messages.append(HumanMessage(content=deepcopy(payload.user_input)))
+    user_message_content = (
+        payload.hitl_value
+        if payload.hitl_resume
+        and payload.hitl_action == "edit"
+        and payload.hitl_value is not None
+        else payload.user_input
+    )
+    messages.append(HumanMessage(content=deepcopy(user_message_content)))
     configurable: dict[str, Any] = {
         "thread_id": payload.thread_id or payload.conversation_id,
     }
@@ -484,16 +536,26 @@ def _invoke_initial_agent(
         step_limit = application_meta.get("step_limit")
         if isinstance(step_limit, int) and not isinstance(step_limit, bool) and step_limit > 0:
             invoke_config["recursion_limit"] = step_limit
+    if payload.hitl_resume:
+        invoke_input: dict[str, Any] = {
+            "messages": messages,
+            "hitl_resume": True,
+            "hitl_action": payload.hitl_action,
+            "hitl_value": payload.hitl_value or "",
+            "hitl_decisions": deepcopy(payload.hitl_decisions),
+        }
+    else:
+        invoke_input = {"messages": messages}
     if payload.is_regenerate:
         _discard_regenerated_thread(memory, invoke_config)
-    else:
+    elif not payload.hitl_resume:
         _discard_failed_checkpoint(memory, invoke_config)
         _discard_failed_direct_application_checkpoints(
             memory,
             invoke_config,
             payload,
         )
-    result = executor.invoke({"messages": messages}, invoke_config)
+    result = executor.invoke(invoke_input, invoke_config)
     if not isinstance(result, dict):
         raise TypeError("the SDK agent invocation returned a non-object result")
     return result

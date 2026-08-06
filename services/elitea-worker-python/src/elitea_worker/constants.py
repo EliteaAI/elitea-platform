@@ -16,24 +16,23 @@ CAPABILITY_ID = CONFIGURATION_VALIDATION_CAPABILITY_ID
 RUNTIME_IMPLEMENTATION = "elitea-worker-python"
 RUNTIME_VERSION = "0.1.0"
 
-# The admitted current-runtime SDK is distribution 0.9.1. The standalone
+# The admitted current-runtime SDK is distribution 0.9.6. The standalone
 # worker admits one exact reviewed source artifact rather than a floating
 # branch or an unverified same-version rebuild.
-SDK_SOURCE_REVISION = "6bc6dfcb740c8ec4f81c1da7c929f00786221cc6"
-SDK_DISTRIBUTION_VERSION = "0.9.1"
+SDK_SOURCE_REVISION = "6155d20acb4a3b00a6085212a75258cc1b3c695a"
+SDK_DISTRIBUTION_VERSION = "0.9.6"
 SDK_SOURCE_ARCHIVE_SHA256 = (
-    "c8674ede3ff93c34bdee8a67f1cacf42c4ea2ba9bf652a755d830c04294129b9"
+    "5771315bbf8f300171bf4526f1550b2e7789e59d9530479674537fc8c3b093a0"
 )
 SDK_PACKAGE_TREE_SHA256 = (
-    "2caab1755e33356ab86d4d0c88a9087507f01ca57a9a7f1f00c166dc89a2fddd"
+    "1b5d675d087a1b753562274ca0d02603c6396a27e4cb5633d9948ac8613739b7"
 )
-# SDK 0.9.1 preserves the admitted configuration and indexing-type contracts;
-# 0.8.26, so that independently versioned projection stays stable.
-CONFIGURATION_CATALOG_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
+# Configuration schemas are regenerated from this exact admitted SDK source.
+CONFIGURATION_CATALOG_REVISION = SDK_SOURCE_REVISION
 CONFIGURATION_CATALOG_SHA256 = (
     "4a96e3ab8e3842ebf2645a851aeb12e3e2343f28e7d024c1a2960eb4ec254351"
 )
-# Index types gained the source-backed .mdx entry in this admitted SDK.
+# Index types remain derived from the exact admitted SDK source.
 INDEX_TYPES_SOURCE_REVISION = SDK_SOURCE_REVISION
 
 JSON_MEDIA_TYPES = frozenset({"application/json", "application/json; charset=utf-8"})

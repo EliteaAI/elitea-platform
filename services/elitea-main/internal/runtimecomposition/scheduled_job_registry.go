@@ -23,7 +23,7 @@ func scheduledJobs(
 	indexSchedule schedulingapp.Schedule,
 	retentionSchedule schedulingapp.Schedule,
 ) []schedulingapp.Job {
-	return []schedulingapp.Job{
+	jobs := []schedulingapp.Job{
 		{
 			ID:       currentIndexScheduleCapability,
 			Revision: currentIndexScheduleRevision,
@@ -32,15 +32,18 @@ func scheduledJobs(
 			Timeout:  currentIndexScheduleHandlerTimeout,
 			Handler:  indexHandler,
 		},
-		{
+	}
+	if retentionHandler != nil && retentionSchedule != nil {
+		jobs = append(jobs, schedulingapp.Job{
 			ID:       artifactRetentionSweepCapability,
 			Revision: artifactRetentionSweepRevision,
 			Mode:     schedulingapp.ModeLocalBounded,
 			Schedule: retentionSchedule,
 			Timeout:  artifactRetentionSweepHandlerTimeout,
 			Handler:  retentionHandler,
-		},
+		})
 	}
+	return jobs
 }
 
 // scheduledJobRegistry is a one-line indirection over

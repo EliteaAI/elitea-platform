@@ -26,7 +26,7 @@ DEFAULT_SNAPSHOT = (
     / "configurations"
     / "current_available_snapshot.json"
 )
-EXPECTED_SDK_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
+EXPECTED_SDK_REVISION = "6155d20acb4a3b00a6085212a75258cc1b3c695a"
 EXPECTED_SDK_ENTRY_COUNT = 32
 EXPECTED_NON_SDK_ENTRY_COUNT = 17
 SNAPSHOT_SCHEMA_VERSION = "elitea.current-configuration-available-snapshot.v1"

@@ -163,6 +163,48 @@ func TestAdmissionServiceAcceptsBoundCurrentAdhocTurn(t *testing.T) {
 	}
 }
 
+func TestAdmissionServiceAcceptsOnlyOneBoundCurrentContinuation(t *testing.T) {
+	store := successfulRecordingStore()
+	service := testAdmissionService(t, store)
+	conversationID := "8bc66e50-46c4-4e2c-94ec-daec6c596ac0"
+	questionID := "ee92ccbd-3312-4c72-b20b-fddf224e7c0e"
+	responseID := "061e2c58-2e09-5853-a006-532b082a0433"
+	input := validAgentInput()
+	input.ThreadId = proto.String("thread-hitl-1")
+	input.ExecutionGeneration = proto.String(questionID)
+	input.ShouldContinue = true
+	input.HitlResume = true
+	input.HitlAction = proto.String("approve")
+	input.HitlDecisions = []byte(`[{"interrupt_id":"interrupt-root-1","action":"approve","value":""}]`)
+	request := validSubmitRequest()
+	request.CapabilityID = executiondomain.AgentApplicationCapability
+	request.ClientStreamID = conversationID
+	request.ClientMessageID = responseID
+	request.SIOEvent = "chat_continue_predict"
+	request.Input = input
+	request.CurrentContinueTurn = &CurrentContinueTurn{
+		ProjectID: 7, ActorUserID: 11, ConversationUUID: conversationID,
+		TargetParticipantID: 21, Kind: CurrentRegenerationApplication,
+		ApplicationID: 31, ApplicationVersionID: 41, QuestionID: questionID,
+		ResponseMessageID: responseID, ExecutionGeneration: questionID,
+		ThreadID: "thread-hitl-1", InterruptID: "interrupt-root-1", Action: "approve",
+	}
+
+	if _, err := service.Submit(context.Background(), request); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if store.admission.CurrentContinueTurn == nil || store.admission.CurrentTurn != nil ||
+		store.admission.CurrentAdhocTurn != nil || store.admission.CurrentRegenerateTurn != nil {
+		t.Fatalf("admission=%+v", store.admission)
+	}
+
+	request.CurrentRegenerateTurn = &CurrentRegenerateTurn{}
+	invalidService := testAdmissionService(t, successfulRecordingStore())
+	if _, err := invalidService.Submit(context.Background(), request); !errors.Is(err, ErrInvalidAgentAdmission) {
+		t.Fatalf("overlapping continuation Submit() error = %v", err)
+	}
+}
+
 func TestAdmissionServicePreservesCancellation(t *testing.T) {
 	store := successfulRecordingStore()
 	service := testAdmissionService(t, store)

@@ -84,21 +84,30 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 	defer pool.Close()
 
-	// Object store. The service does not start without a working one — there
-	// is no filesystem fallback in the target architecture.
-	storageCfg, err := storage.ConfigFromEnv(os.LookupEnv)
-	if err != nil {
-		return fmt.Errorf("load storage configuration: %w", err)
-	}
-	objectStore, err := newObjectStore(ctx, storageCfg)
-	if err != nil {
-		return fmt.Errorf("create object store: %w", err)
-	}
-	if err := objectStoreReadinessProbe(ctx, objectStore); err != nil {
-		return fmt.Errorf("object store readiness probe: %w", err)
-	}
-	if err := configureObjectStoreRetentionLifecycle(ctx, objectStore); err != nil {
-		return fmt.Errorf("configure object store retention lifecycle: %w", err)
+	// Object store. Production remains fail-closed: when the capability is
+	// enabled, startup requires a working S3/Azure/GCS backend. The mixed
+	// migration deployment explicitly disables these still-incomplete Go
+	// routes and keeps the current Centry artifacts capability authoritative;
+	// this avoids adding a second storage service or inventing a filesystem
+	// compatibility backend.
+	var objectStore storage.ObjectStore
+	if os.Getenv("ELITEA_ARTIFACTS_ENABLED") != "false" {
+		storageCfg, err := storage.ConfigFromEnv(os.LookupEnv)
+		if err != nil {
+			return fmt.Errorf("load storage configuration: %w", err)
+		}
+		objectStore, err = newObjectStore(ctx, storageCfg)
+		if err != nil {
+			return fmt.Errorf("create object store: %w", err)
+		}
+		if err := objectStoreReadinessProbe(ctx, objectStore); err != nil {
+			return fmt.Errorf("object store readiness probe: %w", err)
+		}
+		if err := configureObjectStoreRetentionLifecycle(ctx, objectStore); err != nil {
+			return fmt.Errorf("configure object store retention lifecycle: %w", err)
+		}
+	} else {
+		logger.Info("Go artifacts capability disabled; current Centry artifacts routes remain authoritative")
 	}
 
 	// The unversioned legacy bootstrap exists only for an empty local developer

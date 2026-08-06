@@ -53,10 +53,33 @@ _CUSTOM_EVENTS: dict[str, tuple[str, frozenset[str]]] = {
     "swarm_agent_start": ("agent_swarm_agent_start", frozenset({"agent_name", "is_parent", "message_count"})),
     "swarm_agent_response": ("agent_swarm_agent_response", frozenset({"agent_name", "is_parent", "content", "has_tool_calls", "tool_calls"})),
     "swarm_handoff": ("agent_swarm_handoff", frozenset({"from_agent", "to_agent"})),
-    "hitl_interrupt": ("agent_hitl_interrupt", frozenset({"node_name", "message", "available_actions", "routes", "edit_state_key"})),
 }
 _MAX_TRACE_TEXT_BYTES = 128 * 1024
 _CUSTOM_STATE_TRANSCRIPT_FIELDS = ("messages", "chat_history")
+
+
+def _normalize_hitl_pause(
+    result: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Preserve the current singular/plural HITL result contract."""
+
+    singular = result.get("hitl_interrupt")
+    if singular is not None and not isinstance(singular, dict):
+        raise InvalidInput("The agent HITL interrupt is malformed.")
+    raw_plural = result.get("hitl_interrupts")
+    if raw_plural is None:
+        plural: list[dict[str, Any]] = []
+    elif isinstance(raw_plural, list) and all(
+        isinstance(item, dict) for item in raw_plural
+    ):
+        plural = list(raw_plural)
+    else:
+        raise InvalidInput("The agent HITL interrupt list is malformed.")
+    if not plural and singular is not None:
+        plural = [singular]
+    if singular is None and plural:
+        singular = plural[0]
+    return singular, plural
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,17 +115,43 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
     def emit_agent_start(self, *, invoked_skills: list[Any] | None = None) -> None:
         self._emit("agent_start", response_metadata={"invoked_skills": invoked_skills or []})
 
-    def emit_completion(
+    def emit_terminal(
         self,
         result: dict[str, Any],
         payload: AgentExecutionPayload,
     ) -> node_event_pb2.NodeEventV1:
-        """Emit the current terminal browser events and return ``full_message``.
+        """Emit exactly one current terminal outcome for a completed or HITL run."""
 
-        The initial v1 kernel admits completed root executions only. HITL,
-        child parking and resume remain rejected before SDK invocation, so this
-        method cannot accidentally turn a paused execution into a final answer.
-        """
+        hitl_interrupt, hitl_interrupts = _normalize_hitl_pause(result)
+        if hitl_interrupt is not None:
+            thread_id = result.get("thread_id")
+            if not isinstance(thread_id, str) or not thread_id:
+                thread_id = self._context.thread_id
+            message = hitl_interrupt.get("message")
+            if not isinstance(message, str) or not message:
+                message = "Awaiting human review..."
+            return self._emit(
+                "agent_hitl_interrupt",
+                content=message,
+                response_metadata={
+                    "thread_id": thread_id,
+                    "chat_project_id": self._context.chat_project_id,
+                    "message": message,
+                    "hitl_interrupt": _json_value(hitl_interrupt),
+                    "hitl_interrupts": _json_value(hitl_interrupts),
+                    "node_name": _json_value(hitl_interrupt.get("node_name")),
+                    "available_actions": _json_value(
+                        hitl_interrupt.get("available_actions", [])
+                    ),
+                    "routes": _json_value(hitl_interrupt.get("routes", {})),
+                    "edit_state_key": _json_value(
+                        hitl_interrupt.get("edit_state_key")
+                    ),
+                },
+            )
+
+        if result.get("paused") is True:
+            raise InvalidInput("The paused agent result has no supported interrupt.")
 
         content = _extract_response_content(result)
         thread_id = result.get("thread_id")
@@ -145,6 +194,18 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
                 "invoked_skills": _json_value(payload.invoked_skills),
             },
         )
+
+    def emit_completion(
+        self,
+        result: dict[str, Any],
+        payload: AgentExecutionPayload,
+    ) -> node_event_pb2.NodeEventV1:
+        """Compatibility alias for callers that still expect a completed result."""
+
+        terminal = self.emit_terminal(result, payload)
+        if terminal.type != "full_message":
+            raise InvalidInput("The agent execution did not complete.")
+        return terminal
 
     def on_tool_start(
         self,

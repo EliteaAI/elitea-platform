@@ -41,6 +41,16 @@ def _callback():
     return callback, events
 
 
+def _request_payload():
+    return SimpleNamespace(
+        application={"id": 11, "version_id": 22},
+        should_continue=False,
+        hitl_resume=False,
+        parallel_reconcile=None,
+        invoked_skills=[],
+    )
+
+
 def _json(event):
     import json
 
@@ -236,7 +246,43 @@ def test_tool_call_only_llm_turn_keeps_model_activity_without_copying_arguments(
     assert "must-not-be-copied" not in str(step)
 
 
-def test_custom_hitl_event_keeps_current_shape_and_correlation() -> None:
+def test_hitl_terminal_keeps_current_shape_and_is_not_a_full_message() -> None:
+    callback, events = _callback()
+    payload = _request_payload()
+    interrupt = {
+        "interrupt_id": "interrupt-1",
+        "node_name": "sensitive_tool",
+        "message": "Approve?",
+        "available_actions": ["approve", "reject"],
+        "routes": [{"tool_call_id": "call-1"}],
+    }
+
+    terminal = callback.emit_terminal(
+        {
+            "thread_id": "thread-1",
+            "paused": True,
+            "pause_type": "hitl",
+            "hitl_interrupt": interrupt,
+            "hitl_interrupts": [interrupt],
+        },
+        payload,
+    )
+
+    decoded = [_json(event) for event in events]
+    assert [event["type"] for event in decoded] == ["agent_hitl_interrupt"]
+    event = _json(terminal)
+    assert event["stream_id"] == "conversation-1"
+    assert event["sio_event"] == "chat_predict"
+    assert event["content"] == "Approve?"
+    assert event["response_metadata"]["hitl_interrupt"] == interrupt
+    assert event["response_metadata"]["hitl_interrupts"] == [interrupt]
+    assert event["response_metadata"]["available_actions"] == [
+        "approve",
+        "reject",
+    ]
+
+
+def test_raw_sdk_hitl_custom_event_is_not_a_second_terminal_owner() -> None:
     callback, events = _callback()
     callback.on_custom_event(
         "hitl_interrupt",
@@ -250,15 +296,7 @@ def test_custom_hitl_event_keeps_current_shape_and_correlation() -> None:
         metadata={"checkpoint_ns": "agent:child"},
     )
 
-    event = _json(events[0])
-    assert event["type"] == "agent_hitl_interrupt"
-    assert event["stream_id"] == "conversation-1"
-    assert event["sio_event"] == "chat_predict"
-    assert event["response_metadata"]["available_actions"] == [
-        "approve",
-        "reject",
-    ]
-    assert event["response_metadata"]["metadata"]["checkpoint_ns"] == "agent:child"
+    assert events == []
 
 
 def test_large_transition_omits_only_duplicate_transcript_state() -> None:

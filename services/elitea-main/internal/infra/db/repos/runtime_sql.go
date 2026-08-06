@@ -73,6 +73,41 @@ func (e pgxExecutor) GetCurrentAgentTraceBinding(
 	return sqlcgen.New(e.queryer).GetCurrentAgentTraceBinding(ctx, arg)
 }
 
+func (e pgxExecutor) LockCurrentAgentResponseForTerminal(
+	ctx context.Context,
+	arg sqlcgen.LockCurrentAgentResponseForTerminalParams,
+) (int32, error) {
+	return sqlcgen.New(e.queryer).LockCurrentAgentResponseForTerminal(ctx, arg)
+}
+
+func (e pgxExecutor) InsertCurrentAgentTextItem(
+	ctx context.Context,
+	messageGroupID int64,
+) (int32, error) {
+	return sqlcgen.New(e.queryer).InsertCurrentAgentTextItem(ctx, messageGroupID)
+}
+
+func (e pgxExecutor) InsertCurrentAgentTextContent(
+	ctx context.Context,
+	arg sqlcgen.InsertCurrentAgentTextContentParams,
+) error {
+	return sqlcgen.New(e.queryer).InsertCurrentAgentTextContent(ctx, arg)
+}
+
+func (e pgxExecutor) FinalizeCurrentAgentFullMessage(
+	ctx context.Context,
+	arg sqlcgen.FinalizeCurrentAgentFullMessageParams,
+) (int64, error) {
+	return sqlcgen.New(e.queryer).FinalizeCurrentAgentFullMessage(ctx, arg)
+}
+
+func (e pgxExecutor) FinalizeCurrentAgentHITLPause(
+	ctx context.Context,
+	arg sqlcgen.FinalizeCurrentAgentHITLPauseParams,
+) (int64, error) {
+	return sqlcgen.New(e.queryer).FinalizeCurrentAgentHITLPause(ctx, arg)
+}
+
 func (e pgxExecutor) ResolveCurrentApplicationTurn(
 	ctx context.Context,
 	arg sqlcgen.ResolveCurrentApplicationTurnParams,
@@ -92,6 +127,13 @@ func (e pgxExecutor) ResolveCurrentRegeneration(
 	arg sqlcgen.ResolveCurrentRegenerationParams,
 ) (sqlcgen.ResolveCurrentRegenerationRow, error) {
 	return sqlcgen.New(e.queryer).ResolveCurrentRegeneration(ctx, arg)
+}
+
+func (e pgxExecutor) ResolveCurrentContinuation(
+	ctx context.Context,
+	arg sqlcgen.ResolveCurrentContinuationParams,
+) (sqlcgen.ResolveCurrentContinuationRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentContinuation(ctx, arg)
 }
 
 type sharedStore interface {

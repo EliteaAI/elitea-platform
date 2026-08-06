@@ -654,6 +654,138 @@ FROM response_item`, responseID, content); err != nil {
 	}
 }
 
+func TestPostgresCurrentRootHITLContinuationConsumesExistingResponseAtomically(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	questionID := "20000000-0000-4000-8000-000000000051"
+	responseID := insertPostgresCurrentApplicationTurn(
+		t, queries, conversationID, questionID,
+		"30000000-0000-4000-8000-000000000051",
+		"40000000-0000-4000-8000-000000000051",
+		"delete the stale branch", "execution-paused",
+	)
+	if _, err := tx.Exec(t.Context(), `
+WITH paused AS (
+    UPDATE chat_message_group
+    SET is_streaming = FALSE,
+        meta = meta || jsonb_build_object(
+            'thread_id', 'thread-hitl-1',
+            'execution_generation', $2::text,
+            'hitl_interrupt', jsonb_build_object(
+                'interrupt_id', 'interrupt-root-1',
+                'available_actions', jsonb_build_array(
+                    'approve', 'reject', 'edit', 'block_with_comment'
+                ),
+                'tool_name', 'configurations:delete_branch'
+            )
+        )
+    WHERE uuid = $1
+    RETURNING id
+)
+INSERT INTO chat_message_trace_step (
+    id, message_group_id, kind, run_id, tool_name, step_type, text, attrs
+)
+SELECT 51, paused.id, 'hitl', 'run-hitl-1', 'configurations:delete_branch',
+       'agent_hitl_interrupt', 'Approval required',
+       '{"interrupt_id":"interrupt-root-1"}'::jsonb
+FROM paused`, responseID, questionID); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := queries.ResolveCurrentContinuation(
+		t.Context(),
+		sqlcgen.ResolveCurrentContinuationParams{
+			ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
+			ResponseMessageID: responseID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ContinuationKind != "application" ||
+		resolved.ThreadID != "thread-hitl-1" || resolved.ExecutionGeneration != questionID ||
+		resolved.UserInput != "delete the stale branch" {
+		t.Fatalf("resolved=%+v", resolved)
+	}
+
+	resume := sqlcgen.ResumeCurrentAgentHITLParams{
+		ActorUserID: 12, ProjectID: 1, TargetParticipantID: 21,
+		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
+		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
+		ResponseMessageID: responseID, ExecutionGeneration: questionID,
+		ThreadID: "thread-hitl-1", InterruptID: "interrupt-root-1",
+		HitlAction: "approve", ExecutionID: "execution-resumed",
+	}
+	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong actor resume error=%v", err)
+	}
+	resume.ActorUserID = 11
+	resume.HitlAction = "answer"
+	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("unavailable action resume error=%v", err)
+	}
+	resume.HitlAction = "approve"
+	row, err := queries.ResumeCurrentAgentHITL(t.Context(), resume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ResponseMessageID != responseID || row.ResponseMessageGroupID <= 0 {
+		t.Fatalf("resume row=%+v", row)
+	}
+	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("replayed resume error=%v", err)
+	}
+	if _, err := queries.ResolveCurrentContinuation(
+		t.Context(),
+		sqlcgen.ResolveCurrentContinuationParams{
+			ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
+			ResponseMessageID: responseID,
+		},
+	); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("resolved continuation remained visible: %v", err)
+	}
+
+	var isStreaming, hasPending bool
+	var taskID string
+	var resolvedIDs []string
+	var traceCount int
+	if err := tx.QueryRow(t.Context(), `
+SELECT response.is_streaming,
+       response.task_id,
+       response.meta ? 'hitl_interrupt',
+       ARRAY(
+           SELECT jsonb_array_elements_text(
+               COALESCE(response.meta -> 'resolved_hitl_interrupt_ids', '[]'::jsonb)
+           )
+       ),
+       (SELECT count(*) FROM chat_message_trace_step WHERE message_group_id = response.id)
+FROM chat_message_group AS response
+WHERE response.uuid = $1`, responseID).Scan(
+		&isStreaming, &taskID, &hasPending, &resolvedIDs, &traceCount,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !isStreaming || taskID != "execution-resumed" || hasPending ||
+		len(resolvedIDs) != 1 || resolvedIDs[0] != "interrupt-root-1" || traceCount != 1 {
+		t.Fatalf(
+			"streaming=%v task=%q pending=%v resolved=%v traces=%d",
+			isStreaming, taskID, hasPending, resolvedIDs, traceCount,
+		)
+	}
+}
+
 func insertPostgresSupportContext(
 	t *testing.T,
 	tx pgx.Tx,

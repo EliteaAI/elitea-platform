@@ -101,11 +101,11 @@ func TestPinnedCurrentAvailableCatalogMatchesCurrentFixedRegistry(t *testing.T) 
 	})
 
 	sources := catalog.SourceRevisions()
-	if got := sources["elitea_sdk"]; got != "a78d3654f99d8ff89ca7233f20a66d676e564f79" {
+	if got := sources["elitea_sdk"]; got != "6155d20acb4a3b00a6085212a75258cc1b3c695a" {
 		t.Fatalf("elitea_sdk revision = %q", got)
 	}
 	sources["elitea_sdk"] = "changed"
-	if got := catalog.SourceRevisions()["elitea_sdk"]; got != "a78d3654f99d8ff89ca7233f20a66d676e564f79" {
+	if got := catalog.SourceRevisions()["elitea_sdk"]; got != "6155d20acb4a3b00a6085212a75258cc1b3c695a" {
 		t.Fatalf("SourceRevisions() aliased caller mutation: %q", got)
 	}
 

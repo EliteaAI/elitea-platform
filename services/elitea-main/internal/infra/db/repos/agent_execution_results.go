@@ -36,7 +36,6 @@ func newAgentExecutionResultsRepository(projects projectStore) (*AgentExecutionR
 }
 
 type currentAgentFullMessage struct {
-	Cursor           int64
 	Content          string
 	ThreadID         string
 	References       json.RawMessage
@@ -44,11 +43,42 @@ type currentAgentFullMessage struct {
 	ResponseMetadata json.RawMessage
 }
 
+type currentAgentHITLPause struct {
+	ThreadID  string
+	Interrupt json.RawMessage
+}
+
+type currentAgentTerminal struct {
+	Cursor      int64
+	FullMessage *currentAgentFullMessage
+	HITLPause   *currentAgentHITLPause
+}
+
 type agentExecutionTerminalNodeEventQuerier interface {
 	GetAgentExecutionTerminalNodeEvent(
 		context.Context,
 		sqlcgen.GetAgentExecutionTerminalNodeEventParams,
 	) (sqlcgen.GetAgentExecutionTerminalNodeEventRow, error)
+}
+
+type currentAgentTerminalWriter interface {
+	LockCurrentAgentResponseForTerminal(
+		context.Context,
+		sqlcgen.LockCurrentAgentResponseForTerminalParams,
+	) (int32, error)
+	InsertCurrentAgentTextItem(context.Context, int64) (int32, error)
+	InsertCurrentAgentTextContent(
+		context.Context,
+		sqlcgen.InsertCurrentAgentTextContentParams,
+	) error
+	FinalizeCurrentAgentFullMessage(
+		context.Context,
+		sqlcgen.FinalizeCurrentAgentFullMessageParams,
+	) (int64, error)
+	FinalizeCurrentAgentHITLPause(
+		context.Context,
+		sqlcgen.FinalizeCurrentAgentHITLPauseParams,
+	) (int64, error)
 }
 
 func (r *AgentExecutionResultsRepository) ProjectAgentExecution(ctx context.Context, projection outputapp.AgentExecutionProjection) (outputapp.ProjectionOutcome, error) {
@@ -66,14 +96,14 @@ func (r *AgentExecutionResultsRepository) ProjectAgentExecution(ctx context.Cont
 	var outcome outputapp.ProjectionOutcome
 	cancellationWon := false
 	err = r.projects.WithinProjectTx(ctx, projectID, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
-		fullMessage, err := loadCurrentAgentFullMessage(ctx, tx, projectDatabaseID, projection)
+		terminal, err := loadCurrentAgentTerminal(ctx, tx, projectDatabaseID, projection)
 		if err != nil {
 			return err
 		}
 		existing, err := loadExistingOutput(ctx, tx, record)
 		if err == nil {
 			if sameDurableOutput(existing, record) {
-				outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: uint64(fullMessage.Cursor), CommittedSequence: record.Sequence}
+				outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: uint64(terminal.Cursor), CommittedSequence: record.Sequence}
 				return nil
 			}
 			if sameCanonicalCancellation(existing, record) {
@@ -93,7 +123,7 @@ func (r *AgentExecutionResultsRepository) ProjectAgentExecution(ctx context.Cont
 			existing, loadErr := loadExistingOutput(ctx, tx, record)
 			if loadErr == nil {
 				if sameDurableOutput(existing, record) {
-					outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: uint64(fullMessage.Cursor), CommittedSequence: record.Sequence}
+					outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: uint64(terminal.Cursor), CommittedSequence: record.Sequence}
 					return nil
 				}
 				if sameCanonicalCancellation(existing, record) {
@@ -117,13 +147,13 @@ func (r *AgentExecutionResultsRepository) ProjectAgentExecution(ctx context.Cont
 			}
 			return runtimedomain.ErrStaleFence
 		}
-		if err := persistCurrentAgentFullMessage(ctx, tx, projectID, projection.Expected, fullMessage); err != nil {
+		if err := persistCurrentAgentTerminal(ctx, tx, projection.Expected, terminal); err != nil {
 			return err
 		}
 		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {
 			return err
 		}
-		outcome = outputapp.ProjectionOutcome{Inserted: true, Cursor: uint64(fullMessage.Cursor), CommittedSequence: record.Sequence}
+		outcome = outputapp.ProjectionOutcome{Inserted: true, Cursor: uint64(terminal.Cursor), CommittedSequence: record.Sequence}
 		return nil
 	})
 	if err != nil {
@@ -153,12 +183,12 @@ func agentExecutionOutputRecord(frame outputapp.AgentExecutionFrame) (outputReco
 	), projectionProjectID, nil
 }
 
-func loadCurrentAgentFullMessage(ctx context.Context, tx sqlExecutor, projectID int32, projection outputapp.AgentExecutionProjection) (currentAgentFullMessage, error) {
+func loadCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, projectID int32, projection outputapp.AgentExecutionProjection) (currentAgentTerminal, error) {
 	frame := projection.Frame
 	artifact := frame.Result.ResultArtifact
 	queries, ok := tx.(agentExecutionTerminalNodeEventQuerier)
 	if !ok {
-		return currentAgentFullMessage{}, errors.New("agent execution terminal query is unavailable")
+		return currentAgentTerminal{}, errors.New("agent execution terminal query is unavailable")
 	}
 	row, err := queries.GetAgentExecutionTerminalNodeEvent(
 		ctx,
@@ -169,17 +199,16 @@ func loadCurrentAgentFullMessage(ctx context.Context, tx sqlExecutor, projectID 
 		},
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return currentAgentFullMessage{}, outputapp.ErrAgentExecutionResultMismatch
+		return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
 	}
 	if err != nil {
-		return currentAgentFullMessage{}, fmt.Errorf("load durable agent full message: %w", err)
+		return currentAgentTerminal{}, fmt.Errorf("load durable agent terminal event: %w", err)
 	}
 	digest, err := storedDigest(row.LastNodeEventDigest)
 	if err != nil || row.LastNodeCursor == nil || *row.LastNodeCursor <= 0 || row.LastNodeSequence != int64(frame.Sequence)-1 ||
 		len(row.LastNodeEventBytes) != int(artifact.ByteLength) || runtimedomain.SHA256(row.LastNodeEventBytes) != digest || digest != artifact.Digest ||
-		artifact.ArtifactID != "node-event:"+frame.Fence.ExecutionID+":full-message" ||
 		artifact.ImmutableVersion != "sha256:"+hex.EncodeToString(digest[:]) {
-		return currentAgentFullMessage{}, outputapp.ErrAgentExecutionResultMismatch
+		return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
 	}
 	var event struct {
 		Type                string          `json:"type"`
@@ -191,85 +220,165 @@ func loadCurrentAgentFullMessage(ctx context.Context, tx sqlExecutor, projectID 
 		ExecutionGeneration string          `json:"execution_generation"`
 		ResponseMetadata    json.RawMessage `json:"response_metadata"`
 	}
-	if json.Unmarshal(row.LastNodeEventBytes, &event) != nil || event.Type != "full_message" ||
+	if json.Unmarshal(row.LastNodeEventBytes, &event) != nil ||
 		event.StreamID != projection.Expected.ClientStreamID || event.MessageID != projection.Expected.ClientMessageID ||
 		event.SIOEvent != projection.Expected.SIOEvent || event.ExecutionGeneration != projection.Expected.ClientExecutionGeneration {
-		return currentAgentFullMessage{}, outputapp.ErrAgentExecutionResultMismatch
+		return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
 	}
+	terminal := currentAgentTerminal{Cursor: *row.LastNodeCursor}
+	switch frame.Result.TerminalState {
+	case outputapp.AgentExecutionTerminalCompleted:
+		if artifact.ArtifactID != "node-event:"+frame.Fence.ExecutionID+":full-message" || event.Type != "full_message" {
+			return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		fullMessage, err := decodeCurrentAgentFullMessage(event.Content, event.References, event.ResponseMetadata)
+		if err != nil {
+			return currentAgentTerminal{}, err
+		}
+		terminal.FullMessage = &fullMessage
+	case outputapp.AgentExecutionTerminalPausedHITL:
+		if artifact.ArtifactID != "node-event:"+frame.Fence.ExecutionID+":hitl-interrupt" || event.Type != "agent_hitl_interrupt" {
+			return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		pause, err := decodeCurrentAgentHITLPause(event.Content, event.ResponseMetadata)
+		if err != nil {
+			return currentAgentTerminal{}, err
+		}
+		terminal.HITLPause = &pause
+	default:
+		return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
+	}
+	return terminal, nil
+}
+
+func decodeCurrentAgentFullMessage(contentJSON, references, responseMetadata json.RawMessage) (currentAgentFullMessage, error) {
 	var content string
-	if json.Unmarshal(event.Content, &content) != nil {
+	if json.Unmarshal(contentJSON, &content) != nil {
 		return currentAgentFullMessage{}, outputapp.ErrAgentExecutionResultMismatch
 	}
 	var metadata struct {
 		ThreadID      string          `json:"thread_id"`
 		InvokedSkills json.RawMessage `json:"invoked_skills"`
 	}
-	if json.Unmarshal(event.ResponseMetadata, &metadata) != nil || metadata.ThreadID == "" ||
+	if json.Unmarshal(responseMetadata, &metadata) != nil || metadata.ThreadID == "" ||
 		len(content) > 4*1024*1024 || strings.ContainsRune(content, '\x00') {
 		return currentAgentFullMessage{}, outputapp.ErrAgentExecutionResultMismatch
 	}
 	return currentAgentFullMessage{
-		Cursor:           *row.LastNodeCursor,
 		Content:          content,
 		ThreadID:         metadata.ThreadID,
-		References:       cloneJSONOrDefault(event.References, []byte("[]")),
+		References:       cloneJSONOrDefault(references, []byte("[]")),
 		InvokedSkills:    cloneJSONOrDefault(metadata.InvokedSkills, []byte("[]")),
-		ResponseMetadata: append(json.RawMessage(nil), event.ResponseMetadata...),
+		ResponseMetadata: append(json.RawMessage(nil), responseMetadata...),
 	}, nil
 }
 
-func persistCurrentAgentFullMessage(ctx context.Context, tx sqlExecutor, projectID int64, expected outputapp.ExpectedAgentExecution, message currentAgentFullMessage) error {
-	schema, err := currentProjectSchema(projectID)
-	if err != nil {
-		return err
+func decodeCurrentAgentHITLPause(contentJSON, responseMetadata json.RawMessage) (currentAgentHITLPause, error) {
+	var content string
+	var metadata struct {
+		ThreadID       string          `json:"thread_id"`
+		HITLInterrupt  json.RawMessage `json:"hitl_interrupt"`
+		HITLInterrupts json.RawMessage `json:"hitl_interrupts"`
 	}
-	var messageGroupID int64
-	err = tx.QueryRow(ctx, fmt.Sprintf(`
-SELECT message_group.id
-FROM %s AS message_group
-JOIN %s AS conversation ON conversation.id = message_group.conversation_id
-WHERE message_group.uuid::text = $1
-  AND conversation.uuid::text = $2
-  AND message_group.task_id = $3
-  AND message_group.meta->>'execution_generation' = $4
-FOR UPDATE OF message_group`, schema+".chat_message_group", schema+".chat_conversations"),
-		expected.ClientMessageID, expected.ClientStreamID, expected.ExecutionID,
-		expected.ClientExecutionGeneration,
-	).Scan(&messageGroupID)
+	if json.Unmarshal(contentJSON, &content) != nil || content == "" || len(content) > 64*1024 ||
+		strings.ContainsRune(content, '\x00') || json.Unmarshal(responseMetadata, &metadata) != nil || metadata.ThreadID == "" {
+		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
+	}
+	var interrupt map[string]any
+	var interrupts []map[string]any
+	if json.Unmarshal(metadata.HITLInterrupt, &interrupt) != nil ||
+		json.Unmarshal(metadata.HITLInterrupts, &interrupts) != nil || len(interrupts) != 1 {
+		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
+	}
+	interruptID, _ := interrupt["interrupt_id"].(string)
+	pluralID, _ := interrupts[0]["interrupt_id"].(string)
+	if interruptID == "" || interruptID != pluralID || !validRootHITLInterrupt(interrupt) {
+		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
+	}
+	return currentAgentHITLPause{
+		ThreadID:  metadata.ThreadID,
+		Interrupt: append(json.RawMessage(nil), metadata.HITLInterrupt...),
+	}, nil
+}
+
+func validRootHITLInterrupt(interrupt map[string]any) bool {
+	for _, key := range []string{"child_thread_id", "parent_agent_call_id", "parent_agent_path", "via_call_id", "_via_call_id"} {
+		if value, exists := interrupt[key]; exists && value != nil && value != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected outputapp.ExpectedAgentExecution, terminal currentAgentTerminal) error {
+	writer, ok := tx.(currentAgentTerminalWriter)
+	if !ok {
+		return errors.New("current agent terminal writer is unavailable")
+	}
+	messageGroupID, err := writer.LockCurrentAgentResponseForTerminal(
+		ctx,
+		sqlcgen.LockCurrentAgentResponseForTerminalParams{
+			MessageID:           expected.ClientMessageID,
+			ConversationID:      expected.ClientStreamID,
+			ExecutionID:         expected.ExecutionID,
+			ExecutionGeneration: expected.ClientExecutionGeneration,
+		},
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errors.New("current agent response message group is unavailable")
 	}
 	if err != nil {
 		return fmt.Errorf("lock current agent response message group: %w", err)
 	}
-	var itemID int64
-	err = tx.QueryRow(ctx, fmt.Sprintf(`
-INSERT INTO %s (uuid, item_type, order_index, meta, message_group_id)
-SELECT gen_random_uuid(), 'text_message', count(*), '{}'::jsonb, $1
-FROM %s
-WHERE message_group_id = $1
-RETURNING id`, schema+".chat_message_items", schema+".chat_message_items"), messageGroupID).Scan(&itemID)
+	if terminal.FullMessage != nil && terminal.HITLPause == nil {
+		message := terminal.FullMessage
+		itemID, err := writer.InsertCurrentAgentTextItem(ctx, int64(messageGroupID))
+		if err != nil {
+			return fmt.Errorf("insert current agent text item: %w", err)
+		}
+		if err := writer.InsertCurrentAgentTextContent(
+			ctx,
+			sqlcgen.InsertCurrentAgentTextContentParams{ItemID: int64(itemID), Content: message.Content},
+		); err != nil {
+			return fmt.Errorf("insert current agent text content: %w", err)
+		}
+		rows, err := writer.FinalizeCurrentAgentFullMessage(
+			ctx,
+			sqlcgen.FinalizeCurrentAgentFullMessageParams{
+				ThreadID:       message.ThreadID,
+				ReferencesJson: []byte(message.References),
+				InvokedSkills:  []byte(message.InvokedSkills),
+				MessageGroupID: int64(messageGroupID),
+			},
+		)
+		if err != nil || rows != 1 {
+			return fmt.Errorf("finalize current agent response message group: %w", terminalWriteError(err))
+		}
+		return nil
+	}
+	if terminal.HITLPause != nil && terminal.FullMessage == nil {
+		pause := terminal.HITLPause
+		rows, err := writer.FinalizeCurrentAgentHITLPause(
+			ctx,
+			sqlcgen.FinalizeCurrentAgentHITLPauseParams{
+				ThreadID:       pause.ThreadID,
+				HitlInterrupt:  []byte(pause.Interrupt),
+				MessageGroupID: int64(messageGroupID),
+			},
+		)
+		if err != nil || rows != 1 {
+			return fmt.Errorf("persist current agent HITL pause: %w", terminalWriteError(err))
+		}
+		return nil
+	}
+	return outputapp.ErrAgentExecutionResultMismatch
+}
+
+func terminalWriteError(err error) error {
 	if err != nil {
-		return fmt.Errorf("insert current agent text item: %w", err)
+		return err
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, content) VALUES ($1, $2)`, schema+".chat_messages_text"), itemID, message.Content); err != nil {
-		return fmt.Errorf("insert current agent text content: %w", err)
-	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`
-UPDATE %s
-SET is_streaming = FALSE,
-    meta = meta || jsonb_build_object(
-        'thread_id', $2::text,
-        'references', $3::jsonb,
-        'is_error', FALSE,
-        'error', '',
-        'invoked_skills', $4::jsonb
-    ),
-    updated_at = clock_timestamp()
-WHERE id = $1`, schema+".chat_message_group"), messageGroupID, message.ThreadID, []byte(message.References), []byte(message.InvokedSkills)); err != nil {
-		return fmt.Errorf("finalize current agent response message group: %w", err)
-	}
-	return nil
+	return errors.New("current agent terminal row was not updated")
 }
 
 func cloneJSONOrDefault(value, fallback []byte) json.RawMessage {
