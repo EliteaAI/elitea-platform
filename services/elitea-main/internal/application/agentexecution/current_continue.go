@@ -208,6 +208,11 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 	request CurrentContinuationRequest,
 	target CurrentContinuationTarget,
 ) (*runtimev1.AgentExecutionInputV1, *CurrentContinueTurn, string, error) {
+	projectID, projectIDValid := currentContinuationDatabaseID(request.ProjectID)
+	actorUserID, actorUserIDValid := currentContinuationDatabaseID(request.ActorUserID)
+	if !projectIDValid || !actorUserIDValid {
+		return nil, nil, "", ErrUnsupportedCurrentAgentStart
+	}
 	turn := &CurrentContinueTurn{
 		ProjectID: request.ProjectID, ActorUserID: request.ActorUserID,
 		ConversationUUID:    request.ConversationUUID,
@@ -233,7 +238,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		frozen, err := service.freezer.FreezeCurrentApplicationVersion(
 			ctx,
 			CurrentApplicationVersionFreezeRequest{
-				ProjectID: int32(request.ProjectID), ActorUserID: int32(request.ActorUserID),
+				ProjectID: projectID, ActorUserID: actorUserID,
 				VersionDetails: resolved.VersionDetails,
 			},
 		)
@@ -267,7 +272,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		frozen, err := service.freezer.FreezeCurrentApplicationVersion(
 			ctx,
 			CurrentApplicationVersionFreezeRequest{
-				ProjectID: int32(request.ProjectID), ActorUserID: int32(request.ActorUserID),
+				ProjectID: projectID, ActorUserID: actorUserID,
 				VersionDetails: snapshot,
 			},
 		)
@@ -299,6 +304,13 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 	input.HitlValue = stringPointer(request.Value)
 	input.HitlDecisions = decisions
 	return input, turn, capabilityID, nil
+}
+
+func currentContinuationDatabaseID(value int64) (int32, bool) {
+	if value <= 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 func currentRootHITLAction(action string) bool {

@@ -528,6 +528,20 @@ func resumeCurrentAgentHITL(
 	executionID string,
 	turn agentexecutionapp.CurrentContinueTurn,
 ) error {
+	projectID, projectIDValid := currentAgentDatabaseID(turn.ProjectID)
+	targetParticipantID, targetParticipantIDValid := currentAgentDatabaseID(turn.TargetParticipantID)
+	if !projectIDValid || !targetParticipantIDValid {
+		return executionapp.ErrInvalidAdmission
+	}
+	var applicationID, applicationVersionID int32
+	if turn.Kind == agentexecutionapp.CurrentRegenerationApplication {
+		var applicationIDValid, applicationVersionIDValid bool
+		applicationID, applicationIDValid = currentAgentDatabaseID(turn.ApplicationID)
+		applicationVersionID, applicationVersionIDValid = currentAgentDatabaseID(turn.ApplicationVersionID)
+		if !applicationIDValid || !applicationVersionIDValid {
+			return executionapp.ErrInvalidAdmission
+		}
+	}
 	conversationUUID, err := currentPGUUID(turn.ConversationUUID)
 	if err != nil {
 		return executionapp.ErrInvalidAdmission
@@ -543,13 +557,13 @@ func resumeCurrentAgentHITL(
 	row, err := queries.ResumeCurrentAgentHITL(
 		ctx,
 		sqlcgen.ResumeCurrentAgentHITLParams{
-			ActorUserID: turn.ActorUserID, TargetParticipantID: int32(turn.TargetParticipantID),
+			ActorUserID: turn.ActorUserID, TargetParticipantID: targetParticipantID,
 			ConversationUuid: conversationUUID, QuestionID: questionID,
 			ResponseMessageID: responseMessageID, ContinuationKind: string(turn.Kind),
-			ApplicationID: int32(turn.ApplicationID), ApplicationVersionID: int32(turn.ApplicationVersionID),
+			ApplicationID: applicationID, ApplicationVersionID: applicationVersionID,
 			ExecutionGeneration: turn.ExecutionGeneration, ThreadID: turn.ThreadID,
 			InterruptID: turn.InterruptID, HitlAction: turn.Action,
-			ExecutionID: executionID, ProjectID: int32(turn.ProjectID),
+			ExecutionID: executionID, ProjectID: projectID,
 		},
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
