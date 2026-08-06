@@ -181,6 +181,56 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 	}
 }
 
+func TestCurrentApplicationStartPreservesPipelineYAMLInTheExistingApplicationContract(t *testing.T) {
+	pipelineYAML := "nodes:\n  - id: draft\n    type: llm\n  - id: review\n    type: hitl\nedges:\n  - from: draft\n    to: review\n"
+	versionDetails, err := json.Marshal(map[string]any{
+		"id": 41, "application_id": 31, "agent_type": "pipeline",
+		"instructions": pipelineYAML,
+		"llm_settings": map[string]any{"model_name": "test"},
+		"meta":         map[string]any{}, "tools": []any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &currentApplicationResolverStub{target: CurrentApplicationTarget{
+		ApplicationID: 31, ApplicationVersionID: 41,
+		Variables: json.RawMessage(`[]`), VersionDetails: versionDetails,
+		ChatHistory: json.RawMessage(`[]`),
+	}}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "pipeline-execution", CommandID: "pipeline-command", Created: true,
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver, resolver, resolver, resolver,
+		&currentApplicationVersionFreezerStub{}, admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.StartCurrentApplication(
+		context.Background(), validCurrentApplicationStartRequest(),
+	); err != nil {
+		t.Fatalf("StartCurrentApplication() pipeline error = %v", err)
+	}
+	if len(admissions.requests) != 1 {
+		t.Fatalf("pipeline admissions = %d", len(admissions.requests))
+	}
+	var application struct {
+		VersionDetails struct {
+			AgentType    string `json:"agent_type"`
+			Instructions string `json:"instructions"`
+		} `json:"version_details"`
+	}
+	if err := json.Unmarshal(admissions.requests[0].Input.GetApplication(), &application); err != nil {
+		t.Fatal(err)
+	}
+	if application.VersionDetails.AgentType != "pipeline" ||
+		application.VersionDetails.Instructions != pipelineYAML {
+		t.Fatalf("pipeline application snapshot = %+v", application)
+	}
+}
+
 func TestCurrentApplicationRuntimeLLMBindsDerivedCompatibilityOnly(t *testing.T) {
 	result, err := currentApplicationRuntimeLLM(json.RawMessage(`{
   "llm_settings":{"model_name":"model","model_project_id":7,"openai_compatible":true,"temperature":0.6}

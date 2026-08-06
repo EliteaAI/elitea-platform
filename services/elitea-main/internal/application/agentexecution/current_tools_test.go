@@ -193,6 +193,57 @@ func TestCurrentApplicationToolSnapshotPreservesSameProjectLeafApplicationRefere
 	}
 }
 
+func TestCurrentApplicationToolSnapshotPreservesSameProjectPipelineReference(t *testing.T) {
+	service, err := NewCurrentApplicationToolSnapshotService(
+		&currentAgentSettingsResolverStub{},
+		&currentAgentNameResolverStub{},
+		currentAgentModelCatalogForTest(false),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.FreezeCurrentApplicationVersion(
+		context.Background(),
+		CurrentApplicationVersionFreezeRequest{
+			ProjectID: 7, ActorUserID: 11,
+			VersionDetails: json.RawMessage(`{
+  "llm_settings":{"model_name":"model"},
+  "tools":[{
+    "type":"application",
+    "name":"release-pipeline",
+    "description":"Current pipeline nesting primitive",
+    "author_id":11,
+    "participant_id":29,
+    "project_id":7,
+    "settings":{
+      "variables":[],
+      "application_id":3,
+      "selected_tools":[],
+      "application_version_id":4
+    },
+    "id":null,
+    "toolkit_name":"release-pipeline",
+    "agent_type":"pipeline",
+    "created_at":"2026-08-04T10:00:00Z"
+  }]
+}`),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := decodeCurrentApplicationVersion(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := version["tools"].([]any)[0].(map[string]any)
+	if tool["type"] != "application" || tool["agent_type"] != "pipeline" ||
+		tool["name"] != "release-pipeline" || tool["toolkit_name"] != "release-pipeline" {
+		t.Fatalf("pipeline tool=%#v", tool)
+	}
+}
+
 func TestCurrentApplicationToolSnapshotRejectsUnsupportedApplicationReferences(t *testing.T) {
 	base := map[string]any{
 		"type": "application", "name": "child", "description": "",
@@ -210,7 +261,6 @@ func TestCurrentApplicationToolSnapshotRejectsUnsupportedApplicationReferences(t
 	}{
 		{name: "cross project", mutate: func(tool map[string]any) { tool["project_id"] = json.Number("8") }},
 		{name: "wrong actor", mutate: func(tool map[string]any) { tool["author_id"] = json.Number("12") }},
-		{name: "pipeline", mutate: func(tool map[string]any) { tool["agent_type"] = "pipeline" }},
 		{name: "persisted tool id", mutate: func(tool map[string]any) { tool["id"] = json.Number("44") }},
 		{name: "selected child tools", mutate: func(tool map[string]any) {
 			tool["settings"].(map[string]any)["selected_tools"] = []any{"tool"}

@@ -309,6 +309,100 @@ WHERE uuid = '80000000-0000-4000-8000-000000000039'`,
 	}
 }
 
+func TestPostgresCurrentPipelineTurnAdmitsDirectAndAdhocEntryModes(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+UPDATE application_versions
+SET agent_type = 'pipeline',
+    instructions = 'nodes:\n  - id: draft\n    type: llm\n  - id: approve\n    type: hitl\nedges:\n  - from: draft\n    to: approve'
+WHERE id = 41;
+UPDATE chat_participants
+SET meta = jsonb_set(meta::jsonb, '{agent_type}', '"pipeline"'::jsonb)::json
+WHERE id = 30`); err != nil {
+		t.Fatal(err)
+	}
+
+	queries := sqlcgen.New(tx)
+	directConversation := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	directQuestion := mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000037")
+	direct, err := queries.ResolveCurrentApplicationTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentApplicationTurnParams{
+			ActorUserID: 11, TargetParticipantID: 21, QuestionID: directQuestion,
+			ConversationUuid: directConversation, ProjectID: 1,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve direct pipeline: %v", err)
+	}
+	var versionDetails map[string]any
+	if err := json.Unmarshal([]byte(direct.ApplicationVersionDetailsJson), &versionDetails); err != nil ||
+		versionDetails["agent_type"] != "pipeline" ||
+		versionDetails["instructions"] == "" {
+		t.Fatalf("direct pipeline version=%s error=%v", direct.ApplicationVersionDetailsJson, err)
+	}
+	if _, err := queries.InsertCurrentApplicationTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentApplicationTurnParams{
+			ActorUserID: 11, TargetParticipantID: 21,
+			ApplicationVersionID: 41, ApplicationID: 31,
+			ConversationUuid: directConversation, ProjectID: 1,
+			QuestionID: directQuestion, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "30000000-0000-4000-8000-000000000037"),
+			UserInput:           "run direct pipeline",
+			ResponseMessageID:   mustCurrentPGUUID(t, "40000000-0000-4000-8000-000000000037"),
+			ExecutionGeneration: "20000000-0000-4000-8000-000000000037",
+			ExecutionID:         "execution-pipeline-direct",
+		},
+	); err != nil {
+		t.Fatalf("insert direct pipeline turn: %v", err)
+	}
+
+	adhocConversation := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000032")
+	adhocQuestion := mustCurrentPGUUID(t, "50000000-0000-4000-8000-000000000037")
+	adhoc, err := queries.ResolveCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+			QuestionID: adhocQuestion, ConversationUuid: adhocConversation,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve ad-hoc pipeline: %v", err)
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal([]byte(adhoc.ToolsJson), &tools); err != nil || len(tools) != 2 ||
+		tools[1]["type"] != "application" || tools[1]["agent_type"] != "pipeline" {
+		t.Fatalf("ad-hoc pipeline tools=%s error=%v", adhoc.ToolsJson, err)
+	}
+	if _, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: adhocConversation, ProjectID: 1,
+			QuestionID: adhocQuestion, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "60000000-0000-4000-8000-000000000037"),
+			UserInput:           "run attached pipeline",
+			ResponseMessageID:   mustCurrentPGUUID(t, "70000000-0000-4000-8000-000000000037"),
+			ExecutionGeneration: "50000000-0000-4000-8000-000000000037",
+			ExecutionID:         "execution-pipeline-adhoc",
+		},
+	); err != nil {
+		t.Fatalf("insert ad-hoc pipeline turn: %v", err)
+	}
+}
+
 func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
@@ -437,20 +531,6 @@ SET entity_meta = jsonb_set(entity_meta, '{project_id}', '1'::jsonb)
 WHERE id = 30`,
 		},
 		{
-			name:    "pipeline child",
-			apply:   `UPDATE application_versions SET agent_type = 'pipeline' WHERE id = 41`,
-			restore: `UPDATE application_versions SET agent_type = 'agent' WHERE id = 41`,
-		},
-		{
-			name: "participant projects a pipeline",
-			apply: `UPDATE chat_participants
-SET meta = jsonb_set(meta::jsonb, '{agent_type}', '"pipeline"'::jsonb)::json
-WHERE id = 30`,
-			restore: `UPDATE chat_participants
-SET meta = jsonb_set(meta::jsonb, '{agent_type}', '"agent"'::jsonb)::json
-WHERE id = 30`,
-		},
-		{
 			name: "child internal tools",
 			apply: `UPDATE application_versions
 SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
@@ -542,6 +622,11 @@ func TestPostgresCurrentRegenerationResolvesOwnershipAndAtomicallyReusesResponse
 		"30000000-0000-4000-8000-000000000031", responseID,
 		"regenerate this", "execution-original",
 	)
+	// Main-chat user turns include a persisted context envelope alongside the
+	// visible text. The current WebSocket regeneration path ignores that item;
+	// typed regeneration must accept the same stored shape while attachments and
+	// canvases remain outside this focused contract.
+	insertPostgresSupportContext(t, tx, questionID, 11, 1)
 	pending, err := queries.ResolveCurrentRegeneration(
 		t.Context(),
 		sqlcgen.ResolveCurrentRegenerationParams{
@@ -654,7 +739,7 @@ FROM response_item`, responseID, content); err != nil {
 	}
 }
 
-func TestPostgresCurrentRootHITLContinuationConsumesExistingResponseAtomically(t *testing.T) {
+func TestPostgresCurrentSequentialNestedHITLContinuationConsumesExistingResponseAtomically(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -689,6 +774,14 @@ WITH paused AS (
                     'approve', 'reject', 'edit', 'block_with_comment'
                 ),
                 'tool_name', 'configurations:delete_branch'
+            ) || jsonb_build_object(
+                'parent_agent_call_id', 'call-pipeline-1',
+                'parent_agent_path', jsonb_build_array(
+                    jsonb_build_object(
+                        'name', 'release-pipeline',
+                        'call_id', 'call-pipeline-1'
+                    )
+                )
             )
         )
     WHERE uuid = $1
