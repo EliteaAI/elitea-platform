@@ -35,8 +35,8 @@ describe('INVOCATION_ID_RE', () => {
 });
 
 describe('partitionActionsIntoBlocks', () => {
-  const deriveName = (a: SubAgentGroupable) => (a as Record<string, string>).agentName ?? '';
-  const deriveInstanceKey = (a: SubAgentGroupable) => (a as Record<string, string>).pcid ?? '';
+  const deriveName = (a: SubAgentGroupable) => (a as unknown as Record<string, string>).agentName ?? '';
+  const deriveInstanceKey = (a: SubAgentGroupable) => (a as unknown as Record<string, string>).pcid ?? '';
   const classifyWrapper = () => null;
   const opts = { deriveName, deriveInstanceKey, classifyWrapper };
 
@@ -44,8 +44,8 @@ describe('partitionActionsIntoBlocks', () => {
     const actions = [{ agentName: '' }, { agentName: '' }] as unknown as SubAgentGroupable[];
     const blocks = partitionActionsIntoBlocks(actions, opts);
     expect(blocks).toHaveLength(1);
-    expect(blocks[0].kind).toBe('coord');
-    expect(blocks[0].actions).toHaveLength(2);
+    expect(blocks[0]!.kind).toBe('coord');
+    expect(blocks[0]!.actions).toHaveLength(2);
   });
 
   it('groups named actions into sub blocks by instanceKey', () => {
@@ -55,8 +55,8 @@ describe('partitionActionsIntoBlocks', () => {
     ] as unknown as SubAgentGroupable[];
     const blocks = partitionActionsIntoBlocks(actions, opts);
     expect(blocks).toHaveLength(1);
-    expect(blocks[0].kind).toBe('sub');
-    expect(blocks[0].actions).toHaveLength(2);
+    expect(blocks[0]!.kind).toBe('sub');
+    expect(blocks[0]!.actions).toHaveLength(2);
   });
 
   it('creates separate blocks for different instance keys', () => {
@@ -70,7 +70,7 @@ describe('partitionActionsIntoBlocks', () => {
 
   it('folds sequential-resume pcid into paused block of same name', () => {
     const classifyWrapperPaused = (a: SubAgentGroupable) =>
-      (a as Record<string, string>).phase === 'paused' ? 'paused' as const : null;
+      (a as unknown as Record<string, string>).phase === 'paused' ? 'paused' as const : null;
     const actions = [
       { agentName: 'bot', pcid: 'call_1', phase: 'paused' },
       { agentName: 'bot', pcid: 'call_2' },
@@ -81,10 +81,10 @@ describe('partitionActionsIntoBlocks', () => {
       classifyWrapper: classifyWrapperPaused,
     });
     expect(blocks).toHaveLength(1);
-    expect(blocks[0].kind).toBe('sub');
-    if (blocks[0].kind === 'sub') {
-      expect(blocks[0].aliasKeys).toContain('call_1');
-      expect(blocks[0].aliasKeys).toContain('call_2');
+    expect(blocks[0]!.kind).toBe('sub');
+    if (blocks[0]!.kind === 'sub') {
+      expect(blocks[0]!.aliasKeys).toContain('call_1');
+      expect(blocks[0]!.aliasKeys).toContain('call_2');
     }
   });
 

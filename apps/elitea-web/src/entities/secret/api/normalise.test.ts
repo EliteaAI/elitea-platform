@@ -10,7 +10,7 @@ describe('normaliseSecrets', () => {
 
   it('falls back secretName to name when secret_name is missing', () => {
     const wire = [{ name: 'KEY' }];
-    expect(normaliseSecrets(wire)[0].secretName).toBe('KEY');
+    expect(normaliseSecrets(wire)[0]!.secretName).toBe('KEY');
   });
 
   it('handles completely empty objects', () => {
@@ -23,6 +23,6 @@ describe('normaliseSecrets', () => {
 
   it('coerces non-string name to string', () => {
     const wire = [{ name: 123, secret_name: 'x', is_default: false }];
-    expect(normaliseSecrets(wire)[0].name).toBe('123');
+    expect(normaliseSecrets(wire)[0]!.name).toBe('123');
   });
 });

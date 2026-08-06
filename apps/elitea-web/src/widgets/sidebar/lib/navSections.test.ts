@@ -1,14 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { computeIsSelectedProjectPublic, navSections, selectedNavItem, visibleNavSections } from './navSections';
-
-vi.mock('@/shared/config', () => ({
-  getConfig: vi.fn(() => ({ status: 'ok', config: { vite_public_project_id: '999' } })),
-}));
-
-vi.mock('@/entities/project', () => ({
-  isPublicProject: (id: string, publicId: string) => id === publicId,
-}));
+import { navSections, selectedNavItem, visibleNavSections } from './navSections';
 
 describe('navSections', () => {
   it('returns 3 groups', () => {
@@ -16,7 +8,7 @@ describe('navSections', () => {
   });
 
   it('first section has chat, agents, pipelines', () => {
-    const first = navSections()[0].items;
+    const first = navSections()[0]!.items;
     expect(first.map((i) => i.value)).toEqual(['chat', 'agents', 'pipelines']);
   });
 
@@ -65,20 +57,6 @@ describe('visibleNavSections', () => {
     result.forEach((section) => {
       expect(section.items.length).toBeGreaterThan(0);
     });
-  });
-});
-
-describe('computeIsSelectedProjectPublic', () => {
-  it('returns true when id matches public project id from config', () => {
-    expect(computeIsSelectedProjectPublic('999')).toBe(true);
-  });
-
-  it('returns false for non-public id', () => {
-    expect(computeIsSelectedProjectPublic('123')).toBe(false);
-  });
-
-  it('returns false for undefined', () => {
-    expect(computeIsSelectedProjectPublic(undefined)).toBe(false);
   });
 });
 

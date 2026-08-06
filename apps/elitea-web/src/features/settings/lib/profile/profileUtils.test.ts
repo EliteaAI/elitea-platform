@@ -14,8 +14,9 @@ describe('serializeProfileFormData', () => {
   it('returns defaults with model info when authorData is undefined', () => {
     const result = serializeProfileFormData(undefined, defaultModel);
     expect(result.persona).toBe('');
-    expect(result.summary_llm_settings.model_name).toBe('gpt-4');
-    expect(result.summary_llm_settings.model_project_id).toBe('10');
+    const llm = result.summary_llm_settings as Record<string, unknown>;
+    expect(llm.model_name).toBe('gpt-4');
+    expect(llm.model_project_id).toBe('10');
   });
 
   it('serializes personalization persona and instructions', () => {
@@ -43,16 +44,18 @@ describe('serializeProfileFormData', () => {
       personalization: { default_summarization: { enable_summarization: true, summary_instructions: 'summarize', summary_model_name: 'claude', summary_model_project_id: '42', target_summary_tokens: 2048 } },
     }, null);
     expect(result.enable_summarization).toBe(true);
-    expect(result.summary_llm_settings.instructions).toBe('summarize');
-    expect(result.summary_llm_settings.model_name).toBe('claude');
-    expect(result.summary_llm_settings.model_project_id).toBe('42');
-    expect(result.summary_llm_settings.max_tokens).toBe(2048);
+    const llm = result.summary_llm_settings as Record<string, unknown>;
+    expect(llm.instructions).toBe('summarize');
+    expect(llm.model_name).toBe('claude');
+    expect(llm.model_project_id).toBe('42');
+    expect(llm.max_tokens).toBe(2048);
   });
 
   it('falls back to defaultModel for summarization model_name', () => {
     const result = serializeProfileFormData({ personalization: { default_summarization: {} } }, defaultModel);
-    expect(result.summary_llm_settings.model_name).toBe('gpt-4');
-    expect(result.summary_llm_settings.model_project_id).toBe('10');
+    const llm = result.summary_llm_settings as Record<string, unknown>;
+    expect(llm.model_name).toBe('gpt-4');
+    expect(llm.model_project_id).toBe('10');
   });
 });
 

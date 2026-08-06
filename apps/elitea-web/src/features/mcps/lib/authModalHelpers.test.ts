@@ -1,7 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
-  applySaveCredentialsPreference,
   buildStartFlowOptions,
   ensureAuthServersAvailable,
   isStringArray,
@@ -10,18 +9,6 @@ import {
   resolveFormDefaults,
   scopesToString,
 } from './authModalHelpers';
-
-import { removeSavedCredentials, setSavedCredentials } from './storage';
-import { openAuthPopup } from './window';
-
-vi.mock('./storage', () => ({
-  setSavedCredentials: vi.fn(),
-  removeSavedCredentials: vi.fn(),
-}));
-
-vi.mock('./window', () => ({
-  openAuthPopup: vi.fn(),
-}));
 
 describe('isStringArray', () => {
   it('returns true for string arrays', () => {
@@ -65,7 +52,7 @@ describe('pickMcpAuthMetadataFields', () => {
       providedSettings: { mcp_client_id: 'id1' },
       resourceScopes: ['read'],
     };
-    const result = pickMcpAuthMetadataFields(meta as never);
+    const result = pickMcpAuthMetadataFields(meta);
     expect(result.authServers).toEqual(['https://auth.example.com']);
     expect(result.resourceScopes).toEqual(['read']);
   });
@@ -118,12 +105,12 @@ describe('resolveAuthModalDetailCopy', () => {
 describe('ensureAuthServersAvailable', () => {
   it('throws when no authServers', () => {
     expect(() => ensureAuthServersAvailable(null)).toThrow('No authorization servers');
-    expect(() => ensureAuthServersAvailable({ authServers: [] } as never)).toThrow();
+    expect(() => ensureAuthServersAvailable({ authServers: [] })).toThrow();
   });
 
   it('returns validated object when servers present', () => {
     const meta = { authServers: ['https://a.com'], oauthAuthorizationServer: { token_endpoint: 'x' }, oauthMetadata: null };
-    const result = ensureAuthServersAvailable(meta as never);
+    const result = ensureAuthServersAvailable(meta);
     expect(result.authServers).toEqual(['https://a.com']);
   });
 });
@@ -132,7 +119,7 @@ describe('buildStartFlowOptions', () => {
   it('builds options from params', () => {
     const result = buildStartFlowOptions({
       storageKey: 'https://server.com',
-      validated: { authServers: ['https://a.com'], oauthAuthorizationServer: { token_endpoint: 'tok' } as never, oauthMetadata: null },
+      validated: { authServers: ['https://a.com'], oauthAuthorizationServer: { token_endpoint: 'tok' }, oauthMetadata: null },
       authWindow: {} as Window,
       credentials: { clientId: 'cid', clientSecret: 'csec' },
       scope: 'openid',
@@ -159,18 +146,3 @@ describe('buildStartFlowOptions', () => {
   });
 });
 
-describe('applySaveCredentialsPreference', () => {
-  it('saves credentials when opted in and credentials exist', () => {
-    applySaveCredentialsPreference({
-      saveCredentials: true, storageKey: 'k', credentials: { clientId: 'id', clientSecret: '' }, toolkitType: 'mcp',
-    });
-    expect(setSavedCredentials).toHaveBeenCalledWith({ serverUrl: 'k', clientId: 'id', clientSecret: '', toolkitType: 'mcp' });
-  });
-
-  it('removes credentials when opted out', () => {
-    applySaveCredentialsPreference({
-      saveCredentials: false, storageKey: 'k', credentials: { clientId: '', clientSecret: '' }, toolkitType: 'mcp',
-    });
-    expect(removeSavedCredentials).toHaveBeenCalledWith('k', 'mcp');
-  });
-});

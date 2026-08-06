@@ -26,9 +26,9 @@ describe('resolveActiveSubmenuView', () => {
       onSelect,
     });
     expect(result.items).toHaveLength(2);
-    expect(result.items[0].label).toBe('Bot');
-    expect(result.items[0].key).toBe('agent-a1');
-    result.items[0].onClick?.();
+    expect(result.items[0]!.label).toBe('Bot');
+    expect(result.items[0]!.key).toBe('agent-a1');
+    result.items[0]!.onClick?.();
     expect(onSelect).toHaveBeenCalledWith({ id: 'a1', name: 'Bot' });
   });
 
@@ -37,8 +37,8 @@ describe('resolveActiveSubmenuView', () => {
       ...baseParams(),
       entities: { pipelines: [{ id: 'p1', name: 'MyPipeline' }] },
     });
-    expect(result.items[0].label).toBe('MyPipeline');
-    expect(result.items[0].key).toBe('pipeline-p1');
+    expect(result.items[0]!.label).toBe('MyPipeline');
+    expect(result.items[0]!.key).toBe('pipeline-p1');
   });
 
   it('builds toolkit submenu from entities.toolkits', () => {
@@ -46,7 +46,7 @@ describe('resolveActiveSubmenuView', () => {
       ...baseParams(),
       entities: { toolkits: [{ id: 't1', name: 'ToolA' }] },
     });
-    expect(result.items[0].label).toBe('ToolA');
+    expect(result.items[0]!.label).toBe('ToolA');
   });
 
   it('builds mcps submenu from entities.mcps', () => {
@@ -54,7 +54,7 @@ describe('resolveActiveSubmenuView', () => {
       ...baseParams(),
       entities: { mcps: [{ id: 'm1', name: 'McpServer' }] },
     });
-    expect(result.items[0].label).toBe('McpServer');
+    expect(result.items[0]!.label).toBe('McpServer');
   });
 
   it('builds tools submenu with checked state', () => {
@@ -66,9 +66,9 @@ describe('resolveActiveSubmenuView', () => {
       onInternalToolsConfigChange: onConfig,
     });
     expect(result.items).toHaveLength(2);
-    expect(result.items[0].checked).toBe(true);
-    expect(result.items[1].checked).toBe(false);
-    result.items[1].onClick?.();
+    expect(result.items[0]!.checked).toBe(true);
+    expect(result.items[1]!.checked).toBe(false);
+    result.items[1]!.onClick?.();
     expect(onConfig).toHaveBeenCalledWith({ key: 'code', value: true });
   });
 
@@ -94,7 +94,7 @@ describe('resolveActiveSubmenuView', () => {
       ...baseParams(),
       participants: [{ id: 'x' }],
     });
-    expect(result.items[0].label).toBe('Agent 1');
+    expect(result.items[0]!.label).toBe('Agent 1');
   });
 
   it('uses index as key fallback when entity has no id', () => {
@@ -102,6 +102,6 @@ describe('resolveActiveSubmenuView', () => {
       ...baseParams(),
       participants: [{ name: 'NoId' }],
     });
-    expect(result.items[0].key).toBe('agent-0');
+    expect(result.items[0]!.key).toBe('agent-0');
   });
 });

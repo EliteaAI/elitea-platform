@@ -44,7 +44,7 @@ describe('getRemainingAttachmentCapacity', () => {
   });
 
   it('respects custom limits', () => {
-    const limits = { MAX_ATTACHMENTS: 2, MAX_TOTAL_SIZE: 500 };
+    const limits = { MAX_ATTACHMENTS: 2, MAX_TOTAL_SIZE: 500 } as unknown as typeof ATTACHMENT_LIMITS;
     const files = [makeFile('a.txt', 100), makeFile('b.txt', 100)];
     const result = getRemainingAttachmentCapacity(files, limits);
     expect(result.remainingAttachments).toBe(0);
@@ -100,7 +100,7 @@ describe('validateAttachmentFiles', () => {
   it('enforces the image count limit', () => {
     const existing = Array.from({ length: 10 }, (_, i) => makeFile(`img${i}.jpg`, 100, 'image/jpeg'));
     const newImage = makeFile('extra.png', 100, 'image/png');
-    const result = validateAttachmentFiles([newImage], existing, { ...ATTACHMENT_LIMITS, MAX_ATTACHMENTS: 20 });
+    const result = validateAttachmentFiles([newImage], existing, { ...ATTACHMENT_LIMITS, MAX_ATTACHMENTS: 20 } as unknown as typeof ATTACHMENT_LIMITS);
     expect(result.validFiles).toHaveLength(0);
     expect(result.errors[0]).toContain('10 image');
   });
@@ -114,7 +114,7 @@ describe('validateAttachmentFiles', () => {
   });
 
   it('accumulates multiple errors for different rejection reasons', () => {
-    const limits = { ...ATTACHMENT_LIMITS, MAX_ATTACHMENTS: 20 };
+    const limits = { ...ATTACHMENT_LIMITS, MAX_ATTACHMENTS: 20 } as unknown as typeof ATTACHMENT_LIMITS;
     const tooBig = makeFile('huge.bin', 200 * 1024 * 1024);
     const tooBigImg = makeFile('huge.png', 10 * 1024 * 1024, 'image/png');
     const result = validateAttachmentFiles([tooBig, tooBigImg], [], limits);

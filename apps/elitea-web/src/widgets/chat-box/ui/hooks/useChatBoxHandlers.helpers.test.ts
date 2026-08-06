@@ -114,11 +114,11 @@ describe('findQuestionText', () => {
   ];
 
   it('finds the question text for an answer', () => {
-    expect(findQuestionText(history, history[1])).toBe('Hello');
+    expect(findQuestionText(history, history[1]!)).toBe('Hello');
   });
 
   it('returns undefined when questionId is missing', () => {
-    expect(findQuestionText(history, history[0])).toBeUndefined();
+    expect(findQuestionText(history, history[0]!)).toBeUndefined();
   });
 });
 
