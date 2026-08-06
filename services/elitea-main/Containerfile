@@ -73,3 +73,23 @@ ENV ADMIN_UI_STATIC_DIR=/nonexistent
 FROM runtime AS final
 
 COPY --from=admin-builder /admin/static/dist /data/admin_ui/static/dist
+
+# ── Stage 6: E2E test image ───────────────────────────────────────────────────
+# Uses the elitea-web admin SPA (src/entries/admin) instead of the admin-ui
+# submodule, so E2E runs don't require the submodule checkout.
+FROM node:24-alpine AS elitea-web-admin-builder
+
+WORKDIR /build
+
+COPY apps/elitea-web/package.json apps/elitea-web/package-lock.json ./
+RUN npm ci
+
+COPY apps/elitea-web/index.html apps/elitea-web/tsconfig.json apps/elitea-web/vite.config.ts ./
+COPY apps/elitea-web/src/ ./src/
+
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+RUN npm run build:admin
+
+FROM runtime AS e2e
+
+COPY --from=elitea-web-admin-builder /build/dist/admin /data/admin_ui/static/dist

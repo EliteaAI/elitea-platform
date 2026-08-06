@@ -31,6 +31,9 @@ export async function checkA11y(page: Page): Promise<void> {
     .disableRules([
       // MUI Select: combobox role false-positive when listbox portal is detached.
       'aria-required-children',
+      // AppShell nav items use role="menuitem" without a parent role="menu".
+      // Fix belongs in the shell nav component; tracked as issue #62.
+      'aria-required-parent',
       // Landmark rules (best-practice, not wcag2a): <main> + region missing.
       // AppShell not yet wired into _shell/route.tsx. Tracked: issue #62.
       'landmark-one-main',

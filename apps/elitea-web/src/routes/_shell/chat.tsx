@@ -28,7 +28,7 @@
  */
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 
-import { ChatWithEditors } from '@/processes/chat';
+import { ChatWithConversations } from '@/processes/chat/ui/ChatWithConversations';
 
 import { requireChatPermission } from '../-guards/requirePermission';
 import { RouteError, RoutePending } from '../-ui/RouteStatus';
@@ -45,7 +45,7 @@ export const Route = createFileRoute('/_shell/chat')({
 function ChatWrapperShell() {
   return (
     <>
-      <ChatWithEditors />
+      <ChatWithConversations />
       <Outlet />
     </>
   );

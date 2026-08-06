@@ -90,7 +90,7 @@ services:
   # ── Application services ────────────────────────────────────────────────────
 
   elitea-main:
-    image: ghcr.io/eliteaai/elitea-main:dev
+    image: ghcr.io/eliteaai/elitea-main:e2e
     environment:
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
       REDIS_URL: "redis:6379"

@@ -622,12 +622,28 @@ jobs:
         run: npm ci
       - name: Set up Docker Buildx (for elitea-web image build)
         uses: docker/setup-buildx-action@v3
+      - name: Build elitea-main:e2e and elitea-web:e2e from source
+        # docker-compose.e2e-standalone.yml references elitea-main:e2e and elitea-web:e2e.
+        # Build both locally so the E2E stack does not require pre-published images.
+        # elitea-main: use the `e2e` target which builds the admin SPA from
+        #   apps/elitea-web/src/entries/admin (no admin-ui submodule required).
+        # elitea-web:  the image includes the bundled SPA served by nginx.
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker build \
+            --file services/elitea-main/Containerfile \
+            --target e2e \
+            --tag ghcr.io/eliteaai/elitea-main:e2e \
+            --platform linux/amd64 \
+            .
+          docker buildx bake \
+            --set '*.platform=linux/amd64' \
+            --set 'elitea-web.tags=ghcr.io/eliteaai/elitea-web:e2e' \
+            elitea-web
       - name: Bring up E2E stack
-        # e2e-stack.sh up runs:
-        #   docker compose -f deploy/docker-compose.yml
-        #                  -f deploy/docker-compose.e2e.yml up -d --wait
+        # e2e-stack.sh uses deploy/docker-compose.e2e-standalone.yml which references
+        # elitea-main:e2e (built above) and elitea-web:e2e (also built above).
         # The script auto-detects `docker compose` (CI) vs `podman compose` (local).
-        # COMPOSE_BIN override ensures docker compose is used on ubuntu-latest.
         # E2E_PORT=8080 is free on ubuntu-latest (no centry stack); 8082 is the local default.
         env:
           COMPOSE_BIN: docker compose

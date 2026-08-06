@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
@@ -740,8 +741,19 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
 	}
 
+	var adminUICfg *adminui.Config
+	if dir := os.Getenv("ADMIN_UI_STATIC_DIR"); dir != "" {
+		adminUICfg = &adminui.Config{
+			StaticDir:     dir,
+			ViteServerURL: "/api/v2",
+			BasePath:      "/admin/app",
+			SecretKey:     os.Getenv("APPLICATION_SECRET_KEY"),
+		}
+	}
+
 	r := api.NewRouter(api.RouterConfig{
-		Pool: pool,
+		AdminUI: adminUICfg,
+		Pool:    pool,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,

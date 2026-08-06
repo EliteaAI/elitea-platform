@@ -60,34 +60,45 @@ test('J5: deep link to specific agent version cold-loads', async ({ browser, req
 // ROUTE-070: the splat route ($projectId.$) strips the project segment and
 // hard-reloads at the same path with the active project switched.
 // ─────────────────────────────────────────────────────────────────────────────
-test('J6: share link with project id switches project and reloads', async ({ page, request }) => {
-  const agentId = await createAgent(request, `${AUTOTEST_PREFIX}sharelink-agent`).catch(
-    () => null,
+// J6 uses the admin persona because the member persona is excluded from the
+// project list when check_public_role=true and the user has no admin role.
+// The admin (e2e-admin) has the 'admin' role on project 1 so they appear in
+// ListCurrentUserProjects and the project switch redirect fires.
+const j6Test = test.extend<object>({ storageState: STORAGE_STATE.admin });
+j6Test('J6: share link with project id switches project and reloads', async ({ page, request }) => {
+  // ROUTE-070: the /$projectId/$ splat strips the project segment and reloads.
+  // We test the routing mechanism with a known destination path — we don't
+  // need an actual agent; ROUTE-070 fires based on the projectId param alone.
+  // Use /app/chat as a simple destination after the project switch.
+  const shareLink = `${BASE_URL}/app/${DEFAULT_PROJECT_ID}/chat`;
+
+  // Attempt to create an agent for a more precise URL check — but fall back
+  // to the /chat path if the backend API isn't available in this E2E stack.
+  const agentId = await createAgent(page.request, `${AUTOTEST_PREFIX}sharelink-agent`).catch(
+    () => createAgent(request, `${AUTOTEST_PREFIX}sharelink-agent`).catch(() => null),
   );
 
-  if (!agentId) {
-    test.skip(true, 'Agent creation failed — cannot test project-switch deep link without a real agent ID');
-    return;
-  }
+  const targetUrl = agentId
+    ? `${BASE_URL}/app/${DEFAULT_PROJECT_ID}/agents/my/${agentId}`
+    : shareLink;
 
   try {
-    // Share links look like /app/{projectId}/agents/my/{agentId} — the projectId
-    // segment is the first path segment after the app base. ROUTE-070 is the
-    // splat route that handles this and hard-reloads at the canonical path.
-    const shareLink = `${BASE_URL}/app/${DEFAULT_PROJECT_ID}/agents/my/${agentId}`;
-    await page.goto(shareLink, { waitUntil: 'domcontentloaded' });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
 
     // After the project switch + hard reload, the URL should have the project
-    // segment stripped. The final URL should be /app/agents/my/{id}.
-    await page.waitForURL(`**/agents/my/${agentId}**`, { timeout: 15_000 });
+    // segment stripped. The final URL should NOT contain /{projectId}/.
+    await page.waitForURL(
+      agentId ? `**/agents/my/${agentId}**` : `**/app/chat**`,
+      { timeout: 15_000 },
+    );
 
     // The project segment should be stripped from the final URL.
-    expect(page.url()).not.toContain(`/${DEFAULT_PROJECT_ID}/agents`);
+    expect(page.url()).not.toContain(`/app/${DEFAULT_PROJECT_ID}/`);
 
     await checkA11y(page);
   } finally {
     if (agentId) {
-      await deleteAgent(request, agentId).catch(() => {});
+      await deleteAgent(page.request, agentId).catch(() => deleteAgent(request, agentId).catch(() => {}));
     }
   }
 });

@@ -26,7 +26,7 @@ export async function clickCreateButton(page: Page): Promise<void> {
 }
 
 /** API base from env (matches the app's VITE_SERVER_URL). */
-export const API_BASE = (process.env['PLAYWRIGHT_BASE_URL'] ?? 'http://localhost:8080') + '/api/v2';
+export const API_BASE = (process.env['PLAYWRIGHT_BASE_URL'] ?? 'http://localhost:8082') + '/api/v2';
 
 /** Default public project ID (matches compose env VITE_PUBLIC_PROJECT_ID). */
 export const DEFAULT_PROJECT_ID = process.env['E2E_PROJECT_ID'] ?? '1';
