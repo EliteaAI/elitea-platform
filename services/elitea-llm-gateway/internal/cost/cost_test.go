@@ -213,6 +213,24 @@ func TestPrice_CatalogNullOutputUsesInputTimes3(t *testing.T) {
 	}
 }
 
+func TestLookupCatalog_InputTimes3OverflowGuard(t *testing.T) {
+	// inputNano just above MaxInt64/3: input*3 would silently overflow int64
+	// and wrap to a small/negative output price instead of the correct
+	// fallback. lookupCatalog must refuse the row so the caller falls back to
+	// the default table.
+	db := &fakeDB{rows: map[string]fakeRow{
+		"custom:m": {srcInput: ptr(math.MaxInt64/3 + 1), srcOutput: nil},
+	}}
+	c := New(Config{DB: db})
+	p, ok := c.lookupCatalog(context.Background(), "custom", "m")
+	if ok {
+		t.Fatalf("ok = true, want false (overflow guard should reject the row)")
+	}
+	if p != (Price{}) {
+		t.Fatalf("price = %+v, want zero value", p)
+	}
+}
+
 func TestPrice_CatalogNullInputFallsBackToDefault(t *testing.T) {
 	// A row with NULL input price is treated as uncatalogued → default table.
 	db := &fakeDB{rows: map[string]fakeRow{

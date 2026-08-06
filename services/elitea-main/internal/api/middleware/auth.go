@@ -86,7 +86,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 			if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
 				user, err := validateToken(r.Context(), cfg, apiKey)
 				if err != nil {
-					http.Error(w, `{"error":"invalid api key"}`, http.StatusUnauthorized)
+					writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated", "invalid api key")
 					return
 				}
 				user, err = validatePrincipal(r.Context(), cfg, user)
@@ -116,7 +116,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 					serveAuthenticated(next, w, r, devUser(), auth.AuthenticationSourceDevelopment)
 					return
 				}
-				http.Error(w, `{"error":"missing authorization header"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated", "missing authorization header")
 				return
 			}
 
@@ -131,19 +131,19 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 			} else if strings.HasPrefix(authHeader, "Basic ") {
 				decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
 				if err != nil {
-					http.Error(w, `{"error":"invalid basic auth encoding"}`, http.StatusUnauthorized)
+					writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated", "invalid basic auth encoding")
 					return
 				}
 				parts := strings.SplitN(string(decoded), ":", 2)
 				token = parts[0]
 			} else {
-				http.Error(w, `{"error":"unsupported authorization scheme"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated", "unsupported authorization scheme")
 				return
 			}
 
 			user, err := validateToken(r.Context(), cfg, token)
 			if err != nil {
-				http.Error(w, `{"error":"token validation failed"}`, http.StatusUnauthorized)
+				writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated", "token validation failed")
 				return
 			}
 
@@ -155,6 +155,27 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 			serveAuthenticated(next, w, r, user, auth.AuthenticationSourceToken)
 		})
 	}
+}
+
+// jsonError is the OpenAI-shaped nested error envelope mandated by spec §2.5:
+// {"error":{"message","type","code"}}.
+type jsonError struct {
+	Error jsonErrorFields `json:"error"`
+}
+
+type jsonErrorFields struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    string `json:"code,omitempty"`
+}
+
+// writeJSONError writes a spec §2.5 nested JSON error body with
+// Content-Type: application/json, replacing the flat text/plain bodies
+// http.Error produces. Used by both this file and project.go.
+func writeJSONError(w http.ResponseWriter, status int, errType, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(jsonError{Error: jsonErrorFields{Message: message, Type: errType, Code: code}})
 }
 
 func configuredTrustedProxyCIDRs(configured []string) []*net.IPNet {
@@ -280,7 +301,7 @@ func serveAuthenticated(next http.Handler, w http.ResponseWriter, r *http.Reques
 }
 
 func writeInactivePrincipal(w http.ResponseWriter) {
-	http.Error(w, `{"error":"authenticated principal is inactive"}`, http.StatusUnauthorized)
+	writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated", "authenticated principal is inactive")
 }
 
 func verifySessionCookie(token, secret string) (auth.User, bool) {

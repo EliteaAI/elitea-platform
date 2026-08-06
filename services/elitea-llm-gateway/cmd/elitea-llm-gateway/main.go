@@ -61,14 +61,11 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Base mux with a health endpoint. Passed to the server as its
-	// http.Handler; the /llm chi router is mounted below once the embedded
-	// bifrost client is available.
+	// Base mux, passed to the server as its http.Handler; the /llm chi router
+	// is mounted below once the embedded bifrost client is available. The
+	// /healthz route itself is registered further down, once govStore exists,
+	// so it can probe the NATS circuit breaker.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
 
 	// Open the Postgres pool BEFORE the server: it backs the vault-backed
 	// Account (BFF.6), the governance/failmode store (FIX #0), and the
@@ -165,6 +162,24 @@ func main() {
 		logger.Warn("BUDGET ENFORCEMENT DISABLED: " + budgetDisabledReason(cfg, nc, pool))
 		recordBudgetEnforcementEnabled(false)
 	}
+
+	// The NATS circuit-breaker state is invisible to Kubernetes readiness
+	// probes unless /healthz surfaces it: without this, a pod whose
+	// budget-enforcement path is dead (breaker open/half-open) stays in the
+	// load-balancer rotation. govStore is nil when enforcement is disabled, in
+	// which case the route reports healthy unconditionally.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if govStore != nil {
+			if err := govStore.Ping(r.Context()); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"nats unavailable"}`))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert

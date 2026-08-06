@@ -56,8 +56,12 @@ func TestAuth_MissingHeader(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", rec.Code)
 	}
-	if body := rec.Body.String(); body != `{"error":"missing authorization header"}`+"\n" {
-		t.Errorf("unexpected body: %q", body)
+	wantBody := `{"error":{"message":"missing authorization header","type":"authentication_error","code":"unauthenticated"}}` + "\n"
+	if body := rec.Body.String(); body != wantBody {
+		t.Errorf("unexpected body: %q, want %q", body, wantBody)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 }
 

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -48,6 +49,22 @@ func TestGatewayProxy_UnauthenticatedReturns401(t *testing.T) {
 	if proxy.reached {
 		t.Error("proxy must not be reached for unauthenticated requests")
 	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json (spec §2.5)", ct)
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v (body: %s)", err, rec.Body.String())
+	}
+	if body.Error.Message == "" || body.Error.Type == "" || body.Error.Code == "" {
+		t.Errorf("expected nested error{message,type,code} all populated, got %+v", body.Error)
+	}
 }
 
 func TestGatewayProxy_AuthenticatedWithProjectContext(t *testing.T) {
@@ -79,6 +96,42 @@ func TestGatewayProxy_AuthenticatedWithProjectContext(t *testing.T) {
 	}
 	if resolver.called {
 		t.Error("resolver must not be consulted for system project-user names")
+	}
+}
+
+// TestGatewayProxy_PersonalProjectFallback verifies that for a regular
+// (non-system) user the Project middleware consults the
+// DBPersonalProjectResolver and injects the returned id, mirroring
+// TestLLMRoute_PersonalProjectFallback for the GatewayProxy mount.
+func TestGatewayProxy_PersonalProjectFallback(t *testing.T) {
+	regularUser := auth.User{
+		ID:       "55",
+		Name:     "alice@example.com",
+		AuthType: "token",
+	}
+	validator := &stubTokenValidator{user: regularUser}
+	resolver := &stubProjectResolver{id: 77}
+	proxy := &recordingHandler{}
+
+	cfg := buildGatewayRouterConfig(t, validator, resolver, proxy)
+	r := api.NewRouter(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer test-regular-token")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !proxy.reached {
+		t.Fatal("proxy was not reached")
+	}
+	if !resolver.called {
+		t.Error("personal project resolver should be called for non-system user")
+	}
+	if proxy.project.ProjectID != 77 {
+		t.Errorf("expected ProjectID 77 in proxy context, got %d", proxy.project.ProjectID)
 	}
 }
 
