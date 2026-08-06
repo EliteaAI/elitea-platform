@@ -199,7 +199,7 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 }
 
 // freezeCurrentAdhocApplicationReference admits only the current same-project
-// leaf-agent reference emitted by ResolveCurrentAdhocTurn. The child application
+// application reference emitted by ResolveCurrentAdhocTurn. The child application
 // remains SDK-owned and is fetched by its application/version identity;
 // no child configuration or credential material is copied into the command.
 func freezeCurrentAdhocApplicationReference(
@@ -221,7 +221,7 @@ func freezeCurrentAdhocApplicationReference(
 	toolProjectID, validProjectID := positiveCurrentAgentJSONInteger(tool["project_id"])
 	settings, validSettings := tool["settings"].(map[string]any)
 	if !validName || !validToolkitName || name != toolkitName || !validDescription ||
-		!validAgentType || strings.EqualFold(agentType, "pipeline") || !validCreatedAt ||
+		!validAgentType || !validCreatedAt ||
 		!validAuthorID || authorID != int64(actorUserID) || !validParticipantID ||
 		!validProjectID || toolProjectID != int64(projectID) || !validSettings ||
 		len(settings) != 4 || !emptyCurrentAgentJSONArray(settings["variables"]) ||

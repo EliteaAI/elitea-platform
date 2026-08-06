@@ -159,25 +159,22 @@ WITH resolved AS MATERIALIZED (
                     IS DISTINCT FROM ($4::integer)::text
                 OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
                 OR invalid_application_version.id IS NULL
-                OR invalid_application_version.agent_type = 'pipeline'
-                OR LOWER(COALESCE(
-                    invalid_application_participant.meta ->> 'agent_type',
-                    invalid_application_version.agent_type,
-                    ''
-                )) = 'pipeline'
                 OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
-                OR EXISTS (
-                    SELECT 1
-                    FROM entity_tool_mapping AS unsupported_child_mapping
-                    JOIN elitea_tools AS unsupported_child_tool
-                      ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
-                    WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
-                      AND unsupported_child_mapping.entity_type = 'agent'
-                      AND (
-                          unsupported_child_tool.type = 'application'
-                          OR unsupported_child_tool.type = 'mcp'
-                          OR unsupported_child_tool.meta ->> 'mcp' = 'true'
-                      )
+                OR (
+                    LOWER(invalid_application_version.agent_type) <> 'pipeline'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM entity_tool_mapping AS unsupported_child_mapping
+                        JOIN elitea_tools AS unsupported_child_tool
+                          ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
+                        WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
+                          AND unsupported_child_mapping.entity_type = 'agent'
+                          AND (
+                              unsupported_child_tool.type = 'application'
+                              OR unsupported_child_tool.type = 'mcp'
+                              OR unsupported_child_tool.meta ->> 'mcp' = 'true'
+                          )
+                    )
                 )
             )
       )
@@ -364,7 +361,6 @@ WITH resolved AS MATERIALIZED (
      AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
     WHERE conversation.uuid = $5::uuid
       AND (target_participant.entity_meta ->> 'project_id')::integer = $6::integer
-      AND application_version.agent_type <> 'pipeline'
       AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
       AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
       AND COALESCE(
@@ -587,14 +583,13 @@ WITH resolved AS MATERIALIZED (
               AND response_author.entity_name = 'application'
               AND (response_author.entity_meta ->> 'project_id')::integer = $9::integer
               AND application_version.id IS NOT NULL
-              AND application_version.agent_type <> 'pipeline'
           )
       )
       AND NOT EXISTS (
           SELECT 1
           FROM chat_message_items AS unsupported_question_item
           WHERE unsupported_question_item.message_group_id = question.id
-            AND unsupported_question_item.item_type <> 'text_message'
+            AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message')
       )
       AND NOT EXISTS (
           SELECT 1
@@ -774,24 +769,22 @@ LEFT JOIN LATERAL (
           AND application_participant.entity_meta ->> 'project_id'
               = ($3::integer)::text
           AND COALESCE(application_participant.meta ->> 'name', '') <> ''
-          AND application_version.agent_type <> 'pipeline'
-          AND LOWER(COALESCE(
-              application_participant.meta ->> 'agent_type',
-              application_version.agent_type
-          )) <> 'pipeline'
           AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
-          AND NOT EXISTS (
-              SELECT 1
-              FROM entity_tool_mapping AS child_mapping
-              JOIN elitea_tools AS child_tool
-                ON child_tool.id = child_mapping.tool_id
-              WHERE child_mapping.entity_version_id = application_version.id
-                AND child_mapping.entity_type = 'agent'
-                AND (
-                    child_tool.type = 'application'
-                    OR child_tool.type = 'mcp'
-                    OR child_tool.meta ->> 'mcp' = 'true'
-                )
+          AND (
+              LOWER(application_version.agent_type) = 'pipeline'
+              OR NOT EXISTS (
+                  SELECT 1
+                  FROM entity_tool_mapping AS child_mapping
+                  JOIN elitea_tools AS child_tool
+                    ON child_tool.id = child_mapping.tool_id
+                  WHERE child_mapping.entity_version_id = application_version.id
+                    AND child_mapping.entity_type = 'agent'
+                    AND (
+                        child_tool.type = 'application'
+                        OR child_tool.type = 'mcp'
+                        OR child_tool.meta ->> 'mcp' = 'true'
+                    )
+              )
           )
     ) AS current_tool
 ) AS current_tools ON TRUE
@@ -904,25 +897,22 @@ WHERE conversation.uuid = $5::uuid
                 IS DISTINCT FROM ($3::integer)::text
             OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
             OR invalid_application_version.id IS NULL
-            OR invalid_application_version.agent_type = 'pipeline'
-            OR LOWER(COALESCE(
-                invalid_application_participant.meta ->> 'agent_type',
-                invalid_application_version.agent_type,
-                ''
-            )) = 'pipeline'
             OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
-            OR EXISTS (
-                SELECT 1
-                FROM entity_tool_mapping AS unsupported_child_mapping
-                JOIN elitea_tools AS unsupported_child_tool
-                  ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
-                WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
-                  AND unsupported_child_mapping.entity_type = 'agent'
-                  AND (
-                      unsupported_child_tool.type = 'application'
-                      OR unsupported_child_tool.type = 'mcp'
-                      OR unsupported_child_tool.meta ->> 'mcp' = 'true'
-                  )
+            OR (
+                LOWER(invalid_application_version.agent_type) <> 'pipeline'
+                AND EXISTS (
+                    SELECT 1
+                    FROM entity_tool_mapping AS unsupported_child_mapping
+                    JOIN elitea_tools AS unsupported_child_tool
+                      ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
+                    WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
+                      AND unsupported_child_mapping.entity_type = 'agent'
+                      AND (
+                          unsupported_child_tool.type = 'application'
+                          OR unsupported_child_tool.type = 'mcp'
+                          OR unsupported_child_tool.meta ->> 'mcp' = 'true'
+                      )
+                )
             )
         )
   )
@@ -1172,7 +1162,6 @@ LEFT JOIN LATERAL (
 ) AS current_history ON TRUE
 WHERE conversation.uuid = $4::uuid
   AND (target_participant.entity_meta ->> 'project_id')::integer = $5::integer
-  AND application_version.agent_type <> 'pipeline'
   AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
   AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
   AND COALESCE(
@@ -1325,19 +1314,12 @@ WHERE conversation.uuid = $2::uuid
       )
   )
   AND jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
-  AND NOT response.meta ? 'hitl_interrupts'
   AND COALESCE(response.meta #>> '{hitl_interrupt,interrupt_id}', '') <> ''
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
-  AND NOT EXISTS (
-      SELECT 1
-      FROM jsonb_each(response.meta -> 'hitl_interrupt') AS interrupt_field(key, value)
-      WHERE interrupt_field.key IN (
-          'child_thread_id', 'parent_agent_call_id', 'parent_agent_path',
-          'via_call_id', '_via_call_id'
-      )
-        AND interrupt_field.value NOT IN ('null'::jsonb, '""'::jsonb)
-  )
+  AND COALESCE(response.meta #>> '{hitl_interrupt,child_thread_id}', '') = ''
+  AND COALESCE(response.meta #>> '{hitl_interrupt,via_call_id}', '') = ''
+  AND COALESCE(response.meta #>> '{hitl_interrupt,_via_call_id}', '') = ''
 `
 
 type ResolveCurrentContinuationParams struct {
@@ -1432,7 +1414,7 @@ WHERE response.uuid = $2::uuid
       SELECT 1
       FROM chat_message_items AS unsupported_question_item
       WHERE unsupported_question_item.message_group_id = question.id
-        AND unsupported_question_item.item_type <> 'text_message'
+        AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message')
   )
   AND NOT EXISTS (
       SELECT 1
@@ -1501,7 +1483,6 @@ WITH resolved AS MATERIALIZED (
       AND response.meta ->> 'execution_generation' = $7::text
       AND response.meta ->> 'thread_id' = $8::text
       AND jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
-      AND NOT response.meta ? 'hitl_interrupts'
       AND response.meta #>> '{hitl_interrupt,interrupt_id}' = $9::text
       AND jsonb_typeof(response.meta #> '{hitl_interrupt,available_actions}') = 'array'
       AND jsonb_array_length(response.meta #> '{hitl_interrupt,available_actions}') > 0
@@ -1522,18 +1503,11 @@ WITH resolved AS MATERIALIZED (
               AND response_author.entity_name = 'application'
               AND (response_author.entity_meta ->> 'project_id')::integer = $13::integer
               AND application_version.id IS NOT NULL
-              AND application_version.agent_type <> 'pipeline'
           )
       )
-      AND NOT EXISTS (
-          SELECT 1
-          FROM jsonb_each(response.meta -> 'hitl_interrupt') AS interrupt_field(key, value)
-          WHERE interrupt_field.key IN (
-              'child_thread_id', 'parent_agent_call_id', 'parent_agent_path',
-              'via_call_id', '_via_call_id'
-          )
-            AND interrupt_field.value NOT IN ('null'::jsonb, '""'::jsonb)
-      )
+      AND COALESCE(response.meta #>> '{hitl_interrupt,child_thread_id}', '') = ''
+      AND COALESCE(response.meta #>> '{hitl_interrupt,via_call_id}', '') = ''
+      AND COALESCE(response.meta #>> '{hitl_interrupt,_via_call_id}', '') = ''
     FOR UPDATE OF response
 ), updated AS (
     UPDATE chat_message_group AS response

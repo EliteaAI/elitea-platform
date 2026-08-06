@@ -363,6 +363,39 @@ def test_sdk_adapter_preserves_constructor_split_without_forwarding_authority() 
     assert len(client.application_executor.calls[0][0]["messages"]) == 2
 
 
+def test_sdk_adapter_delegates_pipeline_yaml_through_the_existing_application_api() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    payload = _request().payload
+    pipeline_yaml = (
+        "nodes:\n"
+        "  - id: draft\n"
+        "    type: llm\n"
+        "  - id: approval\n"
+        "    type: hitl\n"
+        "edges:\n"
+        "  - from: draft\n"
+        "    to: approval\n"
+    )
+    payload.application["version_details"] = {
+        "id": 22,
+        "application_id": 11,
+        "agent_type": "pipeline",
+        "instructions": pipeline_yaml,
+        "llm_settings": {"model_name": "gpt-test"},
+        "meta": {"step_limit": 17},
+        "tools": [],
+    }
+
+    assert adapter.execute_application(payload) == {"mode": "application"}
+
+    assert len(client.application_calls) == 1
+    version_details = client.application_calls[0]["version_details"]
+    assert version_details["agent_type"] == "pipeline"
+    assert version_details["instructions"] == pipeline_yaml
+    assert client.application_executor.calls[0][1]["recursion_limit"] == 17
+
+
 def test_sdk_adapter_rejects_an_unrecoverable_random_thread() -> None:
     request = _request()
     object.__setattr__(request.payload, "thread_id", None)
