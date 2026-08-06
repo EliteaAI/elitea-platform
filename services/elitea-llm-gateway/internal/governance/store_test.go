@@ -631,6 +631,24 @@ func TestPing_Unhealthy(t *testing.T) {
 	}
 }
 
+// TestPing_HalfOpen: StateHalfOpen must also be treated as unhealthy — a
+// breaker mistakenly reported healthy during its probe window would let
+// NATSUnavailable() callers make routing decisions on stale state.
+func TestPing_HalfOpen(t *testing.T) {
+	nc := newFakeNATS()
+	nc.breakerState = gobreaker.StateHalfOpen
+	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
+	gs := newStore(nc, db)
+
+	err := gs.Ping(context.Background())
+	if err == nil {
+		t.Fatal("Ping should return error when NATS breaker is half-open")
+	}
+	if !errors.Is(err, nats.ErrUnavailable) {
+		t.Fatalf("err = %v, want errors.Is(err, nats.ErrUnavailable)", err)
+	}
+}
+
 // TestDefaultParams_Sane: DefaultParams must return a non-zero Params.
 func TestDefaultParams_Sane(t *testing.T) {
 	p := DefaultParams()

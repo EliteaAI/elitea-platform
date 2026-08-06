@@ -31,6 +31,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"math/big"
 	"sync"
 	"time"
@@ -252,7 +253,12 @@ func (c *Calculator) lookupCatalog(ctx context.Context, provider, model string) 
 	if outputNano != nil {
 		out = *outputNano
 	} else {
-		// pylon default when output price is absent: input * 3.
+		// pylon default when output price is absent: input * 3. Guard against
+		// silent int64 overflow (which would produce an output price of 0
+		// instead of the correct fallback) for a corrupt/absurd catalog row.
+		if *inputNano > math.MaxInt64/3 {
+			return Price{}, false
+		}
 		out = *inputNano * 3
 	}
 	return Price{InputNanoPer1M: *inputNano, OutputNanoPer1M: out, Source: "catalog"}, true

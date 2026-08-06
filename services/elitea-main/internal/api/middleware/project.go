@@ -100,7 +100,7 @@ func Project(cfg ProjectConfig) func(http.Handler) http.Handler {
 
 			projectID, err := resolveProjectID(ctx, cfg.Resolver, user)
 			if err != nil || projectID <= 0 {
-				http.Error(w, `{"error":"could not resolve project for caller"}`, http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "project_not_resolved", "could not resolve project for caller")
 				return
 			}
 
