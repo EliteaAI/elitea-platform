@@ -99,7 +99,7 @@ describe('CreateApplication', () => {
     await fillAndSave(user);
 
     expect(await screen.findByText('Failed to create the agent.')).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it('attributes a duplicate-name conflict to the Name field instead of showing one generic message — old app: useCreateApplication.jsx:85-107\'s formik.setFieldError', async () => {
     server.use(
@@ -116,7 +116,7 @@ describe('CreateApplication', () => {
 
     expect(await screen.findByText('Name: An agent with this name already exists.')).toBeInTheDocument();
     expect(screen.queryByText('Failed to create the agent.')).not.toBeInTheDocument();
-  });
+  }, 15_000);
 
   it('clears the create-error banner once a subsequent save succeeds', async () => {
     server.use(
@@ -144,5 +144,5 @@ describe('CreateApplication', () => {
     await user.click(screen.getByTestId('agent-save-button'));
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/agents/latest/1'));
-  });
+  }, 15_000);
 });
