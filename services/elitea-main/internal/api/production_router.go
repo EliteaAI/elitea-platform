@@ -161,7 +161,20 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	if cfg.CurrentModelDefault != nil {
 		r.Method(http.MethodPost, configurationapi.CurrentModelDefaultPath, cfg.CurrentModelDefault)
 	}
-	if cfg.CurrentLLMFacade != nil {
+	if cfg.GatewayProxy != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(apimw.Auth(apimw.AuthConfig{
+				Client:                    cfg.AuthClient,
+				Validator:                 cfg.AuthValidator,
+				PrincipalValidator:        cfg.PrincipalValidator,
+				ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
+				SessionSecret:             cfg.SessionSecret,
+				TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
+			}))
+			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: cfg.GatewayProjectResolver}))
+			r.Mount("/llm", cfg.GatewayProxy)
+		})
+	} else if cfg.CurrentLLMFacade != nil {
 		r.Handle("/llm/*", cfg.CurrentLLMFacade)
 	}
 

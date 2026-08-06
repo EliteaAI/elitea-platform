@@ -36,6 +36,7 @@ import (
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/llmproxy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
@@ -646,6 +647,28 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
 	}
 
+	// BF0.9c: compose the mTLS streaming reverse proxy to elitea-llm-gateway-svc.
+	// Gated on LLM_GATEWAY_URL so the proxy is only enabled in deployments where
+	// the gateway service is reachable.
+	var gatewayProxy http.Handler
+	var gatewayProjectResolver apimw.PersonalProjectResolver
+	if gwURL := os.Getenv("LLM_GATEWAY_URL"); gwURL != "" {
+		gw, gwErr := llmproxy.New(llmproxy.Config{
+			TargetURL:      gwURL,
+			IdentitySecret: os.Getenv("GATEWAY_IDENTITY_SECRET"),
+			ClientCertFile: os.Getenv("LLM_GATEWAY_CLIENT_CERT"),
+			ClientKeyFile:  os.Getenv("LLM_GATEWAY_CLIENT_KEY"),
+			CAFile:         os.Getenv("LLM_GATEWAY_CA_FILE"),
+			Logger:         logger,
+		})
+		if gwErr != nil {
+			return fmt.Errorf("compose llm gateway proxy: %w", gwErr)
+		}
+		gatewayProxy = gw
+		gatewayProjectResolver = apimw.NewDBPersonalProjectResolver(pool)
+		slog.Info("llm gateway proxy enabled", "target", gwURL)
+	}
+
 	r := api.NewRouter(api.RouterConfig{
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
@@ -675,6 +698,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,
 		CurrentLLMFacade:              currentLLMFacade,
+		GatewayProxy:                  gatewayProxy,
+		GatewayProjectResolver:        gatewayProjectResolver,
 		ObjectStore:                   objectStore,
 	})
 
