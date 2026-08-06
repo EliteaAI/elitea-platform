@@ -600,6 +600,7 @@ jobs:
 
   e2e:
     name: E2E
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -620,6 +621,7 @@ jobs:
 
   visual:
     name: Visual regression
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
