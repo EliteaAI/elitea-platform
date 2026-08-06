@@ -658,6 +658,14 @@ jobs:
           name: playwright-report
           path: apps/elitea-web/playwright-results/
           retention-days: 14
+      - name: Upload failed test video recordings
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-failed-videos
+          path: apps/elitea-web/playwright-results/**/*.webm
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Tear down E2E stack
         if: always()
         env:
