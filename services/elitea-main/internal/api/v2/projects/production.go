@@ -22,10 +22,12 @@ func NewCurrentProjectListRoute(
 	authConfig apimw.AuthConfig,
 	permissions auth.PermissionResolver,
 ) (*CurrentProjectListRoute, error) {
-	if projects == nil || authConfig.PrincipalValidator == nil ||
-		authConfig.ForwardedIdentityVerifier == nil || permissions == nil {
+	if projects == nil || permissions == nil {
 		return nil, ErrInvalidCurrentProjectListRoute
 	}
+	// PrincipalValidator and ForwardedIdentityVerifier are optional — when
+	// nil the auth middleware falls back to session-cookie verification
+	// (OIDC deployments without Form auth / ELITEA_AUTH_CONFIG_FILE).
 
 	handler := http.Handler(http.HandlerFunc(NewCurrentProjectListHandler(projects).GetCurrentProjectList))
 	handler = apimw.RequireResolvedPermissionsForProject(

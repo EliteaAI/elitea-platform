@@ -26,6 +26,8 @@
  */
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 
+import { AppShell } from '@/widgets/app-shell';
+
 import { commonSearchSchema } from '../-search/common';
 
 export const Route = createFileRoute('/_shell')({
@@ -35,8 +37,8 @@ export const Route = createFileRoute('/_shell')({
 
 function ShellLayout() {
   return (
-    // Sidebar/MainPanel chrome: Wave-2 (S1/widgets) territory. Wave-1 scope
-    // is the Outlet wiring only.
-    <Outlet />
+    <AppShell>
+      <Outlet />
+    </AppShell>
   );
 }

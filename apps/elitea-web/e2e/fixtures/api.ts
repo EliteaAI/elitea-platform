@@ -8,9 +8,22 @@
  * All entities created here use the `autotest_` prefix (per qa/ convention)
  * so failed runs' leftovers are identifiable and sweepable.
  */
-import type { APIRequestContext } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
+import { expect } from '@playwright/test';
 
 export const AUTOTEST_PREFIX = 'autotest_';
+
+/**
+ * Wait for the sidebar create button to become enabled, then click it.
+ * The button stays disabled until the permission query resolves, which
+ * requires the project store to hydrate from localStorage. This can take
+ * up to ~3 s on a cold page load in the E2E stack.
+ */
+export async function clickCreateButton(page: Page): Promise<void> {
+  const btn = page.getByTestId('sidebar-create-button');
+  await expect(btn).toBeEnabled({ timeout: 15_000 });
+  await btn.click();
+}
 
 /** API base from env (matches the app's VITE_SERVER_URL). */
 export const API_BASE = (process.env['PLAYWRIGHT_BASE_URL'] ?? 'http://localhost:8080') + '/api/v2';

@@ -1,8 +1,14 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 
 import { QueryClientProvider } from '@tanstack/react-query';
 
 import { I18nProvider } from '@/shared/i18n';
+import { getConfig } from '@/shared/config';
+import {
+  createNoopSocketClient,
+  createSocketClient,
+  SocketClientContext,
+} from '@/shared/api/socket/client';
 
 import { AppErrorBoundary } from './ErrorBoundary';
 import { BrandThemeProvider } from './BrandThemeProvider';
@@ -59,11 +65,28 @@ export interface AppProvidersProps {
 export function AppProviders({ children }: AppProvidersProps) {
   const [queryClient] = useState(createAppQueryClient);
 
+  // Create the socket client once per mount. When VITE_SOCKET_SERVER is absent
+  // or empty (E2E compose, offline dev), a no-op client is provided so that
+  // useSocketClient() callers render in degraded-but-functional state instead
+  // of throwing "no SocketClientContext.Provider is mounted".
+  const socketClient = useMemo(() => {
+    const cfg = getConfig();
+    if (cfg.status !== 'ok') return createNoopSocketClient();
+    const url = cfg.config.vite_socket_server;
+    const path = cfg.config.vite_socket_path;
+    if (!url) return createNoopSocketClient();
+    return createSocketClient({ url, ...(path !== undefined ? { path } : {}) });
+  }, []);
+
   return (
     <AppErrorBoundary>
       <BrandThemeProvider>
         <I18nProvider>
-          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+          <QueryClientProvider client={queryClient}>
+            <SocketClientContext.Provider value={socketClient}>
+              {children}
+            </SocketClientContext.Provider>
+          </QueryClientProvider>
         </I18nProvider>
       </BrandThemeProvider>
     </AppErrorBoundary>

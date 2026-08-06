@@ -36,7 +36,9 @@ test('J3: session expiry triggers re-auth popup and retries original request', a
   const popupPromise = page.waitForEvent('popup', { timeout: 10_000 }).catch(() => null);
 
   // Trigger a navigation that will make an API call (navigating to agents).
-  await page.goto(BASE_URL + '/app/agents/my', { waitUntil: 'domcontentloaded' });
+  // Use 'commit' — webkit throws navigation-interrupted errors when the app
+  // performs an in-app redirect after initial commit (large query string).
+  await page.goto(BASE_URL + '/app/agents/my', { waitUntil: 'commit' }).catch(() => {});
 
   const popup = await popupPromise;
   if (popup) {
@@ -74,7 +76,7 @@ test('J7: project switch from the sidebar', async ({ page }) => {
   // The sidebar header contains the project switcher.
   const projectSwitcher = page
     .getByTestId('sidebar-header-project')
-    .or(page.getByRole('button', { name: /project|switch/i }));
+    .or(page.getByRole('button', { name: /project|switch/i })).first();
 
   const isVisible = await projectSwitcher.isVisible().catch(() => false);
   if (!isVisible) {
@@ -87,7 +89,7 @@ test('J7: project switch from the sidebar', async ({ page }) => {
 
   // The project dropdown / dialog should open.
   await expect(
-    page.getByRole('listbox').or(page.getByRole('dialog')).or(page.getByRole('menu')),
+    page.getByRole('listbox').or(page.getByRole('dialog')).or(page.getByRole('menu')).first(),
   ).toBeVisible({ timeout: 5_000 });
 
   // If there are other projects, select the second one.
@@ -99,7 +101,7 @@ test('J7: project switch from the sidebar', async ({ page }) => {
     // After switching, project-scoped data should reload.
     // The URL may or may not change depending on how deep the current route is.
     // Verify the app remains stable.
-    await expect(page.getByTestId('sidebar-toggle').or(page.getByTestId('sidebar-collapse-toggle'))).toBeVisible({
+    await expect(page.getByTestId('sidebar-toggle').or(page.getByTestId('sidebar-collapse-toggle')).first()).toBeVisible({
       timeout: 10_000,
     });
 

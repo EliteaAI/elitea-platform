@@ -9,7 +9,7 @@ import { test, expect } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
-import { AUTOTEST_PREFIX } from '../../fixtures/api';
+import { AUTOTEST_PREFIX, clickCreateButton } from '../../fixtures/api';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Journey 8: Create conversation, send message, stream tokens, stop
@@ -21,17 +21,14 @@ test('J8: create conversation, send message, stream tokens, stop', async ({ page
   await checkA11y(page);
 
   // Create a new conversation using the + button.
-  const newChatButton = page
-    .getByTestId('plus-menu-button')
-    .or(page.getByTestId('sidebar-create-button'))
-    .or(page.getByRole('button', { name: /new chat|new conversation/i }));
+  await clickCreateButton(page);
 
-  await newChatButton.click({ timeout: 5_000 });
-
-  // The chat input should be visible.
+  // The chat input should be visible. chat-input testId is on the MUI TextField
+  // wrapper div; the actual fillable element is the inner textarea (chat-message-input).
   const chatInput = page
-    .getByTestId('chat-input')
-    .or(page.getByRole('textbox', { name: /message|ask/i }));
+    .getByTestId('chat-message-input')
+    .or(page.locator('[data-testid="chat-input"] textarea'))
+    .or(page.getByRole('textbox', { name: /message|ask/i })).first();
   await expect(chatInput).toBeVisible({ timeout: 10_000 });
 
   // Type and send a simple message.
@@ -70,8 +67,9 @@ test('J9: regenerate a response', async ({ page }) => {
 
   // Type and send a message to get an initial response.
   const chatInput = page
-    .getByTestId('chat-input')
-    .or(page.getByRole('textbox', { name: /message|ask/i }));
+    .getByTestId('chat-message-input')
+    .or(page.locator('[data-testid="chat-input"] textarea'))
+    .or(page.getByRole('textbox', { name: /message|ask/i })).first();
   await expect(chatInput).toBeVisible({ timeout: 10_000 });
   await chatInput.fill(`${AUTOTEST_PREFIX}regen-test`);
   await page.getByTestId('chat-send-button').click();
@@ -82,7 +80,7 @@ test('J9: regenerate a response', async ({ page }) => {
   // Find the regenerate button (usually near the last assistant message).
   const regenButton = page
     .getByRole('button', { name: /regenerate/i })
-    .or(page.getByTestId('chat-regen-button'));
+    .or(page.getByTestId('chat-regen-button')).first();
 
   const regenVisible = await regenButton.isVisible().catch(() => false);
   if (!regenVisible) {
@@ -111,8 +109,9 @@ test('J11: server-side conversation rename live-updates in the list', async ({
 
   // Send a message to create a conversation that will get an auto-generated name.
   const chatInput = page
-    .getByTestId('chat-input')
-    .or(page.getByRole('textbox', { name: /message|ask/i }));
+    .getByTestId('chat-message-input')
+    .or(page.locator('[data-testid="chat-input"] textarea'))
+    .or(page.getByRole('textbox', { name: /message|ask/i })).first();
   await expect(chatInput).toBeVisible({ timeout: 10_000 });
   await chatInput.fill(`${AUTOTEST_PREFIX}rename test message`);
   await page.getByTestId('chat-send-button').click();

@@ -9,7 +9,7 @@ import { test, expect } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
-import { AUTOTEST_PREFIX } from '../../fixtures/api';
+import { AUTOTEST_PREFIX, clickCreateButton } from '../../fixtures/api';
 
 test('J19: create credential and use it in an agent', async ({ page }) => {
   // Navigate to the credentials / configurations page.
@@ -21,7 +21,7 @@ test('J19: create credential and use it in an agent', async ({ page }) => {
   // The credentials panel should be visible.
   const credForm = page
     .getByTestId('configuration-form')
-    .or(page.getByRole('heading', { name: /credential|configuration/i }));
+    .or(page.getByRole('heading', { name: /credential|configuration/i })).first();
   const credVisible = await credForm.isVisible().catch(() => false);
   if (!credVisible) {
     // Try the create-configuration route (ROUTE-059).
@@ -39,7 +39,7 @@ test('J19: create credential and use it in an agent', async ({ page }) => {
   await createButton.click();
 
   // The form should appear.
-  const form = page.getByTestId('config-form').or(page.getByRole('dialog'));
+  const form = page.getByTestId('config-form').or(page.getByRole('dialog')).first();
   await expect(form).toBeVisible({ timeout: 10_000 });
 
   // Fill in credential details.
@@ -59,12 +59,9 @@ test('J19: create credential and use it in an agent', async ({ page }) => {
   await page.goto(BASE_URL + '/app/agents/my');
   await page.waitForURL('**/agents**', { timeout: 10_000 });
 
-  const createAgentButton = page
-    .getByRole('button', { name: /create|new agent/i })
-    .or(page.getByTestId('sidebar-create-button'));
-  await createAgentButton.click({ timeout: 5_000 });
+  await clickCreateButton(page);
 
-  const agentForm = page.getByTestId('create-application-form-panel').or(page.getByRole('dialog'));
+  const agentForm = page.getByTestId('create-application-form-panel').or(page.getByRole('dialog')).first();
   await expect(agentForm).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole('textbox', { name: /name/i }).first().fill(`${AUTOTEST_PREFIX}cred-agent`);
@@ -73,7 +70,7 @@ test('J19: create credential and use it in an agent', async ({ page }) => {
   const credSelector = page
     .getByTestId('credentials-select-refresh')
     .or(page.getByTestId('llm-selector'))
-    .or(page.getByRole('combobox', { name: /credential|model/i }));
+    .or(page.getByRole('combobox', { name: /credential|model/i })).first();
 
   const selectorVisible = await credSelector.isVisible().catch(() => false);
   if (selectorVisible) {

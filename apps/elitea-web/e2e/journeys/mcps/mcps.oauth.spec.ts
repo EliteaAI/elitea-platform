@@ -9,7 +9,7 @@ import { test, expect } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
-import { AUTOTEST_PREFIX } from '../../fixtures/api';
+import { AUTOTEST_PREFIX, clickCreateButton } from '../../fixtures/api';
 
 test('J18: create MCP with OAuth callback round trip', async ({ page }) => {
   await page.goto(BASE_URL + '/app/mcp/my');
@@ -18,20 +18,20 @@ test('J18: create MCP with OAuth callback round trip', async ({ page }) => {
   await checkA11y(page);
 
   // Create an MCP.
-  const createButton = page
+  const mcpCreateButton = page
     .getByRole('button', { name: /create|new mcp/i })
-    .or(page.getByTestId('sidebar-create-button'));
+    .or(page.getByTestId('sidebar-create-button')).first();
 
-  const createVisible = await createButton.isVisible().catch(() => false);
+  const createVisible = await mcpCreateButton.isVisible().catch(() => false);
   if (!createVisible) {
     test.skip(true, 'MCP create button not found — mcp_exposure_enabled may be off');
     return;
   }
 
-  await createButton.click({ timeout: 5_000 });
+  await clickCreateButton(page);
 
   // The create form should appear.
-  const formPanel = page.getByRole('dialog').or(page.getByTestId('create-form'));
+  const formPanel = page.getByRole('dialog').or(page.getByTestId('create-form')).first();
   await expect(formPanel).toBeVisible({ timeout: 10_000 });
 
   // Fill name.

@@ -413,6 +413,13 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	// Authorization header.
 	r.Get("/icons/{projectID}/{filename}", v2core.DownloadIcon(cfg.ObjectStore))
 
+	// CurrentProjectList: self-contained auth+RBAC chain; registered at the top
+	// level so it shadows the broad /api/v2/projects mount below (chi matches
+	// the most-specific registered route first).
+	if cfg.CurrentProjectList != nil {
+		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
+	}
+
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
 	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})

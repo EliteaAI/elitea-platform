@@ -249,6 +249,24 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		logger.Info("OIDC authentication enabled", "issuer", oidcCfg.IssuerURL)
 	}
 
+	// Wire currentProjectList with OIDC-only auth when formGraph is absent.
+	// formGraph (ELITEA_AUTH_CONFIG_FILE) wires it above with full validators;
+	// OIDC-only deployments (E2E stack) only have session-cookie auth.
+	if currentProjectList == nil && oidcSessionHandler != nil {
+		var oidcProjectListErr error
+		currentProjectList, oidcProjectListErr = v2projects.NewCurrentProjectListRoute(
+			sqlcgen.New(pool),
+			apimw.AuthConfig{
+				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if oidcProjectListErr != nil {
+			return fmt.Errorf("compose OIDC-only project-list route: %w", oidcProjectListErr)
+		}
+		logger.Info("project-list route enabled (OIDC-only auth)")
+	}
+
 	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("load current project-info settings: %w", err)
@@ -715,9 +733,15 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		gatewayPrincipalValidator = principalValidator
 		gatewayForwardedIdentityVerifier = forwardedIdentityVerifier
 		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
+	} else if oidcSessionHandler != nil {
+		// OIDC-only deployments (no ELITEA_AUTH_CONFIG_FILE) still need the session
+		// secret in the auth middleware so OIDC session cookies are accepted on
+		// /api/v2 routes. formGraph uses the same APPLICATION_SECRET_KEY.
+		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
 	}
 
 	r := api.NewRouter(api.RouterConfig{
+		Pool: pool,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,

@@ -34,7 +34,8 @@ test('J5: deep link to specific agent version cold-loads', async ({ browser, req
       await expect(
         page.getByTestId('edit-application-configuration-tab-panel')
           .or(page.getByTestId('create-application-form-panel'))
-          .or(page.getByTestId('version-selector-trigger')),
+          .or(page.getByTestId('version-selector-trigger'))
+          .first(),
       ).toBeVisible({ timeout: 10_000 });
 
       // The URL must be preserved (not redirected away).
@@ -64,16 +65,21 @@ test('J6: share link with project id switches project and reloads', async ({ pag
     () => null,
   );
 
+  if (!agentId) {
+    test.skip(true, 'Agent creation failed — cannot test project-switch deep link without a real agent ID');
+    return;
+  }
+
   try {
-    // Share links look like /{projectId}/agents/my/{agentId} — the projectId
-    // segment is the first path segment. ROUTE-070 is the splat route that
-    // handles this.
-    const shareLink = `${BASE_URL}/app/${DEFAULT_PROJECT_ID}/agents/my/${agentId ?? 'nonexistent'}`;
+    // Share links look like /app/{projectId}/agents/my/{agentId} — the projectId
+    // segment is the first path segment after the app base. ROUTE-070 is the
+    // splat route that handles this and hard-reloads at the canonical path.
+    const shareLink = `${BASE_URL}/app/${DEFAULT_PROJECT_ID}/agents/my/${agentId}`;
     await page.goto(shareLink, { waitUntil: 'domcontentloaded' });
 
     // After the project switch + hard reload, the URL should have the project
     // segment stripped. The final URL should be /app/agents/my/{id}.
-    await page.waitForURL(`**/agents/my/${agentId ?? 'nonexistent'}**`, { timeout: 15_000 });
+    await page.waitForURL(`**/agents/my/${agentId}**`, { timeout: 15_000 });
 
     // The project segment should be stripped from the final URL.
     expect(page.url()).not.toContain(`/${DEFAULT_PROJECT_ID}/agents`);

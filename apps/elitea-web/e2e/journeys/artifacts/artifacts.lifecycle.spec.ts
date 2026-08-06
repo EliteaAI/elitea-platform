@@ -25,7 +25,7 @@ test('J20: artifacts bucket lifecycle: create, upload, preview, download, ZIP, d
   // Create a bucket.
   const createBucketButton = page
     .getByRole('button', { name: /create bucket|new bucket/i })
-    .or(page.getByTestId('create-bucket-button'));
+    .or(page.getByTestId('create-bucket-button')).first();
 
   const createVisible = await createBucketButton.isVisible().catch(() => false);
   if (!createVisible) {

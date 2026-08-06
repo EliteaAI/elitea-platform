@@ -2,6 +2,7 @@ import { RouterProvider } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
 
 import { getConfig, MissingEnvPage } from '@/shared/config';
+import { configureGeneratedClient } from '@/shared/api/generated/mutator';
 
 import { AppProviders } from './providers';
 import { createAppRouter } from './router';
@@ -64,6 +65,11 @@ export function App() {
   if (config.status === 'missing') {
     return <MissingEnvPage missing={config.missing} />;
   }
+
+  // Wire the generated API client with the runtime server URL (R2 gap).
+  // Called on every render, but idempotent — configureGeneratedClient replaces
+  // the singleton in-place, which is fine since the URL never changes at runtime.
+  configureGeneratedClient({ baseUrl: config.config.vite_server_url });
 
   return (
     <AppProviders>

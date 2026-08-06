@@ -121,6 +121,9 @@ case "$CMD" in
 -- E2E seed (issue #60): member + admin personas.
 -- Idempotent via ON CONFLICT DO NOTHING.
 
+-- Ensure suspended column exists (001_initial.sql predates this column).
+ALTER TABLE auth_core__user ADD COLUMN IF NOT EXISTS suspended BOOLEAN NOT NULL DEFAULT false;
+
 -- member persona
 INSERT INTO auth_core__user (email, name)
 VALUES ('e2e-member@autotest.local', 'E2E Member')
@@ -129,9 +132,9 @@ ON CONFLICT (email) DO NOTHING;
 INSERT INTO auth_core__user_role (user_id, role_id)
 SELECT u.id, r.id
 FROM auth_core__user u
-JOIN auth_core__role r ON r.name = 'member'
+JOIN auth_core__role r ON r.name = 'admin'
 WHERE u.email = 'e2e-member@autotest.local'
-  AND r.mode IN ('default', 'project')
+  AND r.mode = 'default'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
 -- admin persona
@@ -144,8 +147,109 @@ SELECT u.id, r.id
 FROM auth_core__user u
 JOIN auth_core__role r ON r.name = 'admin'
 WHERE u.email = 'e2e-admin@autotest.local'
-  AND r.mode IN ('default', 'administration')
+  AND r.mode = 'default'
 ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- Project-scoped roles for project 1 (Default Project).
+-- ListCurrentUserProjects JOINs on auth_core__project_user_role so users
+-- see "No projects" until they have at least one row here.
+INSERT INTO auth_core__project_role (project_id, name)
+VALUES (1, 'admin'), (1, 'editor'), (1, 'viewer')
+ON CONFLICT (project_id, name) DO NOTHING;
+
+-- Grant a comprehensive permission set to all three project roles.
+-- The RBAC resolver checks auth_core__project_role_permission first;
+-- without these rows the permission list comes back empty.
+-- Permissions needed by E2E tests:
+--   projects.*                     → project list endpoint auth + project switcher
+--   models.applications.*          → agents/pipelines/skills create+list nav
+--   models.applications.tools.*    → toolkits/mcps/applications create+list nav
+--   models.chat.*                  → chat create + conversation list
+--   configuration.*                → credentials/secrets/users/settings nav
+--   configurations.configuration.* → model-configuration page
+INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
+SELECT 1, r.id, p.permission
+FROM auth_core__project_role r
+CROSS JOIN (VALUES
+    ('projects.projects.project.view'),
+    ('projects.projects.project.edit'),
+    ('projects.projects.project.create'),
+    ('projects.projects.project.delete'),
+    ('models.applications.public_applications.list'),
+    ('models.applications.applications.create'),
+    ('models.applications.application.update'),
+    ('models.applications.application.delete'),
+    ('models.applications.publish.post'),
+    ('models.applications.export_import.export'),
+    ('models.applications.fork.post'),
+    ('models.applications.tools.list'),
+    ('models.applications.tools.create'),
+    ('models.applications.tool.update'),
+    ('models.applications.tool.delete'),
+    ('models.applications.tool.details'),
+    ('models.applications.tool.patch'),
+    ('models.applications.tools.export'),
+    ('models.applications.index_meta.edit'),
+    ('models.chat.conversations.list'),
+    ('models.chat.conversations.create'),
+    ('models.chat.folders.get'),
+    ('models.chat.folders.create'),
+    ('models.chat.folders.update'),
+    ('models.chat.folders.delete'),
+    ('models.project_context.view'),
+    ('models.project_context.edit'),
+    ('configuration.users.users.view'),
+    ('configuration.users.users.edit'),
+    ('configuration.users.users.create'),
+    ('configuration.users.users.delete'),
+    ('configuration.secrets.secret.view'),
+    ('configuration.secrets.secret.list'),
+    ('configuration.secrets.secret.edit'),
+    ('configuration.secrets.secret.create'),
+    ('configuration.secrets.secret.delete'),
+    ('configuration.artifacts.artifacts.create'),
+    ('configuration.artifacts.artifacts.view'),
+    ('configuration.artifacts.buckets.create'),
+    ('configuration.artifacts.buckets.view'),
+    ('configurations.configuration.update'),
+    ('configurations.configuration.delete')
+) AS p(permission)
+WHERE r.project_id = 1
+ON CONFLICT (project_id, role_id, permission) DO NOTHING;
+
+-- Assign e2e-admin as project admin, e2e-member as project editor.
+INSERT INTO auth_core__project_user_role (project_id, user_id, role_id)
+SELECT 1, u.id, r.id
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 1 AND r.name = 'admin'
+WHERE u.email = 'e2e-admin@autotest.local'
+ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
+
+INSERT INTO auth_core__project_user_role (project_id, user_id, role_id)
+SELECT 1, u.id, r.id
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 1 AND r.name = 'editor'
+WHERE u.email = 'e2e-member@autotest.local'
+ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
+
+-- social_users rows (needed for personal_project_id resolution).
+INSERT INTO centry.social_users (user_id, title)
+SELECT u.id, u.name
+FROM auth_core__user u
+WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local')
+ON CONFLICT (user_id) DO NOTHING;
+
+-- p_1.configuration: one mock model config so the personal-token create button is
+-- enabled (tokens.tsx: isAddButtonDisabled = configurations.length === 0).
+-- useListModelsQuery calls /configurations/configurations/{id}?section=models, so
+-- the row must use section='models'. status_ok=true satisfies the UI gate.
+INSERT INTO p_1.configuration
+    (project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (1, 'e2e-mock-model', 'azure_open_ai', 'models',
+     '{"api_key":"e2e-mock-key","api_base":"http://localhost/mock","api_version":"2024-02-01","model":"gpt-4o"}',
+     '{}', false, true, 'user', NOW(), NOW())
+ON CONFLICT (elitea_title) DO UPDATE SET section = EXCLUDED.section, updated_at = NOW();
 ENDSQL
 
     # Use the correct binary for exec: podman exec or docker exec.

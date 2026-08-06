@@ -51,9 +51,10 @@ func TestNewCurrentProjectListRouteRejectsIncompleteSecurityComposition(t *testi
 		authConfig  apimw.AuthConfig
 		permissions auth.PermissionResolver
 	}{
+		// Only store and permissions are required; PrincipalValidator and
+		// ForwardedIdentityVerifier are optional (OIDC-only deployments use
+		// session-cookie auth without either).
 		"missing query":       {authConfig: apimw.AuthConfig{PrincipalValidator: principal, ForwardedIdentityVerifier: peer}, permissions: permissions},
-		"missing principal":   {store: store, authConfig: apimw.AuthConfig{ForwardedIdentityVerifier: peer}, permissions: permissions},
-		"missing peer proof":  {store: store, authConfig: apimw.AuthConfig{PrincipalValidator: principal}, permissions: permissions},
 		"missing permissions": {store: store, authConfig: apimw.AuthConfig{PrincipalValidator: principal, ForwardedIdentityVerifier: peer}},
 	} {
 		t.Run(name, func(t *testing.T) {

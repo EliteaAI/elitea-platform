@@ -19,8 +19,9 @@ test('J10: create folder, drag conversation into it, reorder persists', async ({
 
   // First, create a conversation so we have something to move.
   const chatInput = page
-    .getByTestId('chat-input')
-    .or(page.getByRole('textbox', { name: /message|ask/i }));
+    .getByTestId('chat-message-input')
+    .or(page.locator('[data-testid="chat-input"] textarea'))
+    .or(page.getByRole('textbox', { name: /message|ask/i })).first();
   await expect(chatInput).toBeVisible({ timeout: 10_000 });
   await chatInput.fill(`${AUTOTEST_PREFIX}folder-test`);
   await page.getByTestId('chat-send-button').click();
@@ -33,7 +34,7 @@ test('J10: create folder, drag conversation into it, reorder persists', async ({
   // Create a folder via the conversation list.
   const createFolderButton = page
     .getByRole('button', { name: /folder|new folder/i })
-    .or(page.getByTestId('create-folder-button'));
+    .or(page.getByTestId('create-folder-button')).first();
 
   const folderBtnVisible = await createFolderButton.isVisible().catch(() => false);
   if (!folderBtnVisible) {
@@ -47,7 +48,7 @@ test('J10: create folder, drag conversation into it, reorder persists', async ({
   // Name the folder.
   const folderNameInput = page
     .getByRole('textbox', { name: /folder name/i })
-    .or(page.getByPlaceholder(/folder name/i));
+    .or(page.getByPlaceholder(/folder name/i)).first();
 
   if (await folderNameInput.isVisible().catch(() => false)) {
     await folderNameInput.fill(`${AUTOTEST_PREFIX}test-folder`);
@@ -57,7 +58,7 @@ test('J10: create folder, drag conversation into it, reorder persists', async ({
   // A folder accordion item should appear.
   const folderItem = page
     .getByTestId('folder-accordion-item-skeleton')
-    .or(page.getByRole('button', { name: /autotest_test-folder/i }));
+    .or(page.getByRole('button', { name: /autotest_test-folder/i })).first();
 
   await expect(
     page

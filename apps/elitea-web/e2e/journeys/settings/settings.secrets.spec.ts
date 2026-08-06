@@ -21,7 +21,7 @@ test('J21: settings: create secret', async ({ page }) => {
   // The create secret modal or form should be visible.
   const createModal = page
     .getByRole('dialog')
-    .or(page.getByTestId('create-form'));
+    .or(page.getByTestId('create-form')).first();
 
   let modalVisible = await createModal.isVisible().catch(() => false);
   if (!modalVisible) {
@@ -49,7 +49,7 @@ test('J21: settings: create secret', async ({ page }) => {
 
   const valueInput = page
     .getByRole('textbox', { name: /value/i })
-    .or(page.locator('input[type="password"]'));
+    .or(page.locator('input[type="password"]')).first();
   await valueInput.fill('e2e-secret-value');
 
   // Save.

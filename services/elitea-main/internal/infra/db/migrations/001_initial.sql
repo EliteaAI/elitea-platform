@@ -356,7 +356,8 @@ CREATE TABLE IF NOT EXISTS auth_core__user (
     id SERIAL PRIMARY KEY,
     email TEXT UNIQUE,
     name TEXT,
-    last_login TIMESTAMP
+    last_login TIMESTAMP,
+    suspended BOOLEAN NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS idx_auth_core_user_email ON auth_core__user(email);
 

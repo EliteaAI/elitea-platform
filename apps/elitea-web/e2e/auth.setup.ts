@@ -27,10 +27,12 @@ setup.describe('Auth setup', () => {
   });
 
   setup('authenticate as member persona', async ({ page }) => {
+    setup.setTimeout(60_000);
     await performOidcLogin(page, 'e2e-member@autotest.local', STORAGE_STATE.member);
   });
 
   setup('authenticate as admin persona', async ({ page }) => {
+    setup.setTimeout(60_000);
     await performOidcLogin(page, 'e2e-admin@autotest.local', STORAGE_STATE.admin);
   });
 });
@@ -84,6 +86,24 @@ async function performOidcLogin(
   if (!infoBody.authenticated) {
     throw new Error(`OIDC session not authenticated for ${email}; info: ${JSON.stringify(infoBody)}`);
   }
+
+  // Seed the selected project into localStorage/sessionStorage so tests start
+  // with an active project — prevents the create button from being disabled.
+  // AppShell normally auto-selects via GET /social/author → personal_project_id,
+  // but that async waterfall may not complete before tests access the create
+  // button. We write the default project (id=1) directly so the store hydrates
+  // from storage immediately on the next page load.
+  //
+  // We do this while on the BASE_URL domain so the evaluate runs in the right
+  // storage origin. The SPA may still be redirecting after the OIDC callback —
+  // navigate to /app/ to stabilize, then write storage.
+  await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
+  await page.evaluate(() => {
+    localStorage.setItem('el.project.id', '1');
+    localStorage.setItem('el.project.name', 'Default Project');
+    sessionStorage.setItem('el.project.id', '1');
+    sessionStorage.setItem('el.project.name', 'Default Project');
+  });
 
   // Save the authenticated state (cookies + localStorage).
   await page.context().storageState({ path: storageStatePath });
