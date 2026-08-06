@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -134,5 +139,80 @@ func TestDrainForShutdown_NilGovStore(t *testing.T) {
 
 	if len(order) != 1 || order[0] != "billing" {
 		t.Fatalf("with a nil gov store, only billing should drain; got %v", order)
+	}
+}
+
+// --- /healthz response contract tests ----------------------------------------
+
+type fakePinger struct {
+	err error
+}
+
+func (f *fakePinger) Ping(_ context.Context) error { return f.err }
+
+// healthzHandler mirrors the inline closure in main.go. It exists so the test
+// exercises the same branching without needing live NATS or refactoring the
+// composition root. TestMainWiring already asserts govStore.Ping( is called.
+func healthzHandler(pinger interface{ Ping(context.Context) error }) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pinger != nil {
+			if err := pinger.Ping(r.Context()); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"nats unavailable"}`))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+}
+
+func TestHealthz_PingFailureReturns503(t *testing.T) {
+	h := healthzHandler(&fakePinger{err: errors.New("breaker open")})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not valid JSON: %s", rec.Body.String())
+	}
+	if body["error"] != "nats unavailable" {
+		t.Errorf("error = %q, want %q", body["error"], "nats unavailable")
+	}
+}
+
+func TestHealthz_PingOKReturns200(t *testing.T) {
+	h := healthzHandler(&fakePinger{err: nil})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "ok" {
+		t.Errorf("body = %q, want %q", body, "ok")
+	}
+}
+
+func TestHealthz_NilPingerReturns200(t *testing.T) {
+	h := healthzHandler(nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 }

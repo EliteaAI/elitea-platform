@@ -14,7 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"errors"
+
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/oauth2"
 )
@@ -209,6 +212,11 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := h.provisionUser(ctx, claims.Sub, claims.Email, claims.Name)
 	if err != nil {
+		if errors.Is(err, errUserSuspended) {
+			slog.Warn("OIDC: suspended user attempted login", "email", claims.Email)
+			http.Error(w, "account suspended", http.StatusForbidden)
+			return
+		}
 		slog.Error("OIDC: user provisioning failed", "err", err, "email", claims.Email)
 		http.Error(w, "user provisioning failed", http.StatusInternalServerError)
 		return
@@ -229,6 +237,8 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, targetTo, http.StatusFound)
 }
 
+var errUserSuspended = errors.New("user account is suspended")
+
 func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string) (string, error) {
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
@@ -241,10 +251,14 @@ func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string
 		`INSERT INTO auth_core__user (email, name, last_login)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (email) DO UPDATE SET last_login = $3
+		 WHERE auth_core__user.suspended = false
 		 RETURNING id`,
 		email, name, time.Now(),
 	).Scan(&userID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", errUserSuspended
+		}
 		return "", fmt.Errorf("upsert user: %w", err)
 	}
 

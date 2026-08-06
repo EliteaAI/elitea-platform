@@ -67,7 +67,7 @@ func (h *SessionHandler) Info(w http.ResponseWriter, r *http.Request) {
 	}
 	var activeUserID int64
 	if err := h.pool.QueryRow(r.Context(),
-		`SELECT id FROM public.auth_core__user WHERE id = $1`,
+		`SELECT id FROM public.auth_core__user WHERE id = $1 AND suspended = false`,
 		userID,
 	).Scan(&activeUserID); err != nil {
 		writeSessionJSON(w, http.StatusOK, map[string]any{"authenticated": false})
