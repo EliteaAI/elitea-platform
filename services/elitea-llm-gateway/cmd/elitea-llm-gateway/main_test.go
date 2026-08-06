@@ -43,7 +43,7 @@ func TestMainWiring(t *testing.T) {
 		{"shutdownSequence(", "the shutdown sequence is never invoked — stream grace, HTTP drain, billing drain and NATS close would not run in the one order that loses no spend (issue #9)"},
 		{"llmproxy.WithOpsEventPublisher(", "budget.unbilled_stream is never published — a stream the gateway could not bill would be invisible to operators (issue #9)"},
 		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
-		{"govStore.Ping(", "the NATS circuit-breaker state is never surfaced on /healthz — a pod with a dead budget-enforcement path stays in the load-balancer rotation"},
+		{"makeHealthzHandler(", "the NATS circuit-breaker /healthz handler is never mounted — a pod with a dead budget-enforcement path stays in the load-balancer rotation"},
 		{"drainForShutdown(", "in-flight billing + persist goroutines must be drained before pool.Close() or spend is dropped / a pool races"},
 		{"grace.StopStreamGrace(", "phase 1 of shutdown is missing — the stream grace would extend the pod's termination window (issue #9)"},
 		{"srv.ShutdownHTTP(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
@@ -150,26 +150,8 @@ type fakePinger struct {
 
 func (f *fakePinger) Ping(_ context.Context) error { return f.err }
 
-// healthzHandler mirrors the inline closure in main.go. It exists so the test
-// exercises the same branching without needing live NATS or refactoring the
-// composition root. TestMainWiring already asserts govStore.Ping( is called.
-func healthzHandler(pinger interface{ Ping(context.Context) error }) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if pinger != nil {
-			if err := pinger.Ping(r.Context()); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = w.Write([]byte(`{"error":"nats unavailable"}`))
-				return
-			}
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	}
-}
-
 func TestHealthz_PingFailureReturns503(t *testing.T) {
-	h := healthzHandler(&fakePinger{err: errors.New("breaker open")})
+	h := makeHealthzHandler(&fakePinger{err: errors.New("breaker open")})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -191,7 +173,7 @@ func TestHealthz_PingFailureReturns503(t *testing.T) {
 }
 
 func TestHealthz_PingOKReturns200(t *testing.T) {
-	h := healthzHandler(&fakePinger{err: nil})
+	h := makeHealthzHandler(&fakePinger{err: nil})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -206,7 +188,7 @@ func TestHealthz_PingOKReturns200(t *testing.T) {
 }
 
 func TestHealthz_NilPingerReturns200(t *testing.T) {
-	h := healthzHandler(nil)
+	h := makeHealthzHandler(nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
