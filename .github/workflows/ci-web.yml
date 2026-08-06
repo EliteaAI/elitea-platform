@@ -566,7 +566,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Bake elitea-web (build only, push happens in publish.yml)
         working-directory: .
-        run: docker buildx bake elitea-web
+        run: docker buildx bake --set '*.platform=linux/amd64' elitea-web
 
   parity:
     name: Parity (uictl routes + manifest)
