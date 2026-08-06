@@ -85,6 +85,10 @@ env:
   # override" — the handler falls back to its own default (365 days).
   ARTIFACT_ATTACHMENT_RETENTION_DAYS: ""
 
+  # --- LLM gateway proxy (BF0.9c) -----------------------------------------------
+  # URL of the elitea-llm-gateway service. Empty disables GatewayProxy.
+  LLM_GATEWAY_URL: ""
+
 # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
 # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
 # above — mirrors deploy/helm/elitea-llm-gateway's values.yaml `secrets:`
@@ -127,6 +131,22 @@ secrets:
   AZURE_STORAGE_KEY:
     secretName: elitea-main-storage-secrets
     key: azure-storage-key
+    optional: true
+  GATEWAY_IDENTITY_SECRET:
+    secretName: elitea-main-llm-gateway-secrets
+    key: gateway-identity-secret
+    optional: true
+  LLM_GATEWAY_CLIENT_CERT:
+    secretName: elitea-main-llm-gateway-secrets
+    key: llm-gateway-client-cert
+    optional: true
+  LLM_GATEWAY_CLIENT_KEY:
+    secretName: elitea-main-llm-gateway-secrets
+    key: llm-gateway-client-key
+    optional: true
+  LLM_GATEWAY_CA_FILE:
+    secretName: elitea-main-llm-gateway-secrets
+    key: llm-gateway-ca-file
     optional: true
 
 probes:
