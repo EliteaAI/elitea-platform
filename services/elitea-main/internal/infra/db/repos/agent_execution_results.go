@@ -292,7 +292,7 @@ func decodeCurrentAgentHITLPause(contentJSON, responseMetadata json.RawMessage) 
 	}
 	interruptID, _ := interrupt["interrupt_id"].(string)
 	pluralID, _ := interrupts[0]["interrupt_id"].(string)
-	if interruptID == "" || interruptID != pluralID || !validRootHITLInterrupt(interrupt) {
+	if interruptID == "" || interruptID != pluralID || !validSequentialHITLInterrupt(interrupt) {
 		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
 	}
 	return currentAgentHITLPause{
@@ -301,13 +301,44 @@ func decodeCurrentAgentHITLPause(contentJSON, responseMetadata json.RawMessage) 
 	}, nil
 }
 
-func validRootHITLInterrupt(interrupt map[string]any) bool {
-	for _, key := range []string{"child_thread_id", "parent_agent_call_id", "parent_agent_path", "via_call_id", "_via_call_id"} {
+// validSequentialHITLInterrupt admits both a root pause and one pause raised by
+// a synchronously nested application or pipeline. A child-thread identity or
+// explicit routing marker belongs to the parallel child-dispatch protocol and
+// remains outside this focused continuation slice.
+func validSequentialHITLInterrupt(interrupt map[string]any) bool {
+	for _, key := range []string{"child_thread_id", "via_call_id", "_via_call_id"} {
 		if value, exists := interrupt[key]; exists && value != nil && value != "" {
 			return false
 		}
 	}
+	callID, hasCallID := interrupt["parent_agent_call_id"]
+	if hasCallID && !validCurrentAgentHITLText(callID, 512) {
+		return false
+	}
+	pathValue, hasPath := interrupt["parent_agent_path"]
+	if !hasPath || pathValue == nil {
+		return !hasCallID
+	}
+	path, ok := pathValue.([]any)
+	if !ok || len(path) == 0 || len(path) > 3 || !hasCallID {
+		return false
+	}
+	for index, raw := range path {
+		entry, ok := raw.(map[string]any)
+		if !ok || !validCurrentAgentHITLText(entry["name"], 256) ||
+			!validCurrentAgentHITLText(entry["call_id"], 512) {
+			return false
+		}
+		if index == len(path)-1 && entry["call_id"] != callID {
+			return false
+		}
+	}
 	return true
+}
+
+func validCurrentAgentHITLText(value any, limit int) bool {
+	text, ok := value.(string)
+	return ok && text != "" && len(text) <= limit && !strings.ContainsRune(text, '\x00')
 }
 
 func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected outputapp.ExpectedAgentExecution, terminal currentAgentTerminal) error {

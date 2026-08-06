@@ -301,18 +301,13 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 				return fmt.Errorf("resolve current agent continuation: %w", queryErr)
 			}
 			var interrupt struct {
-				InterruptID       string   `json:"interrupt_id"`
-				AvailableActions  []string `json:"available_actions"`
-				ChildThreadID     string   `json:"child_thread_id"`
-				ParentAgentCallID string   `json:"parent_agent_call_id"`
-				ParentAgentPath   []any    `json:"parent_agent_path"`
-				ViaCallID         string   `json:"via_call_id"`
-				PrivateViaCallID  string   `json:"_via_call_id"`
+				InterruptID      string   `json:"interrupt_id"`
+				AvailableActions []string `json:"available_actions"`
 			}
+			var rawInterrupt map[string]any
 			if json.Unmarshal([]byte(row.HitlInterruptJson), &interrupt) != nil ||
-				interrupt.ChildThreadID != "" || interrupt.ParentAgentCallID != "" ||
-				len(interrupt.ParentAgentPath) != 0 || interrupt.ViaCallID != "" ||
-				interrupt.PrivateViaCallID != "" {
+				json.Unmarshal([]byte(row.HitlInterruptJson), &rawInterrupt) != nil ||
+				!validSequentialHITLInterrupt(rawInterrupt) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
 			}
 			target = agentexecutionapp.CurrentContinuationTarget{
