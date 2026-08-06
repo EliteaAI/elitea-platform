@@ -126,6 +126,7 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		turn := admission.CurrentTurn
 		if admission.CurrentAdhocTurn != nil ||
 			admission.CurrentRegenerateTurn != nil ||
+			admission.CurrentContinueTurn != nil ||
 			admission.Record.Job.CapabilityID != executiondomain.AgentApplicationCapability ||
 			turn.Validate() != nil ||
 			turn.ProjectID > math.MaxInt32 ||
@@ -139,7 +140,7 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	}
 	if admission.CurrentAdhocTurn != nil {
 		turn := admission.CurrentAdhocTurn
-		if admission.CurrentRegenerateTurn != nil ||
+		if admission.CurrentRegenerateTurn != nil || admission.CurrentContinueTurn != nil ||
 			admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability ||
 			turn.Validate() != nil || turn.ProjectID > math.MaxInt32 ||
 			turn.TargetParticipantID > math.MaxInt32 ||
@@ -151,6 +152,20 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	}
 	if admission.CurrentRegenerateTurn != nil {
 		turn := admission.CurrentRegenerateTurn
+		if admission.CurrentContinueTurn != nil || turn.Validate() != nil || turn.ProjectID > math.MaxInt32 ||
+			turn.TargetParticipantID > math.MaxInt32 ||
+			turn.ApplicationID > math.MaxInt32 || turn.ApplicationVersionID > math.MaxInt32 ||
+			turn.ProjectID != resourceProjectIDUnchecked(admission.Record.Job.ResourceProjectID) ||
+			turn.ResponseMessageID != admission.Binding.ClientMessageID ||
+			turn.ConversationUUID != admission.Binding.ClientStreamID ||
+			turn.ExecutionGeneration != admission.Binding.ClientExecutionGeneration ||
+			(turn.Kind == agentexecutionapp.CurrentRegenerationApplication && admission.Record.Job.CapabilityID != executiondomain.AgentApplicationCapability) ||
+			(turn.Kind == agentexecutionapp.CurrentRegenerationAdhoc && admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability) {
+			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
+		}
+	}
+	if admission.CurrentContinueTurn != nil {
+		turn := admission.CurrentContinueTurn
 		if turn.Validate() != nil || turn.ProjectID > math.MaxInt32 ||
 			turn.TargetParticipantID > math.MaxInt32 ||
 			turn.ApplicationID > math.MaxInt32 || turn.ApplicationVersionID > math.MaxInt32 ||
@@ -158,6 +173,7 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 			turn.ResponseMessageID != admission.Binding.ClientMessageID ||
 			turn.ConversationUUID != admission.Binding.ClientStreamID ||
 			turn.ExecutionGeneration != admission.Binding.ClientExecutionGeneration ||
+			admission.Binding.SIOEvent != "chat_continue_predict" ||
 			(turn.Kind == agentexecutionapp.CurrentRegenerationApplication && admission.Record.Job.CapabilityID != executiondomain.AgentApplicationCapability) ||
 			(turn.Kind == agentexecutionapp.CurrentRegenerationAdhoc && admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability) {
 			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
@@ -217,6 +233,8 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		currentProjectID = admission.CurrentAdhocTurn.ProjectID
 	} else if admission.CurrentRegenerateTurn != nil {
 		currentProjectID = admission.CurrentRegenerateTurn.ProjectID
+	} else if admission.CurrentContinueTurn != nil {
+		currentProjectID = admission.CurrentContinueTurn.ProjectID
 	}
 	if currentProjectID > 0 {
 		if err := tenant.BindProject(
@@ -231,8 +249,10 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 			conversationID = admission.CurrentTurn.ConversationUUID
 		} else if admission.CurrentAdhocTurn != nil {
 			conversationID = admission.CurrentAdhocTurn.ConversationUUID
-		} else {
+		} else if admission.CurrentRegenerateTurn != nil {
 			conversationID = admission.CurrentRegenerateTurn.ConversationUUID
+		} else {
+			conversationID = admission.CurrentContinueTurn.ConversationUUID
 		}
 		conversationUUID, err := currentPGUUID(conversationID)
 		if err != nil {
@@ -420,6 +440,15 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		); err != nil {
 			return executionapp.AdmissionOutcome{}, err
 		}
+	} else if admission.CurrentContinueTurn != nil {
+		if err := resumeCurrentAgentHITL(
+			ctx,
+			txQueries,
+			admission.Record.Job.ID,
+			*admission.CurrentContinueTurn,
+		); err != nil {
+			return executionapp.AdmissionOutcome{}, err
+		}
 	}
 	if err := txQueries.InsertRuntimeCommandOutbox(
 		ctx,
@@ -489,6 +518,62 @@ func resetCurrentAgentResponse(
 	}
 	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
 		return errors.New("current agent regeneration returned an invalid response binding")
+	}
+	return nil
+}
+
+func resumeCurrentAgentHITL(
+	ctx context.Context,
+	queries *sqlcgen.Queries,
+	executionID string,
+	turn agentexecutionapp.CurrentContinueTurn,
+) error {
+	projectID, projectIDValid := currentAgentDatabaseID(turn.ProjectID)
+	targetParticipantID, targetParticipantIDValid := currentAgentDatabaseID(turn.TargetParticipantID)
+	if !projectIDValid || !targetParticipantIDValid {
+		return executionapp.ErrInvalidAdmission
+	}
+	var applicationID, applicationVersionID int32
+	if turn.Kind == agentexecutionapp.CurrentRegenerationApplication {
+		var applicationIDValid, applicationVersionIDValid bool
+		applicationID, applicationIDValid = currentAgentDatabaseID(turn.ApplicationID)
+		applicationVersionID, applicationVersionIDValid = currentAgentDatabaseID(turn.ApplicationVersionID)
+		if !applicationIDValid || !applicationVersionIDValid {
+			return executionapp.ErrInvalidAdmission
+		}
+	}
+	conversationUUID, err := currentPGUUID(turn.ConversationUUID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	questionID, err := currentPGUUID(turn.QuestionID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	responseMessageID, err := currentPGUUID(turn.ResponseMessageID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	row, err := queries.ResumeCurrentAgentHITL(
+		ctx,
+		sqlcgen.ResumeCurrentAgentHITLParams{
+			ActorUserID: turn.ActorUserID, TargetParticipantID: targetParticipantID,
+			ConversationUuid: conversationUUID, QuestionID: questionID,
+			ResponseMessageID: responseMessageID, ContinuationKind: string(turn.Kind),
+			ApplicationID: applicationID, ApplicationVersionID: applicationVersionID,
+			ExecutionGeneration: turn.ExecutionGeneration, ThreadID: turn.ThreadID,
+			InterruptID: turn.InterruptID, HitlAction: turn.Action,
+			ExecutionID: executionID, ProjectID: projectID,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agentexecutionapp.ErrCurrentAgentHITLAlreadyResolved
+	}
+	if err != nil {
+		return fmt.Errorf("resume current agent HITL: %w", err)
+	}
+	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
+		return errors.New("current agent continuation returned an invalid response binding")
 	}
 	return nil
 }

@@ -68,9 +68,13 @@ def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
     containerfile = (_SERVICE_ROOT / "Containerfile").read_text()
     assert f"ARG ELITEA_SDK_REVISION={SDK_SOURCE_REVISION}" in containerfile
     assert f"ARG ELITEA_SDK_ARCHIVE_SHA256={SDK_SOURCE_ARCHIVE_SHA256}" in containerfile
+    assert f"ARG ELITEA_SDK_VERSION={SDK_DISTRIBUTION_VERSION}" in containerfile
+    assert "python -m pip wheel \\\n    --no-cache-dir" in containerfile
+    assert 'test -f "/wheels/elitea_sdk-${ELITEA_SDK_VERSION}-py3-none-any.whl"' in containerfile
     assert (
-        '"elitea-sdk @ file:///build/elitea-sdk"'
-    ) in containerfile
+        '"elitea-sdk @ file:///wheels/elitea_sdk-${ELITEA_SDK_VERSION}-py3-none-any.whl"'
+        in containerfile
+    )
     assert "git -C ./elitea-sdk archive --format=tar HEAD" in containerfile
     assert "scripts/verify_locked_artifacts.py" in containerfile
     assert "verified_source_archives" in containerfile

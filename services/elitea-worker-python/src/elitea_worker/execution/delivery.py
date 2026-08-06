@@ -2253,18 +2253,23 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
         def invoke_agent():
             callback.emit_agent_start(invoked_skills=payload.invoked_skills)
             result = handler.execute(resolved_input.request)
-            full_message = callback.emit_completion(result.sdk_result, payload)
+            terminal_event = callback.emit_terminal(result.sdk_result, payload)
             callback.raise_if_failed()
-            return result, full_message
+            return result, terminal_event
 
         try:
-            result, full_message = await self._supervisor.run_sync(invoke_agent)
-            browser_result = encode_current_node_event_json(full_message)
+            result, terminal_event = await self._supervisor.run_sync(invoke_agent)
+            browser_result = encode_current_node_event_json(terminal_event)
             digest = hashlib.sha256(browser_result).digest()
+            artifact_kind = (
+                "hitl-interrupt"
+                if terminal_event.type == "agent_hitl_interrupt"
+                else "full-message"
+            )
             return bind_agent_result_artifact(
                 result,
                 artifact_id=(
-                    f"node-event:{command.execution_id}:full-message"
+                    f"node-event:{command.execution_id}:{artifact_kind}"
                 ),
                 immutable_version=f"sha256:{digest.hex()}",
                 byte_length=len(browser_result),

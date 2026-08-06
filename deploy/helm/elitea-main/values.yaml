@@ -25,6 +25,12 @@ resources:
 env:
   DATABASE_URL: ""
 
+  # Production keeps the provider-neutral Go object-store capability enabled
+  # and therefore fail-closed on missing storage configuration. Mixed Centry
+  # deployments explicitly set this to "false" while the current artifacts
+  # plugin remains authoritative.
+  ELITEA_ARTIFACTS_ENABLED: "true"
+
   # --- circular-routing guard #1, upsert time (spec §2.6) --------------------
   # Comma-separated list of the platform's OWN /llm origins, e.g.
   #   "https://dev.elitea.ai/llm/v1,http://elitea-main:8080/llm/v1"

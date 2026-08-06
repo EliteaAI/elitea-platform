@@ -43,19 +43,36 @@ func (a AgentExecutionArtifactReference) Validate() error {
 	return nil
 }
 
+type AgentExecutionTerminalState string
+
+const (
+	AgentExecutionTerminalCompleted  AgentExecutionTerminalState = "completed"
+	AgentExecutionTerminalPausedHITL AgentExecutionTerminalState = "paused_hitl"
+)
+
+func (s AgentExecutionTerminalState) Validate() error {
+	switch s {
+	case AgentExecutionTerminalCompleted, AgentExecutionTerminalPausedHITL:
+		return nil
+	default:
+		return ErrInvalidAgentExecutionOutput
+	}
+}
+
 type AgentExecutionResult struct {
 	InputBundleID           string
 	InputBundleDigest       runtimedomain.Digest
 	RequestEntryID          string
 	RequestImmutableVersion string
 	RequestContentDigest    runtimedomain.Digest
+	TerminalState           AgentExecutionTerminalState
 	ResultArtifact          AgentExecutionArtifactReference
 }
 
 func (r AgentExecutionResult) Validate() error {
 	if !validIndexMetadata(r.InputBundleID) || r.InputBundleDigest.IsZero() ||
 		!validIndexMetadata(r.RequestEntryID) || !validIndexMetadata(r.RequestImmutableVersion) ||
-		r.RequestContentDigest.IsZero() {
+		r.RequestContentDigest.IsZero() || r.TerminalState.Validate() != nil {
 		return ErrInvalidAgentExecutionOutput
 	}
 	return r.ResultArtifact.Validate()

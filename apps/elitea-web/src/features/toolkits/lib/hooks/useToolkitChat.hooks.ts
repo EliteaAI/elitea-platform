@@ -1,12 +1,16 @@
 /**
  * Ported from `apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/
  * useToolkitChat.hooks.js` (426 lines, Wave-2 unit A4b) — the toolkit
- * test/index chat panel's state machine: run/cancel a tool, stream its
- * socket response into `chatHistory`, and manage the model/LLM-settings
- * picker. Socket wiring (the `chat_predict` listener + room lifecycle) is
- * split into `./useToolkitChatSocket.hooks.ts` — see that file's own doc
- * comment for the socket-specific citations; this file covers everything
- * else.
+ * test/index chat panel's state machine: run/cancel a tool, stream the
+ * response into `chatHistory`, and manage the model/LLM-settings picker.
+ * Response wiring (the SSE execution stream + the `chat_predict` socket
+ * fallback and its room lifecycle) is split into
+ * `./useToolkitChatSocket.hooks.ts` — see that file's own doc comment; this
+ * file covers everything else.
+ *
+ * TRANSPORT (issue #93): run dispatch lives in
+ * `./useToolkitChatDispatch.hooks.ts` — REST start first, socket.io
+ * `chat_predict` emit as the fallback.
  *
  * FIVE real, disclosed gaps (each verified by grep, not assumed — see
  * `./useToolkitChat.types.ts`'s per-field doc comments for the individual
@@ -89,8 +93,9 @@ import { generateMockMessageTemplate, generateWelcomeMessage } from '../../index
 import { useIndexHistory } from '../../indexes/lib/hooks/useIndexHistory.hooks';
 import { ToolkitChatModesEnum } from '../constants/toolkitChat.constants';
 import type { CreatedConversation } from '../helpers/toolkitConversation.helpers';
-import { createToolkitConversationWithParticipant, findToolkitParticipant, generateLlmSettings } from '../helpers/toolkitConversation.helpers';
+import { createToolkitConversationWithParticipant, generateLlmSettings } from '../helpers/toolkitConversation.helpers';
 import { useSelectedProjectId } from './useSelectedProjectId';
+import { useToolkitRunDispatch } from './useToolkitChatDispatch.hooks';
 import { useToolkitChatSocket } from './useToolkitChatSocket.hooks';
 import type { ToolkitChatIndexLike, ToolkitChatLlmSettings, ToolkitChatMessage, ToolkitChatModel, UseToolkitChatParams, UseToolkitChatResult } from './useToolkitChat.types';
 
@@ -170,6 +175,8 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
 
   const [isRunning, setIsRunning] = useState(false);
   const [isStoppingIndexing, setIsStoppingIndexing] = useState(false);
+  /** The REST `task_id` whose event stream `./useToolkitChatSocket.hooks.ts` follows (issue #93). `undefined` = socket fallback, and also the post-settle state, so the stream is closed instead of left polling. */
+  const [executionId, setExecutionId] = useState<string | undefined>(undefined);
   const isIndexing = useMemo(() => index?.metadata.state === IndexStatuses.progress, [index]);
 
   const recoveryConversationId = index?.metadata.conversation_id;
@@ -199,6 +206,9 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
 
   const onRunFinish = useCallback(
     (state: string) => {
+      // Close the execution stream first: whichever transport reported the
+      // finish, there is nothing left to receive on it.
+      setExecutionId(undefined);
       if (isTestToolsMode) {
         setIsRunning(false);
         return;
@@ -221,7 +231,18 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
     [index?.id, isTestToolsMode, traceNewIndex],
   );
 
-  const socket = useToolkitChatSocket({
+  /** SSE-first run dispatch with the socket.io fallback — see `./useToolkitChatDispatch.hooks.ts`. */
+  const { startToolRun, runSocketFallback } = useToolkitRunDispatch({
+    projectId,
+    toolkitId,
+    selectedModel,
+    llmSettings,
+    buildMessagePayload,
+    onStartTask,
+    setExecutionId,
+  });
+
+  useToolkitChatSocket({
     isAuthCheckSession,
     onMcpAuthRequired,
     onRunFinish,
@@ -231,6 +252,8 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
     activeConversationUuid: activeConversation?.uuid,
     projectId,
     roomEnabled: isIndexing || isRunning,
+    executionId,
+    onStreamError: runSocketFallback,
   });
 
   useEffect(() => {
@@ -281,28 +304,6 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
     [setProgressingIndexHistoryRecovered, createToolkitConversation, traceNewIndex, index?.id],
   );
 
-  /** The "build the predict payload and emit it" tail of `executeRunTool`, split into its own callback to stay under the §3.5 hook-deps budget (executeRunTool's own array would otherwise exceed 8 entries). */
-  const emitRunToolPrediction = useCallback(
-    (currentConversation: CreatedConversation | null, tool: string, relevantInputVariables: Readonly<Record<string, unknown>>) => {
-      const toolkitParticipant = findToolkitParticipant(currentConversation);
-      const payload = buildMessagePayload({
-        conversation_uuid: currentConversation?.uuid,
-        interaction_uuid: crypto.randomUUID(),
-        projectId,
-        selectedModel,
-        participant: toolkitParticipant,
-        llmSettings,
-        participants: currentConversation?.participants ?? [],
-      });
-
-      socket.emit('chat_predict', {
-        ...payload,
-        tool_call_input: { tool_name: tool, tool_params: relevantInputVariables },
-      });
-    },
-    [projectId, selectedModel, llmSettings, socket, buildMessagePayload],
-  );
-
   const executeRunTool = useCallback(
     async (input: { readonly relevantInputVariables: Readonly<Record<string, unknown>>; readonly indexing: boolean; readonly tool: string }) => {
       const { relevantInputVariables, indexing, tool } = input;
@@ -310,7 +311,7 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
         const needsNewConversation = !activeConversation || (indexing && !modes.includes(ToolkitChatModesEnum.testTools));
         const currentConversation = needsNewConversation ? await startNewToolkitConversation(relevantInputVariables, tool) : activeConversation;
 
-        emitRunToolPrediction(currentConversation, tool, relevantInputVariables);
+        await startToolRun(currentConversation, tool, relevantInputVariables);
       } catch (error) {
         setIsRunning(false);
         if (indexing) {
@@ -319,7 +320,7 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
         setChatHistory((prev) => [...prev, buildRunToolErrorMessage(tool, error)]);
       }
     },
-    [activeConversation, modes, startNewToolkitConversation, emitRunToolPrediction, traceNewIndex, index?.id],
+    [activeConversation, modes, startNewToolkitConversation, startToolRun, traceNewIndex, index?.id],
   );
 
   const run = useCallback(

@@ -97,8 +97,8 @@ jobs:
 
       - name: Check out the exact worker-locked SDK source
         env:
-          SDK_REVISION: 6bc6dfcb740c8ec4f81c1da7c929f00786221cc6
-          SDK_ARCHIVE_SHA256: c8674ede3ff93c34bdee8a67f1cacf42c4ea2ba9bf652a755d830c04294129b9
+          SDK_REVISION: 6155d20acb4a3b00a6085212a75258cc1b3c695a
+          SDK_ARCHIVE_SHA256: 5771315bbf8f300171bf4526f1550b2e7789e59d9530479674537fc8c3b093a0
         run: |
           git clone --filter=blob:none --no-checkout \
             https://github.com/EliteaAI/elitea-sdk.git \

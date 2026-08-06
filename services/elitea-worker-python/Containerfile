@@ -1,7 +1,8 @@
 FROM python:3.12.10-slim AS build
 
-ARG ELITEA_SDK_REVISION=6bc6dfcb740c8ec4f81c1da7c929f00786221cc6
-ARG ELITEA_SDK_ARCHIVE_SHA256=c8674ede3ff93c34bdee8a67f1cacf42c4ea2ba9bf652a755d830c04294129b9
+ARG ELITEA_SDK_REVISION=6155d20acb4a3b00a6085212a75258cc1b3c695a
+ARG ELITEA_SDK_ARCHIVE_SHA256=5771315bbf8f300171bf4526f1550b2e7789e59d9530479674537fc8c3b093a0
+ARG ELITEA_SDK_VERSION=0.9.6
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -38,10 +39,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       /sources/FigmaPy-2018.1.0.tar.gz
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip wheel \
+    --no-cache-dir \
+    --wheel-dir /wheels \
+    --no-deps \
+    ./elitea-sdk \
+    && test -f "/wheels/elitea_sdk-${ELITEA_SDK_VERSION}-py3-none-any.whl" \
+    && python -m pip wheel \
     --wheel-dir /wheels \
     --find-links /wheels \
     --prefer-binary \
-    "elitea-sdk @ file:///build/elitea-sdk" \
+    "elitea-sdk @ file:///wheels/elitea_sdk-${ELITEA_SDK_VERSION}-py3-none-any.whl" \
     ./libs/proto \
     "./services/elitea-worker-python[agent-current,indexing-current]" \
     && python ./services/elitea-worker-python/scripts/verify_locked_artifacts.py \

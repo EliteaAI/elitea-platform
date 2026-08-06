@@ -26,7 +26,10 @@ DEFAULT_SNAPSHOT = (
     / "configurations"
     / "current_available_snapshot.json"
 )
-EXPECTED_SDK_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
+EXPECTED_SDK_REVISION = "6155d20acb4a3b00a6085212a75258cc1b3c695a"
+# SDK 0.9.6 preserves the SDK-owned configuration projection byte-for-byte, so
+# its independently versioned source identity remains at the producing commit.
+SDK_CONFIGURATION_CATALOG_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
 EXPECTED_SDK_ENTRY_COUNT = 32
 EXPECTED_NON_SDK_ENTRY_COUNT = 17
 SNAPSHOT_SCHEMA_VERSION = "elitea.current-configuration-available-snapshot.v1"
@@ -301,13 +304,17 @@ def main() -> int:
     try:
         raw = args.snapshot.read_bytes()
         source = load_document(raw)
-        revision = sdk_revision(args.sdk_root.resolve())
+        sdk_revision(args.sdk_root.resolve())
         registry = import_sdk_registry(args.sdk_root.resolve())
         if len(registry) != EXPECTED_SDK_ENTRY_COUNT:
             raise ContractSyncError(
                 f"SDK registry has {len(registry)} entries, expected {EXPECTED_SDK_ENTRY_COUNT}"
             )
-        synchronized = synchronize_document(source, registry, revision)
+        synchronized = synchronize_document(
+            source,
+            registry,
+            SDK_CONFIGURATION_CATALOG_REVISION,
+        )
         if len(synchronized["entries"]) != EXPECTED_NON_SDK_ENTRY_COUNT + EXPECTED_SDK_ENTRY_COUNT:
             raise ContractSyncError("aggregate snapshot does not contain the expected 49 entries")
         rendered = canonical_json(synchronized)

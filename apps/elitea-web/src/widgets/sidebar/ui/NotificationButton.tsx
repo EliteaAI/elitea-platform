@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
-import { useCallback, useContext, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { useNavigate, useRouteContext } from '@tanstack/react-router';
 
@@ -12,8 +12,12 @@ import Typography from '@mui/material/Typography';
 import CloseIcon from '@mui/icons-material/Close';
 import NotificationsNoneOutlined from '@mui/icons-material/NotificationsNoneOutlined';
 
-import { NotificationListItem, useBulkMarkSeenNotifications, useNotificationsList } from '@/features/notifications';
-import { SocketClientContext } from '@/shared/api/socket/client';
+import {
+  NotificationListItem,
+  useBulkMarkSeenNotifications,
+  useNotificationsSSE,
+  useNotificationsList,
+} from '@/features/notifications';
 import { t } from '@/shared/i18n';
 import { BUTTON_VARIANTS, BaseBtn } from '@/shared/ui/BaseBtn';
 
@@ -54,12 +58,24 @@ import { BUTTON_VARIANTS, BaseBtn } from '@/shared/ui/BaseBtn';
  * established convention for a seam with no shared accessor and near-zero
  * reuse value (documented at each of those two call sites).
  *
- * **Graceful degradation, no provider mounted:** exactly
- * `SidebarConnectionDot.tsx`'s pattern — `useContext(SocketClientContext)`
- * directly (never the throwing `useSocketClient()`), skip the live-push
- * subscription entirely when `null`, and still render fully (the on-mount/
- * refetch-driven badge keeps working; only the "flip on immediately from a
- * live push" half is unavailable until `app/` mounts a provider).
+ * **Live push is SSE, not socket.io (issue #92):** the old app's
+ * `useSocket(sioEvents.notifications_notify, ...)` subscription is gone;
+ * `features/notifications`'s `useNotificationsSSE` subscribes to the Go
+ * route `GET {vite_server_url}/notifications/events/prompt_lib/
+ * {projectId}` instead (`services/elitea-main/internal/api/v2/
+ * notifications/current_events.go`). Socket.io is permanently dead in the
+ * E2E compose stack (`VITE_SOCKET_SERVER=""`), so the socket path could
+ * never fire there at all. One behavioural difference, deliberate: the
+ * socket subscription was unconditional, while the SSE stream is scoped to
+ * `personal_project_id` — the server route takes the project id in its
+ * path and authorizes against it, so there is no unscoped stream to open.
+ *
+ * **Graceful degradation:** no personal project id, no runtime config, or
+ * a runtime with no `EventSource` at all ⇒ the hook no-ops and the widget
+ * still renders fully. The on-mount/refetch-driven badge keeps working;
+ * only the "flip on immediately from a live push" half is unavailable —
+ * the same degradation shape the socket version had with no provider
+ * mounted.
  *
  * **Graceful degradation, no personal project:** matches the old app's own
  * `onClickNotificationButton` exactly — `navigate(RouteDefinitions.Chat)`
@@ -107,7 +123,6 @@ export function NotificationButton(): ReactNode {
   const navigate = useNavigate();
   const routeContext: unknown = useRouteContext({ strict: false });
   const personalProjectId = selectPersonalProjectId(routeContext);
-  const socketClient = useContext(SocketClientContext);
 
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [hasUnread, setHasUnread] = useState(false);
@@ -128,9 +143,9 @@ export function NotificationButton(): ReactNode {
   // query response is AUTHORITATIVE and can flip the dot back off (e.g.
   // after "mark all as read" invalidates and refetches this same query,
   // `features/notifications/api/useNotifications.ts`'s
-  // `NOTIFICATIONS_QUERY_ROOT` invalidation). The socket handler below only
-  // ever sets this `true` OPTIMISTICALLY between refetches — reproduced
-  // as-is, not `socketUnread || data-derived` (that OR'd shape is a one-way
+  // `NOTIFICATIONS_QUERY_ROOT` invalidation). The live-push handler below
+  // only ever sets this `true` OPTIMISTICALLY between refetches — reproduced
+  // as-is, not `pushedUnread || data-derived` (that OR'd shape is a one-way
   // ratchet: once a live push flips it `true`, no later "actually 0 now"
   // response could ever flip it back).
   //
@@ -148,15 +163,12 @@ export function NotificationButton(): ReactNode {
     if (data !== undefined) setHasUnread(!!data.total);
   }, [data, dataUpdatedAt]);
 
-  // Live push (old app: `useSocket(sioEvents.notifications_notify,
-  // onNotificationEvent)`, unconditional — not gated on personal_project_id
-  // either, reproduced as-is). No-ops when no provider is mounted yet.
-  useEffect(() => {
-    if (!socketClient) return undefined;
-    const handleNotify = (): void => setHasUnread(true);
-    socketClient.on('notifications_notify', handleNotify);
-    return () => socketClient.off('notifications_notify', handleNotify);
-  }, [socketClient]);
+  // Live push, now over SSE (issue #92 — see this file's header). No-ops
+  // without a personal project id, without runtime config, or in a runtime
+  // with no `EventSource`; `notifications_ready` inside the hook also
+  // invalidates the list query, so the effect above re-runs authoritatively.
+  const handleNotify = useCallback(() => setHasUnread(true), []);
+  useNotificationsSSE(personalProjectId, handleNotify);
 
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {

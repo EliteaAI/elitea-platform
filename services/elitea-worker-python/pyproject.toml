@@ -9,7 +9,7 @@ description = "Standalone language-neutral ELITEA runtime reference worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "cryptography>=48.0.1,<49",
-  "elitea-sdk==0.9.1",
+  "elitea-sdk==0.9.6",
   "elitea-runtime-proto==0.1.0",
   "grpcio>=1.76,<2",
   "h2>=4.2,<5",

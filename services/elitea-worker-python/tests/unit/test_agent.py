@@ -531,9 +531,115 @@ def test_sdk_adapter_preserves_clean_pause_checkpoints(pending_writes) -> None:
     assert len(client.adhoc_executor.calls) == 1
 
 
-def test_sdk_adapter_rejects_unimplemented_resume_instead_of_drifting() -> None:
+def test_sdk_adapter_rejects_unimplemented_generic_continue_instead_of_drifting() -> None:
     request = _request()
     object.__setattr__(request.payload, "should_continue", True)
 
     with pytest.raises(UnsupportedCapability, match="parity path"):
         _adapter(_Client()).execute_application(request.payload)
+
+
+@pytest.mark.parametrize("application", [True, False])
+@pytest.mark.parametrize(
+    ("action", "value"),
+    [
+        ("reject", "not now"),
+        (
+            "block_with_comment",
+            "append the requested data before retrying the sensitive action",
+        ),
+    ],
+)
+def test_sdk_adapter_resumes_one_exact_hitl_without_deleting_checkpoint(
+    application: bool,
+    action: str,
+    value: str,
+) -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(
+        [("paused-task", "__interrupt__", {"type": "hitl"})]
+    )
+    adapter._memory = memory  # type: ignore[attr-defined]
+    payload = _request(application=application).payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", action)
+    object.__setattr__(payload, "hitl_value", value)
+    object.__setattr__(
+        payload,
+        "hitl_decisions",
+        [
+            {
+                "interrupt_id": "interrupt-1",
+                "action": action,
+                "value": value,
+            }
+        ],
+    )
+
+    if application:
+        adapter.execute_application(payload)
+        invoke_input, invoke_config = client.application_executor.calls[0]
+    else:
+        adapter.execute_adhoc(payload)
+        invoke_input, invoke_config = client.adhoc_executor.calls[0]
+
+    assert memory.deleted_threads == []
+    assert invoke_config["configurable"]["thread_id"] == "thread-1"
+    assert invoke_input["hitl_resume"] is True
+    assert invoke_input["hitl_action"] == action
+    assert invoke_input["hitl_value"] == value
+    assert invoke_input["hitl_decisions"] == [
+        {
+            "interrupt_id": "interrupt-1",
+            "action": action,
+            "value": value,
+        }
+    ]
+
+
+def test_sdk_adapter_rejects_hitl_without_exact_interrupt_identity() -> None:
+    payload = _request().payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", "approve")
+    object.__setattr__(payload, "hitl_decisions", [])
+
+    with pytest.raises(UnsupportedCapability, match="Exactly one root HITL decision"):
+        _adapter(_Client()).execute_application(payload)
+
+
+def test_sdk_adapter_rejects_nested_hitl_route_in_root_slice() -> None:
+    payload = _request().payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", "approve")
+    object.__setattr__(
+        payload,
+        "hitl_decisions",
+        [
+            {
+                "interrupt_id": "interrupt-1",
+                "action": "approve",
+                "child_thread_id": "child-thread",
+            }
+        ],
+    )
+
+    with pytest.raises(UnsupportedCapability, match="Nested or parallel HITL"):
+        _adapter(_Client()).execute_application(payload)
+
+
+def test_sdk_adapter_rejects_hitl_without_continuation_marker() -> None:
+    payload = _request().payload
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", "approve")
+    object.__setattr__(
+        payload,
+        "hitl_decisions",
+        [{"interrupt_id": "interrupt-1", "action": "approve"}],
+    )
+
+    with pytest.raises(UnsupportedCapability, match="continuation marker"):
+        _adapter(_Client()).execute_application(payload)

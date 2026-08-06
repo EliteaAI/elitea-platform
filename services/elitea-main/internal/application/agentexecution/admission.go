@@ -28,6 +28,7 @@ type SubmitRequest struct {
 	CurrentTurn           *CurrentApplicationTurn
 	CurrentAdhocTurn      *CurrentAdhocTurn
 	CurrentRegenerateTurn *CurrentRegenerateTurn
+	CurrentContinueTurn   *CurrentContinueTurn
 }
 
 type Admission struct {
@@ -36,6 +37,7 @@ type Admission struct {
 	CurrentTurn           *CurrentApplicationTurn
 	CurrentAdhocTurn      *CurrentAdhocTurn
 	CurrentRegenerateTurn *CurrentRegenerateTurn
+	CurrentContinueTurn   *CurrentContinueTurn
 }
 
 type AtomicAdmissionStore interface {
@@ -124,6 +126,7 @@ func (s *AdmissionService) Submit(
 	if request.CurrentTurn != nil {
 		if request.CapabilityID != executiondomain.AgentApplicationCapability ||
 			request.CurrentRegenerateTurn != nil ||
+			request.CurrentContinueTurn != nil ||
 			request.CurrentTurn.Validate() != nil ||
 			request.CurrentTurn.ResponseMessageID != request.ClientMessageID ||
 			request.CurrentTurn.ConversationUUID != request.ClientStreamID ||
@@ -132,7 +135,7 @@ func (s *AdmissionService) Submit(
 		}
 	}
 	if request.CurrentAdhocTurn != nil {
-		if request.CurrentTurn != nil || request.CurrentRegenerateTurn != nil ||
+		if request.CurrentTurn != nil || request.CurrentRegenerateTurn != nil || request.CurrentContinueTurn != nil ||
 			request.CapabilityID != executiondomain.AgentAdhocCapability ||
 			request.CurrentAdhocTurn.Validate() != nil ||
 			request.CurrentAdhocTurn.ResponseMessageID != request.ClientMessageID ||
@@ -143,10 +146,22 @@ func (s *AdmissionService) Submit(
 	}
 	if request.CurrentRegenerateTurn != nil {
 		turn := request.CurrentRegenerateTurn
-		if request.CurrentTurn != nil || request.CurrentAdhocTurn != nil ||
+		if request.CurrentTurn != nil || request.CurrentAdhocTurn != nil || request.CurrentContinueTurn != nil ||
 			turn.Validate() != nil || turn.ResponseMessageID != request.ClientMessageID ||
 			turn.ConversationUUID != request.ClientStreamID ||
 			turn.ExecutionGeneration != binding.ClientExecutionGeneration ||
+			(turn.Kind == CurrentRegenerationApplication && request.CapabilityID != executiondomain.AgentApplicationCapability) ||
+			(turn.Kind == CurrentRegenerationAdhoc && request.CapabilityID != executiondomain.AgentAdhocCapability) {
+			return executionapp.AdmissionOutcome{}, ErrInvalidAgentAdmission
+		}
+	}
+	if request.CurrentContinueTurn != nil {
+		turn := request.CurrentContinueTurn
+		if request.CurrentTurn != nil || request.CurrentAdhocTurn != nil || request.CurrentRegenerateTurn != nil ||
+			turn.Validate() != nil || turn.ResponseMessageID != request.ClientMessageID ||
+			turn.ConversationUUID != request.ClientStreamID ||
+			turn.ExecutionGeneration != binding.ClientExecutionGeneration ||
+			request.SIOEvent != "chat_continue_predict" ||
 			(turn.Kind == CurrentRegenerationApplication && request.CapabilityID != executiondomain.AgentApplicationCapability) ||
 			(turn.Kind == CurrentRegenerationAdhoc && request.CapabilityID != executiondomain.AgentAdhocCapability) {
 			return executionapp.AdmissionOutcome{}, ErrInvalidAgentAdmission
@@ -159,6 +174,7 @@ func (s *AdmissionService) Submit(
 		CurrentTurn:           request.CurrentTurn.Clone(),
 		CurrentAdhocTurn:      request.CurrentAdhocTurn.Clone(),
 		CurrentRegenerateTurn: request.CurrentRegenerateTurn.Clone(),
+		CurrentContinueTurn:   request.CurrentContinueTurn.Clone(),
 	})
 	if err != nil {
 		return executionapp.AdmissionOutcome{}, fmt.Errorf("admit agent execution: %w", err)

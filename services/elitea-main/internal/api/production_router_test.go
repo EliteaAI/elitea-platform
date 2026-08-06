@@ -15,6 +15,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
+	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
@@ -30,6 +31,49 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
+
+func TestProductionRouterMountsAllCurrentAgentExecutionPaths(t *testing.T) {
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentAgentStart: handler})
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodPost, "/api/v2/elitea_core/messages/prompt_lib/2/conversation", http.StatusNoContent},
+		{http.MethodPost, "/api/v2/elitea_core/regenerate/prompt_lib/2/message", http.StatusNoContent},
+		{http.MethodPost, "/api/v2/elitea_core/continue_predict/prompt_lib/2/conversation", http.StatusNoContent},
+		{http.MethodGet, "/api/v2/elitea_core/continue_predict/prompt_lib/2/conversation", http.StatusMethodNotAllowed},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+			if response.Code != test.want {
+				t.Fatalf("status=%d want=%d body=%q", response.Code, test.want, response.Body.String())
+			}
+		})
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	response := httptest.NewRecorder()
+	uncomposed.ServeHTTP(
+		response,
+		httptest.NewRequest(
+			http.MethodPost,
+			strings.NewReplacer(
+				"{projectID}", "2",
+				"{conversationID}", "conversation",
+			).Replace(agentexecutionapi.CurrentContinuationPath),
+			nil,
+		),
+	)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed continuation status=%d", response.Code)
+	}
+}
 
 type productionChatConfigReader struct{}
 

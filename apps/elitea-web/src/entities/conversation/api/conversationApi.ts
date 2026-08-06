@@ -191,20 +191,77 @@ export function useUnselectConversationMutation(): UseMutationResult<unknown, un
 export interface RegenerateParams {
   readonly projectId: string | number;
   readonly id: string | number;
+  /**
+   * Opt into the SSE execution contract (issue #93 — `agent.regenerate.v1`).
+   * Sent as the `execution_contract` QUERY parameter and deliberately kept
+   * OUT of the body: the Go route reads it from the query and rejects an
+   * unrecognised body shape outright. Omitted ⇒ the pre-#93 call, whose
+   * response carries no `events_url` and therefore keeps the socket path.
+   */
+  readonly executionContract?: string;
   readonly [key: string]: unknown;
 }
 
-export async function regenerate(params: RegenerateParams): Promise<unknown> {
-  const { projectId, id, ...body } = params;
-  return fetchData<unknown>(`/elitea_core/regenerate/prompt_lib/${String(projectId)}/${String(id)}`, {
+export async function regenerate(params: RegenerateParams): Promise<AgentExecutionStart> {
+  const { projectId, id, executionContract, ...body } = params;
+  const query = executionContract ? `?execution_contract=${encodeURIComponent(executionContract)}` : '';
+  return fetchData<AgentExecutionStart>(`/elitea_core/regenerate/prompt_lib/${String(projectId)}/${String(id)}${query}`, {
     method: 'POST',
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json' },
   });
 }
 
-export function useRegenerateMutation(): UseMutationResult<unknown, unknown, RegenerateParams> {
+export function useRegenerateMutation(): UseMutationResult<AgentExecutionStart, unknown, RegenerateParams> {
   return useMutation({ mutationFn: regenerate });
+}
+
+/* ── startAgentExecution — POST elitea_core/messages/prompt_lib/{projectId}/{conversationUuid} ── */
+/* manifest: conversation.startAgentExecution */
+
+/**
+ * The three `execution_contract` values the Go agent-execution route admits
+ * (`services/elitea-main/internal/api/v2/agentexecution/current_route.go`:
+ * `CurrentApplicationStartContract` / `CurrentAdhocStartContract` /
+ * `CurrentRegenerationContract`). The route REQUIRES one — a POST without a
+ * recognised contract is a 400 — which is what makes it safe for a caller to
+ * treat any failure as "this backend has not landed the SSE path" and fall
+ * back to socket.io (issue #93).
+ */
+export const AGENT_EXECUTE_APPLICATION_CONTRACT = 'agent.execute.application.v1';
+export const AGENT_EXECUTE_ADHOC_CONTRACT = 'agent.execute.adhoc.v1';
+export const AGENT_REGENERATE_CONTRACT = 'agent.regenerate.v1';
+
+/**
+ * The start/regenerate response. `events_url` is the field that matters:
+ * it is the absolute path of this execution's SSE stream (the Go route
+ * builds `"/api/v2/executions/" + projectID + "/" + executionID + "/events"`
+ * itself, so a client must NOT re-derive it). Its ABSENCE is the documented
+ * fallback signal — an older backend answering the same route without one.
+ */
+export interface AgentExecutionStart {
+  readonly events_url?: string;
+  readonly task_id?: string;
+  readonly execution_id?: string;
+  readonly response_message_id?: string;
+  readonly [key: string]: unknown;
+}
+
+export interface StartAgentExecutionParams {
+  readonly projectId: string | number;
+  /** Conversation UUID — the route's `{conversationID}` segment. */
+  readonly conversationUuid: string;
+  /** `agent.execute.application.v1` for an agent-app conversation, `agent.execute.adhoc.v1` for an ad-hoc/test one. */
+  readonly contract: string;
+  readonly body: Readonly<Record<string, unknown>>;
+}
+
+export async function startAgentExecution(params: StartAgentExecutionParams): Promise<AgentExecutionStart> {
+  const { projectId, conversationUuid, contract, body } = params;
+  return fetchData<AgentExecutionStart>(
+    `/elitea_core/messages/prompt_lib/${String(projectId)}/${conversationUuid}?execution_contract=${encodeURIComponent(contract)}`,
+    { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } },
+  );
 }
 
 /* ── stopChatTask — DELETE elitea_core/task/prompt_lib/{projectId}/{taskId} ── */

@@ -55,6 +55,13 @@ type currentRegenerationQuerier interface {
 	) (sqlcgen.ResolveCurrentRegenerationRow, error)
 }
 
+type currentContinuationQuerier interface {
+	ResolveCurrentContinuation(
+		context.Context,
+		sqlcgen.ResolveCurrentContinuationParams,
+	) (sqlcgen.ResolveCurrentContinuationRow, error)
+}
+
 func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 	ctx context.Context,
 	request agentexecutionapp.CurrentApplicationStartRequest,
@@ -251,6 +258,84 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentRegeneration(
 	return target, nil
 }
 
+func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
+	ctx context.Context,
+	request agentexecutionapp.CurrentContinuationResolveRequest,
+) (agentexecutionapp.CurrentContinuationTarget, error) {
+	if err := request.Validate(); err != nil {
+		return agentexecutionapp.CurrentContinuationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	projectID, projectIDValid := currentAgentDatabaseID(request.ProjectID)
+	if !projectIDValid {
+		return agentexecutionapp.CurrentContinuationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	conversationUUID, err := currentPGUUID(request.ConversationUUID)
+	if err != nil {
+		return agentexecutionapp.CurrentContinuationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	responseMessageID, err := currentPGUUID(request.ResponseMessageID)
+	if err != nil {
+		return agentexecutionapp.CurrentContinuationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	var target agentexecutionapp.CurrentContinuationTarget
+	err = repository.projects.WithinProjectTx(
+		ctx,
+		request.ProjectID,
+		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadOnly},
+		func(tx sqlExecutor) error {
+			queries, ok := tx.(currentContinuationQuerier)
+			if !ok {
+				return errors.New("current agent continuation query is unavailable")
+			}
+			row, queryErr := queries.ResolveCurrentContinuation(
+				ctx,
+				sqlcgen.ResolveCurrentContinuationParams{
+					ActorUserID: request.ActorUserID, ProjectID: projectID,
+					ConversationUuid: conversationUUID, ResponseMessageID: responseMessageID,
+				},
+			)
+			if errors.Is(queryErr, pgx.ErrNoRows) {
+				return agentexecutionapp.ErrCurrentAgentHITLAlreadyResolved
+			}
+			if queryErr != nil {
+				return fmt.Errorf("resolve current agent continuation: %w", queryErr)
+			}
+			var interrupt struct {
+				InterruptID       string   `json:"interrupt_id"`
+				AvailableActions  []string `json:"available_actions"`
+				ChildThreadID     string   `json:"child_thread_id"`
+				ParentAgentCallID string   `json:"parent_agent_call_id"`
+				ParentAgentPath   []any    `json:"parent_agent_path"`
+				ViaCallID         string   `json:"via_call_id"`
+				PrivateViaCallID  string   `json:"_via_call_id"`
+			}
+			if json.Unmarshal([]byte(row.HitlInterruptJson), &interrupt) != nil ||
+				interrupt.ChildThreadID != "" || interrupt.ParentAgentCallID != "" ||
+				len(interrupt.ParentAgentPath) != 0 || interrupt.ViaCallID != "" ||
+				interrupt.PrivateViaCallID != "" {
+				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			target = agentexecutionapp.CurrentContinuationTarget{
+				Kind:                agentexecutionapp.CurrentRegenerationKind(row.ContinuationKind),
+				TargetParticipantID: int64(row.TargetParticipantID),
+				QuestionID:          uuid.UUID(row.QuestionID.Bytes).String(), UserInput: row.UserInput,
+				ThreadID: row.ThreadID, ExecutionGeneration: row.ExecutionGeneration,
+				InterruptID:      interrupt.InterruptID,
+				AvailableActions: append([]string(nil), interrupt.AvailableActions...),
+			}
+			if uuid.UUID(row.ConversationUuid.Bytes).String() != request.ConversationUUID ||
+				target.Validate() != nil {
+				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return agentexecutionapp.CurrentContinuationTarget{}, err
+	}
+	return target, nil
+}
+
 func currentPGUUID(value string) (pgtype.UUID, error) {
 	var result pgtype.UUID
 	if err := result.Scan(value); err != nil || !result.Valid {
@@ -262,3 +347,4 @@ func currentPGUUID(value string) (pgtype.UUID, error) {
 var _ currentApplicationStartQuerier = pgxExecutor{}
 var _ currentAdhocStartQuerier = pgxExecutor{}
 var _ currentRegenerationQuerier = pgxExecutor{}
+var _ currentContinuationQuerier = pgxExecutor{}
