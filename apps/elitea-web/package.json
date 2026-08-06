@@ -96,7 +96,6 @@
     "@vitejs/plugin-react": "6.0.4",
     "@vitest/browser-playwright": "4.1.10",
     "@vitest/coverage-v8": "4.1.10",
-    "ast-v8-to-istanbul": "1.0.5",
     "babel-plugin-react-compiler": "1.0.0",
     "dependency-cruiser": "18.1.0",
     "eslint-plugin-i18next": "6.1.5",
@@ -120,4 +119,3 @@
     "vitest": "4.1.10"
   }
 }
-

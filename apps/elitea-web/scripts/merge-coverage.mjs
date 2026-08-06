@@ -90,6 +90,7 @@ async function main() {
   const files = await fs.readdir(outputDir);
   console.log(`  Report files in ${outputDir}: ${files.join(', ')}`);
 
+  assertInstrumentationNotBroken(coverageMap);
   enforceThresholds(coverageMap, skipValidation);
   console.log('Merged coverage reports generated at', outputDir);
 }
@@ -246,6 +247,22 @@ async function findCoverageFiles() {
   }
 
   return files;
+}
+
+function assertInstrumentationNotBroken(coverageMap) {
+  const summary = coverageMap.getCoverageSummary();
+  const data = typeof summary.toJSON === 'function' ? summary.toJSON() : summary;
+  const totalStatements = data.statements?.total ?? 0;
+  const coveredStatements = data.statements?.covered ?? 0;
+
+  if (totalStatements > 0 && coveredStatements === 0) {
+    console.error(
+      `INSTRUMENTATION BROKEN: ${totalStatements} statements counted but 0 covered.`
+      + ' V8 coverage collection is not working — this is a provider/config bug, not a missing-tests problem.'
+      + ' Check vitest.config.ts coverage.provider and any customProviderModule.',
+    );
+    process.exit(1);
+  }
 }
 
 function enforceThresholds(coverageMap, skipValidation) {
