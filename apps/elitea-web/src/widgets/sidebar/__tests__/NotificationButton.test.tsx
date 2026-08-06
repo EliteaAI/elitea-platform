@@ -9,7 +9,7 @@
  * anywhere, matching every other `widgets/sidebar/__tests__` file's
  * convention of staying below the `app/` layer even in tests.
  */
-import type { ReactElement, ReactNode } from 'react';
+import type { ReactElement } from 'react';
 
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from '@tanstack/react-router';
 import type { AnyRouter } from '@tanstack/react-router';
@@ -18,15 +18,15 @@ import CssBaseline from '@mui/material/CssBaseline';
 import { ThemeProvider } from '@mui/material/styles';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
-import { SocketClientContext, type SocketClient } from '@/shared/api/socket/client';
-import { createTestSocketClient } from '@/shared/api/socket/testing';
+import { installTestEventSource, type TestEventSourceRegistry } from '@/shared/api/sse/testing';
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
+import { resetConfigForTests } from '@/shared/config/get-config';
 
 import { server } from '../../../test/setup';
 import { NotificationButton } from '../ui/NotificationButton';
@@ -34,14 +34,14 @@ import { NotificationButton } from '../ui/NotificationButton';
 const BASE = '/api/v2';
 const LIST_PATH = `${BASE}/notifications/notifications/prompt_lib/:projectId`;
 const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
+const globals = globalThis as unknown as Record<string, unknown>;
 
 interface RenderOptions {
   readonly personalProjectId?: string;
-  readonly socketClient?: SocketClient;
 }
 
 async function renderNotificationButton(options: RenderOptions = {}): Promise<AnyRouter> {
-  const { personalProjectId, socketClient } = options;
+  const { personalProjectId } = options;
   const auth = {
     getUser: () => (personalProjectId === undefined ? undefined : { personal_project_id: personalProjectId }),
     getSelectedProjectId: () => undefined,
@@ -65,21 +65,15 @@ async function renderNotificationButton(options: RenderOptions = {}): Promise<An
 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 
-  const tree: ReactNode = socketClient ? (
-    <SocketClientContext.Provider value={socketClient}>
-      <RouterProvider router={router} />
-    </SocketClientContext.Provider>
-  ) : (
-    <RouterProvider router={router} />
-  );
-
   render(
     <ThemeProvider
       theme={theme}
       defaultMode={DEFAULT_COLOR_SCHEME}
     >
       <CssBaseline />
-      <QueryClientProvider client={queryClient}>{tree}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
     </ThemeProvider>,
   );
   return router;
@@ -105,12 +99,24 @@ function wireNotification(overrides: Record<string, unknown> = {}): Record<strin
   };
 }
 
+let sse: TestEventSourceRegistry;
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: BASE });
+  // The live-push half is SSE now (issue #92): jsdom implements no
+  // `EventSource`, so the double from `shared/api/sse/testing.ts` stands in
+  // — and the runtime config has to actually resolve, since the hook builds
+  // its stream URL from `vite_server_url`.
+  sse = installTestEventSource();
+  globals['elitea_ui_config'] = { vite_server_url: BASE, vite_base_uri: '/', vite_public_project_id: 'public-1' };
+  resetConfigForTests();
 });
 
 afterEach(() => {
   resetGeneratedClient();
+  sse.restore();
+  delete globals['elitea_ui_config'];
+  resetConfigForTests();
 });
 
 describe('NotificationButton — trigger + unread badge', () => {
@@ -132,10 +138,15 @@ describe('NotificationButton — trigger + unread badge', () => {
     expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
   });
 
-  it('flips the badge on immediately via a live "notifications_notify" socket push', async () => {
+  it('subscribes to the project-scoped SSE notifications stream on mount', async () => {
     server.use(http.get(LIST_PATH, () => HttpResponse.json({ rows: [], total: 0 })));
-    const socketClient = createTestSocketClient();
-    await renderNotificationButton({ personalProjectId: '7', socketClient });
+    await renderNotificationButton({ personalProjectId: '7' });
+    expect(sse.getSources().map((source) => source.url)).toEqual([`${BASE}/notifications/events/prompt_lib/7`]);
+  });
+
+  it('flips the badge on immediately via a live "notifications_notify" SSE push', async () => {
+    server.use(http.get(LIST_PATH, () => HttpResponse.json({ rows: [], total: 0 })));
+    await renderNotificationButton({ personalProjectId: '7' });
     // Let the on-mount badge query genuinely SETTLE before firing the push
     // — `total: 0` renders identically to the component's own pre-settle
     // initial state, so asserting "no dot" alone (without first flushing
@@ -146,11 +157,42 @@ describe('NotificationButton — trigger + unread badge', () => {
     // effect is always authoritative — see `NotificationButton.tsx`).
     await new Promise((resolve) => setTimeout(resolve, 0));
     await waitFor(() => expect(screen.queryByTestId('sidebar-notification-unread-dot')).toBeNull());
-    socketClient.simulateServerEvent('notifications_notify', undefined);
+    act(() => {
+      sse.emit('notifications_notify');
+    });
     expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
   });
 
-  it('degrades gracefully when no SocketClientContext.Provider is mounted (no crash, badge still driven by the query)', async () => {
+  /**
+   * `notifications_ready` is the stream's "the durable list is ahead of
+   * your cache" signal (the opening cursor handshake, and the substitute
+   * the Go route sends for an oversized notification). It carries no
+   * payload the UI can render, so its whole job is to invalidate the
+   * notifications queries and let the authoritative refetch speak.
+   */
+  it('refetches the badge query on a "notifications_ready" SSE push', async () => {
+    let total = 0;
+    server.use(http.get(LIST_PATH, () => HttpResponse.json({ rows: [], total })));
+    await renderNotificationButton({ personalProjectId: '7' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => expect(screen.queryByTestId('sidebar-notification-unread-dot')).toBeNull());
+
+    total = 3;
+    act(() => {
+      sse.emit('notifications_ready');
+    });
+    expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
+  });
+
+  it('opens no stream and still renders when there is no personal project to scope it to', async () => {
+    const router = await renderNotificationButton({});
+    expect(sse.getSources()).toHaveLength(0);
+    expect(screen.getByTestId('sidebar-notification-button')).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/');
+  });
+
+  it('degrades gracefully in a runtime with no EventSource (no crash, badge still driven by the query)', async () => {
+    sse.restore();
     server.use(http.get(LIST_PATH, () => HttpResponse.json({ rows: [], total: 1 })));
     await renderNotificationButton({ personalProjectId: '7' });
     expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
@@ -177,16 +219,17 @@ describe('NotificationButton — trigger + unread badge', () => {
     );
     server.use(http.put(LIST_PATH, () => HttpResponse.json({})));
 
-    const socketClient = createTestSocketClient();
     const user = userEvent.setup();
-    await renderNotificationButton({ personalProjectId: '7', socketClient });
+    await renderNotificationButton({ personalProjectId: '7' });
 
     // Let the on-mount badge query genuinely settle first (see the "flips
     // the badge on immediately" test above for why this matters).
     await new Promise((resolve) => setTimeout(resolve, 0));
     await waitFor(() => expect(screen.queryByTestId('sidebar-notification-unread-dot')).toBeNull());
 
-    socketClient.simulateServerEvent('notifications_notify', undefined);
+    act(() => {
+      sse.emit('notifications_notify');
+    });
     expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
 
     await user.click(screen.getByTestId('sidebar-notification-button'));
