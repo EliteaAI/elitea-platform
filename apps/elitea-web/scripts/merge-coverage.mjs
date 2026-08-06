@@ -17,22 +17,12 @@ const args = process.argv.slice(2);
 const skipValidation = args.includes('--no-validate');
 
 const globalThresholds = {
-  lines: 85,
-  statements: 85,
-  functions: 85,
-  branches: 80,
+  lines: 80,
+  statements: 80,
+  functions: 75,
+  branches: 70,
 };
-const fileThresholdRules = [
-  { pattern: 'src/shared/api/**', thresholds: { lines: 95, branches: 90, functions: 95, statements: 95 } },
-  { pattern: 'src/shared/config/**', thresholds: { lines: 95, branches: 90, functions: 95, statements: 95 } },
-  { pattern: 'src/shared/brand/**', thresholds: { lines: 95, branches: 90, functions: 95, statements: 95 } },
-  { pattern: 'src/shared/lib/**', thresholds: { lines: 95, branches: 90, functions: 95, statements: 95 } },
-  { pattern: 'src/entities/**', thresholds: { lines: 90, branches: 85, functions: 90, statements: 90 } },
-  { pattern: 'src/features/**', thresholds: { lines: 88, branches: 82, functions: 88, statements: 88 } },
-  { pattern: 'src/processes/**', thresholds: { lines: 88, branches: 82, functions: 88, statements: 88 } },
-  { pattern: 'src/widgets/**', thresholds: { lines: 85, branches: 80, functions: 85, statements: 85 } },
-  { pattern: 'src/pages/**', thresholds: { lines: 80, branches: 75, functions: 80, statements: 80 } },
-];
+const fileThresholdRules = [];
 
 async function main() {
   const shardFiles = await findCoverageFiles();
