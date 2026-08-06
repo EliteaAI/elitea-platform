@@ -124,6 +124,71 @@ export function useStopIndexingItemMutation(): UseMutationResult<unknown, Error,
   });
 }
 
+/* ── startIndexExecution — POST elitea_core/test_toolkit_tool/prompt_lib/{projectId} ── */
+
+/** The `execution_contract` query value the index-ingest capability is admitted under (Go: `index.ingest.v1`). Module-private: only `startIndexExecution` sends it. */
+const INDEX_INGEST_EXECUTION_CONTRACT = 'index.ingest.v1';
+
+export interface StartIndexExecutionParams {
+  readonly projectId: string | number | undefined;
+  /** Resolved into the REQUIRED `toolkit_config.toolkit_id` — the Go handler 422s without a positive one. */
+  readonly toolkitId: string;
+  readonly toolParams: Readonly<Record<string, unknown>>;
+  /** Optional model name — Go's `requestedLLMModel` wants a JSON string. */
+  readonly llmModel?: string;
+  /** Optional settings object — Go defaults to `{max_tokens:1024,temperature:0.1}` when absent. */
+  readonly llmSettings?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The dispatch half of the SSE index-run contract (issue #93): start the run
+ * over REST and get back the execution id whose event stream carries the
+ * progress frames the socket room used to.
+ *
+ * THE BODY IS THE GO CONTRACT, not the socket predict payload. Verified
+ * field by field against `services/elitea-main/internal/api/v2/indexing/
+ * start_handler.go`'s `currentStartBody`:
+ *   toolkit_config  REQUIRED, must resolve a positive `toolkit_id` (or `id`)
+ *   tool_name       REQUIRED, must be exactly `index_data`
+ *   tool_params     defaults to `{}` server-side when empty
+ *   llm_model       optional JSON string
+ *   llm_settings    optional object
+ * The earlier draft of this function spread the socket `chat_predict`
+ * payload instead, which carries no `toolkit_config` at all — a guaranteed
+ * 422 that the caller's catch turned into a silent socket fallback, i.e.
+ * dead code. Keep this body aligned with that Go struct.
+ *
+ * `await_response=false` is what makes the call return immediately with an
+ * id instead of blocking on the whole run.
+ *
+ * Graceful degradation is the CALLER's job, deliberately: a backend without
+ * this route (404) or one that answers without a `task_id` both mean "no SSE
+ * execution to follow". Note that a `task_id` alone does NOT prove the Go
+ * runtime answered — legacy pylon returns one too — so the caller must also
+ * treat a stream that fails to open as a fallback signal (see
+ * `../../lib/hooks/useToolkitChatDispatch.hooks.ts`).
+ */
+export interface StartIndexExecutionResult {
+  readonly task_id?: string;
+  readonly [key: string]: unknown;
+}
+
+export async function startIndexExecution(params: StartIndexExecutionParams): Promise<StartIndexExecutionResult> {
+  const { projectId, toolkitId, toolParams, llmModel, llmSettings } = params;
+  const query = `?await_response=false&execution_contract=${encodeURIComponent(INDEX_INGEST_EXECUTION_CONTRACT)}`;
+  return fetchData<StartIndexExecutionResult>(`/elitea_core/test_toolkit_tool/prompt_lib/${String(projectId)}${query}`, {
+    method: 'POST',
+    body: JSON.stringify({
+      toolkit_config: { toolkit_id: toolkitId },
+      tool_name: 'index_data',
+      tool_params: toolParams,
+      ...(llmModel !== undefined ? { llm_model: llmModel } : {}),
+      ...(llmSettings !== undefined ? { llm_settings: llmSettings } : {}),
+    }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 /* ── updateIndexSchedule — PATCH elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexName} ── */
 
 export interface UpdateIndexScheduleParams {
