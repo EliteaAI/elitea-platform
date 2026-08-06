@@ -22,48 +22,31 @@ test('J20: artifacts bucket lifecycle: create, upload, preview, download, ZIP, d
 
   await checkA11y(page);
 
-  // Create a bucket.
-  const createBucketButton = page
-    .getByRole('button', { name: /create bucket|new bucket/i })
-    .or(page.getByTestId('create-bucket-button')).first();
+  // Create a bucket. The affordance is the BucketSidebar's icon button
+  // (`aria-label="Create bucket"`), matching production — NOT an in-page
+  // primary button. No testid fallback: the stub that carried
+  // `data-testid="create-bucket-button"` is gone, and reinstating a fallback
+  // would let this journey pass against scaffolding again.
+  await page.getByRole('button', { name: /create bucket/i }).first().click();
 
-  const createVisible = await createBucketButton.isVisible().catch(() => false);
-  if (!createVisible) {
-    test.skip(true, 'Create bucket button not found in this build');
-    return;
-  }
-
-  await createBucketButton.click();
-
-  // The create form should appear — may be a stub or full form.
-  const bucketNameInput = page
-    .getByRole('textbox', { name: /bucket name|name/i })
-    .first();
-  await bucketNameInput.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
-  const bucketNameVisible = await bucketNameInput.isVisible().catch(() => false);
-  if (!bucketNameVisible) {
-    // Wave-3 acceptance: create button present; full create-bucket form not yet implemented.
-    await checkA11y(page);
-    return;
-  }
+  // Real CreateBucket form: heading "New bucket", a "Name" field prefilled
+  // with `new-bucket`, and a "Create bucket" submit.
+  await expect(page.getByText(/new bucket/i).first()).toBeVisible({ timeout: 5_000 });
+  const bucketNameInput = page.getByRole('textbox', { name: /^name$/i }).first();
+  await expect(bucketNameInput).toBeVisible({ timeout: 5_000 });
 
   const bucketName = `${AUTOTEST_PREFIX}e2e-bucket`;
   await bucketNameInput.fill(bucketName);
-  await page.getByRole('button', { name: /create|save/i }).first().click();
-  await page.waitForTimeout(1_000);
+  await checkA11y(page);
+  await page.getByRole('button', { name: /^create bucket$/i }).click();
 
-  // The bucket should appear in the list (when API is wired).
-  const bucketItem = page.getByText(bucketName);
-  const bucketVisible = await bucketItem.isVisible({ timeout: 5_000 }).catch(() => false);
-  if (!bucketVisible) {
-    // Wave-3 acceptance: create form wired; no real backend API in this build.
-    await checkA11y(page);
-    return;
-  }
+  // CreateBucket navigates back to /artifacts with `?bucket=<name>` on success.
+  await page.waitForURL(`**/artifacts?**bucket=${bucketName}**`, { timeout: 15_000 });
 
-  // Click the bucket to navigate into it.
+  // The new bucket is selected in the sidebar and its (empty) table is shown.
+  const bucketItem = page.getByText(bucketName).first();
+  await expect(bucketItem).toBeVisible({ timeout: 10_000 });
   await bucketItem.click();
-  await page.waitForURL(`**/artifacts**`, { timeout: 10_000 });
 
   // Create a test file to upload.
   const tmpFile = path.join(os.tmpdir(), 'e2e-artifact.txt');
