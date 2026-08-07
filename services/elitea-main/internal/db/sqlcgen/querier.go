@@ -65,6 +65,7 @@ type Querier interface {
 	// 12-hour local-disk TTL swept by the elitea_core_cleanup_stale_chunks RPC.
 	DeleteStaleAttachmentChunks(ctx context.Context, receivedAt pgtype.Timestamptz) (int64, error)
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
+	FinalizeCurrentAgentAuthorizationPause(ctx context.Context, arg FinalizeCurrentAgentAuthorizationPauseParams) (int64, error)
 	FinalizeCurrentAgentFullMessage(ctx context.Context, arg FinalizeCurrentAgentFullMessageParams) (int64, error)
 	FinalizeCurrentAgentHITLPause(ctx context.Context, arg FinalizeCurrentAgentHITLPauseParams) (int64, error)
 	// These unqualified names are intentional. Every query is executed inside a
@@ -278,6 +279,7 @@ type Querier interface {
 	ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error)
 	ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error)
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
+	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
 	// This is the exact current projects_get_personal_project_id decision tree:
 	// a named personal project wins only when the user has any project-role
@@ -288,6 +290,7 @@ type Querier interface {
 	ResolveCurrentTenantContext(ctx context.Context, arg ResolveCurrentTenantContextParams) (ResolveCurrentTenantContextRow, error)
 	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
 	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)
+	ResumeCurrentAgentAuthorization(ctx context.Context, arg ResumeCurrentAgentAuthorizationParams) (ResumeCurrentAgentAuthorizationRow, error)
 	ResumeCurrentAgentHITL(ctx context.Context, arg ResumeCurrentAgentHITLParams) (ResumeCurrentAgentHITLRow, error)
 	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
 	SetArtifactBucketPinned(ctx context.Context, arg SetArtifactBucketPinnedParams) (EliteaStorageBucket, error)

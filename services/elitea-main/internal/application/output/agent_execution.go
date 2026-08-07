@@ -46,13 +46,15 @@ func (a AgentExecutionArtifactReference) Validate() error {
 type AgentExecutionTerminalState string
 
 const (
-	AgentExecutionTerminalCompleted  AgentExecutionTerminalState = "completed"
-	AgentExecutionTerminalPausedHITL AgentExecutionTerminalState = "paused_hitl"
+	AgentExecutionTerminalCompleted           AgentExecutionTerminalState = "completed"
+	AgentExecutionTerminalPausedHITL          AgentExecutionTerminalState = "paused_hitl"
+	AgentExecutionTerminalPausedAuthorization AgentExecutionTerminalState = "paused_authorization"
 )
 
 func (s AgentExecutionTerminalState) Validate() error {
 	switch s {
-	case AgentExecutionTerminalCompleted, AgentExecutionTerminalPausedHITL:
+	case AgentExecutionTerminalCompleted, AgentExecutionTerminalPausedHITL,
+		AgentExecutionTerminalPausedAuthorization:
 		return nil
 	default:
 		return ErrInvalidAgentExecutionOutput

@@ -153,7 +153,10 @@ LEFT JOIN LATERAL (
 ) AS current_history ON TRUE
 WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
   AND (target_participant.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
-  AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+  AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) IN (
+      '[]'::jsonb,
+      '["internal_mcp"]'::jsonb
+  )
   AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -705,6 +708,142 @@ SELECT updated.id AS response_message_group_id,
        updated.uuid AS response_message_id
 FROM updated;
 
+-- name: ResolveCurrentAuthorizationContinuation :one
+SELECT conversation.uuid AS conversation_uuid,
+       question.uuid AS question_id,
+       response.author_participant_id AS target_participant_id,
+       CASE response_author.entity_name
+           WHEN 'application' THEN 'application'
+           WHEN 'dummy' THEN 'adhoc'
+       END::text AS continuation_kind,
+       question_text.content::text AS user_input,
+       COALESCE(response.meta ->> 'thread_id', '')::text AS thread_id,
+       COALESCE(response.meta ->> 'execution_generation', '')::text AS execution_generation,
+       (response.meta -> 'authorization_requests')::text AS authorization_requests_json
+FROM chat_message_group AS response
+JOIN chat_conversations AS conversation
+  ON conversation.id = response.conversation_id
+JOIN chat_message_group AS question
+  ON question.id = response.reply_to_id
+ AND question.conversation_id = conversation.id
+JOIN chat_participants AS question_author
+  ON question_author.id = question.author_participant_id
+ AND question_author.entity_name = 'user'
+JOIN chat_participants AS response_author
+  ON response_author.id = response.author_participant_id
+ AND response_author.entity_name IN ('application', 'dummy')
+JOIN chat_participant_mapping AS actor_mapping
+  ON actor_mapping.conversation_id = conversation.id
+JOIN chat_participants AS actor_participant
+  ON actor_participant.id = actor_mapping.participant_id
+ AND actor_participant.entity_name = 'user'
+ AND (actor_participant.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
+JOIN LATERAL (
+    SELECT text_item.content
+    FROM chat_message_items AS item
+    JOIN chat_messages_text AS text_item ON text_item.id = item.id
+    WHERE item.message_group_id = question.id
+      AND item.item_type = 'text_message'
+    ORDER BY item.order_index DESC, item.id DESC
+    LIMIT 1
+) AS question_text ON TRUE
+WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
+  AND response.uuid = sqlc.arg(response_message_id)::uuid
+  AND NOT response.is_streaming
+  AND (
+      conversation.author_id = sqlc.arg(actor_user_id)::bigint
+      OR (question_author.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
+  )
+  AND (
+      response_author.entity_name = 'dummy'
+      OR (
+          response_author.entity_name = 'application'
+          AND (response_author.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
+      )
+  )
+  AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+  AND EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+      WHERE request.value ->> 'tool_run_id' = sqlc.arg(authorization_request_id)::text
+  )
+  AND COALESCE(response.meta ->> 'thread_id', '') <> ''
+  AND COALESCE(response.meta ->> 'execution_generation', '') <> '';
+
+-- name: ResumeCurrentAgentAuthorization :one
+WITH resolved AS MATERIALIZED (
+    SELECT response.id, response.uuid
+    FROM chat_message_group AS response
+    JOIN chat_conversations AS conversation
+      ON conversation.id = response.conversation_id
+    JOIN chat_message_group AS question
+      ON question.id = response.reply_to_id
+     AND question.conversation_id = conversation.id
+    JOIN chat_participants AS question_author
+      ON question_author.id = question.author_participant_id
+     AND question_author.entity_name = 'user'
+    JOIN chat_participants AS response_author
+      ON response_author.id = response.author_participant_id
+     AND response_author.id = sqlc.arg(target_participant_id)::integer
+    LEFT JOIN chat_participant_mapping AS application_mapping
+      ON application_mapping.conversation_id = conversation.id
+     AND application_mapping.participant_id = response_author.id
+    LEFT JOIN application_versions AS application_version
+      ON application_version.id = sqlc.arg(application_version_id)::integer
+     AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
+     AND application_version.application_id = sqlc.arg(application_id)::integer
+     AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
+      AND response.uuid = sqlc.arg(response_message_id)::uuid
+      AND question.uuid = sqlc.arg(question_id)::uuid
+      AND NOT response.is_streaming
+      AND response.meta ->> 'execution_generation' = sqlc.arg(execution_generation)::text
+      AND response.meta ->> 'thread_id' = sqlc.arg(thread_id)::text
+      AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+      AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+          WHERE request.value ->> 'tool_run_id' = sqlc.arg(authorization_request_id)::text
+      )
+      AND sqlc.arg(authorization_action)::text IN ('authorize', 'skip')
+      AND (
+          conversation.author_id = sqlc.arg(actor_user_id)::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
+      )
+      AND (
+          (
+              sqlc.arg(continuation_kind)::text = 'adhoc'
+              AND response_author.entity_name = 'dummy'
+              AND sqlc.arg(application_id)::integer = 0
+              AND sqlc.arg(application_version_id)::integer = 0
+          )
+          OR (
+              sqlc.arg(continuation_kind)::text = 'application'
+              AND response_author.entity_name = 'application'
+              AND (response_author.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
+              AND application_version.id IS NOT NULL
+          )
+      )
+    FOR UPDATE OF response
+), updated AS (
+    UPDATE chat_message_group AS response
+    SET meta = (response.meta - 'authorization_requests')
+            || jsonb_build_object(
+                'resolved_authorization_request_ids',
+                COALESCE(response.meta -> 'resolved_authorization_request_ids', '[]'::jsonb)
+                    || jsonb_build_array(sqlc.arg(authorization_request_id)::text)
+            ),
+        is_streaming = TRUE,
+        task_id = sqlc.arg(execution_id)::text,
+        updated_at = clock_timestamp()
+    FROM resolved
+    WHERE response.id = resolved.id
+    RETURNING response.id, response.uuid
+)
+SELECT updated.id AS response_message_group_id,
+       updated.uuid AS response_message_id
+FROM updated;
+
 -- name: ResetCurrentAgentResponse :one
 WITH resolved AS MATERIALIZED (
     SELECT response.id, response.uuid
@@ -778,6 +917,8 @@ WITH resolved AS MATERIALIZED (
     SET meta = (
             response.meta
             - 'resolved_hitl_interrupt_ids'
+            - 'resolved_authorization_request_ids'
+            - 'authorization_requests'
             - 'hitl_interrupts'
             - 'hitl_interrupt'
             - 'invoked_skills'
@@ -822,7 +963,10 @@ WITH resolved AS MATERIALIZED (
      AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
     WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       AND (target_participant.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
-      AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+      AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) IN (
+          '[]'::jsonb,
+          '["internal_mcp"]'::jsonb
+      )
       AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -944,7 +1088,7 @@ VALUES (sqlc.arg(item_id)::bigint, sqlc.arg(content)::text);
 -- name: FinalizeCurrentAgentFullMessage :execrows
 UPDATE chat_message_group
 SET is_streaming = FALSE,
-    meta = (meta - 'hitl_interrupt' - 'hitl_interrupts')
+    meta = (meta - 'hitl_interrupt' - 'hitl_interrupts' - 'authorization_requests')
         || jsonb_build_object(
             'thread_id', sqlc.arg(thread_id)::text,
             'references', sqlc.arg(references_json)::jsonb,
@@ -958,10 +1102,23 @@ WHERE id = sqlc.arg(message_group_id)::bigint;
 -- name: FinalizeCurrentAgentHITLPause :execrows
 UPDATE chat_message_group
 SET is_streaming = FALSE,
-    meta = (meta - 'hitl_interrupts')
+    meta = (meta - 'hitl_interrupts' - 'authorization_requests')
         || jsonb_build_object(
             'thread_id', sqlc.arg(thread_id)::text,
             'hitl_interrupt', sqlc.arg(hitl_interrupt)::jsonb,
+            'is_error', FALSE,
+            'error', ''
+        ),
+    updated_at = clock_timestamp()
+WHERE id = sqlc.arg(message_group_id)::bigint;
+
+-- name: FinalizeCurrentAgentAuthorizationPause :execrows
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = (meta - 'hitl_interrupt' - 'hitl_interrupts')
+        || jsonb_build_object(
+            'thread_id', sqlc.arg(thread_id)::text,
+            'authorization_requests', sqlc.arg(authorization_requests)::jsonb,
             'is_error', FALSE,
             'error', ''
         ),
