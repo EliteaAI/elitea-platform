@@ -58,9 +58,9 @@ const RESOLUTION = {
   '_shell/apps/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['isApplication', 'deps.createToolkit'], 'wired', 'Apps reuse the toolkit creator with isApplication.'],
 
   // ---- credentials (A7) ----
-  '_shell/credentials/$tab.tsx': ['pages/credentials/Credentials', 'Credentials', ['tab', 'projectId', 'onSelectCredential', 'onCreateNew'], 'needs-route-state', 'Route must supply projectId from context and both navigation callbacks.'],
-  '_shell/credentials/$tab.$credential_uid.tsx': ['pages/credentials/EditCredential', 'EditCredential', ['context', 'credentialUid', 'onSaved', 'onDiscarded'], 'needs-route-state', 'Docstring target "EditCredentialFromMain" = EditCredential with the main-app context, not a separate component.'],
-  '_shell/credentials/create-credential.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'onCreated', 'onCancelled'], 'needs-route-state', 'Docstring target "CreateCredentialFromMain" = CreateCredential with the main-app context.'],
+  '_shell/credentials/$tab.tsx': ['pages/credentials/Credentials', 'Credentials', ['tab', 'projectId', 'onSelectCredential', 'onCreateNew'], 'wired', 'Route must supply projectId from context and both navigation callbacks.'],
+  '_shell/credentials/$tab.$credential_uid.tsx': ['pages/credentials/EditCredential', 'EditCredential', ['context', 'credentialUid', 'onSaved', 'onDiscarded'], 'wired', 'Docstring target "EditCredentialFromMain" = EditCredential with the main-app context, not a separate component.'],
+  '_shell/credentials/create-credential.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'onCreated', 'onCancelled'], 'wired', 'Docstring target "CreateCredentialFromMain" = CreateCredential with the main-app context.'],
 
   // ---- misc (A11-A13) ----
   '_shell/help-center.tsx': ['pages/help-center/HelpCenterPage', 'HelpCenterPage', [], 'ready', 'Name drift only: docstring says `Resources`, the built component is HelpCenterPage (also a default export).'],
@@ -77,8 +77,8 @@ const RESOLUTION = {
   '_shell/pipelines/create.tsx': ['pages/pipelines/CreatePipeline', 'CreatePipeline', [], 'ready', ''],
 
   // ---- settings (A9, issue #25) ----
-  '_shell/settings/create-configuration.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'configurationMode', 'onCreated', 'onCancelled'], 'needs-route-state', ''],
-  '_shell/settings/edit-configuration.$credential_uid.tsx': ['pages/credentials/EditCredential', 'EditCredential', ['context', 'credentialUid', 'configurationMode', 'onSaved', 'onDiscarded'], 'needs-route-state', 'ROUTE-065. Param is $credential_uid, NOT $uid — "the MOUNTED route wins".'],
+  '_shell/settings/create-configuration.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'configurationMode', 'onCreated', 'onCancelled'], 'wired', ''],
+  '_shell/settings/edit-configuration.$credential_uid.tsx': ['pages/credentials/EditCredential', 'EditCredential', ['context', 'credentialUid', 'configurationMode', 'onSaved', 'onDiscarded'], 'wired', 'ROUTE-065. Param is $credential_uid, NOT $uid — "the MOUNTED route wins".'],
   '_shell/settings/secrets.tsx': ['pages/settings/Secrets', 'SecretsContent', ['shouldCreate', 'search', 'onSearchChange'], 'hybrid-defect', 'Renders SecretsContent AND a RouteShell heading. Also passes search="" / onSearchChange={() => {}} — the search control is dead. Route must own search state.'],
   '_shell/settings/model-configuration.tsx': ['pages/settings/AIConfiguration', 'AIConfiguration', ['projectId'], 'hybrid-defect', 'Renders AIConfiguration AND a RouteShell heading. See also issue #80 (missing ModelConfiguration layer).'],
 
@@ -93,7 +93,7 @@ const RESOLUTION = {
   '_shell/toolkits/$tab.$toolkitId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['deps.saveToolkit'], 'wired', ''],
 
   // ---- user-public (A13) ----
-  '_shell/user-public/$tab.tsx': ['pages/user-public/ui/UserPublicPage', 'UserPublicPage', ['tab', 'onTabChange', 'statuses', 'onStatusesChange', 'authorId', 'authorName'], 'needs-route-state', 'Heaviest route-owned state in the set: tab + status filters + author identity.'],
+  '_shell/user-public/$tab.tsx': ['pages/user-public/ui/UserPublicPage', 'UserPublicPage', ['tab', 'onTabChange', 'statuses', 'onStatusesChange', 'authorId', 'authorName'], 'wired', 'Heaviest route-owned state in the set: tab + status filters + author identity.'],
   '_shell/user-public/agents.$agentId.tsx': ['pages/agents/EditApplication', 'EditApplication', [], 'ready', ''],
   '_shell/user-public/pipelines.$agentId.tsx': ['pages/pipelines/EditPipeline', 'EditPipeline', [], 'ready', ''],
   '_shell/user-public/apps.$appId.tsx': ['pages/apps/AppDetail', 'AppDetail', [], 'ready', ''],

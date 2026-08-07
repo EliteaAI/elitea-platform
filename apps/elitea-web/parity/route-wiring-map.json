@@ -4,8 +4,7 @@
   "total": 38,
   "byStatus": {
     "ready": 20,
-    "wired": 9,
-    "needs-route-state": 6,
+    "wired": 15,
     "page-is-stub": 1,
     "hybrid-defect": 2
   },
@@ -181,8 +180,8 @@
         "onSaved",
         "onDiscarded"
       ],
-      "status": "needs-route-state",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Docstring target \"EditCredentialFromMain\" = EditCredential with the main-app context, not a separate component."
     },
     {
@@ -200,8 +199,8 @@
         "onSelectCredential",
         "onCreateNew"
       ],
-      "status": "needs-route-state",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Route must supply projectId from context and both navigation callbacks."
     },
     {
@@ -218,8 +217,8 @@
         "onCreated",
         "onCancelled"
       ],
-      "status": "needs-route-state",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Docstring target \"CreateCredentialFromMain\" = CreateCredential with the main-app context."
     },
     {
@@ -371,8 +370,8 @@
         "onCreated",
         "onCancelled"
       ],
-      "status": "needs-route-state",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -391,8 +390,8 @@
         "onSaved",
         "onDiscarded"
       ],
-      "status": "needs-route-state",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "ROUTE-065. Param is $credential_uid, NOT $uid — \"the MOUNTED route wins\"."
     },
     {
@@ -534,8 +533,8 @@
         "authorId",
         "authorName"
       ],
-      "status": "needs-route-state",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Heaviest route-owned state in the set: tab + status filters + author identity."
     },
     {
