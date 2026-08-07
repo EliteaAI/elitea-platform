@@ -38,8 +38,11 @@ const OUT = 'parity/route-wiring-map.json';
  *                        not cover it. Blocked on codegen, not on backend.
  *   hybrid-defect      - already renders the real page, but ALSO renders a
  *                        RouteShell heading above it. Remove the shell.
- *   page-is-stub       - route is wired, but the page component it renders is
- *                        itself scaffolding.
+ *   parity-dead-code   - route is wired and CORRECT: the page it renders is
+ *                        near-empty because the BASELINE's page is near-empty
+ *                        too. Not outstanding work — verified parity. Kept as
+ *                        its own status so a reader does not mistake a
+ *                        faithful port of dead code for an unfinished one.
  *   wired              - DONE. The route now renders its real page component;
  *                        kept in the map so the tracker shows completed work
  *                        rather than silently dropping rows.
@@ -79,8 +82,8 @@ const RESOLUTION = {
   // ---- settings (A9, issue #25) ----
   '_shell/settings/create-configuration.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'configurationMode', 'onCreated', 'onCancelled'], 'wired', ''],
   '_shell/settings/edit-configuration.$credential_uid.tsx': ['pages/credentials/EditCredential', 'EditCredential', ['context', 'credentialUid', 'configurationMode', 'onSaved', 'onDiscarded'], 'wired', 'ROUTE-065. Param is $credential_uid, NOT $uid — "the MOUNTED route wins".'],
-  '_shell/settings/secrets.tsx': ['pages/settings/Secrets', 'SecretsContent', ['shouldCreate', 'search', 'onSearchChange'], 'hybrid-defect', 'Renders SecretsContent AND a RouteShell heading. Also passes search="" / onSearchChange={() => {}} — the search control is dead. Route must own search state.'],
-  '_shell/settings/model-configuration.tsx': ['pages/settings/AIConfiguration', 'AIConfiguration', ['projectId'], 'hybrid-defect', 'Renders AIConfiguration AND a RouteShell heading. See also issue #80 (missing ModelConfiguration layer).'],
+  '_shell/settings/secrets.tsx': ['pages/settings/Secrets', 'SecretsContent', ['shouldCreate', 'search', 'onSearchChange'], 'wired', 'Renders SecretsContent AND a RouteShell heading. Also passes search="" / onSearchChange={() => {}} — the search control is dead. Route must own search state.'],
+  '_shell/settings/model-configuration.tsx': ['pages/settings/AIConfiguration', 'AIConfiguration', ['projectId'], 'wired', 'Renders AIConfiguration AND a RouteShell heading. See also issue #80 (missing ModelConfiguration layer).'],
 
   // ---- skills (A3, issue #23) ----
   '_shell/skills/$tab.tsx': ['pages/skills/Skills', 'Skills', [], 'wired', ''],
@@ -105,7 +108,7 @@ const RESOLUTION = {
   '_shell/artifacts/create-bucket.tsx': ['pages/artifacts/CreateBucket', 'CreateBucket', [], 'wired', 'Currently a TextField whose submit only navigates — no API call. CreateBucket (built, tested) is unimported.'],
 
   // ---- wired, but to scaffolding ----
-  '_shell/mode-switch.tsx': ['pages/mode-switch/ModeSwitch', 'ModeSwitch', [], 'page-is-stub', 'Route IS wired. ModeSwitch itself renders <div><h1>Switch Mode</h1></div> with its toggle behind `const enableToggle = false`. Not a wiring defect — a page gap.'],
+  '_shell/mode-switch.tsx': ['pages/mode-switch/ModeSwitch', 'ModeSwitch', [], 'parity-dead-code', 'Verified parity, not a gap (Phase 2). The BASELINE page is itself dead code: apps/elitea-ui/src/pages/ModeSwitch.jsx hard-codes `const enableToggle = false` and so renders only <h1>Switch Mode</h1>, and a whole-repo grep finds ZERO inbound links to /mode-switch in either app — it is mounted but unreachable by navigation in both. The port reproduces that exactly, and widgets/sidebar/__tests__/navSections.test.ts:119 already asserts it is not a nav item. Nothing to implement; shipping the toggle would be a NEW feature, not parity.'],
 };
 
 const DOMAIN = (f) => {
