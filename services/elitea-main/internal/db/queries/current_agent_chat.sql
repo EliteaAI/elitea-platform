@@ -622,7 +622,8 @@ SELECT conversation.uuid AS conversation_uuid,
        question_text.content::text AS user_input,
        COALESCE(response.meta ->> 'thread_id', '')::text AS thread_id,
        COALESCE(response.meta ->> 'execution_generation', '')::text AS execution_generation,
-       (response.meta -> 'hitl_interrupt')::text AS hitl_interrupt_json
+       (response.meta -> 'hitl_interrupt')::text AS hitl_interrupt_json,
+       pending_hitl.value::text AS hitl_interrupts_json
 FROM chat_message_group AS response
 JOIN chat_conversations AS conversation
   ON conversation.id = response.conversation_id
@@ -650,6 +651,15 @@ JOIN LATERAL (
     ORDER BY item.order_index DESC, item.id DESC
     LIMIT 1
 ) AS question_text ON TRUE
+CROSS JOIN LATERAL (
+    SELECT CASE
+        WHEN jsonb_typeof(response.meta -> 'hitl_interrupts') = 'array'
+            THEN response.meta -> 'hitl_interrupts'
+        WHEN jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
+            THEN jsonb_build_array(response.meta -> 'hitl_interrupt')
+        ELSE '[]'::jsonb
+    END AS value
+) AS pending_hitl
 WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
   AND response.uuid = sqlc.arg(response_message_id)::uuid
   AND NOT response.is_streaming
@@ -664,17 +674,23 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
           AND (response_author.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
       )
   )
-  AND jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
-  AND COALESCE(response.meta #>> '{hitl_interrupt,interrupt_id}', '') <> ''
+  AND jsonb_array_length(pending_hitl.value) BETWEEN 1 AND 16
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(pending_hitl.value) AS interrupt(value)
+      WHERE jsonb_typeof(interrupt.value) <> 'object'
+         OR COALESCE(interrupt.value ->> 'interrupt_id', '') = ''
+         OR COALESCE(interrupt.value ->> 'child_thread_id', '') <> ''
+         OR COALESCE(interrupt.value ->> 'via_call_id', '') <> ''
+         OR COALESCE(interrupt.value ->> '_via_call_id', '') <> ''
+  )
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
-  AND COALESCE(response.meta #>> '{hitl_interrupt,child_thread_id}', '') = ''
-  AND COALESCE(response.meta #>> '{hitl_interrupt,via_call_id}', '') = ''
-  AND COALESCE(response.meta #>> '{hitl_interrupt,_via_call_id}', '') = '';
+;
 
 -- name: ResumeCurrentAgentHITL :one
 WITH resolved AS MATERIALIZED (
-    SELECT response.id, response.uuid
+    SELECT response.id, response.uuid, submitted.value AS decisions
     FROM chat_message_group AS response
     JOIN chat_conversations AS conversation
       ON conversation.id = response.conversation_id
@@ -695,17 +711,65 @@ WITH resolved AS MATERIALIZED (
      AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
      AND application_version.application_id = sqlc.arg(application_id)::integer
      AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof(response.meta -> 'hitl_interrupts') = 'array'
+                THEN response.meta -> 'hitl_interrupts'
+            WHEN jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
+                THEN jsonb_build_array(response.meta -> 'hitl_interrupt')
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS pending
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof(sqlc.arg(hitl_decisions)::jsonb) = 'array'
+                THEN sqlc.arg(hitl_decisions)::jsonb
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS submitted
     WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       AND response.uuid = sqlc.arg(response_message_id)::uuid
       AND question.uuid = sqlc.arg(question_id)::uuid
       AND NOT response.is_streaming
       AND response.meta ->> 'execution_generation' = sqlc.arg(execution_generation)::text
       AND response.meta ->> 'thread_id' = sqlc.arg(thread_id)::text
-      AND jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
-      AND response.meta #>> '{hitl_interrupt,interrupt_id}' = sqlc.arg(interrupt_id)::text
-      AND jsonb_typeof(response.meta #> '{hitl_interrupt,available_actions}') = 'array'
-      AND jsonb_array_length(response.meta #> '{hitl_interrupt,available_actions}') > 0
-      AND (response.meta #> '{hitl_interrupt,available_actions}') ? sqlc.arg(hitl_action)::text
+      AND jsonb_array_length(pending.value) BETWEEN 1 AND 16
+      AND jsonb_array_length(submitted.value) = jsonb_array_length(pending.value)
+      AND (
+          SELECT count(DISTINCT interrupt.value ->> 'interrupt_id')
+          FROM jsonb_array_elements(pending.value) AS interrupt(value)
+      ) = jsonb_array_length(pending.value)
+      AND (
+          SELECT count(DISTINCT decision.value ->> 'interrupt_id')
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+      ) = jsonb_array_length(submitted.value)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+          WHERE jsonb_typeof(decision.value) <> 'object'
+             OR COALESCE(decision.value ->> 'interrupt_id', '') = ''
+             OR COALESCE(decision.value ->> 'action', '') = ''
+             OR COALESCE(decision.value ->> 'child_thread_id', '') <> ''
+             OR COALESCE(decision.value ->> 'via_call_id', '') <> ''
+             OR COALESCE(decision.value ->> '_via_call_id', '') <> ''
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(pending.value) AS interrupt(value)
+          WHERE jsonb_typeof(interrupt.value) <> 'object'
+             OR COALESCE(interrupt.value ->> 'interrupt_id', '') = ''
+             OR COALESCE(interrupt.value ->> 'child_thread_id', '') <> ''
+             OR COALESCE(interrupt.value ->> 'via_call_id', '') <> ''
+             OR COALESCE(interrupt.value ->> '_via_call_id', '') <> ''
+             OR jsonb_typeof(interrupt.value -> 'available_actions') <> 'array'
+             OR jsonb_array_length(interrupt.value -> 'available_actions') = 0
+             OR NOT EXISTS (
+                 SELECT 1
+                 FROM jsonb_array_elements(submitted.value) AS decision(value)
+                 WHERE decision.value ->> 'interrupt_id' = interrupt.value ->> 'interrupt_id'
+                   AND (interrupt.value -> 'available_actions') ? (decision.value ->> 'action')
+             )
+      )
       AND (
           conversation.author_id = sqlc.arg(actor_user_id)::bigint
           OR (question_author.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
@@ -724,9 +788,6 @@ WITH resolved AS MATERIALIZED (
               AND application_version.id IS NOT NULL
           )
       )
-      AND COALESCE(response.meta #>> '{hitl_interrupt,child_thread_id}', '') = ''
-      AND COALESCE(response.meta #>> '{hitl_interrupt,via_call_id}', '') = ''
-      AND COALESCE(response.meta #>> '{hitl_interrupt,_via_call_id}', '') = ''
     FOR UPDATE OF response
 ), updated AS (
     UPDATE chat_message_group AS response
@@ -734,7 +795,13 @@ WITH resolved AS MATERIALIZED (
             || jsonb_build_object(
                 'resolved_hitl_interrupt_ids',
                 COALESCE(response.meta -> 'resolved_hitl_interrupt_ids', '[]'::jsonb)
-                    || jsonb_build_array(sqlc.arg(interrupt_id)::text)
+                    || COALESCE(
+                        (
+                            SELECT jsonb_agg(decision.value ->> 'interrupt_id')
+                            FROM jsonb_array_elements(resolved.decisions) AS decision(value)
+                        ),
+                        '[]'::jsonb
+                    )
             ),
         is_streaming = TRUE,
         task_id = sqlc.arg(execution_id)::text,
@@ -1145,6 +1212,7 @@ SET is_streaming = FALSE,
         || jsonb_build_object(
             'thread_id', sqlc.arg(thread_id)::text,
             'hitl_interrupt', sqlc.arg(hitl_interrupt)::jsonb,
+            'hitl_interrupts', sqlc.arg(hitl_interrupts)::jsonb,
             'is_error', FALSE,
             'error', ''
         ),

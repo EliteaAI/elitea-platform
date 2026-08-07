@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 
 	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -384,15 +385,36 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 			if queryErr != nil {
 				return fmt.Errorf("resolve current agent continuation: %w", queryErr)
 			}
-			var interrupt struct {
+			type persistedHITLInterrupt struct {
 				InterruptID      string   `json:"interrupt_id"`
 				AvailableActions []string `json:"available_actions"`
 			}
+			var interrupt persistedHITLInterrupt
+			var interrupts []persistedHITLInterrupt
 			var rawInterrupt map[string]any
+			var rawInterrupts []map[string]any
 			if json.Unmarshal([]byte(row.HitlInterruptJson), &interrupt) != nil ||
+				json.Unmarshal([]byte(row.HitlInterruptsJson), &interrupts) != nil ||
 				json.Unmarshal([]byte(row.HitlInterruptJson), &rawInterrupt) != nil ||
-				!validSequentialHITLInterrupt(rawInterrupt) {
+				json.Unmarshal([]byte(row.HitlInterruptsJson), &rawInterrupts) != nil ||
+				len(interrupts) == 0 || len(interrupts) > 16 || len(rawInterrupts) != len(interrupts) ||
+				!reflect.DeepEqual(rawInterrupt, rawInterrupts[0]) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			targetInterrupts := make([]agentexecutionapp.CurrentHITLInterrupt, 0, len(interrupts))
+			seen := make(map[string]struct{}, len(interrupts))
+			for index, pending := range interrupts {
+				if pending.InterruptID == "" || !validInProcessHITLInterrupt(rawInterrupts[index]) {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				if _, duplicate := seen[pending.InterruptID]; duplicate {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				seen[pending.InterruptID] = struct{}{}
+				targetInterrupts = append(targetInterrupts, agentexecutionapp.CurrentHITLInterrupt{
+					InterruptID:      pending.InterruptID,
+					AvailableActions: append([]string(nil), pending.AvailableActions...),
+				})
 			}
 			target = agentexecutionapp.CurrentContinuationTarget{
 				ContinuationKind:    agentexecutionapp.CurrentContinuationHITL,
@@ -402,6 +424,7 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 				ThreadID: row.ThreadID, ExecutionGeneration: row.ExecutionGeneration,
 				InterruptID:      interrupt.InterruptID,
 				AvailableActions: append([]string(nil), interrupt.AvailableActions...),
+				HITLInterrupts:   targetInterrupts,
 			}
 			if uuid.UUID(row.ConversationUuid.Bytes).String() != request.ConversationUUID ||
 				target.Validate() != nil {

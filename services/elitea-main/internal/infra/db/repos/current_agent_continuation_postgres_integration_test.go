@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -931,18 +932,19 @@ FROM paused`, responseID, questionID); err != nil {
 		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
 		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
 		ResponseMessageID: responseID, ExecutionGeneration: questionID,
-		ThreadID: "thread-hitl-1", InterruptID: "interrupt-root-1",
-		HitlAction: "approve", ExecutionID: "execution-resumed",
+		ThreadID:      "thread-hitl-1",
+		HitlDecisions: []byte(`[{"interrupt_id":"interrupt-root-1","action":"approve"}]`),
+		ExecutionID:   "execution-resumed",
 	}
 	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("wrong actor resume error=%v", err)
 	}
 	resume.ActorUserID = 11
-	resume.HitlAction = "answer"
+	resume.HitlDecisions = []byte(`[{"interrupt_id":"interrupt-root-1","action":"answer"}]`)
 	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("unavailable action resume error=%v", err)
 	}
-	resume.HitlAction = "approve"
+	resume.HitlDecisions = []byte(`[{"interrupt_id":"interrupt-root-1","action":"approve"}]`)
 	row, err := queries.ResumeCurrentAgentHITL(t.Context(), resume)
 	if err != nil {
 		t.Fatal(err)
@@ -988,6 +990,163 @@ WHERE response.uuid = $1`, responseID).Scan(
 		t.Fatalf(
 			"streaming=%v task=%q pending=%v resolved=%v traces=%d",
 			isStreaming, taskID, hasPending, resolvedIDs, traceCount,
+		)
+	}
+}
+
+func TestPostgresCurrentParallelHITLContinuationConsumesExactDecisionSetAtomically(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	questionID := "20000000-0000-4000-8000-000000000071"
+	responseID := insertPostgresCurrentApplicationTurn(
+		t, queries, conversationID, questionID,
+		"30000000-0000-4000-8000-000000000071",
+		"40000000-0000-4000-8000-000000000071",
+		"approve one change and block the other", "execution-parallel-hitl-paused",
+	)
+	const pending = `[
+		{
+			"interrupt_id":"interrupt-parallel-1",
+			"available_actions":["approve","reject","edit","block_with_comment"],
+			"tool_name":"configurations:update_file"
+		},
+		{
+			"interrupt_id":"interrupt-parallel-2",
+			"available_actions":["approve","reject","edit","block_with_comment"],
+			"tool_name":"configurations:delete_file"
+		}
+	]`
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = meta || jsonb_build_object(
+        'thread_id', 'thread-parallel-hitl-1',
+        'execution_generation', $2::text,
+        'hitl_interrupt', ($3::jsonb -> 0),
+        'hitl_interrupts', $3::jsonb
+    )
+WHERE uuid = $1`, responseID, questionID, pending); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := queries.ResolveCurrentContinuation(
+		t.Context(),
+		sqlcgen.ResolveCurrentContinuationParams{
+			ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
+			ResponseMessageID: responseID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pendingInterrupts []map[string]any
+	if err := json.Unmarshal([]byte(resolved.HitlInterruptsJson), &pendingInterrupts); err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingInterrupts) != 2 {
+		t.Fatalf("pending interrupts=%v", pendingInterrupts)
+	}
+
+	resume := sqlcgen.ResumeCurrentAgentHITLParams{
+		ActorUserID: 11, ProjectID: 1, TargetParticipantID: 21,
+		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
+		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
+		ResponseMessageID: responseID, ExecutionGeneration: questionID,
+		ThreadID: "thread-parallel-hitl-1", ExecutionID: "execution-parallel-hitl-resumed",
+	}
+	invalidDecisionSets := [][]byte{
+		[]byte(`[{"interrupt_id":"interrupt-parallel-1","action":"approve"}]`),
+		[]byte(`[
+			{"interrupt_id":"interrupt-parallel-1","action":"approve"},
+			{"interrupt_id":"interrupt-parallel-1","action":"reject"}
+		]`),
+		[]byte(`[
+			{"interrupt_id":"interrupt-parallel-1","action":"approve"},
+			{"interrupt_id":"interrupt-unknown","action":"reject"}
+		]`),
+		[]byte(`[
+			{"interrupt_id":"interrupt-parallel-1","action":"approve"},
+			{"interrupt_id":"interrupt-parallel-2","action":"answer"}
+		]`),
+	}
+	for _, decisions := range invalidDecisionSets {
+		resume.HitlDecisions = decisions
+		if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("invalid decisions %s error=%v", decisions, err)
+		}
+	}
+
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET meta = jsonb_set(meta, '{hitl_interrupts}', jsonb_build_array($2::jsonb, $2::jsonb))
+WHERE uuid = $1`, responseID, `{
+		"interrupt_id":"interrupt-parallel-1",
+		"available_actions":["approve","reject","edit","block_with_comment"]
+	}`); err != nil {
+		t.Fatal(err)
+	}
+	resume.HitlDecisions = []byte(`[
+		{"interrupt_id":"interrupt-parallel-1","action":"approve"},
+		{"interrupt_id":"interrupt-parallel-2","action":"block_with_comment","value":"retain for audit"}
+	]`)
+	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("duplicate pending interrupts error=%v", err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET meta = jsonb_set(meta, '{hitl_interrupts}', $2::jsonb)
+WHERE uuid = $1`, responseID, pending); err != nil {
+		t.Fatal(err)
+	}
+
+	row, err := queries.ResumeCurrentAgentHITL(t.Context(), resume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ResponseMessageID != responseID || row.ResponseMessageGroupID <= 0 {
+		t.Fatalf("resume row=%+v", row)
+	}
+	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("replayed resume error=%v", err)
+	}
+
+	var isStreaming, hasSingularPending, hasPluralPending bool
+	var taskID string
+	var resolvedIDs []string
+	if err := tx.QueryRow(t.Context(), `
+SELECT response.is_streaming,
+       response.task_id,
+       response.meta ? 'hitl_interrupt',
+       response.meta ? 'hitl_interrupts',
+       ARRAY(
+           SELECT jsonb_array_elements_text(
+               COALESCE(response.meta -> 'resolved_hitl_interrupt_ids', '[]'::jsonb)
+           )
+       )
+FROM chat_message_group AS response
+WHERE response.uuid = $1`, responseID).Scan(
+		&isStreaming, &taskID, &hasSingularPending, &hasPluralPending, &resolvedIDs,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !isStreaming || taskID != "execution-parallel-hitl-resumed" ||
+		hasSingularPending || hasPluralPending ||
+		!slices.Equal(resolvedIDs, []string{"interrupt-parallel-1", "interrupt-parallel-2"}) {
+		t.Fatalf(
+			"streaming=%v task=%q singular_pending=%v plural_pending=%v resolved=%v",
+			isStreaming, taskID, hasSingularPending, hasPluralPending, resolvedIDs,
 		)
 	}
 }

@@ -92,8 +92,12 @@ def request_from(
     )
     if message.steps_limit < 1 and message.HasField("steps_limit"):
         raise InvalidInput("The agent step limit must be positive.")
-    if message.hitl_resume and not message.HasField("hitl_action"):
-        raise InvalidInput("A HITL resume action is required.")
+    if (
+        message.hitl_resume
+        and not message.HasField("hitl_action")
+        and not hitl_decisions
+    ):
+        raise InvalidInput("A HITL resume decision is required.")
     if kind is AgentExecutionKind.APPLICATION:
         _validate_application_identity(application)
     elif kind is AgentExecutionKind.ADHOC:

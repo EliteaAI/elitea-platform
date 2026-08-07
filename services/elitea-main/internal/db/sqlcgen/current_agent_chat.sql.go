@@ -81,21 +81,28 @@ SET is_streaming = FALSE,
         || jsonb_build_object(
             'thread_id', $1::text,
             'hitl_interrupt', $2::jsonb,
+            'hitl_interrupts', $3::jsonb,
             'is_error', FALSE,
             'error', ''
         ),
     updated_at = clock_timestamp()
-WHERE id = $3::bigint
+WHERE id = $4::bigint
 `
 
 type FinalizeCurrentAgentHITLPauseParams struct {
 	ThreadID       string `db:"thread_id" json:"thread_id"`
 	HitlInterrupt  []byte `db:"hitl_interrupt" json:"hitl_interrupt"`
+	HitlInterrupts []byte `db:"hitl_interrupts" json:"hitl_interrupts"`
 	MessageGroupID int64  `db:"message_group_id" json:"message_group_id"`
 }
 
 func (q *Queries) FinalizeCurrentAgentHITLPause(ctx context.Context, arg FinalizeCurrentAgentHITLPauseParams) (int64, error) {
-	result, err := q.db.Exec(ctx, finalizeCurrentAgentHITLPause, arg.ThreadID, arg.HitlInterrupt, arg.MessageGroupID)
+	result, err := q.db.Exec(ctx, finalizeCurrentAgentHITLPause,
+		arg.ThreadID,
+		arg.HitlInterrupt,
+		arg.HitlInterrupts,
+		arg.MessageGroupID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -1469,7 +1476,8 @@ SELECT conversation.uuid AS conversation_uuid,
        question_text.content::text AS user_input,
        COALESCE(response.meta ->> 'thread_id', '')::text AS thread_id,
        COALESCE(response.meta ->> 'execution_generation', '')::text AS execution_generation,
-       (response.meta -> 'hitl_interrupt')::text AS hitl_interrupt_json
+       (response.meta -> 'hitl_interrupt')::text AS hitl_interrupt_json,
+       pending_hitl.value::text AS hitl_interrupts_json
 FROM chat_message_group AS response
 JOIN chat_conversations AS conversation
   ON conversation.id = response.conversation_id
@@ -1497,6 +1505,15 @@ JOIN LATERAL (
     ORDER BY item.order_index DESC, item.id DESC
     LIMIT 1
 ) AS question_text ON TRUE
+CROSS JOIN LATERAL (
+    SELECT CASE
+        WHEN jsonb_typeof(response.meta -> 'hitl_interrupts') = 'array'
+            THEN response.meta -> 'hitl_interrupts'
+        WHEN jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
+            THEN jsonb_build_array(response.meta -> 'hitl_interrupt')
+        ELSE '[]'::jsonb
+    END AS value
+) AS pending_hitl
 WHERE conversation.uuid = $2::uuid
   AND response.uuid = $3::uuid
   AND NOT response.is_streaming
@@ -1511,13 +1528,18 @@ WHERE conversation.uuid = $2::uuid
           AND (response_author.entity_meta ->> 'project_id')::integer = $4::integer
       )
   )
-  AND jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
-  AND COALESCE(response.meta #>> '{hitl_interrupt,interrupt_id}', '') <> ''
+  AND jsonb_array_length(pending_hitl.value) BETWEEN 1 AND 16
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(pending_hitl.value) AS interrupt(value)
+      WHERE jsonb_typeof(interrupt.value) <> 'object'
+         OR COALESCE(interrupt.value ->> 'interrupt_id', '') = ''
+         OR COALESCE(interrupt.value ->> 'child_thread_id', '') <> ''
+         OR COALESCE(interrupt.value ->> 'via_call_id', '') <> ''
+         OR COALESCE(interrupt.value ->> '_via_call_id', '') <> ''
+  )
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
-  AND COALESCE(response.meta #>> '{hitl_interrupt,child_thread_id}', '') = ''
-  AND COALESCE(response.meta #>> '{hitl_interrupt,via_call_id}', '') = ''
-  AND COALESCE(response.meta #>> '{hitl_interrupt,_via_call_id}', '') = ''
 `
 
 type ResolveCurrentContinuationParams struct {
@@ -1536,6 +1558,7 @@ type ResolveCurrentContinuationRow struct {
 	ThreadID            string      `db:"thread_id" json:"thread_id"`
 	ExecutionGeneration string      `db:"execution_generation" json:"execution_generation"`
 	HitlInterruptJson   string      `db:"hitl_interrupt_json" json:"hitl_interrupt_json"`
+	HitlInterruptsJson  string      `db:"hitl_interrupts_json" json:"hitl_interrupts_json"`
 }
 
 func (q *Queries) ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error) {
@@ -1555,6 +1578,7 @@ func (q *Queries) ResolveCurrentContinuation(ctx context.Context, arg ResolveCur
 		&i.ThreadID,
 		&i.ExecutionGeneration,
 		&i.HitlInterruptJson,
+		&i.HitlInterruptsJson,
 	)
 	return i, err
 }
@@ -1772,7 +1796,7 @@ func (q *Queries) ResumeCurrentAgentAuthorization(ctx context.Context, arg Resum
 
 const resumeCurrentAgentHITL = `-- name: ResumeCurrentAgentHITL :one
 WITH resolved AS MATERIALIZED (
-    SELECT response.id, response.uuid
+    SELECT response.id, response.uuid, submitted.value AS decisions
     FROM chat_message_group AS response
     JOIN chat_conversations AS conversation
       ON conversation.id = response.conversation_id
@@ -1793,38 +1817,83 @@ WITH resolved AS MATERIALIZED (
      AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
      AND application_version.application_id = $3::integer
      AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
-    WHERE conversation.uuid = $4::uuid
-      AND response.uuid = $5::uuid
-      AND question.uuid = $6::uuid
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof(response.meta -> 'hitl_interrupts') = 'array'
+                THEN response.meta -> 'hitl_interrupts'
+            WHEN jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
+                THEN jsonb_build_array(response.meta -> 'hitl_interrupt')
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS pending
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof($4::jsonb) = 'array'
+                THEN $4::jsonb
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS submitted
+    WHERE conversation.uuid = $5::uuid
+      AND response.uuid = $6::uuid
+      AND question.uuid = $7::uuid
       AND NOT response.is_streaming
-      AND response.meta ->> 'execution_generation' = $7::text
-      AND response.meta ->> 'thread_id' = $8::text
-      AND jsonb_typeof(response.meta -> 'hitl_interrupt') = 'object'
-      AND response.meta #>> '{hitl_interrupt,interrupt_id}' = $9::text
-      AND jsonb_typeof(response.meta #> '{hitl_interrupt,available_actions}') = 'array'
-      AND jsonb_array_length(response.meta #> '{hitl_interrupt,available_actions}') > 0
-      AND (response.meta #> '{hitl_interrupt,available_actions}') ? $10::text
+      AND response.meta ->> 'execution_generation' = $8::text
+      AND response.meta ->> 'thread_id' = $9::text
+      AND jsonb_array_length(pending.value) BETWEEN 1 AND 16
+      AND jsonb_array_length(submitted.value) = jsonb_array_length(pending.value)
       AND (
-          conversation.author_id = $11::bigint
-          OR (question_author.entity_meta ->> 'id')::bigint = $11::bigint
+          SELECT count(DISTINCT interrupt.value ->> 'interrupt_id')
+          FROM jsonb_array_elements(pending.value) AS interrupt(value)
+      ) = jsonb_array_length(pending.value)
+      AND (
+          SELECT count(DISTINCT decision.value ->> 'interrupt_id')
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+      ) = jsonb_array_length(submitted.value)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+          WHERE jsonb_typeof(decision.value) <> 'object'
+             OR COALESCE(decision.value ->> 'interrupt_id', '') = ''
+             OR COALESCE(decision.value ->> 'action', '') = ''
+             OR COALESCE(decision.value ->> 'child_thread_id', '') <> ''
+             OR COALESCE(decision.value ->> 'via_call_id', '') <> ''
+             OR COALESCE(decision.value ->> '_via_call_id', '') <> ''
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(pending.value) AS interrupt(value)
+          WHERE jsonb_typeof(interrupt.value) <> 'object'
+             OR COALESCE(interrupt.value ->> 'interrupt_id', '') = ''
+             OR COALESCE(interrupt.value ->> 'child_thread_id', '') <> ''
+             OR COALESCE(interrupt.value ->> 'via_call_id', '') <> ''
+             OR COALESCE(interrupt.value ->> '_via_call_id', '') <> ''
+             OR jsonb_typeof(interrupt.value -> 'available_actions') <> 'array'
+             OR jsonb_array_length(interrupt.value -> 'available_actions') = 0
+             OR NOT EXISTS (
+                 SELECT 1
+                 FROM jsonb_array_elements(submitted.value) AS decision(value)
+                 WHERE decision.value ->> 'interrupt_id' = interrupt.value ->> 'interrupt_id'
+                   AND (interrupt.value -> 'available_actions') ? (decision.value ->> 'action')
+             )
+      )
+      AND (
+          conversation.author_id = $10::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = $10::bigint
       )
       AND (
           (
-              $12::text = 'adhoc'
+              $11::text = 'adhoc'
               AND response_author.entity_name = 'dummy'
               AND $3::integer = 0
               AND $2::integer = 0
           )
           OR (
-              $12::text = 'application'
+              $11::text = 'application'
               AND response_author.entity_name = 'application'
-              AND (response_author.entity_meta ->> 'project_id')::integer = $13::integer
+              AND (response_author.entity_meta ->> 'project_id')::integer = $12::integer
               AND application_version.id IS NOT NULL
           )
       )
-      AND COALESCE(response.meta #>> '{hitl_interrupt,child_thread_id}', '') = ''
-      AND COALESCE(response.meta #>> '{hitl_interrupt,via_call_id}', '') = ''
-      AND COALESCE(response.meta #>> '{hitl_interrupt,_via_call_id}', '') = ''
     FOR UPDATE OF response
 ), updated AS (
     UPDATE chat_message_group AS response
@@ -1832,10 +1901,16 @@ WITH resolved AS MATERIALIZED (
             || jsonb_build_object(
                 'resolved_hitl_interrupt_ids',
                 COALESCE(response.meta -> 'resolved_hitl_interrupt_ids', '[]'::jsonb)
-                    || jsonb_build_array($9::text)
+                    || COALESCE(
+                        (
+                            SELECT jsonb_agg(decision.value ->> 'interrupt_id')
+                            FROM jsonb_array_elements(resolved.decisions) AS decision(value)
+                        ),
+                        '[]'::jsonb
+                    )
             ),
         is_streaming = TRUE,
-        task_id = $14::text,
+        task_id = $13::text,
         updated_at = clock_timestamp()
     FROM resolved
     WHERE response.id = resolved.id
@@ -1850,13 +1925,12 @@ type ResumeCurrentAgentHITLParams struct {
 	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
 	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
 	ApplicationID        int32       `db:"application_id" json:"application_id"`
+	HitlDecisions        []byte      `db:"hitl_decisions" json:"hitl_decisions"`
 	ConversationUuid     pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
 	ResponseMessageID    pgtype.UUID `db:"response_message_id" json:"response_message_id"`
 	QuestionID           pgtype.UUID `db:"question_id" json:"question_id"`
 	ExecutionGeneration  string      `db:"execution_generation" json:"execution_generation"`
 	ThreadID             string      `db:"thread_id" json:"thread_id"`
-	InterruptID          string      `db:"interrupt_id" json:"interrupt_id"`
-	HitlAction           string      `db:"hitl_action" json:"hitl_action"`
 	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
 	ContinuationKind     string      `db:"continuation_kind" json:"continuation_kind"`
 	ProjectID            int32       `db:"project_id" json:"project_id"`
@@ -1873,13 +1947,12 @@ func (q *Queries) ResumeCurrentAgentHITL(ctx context.Context, arg ResumeCurrentA
 		arg.TargetParticipantID,
 		arg.ApplicationVersionID,
 		arg.ApplicationID,
+		arg.HitlDecisions,
 		arg.ConversationUuid,
 		arg.ResponseMessageID,
 		arg.QuestionID,
 		arg.ExecutionGeneration,
 		arg.ThreadID,
-		arg.InterruptID,
-		arg.HitlAction,
 		arg.ActorUserID,
 		arg.ContinuationKind,
 		arg.ProjectID,

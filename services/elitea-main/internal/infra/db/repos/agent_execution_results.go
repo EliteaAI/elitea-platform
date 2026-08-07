@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
@@ -44,8 +45,9 @@ type currentAgentFullMessage struct {
 }
 
 type currentAgentHITLPause struct {
-	ThreadID  string
-	Interrupt json.RawMessage
+	ThreadID   string
+	Interrupt  json.RawMessage
+	Interrupts json.RawMessage
 }
 
 type currentAgentAuthorizationPause struct {
@@ -307,17 +309,29 @@ func decodeCurrentAgentHITLPause(contentJSON, responseMetadata json.RawMessage) 
 	var interrupt map[string]any
 	var interrupts []map[string]any
 	if json.Unmarshal(metadata.HITLInterrupt, &interrupt) != nil ||
-		json.Unmarshal(metadata.HITLInterrupts, &interrupts) != nil || len(interrupts) != 1 {
+		json.Unmarshal(metadata.HITLInterrupts, &interrupts) != nil ||
+		len(interrupts) == 0 || len(interrupts) > 16 || !reflect.DeepEqual(interrupt, interrupts[0]) {
 		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
 	}
 	interruptID, _ := interrupt["interrupt_id"].(string)
-	pluralID, _ := interrupts[0]["interrupt_id"].(string)
-	if interruptID == "" || interruptID != pluralID || !validSequentialHITLInterrupt(interrupt) {
+	if interruptID == "" {
 		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
 	}
+	seen := make(map[string]struct{}, len(interrupts))
+	for _, pending := range interrupts {
+		pendingID, _ := pending["interrupt_id"].(string)
+		if pendingID == "" || !validInProcessHITLInterrupt(pending) {
+			return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		if _, duplicate := seen[pendingID]; duplicate {
+			return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		seen[pendingID] = struct{}{}
+	}
 	return currentAgentHITLPause{
-		ThreadID:  metadata.ThreadID,
-		Interrupt: append(json.RawMessage(nil), metadata.HITLInterrupt...),
+		ThreadID:   metadata.ThreadID,
+		Interrupt:  append(json.RawMessage(nil), metadata.HITLInterrupt...),
+		Interrupts: append(json.RawMessage(nil), metadata.HITLInterrupts...),
 	}, nil
 }
 
@@ -402,11 +416,10 @@ func validCurrentAgentAuthorizationHierarchy(hierarchy map[string]any) bool {
 	return true
 }
 
-// validSequentialHITLInterrupt admits both a root pause and one pause raised by
-// a synchronously nested application or pipeline. A child-thread identity or
-// explicit routing marker belongs to the parallel child-dispatch protocol and
-// remains outside this focused continuation slice.
-func validSequentialHITLInterrupt(interrupt map[string]any) bool {
+// validInProcessHITLInterrupt admits root and synchronously nested pauses. A
+// child-thread identity or explicit routing marker belongs to the parallel
+// child-dispatch protocol and remains outside this continuation slice.
+func validInProcessHITLInterrupt(interrupt map[string]any) bool {
 	for _, key := range []string{"child_thread_id", "via_call_id", "_via_call_id"} {
 		if value, exists := interrupt[key]; exists && value != nil && value != "" {
 			return false
@@ -495,6 +508,7 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 			sqlcgen.FinalizeCurrentAgentHITLPauseParams{
 				ThreadID:       pause.ThreadID,
 				HitlInterrupt:  []byte(pause.Interrupt),
+				HitlInterrupts: []byte(pause.Interrupts),
 				MessageGroupID: int64(messageGroupID),
 			},
 		)
