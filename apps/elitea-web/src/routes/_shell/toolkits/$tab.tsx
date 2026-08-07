@@ -7,9 +7,10 @@
  */
 import { createFileRoute } from '@tanstack/react-router';
 
+import { Toolkits } from '@/pages/toolkits/Toolkits';
+
 import { ExclusiveOutlet } from '../../-ui/ExclusiveOutlet';
 import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
 import { pickParams } from '../../-search/params';
 
 export const Route = createFileRoute('/_shell/toolkits/$tab')({
@@ -24,9 +25,13 @@ export const Route = createFileRoute('/_shell/toolkits/$tab')({
   ),
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => (
-    <ExclusiveOutlet>
-      <RouteShell routeId="toolkits.tab" fallback="Toolkits" />
-    </ExclusiveOutlet>
-  ),
+  component: ToolkitsRoute,
 });
+
+function ToolkitsRoute() {
+  return (
+    <ExclusiveOutlet>
+      <Toolkits />
+    </ExclusiveOutlet>
+  );
+}

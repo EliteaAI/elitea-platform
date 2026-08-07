@@ -3,8 +3,7 @@
   "generated": "phase-0",
   "total": 38,
   "byStatus": {
-    "ready": 20,
-    "wired": 15,
+    "wired": 35,
     "page-is-stub": 1,
     "hybrid-defect": 2
   },
@@ -32,8 +31,8 @@
       "targetPath": "src/pages/agents-hub/AgentHub.tsx",
       "targetExport": "AgentHub",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "AgentHubProps is intentionally empty — \"route props are handled at the route layer\"."
     },
     {
@@ -46,8 +45,8 @@
       "targetPath": "src/pages/agents/EditApplication.tsx",
       "targetExport": "EditApplication",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -60,8 +59,8 @@
       "targetPath": "src/pages/agents/Applications.tsx",
       "targetExport": "Applications",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Route keeps its ExclusiveOutlet composition; only the leaf component changes."
     },
     {
@@ -74,8 +73,8 @@
       "targetPath": "src/pages/agents/CreateApplication.tsx",
       "targetExport": "CreateApplication",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -88,8 +87,8 @@
       "targetPath": "src/pages/apps/AppDetail.tsx",
       "targetExport": "AppDetail",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -102,8 +101,8 @@
       "targetPath": "src/pages/apps/Apps.tsx",
       "targetExport": "Apps",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -133,8 +132,8 @@
       "targetPath": "src/pages/apps/Apps.tsx",
       "targetExport": "Apps",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -231,8 +230,8 @@
       "targetPath": "src/pages/help-center/HelpCenterPage.tsx",
       "targetExport": "HelpCenterPage",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Name drift only: docstring says `Resources`, the built component is HelpCenterPage (also a default export)."
     },
     {
@@ -264,8 +263,8 @@
       "requiredProps": [
         "isMCP"
       ],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "No pages/mcps list component exists and none is needed — Toolkits already branches on isMCP throughout (Toolkits.tsx:280 names this route family)."
     },
     {
@@ -309,8 +308,8 @@
       "targetPath": "src/pages/onboarding/Onboarding.tsx",
       "targetExport": "Onboarding",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Route currently renders RouteShell + Outlet; the 398-line Onboarding page is unimported."
     },
     {
@@ -323,8 +322,8 @@
       "targetPath": "src/pages/pipelines/EditPipeline.tsx",
       "targetExport": "EditPipeline",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -337,8 +336,8 @@
       "targetPath": "src/pages/pipelines/Pipelines.tsx",
       "targetExport": "Pipelines",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -351,8 +350,8 @@
       "targetPath": "src/pages/pipelines/CreatePipeline.tsx",
       "targetExport": "CreatePipeline",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -438,8 +437,8 @@
       "targetPath": "src/pages/skills/EditSkill.tsx",
       "targetExport": "EditSkill",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -452,8 +451,8 @@
       "targetPath": "src/pages/skills/Skills.tsx",
       "targetExport": "Skills",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -466,8 +465,8 @@
       "targetPath": "src/pages/skills/CreateSkill.tsx",
       "targetExport": "CreateSkill",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -496,8 +495,8 @@
       "targetPath": "src/pages/toolkits/Toolkits.tsx",
       "targetExport": "Toolkits",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -547,8 +546,8 @@
       "targetPath": "src/pages/agents/EditApplication.tsx",
       "targetExport": "EditApplication",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -561,8 +560,8 @@
       "targetPath": "src/pages/apps/AppDetail.tsx",
       "targetExport": "AppDetail",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -592,8 +591,8 @@
       "targetPath": "src/pages/pipelines/EditPipeline.tsx",
       "targetExport": "EditPipeline",
       "requiredProps": [],
-      "status": "ready",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {

@@ -6,18 +6,23 @@
  */
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 
+import { EditApplication } from '@/pages/agents/EditApplication';
+
 import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
 import { pickParams } from '../../-search/params';
 
 export const Route = createFileRoute('/_shell/agents/$tab/$agentId')({
   validateSearch: pickParams('history_run_id'),
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => (
+  component: EditApplicationRoute,
+});
+
+function EditApplicationRoute() {
+  return (
     <>
-      <RouteShell routeId="agents.tab.agentId" fallback="Edit Application" />
+      <EditApplication />
       <Outlet />
     </>
-  ),
-});
+  );
+}
