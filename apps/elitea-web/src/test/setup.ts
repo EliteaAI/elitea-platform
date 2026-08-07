@@ -11,7 +11,18 @@ import { setupServer } from 'msw/node';
 // authored rather than being re-imported per test file.
 import '@testing-library/jest-dom/vitest';
 
+// [M1 carry-forward] Node 24 ships an experimental `localStorage` global that
+// shadows jsdom's and resolves to `undefined` without `--localstorage-file`,
+// so `window.localStorage` is undefined in the `node` project and any
+// component reading it during an effect throws (`<Sidebar>`, `<AppShell>`).
+// Installed here — not per test file — so every unit inherits it; see the
+// shim's own module comment for the full diagnosis. No-ops when the
+// environment already provides working storage.
+import { installWebStorageShim } from '@/shared/lib/webstorage.testshim';
+
 import { handlers } from './msw/handlers/index';
+
+installWebStorageShim();
 
 /**
  * Global test bootstrap for the `node` (jsdom) vitest project (spec §6.3).

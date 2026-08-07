@@ -60,30 +60,55 @@ _CUSTOM_STATE_TRANSCRIPT_FIELDS = ("messages", "chat_history")
 
 def _normalize_hitl_pause(
     result: dict[str, Any],
+    *,
+    execution_id: str,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """Preserve the current singular/plural HITL result contract."""
+    """Preserve the current singular/plural HITL result contract.
 
-    singular = result.get("hitl_interrupt")
-    if singular is not None and not isinstance(singular, dict):
+    Sensitive-tool interrupts already carry the SDK-owned interrupt identity.
+    A pipeline ``HITLNode`` exposes the same pause contract without an
+    ``interrupt_id``.  One worker execution can settle at only one sequential
+    terminal pause, so its durable execution identity is the stable fallback:
+    command redelivery keeps the same card identity while a later continuation
+    execution receives a new one.
+    """
+
+    raw_singular = result.get("hitl_interrupt")
+    if raw_singular is not None and not isinstance(raw_singular, dict):
         raise InvalidInput("The agent HITL interrupt is malformed.")
+    singular = dict(raw_singular) if raw_singular is not None else None
     raw_plural = result.get("hitl_interrupts")
     if raw_plural is None:
         plural: list[dict[str, Any]] = []
     elif isinstance(raw_plural, list) and all(
         isinstance(item, dict) for item in raw_plural
     ):
-        plural = list(raw_plural)
+        plural = [dict(item) for item in raw_plural]
     else:
         raise InvalidInput("The agent HITL interrupt list is malformed.")
     if not plural and singular is not None:
         plural = [singular]
     if singular is None and plural:
-        singular = plural[0]
+        singular = dict(plural[0])
+
+    if singular is not None and len(plural) == 1:
+        interrupt_id = singular.get("interrupt_id") or plural[0].get(
+            "interrupt_id"
+        )
+        if not isinstance(interrupt_id, str) or not interrupt_id:
+            if not execution_id:
+                raise InvalidInput(
+                    "The agent HITL interrupt identity is unavailable."
+                )
+            interrupt_id = execution_id
+        singular["interrupt_id"] = interrupt_id
+        plural[0]["interrupt_id"] = interrupt_id
     return singular, plural
 
 
 @dataclass(frozen=True, slots=True)
 class CurrentAgentNodeEventContext:
+    execution_id: str
     stream_id: str
     message_id: str
     execution_generation: str
@@ -122,7 +147,10 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
     ) -> node_event_pb2.NodeEventV1:
         """Emit exactly one current terminal outcome for a completed or HITL run."""
 
-        hitl_interrupt, hitl_interrupts = _normalize_hitl_pause(result)
+        hitl_interrupt, hitl_interrupts = _normalize_hitl_pause(
+            result,
+            execution_id=self._context.execution_id,
+        )
         if hitl_interrupt is not None:
             thread_id = result.get("thread_id")
             if not isinstance(thread_id, str) or not thread_id:

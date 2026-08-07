@@ -1,0 +1,563 @@
+{
+  "$comment": "Production parity reference for elitea-web. See MANIFEST.md.",
+  "source": "https://next.elitea.ai",
+  "captured": "2026-08-06",
+  "capturedBy": "operator",
+  "project": {
+    "name": "project_user_33731",
+    "id": 17015,
+    "scope": "Private",
+    "tenantState": "empty"
+  },
+  "viewport": {
+    "pixelWidth": 3204,
+    "pixelHeight": 1697,
+    "dpr": 2,
+    "cssWidth": 1602,
+    "cssHeight": 848
+  },
+  "baseline": "N4 (decisions-ui-reimplementation-2026-07-26.md) \u2014 supersedes Figma; file 5vWxC85QBhqbzPU30RP7LH re-verified 2026-08-06 and holds no product screens",
+  "accentHue": {
+    "dark": "cyan/teal",
+    "light": "magenta/lavender",
+    "note": "Closes the \u00a74.1 Blocker-1 open question: two hues ship, switched by colour scheme. Single-hue hypothesis is refuted. Corroborated by the new pairs: agent-editor-existing and pipeline-flow-editor, each captured in both schemes.",
+    "evidence": [
+      "skills-list-empty.light.jpeg",
+      "agents-list-empty.dark.jpeg"
+    ]
+  },
+  "shots": [
+    {
+      "file": "chat-empty-state.dark.jpeg",
+      "route": "/chat",
+      "targetComponent": "src/processes/chat/ui/ChatWithConversations.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Composer, model chip (GPT-5.4-mini), mic + send; conversations pane with Older group."
+    },
+    {
+      "file": "chat-active-conversation.dark.jpeg",
+      "route": "/chat/:conversationId",
+      "targetComponent": "src/features/chat-messages",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "User + assistant turns, 'Thought for 1 sec' collapsible, per-message actions (speak/copy/regenerate/delete), Today/Older grouping."
+    },
+    {
+      "file": "agents-list-empty.dark.jpeg",
+      "route": "/agents/:tab",
+      "targetComponent": "src/pages/agents/Applications.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Empty state + TAGS rail + author card; list/grid toggle + export in header."
+    },
+    {
+      "file": "agent-create-form.dark.jpeg",
+      "route": "/agents/create",
+      "targetComponent": "src/pages/agents/CreateApplication.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Centred column: GENERAL/INSTRUCTIONS/WELCOME MESSAGE/CONVERSATION STARTERS/ADVANCED; 'Build with AI' pill; Step limit 25."
+    },
+    {
+      "file": "agent-create-build-with-ai-modal.dark.jpeg",
+      "route": "/agents/create",
+      "targetComponent": "src/pages/agents/CreateApplication.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Build with AI dialog: textarea + Cancel/Generate, scrim over the form."
+    },
+    {
+      "file": "pipelines-list-empty.dark.jpeg",
+      "route": "/pipelines/:tab",
+      "targetComponent": "src/pages/pipelines/Pipelines.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Same list chrome as agents, pipeline illustration and copy."
+    },
+    {
+      "file": "pipeline-create-form.dark.jpeg",
+      "route": "/pipelines/create",
+      "targetComponent": "src/pages/pipelines/CreatePipeline.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "As agent create minus INSTRUCTIONS section."
+    },
+    {
+      "file": "toolkit-create-type-picker.dark.jpeg",
+      "route": "/toolkits/create",
+      "targetComponent": "src/pages/toolkits/CreateToolkit.tsx",
+      "theme": "dark",
+      "wiringStatus": "blocked-codegen",
+      "notes": "'Choose the toolkit type': search + 11 category chips + grouped cards (Code Repositories/Communication/Development/Documentation/Integrations)."
+    },
+    {
+      "file": "toolkit-create-gitlab-org-form.dark.jpeg",
+      "route": "/toolkits/create/:toolkitType",
+      "targetComponent": "src/pages/toolkits/CreateToolkit.tsx",
+      "theme": "dark",
+      "wiringStatus": "blocked-codegen",
+      "notes": "Form/Raw Json segmented control; CONFIGURATION + TOOLS; 'Make tools available by MCP' checkbox; 16 tool chips."
+    },
+    {
+      "file": "toolkit-create-gitlab-org-rawjson.dark.jpeg",
+      "route": "/toolkits/create/:toolkitType",
+      "targetComponent": "src/pages/toolkits/CreateToolkit.tsx",
+      "theme": "dark",
+      "wiringStatus": "blocked-codegen",
+      "notes": "Raw Json tab: CodeMirror with gutter, inline 'name is required' validation above the editor."
+    },
+    {
+      "file": "mcp-create-type-picker.light.jpeg",
+      "route": "/mcps/create",
+      "targetComponent": "src/pages/toolkits/CreateToolkit.tsx",
+      "theme": "light",
+      "wiringStatus": "blocked-codegen",
+      "notes": "isMCP variant: Local/Remote chips, empty-Local message linking Documentation, single 'Remote MCP' card."
+    },
+    {
+      "file": "skills-list-empty.light.jpeg",
+      "route": "/skills/:tab",
+      "targetComponent": "src/pages/skills/Skills.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "LIGHT scheme reference: magenta primary button and magenta-tinted illustration."
+    },
+    {
+      "file": "artifacts-bucket-browser.light.jpeg",
+      "route": "/artifacts",
+      "targetComponent": "src/pages/artifacts/Artifacts.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Two-pane: BUCKETS tree (Elitea S3 storage > attachments) + DataGrid (Name/Type/Size/Last update/Actions), toolbar upload/download/delete, footer 'Buckets: 1  Size: 26.3 KB', rows-per-page. NOTE: PR #82's stub renders a heading + one button instead."
+    },
+    {
+      "file": "settings-ai-configuration.dark.jpeg",
+      "route": "/settings/model-configuration",
+      "targetComponent": "src/pages/settings/AIConfiguration.tsx",
+      "theme": "dark",
+      "wiringStatus": "hybrid-defect",
+      "notes": "AI Configuration / OpenAI Template tabs; BaseURL+Project header; LLM Models tier selects; provider-grouped model cards with OK/Shared/tier badges; Embedding Models; Vector Storage. Relevant to issue #80."
+    },
+    {
+      "file": "settings-project-context.dark.jpeg",
+      "route": "/settings/project-params",
+      "targetComponent": "src/pages/settings/ProjectContext.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Toggle card + Project Background editor with Build with AI, file, code/preview toggles; Save/Discard."
+    },
+    {
+      "file": "settings-analytics-overview.dark.jpeg",
+      "route": "/settings/analytics",
+      "targetComponent": "src/features/analytics",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Range chips + From/To pickers; 6 stat tiles; Daily Activity dual-axis chart; Top 5 AI Adopters; Model Usage Breakdown table with share bar."
+    },
+    {
+      "file": "settings-analytics-agents-tab.light.jpeg",
+      "route": "/settings/analytics",
+      "targetComponent": "src/features/analytics",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "LIGHT scheme: magenta active tab; area chart; Agent Activity DataGrid with search and pagination."
+    },
+    {
+      "file": "agent-editor-existing.dark.jpeg",
+      "route": "/agents/:tab/:agentId",
+      "targetComponent": "src/pages/agents/EditApplication.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Existing agent. Split view: left config column (GENERAL/INSTRUCTIONS/WELCOME MESSAGE) + right live test-chat panel with conversation-starter chips. Header adds VERSION selector ('base'), Save / Save As Version / Discard / kebab; toolbar icons expand-canvas, clear, history."
+    },
+    {
+      "file": "agent-editor-existing.light.jpeg",
+      "route": "/agents/:tab/:agentId",
+      "targetComponent": "src/pages/agents/EditApplication.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Light counterpart of agent-editor-existing.dark; starter chips and send button pick up the magenta accent."
+    },
+    {
+      "file": "pipeline-flow-editor.dark.jpeg",
+      "route": "/pipelines/:tab/:agentId",
+      "targetComponent": "src/features/pipelines/ui/FlowEditor.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Three panes: config column (GENERAL with tag chips, TOOLS with +Toolkit/+MCP/+Agent/+Pipeline and an attached agent card w/ version select, INTERNAL TOOLS Attachments toggle), Flow/Yaml canvas with dotted grid, End node, State button, zoom/fit/lock/layout controls and a round + add-node FAB, then a right test-chat panel. Collapsible via the << chevrons."
+    },
+    {
+      "file": "pipeline-flow-editor.light.jpeg",
+      "route": "/pipelines/:tab/:agentId",
+      "targetComponent": "src/features/pipelines/ui/FlowEditor.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Light counterpart; canvas grid and node chrome invert, add-node FAB is magenta."
+    },
+    {
+      "file": "credentials-list-populated.dark.jpeg",
+      "route": "/credentials/:tab",
+      "targetComponent": "src/pages/credentials/Credentials.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "POPULATED grid mode: one credential card (icon + title + author avatar + type caption). Right rail is TYPES (not TAGS) listing 'S3 api credentials'. Rail button reads '+ Credential'."
+    },
+    {
+      "file": "credential-edit-form.dark.jpeg",
+      "route": "/credentials/:tab/:credential_uid",
+      "targetComponent": "src/pages/credentials/EditCredential.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "Single centred column, no section headers: Display Name, ID, Access Key Id, Secret Access Key with a Secret|Password segmented toggle, User Id, Expires At, Permissions (+ 'Enter scopes separated by commas or spaces' helper), Is Active checkbox, 'Test connection' button. Header: back + title, Save / Discard / kebab."
+    },
+    {
+      "file": "settings-users.dark.jpeg",
+      "route": "/settings/users",
+      "targetComponent": "src/pages/settings/Users.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "DataGrid: checkbox column + sortable Name/Email/Last login + Role + Actions; header Search; rows-per-page 20 with '1 - 1 of 1'. Rail primary button becomes 'Invite User'."
+    },
+    {
+      "file": "settings-secrets.dark.jpeg",
+      "route": "/settings/secrets",
+      "targetComponent": "src/pages/settings/Secrets.tsx",
+      "theme": "dark",
+      "wiringStatus": "hybrid-defect",
+      "notes": "Name/Value table; values render as {{secret.<name>}} references, never plaintext. Per-row reveal (eye) + kebab; header Search; round + FAB top-right; rows-per-page 10, '1 - 4 of 4'. The header Search is REAL here \u2014 the route currently stubs it to onSearchChange={() => {}}."
+    },
+    {
+      "file": "agents-hub.dark.jpeg",
+      "route": "/agents-hub",
+      "targetComponent": "src/pages/agents-hub/AgentHub.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "'Welcome to Agent HUB': centred 'Search for agents' + 11 category chips (Trending, My Liked, Business Analyst, DevOps, Development, Elitea, Epam, Knowledge & Documentation, Project Management, Quality Assurance, Other). Below: per-category sections, each a 3-col card grid with a refresh icon by the heading and a 'Show more' link. Cards: avatar/icon + title, stacked AUTHOR AVATARS bottom-left, like count bottom-right."
+    },
+    {
+      "file": "agents-hub.light.jpeg",
+      "route": "/agents-hub",
+      "targetComponent": "src/pages/agents-hub/AgentHub.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Light counterpart. NOTE: this is the entry point to /user-public/:tab \u2014 the author avatars bottom-left of each card are the clickable target."
+    },
+    {
+      "file": "onboarding.dark.jpeg",
+      "route": "/onboarding",
+      "targetComponent": "src/pages/onboarding/Onboarding.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Full-bleed, no page header: ELITEA wordmark, a bordered card with a screenshot thumbnail + expand button, 'Tip 1: Welcome to ELITEA' + body + bolded 'Quick Action:', prev/next circular buttons with '1 / 48' counter, and a floating gradient pill 'Your Elitea workspace is ready!' + 'Jump in now!' CTA."
+    },
+    {
+      "file": "onboarding.light.jpeg",
+      "route": "/onboarding",
+      "targetComponent": "src/pages/onboarding/Onboarding.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Light counterpart; the CTA pill goes magenta."
+    },
+    {
+      "file": "help-center.dark.jpeg",
+      "route": "/help-center",
+      "targetComponent": "src/pages/help-center/HelpCenterPage.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "'Explore Help Center' + subtitle; 2-col grid of five tinted category cards (Documentation blue, Release Notes amber, Video Library purple, Tutorials green, Interactive Tours pink), each a coloured icon + title + caption header over a link list, most ending in 'More...'. Header right: 'Version: 2.0.4 (02-July-2026)' with an info icon."
+    },
+    {
+      "file": "help-center.light.jpeg",
+      "route": "/help-center",
+      "targetComponent": "src/pages/help-center/HelpCenterPage.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Light counterpart \u2014 the five card tints are the load-bearing detail; they are per-category, not theme accent."
+    },
+    {
+      "file": "settings-create-personal-token.dark.jpeg",
+      "route": "/settings/create-personal-token",
+      "targetComponent": "src/routes/_shell/settings/create-personal-token.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "'New Token': just Name + 'Expiration period' (unit select, default Days) + amount (30). Header actions are Generate / Discard \u2014 NOT Save/Cancel. Rail button becomes '+ Token'."
+    },
+    {
+      "file": "settings-create-personal-token.light.jpeg",
+      "route": "/settings/create-personal-token",
+      "targetComponent": "src/routes/_shell/settings/create-personal-token.tsx",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "Light counterpart."
+    },
+    {
+      "file": "settings-personalization.dark.jpeg",
+      "route": "/settings/personalization",
+      "targetComponent": "src/pages/settings/Personalization.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Centred avatar + name + email, then GENERAL (Default Personality select, Default User Instructions), DEFAULT CONTEXT MANAGEMENT (toggle, Max Context Tokens 64000, Preserve Recent Messages 5), nested DEFAULT SUMMARIZATION (toggle, instructions, Target Summary Tokens 4096). Reached from the user chip in the rail, not the Settings sub-nav."
+    },
+    {
+      "file": "settings-personalization.light.jpeg",
+      "route": "/settings/personalization",
+      "targetComponent": "src/pages/settings/Personalization.tsx",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "Light counterpart; toggles are magenta."
+    },
+    {
+      "file": "agents-hub-modal-confluence.dark.jpeg",
+      "route": "/agents-hub",
+      "targetComponent": "src/pages/agents-hub/ui/AgentModal.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Agent detail modal over a scrim. Header: author avatar+name left, like count, copy-link, close. Body: icon, title, description, 'Show context' link, CONVERSATION STARTERS (accent-tinted chips), WELCOME MESSAGE. Footer: full-width-ish 'Start conversation' on a gradient bar."
+    },
+    {
+      "file": "agents-hub-modal-powershell.dark.jpeg",
+      "route": "/agents-hub",
+      "targetComponent": "src/pages/agents-hub/ui/AgentModal.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "Same modal with 4 starters in a 2-col grid and two stacked author avatars."
+    },
+    {
+      "file": "agents-hub-modal-powershell.light.jpeg",
+      "route": "/agents-hub",
+      "targetComponent": "src/pages/agents-hub/ui/AgentModal.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Light counterpart; starters and 'Start conversation' go magenta."
+    },
+    {
+      "file": "agents-hub-scrolled-categories.light.jpeg",
+      "route": "/agents-hub",
+      "targetComponent": "src/pages/agents-hub/AgentHub.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Scrolled past Trending: 'Elitea' and 'Epam' category sections. Category chip bar stays pinned at top."
+    },
+    {
+      "file": "chat-active-conversation.light.jpeg",
+      "route": "/chat/:conversationId",
+      "targetComponent": "src/features/chat-messages",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "Light counterpart of the active conversation."
+    },
+    {
+      "file": "chat-active-conversation-v2.dark.jpeg",
+      "route": "/chat/:conversationId",
+      "targetComponent": "src/features/chat-messages",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Second dark capture, 'about 2 hours ago' timestamps \u2014 use for relative-time formatting."
+    },
+    {
+      "file": "chat-active-rail-collapsed.dark.jpeg",
+      "route": "/chat/:conversationId",
+      "targetComponent": "src/widgets/app-shell/ui/AppShell.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "SHELL STATE: rail collapsed to a ~75px icon-only strip (logo, avatar, +, then nav icons in the same 3 groups, Support Assistant pinned). A '>' expand affordance floats on the rail edge. Conversations pane still open."
+    },
+    {
+      "file": "chat-empty-rail-collapsed.light.jpeg",
+      "route": "/chat",
+      "targetComponent": "src/widgets/app-shell/ui/AppShell.tsx",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "Collapsed rail, conversations pane open, chat empty state."
+    },
+    {
+      "file": "chat-empty-conversations-collapsed.light.jpeg",
+      "route": "/chat",
+      "targetComponent": "src/processes/chat/ui/ChatWithConversations.tsx",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "Rail expanded, CONVERSATIONS pane collapsed to a narrow icon column (new-folder + search) with a '>>' expand chevron."
+    },
+    {
+      "file": "chat-empty-both-collapsed.light.jpeg",
+      "route": "/chat",
+      "targetComponent": "src/widgets/app-shell/ui/AppShell.tsx",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "Both rail and conversations pane collapsed \u2014 widest content case."
+    },
+    {
+      "file": "agents-list-populated-grid.dark.jpeg",
+      "route": "/agents/:tab",
+      "targetComponent": "src/pages/agents/Applications.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "POPULATED grid: 4 cards, author avatar bottom-left, no like/tag chrome for own private agents. Author card bottom-right now reads 'Agents: 4  Published: 0'."
+    },
+    {
+      "file": "agents-list-populated-grid.light.jpeg",
+      "route": "/agents/:tab",
+      "targetComponent": "src/pages/agents/Applications.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Light counterpart."
+    },
+    {
+      "file": "agents-list-populated-list.dark.jpeg",
+      "route": "/agents/:tab",
+      "targetComponent": "src/pages/agents/Applications.tsx",
+      "theme": "dark",
+      "wiringStatus": "ready",
+      "notes": "POPULATED LIST mode \u2014 closes the list-mode gap. Columns: Name & Description (two-line, sortable), Authors, Created (sortable, calendar icon), Actions (kebab). Rows-per-page 20, '1 - 4 of 4'."
+    },
+    {
+      "file": "agents-list-populated-list.light.jpeg",
+      "route": "/agents/:tab",
+      "targetComponent": "src/pages/agents/Applications.tsx",
+      "theme": "light",
+      "wiringStatus": "ready",
+      "notes": "Light counterpart of list mode."
+    },
+    {
+      "file": "user-public-all-grid.public.dark.jpeg",
+      "route": "/user-public/all",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "viewMode=public. Tab bar REPLACES the page title: 'all 95 | agents 95 | pipelines | toolkits | MCPs' with per-tab counts, back arrow at far left. Cards carry author avatar, up-to-2 tag chips (+N overflow), a green publish/bookmark glyph and a like count. TAGS rail on the right. NO status filter in public mode."
+    },
+    {
+      "file": "user-public-all-list.public.dark.jpeg",
+      "route": "/user-public/all",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "List mode: Name & Description / Rate (heart) / Authors (avatar + name, +N) / Created / Actions. A pin glyph marks pinned rows. '1 - 20 of 95'."
+    },
+    {
+      "file": "user-public-all-list.public.light.jpeg",
+      "route": "/user-public/all",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "light",
+      "wiringStatus": "needs-route-state",
+      "notes": "Light counterpart."
+    },
+    {
+      "file": "user-public-all-grid.public.light.jpeg",
+      "route": "/user-public/all",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "light",
+      "wiringStatus": "needs-route-state",
+      "notes": "Light counterpart."
+    },
+    {
+      "file": "user-public-agents-grid.public.dark.jpeg",
+      "route": "/user-public/agents",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "agents tab, grid."
+    },
+    {
+      "file": "user-public-agents-grid.public.light.jpeg",
+      "route": "/user-public/agents",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "light",
+      "wiringStatus": "needs-route-state",
+      "notes": "agents tab, grid. Active tab underline + label take the magenta accent."
+    },
+    {
+      "file": "user-public-agents-list.public.dark.jpeg",
+      "route": "/user-public/agents",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "agents tab, list. Adds a per-row publish glyph column absent from the 'all' tab."
+    },
+    {
+      "file": "user-public-agents-list.public.light.jpeg",
+      "route": "/user-public/agents",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "light",
+      "wiringStatus": "needs-route-state",
+      "notes": "Light counterpart."
+    },
+    {
+      "file": "user-public-pipelines-empty.public.dark.jpeg",
+      "route": "/user-public/pipelines",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "EMPTY tab state: rocket glyph + '<Author> has not created pipeline yet.' \u2014 author-scoped copy, distinct from the main list screens' 'No pipelines yet' + Create/Guided-Tour empty state. No CTA."
+    },
+    {
+      "file": "user-public-pipelines-empty.public.light.jpeg",
+      "route": "/user-public/pipelines",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "light",
+      "wiringStatus": "needs-route-state",
+      "notes": "Light counterpart."
+    },
+    {
+      "file": "user-public-mcps-empty.public.dark.jpeg",
+      "route": "/user-public/MCPs",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "MCPs tab empty: '<Author> has not created any tools yet.' TAGS rail switches to Local/Remote chips."
+    },
+    {
+      "file": "user-public-mcps-empty.public.light.jpeg",
+      "route": "/user-public/MCPs",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "light",
+      "wiringStatus": "needs-route-state",
+      "notes": "Light counterpart."
+    },
+    {
+      "file": "user-public-all-grid.owner.dark.jpeg",
+      "route": "/user-public/all",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "dark",
+      "wiringStatus": "needs-route-state",
+      "notes": "viewMode=OWNER. Counts drop to 'all 5 | agents 4 | pipelines 1'. An 'All statuses' SELECT appears next to the list/grid toggle \u2014 this is PARAM-108 `statuses`, and it renders ONLY in owner mode."
+    },
+    {
+      "file": "user-public-all-grid.owner.light.jpeg",
+      "route": "/user-public/all",
+      "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
+      "theme": "light",
+      "wiringStatus": "needs-route-state",
+      "notes": "Light counterpart, owner mode with the status filter."
+    }
+  ],
+  "gaps": [],
+  "userPublicHowTo": {
+    "whatItIs": "The author public-library page: everything a given AUTHOR has published. Parity target apps/elitea-ui/src/pages/UserPublic/UserPublic.jsx.",
+    "urlShape": "/user-public/{tab}?viewMode={owner|public}&author_id={id}&author_name={name}",
+    "tabs": [
+      "all",
+      "agents",
+      "pipelines",
+      "toolkits",
+      "MCPs"
+    ],
+    "evidence": "apps/elitea-ui/src/hooks/useCardNavigate.js:395-401 (navigateToAuthorPublicPage); routes.js:50 UserPublic='/user-public'; common/constants.js:280,285,286 + ViewMode at :330.",
+    "howToReach": "Open Agent HUB and click the small round AUTHOR AVATAR at the bottom-left of any agent card (see agents-hub.*.jpeg). Cards with 2 avatars have multiple authors. This is the only in-app entry point.",
+    "orDirectUrl": "https://next.elitea.ai/user-public/all?viewMode=public&author_id=<ID>&author_name=<NAME>",
+    "note": "Use an author who has published something \u2014 e.g. the author of 'AI Presentation Creator' (85 likes) in Agent HUB. Your own id is 33731, but that library is empty, so it would only show the empty state.",
+    "resolved": "Captured 2026-08-06. Bare /user-public/ 404s (no :tab). Note the deployed app is version 2.0.4 while the parity baseline apps/elitea-ui is pinned at a55f36cf / 0.4.1863 (2026-07-08) \u2014 treat old-SPA route contracts as advisory, not authoritative.",
+    "viewModes": {
+      "public": "all tabs, no status filter",
+      "owner": "own library, adds the 'All statuses' select (PARAM-108)"
+    }
+  },
+  "coverage": {
+    "shots": 63,
+    "routes": 29,
+    "bothSchemes": true,
+    "listAndGridModes": true,
+    "emptyAndPopulated": true
+  }
+}
