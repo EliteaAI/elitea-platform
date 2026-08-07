@@ -16,7 +16,7 @@
     "cssWidth": 1602,
     "cssHeight": 848
   },
-  "baseline": "N4 (decisions-ui-reimplementation-2026-07-26.md) \u2014 supersedes Figma; file 5vWxC85QBhqbzPU30RP7LH re-verified 2026-08-06 and holds no product screens",
+  "baseline": "N4 (decisions-ui-reimplementation-2026-07-26.md) \u2014 the SHIPPED-BEHAVIOUR baseline. CORRECTED 2026-08-07: this field previously read 'supersedes Figma; file 5vWxC85QBhqbzPU30RP7LH re-verified 2026-08-06 and holds no product screens'. That is FALSE. The operator showed the file's Pages list: an ELITEA-UI section (Sidebar Menu, Onboarding, Maintenance Page, Import Modal, Announcement Banner, Support ChatBot, Responsive Behavior, Empty State Pages, Modals, Errors, Login, Feedback Popover (NPS), Light Theme screens), plus '*** Colors', '*** Cards redesign guide', '*** Improvements', and AGENT HUB / CHAT / AGENTS sections covering the surfaces being reimplemented. The 'one Cover frame' finding came from a quota-exhausted View-seat inspection that the ADR itself marked 'needs operator confirmation'; that confirmation never happened and the hedge was dropped in transit. These screenshots record what the OLD APP DOES (quirks included); Figma records DESIGN INTENT. They answer different questions and neither supersedes the other.",
   "accentHue": {
     "dark": "cyan/teal",
     "light": "magenta/lavender",
