@@ -77,6 +77,34 @@ export default defineConfig({
       dependencies: ['setup'],
       testMatch: /journeys\/.+\.spec\.ts/,
     },
+
+    /*
+     * ── visual (release tags only, via `--grep @visual`) ───────────────────
+     *
+     * Its own project because the journey projects match `journeys/**` only —
+     * `e2e/visual/**` was invisible to them, and `--grep @visual` reported
+     * "No tests found" while looking like a suite that simply had nothing to
+     * report.
+     *
+     * Chromium ONLY, deliberately: a baseline is valid for exactly one
+     * rasteriser, and running webkit against chromium's PNGs would diff every
+     * screen for reasons unrelated to the UI. Adding webkit means a second set
+     * of baselines, not a second project against the same set.
+     */
+    {
+      name: 'visual',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.member,
+        // Pinned so a snapshot's geometry never depends on the runner's
+        // defaults. Matches the 1602x848 CSS geometry of the production
+        // reference set in parity/screenshot-index.json.
+        viewport: { width: 1602, height: 848 },
+        deviceScaleFactor: 2,
+      },
+      dependencies: ['setup'],
+      testMatch: /visual\/.+\.spec\.ts/,
+    },
   ],
 
   // Bring up the real E2E stack before the test run.
