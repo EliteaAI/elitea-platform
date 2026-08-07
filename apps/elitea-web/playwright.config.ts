@@ -87,7 +87,23 @@ export default defineConfig({
     // could authenticate (PR #82 validation, blocker 5).
     command: `${__dirname}/scripts/e2e-stack.sh up && ${__dirname}/scripts/e2e-stack.sh seed`,
     url: BASE_URL + '/app/',
-    reuseExistingServer: !process.env['CI'],
+    /*
+     * `E2E_REUSE_STACK=1` forces reuse regardless of CI (issue #61, item 3).
+     *
+     * The visual job cannot use the plain `!CI` rule. Baselines are only valid
+     * when rendered inside the pinned `mcr.microsoft.com/playwright:v1.62.0-noble`
+     * image — a bare `npx playwright test` on the runner's own OS rasterises
+     * fonts differently and every snapshot diffs. But the stack itself needs a
+     * container runtime, so it has to come up on the HOST and the test run goes
+     * into the container with `--network host`. In that shape `CI` is set, so
+     * `reuseExistingServer` would be false and Playwright would try to bring the
+     * stack up a second time — from inside a container that has no podman/docker.
+     *
+     * A job container instead of `docker run --network host` does not work
+     * either: GitHub job containers do not share the runner's network namespace,
+     * so `BASE_URL=http://localhost:8082` would not reach a host-side stack.
+     */
+    reuseExistingServer: process.env['E2E_REUSE_STACK'] === '1' || !process.env['CI'],
     // Allow up to 3 minutes for image builds + postgres migrations on a cold start.
     timeout: 180_000,
   },

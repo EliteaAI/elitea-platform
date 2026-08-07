@@ -8,6 +8,7 @@ import { useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
 import { CreateApplicationTabBar } from '@/entities/application-form';
+import { CreateAgentForm } from '@/features/agents';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 
@@ -15,6 +16,7 @@ import { applicationDetailDisplayName, toVersionSummaries } from './lib/editAppl
 import { isPublicAgentsProject } from './lib/isPublicAgentsProject';
 import { useCorrectUserNameInUrl } from './lib/useCorrectUserNameInUrl';
 import { useEditApplicationData } from './lib/useEditApplicationData';
+import { useEditApplicationEditorBridge } from './lib/useEditApplicationEditorBridge';
 import { useEditApplicationForm } from './lib/useEditApplicationForm';
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
@@ -91,11 +93,14 @@ function EditApplicationSaveBar({ onSave, canSave, isSaving }: EditApplicationSa
  *
  * **Composition gaps, disclosed:**
  *  - The baseline's `ConfigurationTab` (`Components/Applications/
- *    ConfigurationTab.jsx`) is NOT in this unit's (A1g) owned-file list —
- *    it owns the actual editable panels (instructions, tools, welcome
- *    message, advance settings, editor notes, information — the six
- *    `ApplicationConfigurationLayout` slots) and belongs to a sibling A1
- *    sub-unit. A disclosed placeholder stands in its place below.
+ *    ConfigurationTab.jsx`) owns the six `ApplicationConfigurationLayout`
+ *    slots (instructions, tools, welcome message, advance settings, editor
+ *    notes, information) and still has no port. PARTIALLY CLOSED: the panel
+ *    below no longer renders an empty `<Box/>` — it renders
+ *    `features/agents`' `CreateAgentForm`, the same component the baseline
+ *    shares between its create and edit pages, so the agent's real
+ *    name/description/instructions are on screen. The remaining slots
+ *    (tools, advance settings, editor notes) are still absent.
  *  - `ApplicationTabBar`/`ApplicationControls`
  *    (`@/[fsd]/entities/application-tab-bar/ui`) were NOT promoted into any
  *    `entities/` slice (verified: no `entities/application-tab-bar`
@@ -166,6 +171,54 @@ export function EditApplication(): ReactNode {
 
   const { form, handleSave, isSaving, saveError } = useEditApplicationForm(detail, activeVersion, projectId, applicationId);
 
+  /*
+   * The configuration panel used to be `<Box data-testid=… />` — self-closing
+   * and empty — on the grounds that the baseline's `ConfigurationTab` belonged
+   * to a sibling sub-unit. The consequence was that opening ANY agent showed a
+   * page with no fields on it: J14 created an agent, navigated to it, and found
+   * nothing to read back.
+   *
+   * `CreateAgentForm` is a public export of `features/agents` and is what
+   * `pages/agents/CreateApplication.tsx` already renders; the baseline shares
+   * that same component between its create and edit pages.
+   *
+   * SAVE SCOPE, unchanged and disclosed: `useEditApplicationForm` persists
+   * version-level fields only (`conversation_starters`). `name`/`description`
+   * are APPLICATION-level (`ApplicationUpdateRequest`, PUT
+   * /elitea_core/application/… — routed since #117, but not wired into this
+   * page's save path). They render populated and editable because showing the
+   * agent's real identity is the point of the page; edits to them are NOT yet
+   * persisted. Wiring that endpoint is its own change.
+   */
+  const editor = useEditApplicationEditorBridge(form, activeVersion);
+
+  /*
+   * The configuration panel used to be `<Box data-testid=… />` — self-closing
+   * and empty — on the grounds that the baseline's `ConfigurationTab` belonged
+   * to a sibling sub-unit. The consequence was that opening ANY agent showed a
+   * page with no fields on it at all: J14 created an agent, navigated to it,
+   * and found nothing to read back.
+   *
+   * `CreateAgentForm` is a public export of `features/agents` and is what
+   * `pages/agents/CreateApplication.tsx` already renders; the baseline shares
+   * that same component between its create and edit pages. Bridging it to the
+   * form this page already owns is the smallest faithful fill.
+   *
+   * SAVE SCOPE, unchanged and disclosed: `useEditApplicationForm` persists
+   * version-level fields only (`conversation_starters`). `name`/`description`
+   * are APPLICATION-level (`ApplicationUpdateRequest`, PUT
+   * /elitea_core/application/... — now routed since #117 but not wired into
+   * this page's save path). They render populated and editable here because
+   * showing the agent's real identity is the point of the page, but edits to
+   * them are NOT yet persisted. Wiring that endpoint is its own change.
+   */
+  // `useWatch`, not `form.watch(...)`. This page's form is fed by `useForm({
+  // values })` — the values arrive asynchronously, after the agent detail
+  // resolves. `form.watch()` read in the render body did NOT pick that up here:
+  // the page re-rendered (the heading showed the agent's name) and
+  // `formState.isValid` flipped true (Save became enabled), proving the form
+  // held the values, while `watch()` still returned ''. `useWatch` subscribes to
+  // the control properly and re-renders on the change.
   // Old app: `useViewMode.js` — `viewMode` defaults to `ViewMode.Public`
   // whenever the currently selected project equals `PUBLIC_PROJECT_ID`.
   // `ApplicationTabBar.jsx:65` only renders the Save/Save-New-Version
@@ -230,8 +283,13 @@ export function EditApplication(): ReactNode {
               {t('pages.agents.editApplication.saveError', 'Failed to save your changes.')}
             </Typography>
           )}
-          {/* Composition gap: `Components/Applications/ConfigurationTab.jsx` is not in this unit's (A1g) owned-file list — see doc comment above. */}
-          <Box data-testid="edit-application-configuration-tab-panel" />
+          <Box data-testid="edit-application-configuration-tab-panel">
+            <CreateAgentForm
+              values={editor.values}
+              onFieldChange={editor.onFieldChange}
+              disabled={isReadOnlyView || isFetching}
+            />
+          </Box>
         </Box>
       </Box>
     </FormProvider>
