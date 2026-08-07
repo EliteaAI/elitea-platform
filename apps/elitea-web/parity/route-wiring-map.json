@@ -212,12 +212,13 @@
       "targetExport": "CreateCredential",
       "requiredProps": [
         "context",
+        "credentialType",
         "onCreated",
         "onCancelled"
       ],
       "status": "wired",
       "rendersRouteShell": false,
-      "note": "Docstring target \"CreateCredentialFromMain\" = CreateCredential with the main-app context."
+      "note": "Docstring target \"CreateCredentialFromMain\" = CreateCredential with the main-app context. `credentialType` comes from the ROUTE-024 child match (useParams strict:false) — the child is an empty pattern-A route, so this parent reads its param."
     },
     {
       "routeFile": "src/routes/_shell/help-center.tsx",
@@ -364,13 +365,14 @@
       "targetExport": "CreateCredential",
       "requiredProps": [
         "context",
+        "credentialType",
         "configurationMode",
         "onCreated",
         "onCancelled"
       ],
       "status": "wired",
       "rendersRouteShell": false,
-      "note": ""
+      "note": "`credentialType` comes from the ROUTE-064 child match, same shape as its /credentials twin."
     },
     {
       "routeFile": "src/routes/_shell/settings/edit-configuration.$credential_uid.tsx",
