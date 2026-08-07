@@ -96,6 +96,10 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 			if !ok {
 				return errors.New("current agent start query is unavailable")
 			}
+			nesting, ok := tx.(currentApplicationNestingQuerier)
+			if !ok {
+				return errors.New("current application nesting query is unavailable")
+			}
 			row, queryErr := queries.ResolveCurrentApplicationTurn(
 				ctx,
 				sqlcgen.ResolveCurrentApplicationTurnParams{
@@ -120,6 +124,20 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 				!json.Valid(variables) || !json.Valid(versionDetails) ||
 				!json.Valid(chatHistory) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			if validationErr := validateCurrentApplicationNesting(
+				ctx,
+				nesting,
+				row.ApplicationVersionID,
+				1,
+			); validationErr != nil {
+				if contextErr := ctx.Err(); contextErr != nil {
+					return contextErr
+				}
+				if errors.Is(validationErr, errInvalidCurrentApplicationNesting) {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				return fmt.Errorf("validate current application nesting: %w", validationErr)
 			}
 			target = agentexecutionapp.CurrentApplicationTarget{
 				ApplicationID:        int64(row.ApplicationID),
@@ -166,6 +184,10 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentAdhoc(
 			if !ok {
 				return errors.New("current agent start query is unavailable")
 			}
+			nesting, ok := tx.(currentApplicationNestingQuerier)
+			if !ok {
+				return errors.New("current application nesting query is unavailable")
+			}
 			row, queryErr := queries.ResolveCurrentAdhocTurn(
 				ctx,
 				sqlcgen.ResolveCurrentAdhocTurnParams{
@@ -188,6 +210,16 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentAdhoc(
 				!json.Valid(llmSettings) || !json.Valid(tools) || !json.Valid(chatHistory) ||
 				!json.Valid(conversationMeta) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			tools, queryErr = filterCurrentAdhocApplicationNesting(ctx, nesting, tools)
+			if queryErr != nil {
+				if contextErr := ctx.Err(); contextErr != nil {
+					return contextErr
+				}
+				if errors.Is(queryErr, errInvalidCurrentApplicationNesting) {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				return fmt.Errorf("validate current ad-hoc application nesting: %w", queryErr)
 			}
 			target = agentexecutionapp.CurrentAdhocTarget{
 				TargetParticipantID: int64(row.TargetParticipantID),

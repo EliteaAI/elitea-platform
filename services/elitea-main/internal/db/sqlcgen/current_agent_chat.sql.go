@@ -198,8 +198,7 @@ WITH resolved AS MATERIALIZED (
                         WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
                           AND unsupported_child_mapping.entity_type = 'agent'
                           AND (
-                              unsupported_child_tool.type = 'application'
-                              OR unsupported_child_tool.type = 'mcp'
+                              unsupported_child_tool.type = 'mcp'
                               OR unsupported_child_tool.meta ->> 'mcp' = 'true'
                           )
                     )
@@ -813,8 +812,7 @@ LEFT JOIN LATERAL (
                   WHERE child_mapping.entity_version_id = application_version.id
                     AND child_mapping.entity_type = 'agent'
                     AND (
-                        child_tool.type = 'application'
-                        OR child_tool.type = 'mcp'
+                        child_tool.type = 'mcp'
                         OR child_tool.meta ->> 'mcp' = 'true'
                     )
               )
@@ -941,8 +939,7 @@ WHERE conversation.uuid = $5::uuid
                     WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
                       AND unsupported_child_mapping.entity_type = 'agent'
                       AND (
-                          unsupported_child_tool.type = 'application'
-                          OR unsupported_child_tool.type = 'mcp'
+                          unsupported_child_tool.type = 'mcp'
                           OR unsupported_child_tool.meta ->> 'mcp' = 'true'
                       )
                 )
@@ -1040,6 +1037,50 @@ func (q *Queries) ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurren
 	return i, err
 }
 
+const resolveCurrentApplicationNestingNode = `-- name: ResolveCurrentApplicationNestingNode :one
+SELECT application_version.id AS application_version_id,
+       application_version.application_id,
+       application_version.agent_type,
+       COALESCE((
+           SELECT jsonb_agg(
+               jsonb_build_object(
+                   'tool_id', child_tool.id,
+                   'tool_name', child_tool.name,
+                   'application_id', child_tool.settings -> 'application_id',
+                   'application_version_id', child_tool.settings -> 'application_version_id'
+               )
+               ORDER BY child_mapping.id
+           )
+           FROM entity_tool_mapping AS child_mapping
+           JOIN elitea_tools AS child_tool
+             ON child_tool.id = child_mapping.tool_id
+           WHERE child_mapping.entity_version_id = application_version.id
+             AND child_mapping.entity_type = 'agent'
+             AND child_tool.type = 'application'
+       ), '[]'::jsonb)::text AS child_applications_json
+FROM application_versions AS application_version
+WHERE application_version.id = $1::integer
+`
+
+type ResolveCurrentApplicationNestingNodeRow struct {
+	ApplicationVersionID  int32  `db:"application_version_id" json:"application_version_id"`
+	ApplicationID         int32  `db:"application_id" json:"application_id"`
+	AgentType             string `db:"agent_type" json:"agent_type"`
+	ChildApplicationsJson string `db:"child_applications_json" json:"child_applications_json"`
+}
+
+func (q *Queries) ResolveCurrentApplicationNestingNode(ctx context.Context, applicationVersionID int32) (ResolveCurrentApplicationNestingNodeRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentApplicationNestingNode, applicationVersionID)
+	var i ResolveCurrentApplicationNestingNodeRow
+	err := row.Scan(
+		&i.ApplicationVersionID,
+		&i.ApplicationID,
+		&i.AgentType,
+		&i.ChildApplicationsJson,
+	)
+	return i, err
+}
+
 const resolveCurrentApplicationTurn = `-- name: ResolveCurrentApplicationTurn :one
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
@@ -1101,7 +1142,24 @@ SELECT conversation.id AS conversation_id,
                        'created_at', tool.created_at,
                        'toolkit_name', tool.name,
                        'author', NULL,
-                       'agent_type', NULL,
+                       'agent_type', CASE
+                           WHEN tool.type = 'application'
+                           THEN (
+                               SELECT child_application_version.agent_type
+                               FROM application_versions AS child_application_version
+                               WHERE child_application_version.id = CASE
+                                   WHEN tool.settings ->> 'application_version_id' ~ '^[1-9][0-9]*$'
+                                   THEN (tool.settings ->> 'application_version_id')::integer
+                                   ELSE NULL
+                               END
+                                 AND child_application_version.application_id = CASE
+                                   WHEN tool.settings ->> 'application_id' ~ '^[1-9][0-9]*$'
+                                   THEN (tool.settings ->> 'application_id')::integer
+                                   ELSE NULL
+                               END
+                           )
+                           ELSE NULL
+                       END,
                        'online', NULL,
                        'icon_meta', NULL,
                        'variables', '[]'::jsonb,

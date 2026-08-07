@@ -59,7 +59,24 @@ SELECT conversation.id AS conversation_id,
                        'created_at', tool.created_at,
                        'toolkit_name', tool.name,
                        'author', NULL,
-                       'agent_type', NULL,
+                       'agent_type', CASE
+                           WHEN tool.type = 'application'
+                           THEN (
+                               SELECT child_application_version.agent_type
+                               FROM application_versions AS child_application_version
+                               WHERE child_application_version.id = CASE
+                                   WHEN tool.settings ->> 'application_version_id' ~ '^[1-9][0-9]*$'
+                                   THEN (tool.settings ->> 'application_version_id')::integer
+                                   ELSE NULL
+                               END
+                                 AND child_application_version.application_id = CASE
+                                   WHEN tool.settings ->> 'application_id' ~ '^[1-9][0-9]*$'
+                                   THEN (tool.settings ->> 'application_id')::integer
+                                   ELSE NULL
+                               END
+                           )
+                           ELSE NULL
+                       END,
                        'online', NULL,
                        'icon_meta', NULL,
                        'variables', '[]'::jsonb,
@@ -210,6 +227,30 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
         )
   );
 
+-- name: ResolveCurrentApplicationNestingNode :one
+SELECT application_version.id AS application_version_id,
+       application_version.application_id,
+       application_version.agent_type,
+       COALESCE((
+           SELECT jsonb_agg(
+               jsonb_build_object(
+                   'tool_id', child_tool.id,
+                   'tool_name', child_tool.name,
+                   'application_id', child_tool.settings -> 'application_id',
+                   'application_version_id', child_tool.settings -> 'application_version_id'
+               )
+               ORDER BY child_mapping.id
+           )
+           FROM entity_tool_mapping AS child_mapping
+           JOIN elitea_tools AS child_tool
+             ON child_tool.id = child_mapping.tool_id
+           WHERE child_mapping.entity_version_id = application_version.id
+             AND child_mapping.entity_type = 'agent'
+             AND child_tool.type = 'application'
+       ), '[]'::jsonb)::text AS child_applications_json
+FROM application_versions AS application_version
+WHERE application_version.id = sqlc.arg(application_version_id)::integer;
+
 -- name: ResolveCurrentAdhocTurn :one
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
@@ -319,8 +360,7 @@ LEFT JOIN LATERAL (
                   WHERE child_mapping.entity_version_id = application_version.id
                     AND child_mapping.entity_type = 'agent'
                     AND (
-                        child_tool.type = 'application'
-                        OR child_tool.type = 'mcp'
+                        child_tool.type = 'mcp'
                         OR child_tool.meta ->> 'mcp' = 'true'
                     )
               )
@@ -447,8 +487,7 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
                     WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
                       AND unsupported_child_mapping.entity_type = 'agent'
                       AND (
-                          unsupported_child_tool.type = 'application'
-                          OR unsupported_child_tool.type = 'mcp'
+                          unsupported_child_tool.type = 'mcp'
                           OR unsupported_child_tool.meta ->> 'mcp' = 'true'
                       )
                 )
@@ -1221,8 +1260,7 @@ WITH resolved AS MATERIALIZED (
                         WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
                           AND unsupported_child_mapping.entity_type = 'agent'
                           AND (
-                              unsupported_child_tool.type = 'application'
-                              OR unsupported_child_tool.type = 'mcp'
+                              unsupported_child_tool.type = 'mcp'
                               OR unsupported_child_tool.meta ->> 'mcp' = 'true'
                           )
                     )

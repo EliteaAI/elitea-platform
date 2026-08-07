@@ -278,6 +278,7 @@ type Querier interface {
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
 	ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error)
 	ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error)
+	ResolveCurrentApplicationNestingNode(ctx context.Context, applicationVersionID int32) (ResolveCurrentApplicationNestingNodeRow, error)
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
 	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
