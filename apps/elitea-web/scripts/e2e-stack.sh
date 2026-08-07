@@ -257,6 +257,38 @@ ENDSQL
     $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea < "$SEED_TMP"
     rm -f "$SEED_TMP"
     echo "  ✓ DB rows seeded."
+
+    # ── postcondition: the personas must actually resolve permissions ────────
+    #
+    # Every statement above is `ON CONFLICT DO NOTHING` over a `SELECT`, so a
+    # row whose join finds nothing inserts nothing AND reports success. That is
+    # exactly what happened on a fresh volume: `auth_core__project_user_role`
+    # came out empty, `/auth/permissions/prompt_lib/1` returned `[]`, and the
+    # entire UI came up with every create affordance disabled — with `seed`
+    # having printed "Seed complete." A second `seed` run fixed it, which is the
+    # signature of an ordering dependency, not of a legitimately-empty result.
+    #
+    # Assert the end state rather than trusting the exit codes. A stack that
+    # cannot authorise anything must fail here, loudly, instead of handing every
+    # downstream journey a mystery.
+    GRANTS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(*)
+      FROM auth_core__project_user_role pur
+      JOIN auth_core__user u ON u.id = pur.user_id
+      WHERE pur.project_id = 1
+        AND u.email IN ('e2e-admin@autotest.local','e2e-member@autotest.local');")
+    PERMS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(*) FROM auth_core__project_role_permission WHERE project_id = 1;")
+
+    if [ "${GRANTS:-0}" -lt 2 ] || [ "${PERMS:-0}" -lt 1 ]; then
+      echo "ERROR: seed did not grant both personas a project role." >&2
+      echo "  project_user_role rows for the two personas: ${GRANTS:-0} (want 2)" >&2
+      echo "  project_role_permission rows for project 1:  ${PERMS:-0} (want >0)" >&2
+      echo "  Without these, /auth/permissions/prompt_lib/1 returns [] and every" >&2
+      echo "  create button in the app is permanently disabled." >&2
+      exit 1
+    fi
+    echo "  ✓ RBAC verified: ${GRANTS} persona grant(s), ${PERMS} project permission(s)."
     echo "→ Seed complete."
     ;;
 

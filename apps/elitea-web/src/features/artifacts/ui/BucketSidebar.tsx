@@ -15,6 +15,7 @@ import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import IconButton from '@mui/material/IconButton';
 import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
@@ -89,14 +90,26 @@ export function BucketSidebar(props: BucketSidebarProps): ReactNode {
       <Divider />
       {props.loading ? (
         <Typography sx={{ p: 2 }}>{t('artifacts.buckets.loading', 'Loading buckets…')}</Typography>
+      ) : visibleBuckets.length === 0 ? (
+        // Rendered OUTSIDE the <List>. MUI's List emits a <ul>, and a <p> as its
+        // direct child is an axe `list` violation (impact: serious) — caught by
+        // J20's checkA11y the first time the E2E suite was able to run. An empty
+        // list element is also meaningless to a screen reader, so there is no
+        // reason to emit one when there is nothing to list.
+        <Typography sx={{ p: 2 }}>{t('artifacts.buckets.empty', 'No buckets found.')}</Typography>
       ) : (
         <List
           dense
           sx={{ overflowY: 'auto' }}
         >
           {visibleBuckets.map((bucket) => (
-            <ListItemButton
+            // <ListItem disablePadding> wrapper: see ApplicationListPanel for
+            // why `component="li"` on the button is not the fix.
+            <ListItem
               key={bucket.id}
+              disablePadding
+            >
+            <ListItemButton
               selected={bucket.name === props.selectedBucket}
               onClick={() => props.onSelect(bucket)}
             >
@@ -135,10 +148,8 @@ export function BucketSidebar(props: BucketSidebarProps): ReactNode {
                 </IconButton>
               </Tooltip>
             </ListItemButton>
+            </ListItem>
           ))}
-          {visibleBuckets.length === 0 && (
-            <Typography sx={{ p: 2 }}>{t('artifacts.buckets.empty', 'No buckets found.')}</Typography>
-          )}
         </List>
       )}
       <Dialog

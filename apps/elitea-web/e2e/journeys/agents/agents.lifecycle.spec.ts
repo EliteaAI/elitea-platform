@@ -11,165 +11,112 @@ import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
 import { AUTOTEST_PREFIX, clickCreateButton } from '../../fixtures/api';
 
+import type { Page } from '@playwright/test';
+
+/**
+ * Opens the create-agent form and asserts the REAL form is on screen.
+ *
+ * Deliberately no `.or(getByRole('heading', …))` fallback: a heading is exactly
+ * what a stub route renders, so accepting one means the journey passes against
+ * an unimplemented screen. Three copies of that fallback lived in this file and
+ * were the reason J14/J15/J25 could not tell a working page from a placeholder.
+ */
+async function openCreateAgentForm(page: Page): Promise<void> {
+  await clickCreateButton(page);
+  await expect(page.getByTestId('agent-name-input')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('agent-description-input')).toBeVisible();
+}
+
+/**
+ * Fills both fields the create form requires. `applicationCreationSchema`
+ * (entities/application-form/model/validation.ts) requires name AND
+ * description; filling only the name leaves Save correctly disabled, which is
+ * why J14/J15 used to time out clicking it.
+ */
+async function fillAgentForm(page: Page, name: string): Promise<void> {
+  await page.getByTestId('agent-name-input').fill(name);
+  await page.getByTestId('agent-description-input').fill(`${name} description`);
+  await expect(page.getByTestId('agent-save-button')).toBeEnabled({ timeout: 5_000 });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Journey 14: Create agent, save, publish, unpublish
 // ─────────────────────────────────────────────────────────────────────────────
-test('J14: create agent, save, publish, unpublish', async ({ page }) => {
+/*
+ * NOT COVERED — publish / unpublish.
+ *
+ * JRNY-014 names them, and this test used to "cover" them with
+ * `if (await publishButton.isVisible().catch(() => false))`, which silently
+ * passed because no such control exists: a whole-tree grep for a publish or
+ * unpublish affordance in `features/agents`/`pages/agents` finds only
+ * notification COPY about publish events (`features/notifications/**`), never a
+ * button. The optional block was coverage theatre, so it is gone and the test
+ * is renamed to what it actually verifies. Publishing needs its own journey
+ * once the UI exists.
+ */
+test('J14: create agent, save, and persist it', async ({ page }) => {
   await page.goto(BASE_URL + '/app/agents/my');
   await page.waitForURL('**/agents**', { timeout: 15_000 });
 
   await checkA11y(page);
 
-  // Click "Create" to open the agent creation form.
-  await clickCreateButton(page);
+  await openCreateAgentForm(page);
+  await fillAgentForm(page, `${AUTOTEST_PREFIX}e2e-agent`);
 
-  // The create page navigates to /agents/create. Wait for the heading or form.
-  // The route may render a placeholder heading or the real form.
-  const formPanel = page
-    .getByTestId('create-application-form-panel')
-    .or(page.getByTestId('agent-name-input'))
-    .or(page.getByRole('heading', { name: /create application|new agent/i }))
-    .or(page.getByRole('dialog')).first();
-  await expect(formPanel).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId('agent-save-button').click();
 
-  // Fill the agent name — only if we have a real form (not a placeholder).
-  const nameInput = page
-    .getByTestId('agent-name-input')
-    .or(page.getByRole('textbox', { name: /name/i }).first());
-  const hasForm = await nameInput.isVisible().catch(() => false);
-  if (!hasForm) {
-    // The create route is still a placeholder in this build — a11y check and exit.
-    await checkA11y(page);
-    return;
-  }
+  // A real server round trip: the created agent must be addressable. This is
+  // the assertion a heading-only route cannot satisfy — it requires the POST to
+  // have succeeded and the router to have navigated to the new agent's id.
+  await page.waitForURL(/\/agents\/[^/]+\/[^/]+/, { timeout: 15_000 });
+  await expect(page.getByTestId('agent-name-input')).toHaveValue(`${AUTOTEST_PREFIX}e2e-agent`);
 
-  await nameInput.fill(`${AUTOTEST_PREFIX}e2e-agent`);
-
-  // `description` is required by `applicationCreationSchema`
-  // (entities/application-form/model/validation.ts), a faithful port of the
-  // baseline's ApplicationCreationValidateSchema. The Save button is bound to
-  // `form.formState.isValid`, so leaving it blank leaves Save disabled and the
-  // journey never reaches the request it exists to exercise.
-  await page
-    .getByTestId('agent-description-input')
-    .or(page.getByRole('textbox', { name: /description/i }).first())
-    .fill('Created by the J14 agent-lifecycle journey.');
-
-  // Save the agent.
-  const saveButton = page.getByRole('button', { name: /save/i });
-  await saveButton.click();
-
-  // The agent should appear in the list.
-  await expect(page.getByText(`${AUTOTEST_PREFIX}e2e-agent`)).toBeVisible({ timeout: 10_000 });
-
-  // Publish the agent.
-  const publishButton = page
-    .getByRole('button', { name: /publish/i })
-    .or(page.getByTestId('publish-button')).first();
-
-  const publishVisible = await publishButton.isVisible().catch(() => false);
-  if (publishVisible) {
-    await publishButton.click();
-
-    // Wait for publish confirmation / list update.
-    await page.waitForTimeout(1_000);
-
-    // Unpublish.
-    const unpublishButton = page
-      .getByRole('button', { name: /unpublish/i })
-      .or(page.getByTestId('unpublish-button')).first();
-
-    const unpublishVisible = await unpublishButton.isVisible().catch(() => false);
-    if (unpublishVisible) {
-      await unpublishButton.click();
-      await page.waitForTimeout(500);
-    }
-  }
+  // And it must be listed back on the agents index — proving it was persisted,
+  // not merely held in client state.
+  await page.goto(BASE_URL + '/app/agents/my');
+  await expect(page.getByText(`${AUTOTEST_PREFIX}e2e-agent`).first()).toBeVisible({ timeout: 15_000 });
 
   await checkA11y(page);
-
-  // Cleanup: delete the agent we created.
-  const agentRow = page.getByTestId('application-list-row').filter({
-    hasText: `${AUTOTEST_PREFIX}e2e-agent`,
-  });
-  if (await agentRow.isVisible().catch(() => false)) {
-    // Extract the agent id from the row's data attribute or navigate to it.
-    // Best-effort cleanup — the sweep in afterAll will catch failures.
-  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Journey 15: Create a new version, set default, delete old
 // ─────────────────────────────────────────────────────────────────────────────
-test('J15: create new version, set default, delete old version', async ({ page }) => {
+/*
+ * NARROWED, disclosed. JRNY-015 names "set default" and "delete old version".
+ * Both were wrapped in `if (await x.isVisible().catch(() => false))`, so the
+ * test passed whether or not those menu items existed. Rather than keep
+ * assertions that cannot fail, this now hard-asserts the part that is real —
+ * the version selector exists and lists the saved agent's version — and stops
+ * claiming the rest. Set-default and delete-version need their own journey
+ * written against the actual menu once its items are confirmed present.
+ */
+test('J15: a saved agent exposes a version selector listing its versions', async ({ page }) => {
   await page.goto(BASE_URL + '/app/agents/my');
   await page.waitForURL('**/agents**', { timeout: 15_000 });
 
-  // Create an agent to work with.
-  await clickCreateButton(page);
+  await openCreateAgentForm(page);
+  await fillAgentForm(page, `${AUTOTEST_PREFIX}version-test-agent`);
 
-  const formPanel = page
-    .getByTestId('create-application-form-panel')
-    .or(page.getByTestId('agent-name-input'))
-    .or(page.getByRole('heading', { name: /create application|new agent/i }))
-    .or(page.getByRole('dialog')).first();
-  await expect(formPanel).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId('agent-save-button').click();
 
-  const nameInput = page
-    .getByTestId('agent-name-input')
-    .or(page.getByRole('textbox', { name: /name/i }).first());
-  const hasForm = await nameInput.isVisible().catch(() => false);
-  if (!hasForm) {
-    await checkA11y(page);
-    return;
-  }
+  // Hard: the save must land on a real agent URL carrying an id.
+  await page.waitForURL(/\/agents\/[^/]+\/[^/]+/, { timeout: 15_000 });
 
-  await nameInput.fill(`${AUTOTEST_PREFIX}version-test-agent`);
-  // Required by applicationCreationSchema — see J14 above.
-  await page
-    .getByTestId('agent-description-input')
-    .or(page.getByRole('textbox', { name: /description/i }).first())
-    .fill('Created by the J15 version-lifecycle journey.');
+  // The version selector is the subject of this journey. It must exist — a
+  // `test.skip('Version selector not found in this build')` here turned a
+  // missing feature into a green run.
+  const versionTrigger = page.getByTestId('version-selector-trigger');
+  await expect(versionTrigger).toBeVisible({ timeout: 10_000 });
 
-  await page.getByRole('button', { name: /save/i }).click();
-  await page.waitForTimeout(1_000);
-
-  // Create a new version via the version selector.
-  const versionTrigger = page
-    .getByTestId('version-selector-trigger')
-    .or(page.getByRole('button', { name: /version/i })).first();
-
-  const versionVisible = await versionTrigger.isVisible().catch(() => false);
-  if (!versionVisible) {
-    test.skip(true, 'Version selector not found in this build');
-    return;
-  }
-
+  // The saved agent starts at exactly one version, and the selector must name
+  // it. A control that renders but lists nothing fails here.
   await versionTrigger.click();
-  const newVersionButton = page.getByRole('menuitem', { name: /new version|create version/i });
-  const newVersionVisible = await newVersionButton.isVisible().catch(() => false);
-  if (newVersionVisible) {
-    await newVersionButton.click();
-    await page.waitForTimeout(1_000);
+  const versionOptions = page.getByRole('menuitem');
+  await expect(versionOptions.first()).toBeVisible({ timeout: 5_000 });
+  expect(await versionOptions.count()).toBeGreaterThan(0);
 
-    // Set as default.
-    const setDefaultButton = page.getByRole('button', { name: /set as default|default/i });
-    if (await setDefaultButton.isVisible().catch(() => false)) {
-      await setDefaultButton.click();
-      await page.waitForTimeout(500);
-    }
-
-    // Delete the old version.
-    await versionTrigger.click();
-    const deleteVersionButton = page.getByRole('menuitem', { name: /delete version/i });
-    if (await deleteVersionButton.isVisible().catch(() => false)) {
-      await deleteVersionButton.click();
-      // Confirm deletion dialog.
-      await page.getByRole('button', { name: /confirm|delete|yes/i }).click();
-      await page.waitForTimeout(500);
-    }
-  }
-
+  await page.keyboard.press('Escape');
   await checkA11y(page);
 });
 
@@ -182,50 +129,27 @@ test('J25: unsaved-changes nav block: navigate away from dirty agent → dialog 
   await page.goto(BASE_URL + '/app/agents/my');
   await page.waitForURL('**/agents**', { timeout: 15_000 });
 
-  // Create a new agent or open an existing one.
-  await clickCreateButton(page);
+  await openCreateAgentForm(page);
 
-  const formPanel = page
-    .getByTestId('create-application-form-panel')
-    .or(page.getByTestId('agent-name-input'))
-    .or(page.getByRole('heading', { name: /create application|new agent/i }))
-    .or(page.getByRole('dialog')).first();
-  await expect(formPanel).toBeVisible({ timeout: 10_000 });
+  // Dirty the form.
+  await page.getByTestId('agent-name-input').fill(`${AUTOTEST_PREFIX}dirty-agent`);
 
-  // Make the form dirty by typing something — only if real form is available.
-  const nameInput = page
-    .getByTestId('agent-name-input')
-    .or(page.getByRole('textbox', { name: /name/i })).first();
-  const hasForm = await nameInput.isVisible().catch(() => false);
-  if (!hasForm) {
-    await checkA11y(page);
-    return;
-  }
+  // Navigate away via a real in-app link (no goto() fallback: a hard navigation
+  // bypasses the router's blocker entirely, so falling back to one would test
+  // nothing while still passing).
+  await page.getByRole('link', { name: /chat/i }).first().click();
 
-  await nameInput.fill(`${AUTOTEST_PREFIX}dirty-agent`);
+  // The blocker dialog must appear. It used to be wrapped in
+  // `if (dialogVisible)`, so an app with NO nav blocker passed this journey.
+  const navBlockerDialog = page.getByRole('dialog');
+  await expect(navBlockerDialog).toBeVisible({ timeout: 10_000 });
+  await checkA11y(page);
 
-  // Try to navigate away.
-  await page.getByRole('link', { name: /chat/i }).first().click().catch(async () => {
-    await page.goto(BASE_URL + '/app/chat', { waitUntil: 'domcontentloaded' });
-  });
-
-  // The nav-blocker dialog should appear.
-  const navBlockerDialog = page
-    .getByTestId('nav-blocker-dialog')
-    .or(page.getByRole('dialog', { name: /unsaved|leave/i })).first();
-
-  const dialogVisible = await navBlockerDialog.isVisible().catch(() => false);
-  if (dialogVisible) {
-    await checkA11y(page);
-
-    // Click cancel to stay.
-    await page.getByRole('button', { name: /cancel|stay|no/i }).click();
-
-    // Should remain on the agent page with state intact.
-    await expect(formPanel.or(page.getByTestId('edit-application-configuration-tab-panel')).first()).toBeVisible({
-      timeout: 5_000,
-    });
-  }
+  // Cancelling must keep us on the agent form with the typed value intact —
+  // that is the actual guarantee JRNY-025 is about.
+  await navBlockerDialog.getByRole('button', { name: /cancel|stay|no/i }).first().click();
+  await expect(page.getByTestId('agent-name-input')).toHaveValue(`${AUTOTEST_PREFIX}dirty-agent`);
+  expect(page.url()).toContain('/agents');
 
   await checkA11y(page);
 });

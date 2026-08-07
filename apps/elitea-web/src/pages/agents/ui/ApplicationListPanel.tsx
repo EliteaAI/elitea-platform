@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
 import Typography from '@mui/material/Typography';
@@ -87,18 +88,30 @@ export function ApplicationListPanel({
     <Box sx={containerSx}>
       <List>
         {rows.map((row) => (
-          <ListItemButton
+          // <ListItem disablePadding> wrapping <ListItemButton> — MUI's own
+          // pattern, and the one `features/skills/ui/SkillsList.tsx` already
+          // uses. List emits a <ul>, and ListItemButton defaults to a
+          // <div role="button">, which axe's `list` rule rejects as a direct
+          // child (impact: serious). Putting `component="li"` on the BUTTON
+          // instead only trades that for `aria-allowed-role` — an <li> may not
+          // carry role="button". The wrapper gives a real <li> with the button
+          // inside it, which satisfies both.
+          <ListItem
             key={row.id}
-            data-testid="application-list-row"
-            onClick={() => {
-              onSelect(row.id);
-            }}
+            disablePadding
           >
-            <ListItemText
-              primary={row.name}
-              secondary={row.description}
-            />
-          </ListItemButton>
+            <ListItemButton
+              data-testid="application-list-row"
+              onClick={() => {
+                onSelect(row.id);
+              }}
+            >
+              <ListItemText
+                primary={row.name}
+                secondary={row.description}
+              />
+            </ListItemButton>
+          </ListItem>
         ))}
       </List>
       {hasMore && (

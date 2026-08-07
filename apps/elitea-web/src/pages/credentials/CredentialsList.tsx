@@ -26,6 +26,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
 import Typography from '@mui/material/Typography';
@@ -117,17 +118,23 @@ export function CredentialsList({ projectId, onSelectCredential, onCreateNew }: 
         {allRows.length > 0 && (
           <List>
             {allRows.map((row) => (
-              <ListItemButton
+              // <ListItem disablePadding> wrapper: see ApplicationListPanel for
+              // why `component="li"` on the button is not the fix.
+              <ListItem
                 key={row.id}
-                onClick={() => {
-                  onSelectCredential(row.id);
-                }}
+                disablePadding
               >
-                <ListItemText
-                  primary={credentialDisplayName(row)}
-                  secondary={`${row.type} · ${credentialScope(row)} · ${getCredentialStatus(row.id)}`}
-                />
-              </ListItemButton>
+                <ListItemButton
+                  onClick={() => {
+                    onSelectCredential(row.id);
+                  }}
+                >
+                  <ListItemText
+                    primary={credentialDisplayName(row)}
+                    secondary={`${row.type} · ${credentialScope(row)} · ${getCredentialStatus(row.id)}`}
+                  />
+                </ListItemButton>
+              </ListItem>
             ))}
           </List>
         )}

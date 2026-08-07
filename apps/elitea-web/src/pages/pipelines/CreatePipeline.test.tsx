@@ -18,12 +18,39 @@ afterEach(() => {
 });
 
 describe('CreatePipeline', () => {
-  it('renders the Save/Cancel tab bar and the (composition-gap) form panel', async () => {
+  it('renders the Save/Cancel tab bar and a form panel containing the real fields', async () => {
     renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
 
     expect(await screen.findByTestId('pipeline-save-button')).toBeInTheDocument();
     expect(screen.getByText('Cancel')).toBeInTheDocument();
-    expect(screen.getByTestId('create-pipeline-form-panel')).toBeInTheDocument();
+
+    // `toBeInTheDocument()` on the panel alone is what let this page ship a
+    // self-closing `<Box data-testid="create-pipeline-form-panel" />` with a
+    // green unit test — an empty div is in the document. The E2E journey (J16)
+    // caught it only because a real browser cannot SEE an empty box. Assert on
+    // the fields the panel is supposed to contain, so the container can never
+    // again pass while hollow.
+    const panel = screen.getByTestId('create-pipeline-form-panel');
+    expect(await screen.findByTestId('agent-name-input')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-description-input')).toBeInTheDocument();
+    expect(panel).toContainElement(screen.getByTestId('agent-name-input'));
+    expect(panel).toContainElement(screen.getByTestId('agent-description-input'));
+  });
+
+  it('typing a name and description enables Save (the panel is wired, not just present)', async () => {
+    const user = userEvent.setup();
+    renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
+
+    // Save is gated on applicationCreationSchema, which requires BOTH fields.
+    // Driving the real inputs proves onFieldChange reaches the RHF form —
+    // rendering the fields but leaving them unwired would fail here.
+    expect(await screen.findByTestId('pipeline-save-button')).toBeDisabled();
+
+    await user.type(screen.getByTestId('agent-name-input'), 'my-pipeline');
+    expect(screen.getByTestId('pipeline-save-button')).toBeDisabled();
+
+    await user.type(screen.getByTestId('agent-description-input'), 'does a thing');
+    await waitFor(() => expect(screen.getByTestId('pipeline-save-button')).not.toBeDisabled());
   });
 
   it('clicking Cancel opens a confirm dialog, and confirming navigates back to /pipelines/:tab', async () => {

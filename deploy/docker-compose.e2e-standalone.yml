@@ -135,7 +135,17 @@ services:
       VITE_BASE_URI: "/app/"
       VITE_SOCKET_SERVER: ""
       VITE_SOCKET_PATH: "/socket.io"
-      VITE_PUBLIC_PROJECT_ID: "1"
+      # NOT "1". The seeded working project is id 1 (scripts/e2e-stack.sh), and
+      # `isPublicAgentsProject` compares the selected project against this value
+      # — so setting both to 1 made every agents/pipelines/skills page render the
+      # PUBLIC view (Latest/MyLiked/Trending, backed by
+      # /elitea_core/public_applications) and made the private list
+      # unreachable. J14 created an agent successfully and then could not find
+      # it, because the tab it looked at can only ever show public rows.
+      # 99 is an id no fixture creates, so project 1 behaves as an ordinary
+      # private project and the public surface stays addressable for a journey
+      # that wants to test it.
+      VITE_PUBLIC_PROJECT_ID: "99"
     depends_on:
       elitea-main:
         condition: service_healthy
