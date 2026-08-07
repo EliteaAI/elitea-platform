@@ -12,6 +12,15 @@ import { defineConfig } from 'vitest/config';
 const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 export default defineConfig({
+  // Booting the REAL src/test/setup.ts means honouring the real `@/*` → `./src/*`
+  // alias from tsconfig.json. Without it, any `@/`-prefixed import setup.ts grows
+  // fails the whole fixture run with ERR_MODULE_NOT_FOUND, which reads as "the
+  // rule's failing fixture passed" and reds the gate for an unrelated reason —
+  // exactly what `@/shared/lib/webstorage.testshim` did when setup.ts began
+  // importing it.
+  resolve: {
+    alias: { '@': resolve(APP_DIR, 'src') },
+  },
   test: {
     environment: 'node',
     setupFiles: [resolve(APP_DIR, 'src/test/setup.ts')],

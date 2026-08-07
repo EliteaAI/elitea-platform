@@ -107,7 +107,10 @@ export function shouldRedirectToCreatePage(input: {
   return !isPublicProject && !isLoading && !isError && !disableEmptyRedirect && !hasQuery && totalCount === 0 && selectedTypesCount === 0;
 }
 
-export interface ToolkitsEmptyStateConfig {
+// Not exported: nothing outside this module names the type (it is reached
+// through the two prop interfaces below). An `export` here is dead surface and
+// the dead-code gate counts it as such.
+interface ToolkitsEmptyStateConfig {
   readonly title: string;
   readonly description: string;
   readonly onCreateClick: () => void;

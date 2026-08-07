@@ -591,8 +591,8 @@
             "id": "artifacts.artifactList",
             "method": "GET",
             "path": "/artifacts/s3/{bucket}",
-            "operationId": "artifactList",
-            "source": "generated",
+            "operationId": null,
+            "source": "handwritten",
             "responseSchema": "S3ObjectListResponse",
             "fixture": null,
             "usedBy": [
@@ -603,8 +603,8 @@
             "id": "artifacts.bucketList",
             "method": "GET",
             "path": "/artifacts/s3",
-            "operationId": "bucketList",
-            "source": "generated",
+            "operationId": null,
+            "source": "handwritten",
             "responseSchema": "S3BucketListResponse",
             "fixture": null,
             "usedBy": [
@@ -614,17 +614,17 @@
         {
             "id": "artifacts.createArtifact",
             "method": "POST",
-            "path": "/artifacts/artifacts/default/{project_id}/{bucket}",
-            "operationId": "createArtifact",
+            "path": "/artifacts/objects/{projectID}/{bucket}",
+            "operationId": "uploadObject",
             "source": "generated",
-            "responseSchema": "ArtifactUploadResponse",
+            "responseSchema": "UploadObjectResponse",
             "fixture": null,
             "usedBy": []
         },
         {
             "id": "artifacts.createBucket",
             "method": "POST",
-            "path": "/artifacts/buckets/default/{project_id}",
+            "path": "/artifacts/buckets/{projectID}",
             "operationId": "createBucket",
             "source": "generated",
             "responseSchema": "BucketCreatedResponse",
@@ -636,20 +636,8 @@
         {
             "id": "artifacts.deleteArtifact",
             "method": "DELETE",
-            "path": "/artifacts/artifact/default/{project_id}/{bucket}",
-            "operationId": "deleteArtifact",
-            "source": "generated",
-            "responseSchema": "ArtifactDeletedResponse",
-            "fixture": null,
-            "usedBy": [
-                "features/artifacts"
-            ]
-        },
-        {
-            "id": "artifacts.deleteArtifacts",
-            "method": "DELETE",
-            "path": "/artifacts/artifacts/default/{project_id}/{bucket}",
-            "operationId": "deleteArtifacts",
+            "path": "/artifacts/objects/{projectID}/{bucket}/{key}",
+            "operationId": "deleteObject",
             "source": "generated",
             "responseSchema": null,
             "fixture": null,
@@ -658,9 +646,21 @@
             ]
         },
         {
+            "id": "artifacts.deleteArtifacts",
+            "method": "POST",
+            "path": "/artifacts/objects/{projectID}/{bucket}:batchDelete",
+            "operationId": "batchDeleteObjects",
+            "source": "generated",
+            "responseSchema": "BatchDeleteObjectsResponse",
+            "fixture": null,
+            "usedBy": [
+                "features/artifacts"
+            ]
+        },
+        {
             "id": "artifacts.deleteBucket",
             "method": "DELETE",
-            "path": "/artifacts/buckets/default/{project_id}",
+            "path": "/artifacts/buckets/{projectID}/{bucket}",
             "operationId": "deleteBucket",
             "source": "generated",
             "responseSchema": "BucketDeletedResponse",
@@ -671,9 +671,9 @@
         },
         {
             "id": "artifacts.editBucket",
-            "method": "PUT",
-            "path": "/artifacts/buckets/default/{project_id}",
-            "operationId": "editBucket",
+            "method": "PATCH",
+            "path": "/artifacts/buckets/{projectID}/{bucket}",
+            "operationId": "updateBucket",
             "source": "generated",
             "responseSchema": "Bucket",
             "fixture": null,
@@ -684,8 +684,8 @@
         {
             "id": "artifacts.updateBucketPin",
             "method": "PATCH",
-            "path": "/artifacts/buckets/default/{project_id}",
-            "operationId": "updateBucketPin",
+            "path": "/artifacts/buckets/{projectID}/{bucket}",
+            "operationId": "updateBucket",
             "source": "generated",
             "responseSchema": "Bucket",
             "fixture": null,

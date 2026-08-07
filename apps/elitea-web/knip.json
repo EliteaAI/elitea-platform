@@ -391,8 +391,10 @@
     // Consumed by scripts/mutate-spotcheck.mjs via createRequire() (CommonJS
     // interop for ESM scripts — knip cannot trace dynamic require() calls).
     // Remove when/if the script switches to a static import shim.
+    // `@babel/parser` was dropped from this list: scripts/lib/{mock-rules-core,
+    // i18n-backfill-core,budgets-core}.mjs now import it statically, so knip
+    // traces it and the ignore entry became a stale hint (knip reports it).
     "@babel/generator",
-    "@babel/parser",
     // [Wave-2 batch 2] `react-hook-form`/`@hookform/resolvers`/
     // `@xyflow/react`/`@mui/x-date-pickers`/`recharts` REMOVED from this
     // list: this batch (agents/pipelines/toolkits + analytics) built all 5

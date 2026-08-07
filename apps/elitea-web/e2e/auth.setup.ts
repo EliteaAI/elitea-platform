@@ -82,10 +82,14 @@ async function performOidcLogin(
   // so we cannot rely on sidebar-toggle rendering; instead, /forward-auth/info
   // confirms the server-side cookie round-trip succeeded.
   const infoResponse = await page.request.get(BASE_URL + '/forward-auth/info');
-  const infoBody = await infoResponse.json() as { authenticated?: boolean };
-  if (!infoBody.authenticated) {
-    throw new Error(`OIDC session not authenticated for ${email}; info: ${JSON.stringify(infoBody)}`);
-  }
+  const infoBody = (await infoResponse.json()) as { authenticated?: boolean; user_id?: string };
+  expect(
+    infoBody,
+    `OIDC session not authenticated for ${email}; info: ${JSON.stringify(infoBody)}`,
+  ).toMatchObject({ authenticated: true });
+  // A session with no subject would still satisfy `authenticated: true` but
+  // leaves every downstream journey without an identity to assert against.
+  expect(infoBody.user_id, `OIDC session for ${email} carries no user_id`).toBeTruthy();
 
   // Seed the selected project into localStorage/sessionStorage so tests start
   // with an active project — prevents the create button from being disabled.

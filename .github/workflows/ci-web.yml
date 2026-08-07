@@ -9,6 +9,11 @@ name: CI — Web
 # the npm cache is keyed on that lockfile.
 
 on:
+  # The e2e job guards on `github.event_name == 'workflow_dispatch'`, which was
+  # unreachable while this block only listed pull_request/push — so the suite had
+  # never executed in CI (PR #82 validation, blocker 4). Manual dispatch is the
+  # only way to exercise it before a release tag.
+  workflow_dispatch:
   pull_request:
     paths:
       - "apps/elitea-web/**"
@@ -732,6 +737,10 @@ jobs:
 
   visual:
     name: Visual regression
+    # Release-tag only, per the file header at :5-6 and §6.6/§7.6. The guard was
+    # lost at some point, so this job ran on every PR and hard-failed at the
+    # `test -d e2e/visual` line below (PR #82 validation, blocker 3).
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -750,6 +759,8 @@ jobs:
 
   mutation-spotcheck:
     name: Mutation spot-check
+    # Release-tag only — same lost guard as `visual` above.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
