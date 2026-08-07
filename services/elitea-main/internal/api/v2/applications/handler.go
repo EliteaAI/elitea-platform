@@ -12,8 +12,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
@@ -53,8 +53,18 @@ func (h *Handler) GetDefaultVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same resolution order as the UI's own selectDefaultVersion
+	// (apps/elitea-web/src/entities/version/model/selectors.ts): the version
+	// recorded in the application's meta.default_version_id, else the
+	// well-known unnamed-default version "base", else the newest.
 	for _, v := range versions {
 		if v.IsDefault {
+			writeJSON(w, http.StatusOK, v)
+			return
+		}
+	}
+	for _, v := range versions {
+		if v.Name == defaultVersionName {
 			writeJSON(w, http.StatusOK, v)
 			return
 		}
@@ -140,8 +150,11 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getVersions(ctx context.Context, projectID, applicationID string) []map[string]any {
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`SELECT id, name, status, agent_type, created_at FROM %q.application_versions WHERE application_id = $1 ORDER BY id`, s)
+	s, ok := tenantSchema(projectID)
+	if !ok {
+		return []map[string]any{}
+	}
+	q := fmt.Sprintf(`SELECT id, name, status, agent_type, created_at FROM %s.application_versions WHERE application_id = $1 ORDER BY id`, s)
 	rows, err := h.pool.Query(ctx, q, applicationID)
 	if err != nil {
 		return []map[string]any{}
@@ -184,7 +197,10 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 		return m
 	}
 
-	s := fmt.Sprintf("p_%s", projectID)
+	s, ok := tenantSchema(projectID)
+	if !ok {
+		return nil
+	}
 
 	var id int
 	var appID int
@@ -201,7 +217,7 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 			COALESCE(v.conversation_starters::text, '[]'),
 			COALESCE(v.pipeline_settings::text, '{}'),
 			v.author_id
-		FROM %q.application_versions v
+		FROM %s.application_versions v
 		WHERE v.application_id = $1 AND v.id = $2`, s), applicationID, versionID).Scan(
 		&id, &appID, &name, &status, &createdAt,
 		&agentType, &instructions, &welcomeMsg,
@@ -232,8 +248,8 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 	toolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT etm.id, etm.tool_id, etm.entity_type, COALESCE(etm.selected_tools::text, '{}'),
 			t.name, t.type, t.settings
-		FROM %q.entity_tool_mapping etm
-		LEFT JOIN %q.elitea_tools t ON t.id = etm.tool_id
+		FROM %s.entity_tool_mapping etm
+		LEFT JOIN %s.elitea_tools t ON t.id = etm.tool_id
 		WHERE etm.entity_version_id = $1`, s, s), versionID)
 	if err == nil {
 		defer toolRows.Close()
@@ -279,7 +295,7 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 
 	appToolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT id, name, type, settings::text
-		FROM %q.application_tools
+		FROM %s.application_tools
 		WHERE application_version_id = $1`, s), versionID)
 	if err == nil {
 		defer appToolRows.Close()
@@ -305,7 +321,7 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 	variables := make([]map[string]any, 0)
 	varRows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT name, COALESCE(value, '')
-		FROM %q.application_variables
+		FROM %s.application_variables
 		WHERE application_version_id = $1
 		ORDER BY id`, s), versionID)
 	if err == nil {
@@ -324,31 +340,55 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 
 	return map[string]any{
 		"id":                    strconv.Itoa(id),
-		"application_id":       strconv.Itoa(appID),
-		"name":                 name,
-		"status":               status,
-		"created_at":           createdAt,
-		"agent_type":           agentType,
-		"instructions":         instrVal,
-		"welcome_message":      welcomeVal,
-		"llm_settings":         llmSettings,
-		"meta":                 meta,
+		"application_id":        strconv.Itoa(appID),
+		"name":                  name,
+		"status":                status,
+		"created_at":            createdAt,
+		"agent_type":            agentType,
+		"instructions":          instrVal,
+		"welcome_message":       welcomeVal,
+		"llm_settings":          llmSettings,
+		"meta":                  meta,
 		"conversation_starters": starters,
-		"pipeline_settings":    pipelineSettings,
-		"author_id":            authorIDStr,
-		"tools":                tools,
-		"tags":                 []any{},
-		"variables":            variables,
+		"pipeline_settings":     pipelineSettings,
+		"author_id":             authorIDStr,
+		"tools":                 tools,
+		"tags":                  []any{},
+		"variables":             variables,
 	}
+}
+
+// principal resolves the owning auth_core__user id of the authenticated
+// caller. Every route reaching this handler is inside the authenticated group
+// (internal/api/router.go), so a missing principal is a composition error, not
+// an anonymous caller — it is refused rather than defaulted to user 1, which
+// is what made every application in the prototype owned by user 1 regardless
+// of who created it. Token principals resolve to their owning user;
+// auth.User.OwningUserID never accepts a token id as an author.
+func principal(r *http.Request) (auth.User, int64, bool) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		return auth.User{}, 0, false
+	}
+	ownerID, ok := user.OwningUserID()
+	if !ok {
+		return auth.User{}, 0, false
+	}
+	return user, ownerID, true
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	user, _ := auth.UserFromContext(r.Context())
-	userID := user.ID
-	if userID == "" {
-		userID = "1"
+	if _, ok := tenantSchema(projectID); !ok {
+		apierr.Write(w, apierr.BadRequest("invalid project id"))
+		return
 	}
+	user, ownerID, ok := principal(r)
+	if !ok {
+		apierr.Write(w, apierr.Unauthorized("an authenticated principal is required"))
+		return
+	}
+	userID := strconv.FormatInt(ownerID, 10)
 
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -362,16 +402,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Description: strVal(body, "description"),
 		Type:        strVal(body, "type"),
 		Icon:        strVal(body, "icon"),
+		OwnerID:     ownerID,
 	}
 
-	app, err := h.repo.Create(r.Context(), req)
-	if err != nil {
-		apierr.Write(w, err)
-		return
-	}
-
-	// Pylon creates the first version alongside the application.
-	var versionDetails map[string]any
+	// Pylon creates the first version alongside the application, and so does
+	// the repository — in one transaction. An application with no version row
+	// is invisible to List (which INNER JOINs application_versions) and cannot
+	// be opened in the agent editor, so a half-created agent must not commit.
 	if versions, ok := body["versions"].([]any); ok && len(versions) > 0 {
 		if vBody, ok := versions[0].(map[string]any); ok {
 			// Validate model_project_id if llm_settings provided
@@ -384,82 +421,14 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-
-			vName, _ := vBody["name"].(string)
-			if vName == "" {
-				vName = "latest"
-			}
-			v := applications.Version{Name: vName}
-			ver, vErr := h.repo.CreateVersion(r.Context(), projectID, app.ID, v)
-			if vErr == nil {
-				// Update agent_type, instructions, llm_settings, variables, etc. from body
-				agentType, _ := vBody["agent_type"].(string)
-				instructions, _ := vBody["instructions"].(string)
-				welcomeMsg, _ := vBody["welcome_message"].(string)
-				if agentType == "" {
-					agentType = "openai"
-				}
-				if h.pool != nil {
-					s := fmt.Sprintf("p_%s", projectID)
-					llmJSON := "{}"
-					if llm, ok := vBody["llm_settings"].(map[string]any); ok {
-						if b, e := json.Marshal(llm); e == nil {
-							llmJSON = string(b)
-						}
-					}
-					startersJSON := "[]"
-					if cs, ok := vBody["conversation_starters"].([]any); ok {
-						if b, e := json.Marshal(cs); e == nil {
-							startersJSON = string(b)
-						}
-					}
-					varsJSON := "[]"
-					if vars, ok := vBody["variables"].([]any); ok {
-						if b, e := json.Marshal(vars); e == nil {
-							varsJSON = string(b)
-						}
-					}
-					if _, execErr := h.pool.Exec(r.Context(), fmt.Sprintf(
-						`UPDATE %q.application_versions SET agent_type=$1, instructions=$2, welcome_message=$3, llm_settings=$4::jsonb, conversation_starters=$5::jsonb, author_id=$6 WHERE id=$7`, s),
-						agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, ver.ID); execErr != nil {
-						apierr.Write(w, apierr.Internal("failed to persist version fields"))
-						return
-					}
-					// Store variables in meta as pylon does
-					if vars, ok := vBody["variables"].([]any); ok && len(vars) > 0 {
-						metaJSON := fmt.Sprintf(`{"step_limit":25,"variables":%s}`, varsJSON)
-						if _, execErr := h.pool.Exec(r.Context(), fmt.Sprintf(
-							`UPDATE %q.application_versions SET meta=$1::jsonb WHERE id=$2`, s), metaJSON, ver.ID); execErr != nil {
-							apierr.Write(w, apierr.Internal("failed to persist version meta"))
-							return
-						}
-					}
-					_ = varsJSON
-				}
-
-				llmResp := map[string]any{}
-				if llm, ok := vBody["llm_settings"].(map[string]any); ok {
-					llmResp = llm
-				}
-				versionDetails = map[string]any{
-					"id":             ver.ID,
-					"application_id": ver.ApplicationID,
-					"name":           ver.Name,
-					"status":         ver.Status,
-					"author_id":      userID,
-					"created_at":     ver.CreatedAt,
-					"author":         map[string]any{"id": userID, "email": user.Email, "name": ""},
-					"meta":           map[string]any{"step_limit": 25},
-					"is_forked":      false,
-					"instructions":   instructions,
-					"llm_settings":   llmResp,
-					"conversation_starters": []any{},
-					"tools":          []any{},
-					"variables":      []any{},
-					"tags":           []any{},
-				}
-			}
+			req.InitialVersion = versionFromBody(vBody, ownerID)
 		}
+	}
+
+	app, err := h.repo.Create(r.Context(), req)
+	if err != nil {
+		apierr.Write(w, err)
+		return
 	}
 
 	resp := map[string]any{
@@ -471,11 +440,84 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		"owner_id":    userID,
 		"created_at":  app.CreatedAt,
 	}
-	if versionDetails != nil {
+	if len(app.Versions) > 0 {
+		versionDetails := versionDetailsResponse(app.Versions[0], user, userID)
 		resp["version_details"] = versionDetails
 		resp["versions"] = []any{versionDetails}
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// versionFromBody maps a pylon-shaped version write body onto the columns
+// application_versions actually has. `variables` has no column of its own on
+// the version row — pylon carries it inside meta alongside step_limit — so it
+// is folded into meta here, matching what the prototype's raw SQL did.
+func versionFromBody(vBody map[string]any, authorID int64) *applications.Version {
+	name, _ := vBody["name"].(string)
+	agentType, _ := vBody["agent_type"].(string)
+	instructions, _ := vBody["instructions"].(string)
+	welcomeMessage, _ := vBody["welcome_message"].(string)
+	llmSettings, _ := vBody["llm_settings"].(map[string]any)
+	starters, _ := vBody["conversation_starters"].([]any)
+
+	meta, _ := vBody["meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	if _, ok := meta["step_limit"]; !ok {
+		meta["step_limit"] = defaultStepLimit
+	}
+	if vars, ok := vBody["variables"].([]any); ok && len(vars) > 0 {
+		meta["variables"] = vars
+	}
+
+	return &applications.Version{
+		Name:                 name,
+		AuthorID:             authorID,
+		AgentType:            agentType,
+		Instructions:         instructions,
+		WelcomeMessage:       welcomeMessage,
+		LLMSettings:          llmSettings,
+		ConversationStarters: starters,
+		Meta:                 meta,
+	}
+}
+
+const defaultStepLimit = 25
+
+func versionDetailsResponse(ver applications.Version, user auth.User, userID string) map[string]any {
+	llm := ver.LLMSettings
+	if llm == nil {
+		llm = map[string]any{}
+	}
+	starters := ver.ConversationStarters
+	if starters == nil {
+		starters = []any{}
+	}
+	variables, _ := ver.Meta["variables"].([]any)
+	if variables == nil {
+		variables = []any{}
+	}
+	return map[string]any{
+		"id":                    ver.ID,
+		"application_id":        ver.ApplicationID,
+		"name":                  ver.Name,
+		"status":                ver.Status,
+		"author_id":             userID,
+		"created_at":            ver.CreatedAt,
+		"author":                map[string]any{"id": userID, "email": user.Email, "name": user.Name},
+		"meta":                  ver.Meta,
+		"is_forked":             false,
+		"is_default":            ver.IsDefault,
+		"agent_type":            ver.AgentType,
+		"instructions":          ver.Instructions,
+		"welcome_message":       ver.WelcomeMessage,
+		"llm_settings":          llm,
+		"conversation_starters": starters,
+		"tools":                 []any{},
+		"variables":             variables,
+		"tags":                  []any{},
+	}
 }
 
 func strVal(m map[string]any, key string) string {
@@ -486,11 +528,12 @@ func strVal(m map[string]any, key string) string {
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	applicationID := chi.URLParam(r, "applicationID")
-	user, _ := auth.UserFromContext(r.Context())
-	userID := user.ID
-	if userID == "" {
-		userID = "1"
+	user, ownerID, ok := principal(r)
+	if !ok {
+		apierr.Write(w, apierr.Unauthorized("an authenticated principal is required"))
+		return
 	}
+	userID := strconv.FormatInt(ownerID, 10)
 
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -577,8 +620,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		"name":        app.Name,
 		"description": app.Description,
 		"icon":        app.Icon,
-		"owner_id":    userID,
-		"created_at":  app.CreatedAt,
+		// The application's owner is the row's owner_id, not whoever is
+		// editing it now — an update does not transfer ownership.
+		"owner_id":   app.OwnerID,
+		"created_at": app.CreatedAt,
 	}
 
 	// Update version if provided
@@ -588,23 +633,12 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			v := applications.Version{
 				Name: anyStr(versionData, "name"),
 			}
+			if instr, ok := versionData["instructions"].(string); ok {
+				v.Instructions = instr
+			}
 			ver, vErr := h.repo.UpdateVersion(r.Context(), projectID, applicationID, versionID, v)
 			if vErr == nil {
-				vd := map[string]any{
-					"id":             ver.ID,
-					"application_id": ver.ApplicationID,
-					"name":           ver.Name,
-					"status":         ver.Status,
-					"author_id":      userID,
-					"created_at":     ver.CreatedAt,
-					"author":         map[string]any{"id": userID, "email": user.Email, "name": ""},
-					"meta":           map[string]any{"step_limit": 25},
-					"is_forked":      false,
-				}
-				if instr, ok := versionData["instructions"].(string); ok {
-					vd["instructions"] = instr
-				}
-				resp["version_details"] = vd
+				resp["version_details"] = versionDetailsResponse(ver, user, userID)
 			}
 		}
 	}
@@ -626,12 +660,17 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	applicationID := chi.URLParam(r, "applicationID")
 
+	s, ok := tenantSchema(projectID)
+	if !ok {
+		apierr.Write(w, apierr.BadRequest("invalid project id"))
+		return
+	}
+
 	// Guard: block deletion if any version is published/embedded
 	if h.pool != nil {
-		s := fmt.Sprintf("p_%s", projectID)
 		var pubCount int
 		if err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
-			`SELECT COUNT(*) FROM %q.application_versions WHERE application_id = $1 AND status IN ('published','embedded')`, s),
+			`SELECT COUNT(*) FROM %s.application_versions WHERE application_id = $1 AND status IN ('published','embedded')`, s),
 			applicationID).Scan(&pubCount); err != nil {
 			apierr.Write(w, apierr.Internal("failed to check published versions"))
 			return
@@ -656,10 +695,9 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	// Clean up application_tools entries on other versions that reference this deleted app
 	if h.pool != nil {
-		s := fmt.Sprintf("p_%s", projectID)
 		// best-effort cleanup; ignore error so the 204 response is still sent
 		_, _ = h.pool.Exec(r.Context(), fmt.Sprintf(`
-			DELETE FROM %q.application_tools
+			DELETE FROM %s.application_tools
 			WHERE type = 'application'
 			AND settings->>'application_id' = $1`, s), applicationID)
 	}
@@ -709,100 +747,19 @@ func (h *Handler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v := applications.Version{Name: name}
-	ver, err := h.repo.CreateVersion(r.Context(), projectID, applicationID, v)
+	user, ownerID, ok := principal(r)
+	if !ok {
+		apierr.Write(w, apierr.Unauthorized("an authenticated principal is required"))
+		return
+	}
+	userID := strconv.FormatInt(ownerID, 10)
+
+	ver, err := h.repo.CreateVersion(r.Context(), projectID, applicationID, *versionFromBody(body, ownerID))
 	if err != nil {
 		apierr.Write(w, err)
 		return
 	}
-
-	// Persist additional fields from body
-	if h.pool != nil {
-		user, _ := auth.UserFromContext(r.Context())
-		userID := user.ID
-		if userID == "" {
-			userID = "1"
-		}
-
-		s := fmt.Sprintf("p_%s", projectID)
-		agentType, _ := body["agent_type"].(string)
-		instructions, _ := body["instructions"].(string)
-		welcomeMsg, _ := body["welcome_message"].(string)
-		if agentType == "" {
-			agentType = "openai"
-		}
-
-		llmJSON := "{}"
-		if llm, ok := body["llm_settings"].(map[string]any); ok {
-			if b, e := json.Marshal(llm); e == nil {
-				llmJSON = string(b)
-			}
-		}
-		startersJSON := "[]"
-		if cs, ok := body["conversation_starters"].([]any); ok {
-			if b, e := json.Marshal(cs); e == nil {
-				startersJSON = string(b)
-			}
-		}
-		metaJSON := `{"step_limit":25}`
-		if vars, ok := body["variables"].([]any); ok && len(vars) > 0 {
-			if b, e := json.Marshal(vars); e == nil {
-				metaJSON = fmt.Sprintf(`{"step_limit":25,"variables":%s}`, string(b))
-			}
-		}
-
-		if _, execErr := h.pool.Exec(r.Context(), fmt.Sprintf(
-			`UPDATE %q.application_versions SET agent_type=$1, instructions=$2, welcome_message=$3, llm_settings=$4::jsonb, conversation_starters=$5::jsonb, author_id=$6, meta=$7::jsonb WHERE id=$8`, s),
-			agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON, ver.ID); execErr != nil {
-			apierr.Write(w, apierr.Internal("failed to persist version fields"))
-			return
-		}
-
-		llmResp := map[string]any{}
-		if llm, ok := body["llm_settings"].(map[string]any); ok {
-			llmResp = llm
-		}
-		var starters []any
-		if cs, ok := body["conversation_starters"].([]any); ok {
-			starters = cs
-		}
-		if starters == nil {
-			starters = []any{}
-		}
-		var variables []any
-		if vars, ok := body["variables"].([]any); ok {
-			variables = vars
-		}
-		if variables == nil {
-			variables = []any{}
-		}
-		var meta map[string]any
-		// metaJSON was just built from json.Marshal above — cannot be invalid JSON
-		_ = json.Unmarshal([]byte(metaJSON), &meta)
-
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"id":                    ver.ID,
-			"application_id":       ver.ApplicationID,
-			"name":                 ver.Name,
-			"status":               ver.Status,
-			"created_at":           ver.CreatedAt,
-			"author_id":            userID,
-			"author":               map[string]any{"id": userID, "email": user.Email, "name": ""},
-			"agent_type":           agentType,
-			"instructions":         instructions,
-			"welcome_message":      welcomeMsg,
-			"llm_settings":         llmResp,
-			"meta":                 meta,
-			"conversation_starters": starters,
-			"variables":            variables,
-			"tools":                []any{},
-			"tags":                 []any{},
-			"is_forked":            false,
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, ver)
+	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, userID))
 }
 
 func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
@@ -810,12 +767,17 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 	applicationID := chi.URLParam(r, "applicationID")
 	versionID := chi.URLParam(r, "versionID")
 
+	if _, ok := tenantSchema(projectID); !ok {
+		apierr.Write(w, apierr.BadRequest("invalid project id"))
+		return
+	}
+
 	// Guard: block update of published/embedded versions
 	if h.pool != nil {
-		s := fmt.Sprintf("p_%s", projectID)
+		s, _ := tenantSchema(projectID)
 		var status string
 		err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
-			`SELECT status FROM %q.application_versions WHERE application_id = $1 AND id = $2`, s),
+			`SELECT status FROM %s.application_versions WHERE application_id = $1 AND id = $2`, s),
 			applicationID, versionID).Scan(&status)
 		if err == nil && (status == "published" || status == "embedded") {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -831,102 +793,46 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update version fields directly via SQL for full fidelity
-	if h.pool != nil {
-		s := fmt.Sprintf("p_%s", projectID)
-		setClauses := []string{"updated_at = now()"}
-		args := []any{}
-		argIdx := 1
-
-		if name, ok := body["name"].(string); ok && name != "" {
-			setClauses = append(setClauses, fmt.Sprintf("name = $%d", argIdx))
-			args = append(args, name)
-			argIdx++
-		}
-		if instr, ok := body["instructions"].(string); ok {
-			setClauses = append(setClauses, fmt.Sprintf("instructions = $%d", argIdx))
-			args = append(args, instr)
-			argIdx++
-		}
-		if llm, ok := body["llm_settings"].(map[string]any); ok {
-			b, _ := json.Marshal(llm)
-			setClauses = append(setClauses, fmt.Sprintf("llm_settings = $%d::jsonb", argIdx))
-			args = append(args, string(b))
-			argIdx++
-		}
-		if cs, ok := body["conversation_starters"].([]any); ok {
-			b, _ := json.Marshal(cs)
-			setClauses = append(setClauses, fmt.Sprintf("conversation_starters = $%d::jsonb", argIdx))
-			args = append(args, string(b))
-			argIdx++
-		}
-		if wm, ok := body["welcome_message"].(string); ok {
-			setClauses = append(setClauses, fmt.Sprintf("welcome_message = $%d", argIdx))
-			args = append(args, wm)
-			argIdx++
-		}
-		if at, ok := body["agent_type"].(string); ok && at != "" {
-			setClauses = append(setClauses, fmt.Sprintf("agent_type = $%d", argIdx))
-			args = append(args, at)
-			argIdx++
-		}
-		if meta, ok := body["meta"].(map[string]any); ok {
-			b, _ := json.Marshal(meta)
-			setClauses = append(setClauses, fmt.Sprintf("meta = $%d::jsonb", argIdx))
-			args = append(args, string(b))
-			argIdx++
-		}
-
-		args = append(args, versionID, applicationID)
-		q := fmt.Sprintf(`UPDATE %q.application_versions SET %s WHERE id = $%d AND application_id = $%d`,
-			s, strings.Join(setClauses, ", "), argIdx, argIdx+1)
-		if _, execErr := h.pool.Exec(r.Context(), q, args...); execErr != nil {
-			apierr.Write(w, apierr.Internal("failed to update version"))
-			return
-		}
-	}
-
-	// Return the updated version
-	if h.pool != nil {
-		s := fmt.Sprintf("p_%s", projectID)
-		var id int
-		var name, status, agentType string
-		var llmJSON, metaJSON, startersJSON []byte
-		var instructions, welcomeMsg string
-		if err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
-			`SELECT id, name, status, COALESCE(agent_type,''), COALESCE(instructions,''), COALESCE(welcome_message,''),
-			        COALESCE(llm_settings::text,'{}')::bytea, COALESCE(meta::text,'{}')::bytea,
-			        COALESCE(conversation_starters::text,'[]')::bytea
-			 FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(
-			&id, &name, &status, &agentType, &instructions, &welcomeMsg, &llmJSON, &metaJSON, &startersJSON); err != nil {
-			apierr.Write(w, apierr.Internal("failed to read updated version"))
-			return
-		}
-
-		var llm, meta map[string]any
-		var starters []any
-		// JSON was read from DB via COALESCE — cannot be invalid
-		_ = json.Unmarshal(llmJSON, &llm)
-		_ = json.Unmarshal(metaJSON, &meta)
-		_ = json.Unmarshal(startersJSON, &starters)
-
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"id": strconv.Itoa(id), "application_id": applicationID,
-			"name": name, "status": status, "agent_type": agentType,
-			"instructions": instructions, "welcome_message": welcomeMsg,
-			"llm_settings": llm, "meta": meta,
-			"conversation_starters": starters,
-		})
+	user, ownerID, ok := principal(r)
+	if !ok {
+		apierr.Write(w, apierr.Unauthorized("an authenticated principal is required"))
 		return
 	}
 
-	v := applications.Version{Name: strVal(body, "name")}
+	// Only the keys the caller actually sent are written: the repository
+	// leaves an unset field alone rather than blanking it. The previous
+	// implementation opened its SET list with `updated_at = now()` —
+	// application_versions has no updated_at column (migrations/001_initial
+	// .sql), so every version update failed with 42P01 and returned a 500.
+	v := applications.Version{}
+	if name, ok := body["name"].(string); ok {
+		v.Name = name
+	}
+	if instructions, ok := body["instructions"].(string); ok {
+		v.Instructions = instructions
+	}
+	if welcomeMessage, ok := body["welcome_message"].(string); ok {
+		v.WelcomeMessage = welcomeMessage
+	}
+	if agentType, ok := body["agent_type"].(string); ok {
+		v.AgentType = agentType
+	}
+	if llm, ok := body["llm_settings"].(map[string]any); ok {
+		v.LLMSettings = llm
+	}
+	if starters, ok := body["conversation_starters"].([]any); ok {
+		v.ConversationStarters = starters
+	}
+	if meta, ok := body["meta"].(map[string]any); ok {
+		v.Meta = meta
+	}
+
 	ver, err := h.repo.UpdateVersion(r.Context(), projectID, applicationID, versionID, v)
 	if err != nil {
 		apierr.Write(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, ver)
+	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, strconv.FormatInt(ownerID, 10)))
 }
 
 func (h *Handler) DeleteVersion(w http.ResponseWriter, r *http.Request) {
@@ -934,12 +840,17 @@ func (h *Handler) DeleteVersion(w http.ResponseWriter, r *http.Request) {
 	applicationID := chi.URLParam(r, "applicationID")
 	versionID := chi.URLParam(r, "versionID")
 
+	if _, ok := tenantSchema(projectID); !ok {
+		apierr.Write(w, apierr.BadRequest("invalid project id"))
+		return
+	}
+
 	// Guard: block deletion of published/embedded versions
 	if h.pool != nil {
-		s := fmt.Sprintf("p_%s", projectID)
+		s, _ := tenantSchema(projectID)
 		var status string
 		err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
-			`SELECT status FROM %q.application_versions WHERE application_id = $1 AND id = $2`, s),
+			`SELECT status FROM %s.application_versions WHERE application_id = $1 AND id = $2`, s),
 			applicationID, versionID).Scan(&status)
 		if err == nil && (status == "published" || status == "embedded") {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -1018,7 +929,11 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	s := fmt.Sprintf("p_%s", projectID)
+	s, ok := tenantSchema(projectID)
+	if !ok {
+		apierr.Write(w, apierr.BadRequest("invalid project id"))
+		return
+	}
 
 	var id int
 	var appID int
@@ -1035,7 +950,7 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 			COALESCE(v.conversation_starters::text, '[]'),
 			COALESCE(v.pipeline_settings::text, '{}'),
 			v.author_id
-		FROM %q.application_versions v
+		FROM %s.application_versions v
 		WHERE v.application_id = $1 AND v.id = $2`, s), applicationID, versionID).Scan(
 		&id, &appID, &name, &status, &createdAt,
 		&agentType, &instructions, &welcomeMsg,
@@ -1070,8 +985,8 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 	toolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT etm.id, etm.tool_id, etm.entity_type, COALESCE(etm.selected_tools::text, '{}'),
 			t.name, t.type, t.settings
-		FROM %q.entity_tool_mapping etm
-		LEFT JOIN %q.elitea_tools t ON t.id = etm.tool_id
+		FROM %s.entity_tool_mapping etm
+		LEFT JOIN %s.elitea_tools t ON t.id = etm.tool_id
 		WHERE etm.entity_version_id = $1`, s, s), versionID)
 	if err == nil {
 		defer toolRows.Close()
@@ -1124,7 +1039,7 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 	projIDInt, _ := strconv.Atoi(projectID)
 	appToolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT id, name, type, settings::text
-		FROM %q.application_tools
+		FROM %s.application_tools
 		WHERE application_version_id = $1`, s), versionID)
 	if err == nil {
 		defer appToolRows.Close()
@@ -1149,7 +1064,7 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"id":                     strconv.Itoa(id),
+		"id":                    strconv.Itoa(id),
 		"application_id":        strconv.Itoa(appID),
 		"name":                  name,
 		"status":                status,
@@ -1199,7 +1114,7 @@ func (h *Handler) expandToolSettings(ctx context.Context, schema, projectID stri
 
 		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 			SELECT id, COALESCE(uuid::text, ''), type, project_id, data, shared
-			FROM %q.configuration
+			FROM %s.configuration
 			WHERE elitea_title = $1
 			LIMIT 1`, schema), title).Scan(
 			&configID, &configUUID, &configType, &configProjectID, &configData, &configShared,
@@ -1211,7 +1126,7 @@ func (h *Handler) expandToolSettings(ctx context.Context, schema, projectID stri
 			}
 			err = h.pool.QueryRow(ctx, fmt.Sprintf(`
 				SELECT id, COALESCE(uuid::text, ''), type, project_id, data, shared
-				FROM %q.configuration
+				FROM %s.configuration
 				WHERE elitea_title = $1 AND shared = true
 				LIMIT 1`, schema), title).Scan(
 				&configID, &configUUID, &configType, &configProjectID, &configData, &configShared,
