@@ -32,6 +32,7 @@
  * `CommonArrayField`/`AnyOfPatternField`/`CommonStringField`'s
  * `codeLanguage` branch, all of which render one).
  */
+import { afterEach, beforeEach } from 'vitest';
 
 // Untyped on purpose: real `DOMRectList`/`DOMRect` declare members this fake
 // never needs (`clientRectsFor`'s only real read is `.length`, see the file
@@ -69,4 +70,47 @@ export function installCodeMirrorTestPolyfills(): void {
   if (typeof window.ResizeObserver === 'undefined') {
     window.ResizeObserver = NoopResizeObserver;
   }
+}
+
+/**
+ * Inverse of the `ResizeObserver` branch above, for the handful of tests
+ * (`EditorPanel.test.tsx`, `PipelineEditor.test.tsx`) that assert on the flow
+ * pane's error boundary catching `useFlowEditorResizeObserver`'s real,
+ * currently-true failure when `ResizeObserver` is unavailable.
+ *
+ * jsdom globals are NOT reset between test files within the same vitest
+ * worker (proven: the storage shim in `src/test/setup.ts` exists for the
+ * identical reason). 28 other test files call
+ * `installCodeMirrorTestPolyfills()` above, which defines
+ * `window.ResizeObserver` PERMANENTLY for the rest of that worker process's
+ * lifetime — so whether the flow-pane fallback tests pass or fail was
+ * silently dependent on vitest's file-to-worker scheduling for that run,
+ * reproduced directly: 3 consecutive full-suite runs went 2 fail / 0 fail /
+ * 0 fail with no source change between them.
+ *
+ * Call once at module scope in any file with that assertion. Registers its
+ * own `beforeEach`/`afterEach` so the precondition holds regardless of
+ * which other files already ran in the same worker, and restores whatever
+ * was there before so this file does not itself become a new source of the
+ * same leak for files that run after it.
+ */
+export function forceResizeObserverAbsentForTest(): void {
+  let previous: typeof window.ResizeObserver;
+  let hadOwnProperty = false;
+
+  beforeEach(() => {
+    hadOwnProperty = Object.prototype.hasOwnProperty.call(window, 'ResizeObserver');
+    previous = window.ResizeObserver;
+    // @ts-expect-error -- deliberately removing the global for this test; see the module doc comment above.
+    delete window.ResizeObserver;
+  });
+
+  afterEach(() => {
+    if (hadOwnProperty) {
+      window.ResizeObserver = previous;
+    } else {
+      // @ts-expect-error -- restoring the pre-test "absent" state exactly.
+      delete window.ResizeObserver;
+    }
+  });
 }
