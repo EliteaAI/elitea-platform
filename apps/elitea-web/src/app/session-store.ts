@@ -20,6 +20,7 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 
 import { createHttpClient } from '@/shared/api/http';
+import { readPersistedProject } from '@/widgets/app-shell';
 
 import type { AuthContext, AuthUser } from './router-context';
 
@@ -88,8 +89,42 @@ export const useSessionStore = Object.assign(useSessionStoreHook, {
   setState: (partial: Partial<SessionState>): void => resolveStore().setState(partial),
 });
 
+/**
+ * `AuthContext.getSelectedProjectId`, resolving the currently selected
+ * project for every consumer of the router context — `pages/agents`,
+ * `features/apps` and `features/chat-input` each hold a `useSelectedProjectId`
+ * hook that is a one-line read of this seam, and `routes/-guards/`
+ * (`skillsGuard`, `integrationGuard`) call it directly.
+ *
+ * It returned a hardcoded `undefined` — the "R2 integration gap" App.tsx's own
+ * header flags ("`<RouterProvider>` does not override the router's stub
+ * `context.auth` with a real session-backed one"). Every query gated on the
+ * resolved project id was therefore permanently disabled: `EditApplication`
+ * never fetched an agent at all, so a deep link to `/agents/:tab/:id/:version`
+ * cold-loaded to an empty page with the fallback "Agent" heading (JRNY-005).
+ *
+ * The selection itself already exists and is already persisted —
+ * `widgets/app-shell`'s `useSelectedProject` writes it through
+ * `writePersistedProject` on every `selectProject` call, before it updates its
+ * own store — so reading the persisted value here is both current and
+ * synchronous, which this non-hook seam requires. `app/` is also the only
+ * layer permitted to reach into `widgets/` (the three `useSelectedProjectId`
+ * duplicates sit in `pages/` and `features/`, which may not import upward).
+ *
+ * The `undefined` vs `''` branch is the baseline's, per AuthContext's own
+ * contract (`router-context.ts`): with no selection but a personal project in
+ * play, return `undefined` — "a project exists but is not the active
+ * selection yet", which leaves guards on their defer path — and only return
+ * `''` when there is no project context at all.
+ */
+function resolveSelectedProjectId(): string | undefined {
+  const persisted = readPersistedProject();
+  if (persisted !== null) return persisted.id;
+  return useSessionStore.getState().user?.personal_project_id !== undefined ? undefined : '';
+}
+
 /** Stable AuthContext backed by the zustand store — passed to RouterProvider. */
 export const sessionAuthContext: AuthContext = {
   getUser: () => useSessionStore.getState().user,
-  getSelectedProjectId: () => undefined,
+  getSelectedProjectId: resolveSelectedProjectId,
 };
