@@ -46,15 +46,15 @@ const OUT = 'parity/route-wiring-map.json';
  */
 const RESOLUTION = {
   // ---- agents (A1) ----
-  '_shell/agents-hub.tsx': ['pages/agents-hub/AgentHub', 'AgentHub', [], 'ready', 'AgentHubProps is intentionally empty — "route props are handled at the route layer".'],
-  '_shell/agents/$tab.tsx': ['pages/agents/Applications', 'Applications', [], 'ready', 'Route keeps its ExclusiveOutlet composition; only the leaf component changes.'],
-  '_shell/agents/$tab.$agentId.tsx': ['pages/agents/EditApplication', 'EditApplication', [], 'ready', ''],
-  '_shell/agents/create.tsx': ['pages/agents/CreateApplication', 'CreateApplication', [], 'ready', ''],
+  '_shell/agents-hub.tsx': ['pages/agents-hub/AgentHub', 'AgentHub', [], 'wired', 'AgentHubProps is intentionally empty — "route props are handled at the route layer".'],
+  '_shell/agents/$tab.tsx': ['pages/agents/Applications', 'Applications', [], 'wired', 'Route keeps its ExclusiveOutlet composition; only the leaf component changes.'],
+  '_shell/agents/$tab.$agentId.tsx': ['pages/agents/EditApplication', 'EditApplication', [], 'wired', ''],
+  '_shell/agents/create.tsx': ['pages/agents/CreateApplication', 'CreateApplication', [], 'wired', ''],
 
   // ---- apps (A6) ----
-  '_shell/apps/index.tsx': ['pages/apps/Apps', 'Apps', [], 'ready', ''],
-  '_shell/apps/$tab.tsx': ['pages/apps/Apps', 'Apps', [], 'ready', ''],
-  '_shell/apps/$tab.$appId.tsx': ['pages/apps/AppDetail', 'AppDetail', [], 'ready', ''],
+  '_shell/apps/index.tsx': ['pages/apps/Apps', 'Apps', [], 'wired', ''],
+  '_shell/apps/$tab.tsx': ['pages/apps/Apps', 'Apps', [], 'wired', ''],
+  '_shell/apps/$tab.$appId.tsx': ['pages/apps/AppDetail', 'AppDetail', [], 'wired', ''],
   '_shell/apps/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['isApplication', 'deps.createToolkit'], 'wired', 'Apps reuse the toolkit creator with isApplication.'],
 
   // ---- credentials (A7) ----
@@ -63,18 +63,18 @@ const RESOLUTION = {
   '_shell/credentials/create-credential.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'onCreated', 'onCancelled'], 'wired', 'Docstring target "CreateCredentialFromMain" = CreateCredential with the main-app context.'],
 
   // ---- misc (A11-A13) ----
-  '_shell/help-center.tsx': ['pages/help-center/HelpCenterPage', 'HelpCenterPage', [], 'ready', 'Name drift only: docstring says `Resources`, the built component is HelpCenterPage (also a default export).'],
-  '_shell/onboarding.tsx': ['pages/onboarding/Onboarding', 'Onboarding', [], 'ready', 'Route currently renders RouteShell + Outlet; the 398-line Onboarding page is unimported.'],
+  '_shell/help-center.tsx': ['pages/help-center/HelpCenterPage', 'HelpCenterPage', [], 'wired', 'Name drift only: docstring says `Resources`, the built component is HelpCenterPage (also a default export).'],
+  '_shell/onboarding.tsx': ['pages/onboarding/Onboarding', 'Onboarding', [], 'wired', 'Route currently renders RouteShell + Outlet; the 398-line Onboarding page is unimported.'],
 
   // ---- mcps (A5) ----
-  '_shell/mcps/$tab.tsx': ['pages/toolkits/Toolkits', 'Toolkits', ['isMCP'], 'ready', 'No pages/mcps list component exists and none is needed — Toolkits already branches on isMCP throughout (Toolkits.tsx:280 names this route family).'],
+  '_shell/mcps/$tab.tsx': ['pages/toolkits/Toolkits', 'Toolkits', ['isMCP'], 'wired', 'No pages/mcps list component exists and none is needed — Toolkits already branches on isMCP throughout (Toolkits.tsx:280 names this route family).'],
   '_shell/mcps/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['isMCP', 'deps.createToolkit'], 'wired', ''],
   '_shell/mcps/$tab.$mcpId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['isMCP', 'deps.saveToolkit'], 'wired', ''],
 
   // ---- pipelines (A2) ----
-  '_shell/pipelines/$tab.tsx': ['pages/pipelines/Pipelines', 'Pipelines', [], 'ready', ''],
-  '_shell/pipelines/$tab.$agentId.tsx': ['pages/pipelines/EditPipeline', 'EditPipeline', [], 'ready', ''],
-  '_shell/pipelines/create.tsx': ['pages/pipelines/CreatePipeline', 'CreatePipeline', [], 'ready', ''],
+  '_shell/pipelines/$tab.tsx': ['pages/pipelines/Pipelines', 'Pipelines', [], 'wired', ''],
+  '_shell/pipelines/$tab.$agentId.tsx': ['pages/pipelines/EditPipeline', 'EditPipeline', [], 'wired', ''],
+  '_shell/pipelines/create.tsx': ['pages/pipelines/CreatePipeline', 'CreatePipeline', [], 'wired', ''],
 
   // ---- settings (A9, issue #25) ----
   '_shell/settings/create-configuration.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'configurationMode', 'onCreated', 'onCancelled'], 'wired', ''],
@@ -83,20 +83,20 @@ const RESOLUTION = {
   '_shell/settings/model-configuration.tsx': ['pages/settings/AIConfiguration', 'AIConfiguration', ['projectId'], 'hybrid-defect', 'Renders AIConfiguration AND a RouteShell heading. See also issue #80 (missing ModelConfiguration layer).'],
 
   // ---- skills (A3, issue #23) ----
-  '_shell/skills/$tab.tsx': ['pages/skills/Skills', 'Skills', [], 'ready', ''],
-  '_shell/skills/$tab.$skillId.tsx': ['pages/skills/EditSkill', 'EditSkill', [], 'ready', ''],
-  '_shell/skills/create.tsx': ['pages/skills/CreateSkill', 'CreateSkill', [], 'ready', ''],
+  '_shell/skills/$tab.tsx': ['pages/skills/Skills', 'Skills', [], 'wired', ''],
+  '_shell/skills/$tab.$skillId.tsx': ['pages/skills/EditSkill', 'EditSkill', [], 'wired', ''],
+  '_shell/skills/create.tsx': ['pages/skills/CreateSkill', 'CreateSkill', [], 'wired', ''],
 
   // ---- toolkits (A4) ----
-  '_shell/toolkits/$tab.tsx': ['pages/toolkits/Toolkits', 'Toolkits', [], 'ready', ''],
+  '_shell/toolkits/$tab.tsx': ['pages/toolkits/Toolkits', 'Toolkits', [], 'wired', ''],
   '_shell/toolkits/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['deps.createToolkit'], 'wired', ''],
   '_shell/toolkits/$tab.$toolkitId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['deps.saveToolkit'], 'wired', ''],
 
   // ---- user-public (A13) ----
   '_shell/user-public/$tab.tsx': ['pages/user-public/ui/UserPublicPage', 'UserPublicPage', ['tab', 'onTabChange', 'statuses', 'onStatusesChange', 'authorId', 'authorName'], 'wired', 'Heaviest route-owned state in the set: tab + status filters + author identity.'],
-  '_shell/user-public/agents.$agentId.tsx': ['pages/agents/EditApplication', 'EditApplication', [], 'ready', ''],
-  '_shell/user-public/pipelines.$agentId.tsx': ['pages/pipelines/EditPipeline', 'EditPipeline', [], 'ready', ''],
-  '_shell/user-public/apps.$appId.tsx': ['pages/apps/AppDetail', 'AppDetail', [], 'ready', ''],
+  '_shell/user-public/agents.$agentId.tsx': ['pages/agents/EditApplication', 'EditApplication', [], 'wired', ''],
+  '_shell/user-public/pipelines.$agentId.tsx': ['pages/pipelines/EditPipeline', 'EditPipeline', [], 'wired', ''],
+  '_shell/user-public/apps.$appId.tsx': ['pages/apps/AppDetail', 'AppDetail', [], 'wired', ''],
   '_shell/user-public/toolkits.$toolkitId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['deps.saveToolkit'], 'wired', ''],
   '_shell/user-public/mcps.$mcpId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['isMCP', 'deps.saveToolkit'], 'wired', ''],
 

@@ -90,9 +90,19 @@ describe('SkillsGuard (full router)', () => {
       getSelectedProjectId: () => '999',
     });
 
+    // `/skills/:tab` now renders the real `Skills` page (Phase 1a), not the
+    // `RouteShell` placeholder this assertion originally used as a proxy for
+    // "the route rendered" — so it asserts on the page's own heading
+    // instead. The guard's actual claim (no redirect fired) is the
+    // `pathname` check below; this one proves the route reached its target
+    // rather than an error boundary.
+    // Scoped to the heading role: "Skills" also appears as the sidebar's own
+    // nav label, which is present on every route and would make a bare text
+    // query pass without the page ever rendering.
     await waitFor(() => {
-      expect(screen.getByTestId('route-shell')).toHaveAttribute('data-route-id', 'skills.tab');
+      expect(screen.getByRole('heading', { name: 'Skills', level: 1 })).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('route-shell')).not.toBeInTheDocument();
     expect(router.state.location.pathname).toBe('/skills/all');
   });
 });

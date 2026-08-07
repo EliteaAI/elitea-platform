@@ -1,16 +1,21 @@
 /** ROUTE-004 `/onboarding` -> `Onboarding` (spec §8.1). */
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 
+import Onboarding from '@/pages/onboarding/Onboarding';
+
 import { RouteError, RoutePending } from '../-ui/RouteStatus';
-import { RouteShell } from '../-ui/RouteShell';
 
 export const Route = createFileRoute('/_shell/onboarding')({
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => (
+  component: OnboardingRoute,
+});
+
+function OnboardingRoute() {
+  return (
     <>
-      <RouteShell routeId="onboarding" fallback="Onboarding" />
+      <Onboarding />
       <Outlet />
     </>
-  ),
-});
+  );
+}
