@@ -59,27 +59,64 @@ export async function deleteConversation(
   );
 }
 
+/** An agent created through the API, with the initial version it owns. */
+export interface CreatedAgent {
+  /** `applications.id` — the SERIAL key every route addresses the agent by. */
+  readonly id: string;
+  /** `application_versions.id` of the initial version created alongside it. */
+  readonly versionId: string;
+}
+
 /**
  * Create an agent (application) via API.
- * Returns the new agent id.
+ *
+ * Sends a `versions` array, exactly as the create-agent form does
+ * (`entities/application-form/model/mutations.ts` `toVersionWriteRequest`).
+ * An application with no version row is a degenerate entity: `List` INNER
+ * JOINs `application_versions`, so it never appears in the agents list, and
+ * there is no version for a deep link to open. A fixture that creates one
+ * sets its callers up to assert against a shape the product never produces.
+ *
+ * Throws on a non-2xx response. It previously read `body.id` off whatever
+ * came back, so when `POST /elitea_core/applications/...` was returning 404
+ * (issue #115) the `.json()` parse threw and every caller's `.catch()`
+ * quietly took a degraded branch — the journeys passed while the endpoint
+ * they exist to exercise was entirely absent.
  */
 export async function createAgent(
   request: APIRequestContext,
   name: string,
-): Promise<string> {
-  const resp = await request.post(
-    `${API_BASE}/elitea_core/applications/prompt_lib/${DEFAULT_PROJECT_ID}`,
-    {
-      data: {
-        name,
-        description: `${AUTOTEST_PREFIX}e2e test agent`,
-        type: 'agent',
-        prompt: 'You are a helpful assistant.',
-      },
+): Promise<CreatedAgent> {
+  const path = `/elitea_core/applications/prompt_lib/${DEFAULT_PROJECT_ID}`;
+  const resp = await request.post(`${API_BASE}${path}`, {
+    data: {
+      name,
+      description: `${AUTOTEST_PREFIX}e2e test agent`,
+      type: 'agent',
+      versions: [
+        {
+          name: 'base',
+          agent_type: 'openai',
+          instructions: 'You are a helpful assistant.',
+          conversation_starters: [],
+        },
+      ],
     },
-  );
+  });
+  if (!resp.ok()) {
+    throw new Error(
+      `createAgent: POST ${path} returned ${resp.status()}: ${(await resp.text()).slice(0, 300)}`,
+    );
+  }
   const body = await resp.json();
-  return body.id as string;
+  const id: unknown = body?.id;
+  const versionId: unknown = body?.version_details?.id;
+  if (typeof id !== 'string' || typeof versionId !== 'string') {
+    throw new Error(
+      `createAgent: POST ${path} returned 201 without an id/version_details.id: ${JSON.stringify(body).slice(0, 300)}`,
+    );
+  }
+  return { id, versionId };
 }
 
 /**

@@ -7,12 +7,14 @@
  * than touching the module singleton — that is the reason the factory is
  * exported (same rationale as `createNavBlockerStore`).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
+
+import { writePersistedProject } from '@/widgets/app-shell';
 
 import { server } from '../test/setup';
 
-import { createSessionStore } from './session-store';
+import { createSessionStore, sessionAuthContext, useSessionStore } from './session-store';
 
 const INFO = '/forward-auth/info';
 
@@ -103,5 +105,42 @@ describe('createSessionStore', () => {
 
     expect(a.getState().user?.id).toBe('u-7');
     expect(b.getState().user).toBeUndefined();
+  });
+});
+
+/**
+ * `sessionAuthContext.getSelectedProjectId` is the seam every
+ * `useSelectedProjectId` duplicate reads and every project-scoped query is
+ * gated on. It returned a hardcoded `undefined`, so those queries never ran
+ * and `EditApplication` could not load an agent at all — a deep link
+ * cold-loaded to an empty page (JRNY-005).
+ */
+describe('sessionAuthContext.getSelectedProjectId', () => {
+  afterEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    useSessionStore.setState({ user: undefined });
+  });
+
+  it('resolves the persisted selected project', () => {
+    writePersistedProject({ id: '42', name: 'Default Project' });
+    expect(sessionAuthContext.getSelectedProjectId()).toBe('42');
+  });
+
+  it('prefers the per-tab session selection over the local one', () => {
+    writePersistedProject({ id: '7', name: 'Local' });
+    sessionStorage.setItem('el.project.id', '9');
+    sessionStorage.setItem('el.project.name', 'This Tab');
+    expect(sessionAuthContext.getSelectedProjectId()).toBe('9');
+  });
+
+  it('defers with undefined when nothing is selected but a personal project exists', () => {
+    useSessionStore.setState({ user: { id: 'u-1', personal_project_id: 'p-1' } });
+    expect(sessionAuthContext.getSelectedProjectId()).toBeUndefined();
+  });
+
+  it("returns '' when there is no project context at all", () => {
+    useSessionStore.setState({ user: { id: 'u-1' } });
+    expect(sessionAuthContext.getSelectedProjectId()).toBe('');
   });
 });
