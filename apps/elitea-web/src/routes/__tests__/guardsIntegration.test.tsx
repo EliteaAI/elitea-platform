@@ -1,11 +1,36 @@
+import CssBaseline from '@mui/material/CssBaseline';
+import { ThemeProvider } from '@mui/material/styles';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router';
 import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthContext, RouterContext } from '@/app/router-context';
 import { resetConfigForTests } from '@/shared/config/get-config';
+import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 
 import { routeTree } from '../../routeTree.gen';
+
+/**
+ * Real router mount (§6.2), so `AppShell` mounts for real too. `AppShell`
+ * needs BOTH providers a bare `RouterProvider` doesn't supply:
+ *
+ *  - a `QueryClient`: `useProjectOptions` -> `useListProjects` -> `useQuery`
+ *    throws "No QueryClient set" without one.
+ *  - a MUI `ThemeProvider`: `AppShell`'s `sx` callbacks read `theme.palette`,
+ *    which throws "Cannot read properties of undefined (reading 'palette')"
+ *    against MUI's context-less default theme.
+ *
+ * Both errors were swallowed by the router's own error boundary, rendering
+ * "Something went wrong!" instead of surfacing in the test output — which is
+ * why this needed reading the boundary's DOM dump, not just the assertion
+ * failure, to find. Same shared-instance pattern as this directory's sibling
+ * `settingsLayout.test.tsx`, which already solved this for its own suite.
+ */
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
 
 beforeEach(() => {
   resetConfigForTests();
@@ -17,6 +42,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   resetConfigForTests();
+  queryClient.clear();
 });
 
 /**
@@ -28,7 +54,17 @@ afterEach(() => {
 function mountAt(path: string, auth: AuthContext) {
   const history = createMemoryHistory({ initialEntries: [path] });
   const router = createRouter({ routeTree, history, context: { auth } satisfies RouterContext });
-  render(<RouterProvider router={router} />);
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider
+        theme={theme}
+        defaultMode={DEFAULT_COLOR_SCHEME}
+      >
+        <CssBaseline />
+        <RouterProvider router={router} />
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
   return router;
 }
 
