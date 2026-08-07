@@ -149,10 +149,9 @@ describe('triggerProactiveRefresh', () => {
     );
 
     triggerProactiveRefresh('https://proactive.example.com');
-    // Fire-and-forget: give the microtask queue a turn.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(getAccessToken('https://proactive.example.com')).toBe('refreshed-proactively');
+    // Fire-and-forget: poll until the refresh lands.
+    await vi.waitFor(() =>
+      expect(getAccessToken('https://proactive.example.com')).toBe('refreshed-proactively'));
   });
 
   it('forwards the stored used_dcr flag on a proactive refresh request too', async () => {
@@ -176,9 +175,8 @@ describe('triggerProactiveRefresh', () => {
     );
 
     triggerProactiveRefresh('https://proactive-dcr.example.com');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(refreshBody).toMatchObject({ used_dcr: true });
+    // Fire-and-forget: poll until the proxy has actually been called.
+    await vi.waitFor(() => expect(refreshBody).toMatchObject({ used_dcr: true }));
   });
 
   it('does not log the user out on a failed proactive refresh (best-effort only)', async () => {
