@@ -528,6 +528,20 @@ jobs:
       - name: Run knip dead code gate
         run: npx knip --max-issues 0
 
+  gate-playwright-image-tag:
+    name: Playwright image tag
+    # Runs on every PR, unlike the `visual` job that consumes the tag (release
+    # tags only). A drift introduced on a PR must not lie dormant until a
+    # release, when it would surface as an unexplained wall of snapshot diffs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Check the container tag matches package.json
+        run: node scripts/check-playwright-image-tag.mjs
+
   gate-theme:
     name: Theme gate
     runs-on: ubuntu-latest
@@ -751,11 +765,54 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Snapshot suite
+
+      # The tag below is asserted against package.json's pinned
+      # @playwright/test, so a version bump cannot silently leave baselines
+      # being compared against a different browser build (issue #61, item 4).
+      - name: Playwright container tag matches the pinned library
+        run: node scripts/check-playwright-image-tag.mjs
+
+      # The stack comes up on the HOST: scripts/e2e-stack.sh needs a container
+      # runtime, and a job `container:` would be docker-in-docker AND would not
+      # share the runner's network namespace, so BASE_URL=localhost:8082 could
+      # not reach it (issue #61, item 2).
+      - name: Bring up the E2E stack (host)
+        env:
+          COMPOSE_BIN: docker compose
+        run: ./scripts/e2e-stack.sh up && ./scripts/e2e-stack.sh seed
+
+      # Only the TEST RUN is containerised, in the image pinned to the same
+      # Playwright version, because baselines are only comparable when one fixed
+      # font stack rasterises them. A bare `npx playwright test` on the runner's
+      # own OS is what this issue calls "the main thing that will make this suite
+      # useless if skipped" (issue #61, item 1).
+      #
+      # E2E_REUSE_STACK=1 stops Playwright trying to start the stack a second
+      # time from inside a container that has no container runtime — see
+      # playwright.config.ts's webServer.reuseExistingServer comment.
+      - name: Snapshot suite (pinned container, host network)
         run: |
           test -d e2e/visual || { echo "release tag without a visual suite (unit V2) — refusing"; exit 1; }
-          npx playwright install --with-deps chromium
-          npx playwright test --grep @visual
+          docker run --rm --network host \
+            -v "$PWD":/work -w /work \
+            -e CI=1 -e E2E_REUSE_STACK=1 \
+            mcr.microsoft.com/playwright:v1.62.0-noble \
+            npx playwright test --grep @visual
+
+      - name: Upload snapshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-diffs
+          path: apps/elitea-web/playwright-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Tear down E2E stack
+        if: always()
+        env:
+          COMPOSE_BIN: docker compose
+        run: ./scripts/e2e-stack.sh down
 
   mutation-spotcheck:
     name: Mutation spot-check
