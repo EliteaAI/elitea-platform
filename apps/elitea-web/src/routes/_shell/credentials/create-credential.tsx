@@ -12,8 +12,19 @@
  *
  * `onCreated`/`onCancelled` both return to the credentials list — the route
  * owns navigation, the page owns the form (§3.2).
+ *
+ * `:credentialType` (ROUTE-024) is a real deep-link entry point in the
+ * baseline, not decoration: `components/CredentialWarningBanner.jsx:43`
+ * builds `CreateCredentialTypeFromMain.replace(':credentialType', type)`
+ * whenever it knows the type, and `hooks/credentials/useCredentialSearch.js:29`
+ * navigates there when a type is picked. `pages/Credentials/CreateCredential.jsx`
+ * then reads it with a single `useParams()` (:24) and shows the FORM instead
+ * of the type selector (`isEditing` at :132 requires `credentialType`).
+ * Since ROUTE-024 is an empty pattern-A child with no component of its own,
+ * this parent reads the param the same way the baseline does — one
+ * `useParams`, `strict: false` because the param belongs to the child match.
  */
-import { createFileRoute, Outlet, useNavigate } from '@tanstack/react-router';
+import { createFileRoute, Outlet, useNavigate, useParams } from '@tanstack/react-router';
 import { useCallback } from 'react';
 
 import { CreateCredential } from '@/pages/credentials/CreateCredential';
@@ -24,16 +35,31 @@ import { RouteError, RoutePending } from '../../-ui/RouteStatus';
 function CreateCredentialRoute() {
   const navigate = useNavigate();
   const context = useCredentialFormContext();
+  const { credentialType } = useParams({ strict: false });
   const leave = useCallback(() => {
     void navigate({ to: '/credentials' });
   }, [navigate]);
+  // Picking a type NAVIGATES to ROUTE-024 rather than setting page state, so
+  // the URL always names the type on screen — the baseline's own model
+  // (`hooks/credentials/useCredentialSearch.js:29` navigates to
+  // `CreateCredentialTypeFromMain` on selection). That is what makes Back
+  // from the form return to the picker, and what makes the resulting URL
+  // shareable — the same URL `CredentialWarningBanner` hands out.
+  const chooseType = useCallback(
+    (type: string) => {
+      void navigate({ to: '/credentials/create-credential/$credentialType', params: { credentialType: type } });
+    },
+    [navigate],
+  );
 
   return (
     <>
       <CreateCredential
         context={context}
+        {...(credentialType !== undefined ? { credentialType } : {})}
         onCreated={leave}
         onCancelled={leave}
+        onTypeChosen={chooseType}
       />
       <Outlet />
     </>
