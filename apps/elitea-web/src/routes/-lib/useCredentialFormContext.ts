@@ -61,17 +61,35 @@ export function selectPersonalProjectId(context: unknown): string | undefined {
   return (context as PersonalProjectRouterContext).auth?.getUser?.()?.personal_project_id;
 }
 
+/**
+ * The whole derivation, as a pure function — every branch that matters here
+ * is a fail-closed default, and those are exactly the branches worth
+ * asserting directly rather than through a router+store+query mount. Same
+ * "pure extraction, unit-testable without mounting" split
+ * `pages/user-public/api/useRouterAuth.ts` uses for its own selectors.
+ */
+export function deriveCredentialFormContext(
+  projectId: string,
+  personalProjectId: string | undefined,
+  permissions: ReadonlySet<string>,
+): CredentialFormContext {
+  return {
+    projectId,
+    ...(personalProjectId === undefined ? {} : { personalProjectId }),
+    isTeamProject: projectId !== '' && personalProjectId !== undefined && projectId !== personalProjectId,
+    canUpdate: permissions.has(PERMISSIONS.configuration.update),
+    canDelete: permissions.has(PERMISSIONS.configuration.delete),
+  };
+}
+
 export function useCredentialFormContext(): CredentialFormContext {
   const projectId = useSelectedProjectStore((state) => state.project?.id ?? '');
   const routeContext: unknown = useRouteContext({ strict: false });
   const personalProjectId = selectPersonalProjectId(routeContext);
   const permissions = usePermissionSet(projectId === '' ? undefined : projectId);
 
-  return useMemo(() => ({
-    projectId,
-    ...(personalProjectId === undefined ? {} : { personalProjectId }),
-    isTeamProject: projectId !== '' && personalProjectId !== undefined && projectId !== personalProjectId,
-    canUpdate: permissions.has(PERMISSIONS.configuration.update),
-    canDelete: permissions.has(PERMISSIONS.configuration.delete),
-  }), [projectId, personalProjectId, permissions]);
+  return useMemo(
+    () => deriveCredentialFormContext(projectId, personalProjectId, permissions),
+    [projectId, personalProjectId, permissions],
+  );
 }
