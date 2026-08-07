@@ -2779,7 +2779,7 @@ components:
     # ---- Toolkit instances ------------------------------------------------
     ToolkitCreateRequest:
       type: object
-      required: [name, type]
+      required: [type]
       description: >
         NOTE(1c): the handler decodes into `map[string]any` and the repository
         reads exactly `name`, `type`, `description` and `settings`
@@ -2788,6 +2788,12 @@ components:
         one — keep it in step with pgRepo.CreateToolkit if that changes.
         `author_id` is deliberately absent: the handler overwrites it from the
         authenticated principal.
+
+        Only `type` is required. `name` is NOT enforced by the backend —
+        `validateToolkitCreate` checks settings for `type: github` and nothing
+        else, and the repository stores whatever `name` it is given, including
+        an empty one. Marking `name` required here would make the generated
+        client stricter than the server and reject requests the API accepts.
       properties:
         name: { type: string, minLength: 1 }
         type:

@@ -40,6 +40,9 @@ const OUT = 'parity/route-wiring-map.json';
  *                        RouteShell heading above it. Remove the shell.
  *   page-is-stub       - route is wired, but the page component it renders is
  *                        itself scaffolding.
+ *   wired              - DONE. The route now renders its real page component;
+ *                        kept in the map so the tracker shows completed work
+ *                        rather than silently dropping rows.
  */
 const RESOLUTION = {
   // ---- agents (A1) ----
@@ -52,7 +55,7 @@ const RESOLUTION = {
   '_shell/apps/index.tsx': ['pages/apps/Apps', 'Apps', [], 'ready', ''],
   '_shell/apps/$tab.tsx': ['pages/apps/Apps', 'Apps', [], 'ready', ''],
   '_shell/apps/$tab.$appId.tsx': ['pages/apps/AppDetail', 'AppDetail', [], 'ready', ''],
-  '_shell/apps/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['isApplication', 'deps.createToolkit'], 'blocked-codegen', 'Apps reuse the toolkit creator with isApplication.'],
+  '_shell/apps/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['isApplication', 'deps.createToolkit'], 'wired', 'Apps reuse the toolkit creator with isApplication.'],
 
   // ---- credentials (A7) ----
   '_shell/credentials/$tab.tsx': ['pages/credentials/Credentials', 'Credentials', ['tab', 'projectId', 'onSelectCredential', 'onCreateNew'], 'needs-route-state', 'Route must supply projectId from context and both navigation callbacks.'],
@@ -65,8 +68,8 @@ const RESOLUTION = {
 
   // ---- mcps (A5) ----
   '_shell/mcps/$tab.tsx': ['pages/toolkits/Toolkits', 'Toolkits', ['isMCP'], 'ready', 'No pages/mcps list component exists and none is needed — Toolkits already branches on isMCP throughout (Toolkits.tsx:280 names this route family).'],
-  '_shell/mcps/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['isMCP', 'deps.createToolkit'], 'blocked-codegen', ''],
-  '_shell/mcps/$tab.$mcpId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['isMCP', 'deps.saveToolkit'], 'blocked-codegen', ''],
+  '_shell/mcps/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['isMCP', 'deps.createToolkit'], 'wired', ''],
+  '_shell/mcps/$tab.$mcpId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['isMCP', 'deps.saveToolkit'], 'wired', ''],
 
   // ---- pipelines (A2) ----
   '_shell/pipelines/$tab.tsx': ['pages/pipelines/Pipelines', 'Pipelines', [], 'ready', ''],
@@ -86,20 +89,20 @@ const RESOLUTION = {
 
   // ---- toolkits (A4) ----
   '_shell/toolkits/$tab.tsx': ['pages/toolkits/Toolkits', 'Toolkits', [], 'ready', ''],
-  '_shell/toolkits/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['deps.createToolkit'], 'blocked-codegen', ''],
-  '_shell/toolkits/$tab.$toolkitId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['deps.saveToolkit'], 'blocked-codegen', ''],
+  '_shell/toolkits/create.tsx': ['pages/toolkits/CreateToolkit', 'CreateToolkit', ['deps.createToolkit'], 'wired', ''],
+  '_shell/toolkits/$tab.$toolkitId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['deps.saveToolkit'], 'wired', ''],
 
   // ---- user-public (A13) ----
   '_shell/user-public/$tab.tsx': ['pages/user-public/ui/UserPublicPage', 'UserPublicPage', ['tab', 'onTabChange', 'statuses', 'onStatusesChange', 'authorId', 'authorName'], 'needs-route-state', 'Heaviest route-owned state in the set: tab + status filters + author identity.'],
   '_shell/user-public/agents.$agentId.tsx': ['pages/agents/EditApplication', 'EditApplication', [], 'ready', ''],
   '_shell/user-public/pipelines.$agentId.tsx': ['pages/pipelines/EditPipeline', 'EditPipeline', [], 'ready', ''],
   '_shell/user-public/apps.$appId.tsx': ['pages/apps/AppDetail', 'AppDetail', [], 'ready', ''],
-  '_shell/user-public/toolkits.$toolkitId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['deps.saveToolkit'], 'blocked-codegen', ''],
-  '_shell/user-public/mcps.$mcpId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['isMCP', 'deps.saveToolkit'], 'blocked-codegen', ''],
+  '_shell/user-public/toolkits.$toolkitId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['deps.saveToolkit'], 'wired', ''],
+  '_shell/user-public/mcps.$mcpId.tsx': ['pages/toolkits/EditToolkit', 'EditToolkit', ['isMCP', 'deps.saveToolkit'], 'wired', ''],
 
   // ---- artifacts (A8) — inline stubs added by PR #82, NOT RouteShell ----
-  '_shell/artifacts/index.tsx': ['pages/artifacts/Artifacts', 'Artifacts', [], 'ready', 'Currently a hand-written heading + one Button. The 363-line Artifacts page is unimported. Revert the stub rather than editing it.'],
-  '_shell/artifacts/create-bucket.tsx': ['pages/artifacts/CreateBucket', 'CreateBucket', [], 'ready', 'Currently a TextField whose submit only navigates — no API call. CreateBucket (built, tested) is unimported.'],
+  '_shell/artifacts/index.tsx': ['pages/artifacts/Artifacts', 'Artifacts', [], 'wired', 'Currently a hand-written heading + one Button. The 363-line Artifacts page is unimported. Revert the stub rather than editing it.'],
+  '_shell/artifacts/create-bucket.tsx': ['pages/artifacts/CreateBucket', 'CreateBucket', [], 'wired', 'Currently a TextField whose submit only navigates — no API call. CreateBucket (built, tested) is unimported.'],
 
   // ---- wired, but to scaffolding ----
   '_shell/mode-switch.tsx': ['pages/mode-switch/ModeSwitch', 'ModeSwitch', [], 'page-is-stub', 'Route IS wired. ModeSwitch itself renders <div><h1>Switch Mode</h1></div> with its toggle behind `const enableToggle = false`. Not a wiring defect — a page gap.'],
