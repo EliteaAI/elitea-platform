@@ -416,6 +416,127 @@ WHERE id = 30`); err != nil {
 	}
 }
 
+func TestPostgresCurrentNestedApplicationTurnPreservesThreeTierContract(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+INSERT INTO application_versions (
+    id, application_id, name, status, author_id, uuid, llm_settings, instructions,
+    conversation_starters, welcome_message, agent_type, meta, pipeline_settings
+) VALUES
+    (42, 32, 'nested-orchestrator', 'draft', 11, '80000000-0000-4000-8000-000000000032',
+     '{"model_name":"test"}'::jsonb, 'Delegate once', '[]'::json, '', 'agent', '{}'::jsonb, '{}'::jsonb),
+    (43, 33, 'nested-leaf', 'draft', 11, '80000000-0000-4000-8000-000000000033',
+     '{"model_name":"test"}'::jsonb, 'Return the result', '[]'::json, '', 'agent', '{}'::jsonb, '{}'::jsonb),
+    (44, 34, 'attached-orchestrator', 'draft', 11, '80000000-0000-4000-8000-000000000034',
+     '{"model_name":"test"}'::jsonb, 'Delegate once', '[]'::json, '', 'agent', '{}'::jsonb, '{}'::jsonb),
+    (45, 35, 'attached-leaf', 'draft', 11, '80000000-0000-4000-8000-000000000035',
+     '{"model_name":"test"}'::jsonb, 'Return the result', '[]'::json, '', 'agent', '{}'::jsonb, '{}'::jsonb);
+INSERT INTO elitea_tools (id, type, name, description, settings, author_id, meta) VALUES
+    (52, 'application', 'nested-orchestrator', NULL,
+     '{"application_id":32,"application_version_id":42}'::jsonb, 11, '{}'::jsonb),
+    (53, 'application', 'nested-leaf', NULL,
+     '{"application_id":33,"application_version_id":43}'::jsonb, 11, '{}'::jsonb),
+    (54, 'application', 'attached-leaf', NULL,
+     '{"application_id":35,"application_version_id":45}'::jsonb, 11, '{}'::jsonb);
+INSERT INTO entity_tool_mapping (
+    tool_id, entity_id, entity_version_id, entity_type, selected_tools
+) VALUES
+    (52, 31, 41, 'agent', NULL),
+    (53, 32, 42, 'agent', NULL),
+    (54, 34, 44, 'agent', NULL);
+UPDATE chat_participants
+SET entity_meta = '{"id":34,"project_id":1}'::jsonb,
+    meta = '{"name":"attached-orchestrator","description":"Nested child","agent_type":"agent"}'::json
+WHERE id = 30;
+UPDATE chat_participant_mapping
+SET entity_settings = '{"version_id":44,"variables":[],"agent_type":"agent"}'::jsonb
+WHERE conversation_id = 2 AND participant_id = 30;`); err != nil {
+		t.Fatal(err)
+	}
+
+	queries := sqlcgen.New(tx)
+	if err := validateCurrentApplicationNesting(t.Context(), queries, 41, 1); err != nil {
+		t.Fatalf("validate selected three-tier agent: %v", err)
+	}
+	direct, err := queries.ResolveCurrentApplicationTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentApplicationTurnParams{
+			ActorUserID: 11, TargetParticipantID: 21,
+			QuestionID:       mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000038"),
+			ConversationUuid: mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031"),
+			ProjectID:        1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versionDetails struct {
+		Tools []struct {
+			Type      string         `json:"type"`
+			AgentType string         `json:"agent_type"`
+			Settings  map[string]any `json:"settings"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(direct.ApplicationVersionDetailsJson), &versionDetails); err != nil ||
+		len(versionDetails.Tools) != 1 || versionDetails.Tools[0].Type != "application" ||
+		versionDetails.Tools[0].AgentType != "agent" ||
+		versionDetails.Tools[0].Settings["application_version_id"] != float64(42) {
+		t.Fatalf("direct nested version=%s error=%v", direct.ApplicationVersionDetailsJson, err)
+	}
+
+	adhocConversation := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000032")
+	adhocQuestion := mustCurrentPGUUID(t, "50000000-0000-4000-8000-000000000038")
+	adhoc, err := queries.ResolveCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+			QuestionID: adhocQuestion, ConversationUuid: adhocConversation,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve attached nested agent: %v", err)
+	}
+	filtered, err := filterCurrentAdhocApplicationNesting(
+		t.Context(),
+		queries,
+		json.RawMessage(adhoc.ToolsJson),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal(filtered, &tools); err != nil || len(tools) != 2 ||
+		tools[1]["type"] != "application" || tools[1]["agent_type"] != "agent" {
+		t.Fatalf("ad-hoc nested tools=%s error=%v", filtered, err)
+	}
+	if _, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: adhocConversation, ProjectID: 1,
+			QuestionID: adhocQuestion, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "60000000-0000-4000-8000-000000000038"),
+			UserInput:           "run attached nested agent",
+			ResponseMessageID:   mustCurrentPGUUID(t, "70000000-0000-4000-8000-000000000038"),
+			ExecutionGeneration: "50000000-0000-4000-8000-000000000038",
+			ExecutionID:         "execution-nested-adhoc",
+		},
+	); err != nil {
+		t.Fatalf("insert attached nested turn: %v", err)
+	}
+}
+
 func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
@@ -510,7 +631,7 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	}
 }
 
-func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipants(t *testing.T) {
+func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipantBoundaries(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -549,27 +670,6 @@ WHERE id = 30`,
 SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
 WHERE id = 41`,
 			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
-		},
-		{
-			name: "nested child agent",
-			apply: `WITH child_tool AS (
-    INSERT INTO elitea_tools (
-        id, type, name, description, settings, author_id, meta
-    ) VALUES (
-        52, 'application', 'grandchild', 'Nested child',
-        '{"application_id":31,"application_version_id":41}'::jsonb,
-        11, '{}'::jsonb
-    )
-    RETURNING id
-)
-INSERT INTO entity_tool_mapping (
-    tool_id, entity_id, entity_version_id, entity_type, selected_tools
-)
-SELECT child_tool.id, 31, 41, 'agent', '[]'::jsonb FROM child_tool`,
-			restore: `WITH removed_mapping AS (
-    DELETE FROM entity_tool_mapping WHERE tool_id = 52
-)
-DELETE FROM elitea_tools WHERE id = 52`,
 		},
 	}
 

@@ -122,6 +122,13 @@ func (e pgxExecutor) ResolveCurrentApplicationTurn(
 	return sqlcgen.New(e.queryer).ResolveCurrentApplicationTurn(ctx, arg)
 }
 
+func (e pgxExecutor) ResolveCurrentApplicationNestingNode(
+	ctx context.Context,
+	applicationVersionID int32,
+) (sqlcgen.ResolveCurrentApplicationNestingNodeRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentApplicationNestingNode(ctx, applicationVersionID)
+}
+
 func (e pgxExecutor) ResolveCurrentAdhocTurn(
 	ctx context.Context,
 	arg sqlcgen.ResolveCurrentAdhocTurnParams,
