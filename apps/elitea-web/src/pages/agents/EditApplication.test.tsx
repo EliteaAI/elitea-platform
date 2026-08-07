@@ -60,14 +60,27 @@ describe('EditApplication', () => {
     server.use(getGetApplicationMockHandler(detail()));
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
 
-    expect(await screen.findByText('My Agent')).toBeInTheDocument();
+    // 5s, not the 1s default: the configuration panel now renders the real
+    // `CreateAgentForm` (several MUI accordions) instead of an empty Box, so the
+    // first paint is much heavier. This passed locally and failed on CI at the
+    // default timeout, with the DOM showing the fallback `<h3>Agent</h3>` — the
+    // query had simply not resolved yet. The assertion is unchanged; only the
+    // wait is realistic for a slower machine.
+    expect(await screen.findByText('My Agent', {}, { timeout: 5_000 })).toBeInTheDocument();
   });
 
-  it('renders the (composition-gap) configuration tab panel', async () => {
+  it('renders the configuration tab panel with the real agent fields in it', async () => {
     server.use(getGetApplicationMockHandler(detail()));
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
 
-    expect(await screen.findByTestId('edit-application-configuration-tab-panel')).toBeInTheDocument();
+    // Asserting the panel is `toBeInTheDocument()` is what let this page ship a
+    // self-closing `<Box data-testid=… />` for so long — an empty div is in the
+    // document. Assert it CONTAINS the fields, so a hollow panel fails here
+    // rather than waiting for an E2E journey to notice.
+    const panel = await screen.findByTestId('edit-application-configuration-tab-panel', {}, { timeout: 5_000 });
+    expect(await screen.findByTestId('agent-name-input', {}, { timeout: 5_000 })).toBeInTheDocument();
+    expect(panel).toContainElement(screen.getByTestId('agent-name-input'));
+    expect(panel).toContainElement(screen.getByTestId('agent-description-input'));
   });
 
   it('shows the not-found state when the URL version is not in the versions list', async () => {

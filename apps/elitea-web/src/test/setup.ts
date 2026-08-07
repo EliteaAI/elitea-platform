@@ -25,6 +25,28 @@ import { handlers } from './msw/handlers/index';
 const shimmedStorages = installWebStorageShim();
 
 /**
+ * jsdom ships no `ResizeObserver`, and several components create one
+ * unconditionally on mount (`useTextOverflow` via
+ * `TypographyWithConditionalTooltip`, reached from any tree containing
+ * `EllipsisTypography`). Individual test files used to stub it themselves with
+ * `vi.stubGlobal`, which leaks across files in the same worker: a test that
+ * needed the stub but did not install it passed locally — because a file that
+ * DID install it happened to run first in that worker — and failed in CI, where
+ * the shard split put it in a worker on its own. `EditApplication.test.tsx` hit
+ * exactly that after it began rendering `CreateAgentForm`.
+ *
+ * Installing it here makes the environment deterministic instead of dependent
+ * on file ordering. Per-file `vi.stubGlobal` calls still override this.
+ */
+if (!('ResizeObserver' in globalThis)) {
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  };
+}
+
+/**
  * Global test bootstrap for the `node` (jsdom) vitest project (spec §6.3).
  *
  * Mocks stop at the network boundary (§6.2): the ONLY substitutions a test

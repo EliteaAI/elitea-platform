@@ -69,7 +69,17 @@ test('J14: create agent, save, and persist it', async ({ page }) => {
   // the assertion a heading-only route cannot satisfy — it requires the POST to
   // have succeeded and the router to have navigated to the new agent's id.
   await page.waitForURL(/\/agents\/[^/]+\/[^/]+/, { timeout: 15_000 });
-  await expect(page.getByTestId('agent-name-input')).toHaveValue(`${AUTOTEST_PREFIX}e2e-agent`);
+
+  // Assert on the EDIT page's own panel, not just on a populated name input.
+  // Proven necessary by mutation: with this route reverted to a heading-only
+  // stub, `expect(agent-name-input).toHaveValue(...)` still PASSED — the create
+  // page's input stays mounted under the parent route long enough to satisfy it,
+  // so the journey went green against a stub. This testid exists only on
+  // EditApplication, and (since the panel is no longer a self-closing Box) is
+  // only non-empty when the real form is inside it.
+  const editPanel = page.getByTestId('edit-application-configuration-tab-panel');
+  await expect(editPanel).toBeVisible({ timeout: 10_000 });
+  await expect(editPanel.getByTestId('agent-name-input')).toHaveValue(`${AUTOTEST_PREFIX}e2e-agent`);
 
   // And it must be listed back on the agents index — proving it was persisted,
   // not merely held in client state.
