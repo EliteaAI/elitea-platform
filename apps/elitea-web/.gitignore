@@ -13,4 +13,3 @@ test-results/
 .playwright-state/
 playwright-results/
 playwright-report/
-test-results/
