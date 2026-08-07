@@ -32,18 +32,13 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useCallback } from 'react';
 
 import { UserPublicPage } from '@/pages/user-public/ui/UserPublicPage';
-import { UserPublicTabs } from '@/shared/lib/tabs';
 import type { UserPublicTabValue } from '@/pages/user-public/lib/constants';
+
+import { toAuthorField, toStatuses, toTabValue } from '../../-lib/userPublicParams';
 
 import { ExclusiveOutlet } from '../../-ui/ExclusiveOutlet';
 import { RouteError, RoutePending } from '../../-ui/RouteStatus';
 import { pickParams } from '../../-search/params';
-
-const FALLBACK_TAB: UserPublicTabValue = UserPublicTabs[0];
-
-function toTabValue(tab: string): UserPublicTabValue {
-  return UserPublicTabs.find((candidate) => candidate === tab) ?? FALLBACK_TAB;
-}
 
 function UserPublicRoute() {
   const navigate = useNavigate();
@@ -63,10 +58,10 @@ function UserPublicRoute() {
       <UserPublicPage
         tab={toTabValue(tab)}
         onTabChange={onTabChange}
-        statuses={statuses ?? []}
+        statuses={toStatuses(statuses)}
         onStatusesChange={onStatusesChange}
-        authorId={authorId ?? ''}
-        authorName={authorName ?? ''}
+        authorId={toAuthorField(authorId)}
+        authorName={toAuthorField(authorName)}
       />
     </ExclusiveOutlet>
   );
