@@ -25,7 +25,6 @@ const mocks = {
     data: [{ id: 'storage-1', title: 'Primary', shared: false }],
   },
   createBucket: vi.fn(),
-  renameBucket: vi.fn(),
   pinBucket: vi.fn(),
   deleteBucket: vi.fn(),
   deleteFile: vi.fn(),
@@ -41,10 +40,6 @@ interface BucketSidebarMockProps {
   readonly onCreate: () => void;
   readonly onSelect: (bucket: { id: string; name: string; isPinned: boolean; createdAt: string }) => void;
   readonly onStorageChange: (id: string) => void;
-  readonly onRename: (
-    bucket: { id: string; name: string; isPinned: boolean; createdAt: string },
-    nextName: string,
-  ) => Promise<unknown>;
   readonly onPin: (bucket: { id: string; name: string; isPinned: boolean; createdAt: string }) => Promise<unknown>;
   readonly onDelete: (bucket: { id: string; name: string; isPinned: boolean; createdAt: string }) => Promise<unknown>;
 }
@@ -78,7 +73,6 @@ function MockBucketSidebar(props: BucketSidebarMockProps): ReactNode {
       <button onClick={() => props.onSelect(bucket)}>select-docs</button>
       <button onClick={() => props.onSelect({ ...bucket, id: 'bucket-2', name: 'reports' })}>select-reports</button>
       <button onClick={() => props.onStorageChange('storage-2')}>select-storage</button>
-      <button onClick={() => void props.onRename(bucket, 'reports')}>rename-docs</button>
       <button onClick={() => void props.onPin(bucket)}>pin-docs</button>
       <button onClick={() => void props.onDelete(bucket)}>delete-docs</button>
     </nav>
@@ -133,7 +127,6 @@ describe('Artifacts page', () => {
     mocks.storage.data = [{ id: 'storage-1', title: 'Primary', shared: false }];
     mocks.fetchArtifactBlob.mockReset().mockResolvedValue({ ok: true, data: new Blob(['hello']) });
     for (const mutation of [
-      mocks.renameBucket,
       mocks.pinBucket,
       mocks.deleteBucket,
       mocks.deleteFile,
@@ -160,7 +153,6 @@ describe('Artifacts page', () => {
     vi.spyOn(artifactsFeature, 'useArtifactStorageConfigurations').mockReturnValue(mocks.storage as never);
     vi.spyOn(artifactsFeature, 'useArtifactMutations').mockReturnValue({
       createBucket: { mutateAsync: mocks.createBucket, isPending: false },
-      renameBucket: { mutateAsync: mocks.renameBucket },
       pinBucket: { mutateAsync: mocks.pinBucket },
       deleteBucket: { mutateAsync: mocks.deleteBucket },
       deleteFile: { mutateAsync: mocks.deleteFile },
@@ -246,16 +238,10 @@ describe('Artifacts page', () => {
     expect(mocks.zipStart).toHaveBeenCalledTimes(2);
   });
 
-  it('renames, pins, and deletes buckets while preserving selection', async () => {
+  it('pins and deletes buckets while preserving selection', async () => {
     const user = userEvent.setup();
-    const { router } = renderArtifactsRoute(<Artifacts />, '/artifacts?bucket=docs');
-    await user.click(await screen.findByRole('button', { name: 'rename-docs' }));
-    await waitFor(() => expect(mocks.renameBucket).toHaveBeenCalledWith({
-      currentName: 'docs',
-      nextName: 'reports',
-    }));
-    await waitFor(() => expect(router.state.location.search).toMatchObject({ bucket: 'reports' }));
-    await user.click(screen.getByRole('button', { name: 'pin-docs' }));
+    renderArtifactsRoute(<Artifacts />, '/artifacts?bucket=docs');
+    await user.click(await screen.findByRole('button', { name: 'pin-docs' }));
     expect(mocks.pinBucket).toHaveBeenCalledWith({ name: 'docs', isPinned: true });
     await user.click(screen.getByRole('button', { name: 'delete-docs' }));
     expect(mocks.deleteBucket).toHaveBeenCalledWith('docs');

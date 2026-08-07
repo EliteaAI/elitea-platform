@@ -40,20 +40,32 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
 
-export const ToolkitInstanceListResponse = zod
-  .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
-  })
-  .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
-  );
+export const BatchDeleteObjectsResponse = zod.object({
+  deleted: zod.array(zod.string()),
+  failed: zod.array(
+    zod.object({
+      key: zod.string(),
+      code: zod.enum([
+        "NotFound",
+        "AlreadyExists",
+        "AccessDenied",
+        "InvalidArgument",
+        "InvalidKey",
+        "TooLarge",
+        "QuotaExceeded",
+        "PreconditionFailed",
+        "NotImplemented",
+        "Internal",
+      ]),
+      message: zod.string(),
+    }),
+  ),
+});
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
+export type BatchDeleteObjectsResponse = zod.input<
+  typeof BatchDeleteObjectsResponse
 >;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
+export type BatchDeleteObjectsResponseOutput = zod.output<
+  typeof BatchDeleteObjectsResponse
 >;

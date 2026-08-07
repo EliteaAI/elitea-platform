@@ -50,7 +50,7 @@ export const SocialTrendingAuthor = zod
     likes: zod.int(),
   })
   .describe(
-    "NOTE(W2): social.TrendingAuthors row shape (internal\/api\/v2\/social\/handler.go:202-237, fields at :230-233) — ranks centry.social_users by `COUNT(sl.id)` joined against `centry.social_likes sl ON sl.user_id = su.user_id AND sl.project_id = $1` (:210-218). In this repo's only migration (internal\/infra\/db\/migrations\/001_initial.sql:315-322) `social_likes` is a PER-PROJECT table (`%I.social_likes`, i.e. `p_{project_id}.social_likes`) with columns `entity_name\/entity_id\/user_id` and NO `project_id` column — there is no `centry.social_likes` relation with a `project_id` column for this query to join against. The handler's query error is checked but only gates whether the result loop runs; the error itself is never surfaced, so the handler always writes `[]` on failure (handler.go:220-236). As far as this repo's migration history shows, this endpoint is therefore behaviorally always-empty today — the same wire output as the pre-existing eliteacore stub at `\/elitea_core\/trending_authors\/prompt_lib\/{project_id}` (`getTrendingAuthors`), despite living at a different path and having real ranking logic in the Go source. Flagged for a human call (W2 report); not fixed here (Go source is out of scope for this spec-only change).\n",
+    "NOTE(W2): social.TrendingAuthors row shape (internal\/api\/v2\/social\/handler.go:202-237, fields at :230-233) — ranks social authors by their like activity in the authorized project schema (social\/handler.go:206-240). The handler reads `p_{project_id}.social_likes`, matching migration 001's per-project table shape.\n",
   );
 
 export type SocialTrendingAuthor = zod.input<typeof SocialTrendingAuthor>;

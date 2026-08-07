@@ -76,7 +76,7 @@ export function installWebStorageShim(): readonly string[] {
   const targets: readonly (typeof globalThis)[] =
     typeof window === 'undefined' || (window as unknown) === globalThis
       ? [globalThis]
-      : [globalThis, window as unknown as typeof globalThis];
+      : [globalThis, window];
 
   for (const name of ['localStorage', 'sessionStorage'] as const) {
     if (isUsable((globalThis as Record<string, unknown>)[name])) continue;

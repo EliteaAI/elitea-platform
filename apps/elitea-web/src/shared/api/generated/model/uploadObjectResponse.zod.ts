@@ -40,20 +40,16 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
 
-export const ToolkitInstanceListResponse = zod
-  .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
-  })
-  .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
-  );
+export const UploadObjectResponse = zod.object({
+  key: zod.string(),
+  size_bytes: zod.int(),
+  media_type: zod.string(),
+  etag: zod.string(),
+  created_at: zod.iso.datetime({ offset: true }),
+});
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
->;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
+export type UploadObjectResponse = zod.input<typeof UploadObjectResponse>;
+export type UploadObjectResponseOutput = zod.output<
+  typeof UploadObjectResponse
 >;

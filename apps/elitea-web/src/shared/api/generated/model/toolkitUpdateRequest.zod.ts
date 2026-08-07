@@ -40,20 +40,19 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
 
-export const ToolkitInstanceListResponse = zod
+export const ToolkitUpdateRequest = zod
   .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
+    name: zod.string().min(1).optional(),
+    type: zod.string().optional(),
+    description: zod.string().optional(),
+    settings: zod.record(zod.string(), zod.unknown()).optional(),
   })
   .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
+    "NOTE(1c): all fields optional — `pgRepo.UpdateToolkit` applies only the keys present. Must NOT contain `has_relation`: that key makes the handler dispatch to a different operation entirely (tool↔entity relation, see the `updateToolkit` description and issue #38).\n",
   );
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
->;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
+export type ToolkitUpdateRequest = zod.input<typeof ToolkitUpdateRequest>;
+export type ToolkitUpdateRequestOutput = zod.output<
+  typeof ToolkitUpdateRequest
 >;

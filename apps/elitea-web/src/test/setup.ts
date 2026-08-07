@@ -22,7 +22,7 @@ import { installWebStorageShim } from '@/shared/lib/webstorage.testshim';
 
 import { handlers } from './msw/handlers/index';
 
-installWebStorageShim();
+const shimmedStorages = installWebStorageShim();
 
 /**
  * Global test bootstrap for the `node` (jsdom) vitest project (spec §6.3).
@@ -44,6 +44,15 @@ afterEach(() => {
   // Removes runtime handlers added via server.use() so network behaviour
   // never leaks between tests.
   server.resetHandlers();
+
+  // The shim above installs ONE storage instance for the whole worker, where
+  // a working jsdom would hand each test file its own `window`. Without this
+  // reset, storage written by one test is visible to every later test in the
+  // same worker — an isolation leak that shows up as tests passing alone and
+  // failing in-suite. Clearing here restores per-test isolation.
+  for (const name of shimmedStorages) {
+    (globalThis as unknown as Record<string, Storage | undefined>)[name]?.clear();
+  }
 });
 
 afterAll(() => {

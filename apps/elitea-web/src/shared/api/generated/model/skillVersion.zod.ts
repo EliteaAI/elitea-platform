@@ -40,20 +40,21 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
 
-export const ToolkitInstanceListResponse = zod
+export const SkillVersion = zod
   .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
+    id: zod.string().optional(),
+    name: zod
+      .string()
+      .describe(
+        'The platform ships a single implicit \"base\" version today (issue #37); real multi-version support is a tracked fast-follow.',
+      ),
+    instructions: zod.string(),
+    tags: zod.array(zod.string()),
   })
   .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
+    "A skill's content: the instructions an agent follows plus its topical tags. Persisted in skill_versions\/skill_version_tag_association (repos\/skills.go upsertBaseSkillVersion).\n",
   );
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
->;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
->;
+export type SkillVersion = zod.input<typeof SkillVersion>;
+export type SkillVersionOutput = zod.output<typeof SkillVersion>;

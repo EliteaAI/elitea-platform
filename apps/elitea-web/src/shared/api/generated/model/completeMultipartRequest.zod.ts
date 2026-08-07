@@ -40,20 +40,19 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
+import { CompletedPart } from "./completedPart.zod";
 
-export const ToolkitInstanceListResponse = zod
+export const CompleteMultipartRequest = zod
   .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
+    parts: zod.array(CompletedPart).min(1),
   })
   .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
+    "Body for POST ...\/grants\/{projectID}\/{grantID}:completeMultipart (S16).\n",
   );
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
+export type CompleteMultipartRequest = zod.input<
+  typeof CompleteMultipartRequest
 >;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
+export type CompleteMultipartRequestOutput = zod.output<
+  typeof CompleteMultipartRequest
 >;

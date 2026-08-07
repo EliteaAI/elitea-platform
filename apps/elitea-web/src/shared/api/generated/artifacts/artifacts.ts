@@ -53,29 +53,25 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
-  ArtifactDeletedResponse,
-  ArtifactListParams,
-  ArtifactUploadResponse,
+  BatchDeleteObjectsRequest,
+  BatchDeleteObjectsResponse,
   Bucket,
-  BucketCreateRequest,
-  BucketCreatedResponse,
-  BucketDeletedResponse,
-  BucketListParams,
-  BucketPinRequest,
-  BucketUpdateRequest,
-  CreateArtifactBody,
-  DeleteArtifactParams,
-  DeleteArtifactsParams,
-  DeleteBucketParams,
-  EditBucketParams,
-  N400Response,
+  BucketListResponse,
+  CompleteMultipartRequest,
+  CreateBucketRequest,
+  CreateTransferGrantRequest,
+  Error,
+  ListObjectsParams,
+  ListObjectsResponse,
   N401Response,
   N403Response,
   N404Response,
-  N500Response,
-  S3BucketListResponse,
-  S3ObjectListResponse,
-  UpdateBucketPinParams,
+  PresignUploadPartResponse,
+  TransferGrantResponse,
+  UpdateBucketRequest,
+  UploadObjectBody,
+  UploadObjectParams,
+  UploadObjectResponse,
 } from "../model";
 
 import { eliteaFetch } from ".././mutator";
@@ -100,122 +96,105 @@ const withQueryKey = <T extends object, K>(
   return result;
 };
 
-export type bucketListResponse200ApplicationJson = {
-  data: S3BucketListResponse;
+export type listBucketsResponse200 = {
+  data: BucketListResponse;
   status: 200;
 };
 
-export type bucketListResponse200ApplicationXml = {
-  data: string;
-  status: 200;
-};
-
-export type bucketListResponse401 = {
+export type listBucketsResponse401 = {
   data: N401Response;
   status: 401;
 };
 
-export type bucketListResponse403 = {
+export type listBucketsResponse403 = {
   data: N403Response;
   status: 403;
 };
 
-export type bucketListResponseSuccess = (
-  bucketListResponse200ApplicationJson | bucketListResponse200ApplicationXml
+export type listBucketsResponseSuccess = listBucketsResponse200 & {
+  headers: Headers;
+};
+export type listBucketsResponseError = (
+  listBucketsResponse401 | listBucketsResponse403
 ) & {
   headers: Headers;
 };
-export type bucketListResponseError = (
-  bucketListResponse401 | bucketListResponse403
-) & {
-  headers: Headers;
-};
 
-export type bucketListResponse =
-  bucketListResponseSuccess | bucketListResponseError;
+export type listBucketsResponse =
+  listBucketsResponseSuccess | listBucketsResponseError;
 
-export const getBucketListUrl = (params: BucketListParams) => {
-  const normalizedParams = new URLSearchParams();
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? "null" : String(value));
-    }
-  });
-
-  const stringifiedParams = normalizedParams.toString();
-
-  return stringifiedParams.length > 0
-    ? `/artifacts/s3?${stringifiedParams}`
-    : `/artifacts/s3`;
+export const getListBucketsUrl = (projectID: number) => {
+  return `/artifacts/buckets/${projectID}`;
 };
 
 /**
- * NOTE(W2): internal/api/v2/artifacts/s3handler.go:24-56 — JSON only
- * with ?format=json ({buckets, owner}); XML ListAllMyBucketsResult
- * otherwise. The old spec's "array" response was drift.
- * @summary List all storage buckets visible to the given project
+ * @summary List every non-deleted bucket in a project
  */
-export const bucketList = async (
-  params: BucketListParams,
+export const listBuckets = async (
+  projectID: number,
   options?: Parameters<typeof eliteaFetch>[1],
-): Promise<bucketListResponse> => {
-  return eliteaFetch<bucketListResponse>(getBucketListUrl(params), {
+): Promise<listBucketsResponse> => {
+  return eliteaFetch<listBucketsResponse>(getListBucketsUrl(projectID), {
     ...options,
     method: "GET",
   });
 };
 
-export const getBucketListQueryKey = (params?: BucketListParams) => {
-  return [`/artifacts/s3`, ...(params ? [params] : [])] as const;
+export const getListBucketsQueryKey = (projectID: number) => {
+  return [`/artifacts/buckets/${projectID}`] as const;
 };
 
-export const getBucketListQueryOptions = <
-  TData = Awaited<ReturnType<typeof bucketList>>,
+export const getListBucketsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listBuckets>>,
   TError = N401Response | N403Response,
 >(
-  params: BucketListParams,
+  projectID: number,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof bucketList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listBuckets>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
 ) => {
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
-  const queryKey = queryOptions?.queryKey ?? getBucketListQueryKey(params);
+  const queryKey = queryOptions?.queryKey ?? getListBucketsQueryKey(projectID);
 
-  const queryFn: QueryFunction<Awaited<ReturnType<typeof bucketList>>> = ({
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listBuckets>>> = ({
     signal,
-  }) => bucketList(params, { signal, ...requestOptions });
+  }) => listBuckets(projectID, { signal, ...requestOptions });
 
-  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
-    Awaited<ReturnType<typeof bucketList>>,
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectID !== null && projectID !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listBuckets>>,
     TError,
     TData
   > & { queryKey: DataTag<QueryKey, TData, TError> };
 };
 
-export type BucketListQueryResult = NonNullable<
-  Awaited<ReturnType<typeof bucketList>>
+export type ListBucketsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listBuckets>>
 >;
-export type BucketListQueryError = N401Response | N403Response;
+export type ListBucketsQueryError = N401Response | N403Response;
 
-export function useBucketList<
-  TData = Awaited<ReturnType<typeof bucketList>>,
+export function useListBuckets<
+  TData = Awaited<ReturnType<typeof listBuckets>>,
   TError = N401Response | N403Response,
 >(
-  params: BucketListParams,
+  projectID: number,
   options: {
     query: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof bucketList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listBuckets>>, TError, TData>
     > &
       Pick<
         DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof bucketList>>,
+          Awaited<ReturnType<typeof listBuckets>>,
           TError,
-          Awaited<ReturnType<typeof bucketList>>
+          Awaited<ReturnType<typeof listBuckets>>
         >,
         "initialData"
       >;
@@ -225,20 +204,20 @@ export function useBucketList<
 ): DefinedUseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useBucketList<
-  TData = Awaited<ReturnType<typeof bucketList>>,
+export function useListBuckets<
+  TData = Awaited<ReturnType<typeof listBuckets>>,
   TError = N401Response | N403Response,
 >(
-  params: BucketListParams,
+  projectID: number,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof bucketList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listBuckets>>, TError, TData>
     > &
       Pick<
         UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof bucketList>>,
+          Awaited<ReturnType<typeof listBuckets>>,
           TError,
-          Awaited<ReturnType<typeof bucketList>>
+          Awaited<ReturnType<typeof listBuckets>>
         >,
         "initialData"
       >;
@@ -248,14 +227,14 @@ export function useBucketList<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useBucketList<
-  TData = Awaited<ReturnType<typeof bucketList>>,
+export function useListBuckets<
+  TData = Awaited<ReturnType<typeof listBuckets>>,
   TError = N401Response | N403Response,
 >(
-  params: BucketListParams,
+  projectID: number,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof bucketList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listBuckets>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -264,17 +243,17 @@ export function useBucketList<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary List all storage buckets visible to the given project
+ * @summary List every non-deleted bucket in a project
  */
 
-export function useBucketList<
-  TData = Awaited<ReturnType<typeof bucketList>>,
+export function useListBuckets<
+  TData = Awaited<ReturnType<typeof listBuckets>>,
   TError = N401Response | N403Response,
 >(
-  params: BucketListParams,
+  projectID: number,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof bucketList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listBuckets>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -282,7 +261,7 @@ export function useBucketList<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
-  const queryOptions = getBucketListQueryOptions(params, options);
+  const queryOptions = getListBucketsQueryOptions(projectID, options);
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,
@@ -293,12 +272,12 @@ export function useBucketList<
 }
 
 export type createBucketResponse200 = {
-  data: BucketCreatedResponse;
+  data: Bucket;
   status: 200;
 };
 
 export type createBucketResponse400 = {
-  data: N400Response;
+  data: Error;
   status: 400;
 };
 
@@ -312,9 +291,9 @@ export type createBucketResponse403 = {
   status: 403;
 };
 
-export type createBucketResponse500 = {
-  data: N500Response;
-  status: 500;
+export type createBucketResponse409 = {
+  data: Error;
+  status: 409;
 };
 
 export type createBucketResponseSuccess = createBucketResponse200 & {
@@ -324,7 +303,7 @@ export type createBucketResponseError = (
   | createBucketResponse400
   | createBucketResponse401
   | createBucketResponse403
-  | createBucketResponse500
+  | createBucketResponse409
 ) & {
   headers: Headers;
 };
@@ -332,44 +311,44 @@ export type createBucketResponseError = (
 export type createBucketResponse =
   createBucketResponseSuccess | createBucketResponseError;
 
-export const getCreateBucketUrl = (projectId: string) => {
-  return `/artifacts/buckets/default/${projectId}`;
+export const getCreateBucketUrl = (projectID: number) => {
+  return `/artifacts/buckets/${projectID}`;
 };
 
 /**
- * NOTE(W2): internal/api/v2/artifacts/handler.go:87-106.
- * @summary Create a new storage bucket for the specified project
+ * The bucket name is validated against ^[a-z][a-z0-9-]{1,62}$ and rejected, never normalised, when it does not already match (S8).
+ * @summary Create a new bucket
  */
 export const createBucket = async (
-  projectId: string,
-  bucketCreateRequest: BucketCreateRequest,
+  projectID: number,
+  createBucketRequest: CreateBucketRequest,
   options?: Parameters<typeof eliteaFetch>[1],
 ): Promise<createBucketResponse> => {
-  return eliteaFetch<createBucketResponse>(getCreateBucketUrl(projectId), {
+  return eliteaFetch<createBucketResponse>(getCreateBucketUrl(projectID), {
     ...options,
     method: "POST",
     headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(bucketCreateRequest),
+    body: JSON.stringify(createBucketRequest),
   });
 };
 
 export const getCreateBucketQueryKey = (
-  projectId: string,
-  bucketCreateRequest?: BucketCreateRequest,
+  projectID: number,
+  createBucketRequest?: CreateBucketRequest,
 ) => {
   return [
     "POST",
-    `/artifacts/buckets/default/${projectId}`,
-    bucketCreateRequest,
+    `/artifacts/buckets/${projectID}`,
+    createBucketRequest,
   ] as const;
 };
 
 export const getCreateBucketQueryOptions = <
   TData = Awaited<ReturnType<typeof createBucket>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+  TError = Error | N401Response | N403Response,
 >(
-  projectId: string,
-  bucketCreateRequest: BucketCreateRequest,
+  projectID: number,
+  createBucketRequest: CreateBucketRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof createBucket>>, TError, TData>
@@ -381,17 +360,17 @@ export const getCreateBucketQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getCreateBucketQueryKey(projectId, bucketCreateRequest);
+    getCreateBucketQueryKey(projectID, createBucketRequest);
 
   const queryFn: QueryFunction<Awaited<ReturnType<typeof createBucket>>> = ({
     signal,
   }) =>
-    createBucket(projectId, bucketCreateRequest, { signal, ...requestOptions });
+    createBucket(projectID, createBucketRequest, { signal, ...requestOptions });
 
   return {
     queryKey,
     queryFn,
-    enabled: projectId !== null && projectId !== undefined,
+    enabled: projectID !== null && projectID !== undefined,
     ...queryOptions,
   } as UseQueryOptions<
     Awaited<ReturnType<typeof createBucket>>,
@@ -403,15 +382,14 @@ export const getCreateBucketQueryOptions = <
 export type CreateBucketQueryResult = NonNullable<
   Awaited<ReturnType<typeof createBucket>>
 >;
-export type CreateBucketQueryError =
-  N400Response | N401Response | N403Response | N500Response;
+export type CreateBucketQueryError = Error | N401Response | N403Response;
 
 export function useCreateBucket<
   TData = Awaited<ReturnType<typeof createBucket>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+  TError = Error | N401Response | N403Response,
 >(
-  projectId: string,
-  bucketCreateRequest: BucketCreateRequest,
+  projectID: number,
+  createBucketRequest: CreateBucketRequest,
   options: {
     query: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof createBucket>>, TError, TData>
@@ -432,10 +410,10 @@ export function useCreateBucket<
 };
 export function useCreateBucket<
   TData = Awaited<ReturnType<typeof createBucket>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+  TError = Error | N401Response | N403Response,
 >(
-  projectId: string,
-  bucketCreateRequest: BucketCreateRequest,
+  projectID: number,
+  createBucketRequest: CreateBucketRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof createBucket>>, TError, TData>
@@ -456,10 +434,10 @@ export function useCreateBucket<
 };
 export function useCreateBucket<
   TData = Awaited<ReturnType<typeof createBucket>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+  TError = Error | N401Response | N403Response,
 >(
-  projectId: string,
-  bucketCreateRequest: BucketCreateRequest,
+  projectID: number,
+  createBucketRequest: CreateBucketRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof createBucket>>, TError, TData>
@@ -471,15 +449,15 @@ export function useCreateBucket<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Create a new storage bucket for the specified project
+ * @summary Create a new bucket
  */
 
 export function useCreateBucket<
   TData = Awaited<ReturnType<typeof createBucket>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+  TError = Error | N401Response | N403Response,
 >(
-  projectId: string,
-  bucketCreateRequest: BucketCreateRequest,
+  projectID: number,
+  createBucketRequest: CreateBucketRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof createBucket>>, TError, TData>
@@ -491,8 +469,8 @@ export function useCreateBucket<
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
   const queryOptions = getCreateBucketQueryOptions(
-    projectId,
-    bucketCreateRequest,
+    projectID,
+    createBucketRequest,
     options,
   );
 
@@ -504,107 +482,69 @@ export function useCreateBucket<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
-export type editBucketResponse200 = {
+export type getBucketResponse200 = {
   data: Bucket;
   status: 200;
 };
 
-export type editBucketResponse400 = {
-  data: N400Response;
-  status: 400;
-};
-
-export type editBucketResponse401 = {
+export type getBucketResponse401 = {
   data: N401Response;
   status: 401;
 };
 
-export type editBucketResponse403 = {
+export type getBucketResponse403 = {
   data: N403Response;
   status: 403;
 };
 
-export type editBucketResponse404 = {
+export type getBucketResponse404 = {
   data: N404Response;
   status: 404;
 };
 
-export type editBucketResponseSuccess = editBucketResponse200 & {
+export type getBucketResponseSuccess = getBucketResponse200 & {
   headers: Headers;
 };
-export type editBucketResponseError = (
-  | editBucketResponse400
-  | editBucketResponse401
-  | editBucketResponse403
-  | editBucketResponse404
+export type getBucketResponseError = (
+  getBucketResponse401 | getBucketResponse403 | getBucketResponse404
 ) & {
   headers: Headers;
 };
 
-export type editBucketResponse =
-  editBucketResponseSuccess | editBucketResponseError;
+export type getBucketResponse =
+  getBucketResponseSuccess | getBucketResponseError;
 
-export const getEditBucketUrl = (
-  projectId: string,
-  params: EditBucketParams,
-) => {
-  const normalizedParams = new URLSearchParams();
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? "null" : String(value));
-    }
-  });
-
-  const stringifiedParams = normalizedParams.toString();
-
-  return stringifiedParams.length > 0
-    ? `/artifacts/buckets/default/${projectId}?${stringifiedParams}`
-    : `/artifacts/buckets/default/${projectId}`;
+export const getGetBucketUrl = (projectID: number, bucket: string) => {
+  return `/artifacts/buckets/${projectID}/${bucket}`;
 };
 
 /**
- * NOTE(W2): internal/api/v2/artifacts/handler.go:109-127 — requires
- * ?name= (target bucket); responds with the full Bucket record.
- * @summary Update (rename) an existing bucket
+ * @summary Get one bucket
  */
-export const editBucket = async (
-  projectId: string,
-  bucketUpdateRequest: BucketUpdateRequest,
-  params: EditBucketParams,
+export const getBucket = async (
+  projectID: number,
+  bucket: string,
   options?: Parameters<typeof eliteaFetch>[1],
-): Promise<editBucketResponse> => {
-  return eliteaFetch<editBucketResponse>(getEditBucketUrl(projectId, params), {
+): Promise<getBucketResponse> => {
+  return eliteaFetch<getBucketResponse>(getGetBucketUrl(projectID, bucket), {
     ...options,
-    method: "PUT",
-    headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(bucketUpdateRequest),
+    method: "GET",
   });
 };
 
-export const getEditBucketQueryKey = (
-  projectId: string,
-  bucketUpdateRequest?: BucketUpdateRequest,
-  params?: EditBucketParams,
-) => {
-  return [
-    "PUT",
-    `/artifacts/buckets/default/${projectId}`,
-    ...(params ? [params] : []),
-    bucketUpdateRequest,
-  ] as const;
+export const getGetBucketQueryKey = (projectID: number, bucket: string) => {
+  return [`/artifacts/buckets/${projectID}/${bucket}`] as const;
 };
 
-export const getEditBucketQueryOptions = <
-  TData = Awaited<ReturnType<typeof editBucket>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export const getGetBucketQueryOptions = <
+  TData = Awaited<ReturnType<typeof getBucket>>,
+  TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  bucketUpdateRequest: BucketUpdateRequest,
-  params: EditBucketParams,
+  projectID: number,
+  bucket: string,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof editBucket>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof getBucket>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -612,51 +552,46 @@ export const getEditBucketQueryOptions = <
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
   const queryKey =
-    queryOptions?.queryKey ??
-    getEditBucketQueryKey(projectId, bucketUpdateRequest, params);
+    queryOptions?.queryKey ?? getGetBucketQueryKey(projectID, bucket);
 
-  const queryFn: QueryFunction<Awaited<ReturnType<typeof editBucket>>> = ({
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getBucket>>> = ({
     signal,
-  }) =>
-    editBucket(projectId, bucketUpdateRequest, params, {
-      signal,
-      ...requestOptions,
-    });
+  }) => getBucket(projectID, bucket, { signal, ...requestOptions });
 
   return {
     queryKey,
     queryFn,
-    enabled: projectId !== null && projectId !== undefined,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      bucket !== null &&
+      bucket !== undefined,
     ...queryOptions,
-  } as UseQueryOptions<
-    Awaited<ReturnType<typeof editBucket>>,
-    TError,
-    TData
-  > & { queryKey: DataTag<QueryKey, TData, TError> };
+  } as UseQueryOptions<Awaited<ReturnType<typeof getBucket>>, TError, TData> & {
+    queryKey: DataTag<QueryKey, TData, TError>;
+  };
 };
 
-export type EditBucketQueryResult = NonNullable<
-  Awaited<ReturnType<typeof editBucket>>
+export type GetBucketQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getBucket>>
 >;
-export type EditBucketQueryError =
-  N400Response | N401Response | N403Response | N404Response;
+export type GetBucketQueryError = N401Response | N403Response | N404Response;
 
-export function useEditBucket<
-  TData = Awaited<ReturnType<typeof editBucket>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useGetBucket<
+  TData = Awaited<ReturnType<typeof getBucket>>,
+  TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  bucketUpdateRequest: BucketUpdateRequest,
-  params: EditBucketParams,
+  projectID: number,
+  bucket: string,
   options: {
     query: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof editBucket>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof getBucket>>, TError, TData>
     > &
       Pick<
         DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof editBucket>>,
+          Awaited<ReturnType<typeof getBucket>>,
           TError,
-          Awaited<ReturnType<typeof editBucket>>
+          Awaited<ReturnType<typeof getBucket>>
         >,
         "initialData"
       >;
@@ -666,22 +601,21 @@ export function useEditBucket<
 ): DefinedUseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useEditBucket<
-  TData = Awaited<ReturnType<typeof editBucket>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useGetBucket<
+  TData = Awaited<ReturnType<typeof getBucket>>,
+  TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  bucketUpdateRequest: BucketUpdateRequest,
-  params: EditBucketParams,
+  projectID: number,
+  bucket: string,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof editBucket>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof getBucket>>, TError, TData>
     > &
       Pick<
         UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof editBucket>>,
+          Awaited<ReturnType<typeof getBucket>>,
           TError,
-          Awaited<ReturnType<typeof editBucket>>
+          Awaited<ReturnType<typeof getBucket>>
         >,
         "initialData"
       >;
@@ -691,16 +625,15 @@ export function useEditBucket<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useEditBucket<
-  TData = Awaited<ReturnType<typeof editBucket>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useGetBucket<
+  TData = Awaited<ReturnType<typeof getBucket>>,
+  TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  bucketUpdateRequest: BucketUpdateRequest,
-  params: EditBucketParams,
+  projectID: number,
+  bucket: string,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof editBucket>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof getBucket>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -709,19 +642,18 @@ export function useEditBucket<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Update (rename) an existing bucket
+ * @summary Get one bucket
  */
 
-export function useEditBucket<
-  TData = Awaited<ReturnType<typeof editBucket>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useGetBucket<
+  TData = Awaited<ReturnType<typeof getBucket>>,
+  TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  bucketUpdateRequest: BucketUpdateRequest,
-  params: EditBucketParams,
+  projectID: number,
+  bucket: string,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof editBucket>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof getBucket>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -729,12 +661,7 @@ export function useEditBucket<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
-  const queryOptions = getEditBucketQueryOptions(
-    projectId,
-    bucketUpdateRequest,
-    params,
-    options,
-  );
+  const queryOptions = getGetBucketQueryOptions(projectID, bucket, options);
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,
@@ -744,114 +671,93 @@ export function useEditBucket<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
-export type updateBucketPinResponse200 = {
+export type updateBucketResponse200 = {
   data: Bucket;
   status: 200;
 };
 
-export type updateBucketPinResponse400 = {
-  data: N400Response;
+export type updateBucketResponse400 = {
+  data: Error;
   status: 400;
 };
 
-export type updateBucketPinResponse401 = {
+export type updateBucketResponse401 = {
   data: N401Response;
   status: 401;
 };
 
-export type updateBucketPinResponse403 = {
-  data: N403Response;
+export type updateBucketResponse403 = {
+  data: Error;
   status: 403;
 };
 
-export type updateBucketPinResponse404 = {
+export type updateBucketResponse404 = {
   data: N404Response;
   status: 404;
 };
 
-export type updateBucketPinResponseSuccess = updateBucketPinResponse200 & {
+export type updateBucketResponseSuccess = updateBucketResponse200 & {
   headers: Headers;
 };
-export type updateBucketPinResponseError = (
-  | updateBucketPinResponse400
-  | updateBucketPinResponse401
-  | updateBucketPinResponse403
-  | updateBucketPinResponse404
+export type updateBucketResponseError = (
+  | updateBucketResponse400
+  | updateBucketResponse401
+  | updateBucketResponse403
+  | updateBucketResponse404
 ) & {
   headers: Headers;
 };
 
-export type updateBucketPinResponse =
-  updateBucketPinResponseSuccess | updateBucketPinResponseError;
+export type updateBucketResponse =
+  updateBucketResponseSuccess | updateBucketResponseError;
 
-export const getUpdateBucketPinUrl = (
-  projectId: string,
-  params: UpdateBucketPinParams,
-) => {
-  const normalizedParams = new URLSearchParams();
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? "null" : String(value));
-    }
-  });
-
-  const stringifiedParams = normalizedParams.toString();
-
-  return stringifiedParams.length > 0
-    ? `/artifacts/buckets/default/${projectId}?${stringifiedParams}`
-    : `/artifacts/buckets/default/${projectId}`;
+export const getUpdateBucketUrl = (projectID: number, bucket: string) => {
+  return `/artifacts/buckets/${projectID}/${bucket}`;
 };
 
 /**
- * NOTE(W2): internal/api/v2/artifacts/handler.go:130-150 — body
- * {is_pinned}; responds with the full Bucket record.
- * @summary Toggle the pinned state of a named bucket
+ * is_pinned, retention_days, and tags are all optional and independently settable (S8). A retention_days above the project's policy ceiling (project_storage_policy.retention_max_days, not retention_default_days) is rejected with 403 QuotaExceeded.
+ * @summary Update a bucket's pin state, retention, and/or tags
  */
-export const updateBucketPin = async (
-  projectId: string,
-  bucketPinRequest: BucketPinRequest,
-  params: UpdateBucketPinParams,
+export const updateBucket = async (
+  projectID: number,
+  bucket: string,
+  updateBucketRequest: UpdateBucketRequest,
   options?: Parameters<typeof eliteaFetch>[1],
-): Promise<updateBucketPinResponse> => {
-  return eliteaFetch<updateBucketPinResponse>(
-    getUpdateBucketPinUrl(projectId, params),
+): Promise<updateBucketResponse> => {
+  return eliteaFetch<updateBucketResponse>(
+    getUpdateBucketUrl(projectID, bucket),
     {
       ...options,
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...options?.headers },
-      body: JSON.stringify(bucketPinRequest),
+      body: JSON.stringify(updateBucketRequest),
     },
   );
 };
 
-export const getUpdateBucketPinQueryKey = (
-  projectId: string,
-  bucketPinRequest?: BucketPinRequest,
-  params?: UpdateBucketPinParams,
+export const getUpdateBucketQueryKey = (
+  projectID: number,
+  bucket: string,
+  updateBucketRequest?: UpdateBucketRequest,
 ) => {
   return [
     "PATCH",
-    `/artifacts/buckets/default/${projectId}`,
-    ...(params ? [params] : []),
-    bucketPinRequest,
+    `/artifacts/buckets/${projectID}/${bucket}`,
+    updateBucketRequest,
   ] as const;
 };
 
-export const getUpdateBucketPinQueryOptions = <
-  TData = Awaited<ReturnType<typeof updateBucketPin>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export const getUpdateBucketQueryOptions = <
+  TData = Awaited<ReturnType<typeof updateBucket>>,
+  TError = Error | N401Response | N404Response,
 >(
-  projectId: string,
-  bucketPinRequest: BucketPinRequest,
-  params: UpdateBucketPinParams,
+  projectID: number,
+  bucket: string,
+  updateBucketRequest: UpdateBucketRequest,
   options?: {
     query?: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof updateBucketPin>>,
-        TError,
-        TData
-      >
+      UseQueryOptions<Awaited<ReturnType<typeof updateBucket>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -860,12 +766,12 @@ export const getUpdateBucketPinQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getUpdateBucketPinQueryKey(projectId, bucketPinRequest, params);
+    getUpdateBucketQueryKey(projectID, bucket, updateBucketRequest);
 
-  const queryFn: QueryFunction<Awaited<ReturnType<typeof updateBucketPin>>> = ({
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof updateBucket>>> = ({
     signal,
   }) =>
-    updateBucketPin(projectId, bucketPinRequest, params, {
+    updateBucket(projectID, bucket, updateBucketRequest, {
       signal,
       ...requestOptions,
     });
@@ -873,41 +779,40 @@ export const getUpdateBucketPinQueryOptions = <
   return {
     queryKey,
     queryFn,
-    enabled: projectId !== null && projectId !== undefined,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      bucket !== null &&
+      bucket !== undefined,
     ...queryOptions,
   } as UseQueryOptions<
-    Awaited<ReturnType<typeof updateBucketPin>>,
+    Awaited<ReturnType<typeof updateBucket>>,
     TError,
     TData
   > & { queryKey: DataTag<QueryKey, TData, TError> };
 };
 
-export type UpdateBucketPinQueryResult = NonNullable<
-  Awaited<ReturnType<typeof updateBucketPin>>
+export type UpdateBucketQueryResult = NonNullable<
+  Awaited<ReturnType<typeof updateBucket>>
 >;
-export type UpdateBucketPinQueryError =
-  N400Response | N401Response | N403Response | N404Response;
+export type UpdateBucketQueryError = Error | N401Response | N404Response;
 
-export function useUpdateBucketPin<
-  TData = Awaited<ReturnType<typeof updateBucketPin>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useUpdateBucket<
+  TData = Awaited<ReturnType<typeof updateBucket>>,
+  TError = Error | N401Response | N404Response,
 >(
-  projectId: string,
-  bucketPinRequest: BucketPinRequest,
-  params: UpdateBucketPinParams,
+  projectID: number,
+  bucket: string,
+  updateBucketRequest: UpdateBucketRequest,
   options: {
     query: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof updateBucketPin>>,
-        TError,
-        TData
-      >
+      UseQueryOptions<Awaited<ReturnType<typeof updateBucket>>, TError, TData>
     > &
       Pick<
         DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof updateBucketPin>>,
+          Awaited<ReturnType<typeof updateBucket>>,
           TError,
-          Awaited<ReturnType<typeof updateBucketPin>>
+          Awaited<ReturnType<typeof updateBucket>>
         >,
         "initialData"
       >;
@@ -917,26 +822,22 @@ export function useUpdateBucketPin<
 ): DefinedUseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useUpdateBucketPin<
-  TData = Awaited<ReturnType<typeof updateBucketPin>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useUpdateBucket<
+  TData = Awaited<ReturnType<typeof updateBucket>>,
+  TError = Error | N401Response | N404Response,
 >(
-  projectId: string,
-  bucketPinRequest: BucketPinRequest,
-  params: UpdateBucketPinParams,
+  projectID: number,
+  bucket: string,
+  updateBucketRequest: UpdateBucketRequest,
   options?: {
     query?: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof updateBucketPin>>,
-        TError,
-        TData
-      >
+      UseQueryOptions<Awaited<ReturnType<typeof updateBucket>>, TError, TData>
     > &
       Pick<
         UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof updateBucketPin>>,
+          Awaited<ReturnType<typeof updateBucket>>,
           TError,
-          Awaited<ReturnType<typeof updateBucketPin>>
+          Awaited<ReturnType<typeof updateBucket>>
         >,
         "initialData"
       >;
@@ -946,20 +847,16 @@ export function useUpdateBucketPin<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useUpdateBucketPin<
-  TData = Awaited<ReturnType<typeof updateBucketPin>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useUpdateBucket<
+  TData = Awaited<ReturnType<typeof updateBucket>>,
+  TError = Error | N401Response | N404Response,
 >(
-  projectId: string,
-  bucketPinRequest: BucketPinRequest,
-  params: UpdateBucketPinParams,
+  projectID: number,
+  bucket: string,
+  updateBucketRequest: UpdateBucketRequest,
   options?: {
     query?: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof updateBucketPin>>,
-        TError,
-        TData
-      >
+      UseQueryOptions<Awaited<ReturnType<typeof updateBucket>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -968,23 +865,19 @@ export function useUpdateBucketPin<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Toggle the pinned state of a named bucket
+ * @summary Update a bucket's pin state, retention, and/or tags
  */
 
-export function useUpdateBucketPin<
-  TData = Awaited<ReturnType<typeof updateBucketPin>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useUpdateBucket<
+  TData = Awaited<ReturnType<typeof updateBucket>>,
+  TError = Error | N401Response | N404Response,
 >(
-  projectId: string,
-  bucketPinRequest: BucketPinRequest,
-  params: UpdateBucketPinParams,
+  projectID: number,
+  bucket: string,
+  updateBucketRequest: UpdateBucketRequest,
   options?: {
     query?: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof updateBucketPin>>,
-        TError,
-        TData
-      >
+      UseQueryOptions<Awaited<ReturnType<typeof updateBucket>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -992,10 +885,10 @@ export function useUpdateBucketPin<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
-  const queryOptions = getUpdateBucketPinQueryOptions(
-    projectId,
-    bucketPinRequest,
-    params,
+  const queryOptions = getUpdateBucketQueryOptions(
+    projectID,
+    bucket,
+    updateBucketRequest,
     options,
   );
 
@@ -1007,9 +900,9 @@ export function useUpdateBucketPin<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
-export type deleteBucketResponse200 = {
-  data: BucketDeletedResponse;
-  status: 200;
+export type deleteBucketResponse204 = {
+  data: void;
+  status: 204;
 };
 
 export type deleteBucketResponse401 = {
@@ -1027,7 +920,7 @@ export type deleteBucketResponse404 = {
   status: 404;
 };
 
-export type deleteBucketResponseSuccess = deleteBucketResponse200 & {
+export type deleteBucketResponseSuccess = deleteBucketResponse204 & {
   headers: Headers;
 };
 export type deleteBucketResponseError = (
@@ -1039,37 +932,21 @@ export type deleteBucketResponseError = (
 export type deleteBucketResponse =
   deleteBucketResponseSuccess | deleteBucketResponseError;
 
-export const getDeleteBucketUrl = (
-  projectId: string,
-  params: DeleteBucketParams,
-) => {
-  const normalizedParams = new URLSearchParams();
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? "null" : String(value));
-    }
-  });
-
-  const stringifiedParams = normalizedParams.toString();
-
-  return stringifiedParams.length > 0
-    ? `/artifacts/buckets/default/${projectId}?${stringifiedParams}`
-    : `/artifacts/buckets/default/${projectId}`;
+export const getDeleteBucketUrl = (projectID: number, bucket: string) => {
+  return `/artifacts/buckets/${projectID}/${bucket}`;
 };
 
 /**
- * NOTE(W2): internal/api/v2/artifacts/handler.go:153-165 —
- * {"message":"Deleted"}.
- * @summary Remove a bucket and all of its contents
+ * Deletes objects via ObjectStore.DeleteBatch over a prefix listing, then soft-deletes the bucket metadata row (S8).
+ * @summary Delete a bucket and every object in it
  */
 export const deleteBucket = async (
-  projectId: string,
-  params: DeleteBucketParams,
+  projectID: number,
+  bucket: string,
   options?: Parameters<typeof eliteaFetch>[1],
 ): Promise<deleteBucketResponse> => {
   return eliteaFetch<deleteBucketResponse>(
-    getDeleteBucketUrl(projectId, params),
+    getDeleteBucketUrl(projectID, bucket),
     {
       ...options,
       method: "DELETE",
@@ -1077,23 +954,16 @@ export const deleteBucket = async (
   );
 };
 
-export const getDeleteBucketQueryKey = (
-  projectId: string,
-  params?: DeleteBucketParams,
-) => {
-  return [
-    "DELETE",
-    `/artifacts/buckets/default/${projectId}`,
-    ...(params ? [params] : []),
-  ] as const;
+export const getDeleteBucketQueryKey = (projectID: number, bucket: string) => {
+  return ["DELETE", `/artifacts/buckets/${projectID}/${bucket}`] as const;
 };
 
 export const getDeleteBucketQueryOptions = <
   TData = Awaited<ReturnType<typeof deleteBucket>>,
   TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  params: DeleteBucketParams,
+  projectID: number,
+  bucket: string,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof deleteBucket>>, TError, TData>
@@ -1104,16 +974,20 @@ export const getDeleteBucketQueryOptions = <
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
   const queryKey =
-    queryOptions?.queryKey ?? getDeleteBucketQueryKey(projectId, params);
+    queryOptions?.queryKey ?? getDeleteBucketQueryKey(projectID, bucket);
 
   const queryFn: QueryFunction<Awaited<ReturnType<typeof deleteBucket>>> = ({
     signal,
-  }) => deleteBucket(projectId, params, { signal, ...requestOptions });
+  }) => deleteBucket(projectID, bucket, { signal, ...requestOptions });
 
   return {
     queryKey,
     queryFn,
-    enabled: projectId !== null && projectId !== undefined,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      bucket !== null &&
+      bucket !== undefined,
     ...queryOptions,
   } as UseQueryOptions<
     Awaited<ReturnType<typeof deleteBucket>>,
@@ -1131,8 +1005,8 @@ export function useDeleteBucket<
   TData = Awaited<ReturnType<typeof deleteBucket>>,
   TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  params: DeleteBucketParams,
+  projectID: number,
+  bucket: string,
   options: {
     query: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof deleteBucket>>, TError, TData>
@@ -1155,8 +1029,8 @@ export function useDeleteBucket<
   TData = Awaited<ReturnType<typeof deleteBucket>>,
   TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  params: DeleteBucketParams,
+  projectID: number,
+  bucket: string,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof deleteBucket>>, TError, TData>
@@ -1179,8 +1053,8 @@ export function useDeleteBucket<
   TData = Awaited<ReturnType<typeof deleteBucket>>,
   TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  params: DeleteBucketParams,
+  projectID: number,
+  bucket: string,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof deleteBucket>>, TError, TData>
@@ -1192,15 +1066,15 @@ export function useDeleteBucket<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Remove a bucket and all of its contents
+ * @summary Delete a bucket and every object in it
  */
 
 export function useDeleteBucket<
   TData = Awaited<ReturnType<typeof deleteBucket>>,
   TError = N401Response | N403Response | N404Response,
 >(
-  projectId: string,
-  params: DeleteBucketParams,
+  projectID: number,
+  bucket: string,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof deleteBucket>>, TError, TData>
@@ -1211,7 +1085,7 @@ export function useDeleteBucket<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
-  const queryOptions = getDeleteBucketQueryOptions(projectId, params, options);
+  const queryOptions = getDeleteBucketQueryOptions(projectID, bucket, options);
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,
@@ -1221,48 +1095,42 @@ export function useDeleteBucket<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
-export type artifactListResponse200ApplicationJson = {
-  data: S3ObjectListResponse;
+export type listObjectsResponse200 = {
+  data: ListObjectsResponse;
   status: 200;
 };
 
-export type artifactListResponse200ApplicationXml = {
-  data: string;
-  status: 200;
-};
-
-export type artifactListResponse401 = {
+export type listObjectsResponse401 = {
   data: N401Response;
   status: 401;
 };
 
-export type artifactListResponse403 = {
+export type listObjectsResponse403 = {
   data: N403Response;
   status: 403;
 };
 
-export type artifactListResponse404 = {
+export type listObjectsResponse404 = {
   data: N404Response;
   status: 404;
 };
 
-export type artifactListResponseSuccess = (
-  artifactListResponse200ApplicationJson | artifactListResponse200ApplicationXml
-) & {
+export type listObjectsResponseSuccess = listObjectsResponse200 & {
   headers: Headers;
 };
-export type artifactListResponseError = (
-  artifactListResponse401 | artifactListResponse403 | artifactListResponse404
+export type listObjectsResponseError = (
+  listObjectsResponse401 | listObjectsResponse403 | listObjectsResponse404
 ) & {
   headers: Headers;
 };
 
-export type artifactListResponse =
-  artifactListResponseSuccess | artifactListResponseError;
+export type listObjectsResponse =
+  listObjectsResponseSuccess | listObjectsResponseError;
 
-export const getArtifactListUrl = (
+export const getListObjectsUrl = (
+  projectID: number,
   bucket: string,
-  params: ArtifactListParams,
+  params?: ListObjectsParams,
 ) => {
   const normalizedParams = new URLSearchParams();
 
@@ -1275,43 +1143,49 @@ export const getArtifactListUrl = (
   const stringifiedParams = normalizedParams.toString();
 
   return stringifiedParams.length > 0
-    ? `/artifacts/s3/${bucket}?${stringifiedParams}`
-    : `/artifacts/s3/${bucket}`;
+    ? `/artifacts/objects/${projectID}/${bucket}?${stringifiedParams}`
+    : `/artifacts/objects/${projectID}/${bucket}`;
 };
 
 /**
- * NOTE(W2): internal/api/v2/artifacts/s3handler.go:58-92 — JSON only
- * with ?format=json ({contents, name}; note camelCase lastModified);
- * XML ListBucketResult otherwise.
- * @summary List all artifacts stored in the specified bucket
+ * @summary List objects in a bucket
  */
-export const artifactList = async (
+export const listObjects = async (
+  projectID: number,
   bucket: string,
-  params: ArtifactListParams,
+  params?: ListObjectsParams,
   options?: Parameters<typeof eliteaFetch>[1],
-): Promise<artifactListResponse> => {
-  return eliteaFetch<artifactListResponse>(getArtifactListUrl(bucket, params), {
-    ...options,
-    method: "GET",
-  });
+): Promise<listObjectsResponse> => {
+  return eliteaFetch<listObjectsResponse>(
+    getListObjectsUrl(projectID, bucket, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
 };
 
-export const getArtifactListQueryKey = (
+export const getListObjectsQueryKey = (
+  projectID: number,
   bucket: string,
-  params?: ArtifactListParams,
+  params?: ListObjectsParams,
 ) => {
-  return [`/artifacts/s3/${bucket}`, ...(params ? [params] : [])] as const;
+  return [
+    `/artifacts/objects/${projectID}/${bucket}`,
+    ...(params ? [params] : []),
+  ] as const;
 };
 
-export const getArtifactListQueryOptions = <
-  TData = Awaited<ReturnType<typeof artifactList>>,
+export const getListObjectsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listObjects>>,
   TError = N401Response | N403Response | N404Response,
 >(
+  projectID: number,
   bucket: string,
-  params: ArtifactListParams,
+  params?: ListObjectsParams,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof artifactList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listObjects>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -1319,44 +1193,49 @@ export const getArtifactListQueryOptions = <
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
   const queryKey =
-    queryOptions?.queryKey ?? getArtifactListQueryKey(bucket, params);
+    queryOptions?.queryKey ?? getListObjectsQueryKey(projectID, bucket, params);
 
-  const queryFn: QueryFunction<Awaited<ReturnType<typeof artifactList>>> = ({
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listObjects>>> = ({
     signal,
-  }) => artifactList(bucket, params, { signal, ...requestOptions });
+  }) => listObjects(projectID, bucket, params, { signal, ...requestOptions });
 
   return {
     queryKey,
     queryFn,
-    enabled: bucket !== null && bucket !== undefined,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      bucket !== null &&
+      bucket !== undefined,
     ...queryOptions,
   } as UseQueryOptions<
-    Awaited<ReturnType<typeof artifactList>>,
+    Awaited<ReturnType<typeof listObjects>>,
     TError,
     TData
   > & { queryKey: DataTag<QueryKey, TData, TError> };
 };
 
-export type ArtifactListQueryResult = NonNullable<
-  Awaited<ReturnType<typeof artifactList>>
+export type ListObjectsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listObjects>>
 >;
-export type ArtifactListQueryError = N401Response | N403Response | N404Response;
+export type ListObjectsQueryError = N401Response | N403Response | N404Response;
 
-export function useArtifactList<
-  TData = Awaited<ReturnType<typeof artifactList>>,
+export function useListObjects<
+  TData = Awaited<ReturnType<typeof listObjects>>,
   TError = N401Response | N403Response | N404Response,
 >(
+  projectID: number,
   bucket: string,
-  params: ArtifactListParams,
+  params: undefined | ListObjectsParams,
   options: {
     query: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof artifactList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listObjects>>, TError, TData>
     > &
       Pick<
         DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof artifactList>>,
+          Awaited<ReturnType<typeof listObjects>>,
           TError,
-          Awaited<ReturnType<typeof artifactList>>
+          Awaited<ReturnType<typeof listObjects>>
         >,
         "initialData"
       >;
@@ -1366,21 +1245,22 @@ export function useArtifactList<
 ): DefinedUseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useArtifactList<
-  TData = Awaited<ReturnType<typeof artifactList>>,
+export function useListObjects<
+  TData = Awaited<ReturnType<typeof listObjects>>,
   TError = N401Response | N403Response | N404Response,
 >(
+  projectID: number,
   bucket: string,
-  params: ArtifactListParams,
+  params?: ListObjectsParams,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof artifactList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listObjects>>, TError, TData>
     > &
       Pick<
         UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof artifactList>>,
+          Awaited<ReturnType<typeof listObjects>>,
           TError,
-          Awaited<ReturnType<typeof artifactList>>
+          Awaited<ReturnType<typeof listObjects>>
         >,
         "initialData"
       >;
@@ -1390,15 +1270,16 @@ export function useArtifactList<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useArtifactList<
-  TData = Awaited<ReturnType<typeof artifactList>>,
+export function useListObjects<
+  TData = Awaited<ReturnType<typeof listObjects>>,
   TError = N401Response | N403Response | N404Response,
 >(
+  projectID: number,
   bucket: string,
-  params: ArtifactListParams,
+  params?: ListObjectsParams,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof artifactList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listObjects>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -1407,18 +1288,19 @@ export function useArtifactList<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary List all artifacts stored in the specified bucket
+ * @summary List objects in a bucket
  */
 
-export function useArtifactList<
-  TData = Awaited<ReturnType<typeof artifactList>>,
+export function useListObjects<
+  TData = Awaited<ReturnType<typeof listObjects>>,
   TError = N401Response | N403Response | N404Response,
 >(
+  projectID: number,
   bucket: string,
-  params: ArtifactListParams,
+  params?: ListObjectsParams,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof artifactList>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof listObjects>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -1426,7 +1308,12 @@ export function useArtifactList<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
-  const queryOptions = getArtifactListQueryOptions(bucket, params, options);
+  const queryOptions = getListObjectsQueryOptions(
+    projectID,
+    bucket,
+    params,
+    options,
+  );
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,
@@ -1436,77 +1323,94 @@ export function useArtifactList<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
-export type createArtifactResponse200 = {
-  data: ArtifactUploadResponse;
-  status: 200;
+export type uploadObjectResponse201 = {
+  data: UploadObjectResponse;
+  status: 201;
 };
 
-export type createArtifactResponse400 = {
-  data: N400Response;
+export type uploadObjectResponse400 = {
+  data: Error;
   status: 400;
 };
 
-export type createArtifactResponse401 = {
+export type uploadObjectResponse401 = {
   data: N401Response;
   status: 401;
 };
 
-export type createArtifactResponse403 = {
+export type uploadObjectResponse403 = {
   data: N403Response;
   status: 403;
 };
 
-export type createArtifactResponse500 = {
-  data: N500Response;
-  status: 500;
+export type uploadObjectResponse404 = {
+  data: N404Response;
+  status: 404;
 };
 
-export type createArtifactResponseSuccess = createArtifactResponse200 & {
+export type uploadObjectResponse409 = {
+  data: Error;
+  status: 409;
+};
+
+export type uploadObjectResponse413 = {
+  data: Error;
+  status: 413;
+};
+
+export type uploadObjectResponseSuccess = uploadObjectResponse201 & {
   headers: Headers;
 };
-export type createArtifactResponseError = (
-  | createArtifactResponse400
-  | createArtifactResponse401
-  | createArtifactResponse403
-  | createArtifactResponse500
+export type uploadObjectResponseError = (
+  | uploadObjectResponse400
+  | uploadObjectResponse401
+  | uploadObjectResponse403
+  | uploadObjectResponse404
+  | uploadObjectResponse409
+  | uploadObjectResponse413
 ) & {
   headers: Headers;
 };
 
-export type createArtifactResponse =
-  createArtifactResponseSuccess | createArtifactResponseError;
+export type uploadObjectResponse =
+  uploadObjectResponseSuccess | uploadObjectResponseError;
 
-export const getCreateArtifactUrl = (projectId: string, bucket: string) => {
-  return `/artifacts/artifacts/default/${projectId}/${bucket}`;
+export const getUploadObjectUrl = (
+  projectID: number,
+  bucket: string,
+  params?: UploadObjectParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/artifacts/objects/${projectID}/${bucket}?${stringifiedParams}`
+    : `/artifacts/objects/${projectID}/${bucket}`;
 };
 
 /**
- * NOTE(W2): UploadArtifact,
- * internal/api/v2/artifacts/handler.go:279-324 — reads only the `file`
- * part (:288); filename/overwrite_attachments are accepted for old-SPA
- * parity but not read. Responds {"message":"Done", size, name}.
- * @summary Upload a file to the specified bucket
+ * Streaming multipart upload, field `file` (S9). The server derives the storage key from the bucket and the supplied display name — a caller never supplies a storage path directly.
+ * @summary Stream-upload one object
  */
-export const createArtifact = async (
-  projectId: string,
+export const uploadObject = async (
+  projectID: number,
   bucket: string,
-  createArtifactBody: CreateArtifactBody,
+  uploadObjectBody: UploadObjectBody,
+  params?: UploadObjectParams,
   options?: Parameters<typeof eliteaFetch>[1],
-): Promise<createArtifactResponse> => {
+): Promise<uploadObjectResponse> => {
   const formData = new FormData();
-  formData.append(`file`, createArtifactBody.file);
-  if (createArtifactBody.filename !== undefined) {
-    formData.append(`filename`, createArtifactBody.filename);
-  }
-  if (createArtifactBody.overwrite_attachments !== undefined) {
-    formData.append(
-      `overwrite_attachments`,
-      createArtifactBody.overwrite_attachments.toString(),
-    );
-  }
+  formData.append(`file`, uploadObjectBody.file);
 
-  return eliteaFetch<createArtifactResponse>(
-    getCreateArtifactUrl(projectId, bucket),
+  return eliteaFetch<uploadObjectResponse>(
+    getUploadObjectUrl(projectID, bucket, params),
     {
       ...options,
       method: "POST",
@@ -1515,28 +1419,31 @@ export const createArtifact = async (
   );
 };
 
-export const getCreateArtifactQueryKey = (
-  projectId: string,
+export const getUploadObjectQueryKey = (
+  projectID: number,
   bucket: string,
-  createArtifactBody?: CreateArtifactBody,
+  uploadObjectBody?: UploadObjectBody,
+  params?: UploadObjectParams,
 ) => {
   return [
     "POST",
-    `/artifacts/artifacts/default/${projectId}/${bucket}`,
-    createArtifactBody,
+    `/artifacts/objects/${projectID}/${bucket}`,
+    ...(params ? [params] : []),
+    uploadObjectBody,
   ] as const;
 };
 
-export const getCreateArtifactQueryOptions = <
-  TData = Awaited<ReturnType<typeof createArtifact>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+export const getUploadObjectQueryOptions = <
+  TData = Awaited<ReturnType<typeof uploadObject>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  createArtifactBody: CreateArtifactBody,
+  uploadObjectBody: UploadObjectBody,
+  params?: UploadObjectParams,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof createArtifact>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof uploadObject>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -1545,12 +1452,12 @@ export const getCreateArtifactQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getCreateArtifactQueryKey(projectId, bucket, createArtifactBody);
+    getUploadObjectQueryKey(projectID, bucket, uploadObjectBody, params);
 
-  const queryFn: QueryFunction<Awaited<ReturnType<typeof createArtifact>>> = ({
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof uploadObject>>> = ({
     signal,
   }) =>
-    createArtifact(projectId, bucket, createArtifactBody, {
+    uploadObject(projectID, bucket, uploadObjectBody, params, {
       signal,
       ...requestOptions,
     });
@@ -1559,40 +1466,41 @@ export const getCreateArtifactQueryOptions = <
     queryKey,
     queryFn,
     enabled:
-      projectId !== null &&
-      projectId !== undefined &&
+      projectID !== null &&
+      projectID !== undefined &&
       bucket !== null &&
       bucket !== undefined,
     ...queryOptions,
   } as UseQueryOptions<
-    Awaited<ReturnType<typeof createArtifact>>,
+    Awaited<ReturnType<typeof uploadObject>>,
     TError,
     TData
   > & { queryKey: DataTag<QueryKey, TData, TError> };
 };
 
-export type CreateArtifactQueryResult = NonNullable<
-  Awaited<ReturnType<typeof createArtifact>>
+export type UploadObjectQueryResult = NonNullable<
+  Awaited<ReturnType<typeof uploadObject>>
 >;
-export type CreateArtifactQueryError =
-  N400Response | N401Response | N403Response | N500Response;
+export type UploadObjectQueryError =
+  Error | N401Response | N403Response | N404Response;
 
-export function useCreateArtifact<
-  TData = Awaited<ReturnType<typeof createArtifact>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+export function useUploadObject<
+  TData = Awaited<ReturnType<typeof uploadObject>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  createArtifactBody: CreateArtifactBody,
+  uploadObjectBody: UploadObjectBody,
+  params: undefined | UploadObjectParams,
   options: {
     query: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof createArtifact>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof uploadObject>>, TError, TData>
     > &
       Pick<
         DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof createArtifact>>,
+          Awaited<ReturnType<typeof uploadObject>>,
           TError,
-          Awaited<ReturnType<typeof createArtifact>>
+          Awaited<ReturnType<typeof uploadObject>>
         >,
         "initialData"
       >;
@@ -1602,22 +1510,23 @@ export function useCreateArtifact<
 ): DefinedUseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useCreateArtifact<
-  TData = Awaited<ReturnType<typeof createArtifact>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+export function useUploadObject<
+  TData = Awaited<ReturnType<typeof uploadObject>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  createArtifactBody: CreateArtifactBody,
+  uploadObjectBody: UploadObjectBody,
+  params?: UploadObjectParams,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof createArtifact>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof uploadObject>>, TError, TData>
     > &
       Pick<
         UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof createArtifact>>,
+          Awaited<ReturnType<typeof uploadObject>>,
           TError,
-          Awaited<ReturnType<typeof createArtifact>>
+          Awaited<ReturnType<typeof uploadObject>>
         >,
         "initialData"
       >;
@@ -1627,16 +1536,17 @@ export function useCreateArtifact<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useCreateArtifact<
-  TData = Awaited<ReturnType<typeof createArtifact>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+export function useUploadObject<
+  TData = Awaited<ReturnType<typeof uploadObject>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  createArtifactBody: CreateArtifactBody,
+  uploadObjectBody: UploadObjectBody,
+  params?: UploadObjectParams,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof createArtifact>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof uploadObject>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -1645,19 +1555,20 @@ export function useCreateArtifact<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Upload a file to the specified bucket
+ * @summary Stream-upload one object
  */
 
-export function useCreateArtifact<
-  TData = Awaited<ReturnType<typeof createArtifact>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
+export function useUploadObject<
+  TData = Awaited<ReturnType<typeof uploadObject>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  createArtifactBody: CreateArtifactBody,
+  uploadObjectBody: UploadObjectBody,
+  params?: UploadObjectParams,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof createArtifact>>, TError, TData>
+      UseQueryOptions<Awaited<ReturnType<typeof uploadObject>>, TError, TData>
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -1665,277 +1576,10 @@ export function useCreateArtifact<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
-  const queryOptions = getCreateArtifactQueryOptions(
-    projectId,
+  const queryOptions = getUploadObjectQueryOptions(
+    projectID,
     bucket,
-    createArtifactBody,
-    options,
-  );
-
-  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
-    TData,
-    TError
-  > & { queryKey: DataTag<QueryKey, TData, TError> };
-
-  return withQueryKey(query, queryOptions.queryKey);
-}
-
-export type deleteArtifactsResponse204 = {
-  data: void;
-  status: 204;
-};
-
-export type deleteArtifactsResponse400 = {
-  data: N400Response;
-  status: 400;
-};
-
-export type deleteArtifactsResponse401 = {
-  data: N401Response;
-  status: 401;
-};
-
-export type deleteArtifactsResponse403 = {
-  data: N403Response;
-  status: 403;
-};
-
-export type deleteArtifactsResponse500 = {
-  data: N500Response;
-  status: 500;
-};
-
-export type deleteArtifactsResponseSuccess = deleteArtifactsResponse204 & {
-  headers: Headers;
-};
-export type deleteArtifactsResponseError = (
-  | deleteArtifactsResponse400
-  | deleteArtifactsResponse401
-  | deleteArtifactsResponse403
-  | deleteArtifactsResponse500
-) & {
-  headers: Headers;
-};
-
-export type deleteArtifactsResponse =
-  deleteArtifactsResponseSuccess | deleteArtifactsResponseError;
-
-export const getDeleteArtifactsUrl = (
-  projectId: string,
-  bucket: string,
-  params: DeleteArtifactsParams,
-) => {
-  const normalizedParams = new URLSearchParams();
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    const explodeParameters = ["fname[]"];
-
-    if (Array.isArray(value) && explodeParameters.includes(key)) {
-      value.forEach((v) => {
-        normalizedParams.append(key, v === null ? "null" : String(v));
-      });
-      return;
-    }
-  });
-
-  const stringifiedParams = normalizedParams.toString();
-
-  return stringifiedParams.length > 0
-    ? `/artifacts/artifacts/default/${projectId}/${bucket}?${stringifiedParams}`
-    : `/artifacts/artifacts/default/${projectId}/${bucket}`;
-};
-
-/**
- * NOTE(W2): internal/api/v2/artifacts/handler.go:327-340 — the query
- * key is `fname[]` (repeated), NOT `fnames` (:330); 204 with no body on
- * success, 400 {"error": ...} when the key is missing.
- * @summary Remove multiple artifacts from a bucket in one request
- */
-export const deleteArtifacts = async (
-  projectId: string,
-  bucket: string,
-  params: DeleteArtifactsParams,
-  options?: Parameters<typeof eliteaFetch>[1],
-): Promise<deleteArtifactsResponse> => {
-  return eliteaFetch<deleteArtifactsResponse>(
-    getDeleteArtifactsUrl(projectId, bucket, params),
-    {
-      ...options,
-      method: "DELETE",
-    },
-  );
-};
-
-export const getDeleteArtifactsQueryKey = (
-  projectId: string,
-  bucket: string,
-  params?: DeleteArtifactsParams,
-) => {
-  return [
-    "DELETE",
-    `/artifacts/artifacts/default/${projectId}/${bucket}`,
-    ...(params ? [params] : []),
-  ] as const;
-};
-
-export const getDeleteArtifactsQueryOptions = <
-  TData = Awaited<ReturnType<typeof deleteArtifacts>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
->(
-  projectId: string,
-  bucket: string,
-  params: DeleteArtifactsParams,
-  options?: {
-    query?: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof deleteArtifacts>>,
-        TError,
-        TData
-      >
-    >;
-    request?: SecondParameter<typeof eliteaFetch>;
-  },
-) => {
-  const { query: queryOptions, request: requestOptions } = options ?? {};
-
-  const queryKey =
-    queryOptions?.queryKey ??
-    getDeleteArtifactsQueryKey(projectId, bucket, params);
-
-  const queryFn: QueryFunction<Awaited<ReturnType<typeof deleteArtifacts>>> = ({
-    signal,
-  }) =>
-    deleteArtifacts(projectId, bucket, params, { signal, ...requestOptions });
-
-  return {
-    queryKey,
-    queryFn,
-    enabled:
-      projectId !== null &&
-      projectId !== undefined &&
-      bucket !== null &&
-      bucket !== undefined,
-    ...queryOptions,
-  } as UseQueryOptions<
-    Awaited<ReturnType<typeof deleteArtifacts>>,
-    TError,
-    TData
-  > & { queryKey: DataTag<QueryKey, TData, TError> };
-};
-
-export type DeleteArtifactsQueryResult = NonNullable<
-  Awaited<ReturnType<typeof deleteArtifacts>>
->;
-export type DeleteArtifactsQueryError =
-  N400Response | N401Response | N403Response | N500Response;
-
-export function useDeleteArtifacts<
-  TData = Awaited<ReturnType<typeof deleteArtifacts>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
->(
-  projectId: string,
-  bucket: string,
-  params: DeleteArtifactsParams,
-  options: {
-    query: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof deleteArtifacts>>,
-        TError,
-        TData
-      >
-    > &
-      Pick<
-        DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof deleteArtifacts>>,
-          TError,
-          Awaited<ReturnType<typeof deleteArtifacts>>
-        >,
-        "initialData"
-      >;
-    request?: SecondParameter<typeof eliteaFetch>;
-  },
-  queryClient?: QueryClient,
-): DefinedUseQueryResult<TData, TError> & {
-  queryKey: DataTag<QueryKey, TData, TError>;
-};
-export function useDeleteArtifacts<
-  TData = Awaited<ReturnType<typeof deleteArtifacts>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
->(
-  projectId: string,
-  bucket: string,
-  params: DeleteArtifactsParams,
-  options?: {
-    query?: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof deleteArtifacts>>,
-        TError,
-        TData
-      >
-    > &
-      Pick<
-        UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof deleteArtifacts>>,
-          TError,
-          Awaited<ReturnType<typeof deleteArtifacts>>
-        >,
-        "initialData"
-      >;
-    request?: SecondParameter<typeof eliteaFetch>;
-  },
-  queryClient?: QueryClient,
-): UseQueryResult<TData, TError> & {
-  queryKey: DataTag<QueryKey, TData, TError>;
-};
-export function useDeleteArtifacts<
-  TData = Awaited<ReturnType<typeof deleteArtifacts>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
->(
-  projectId: string,
-  bucket: string,
-  params: DeleteArtifactsParams,
-  options?: {
-    query?: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof deleteArtifacts>>,
-        TError,
-        TData
-      >
-    >;
-    request?: SecondParameter<typeof eliteaFetch>;
-  },
-  queryClient?: QueryClient,
-): UseQueryResult<TData, TError> & {
-  queryKey: DataTag<QueryKey, TData, TError>;
-};
-/**
- * @summary Remove multiple artifacts from a bucket in one request
- */
-
-export function useDeleteArtifacts<
-  TData = Awaited<ReturnType<typeof deleteArtifacts>>,
-  TError = N400Response | N401Response | N403Response | N500Response,
->(
-  projectId: string,
-  bucket: string,
-  params: DeleteArtifactsParams,
-  options?: {
-    query?: Partial<
-      UseQueryOptions<
-        Awaited<ReturnType<typeof deleteArtifacts>>,
-        TError,
-        TData
-      >
-    >;
-    request?: SecondParameter<typeof eliteaFetch>;
-  },
-  queryClient?: QueryClient,
-): UseQueryResult<TData, TError> & {
-  queryKey: DataTag<QueryKey, TData, TError>;
-} {
-  const queryOptions = getDeleteArtifactsQueryOptions(
-    projectId,
-    bucket,
+    uploadObjectBody,
     params,
     options,
   );
@@ -1948,109 +1592,98 @@ export function useDeleteArtifacts<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
-export type deleteArtifactResponse200 = {
-  data: ArtifactDeletedResponse;
+export type batchDeleteObjectsResponse200 = {
+  data: BatchDeleteObjectsResponse;
   status: 200;
 };
 
-export type deleteArtifactResponse400 = {
-  data: N400Response;
+export type batchDeleteObjectsResponse400 = {
+  data: Error;
   status: 400;
 };
 
-export type deleteArtifactResponse401 = {
+export type batchDeleteObjectsResponse401 = {
   data: N401Response;
   status: 401;
 };
 
-export type deleteArtifactResponse403 = {
+export type batchDeleteObjectsResponse403 = {
   data: N403Response;
   status: 403;
 };
 
-export type deleteArtifactResponse404 = {
+export type batchDeleteObjectsResponse404 = {
   data: N404Response;
   status: 404;
 };
 
-export type deleteArtifactResponseSuccess = deleteArtifactResponse200 & {
-  headers: Headers;
-};
-export type deleteArtifactResponseError = (
-  | deleteArtifactResponse400
-  | deleteArtifactResponse401
-  | deleteArtifactResponse403
-  | deleteArtifactResponse404
+export type batchDeleteObjectsResponseSuccess =
+  batchDeleteObjectsResponse200 & {
+    headers: Headers;
+  };
+export type batchDeleteObjectsResponseError = (
+  | batchDeleteObjectsResponse400
+  | batchDeleteObjectsResponse401
+  | batchDeleteObjectsResponse403
+  | batchDeleteObjectsResponse404
 ) & {
   headers: Headers;
 };
 
-export type deleteArtifactResponse =
-  deleteArtifactResponseSuccess | deleteArtifactResponseError;
+export type batchDeleteObjectsResponse =
+  batchDeleteObjectsResponseSuccess | batchDeleteObjectsResponseError;
 
-export const getDeleteArtifactUrl = (
-  projectId: string,
-  bucket: string,
-  params: DeleteArtifactParams,
-) => {
-  const normalizedParams = new URLSearchParams();
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? "null" : String(value));
-    }
-  });
-
-  const stringifiedParams = normalizedParams.toString();
-
-  return stringifiedParams.length > 0
-    ? `/artifacts/artifact/default/${projectId}/${bucket}?${stringifiedParams}`
-    : `/artifacts/artifact/default/${projectId}/${bucket}`;
+export const getBatchDeleteObjectsUrl = (projectID: number, bucket: string) => {
+  return `/artifacts/objects/${projectID}/${bucket}:batchDelete`;
 };
 
 /**
- * NOTE(W2): internal/api/v2/artifacts/handler.go:259-276 — requires
- * ?filename=; integration_id/is_local are accepted for old-SPA parity
- * but not read. Responds {"message":"Deleted", size}.
- * @summary Remove a single named artifact from a bucket
+ * A JSON body, not repeated query parameters (S9). An empty `keys` array is 400 InvalidArgument — it never means "delete the bucket".
+ * @summary Delete a batch of objects by key in one request
  */
-export const deleteArtifact = async (
-  projectId: string,
+export const batchDeleteObjects = async (
+  projectID: number,
   bucket: string,
-  params: DeleteArtifactParams,
+  batchDeleteObjectsRequest: BatchDeleteObjectsRequest,
   options?: Parameters<typeof eliteaFetch>[1],
-): Promise<deleteArtifactResponse> => {
-  return eliteaFetch<deleteArtifactResponse>(
-    getDeleteArtifactUrl(projectId, bucket, params),
+): Promise<batchDeleteObjectsResponse> => {
+  return eliteaFetch<batchDeleteObjectsResponse>(
+    getBatchDeleteObjectsUrl(projectID, bucket),
     {
       ...options,
-      method: "DELETE",
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(batchDeleteObjectsRequest),
     },
   );
 };
 
-export const getDeleteArtifactQueryKey = (
-  projectId: string,
+export const getBatchDeleteObjectsQueryKey = (
+  projectID: number,
   bucket: string,
-  params?: DeleteArtifactParams,
+  batchDeleteObjectsRequest?: BatchDeleteObjectsRequest,
 ) => {
   return [
-    "DELETE",
-    `/artifacts/artifact/default/${projectId}/${bucket}`,
-    ...(params ? [params] : []),
+    "POST",
+    `/artifacts/objects/${projectID}/${bucket}:batchDelete`,
+    batchDeleteObjectsRequest,
   ] as const;
 };
 
-export const getDeleteArtifactQueryOptions = <
-  TData = Awaited<ReturnType<typeof deleteArtifact>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export const getBatchDeleteObjectsQueryOptions = <
+  TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  params: DeleteArtifactParams,
+  batchDeleteObjectsRequest: BatchDeleteObjectsRequest,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof deleteArtifact>>, TError, TData>
+      UseQueryOptions<
+        Awaited<ReturnType<typeof batchDeleteObjects>>,
+        TError,
+        TData
+      >
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -2059,51 +1692,58 @@ export const getDeleteArtifactQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getDeleteArtifactQueryKey(projectId, bucket, params);
+    getBatchDeleteObjectsQueryKey(projectID, bucket, batchDeleteObjectsRequest);
 
-  const queryFn: QueryFunction<Awaited<ReturnType<typeof deleteArtifact>>> = ({
-    signal,
-  }) =>
-    deleteArtifact(projectId, bucket, params, { signal, ...requestOptions });
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof batchDeleteObjects>>
+  > = ({ signal }) =>
+    batchDeleteObjects(projectID, bucket, batchDeleteObjectsRequest, {
+      signal,
+      ...requestOptions,
+    });
 
   return {
     queryKey,
     queryFn,
     enabled:
-      projectId !== null &&
-      projectId !== undefined &&
+      projectID !== null &&
+      projectID !== undefined &&
       bucket !== null &&
       bucket !== undefined,
     ...queryOptions,
   } as UseQueryOptions<
-    Awaited<ReturnType<typeof deleteArtifact>>,
+    Awaited<ReturnType<typeof batchDeleteObjects>>,
     TError,
     TData
   > & { queryKey: DataTag<QueryKey, TData, TError> };
 };
 
-export type DeleteArtifactQueryResult = NonNullable<
-  Awaited<ReturnType<typeof deleteArtifact>>
+export type BatchDeleteObjectsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof batchDeleteObjects>>
 >;
-export type DeleteArtifactQueryError =
-  N400Response | N401Response | N403Response | N404Response;
+export type BatchDeleteObjectsQueryError =
+  Error | N401Response | N403Response | N404Response;
 
-export function useDeleteArtifact<
-  TData = Awaited<ReturnType<typeof deleteArtifact>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useBatchDeleteObjects<
+  TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  params: DeleteArtifactParams,
+  batchDeleteObjectsRequest: BatchDeleteObjectsRequest,
   options: {
     query: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof deleteArtifact>>, TError, TData>
+      UseQueryOptions<
+        Awaited<ReturnType<typeof batchDeleteObjects>>,
+        TError,
+        TData
+      >
     > &
       Pick<
         DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof deleteArtifact>>,
+          Awaited<ReturnType<typeof batchDeleteObjects>>,
           TError,
-          Awaited<ReturnType<typeof deleteArtifact>>
+          Awaited<ReturnType<typeof batchDeleteObjects>>
         >,
         "initialData"
       >;
@@ -2113,22 +1753,26 @@ export function useDeleteArtifact<
 ): DefinedUseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useDeleteArtifact<
-  TData = Awaited<ReturnType<typeof deleteArtifact>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useBatchDeleteObjects<
+  TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  params: DeleteArtifactParams,
+  batchDeleteObjectsRequest: BatchDeleteObjectsRequest,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof deleteArtifact>>, TError, TData>
+      UseQueryOptions<
+        Awaited<ReturnType<typeof batchDeleteObjects>>,
+        TError,
+        TData
+      >
     > &
       Pick<
         UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof deleteArtifact>>,
+          Awaited<ReturnType<typeof batchDeleteObjects>>,
           TError,
-          Awaited<ReturnType<typeof deleteArtifact>>
+          Awaited<ReturnType<typeof batchDeleteObjects>>
         >,
         "initialData"
       >;
@@ -2138,16 +1782,20 @@ export function useDeleteArtifact<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 };
-export function useDeleteArtifact<
-  TData = Awaited<ReturnType<typeof deleteArtifact>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useBatchDeleteObjects<
+  TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  params: DeleteArtifactParams,
+  batchDeleteObjectsRequest: BatchDeleteObjectsRequest,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof deleteArtifact>>, TError, TData>
+      UseQueryOptions<
+        Awaited<ReturnType<typeof batchDeleteObjects>>,
+        TError,
+        TData
+      >
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -2156,19 +1804,23 @@ export function useDeleteArtifact<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Remove a single named artifact from a bucket
+ * @summary Delete a batch of objects by key in one request
  */
 
-export function useDeleteArtifact<
-  TData = Awaited<ReturnType<typeof deleteArtifact>>,
-  TError = N400Response | N401Response | N403Response | N404Response,
+export function useBatchDeleteObjects<
+  TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
+  TError = Error | N401Response | N403Response | N404Response,
 >(
-  projectId: string,
+  projectID: number,
   bucket: string,
-  params: DeleteArtifactParams,
+  batchDeleteObjectsRequest: BatchDeleteObjectsRequest,
   options?: {
     query?: Partial<
-      UseQueryOptions<Awaited<ReturnType<typeof deleteArtifact>>, TError, TData>
+      UseQueryOptions<
+        Awaited<ReturnType<typeof batchDeleteObjects>>,
+        TError,
+        TData
+      >
     >;
     request?: SecondParameter<typeof eliteaFetch>;
   },
@@ -2176,10 +1828,1961 @@ export function useDeleteArtifact<
 ): UseQueryResult<TData, TError> & {
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
-  const queryOptions = getDeleteArtifactQueryOptions(
-    projectId,
+  const queryOptions = getBatchDeleteObjectsQueryOptions(
+    projectID,
     bucket,
-    params,
+    batchDeleteObjectsRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type downloadObjectResponse200 = {
+  data: Blob;
+  status: 200;
+};
+
+export type downloadObjectResponse206 = {
+  data: Blob;
+  status: 206;
+};
+
+export type downloadObjectResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type downloadObjectResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type downloadObjectResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type downloadObjectResponseSuccess = (
+  downloadObjectResponse200 | downloadObjectResponse206
+) & {
+  headers: Headers;
+};
+export type downloadObjectResponseError = (
+  | downloadObjectResponse401
+  | downloadObjectResponse403
+  | downloadObjectResponse404
+) & {
+  headers: Headers;
+};
+
+export type downloadObjectResponse =
+  downloadObjectResponseSuccess | downloadObjectResponseError;
+
+export const getDownloadObjectUrl = (
+  projectID: number,
+  bucket: string,
+  key: string,
+) => {
+  return `/artifacts/objects/${projectID}/${bucket}/${key}`;
+};
+
+/**
+ * @summary Download an object, with optional byte-range support
+ */
+export const downloadObject = async (
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<downloadObjectResponse> => {
+  return eliteaFetch<downloadObjectResponse>(
+    getDownloadObjectUrl(projectID, bucket, key),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getDownloadObjectQueryKey = (
+  projectID: number,
+  bucket: string,
+  key: string,
+) => {
+  return [`/artifacts/objects/${projectID}/${bucket}/${key}`] as const;
+};
+
+export const getDownloadObjectQueryOptions = <
+  TData = Awaited<ReturnType<typeof downloadObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof downloadObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getDownloadObjectQueryKey(projectID, bucket, key);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof downloadObject>>> = ({
+    signal,
+  }) => downloadObject(projectID, bucket, key, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      bucket !== null &&
+      bucket !== undefined &&
+      key !== null &&
+      key !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof downloadObject>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type DownloadObjectQueryResult = NonNullable<
+  Awaited<ReturnType<typeof downloadObject>>
+>;
+export type DownloadObjectQueryError =
+  N401Response | N403Response | N404Response;
+
+export function useDownloadObject<
+  TData = Awaited<ReturnType<typeof downloadObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof downloadObject>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof downloadObject>>,
+          TError,
+          Awaited<ReturnType<typeof downloadObject>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useDownloadObject<
+  TData = Awaited<ReturnType<typeof downloadObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof downloadObject>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof downloadObject>>,
+          TError,
+          Awaited<ReturnType<typeof downloadObject>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useDownloadObject<
+  TData = Awaited<ReturnType<typeof downloadObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof downloadObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Download an object, with optional byte-range support
+ */
+
+export function useDownloadObject<
+  TData = Awaited<ReturnType<typeof downloadObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof downloadObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getDownloadObjectQueryOptions(
+    projectID,
+    bucket,
+    key,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type statObjectResponse200 = {
+  data: void;
+  status: 200;
+};
+
+export type statObjectResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type statObjectResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type statObjectResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type statObjectResponseSuccess = statObjectResponse200 & {
+  headers: Headers;
+};
+export type statObjectResponseError = (
+  statObjectResponse401 | statObjectResponse403 | statObjectResponse404
+) & {
+  headers: Headers;
+};
+
+export type statObjectResponse =
+  statObjectResponseSuccess | statObjectResponseError;
+
+export const getStatObjectUrl = (
+  projectID: number,
+  bucket: string,
+  key: string,
+) => {
+  return `/artifacts/objects/${projectID}/${bucket}/${key}`;
+};
+
+/**
+ * @summary Fetch object metadata as headers only, no body
+ */
+export const statObject = async (
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<statObjectResponse> => {
+  return eliteaFetch<statObjectResponse>(
+    getStatObjectUrl(projectID, bucket, key),
+    {
+      ...options,
+      method: "HEAD",
+    },
+  );
+};
+
+export const getStatObjectQueryKey = (
+  projectID: number,
+  bucket: string,
+  key: string,
+) => {
+  return ["HEAD", `/artifacts/objects/${projectID}/${bucket}/${key}`] as const;
+};
+
+export const getStatObjectQueryOptions = <
+  TData = Awaited<ReturnType<typeof statObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof statObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getStatObjectQueryKey(projectID, bucket, key);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof statObject>>> = ({
+    signal,
+  }) => statObject(projectID, bucket, key, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      bucket !== null &&
+      bucket !== undefined &&
+      key !== null &&
+      key !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof statObject>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type StatObjectQueryResult = NonNullable<
+  Awaited<ReturnType<typeof statObject>>
+>;
+export type StatObjectQueryError = N401Response | N403Response | N404Response;
+
+export function useStatObject<
+  TData = Awaited<ReturnType<typeof statObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof statObject>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof statObject>>,
+          TError,
+          Awaited<ReturnType<typeof statObject>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useStatObject<
+  TData = Awaited<ReturnType<typeof statObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof statObject>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof statObject>>,
+          TError,
+          Awaited<ReturnType<typeof statObject>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useStatObject<
+  TData = Awaited<ReturnType<typeof statObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof statObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Fetch object metadata as headers only, no body
+ */
+
+export function useStatObject<
+  TData = Awaited<ReturnType<typeof statObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof statObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getStatObjectQueryOptions(
+    projectID,
+    bucket,
+    key,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type deleteObjectResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type deleteObjectResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type deleteObjectResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type deleteObjectResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type deleteObjectResponseSuccess = deleteObjectResponse204 & {
+  headers: Headers;
+};
+export type deleteObjectResponseError = (
+  deleteObjectResponse401 | deleteObjectResponse403 | deleteObjectResponse404
+) & {
+  headers: Headers;
+};
+
+export type deleteObjectResponse =
+  deleteObjectResponseSuccess | deleteObjectResponseError;
+
+export const getDeleteObjectUrl = (
+  projectID: number,
+  bucket: string,
+  key: string,
+) => {
+  return `/artifacts/objects/${projectID}/${bucket}/${key}`;
+};
+
+/**
+ * @summary Delete a single object
+ */
+export const deleteObject = async (
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<deleteObjectResponse> => {
+  return eliteaFetch<deleteObjectResponse>(
+    getDeleteObjectUrl(projectID, bucket, key),
+    {
+      ...options,
+      method: "DELETE",
+    },
+  );
+};
+
+export const getDeleteObjectQueryKey = (
+  projectID: number,
+  bucket: string,
+  key: string,
+) => {
+  return [
+    "DELETE",
+    `/artifacts/objects/${projectID}/${bucket}/${key}`,
+  ] as const;
+};
+
+export const getDeleteObjectQueryOptions = <
+  TData = Awaited<ReturnType<typeof deleteObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof deleteObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getDeleteObjectQueryKey(projectID, bucket, key);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof deleteObject>>> = ({
+    signal,
+  }) => deleteObject(projectID, bucket, key, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      bucket !== null &&
+      bucket !== undefined &&
+      key !== null &&
+      key !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof deleteObject>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type DeleteObjectQueryResult = NonNullable<
+  Awaited<ReturnType<typeof deleteObject>>
+>;
+export type DeleteObjectQueryError = N401Response | N403Response | N404Response;
+
+export function useDeleteObject<
+  TData = Awaited<ReturnType<typeof deleteObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof deleteObject>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof deleteObject>>,
+          TError,
+          Awaited<ReturnType<typeof deleteObject>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useDeleteObject<
+  TData = Awaited<ReturnType<typeof deleteObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof deleteObject>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof deleteObject>>,
+          TError,
+          Awaited<ReturnType<typeof deleteObject>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useDeleteObject<
+  TData = Awaited<ReturnType<typeof deleteObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof deleteObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Delete a single object
+ */
+
+export function useDeleteObject<
+  TData = Awaited<ReturnType<typeof deleteObject>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  key: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof deleteObject>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getDeleteObjectQueryOptions(
+    projectID,
+    bucket,
+    key,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type createTransferGrantResponse200 = {
+  data: TransferGrantResponse;
+  status: 200;
+};
+
+export type createTransferGrantResponse400 = {
+  data: Error;
+  status: 400;
+};
+
+export type createTransferGrantResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type createTransferGrantResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type createTransferGrantResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type createTransferGrantResponseSuccess =
+  createTransferGrantResponse200 & {
+    headers: Headers;
+  };
+export type createTransferGrantResponseError = (
+  | createTransferGrantResponse400
+  | createTransferGrantResponse401
+  | createTransferGrantResponse403
+  | createTransferGrantResponse404
+) & {
+  headers: Headers;
+};
+
+export type createTransferGrantResponse =
+  createTransferGrantResponseSuccess | createTransferGrantResponseError;
+
+export const getCreateTransferGrantUrl = (
+  projectID: number,
+  bucket: string,
+) => {
+  return `/artifacts/grants/${projectID}/${bucket}`;
+};
+
+/**
+ * S15. Falls back to the streaming facade URL, not an error, when Capabilities().Presign is false for the configured backend.
+ * @summary Create a short-lived presigned transfer grant
+ */
+export const createTransferGrant = async (
+  projectID: number,
+  bucket: string,
+  createTransferGrantRequest: CreateTransferGrantRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<createTransferGrantResponse> => {
+  return eliteaFetch<createTransferGrantResponse>(
+    getCreateTransferGrantUrl(projectID, bucket),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(createTransferGrantRequest),
+    },
+  );
+};
+
+export const getCreateTransferGrantQueryKey = (
+  projectID: number,
+  bucket: string,
+  createTransferGrantRequest?: CreateTransferGrantRequest,
+) => {
+  return [
+    "POST",
+    `/artifacts/grants/${projectID}/${bucket}`,
+    createTransferGrantRequest,
+  ] as const;
+};
+
+export const getCreateTransferGrantQueryOptions = <
+  TData = Awaited<ReturnType<typeof createTransferGrant>>,
+  TError = Error | N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  createTransferGrantRequest: CreateTransferGrantRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createTransferGrant>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getCreateTransferGrantQueryKey(
+      projectID,
+      bucket,
+      createTransferGrantRequest,
+    );
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof createTransferGrant>>
+  > = ({ signal }) =>
+    createTransferGrant(projectID, bucket, createTransferGrantRequest, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      bucket !== null &&
+      bucket !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof createTransferGrant>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type CreateTransferGrantQueryResult = NonNullable<
+  Awaited<ReturnType<typeof createTransferGrant>>
+>;
+export type CreateTransferGrantQueryError =
+  Error | N401Response | N403Response | N404Response;
+
+export function useCreateTransferGrant<
+  TData = Awaited<ReturnType<typeof createTransferGrant>>,
+  TError = Error | N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  createTransferGrantRequest: CreateTransferGrantRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createTransferGrant>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof createTransferGrant>>,
+          TError,
+          Awaited<ReturnType<typeof createTransferGrant>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCreateTransferGrant<
+  TData = Awaited<ReturnType<typeof createTransferGrant>>,
+  TError = Error | N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  createTransferGrantRequest: CreateTransferGrantRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createTransferGrant>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof createTransferGrant>>,
+          TError,
+          Awaited<ReturnType<typeof createTransferGrant>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCreateTransferGrant<
+  TData = Awaited<ReturnType<typeof createTransferGrant>>,
+  TError = Error | N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  createTransferGrantRequest: CreateTransferGrantRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createTransferGrant>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Create a short-lived presigned transfer grant
+ */
+
+export function useCreateTransferGrant<
+  TData = Awaited<ReturnType<typeof createTransferGrant>>,
+  TError = Error | N401Response | N403Response | N404Response,
+>(
+  projectID: number,
+  bucket: string,
+  createTransferGrantRequest: CreateTransferGrantRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createTransferGrant>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getCreateTransferGrantQueryOptions(
+    projectID,
+    bucket,
+    createTransferGrantRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type commitTransferGrantResponse200 = {
+  data: UploadObjectResponse;
+  status: 200;
+};
+
+export type commitTransferGrantResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type commitTransferGrantResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type commitTransferGrantResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type commitTransferGrantResponse409 = {
+  data: Error;
+  status: 409;
+};
+
+export type commitTransferGrantResponse412 = {
+  data: Error;
+  status: 412;
+};
+
+export type commitTransferGrantResponse413 = {
+  data: Error;
+  status: 413;
+};
+
+export type commitTransferGrantResponseSuccess =
+  commitTransferGrantResponse200 & {
+    headers: Headers;
+  };
+export type commitTransferGrantResponseError = (
+  | commitTransferGrantResponse401
+  | commitTransferGrantResponse403
+  | commitTransferGrantResponse404
+  | commitTransferGrantResponse409
+  | commitTransferGrantResponse412
+  | commitTransferGrantResponse413
+) & {
+  headers: Headers;
+};
+
+export type commitTransferGrantResponse =
+  commitTransferGrantResponseSuccess | commitTransferGrantResponseError;
+
+export const getCommitTransferGrantUrl = (
+  projectID: number,
+  grantID: string,
+) => {
+  return `/artifacts/grants/${projectID}/${grantID}:commit`;
+};
+
+/**
+ * Verifies size, digest, and media type against the grant row (S15). Media type verification is mandatory — ContentType is not part of the signed presigned-PUT payload. A digest or media-type mismatch deletes the uploaded object and returns 409; an object that exceeds the grant's max_bytes, or a commit that would push the project past its storage quota, deletes the uploaded object and returns 413.
+ * @summary Verify and commit a presigned upload, making it listable
+ */
+export const commitTransferGrant = async (
+  projectID: number,
+  grantID: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<commitTransferGrantResponse> => {
+  return eliteaFetch<commitTransferGrantResponse>(
+    getCommitTransferGrantUrl(projectID, grantID),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getCommitTransferGrantQueryKey = (
+  projectID: number,
+  grantID: string,
+) => {
+  return ["POST", `/artifacts/grants/${projectID}/${grantID}:commit`] as const;
+};
+
+export const getCommitTransferGrantQueryOptions = <
+  TData = Awaited<ReturnType<typeof commitTransferGrant>>,
+  TError = N401Response | N403Response | N404Response | Error,
+>(
+  projectID: number,
+  grantID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof commitTransferGrant>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getCommitTransferGrantQueryKey(projectID, grantID);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof commitTransferGrant>>
+  > = ({ signal }) =>
+    commitTransferGrant(projectID, grantID, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      grantID !== null &&
+      grantID !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof commitTransferGrant>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type CommitTransferGrantQueryResult = NonNullable<
+  Awaited<ReturnType<typeof commitTransferGrant>>
+>;
+export type CommitTransferGrantQueryError =
+  N401Response | N403Response | N404Response | Error;
+
+export function useCommitTransferGrant<
+  TData = Awaited<ReturnType<typeof commitTransferGrant>>,
+  TError = N401Response | N403Response | N404Response | Error,
+>(
+  projectID: number,
+  grantID: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof commitTransferGrant>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof commitTransferGrant>>,
+          TError,
+          Awaited<ReturnType<typeof commitTransferGrant>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCommitTransferGrant<
+  TData = Awaited<ReturnType<typeof commitTransferGrant>>,
+  TError = N401Response | N403Response | N404Response | Error,
+>(
+  projectID: number,
+  grantID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof commitTransferGrant>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof commitTransferGrant>>,
+          TError,
+          Awaited<ReturnType<typeof commitTransferGrant>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCommitTransferGrant<
+  TData = Awaited<ReturnType<typeof commitTransferGrant>>,
+  TError = N401Response | N403Response | N404Response | Error,
+>(
+  projectID: number,
+  grantID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof commitTransferGrant>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Verify and commit a presigned upload, making it listable
+ */
+
+export function useCommitTransferGrant<
+  TData = Awaited<ReturnType<typeof commitTransferGrant>>,
+  TError = N401Response | N403Response | N404Response | Error,
+>(
+  projectID: number,
+  grantID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof commitTransferGrant>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getCommitTransferGrantQueryOptions(
+    projectID,
+    grantID,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type presignUploadPartResponse200 = {
+  data: PresignUploadPartResponse;
+  status: 200;
+};
+
+export type presignUploadPartResponse400 = {
+  data: Error;
+  status: 400;
+};
+
+export type presignUploadPartResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type presignUploadPartResponse403 = {
+  data: Error;
+  status: 403;
+};
+
+export type presignUploadPartResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type presignUploadPartResponse409 = {
+  data: Error;
+  status: 409;
+};
+
+export type presignUploadPartResponse412 = {
+  data: Error;
+  status: 412;
+};
+
+export type presignUploadPartResponseSuccess = presignUploadPartResponse200 & {
+  headers: Headers;
+};
+export type presignUploadPartResponseError = (
+  | presignUploadPartResponse400
+  | presignUploadPartResponse401
+  | presignUploadPartResponse403
+  | presignUploadPartResponse404
+  | presignUploadPartResponse409
+  | presignUploadPartResponse412
+) & {
+  headers: Headers;
+};
+
+export type presignUploadPartResponse =
+  presignUploadPartResponseSuccess | presignUploadPartResponseError;
+
+export const getPresignUploadPartUrl = (
+  projectID: number,
+  grantID: string,
+  partNumber: number,
+) => {
+  return `/artifacts/grants/${projectID}/${grantID}/parts/${partNumber}`;
+};
+
+/**
+ * S16. grantID must be a grant CreateTransferGrant started as native multipart (its response carried upload_id, not url) — a single-shot grant, a GET grant, or a grant belonging to a different project cannot be used here.
+ * @summary Presign one part of a native multipart upload
+ */
+export const presignUploadPart = async (
+  projectID: number,
+  grantID: string,
+  partNumber: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<presignUploadPartResponse> => {
+  return eliteaFetch<presignUploadPartResponse>(
+    getPresignUploadPartUrl(projectID, grantID, partNumber),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getPresignUploadPartQueryKey = (
+  projectID: number,
+  grantID: string,
+  partNumber: number,
+) => {
+  return [
+    "POST",
+    `/artifacts/grants/${projectID}/${grantID}/parts/${partNumber}`,
+  ] as const;
+};
+
+export const getPresignUploadPartQueryOptions = <
+  TData = Awaited<ReturnType<typeof presignUploadPart>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  partNumber: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof presignUploadPart>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getPresignUploadPartQueryKey(projectID, grantID, partNumber);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof presignUploadPart>>
+  > = ({ signal }) =>
+    presignUploadPart(projectID, grantID, partNumber, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      grantID !== null &&
+      grantID !== undefined &&
+      partNumber !== null &&
+      partNumber !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof presignUploadPart>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type PresignUploadPartQueryResult = NonNullable<
+  Awaited<ReturnType<typeof presignUploadPart>>
+>;
+export type PresignUploadPartQueryError = Error | N401Response | N404Response;
+
+export function usePresignUploadPart<
+  TData = Awaited<ReturnType<typeof presignUploadPart>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  partNumber: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof presignUploadPart>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof presignUploadPart>>,
+          TError,
+          Awaited<ReturnType<typeof presignUploadPart>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function usePresignUploadPart<
+  TData = Awaited<ReturnType<typeof presignUploadPart>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  partNumber: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof presignUploadPart>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof presignUploadPart>>,
+          TError,
+          Awaited<ReturnType<typeof presignUploadPart>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function usePresignUploadPart<
+  TData = Awaited<ReturnType<typeof presignUploadPart>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  partNumber: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof presignUploadPart>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Presign one part of a native multipart upload
+ */
+
+export function usePresignUploadPart<
+  TData = Awaited<ReturnType<typeof presignUploadPart>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  partNumber: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof presignUploadPart>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getPresignUploadPartQueryOptions(
+    projectID,
+    grantID,
+    partNumber,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type completeMultipartUploadResponse200 = {
+  data: UploadObjectResponse;
+  status: 200;
+};
+
+export type completeMultipartUploadResponse400 = {
+  data: Error;
+  status: 400;
+};
+
+export type completeMultipartUploadResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type completeMultipartUploadResponse403 = {
+  data: Error;
+  status: 403;
+};
+
+export type completeMultipartUploadResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type completeMultipartUploadResponse409 = {
+  data: Error;
+  status: 409;
+};
+
+export type completeMultipartUploadResponse412 = {
+  data: Error;
+  status: 412;
+};
+
+export type completeMultipartUploadResponse413 = {
+  data: Error;
+  status: 413;
+};
+
+export type completeMultipartUploadResponseSuccess =
+  completeMultipartUploadResponse200 & {
+    headers: Headers;
+  };
+export type completeMultipartUploadResponseError = (
+  | completeMultipartUploadResponse400
+  | completeMultipartUploadResponse401
+  | completeMultipartUploadResponse403
+  | completeMultipartUploadResponse404
+  | completeMultipartUploadResponse409
+  | completeMultipartUploadResponse412
+  | completeMultipartUploadResponse413
+) & {
+  headers: Headers;
+};
+
+export type completeMultipartUploadResponse =
+  completeMultipartUploadResponseSuccess | completeMultipartUploadResponseError;
+
+export const getCompleteMultipartUploadUrl = (
+  projectID: number,
+  grantID: string,
+) => {
+  return `/artifacts/grants/${projectID}/${grantID}:completeMultipart`;
+};
+
+/**
+ * S16. Applies the identical size/digest/media-type/quota verification commitTransferGrant does — completing via multipart is not a lesser-verified path. See commitTransferGrant's own description for what each response code means; they are shared.
+ * @summary Finish a native multipart upload, making it listable
+ */
+export const completeMultipartUpload = async (
+  projectID: number,
+  grantID: string,
+  completeMultipartRequest: CompleteMultipartRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<completeMultipartUploadResponse> => {
+  return eliteaFetch<completeMultipartUploadResponse>(
+    getCompleteMultipartUploadUrl(projectID, grantID),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(completeMultipartRequest),
+    },
+  );
+};
+
+export const getCompleteMultipartUploadQueryKey = (
+  projectID: number,
+  grantID: string,
+  completeMultipartRequest?: CompleteMultipartRequest,
+) => {
+  return [
+    "POST",
+    `/artifacts/grants/${projectID}/${grantID}:completeMultipart`,
+    completeMultipartRequest,
+  ] as const;
+};
+
+export const getCompleteMultipartUploadQueryOptions = <
+  TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  completeMultipartRequest: CompleteMultipartRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof completeMultipartUpload>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getCompleteMultipartUploadQueryKey(
+      projectID,
+      grantID,
+      completeMultipartRequest,
+    );
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof completeMultipartUpload>>
+  > = ({ signal }) =>
+    completeMultipartUpload(projectID, grantID, completeMultipartRequest, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      grantID !== null &&
+      grantID !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof completeMultipartUpload>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type CompleteMultipartUploadQueryResult = NonNullable<
+  Awaited<ReturnType<typeof completeMultipartUpload>>
+>;
+export type CompleteMultipartUploadQueryError =
+  Error | N401Response | N404Response;
+
+export function useCompleteMultipartUpload<
+  TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  completeMultipartRequest: CompleteMultipartRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof completeMultipartUpload>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof completeMultipartUpload>>,
+          TError,
+          Awaited<ReturnType<typeof completeMultipartUpload>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCompleteMultipartUpload<
+  TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  completeMultipartRequest: CompleteMultipartRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof completeMultipartUpload>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof completeMultipartUpload>>,
+          TError,
+          Awaited<ReturnType<typeof completeMultipartUpload>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCompleteMultipartUpload<
+  TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  completeMultipartRequest: CompleteMultipartRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof completeMultipartUpload>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Finish a native multipart upload, making it listable
+ */
+
+export function useCompleteMultipartUpload<
+  TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  completeMultipartRequest: CompleteMultipartRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof completeMultipartUpload>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getCompleteMultipartUploadQueryOptions(
+    projectID,
+    grantID,
+    completeMultipartRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type abortMultipartUploadResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type abortMultipartUploadResponse400 = {
+  data: Error;
+  status: 400;
+};
+
+export type abortMultipartUploadResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type abortMultipartUploadResponse403 = {
+  data: Error;
+  status: 403;
+};
+
+export type abortMultipartUploadResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type abortMultipartUploadResponse409 = {
+  data: Error;
+  status: 409;
+};
+
+export type abortMultipartUploadResponseSuccess =
+  abortMultipartUploadResponse204 & {
+    headers: Headers;
+  };
+export type abortMultipartUploadResponseError = (
+  | abortMultipartUploadResponse400
+  | abortMultipartUploadResponse401
+  | abortMultipartUploadResponse403
+  | abortMultipartUploadResponse404
+  | abortMultipartUploadResponse409
+) & {
+  headers: Headers;
+};
+
+export type abortMultipartUploadResponse =
+  abortMultipartUploadResponseSuccess | abortMultipartUploadResponseError;
+
+export const getAbortMultipartUploadUrl = (
+  projectID: number,
+  grantID: string,
+) => {
+  return `/artifacts/grants/${projectID}/${grantID}:abortMultipart`;
+};
+
+/**
+ * S16. Unlike presignUploadPart/completeMultipartUpload, an expired grant may still be aborted — cleaning up an abandoned upload session is not itself subject to the grant's own TTL.
+ * @summary Cancel a native multipart upload
+ */
+export const abortMultipartUpload = async (
+  projectID: number,
+  grantID: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<abortMultipartUploadResponse> => {
+  return eliteaFetch<abortMultipartUploadResponse>(
+    getAbortMultipartUploadUrl(projectID, grantID),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getAbortMultipartUploadQueryKey = (
+  projectID: number,
+  grantID: string,
+) => {
+  return [
+    "POST",
+    `/artifacts/grants/${projectID}/${grantID}:abortMultipart`,
+  ] as const;
+};
+
+export const getAbortMultipartUploadQueryOptions = <
+  TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof abortMultipartUpload>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getAbortMultipartUploadQueryKey(projectID, grantID);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof abortMultipartUpload>>
+  > = ({ signal }) =>
+    abortMultipartUpload(projectID, grantID, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectID !== null &&
+      projectID !== undefined &&
+      grantID !== null &&
+      grantID !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof abortMultipartUpload>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type AbortMultipartUploadQueryResult = NonNullable<
+  Awaited<ReturnType<typeof abortMultipartUpload>>
+>;
+export type AbortMultipartUploadQueryError =
+  Error | N401Response | N404Response;
+
+export function useAbortMultipartUpload<
+  TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof abortMultipartUpload>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof abortMultipartUpload>>,
+          TError,
+          Awaited<ReturnType<typeof abortMultipartUpload>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useAbortMultipartUpload<
+  TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof abortMultipartUpload>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof abortMultipartUpload>>,
+          TError,
+          Awaited<ReturnType<typeof abortMultipartUpload>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useAbortMultipartUpload<
+  TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof abortMultipartUpload>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Cancel a native multipart upload
+ */
+
+export function useAbortMultipartUpload<
+  TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
+  TError = Error | N401Response | N404Response,
+>(
+  projectID: number,
+  grantID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof abortMultipartUpload>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getAbortMultipartUploadQueryOptions(
+    projectID,
+    grantID,
     options,
   );
 

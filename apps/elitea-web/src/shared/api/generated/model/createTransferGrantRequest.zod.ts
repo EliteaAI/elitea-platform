@@ -40,20 +40,36 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
 
-export const ToolkitInstanceListResponse = zod
+export const CreateTransferGrantRequest = zod
   .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
+    method: zod.enum(["GET", "PUT"]),
+    display_name: zod
+      .string()
+      .optional()
+      .describe(
+        "The server derives the storage key; the caller never supplies one directly (S9\/S15).\n",
+      ),
+    content_type: zod.string(),
+    max_bytes: zod.int(),
+    digest_alg: zod
+      .string()
+      .optional()
+      .describe(
+        "Required alongside digest for media types where integrity matters; commit cannot verify a digest that was never declared at grant time (S15).\n",
+      ),
+    digest: zod
+      .string()
+      .optional()
+      .describe("Hex-encoded digest, algorithm named by digest_alg."),
   })
   .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
+    "PUT grants are single-use. Default TTL 15 minutes, maximum 60 (S15). A PUT request above 64 MiB on a backend whose Capabilities() reports NativeMultipart starts a native multipart upload instead of a single-shot grant (S16) — see TransferGrantResponse.upload_id.\n",
   );
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
+export type CreateTransferGrantRequest = zod.input<
+  typeof CreateTransferGrantRequest
 >;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
+export type CreateTransferGrantRequestOutput = zod.output<
+  typeof CreateTransferGrantRequest
 >;

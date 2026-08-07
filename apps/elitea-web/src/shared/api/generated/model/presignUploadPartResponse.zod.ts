@@ -40,20 +40,24 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
 
-export const ToolkitInstanceListResponse = zod
+export const PresignUploadPartResponse = zod
   .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
+    part_number: zod.int(),
+    url: zod.string().describe("A presigned PUT URL for this part only."),
+    expires_at: zod.iso
+      .datetime({ offset: true })
+      .describe(
+        "Never later than the parent grant's own expires_at — a part URL cannot outlive the upload session it belongs to.\n",
+      ),
   })
   .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
+    "Response for POST ...\/grants\/{projectID}\/{grantID}\/parts\/{partNumber} (S16).\n",
   );
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
+export type PresignUploadPartResponse = zod.input<
+  typeof PresignUploadPartResponse
 >;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
+export type PresignUploadPartResponseOutput = zod.output<
+  typeof PresignUploadPartResponse
 >;
