@@ -37,26 +37,31 @@
  *     doing a client-side `.find()`, which silently failed to resolve any
  *     toolkit past the first page.
  *
- * The remaining 10 baseline exports — `toolkitCreate`, `toolkitEdit`,
- * `toolkitFork`, `toolkitExport`, `toolkitTest`, `mcpSyncTools`,
- * `discoverMcpTools`, `toolkitAssociate`, `validateToolkit`,
- * `toolkitAvailableTools`, `listToolkitTypes` — have NO generated endpoint
- * anywhere (confirmed: `grep -n '"operationId"' endpoints.manifest.json`
- * lists only `toolkits.listToolkits`, `toolkits.listToolkitInstances`, and
- * `applications.deleteApplicationTool` under either tag; no
- * create/update/export/test/mcp_sync/discover/associate/
- * validate/available-tools/toolkit_types GENERATED operation exists).
- * `features/agents/api/useValidateToolkit.ts` (unit A1e) already found this
- * for just the validator endpoint; this file's own research (unit A4g)
- * found the same gap spans nearly the entire toolkit CRUD write surface.
- * NOTE: since `toolkitsDetails` turned out to have a real, handwritten
- * (not generated-client) endpoint despite this file's own earlier
- * "exhaustive" claim to the contrary, these 10 remaining stubs should be
- * re-verified against `router.go:456-500`'s registered handlers before
- * being trusted as genuine backend gaps rather than missed manifest
- * entries — that re-verification is out of scope for this fix (unit A4g's
- * own file-set does not cover the callers of those 10 stubs) and is
- * flagged here, not silently done.
+ * CORRECTION (Phase 1c, 2026-08-07) — the "10 remaining exports have NO
+ * endpoint anywhere" claim this comment used to make was WRONG, and the
+ * re-verification it asked for has now been done. Every one of the ten is
+ * registered in `services/elitea-main/internal/api/router.go`:
+ *
+ *   toolkitCreate         POST   /tools/prompt_lib/{projectID}            :647
+ *   toolkitEdit           PUT    /tool/prompt_lib/{projectID}/{toolkitID} :649
+ *   toolkitFork           POST   /fork_toolkit/prompt_lib/{projectID}     :658
+ *   toolkitExport         GET    /export_toolkit/...                      :661
+ *   toolkitTest           POST   /test_tool/..., /test_toolkit_tool/...   :659-660
+ *   mcpSyncTools          POST   /mcp_sync_tools/prompt_lib/{projectID}   :886
+ *   discoverMcpTools      POST   /toolkit_discover_tools/...              :655
+ *   validateToolkit       GET+POST /toolkit_validator/...                 :656-657
+ *   toolkitAvailableTools GET    /toolkit_available_tools/...             :654
+ *   listToolkitTypes      GET    /toolkit_types/prompt_lib/{projectID}    :653
+ *
+ * The gap was never in the BACKEND — it was in the OpenAPI spec, and hence
+ * in the generated client. `create`/`update` (plus the single-toolkit GET)
+ * were added to `api/openapi/v2.yaml` in Phase 1c and are now real generated
+ * operations, consumed by `useToolkitCreate`/`useToolkitEdit` below.
+ *
+ * The other seven remain unspec'd. They are genuine follow-up work, but the
+ * work is "add the operation to v2.yaml and regenerate", NOT "implement a
+ * handler" — do not repeat this comment's original mistake of treating a
+ * missing spec entry as a missing endpoint.
  *
  * Consistent with the established convention for exactly this situation
  * (`useValidateToolkit`'s injected `useValidateToolkitQuery`,
@@ -93,7 +98,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { getDeleteApplicationToolQueryOptions } from '@/shared/api/generated/applications/applications';
 import { eliteaFetch } from '@/shared/api/generated/mutator';
-import { useListToolkitInstances, useListToolkits } from '@/shared/api/generated/toolkits/toolkits';
+import {
+  createToolkit,
+  updateToolkit,
+  useListToolkitInstances,
+  useListToolkits,
+} from '@/shared/api/generated/toolkits/toolkits';
 import type { ToolkitInstance } from '@/shared/api/generated/model';
 
 /* ── real: toolkit-type settings-schema catalogue ─────────────────────────── */
@@ -270,6 +280,52 @@ export type UseToolkitCreateMutation = (args: { readonly projectId: string } & T
 export type UseToolkitEditMutation = (
   args: { readonly projectId: string; readonly toolId: string } & ToolkitWriteBody,
 ) => Promise<ToolkitWriteResult>;
+
+/* ── real: create / edit (Phase 1c — see the CORRECTION in the module doc) ── */
+
+/**
+ * `POST /elitea_core/tools/prompt_lib/{projectId}` — generated `createToolkit`.
+ *
+ * Returns the SAME `UseToolkitCreateMutation` shape the injected stub used, so
+ * callers that already thread `deps.createToolkit` keep working unchanged;
+ * they can now simply stop injecting and take this default instead.
+ *
+ * `meta` is accepted by this signature but NOT sent: `pgRepo.CreateToolkit`
+ * reads only `name`/`type`/`description`/`settings`
+ * (internal/api/v2/toolkits/handler.go:891-900), and `ToolkitCreateRequest`
+ * models exactly those. Passing `meta` through would be contract fiction.
+ */
+export function useToolkitCreate(): UseToolkitCreateMutation {
+  return useCallback(async ({ projectId, type, name, description, settings }) => {
+    const response = await createToolkit(projectId, {
+      type,
+      ...(name === undefined ? {} : { name }),
+      ...(description === undefined ? {} : { description }),
+      ...(settings === undefined ? {} : { settings }),
+    });
+    return response.data as ToolkitWriteResult;
+  }, []);
+}
+
+/**
+ * `PUT /elitea_core/tool/prompt_lib/{projectId}/{toolId}` — generated
+ * `updateToolkit`. PATCH hits the same handler; only PUT is spec'd.
+ *
+ * NEVER send `has_relation`: that key makes the handler dispatch to
+ * `updateToolRelation` instead of updating the toolkit at all (issue #38).
+ * `ToolkitWriteBody` cannot express it, which is the intended guard.
+ */
+export function useToolkitEdit(): UseToolkitEditMutation {
+  return useCallback(async ({ projectId, toolId, type, name, description, settings }) => {
+    const response = await updateToolkit(projectId, Number(toolId), {
+      type,
+      ...(name === undefined ? {} : { name }),
+      ...(description === undefined ? {} : { description }),
+      ...(settings === undefined ? {} : { settings }),
+    });
+    return response.data as ToolkitWriteResult;
+  }, []);
+}
 
 // `UseToolkitExportQuery` (the injected-`deps` shape this comment block
 // originally anticipated for the export gap — see the module doc comment's

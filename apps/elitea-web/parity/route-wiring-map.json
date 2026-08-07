@@ -3,8 +3,8 @@
   "generated": "phase-0",
   "total": 38,
   "byStatus": {
-    "ready": 22,
-    "blocked-codegen": 7,
+    "ready": 20,
+    "wired": 9,
     "needs-route-state": 6,
     "page-is-stub": 1,
     "hybrid-defect": 2
@@ -120,8 +120,8 @@
         "isApplication",
         "deps.createToolkit"
       ],
-      "status": "blocked-codegen",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Apps reuse the toolkit creator with isApplication."
     },
     {
@@ -148,7 +148,7 @@
       "targetPath": "src/pages/artifacts/CreateBucket.tsx",
       "targetExport": "CreateBucket",
       "requiredProps": [],
-      "status": "ready",
+      "status": "wired",
       "rendersRouteShell": false,
       "note": "Currently a TextField whose submit only navigates — no API call. CreateBucket (built, tested) is unimported."
     },
@@ -162,7 +162,7 @@
       "targetPath": "src/pages/artifacts/Artifacts.tsx",
       "targetExport": "Artifacts",
       "requiredProps": [],
-      "status": "ready",
+      "status": "wired",
       "rendersRouteShell": false,
       "note": "Currently a hand-written heading + one Button. The 363-line Artifacts page is unimported. Revert the stub rather than editing it."
     },
@@ -249,8 +249,8 @@
         "isMCP",
         "deps.saveToolkit"
       ],
-      "status": "blocked-codegen",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -282,8 +282,8 @@
         "isMCP",
         "deps.createToolkit"
       ],
-      "status": "blocked-codegen",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -483,8 +483,8 @@
       "requiredProps": [
         "deps.saveToolkit"
       ],
-      "status": "blocked-codegen",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -513,8 +513,8 @@
       "requiredProps": [
         "deps.createToolkit"
       ],
-      "status": "blocked-codegen",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -579,8 +579,8 @@
         "isMCP",
         "deps.saveToolkit"
       ],
-      "status": "blocked-codegen",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     },
     {
@@ -609,8 +609,8 @@
       "requiredProps": [
         "deps.saveToolkit"
       ],
-      "status": "blocked-codegen",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": ""
     }
   ]
