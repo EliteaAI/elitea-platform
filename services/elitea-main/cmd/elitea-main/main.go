@@ -20,6 +20,7 @@ import (
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
+	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
@@ -28,11 +29,11 @@ import (
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
-	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
@@ -793,6 +794,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		GatewayProxy:                  gatewayProxy,
 		GatewayProjectResolver:        gatewayProjectResolver,
 		ObjectStore:                   objectStore,
+		// Without AppsRepo, internal/api/router.go silently skips registering
+		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*
+		// route, and creating an agent from the UI 404s (#115).
+		AppsRepo: applicationsRepository(pool),
 	})
 
 	// Socket.IO remains unmounted until its legacy connection authentication,
@@ -811,6 +816,19 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 	slog.Info("server stopped")
 	return nil
+}
+
+// applicationsRepository composes the tenant-schema applications repository
+// backing RouterConfig.AppsRepo. It is a named function rather than an inline
+// constructor so main_router_wiring_test.go can assert the field is present in
+// the production RouterConfig literal: a nil AppsRepo makes
+// internal/api/router.go drop the whole /elitea_core applications route group
+// without any startup error, which is how #115 stayed invisible.
+func applicationsRepository(pool *pgxpool.Pool) applications.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewApplicationsRepo(pool)
 }
 
 const maxAuthConfigPathBytes = 4096

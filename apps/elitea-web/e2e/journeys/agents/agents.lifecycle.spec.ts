@@ -45,6 +45,16 @@ test('J14: create agent, save, publish, unpublish', async ({ page }) => {
 
   await nameInput.fill(`${AUTOTEST_PREFIX}e2e-agent`);
 
+  // `description` is required by `applicationCreationSchema`
+  // (entities/application-form/model/validation.ts), a faithful port of the
+  // baseline's ApplicationCreationValidateSchema. The Save button is bound to
+  // `form.formState.isValid`, so leaving it blank leaves Save disabled and the
+  // journey never reaches the request it exists to exercise.
+  await page
+    .getByTestId('agent-description-input')
+    .or(page.getByRole('textbox', { name: /description/i }).first())
+    .fill('Created by the J14 agent-lifecycle journey.');
+
   // Save the agent.
   const saveButton = page.getByRole('button', { name: /save/i });
   await saveButton.click();
@@ -115,6 +125,11 @@ test('J15: create new version, set default, delete old version', async ({ page }
   }
 
   await nameInput.fill(`${AUTOTEST_PREFIX}version-test-agent`);
+  // Required by applicationCreationSchema — see J14 above.
+  await page
+    .getByTestId('agent-description-input')
+    .or(page.getByRole('textbox', { name: /description/i }).first())
+    .fill('Created by the J15 version-lifecycle journey.');
 
   await page.getByRole('button', { name: /save/i }).click();
   await page.waitForTimeout(1_000);

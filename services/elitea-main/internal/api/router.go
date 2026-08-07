@@ -599,7 +599,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			r.Route("/elitea_core", func(r chi.Router) {
 				// Applications
 				if cfg.AppsRepo != nil {
-					appHandler := v2apps.NewHandler(cfg.AppsRepo)
+					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
 					r.Get("/applications/prompt_lib/{projectID}", appHandler.List)
 					r.Post("/applications/prompt_lib/{projectID}", appHandler.Create)
 					r.Get("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Get)
@@ -772,7 +772,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Batch version replacement
 				if cfg.AppsRepo != nil {
-					appHandler := v2apps.NewHandler(cfg.AppsRepo)
+					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
 					r.Post("/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}", appHandler.BatchReplaceVersion)
 				}
 
