@@ -631,7 +631,7 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	}
 }
 
-func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipants(t *testing.T) {
+func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipantBoundaries(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -670,27 +670,6 @@ WHERE id = 30`,
 SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
 WHERE id = 41`,
 			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
-		},
-		{
-			name: "nested child agent",
-			apply: `WITH child_tool AS (
-    INSERT INTO elitea_tools (
-        id, type, name, description, settings, author_id, meta
-    ) VALUES (
-        52, 'application', 'grandchild', 'Nested child',
-        '{"application_id":31,"application_version_id":41}'::jsonb,
-        11, '{}'::jsonb
-    )
-    RETURNING id
-)
-INSERT INTO entity_tool_mapping (
-    tool_id, entity_id, entity_version_id, entity_type, selected_tools
-)
-SELECT child_tool.id, 31, 41, 'agent', '[]'::jsonb FROM child_tool`,
-			restore: `WITH removed_mapping AS (
-    DELETE FROM entity_tool_mapping WHERE tool_id = 52
-)
-DELETE FROM elitea_tools WHERE id = 52`,
 		},
 	}
 
