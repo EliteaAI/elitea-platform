@@ -39,12 +39,26 @@ export async function createConversation(
   request: APIRequestContext,
   name: string,
 ): Promise<string> {
-  const resp = await request.post(
-    `${API_BASE}/elitea_core/conversations/prompt_lib/${DEFAULT_PROJECT_ID}`,
-    { data: { name } },
-  );
-  const body = await resp.json();
-  return body.id as string;
+  const url = `${API_BASE}/elitea_core/conversations/prompt_lib/${DEFAULT_PROJECT_ID}`;
+  const resp = await request.post(url, { data: { name } });
+  // Check the status BEFORE parsing. Calling `.json()` on a 401 (whose body is
+  // not JSON) produced `SyntaxError: Unexpected non-whitespace character after
+  // JSON at position 4` — an error that says nothing about the real problem,
+  // which was an unauthenticated request context. Fail with the status and body
+  // instead, so the next caller diagnoses it in one read.
+  if (!resp.ok()) {
+    throw new Error(
+      `createConversation: POST ${url} -> ${resp.status()} ${resp.statusText()}\n` +
+      `${(await resp.text()).slice(0, 300)}\n` +
+      'If this is a 401, the request context is unauthenticated — pass `page.request` ' +
+      '(which shares the browser context cookies), not the bare `request` fixture.',
+    );
+  }
+  const body = (await resp.json()) as { id?: string };
+  if (body.id === undefined) {
+    throw new Error(`createConversation: response carried no id: ${JSON.stringify(body).slice(0, 200)}`);
+  }
+  return body.id;
 }
 
 /**
