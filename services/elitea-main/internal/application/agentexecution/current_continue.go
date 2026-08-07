@@ -574,14 +574,14 @@ func currentContinuationIdempotencyKey(
 	authorizationID string,
 	authorizationAction string,
 ) string {
-	material := make([]byte, 0, len(decisions)+len(authorizationID)+len(authorizationAction)+2)
-	material = append(material, decisions...)
-	material = append(material, 0)
-	material = append(material, authorizationID...)
-	material = append(material, 0)
-	material = append(material, authorizationAction...)
-	digest := sha256.Sum256(material)
-	return "continue/" + responseID + "/" + hex.EncodeToString(digest[:16])
+	digest := sha256.New()
+	_, _ = digest.Write(decisions)
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write([]byte(authorizationID))
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write([]byte(authorizationAction))
+	sum := digest.Sum(nil)
+	return "continue/" + responseID + "/" + hex.EncodeToString(sum[:16])
 }
 
 func stringPointer(value string) *string {
