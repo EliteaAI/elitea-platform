@@ -1051,6 +1051,7 @@ func requireIssue5681GatewayTLSBinding(
 		"Query(`execution_contract`, `index.ingest.v1`)",
 		"PathRegexp(`^/api/v2/elitea_core/regenerate/prompt_lib/[1-9][0-9]*/[^/]+$`)",
 		"Query(`execution_contract`, `agent.regenerate.v1`)",
+		"PathRegexp(`^/api/v2/elitea_core/task/prompt_lib/[1-9][0-9]*/[^/]+$`)",
 		"PathRegexp(`^/api/v2/elitea_core/index_cancel/prompt_lib/",
 		"PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/",
 		"PathRegexp(`^/api/v2/executions/[1-9][0-9]*/[^/]+/events$`)",

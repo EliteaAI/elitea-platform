@@ -396,6 +396,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	}
 	var agentJobs *repos.AgentExecutionJobsRepository
 	var agentStart *agentexecutionapp.CurrentApplicationStartService
+	var agentCancel *agentexecutionapp.CurrentAgentCancellationService
 	var agentPublisher publisherRunner
 	var agentMaterializer *storage.CurrentConfigurationsMaterializer
 	if config.AgentExecutionDispatchEnabled {
@@ -455,6 +456,14 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		agentTargets, targetErr := repos.NewCurrentAgentStartRepository(dependencies.AdmissionPool)
 		if targetErr != nil {
 			return nil, fmt.Errorf("construct current agent start resolver: %w", targetErr)
+		}
+		agentCancellation, cancelErr := repos.NewCurrentAgentCancelRepository(dependencies.AdmissionPool)
+		if cancelErr != nil {
+			return nil, fmt.Errorf("construct current agent cancellation repository: %w", cancelErr)
+		}
+		agentCancel, cancelErr = agentexecutionapp.NewCurrentAgentCancellationService(agentCancellation)
+		if cancelErr != nil {
+			return nil, fmt.Errorf("construct current agent cancellation service: %w", cancelErr)
 		}
 		agentVersions, targetErr := newCurrentAgentVersionFreezer(
 			dependencies.AdmissionPool,
@@ -1153,6 +1162,9 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			publicRoutes.IndexScheduleUpdate = currentIndex.scheduleUpdate
 			publicRoutes.IndexScheduleDelete = currentIndex.scheduleDelete
 		}
+	}
+	if agentCancel != nil {
+		publicRoutes.AgentCancel = agentCancel
 	}
 
 	closeRedis = false

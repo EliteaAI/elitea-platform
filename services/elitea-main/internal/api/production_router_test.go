@@ -75,6 +75,31 @@ func TestProductionRouterMountsAllCurrentAgentExecutionPaths(t *testing.T) {
 	}
 }
 
+func TestProductionRouterMountsCurrentAgentCancelOnlyWhenComposed(t *testing.T) {
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	path := "/api/v2/elitea_core/task/prompt_lib/2/10000000-0000-4000-8000-000000000051"
+	for _, test := range []struct {
+		name   string
+		router http.Handler
+		method string
+		want   int
+	}{
+		{name: "delete", router: NewRouter(RouterConfig{CurrentAgentCancel: handler}), method: http.MethodDelete, want: http.StatusNoContent},
+		{name: "wrong method", router: NewRouter(RouterConfig{CurrentAgentCancel: handler}), method: http.MethodGet, want: http.StatusMethodNotAllowed},
+		{name: "uncomposed", router: NewRouter(RouterConfig{}), method: http.MethodDelete, want: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			test.router.ServeHTTP(response, httptest.NewRequest(test.method, path, nil))
+			if response.Code != test.want {
+				t.Fatalf("status=%d want=%d body=%q", response.Code, test.want, response.Body.String())
+			}
+		})
+	}
+}
+
 type productionChatConfigReader struct{}
 
 func (productionChatConfigReader) GetCurrentChatConfig(

@@ -20,6 +20,7 @@ type Querier interface {
 	AuthorizeRuntimeValidationProject(ctx context.Context, arg AuthorizeRuntimeValidationProjectParams) (bool, error)
 	BulkDeleteCurrentNotifications(ctx context.Context, arg BulkDeleteCurrentNotificationsParams) (int64, error)
 	BulkSetCurrentNotificationsSeen(ctx context.Context, arg BulkSetCurrentNotificationsSeenParams) (int64, error)
+	CancelCurrentAgentExecution(ctx context.Context, arg CancelCurrentAgentExecutionParams) (CancelCurrentAgentExecutionRow, error)
 	// Claim only the oldest unfinished revision for each configuration. A lower
 	// pending, retrying, processing, or dead revision remains an explicit ordering
 	// barrier. Expired processing rows are reclaimed with a new caller-owned lease
@@ -186,6 +187,7 @@ type Querier interface {
 	InsertScheduledJobCursor(ctx context.Context, arg InsertScheduledJobCursorParams) error
 	InsertScheduledOccurrence(ctx context.Context, arg InsertScheduledOccurrenceParams) error
 	InstallCurrentTenantSearchPath(ctx context.Context, searchPath string) (string, error)
+	IsCurrentAgentCancellationReplay(ctx context.Context, arg IsCurrentAgentCancellationReplayParams) (bool, error)
 	IsCurrentUserProjectMember(ctx context.Context, arg IsCurrentUserProjectMemberParams) (bool, error)
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListActiveCurrentProjectIDs(ctx context.Context, limitRows int32) ([]int32, error)
@@ -268,6 +270,7 @@ type Querier interface {
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
 	MarkCurrentNotificationSeen(ctx context.Context, arg MarkCurrentNotificationSeenParams) (MarkCurrentNotificationSeenRow, error)
 	MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMetaInitializedParams) (pgtype.Timestamptz, error)
+	ProjectCurrentAgentStop(ctx context.Context, arg ProjectCurrentAgentStopParams) (ProjectCurrentAgentStopRow, error)
 	QuarantineExpiredTerminalIndexMetaInitializations(ctx context.Context, quarantineLimit int32) (int64, error)
 	QuarantineIndexMetaInitialization(ctx context.Context, arg QuarantineIndexMetaInitializationParams) (string, error)
 	RefreshAgentExecutionPublication(ctx context.Context, arg RefreshAgentExecutionPublicationParams) (int64, error)
