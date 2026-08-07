@@ -3,9 +3,8 @@
   "generated": "phase-0",
   "total": 38,
   "byStatus": {
-    "wired": 35,
-    "page-is-stub": 1,
-    "hybrid-defect": 2
+    "wired": 37,
+    "parity-dead-code": 1
   },
   "byDomain": {
     "misc": 4,
@@ -294,9 +293,9 @@
       "targetPath": "src/pages/mode-switch/ModeSwitch.tsx",
       "targetExport": "ModeSwitch",
       "requiredProps": [],
-      "status": "page-is-stub",
+      "status": "parity-dead-code",
       "rendersRouteShell": false,
-      "note": "Route IS wired. ModeSwitch itself renders <div><h1>Switch Mode</h1></div> with its toggle behind `const enableToggle = false`. Not a wiring defect — a page gap."
+      "note": "Verified parity, not a gap (Phase 2). The BASELINE page is itself dead code: apps/elitea-ui/src/pages/ModeSwitch.jsx hard-codes `const enableToggle = false` and so renders only <h1>Switch Mode</h1>, and a whole-repo grep finds ZERO inbound links to /mode-switch in either app — it is mounted but unreachable by navigation in both. The port reproduces that exactly, and widgets/sidebar/__tests__/navSections.test.ts:119 already asserts it is not a nav item. Nothing to implement; shipping the toggle would be a NEW feature, not parity."
     },
     {
       "routeFile": "src/routes/_shell/onboarding.tsx",
@@ -405,8 +404,8 @@
       "requiredProps": [
         "projectId"
       ],
-      "status": "hybrid-defect",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Renders AIConfiguration AND a RouteShell heading. See also issue #80 (missing ModelConfiguration layer)."
     },
     {
@@ -423,8 +422,8 @@
         "search",
         "onSearchChange"
       ],
-      "status": "hybrid-defect",
-      "rendersRouteShell": true,
+      "status": "wired",
+      "rendersRouteShell": false,
       "note": "Renders SecretsContent AND a RouteShell heading. Also passes search=\"\" / onSearchChange={() => {}} — the search control is dead. Route must own search state."
     },
     {

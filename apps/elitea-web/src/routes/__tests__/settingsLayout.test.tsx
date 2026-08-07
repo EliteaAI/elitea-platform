@@ -46,15 +46,27 @@ function mountAt(path: string) {
   return router;
 }
 
+/**
+ * These four tests identify WHICH child the nested layout rendered. They used
+ * `route-shell`'s `data-route-id` as that identifier; Phase 2 wired both
+ * children to their real pages and deleted `RouteShell`, so they now assert
+ * on a landmark unique to each child instead.
+ *
+ * Both landmarks are deliberately chosen to be unreachable from the settings
+ * DRAWER, which lists "AI Configuration" and "Secrets" as nav items on every
+ * settings route — a bare text query for either would pass without the child
+ * rendering at all:
+ *   - model-configuration -> the `OpenAI Template` TAB (role-scoped; the tab
+ *     bar belongs to `AIConfiguration`, and no drawer item carries that name)
+ *   - secrets -> the `Search secrets` input placeholder (rendered by
+ *     `SecretsContent`'s own `DrawerPageHeader`)
+ */
 describe('settings nested layout', () => {
   it('RED/GREEN (e): renders the correct child for a known tab (model-configuration)', async () => {
     mountAt('/settings/model-configuration');
 
     await waitFor(() => {
-      expect(screen.getByTestId('route-shell')).toHaveAttribute(
-        'data-route-id',
-        'settings.model-configuration',
-      );
+      expect(screen.getByRole('tab', { name: 'OpenAI Template' })).toBeInTheDocument();
     });
   });
 
@@ -62,7 +74,7 @@ describe('settings nested layout', () => {
     mountAt('/settings/secrets');
 
     await waitFor(() => {
-      expect(screen.getByTestId('route-shell')).toHaveAttribute('data-route-id', 'settings.secrets');
+      expect(screen.getByPlaceholderText('Search secrets')).toBeInTheDocument();
     });
   });
 
@@ -70,10 +82,7 @@ describe('settings nested layout', () => {
     mountAt('/settings');
 
     await waitFor(() => {
-      expect(screen.getByTestId('route-shell')).toHaveAttribute(
-        'data-route-id',
-        'settings.model-configuration',
-      );
+      expect(screen.getByRole('tab', { name: 'OpenAI Template' })).toBeInTheDocument();
     });
   });
 
@@ -86,10 +95,7 @@ describe('settings nested layout', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('route-shell')).toHaveAttribute(
-        'data-route-id',
-        'settings.model-configuration',
-      );
+      expect(screen.getByRole('tab', { name: 'OpenAI Template' })).toBeInTheDocument();
     });
   });
 });
