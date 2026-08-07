@@ -259,6 +259,67 @@ func TestCurrentContinuationRouteCarriesBlockWithComment(t *testing.T) {
 	}
 }
 
+func TestCurrentAuthorizationContinuationRouteCarriesExactInvocationAndCredentials(t *testing.T) {
+	if CurrentAuthorizationContinuationContract != "agent.continue.authorization.v1" {
+		t.Fatalf("authorization continuation contract drifted: %q", CurrentAuthorizationContinuationContract)
+	}
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-authorization", CommandID: "command-authorization",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentAuthorizationContinuationRequest(validCurrentAuthorizationContinuationBody()))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Kind != agentexecutionapp.CurrentContinuationAuthorization ||
+		request.AuthorizationID != "tool-run-sharepoint-1" || request.Action != "authorize" ||
+		request.ProjectID != 7 || request.ActorUserID != 11 ||
+		request.ConversationUUID != "8bc66e50-46c4-4e2c-94ec-daec6c596ac0" ||
+		request.ResponseMessageID != "30e0913e-10d4-43db-b8d0-c7b79480935a" ||
+		!bytes.Equal(request.MCPTokens, []byte(`{"https://sharepoint.example.test":{"access_token":"runtime-secret"}}`)) ||
+		!bytes.Equal(request.IgnoredMCPServers, []byte(`[]`)) ||
+		!bytes.Equal(request.DeclinedMCPServers, []byte(`[]`)) {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
+func TestCurrentAuthorizationContinuationRouteRejectsAmbiguousAndMissingIdentity(t *testing.T) {
+	useCase := &currentStartUseCaseStub{}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	for name, body := range map[string]string{
+		"missing exact identity": strings.Replace(
+			validCurrentAuthorizationContinuationBody(),
+			`"authorization_request_id":"tool-run-sharepoint-1"`,
+			`"authorization_request_id":""`,
+			1,
+		),
+		"mixed HITL resume": strings.Replace(
+			validCurrentAuthorizationContinuationBody(),
+			`"hitl_resume":false`,
+			`"hitl_resume":true`,
+			1,
+		),
+		"unsupported action": strings.Replace(
+			validCurrentAuthorizationContinuationBody(),
+			`"authorization_action":"authorize"`,
+			`"authorization_action":"approve"`,
+			1,
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, currentAuthorizationContinuationRequest(body))
+			if response.Code != http.StatusUnprocessableEntity || useCase.continuationCalls != 0 {
+				t.Fatalf("status=%d calls=%d body=%s",
+					response.Code, useCase.continuationCalls, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestCurrentContinuationRouteRejectsParallelAndMCPResumeShapes(t *testing.T) {
 	useCase := &currentStartUseCaseStub{}
 	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
@@ -461,6 +522,19 @@ func currentContinuationRequest(body string) *http.Request {
 	return request
 }
 
+func currentAuthorizationContinuationRequest(body string) *http.Request {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/continue_predict/prompt_lib/7/8bc66e50-46c4-4e2c-94ec-daec6c596ac0?execution_contract="+CurrentAuthorizationContinuationContract,
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = "10.0.0.8:43120"
+	return request
+}
+
 func validCurrentContinuationBody() string {
 	return `{
   "project_id":7,
@@ -475,6 +549,22 @@ func validCurrentContinuationBody() string {
   "ignored_mcp_servers":[],
   "user_declined_mcp_servers":[],
   "user_input":"edit"
+}`
+}
+
+func validCurrentAuthorizationContinuationBody() string {
+	return `{
+  "project_id":7,
+  "conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+  "message_id":"30e0913e-10d4-43db-b8d0-c7b79480935a",
+  "thread_id":"thread-current-1",
+  "hitl_resume":false,
+  "hitl_decisions":[],
+  "mcp_tokens":{"https://sharepoint.example.test":{"access_token":"runtime-secret"}},
+  "ignored_mcp_servers":[],
+  "user_declined_mcp_servers":[],
+  "authorization_request_id":"tool-run-sharepoint-1",
+  "authorization_action":"authorize"
 }`
 }
 

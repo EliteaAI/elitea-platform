@@ -294,13 +294,32 @@ def test_handler_delegates_once_to_each_current_entrypoint() -> None:
 
 
 class _Executor:
-    def __init__(self, result: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        result: dict[str, Any],
+        state_history: list[Any] | None = None,
+    ) -> None:
         self.result = result
         self.calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        self.state_history = list(state_history or [])
 
     def invoke(self, value, config):
         self.calls.append((value, config))
         return self.result
+
+    def get_state_history(self, config):
+        self.state_history_config = config
+        return iter(self.state_history)
+
+
+class _AuthorizationPauseCallback:
+    def authorization_pause_result(self):
+        return {
+            "thread_id": "thread-1",
+            "error": "Toolkit authorization is required.",
+            "paused": True,
+            "pause_type": "mcp_auth",
+        }
 
 
 class _Client:
@@ -361,6 +380,20 @@ def test_sdk_adapter_preserves_constructor_split_without_forwarding_authority() 
         {"role": "user", "content": "earlier"}
     ]
     assert len(client.application_executor.calls[0][0]["messages"]) == 2
+
+
+def test_sdk_adapter_prefers_callback_authorization_pause_over_graph_result() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    adapter._callbacks = [_AuthorizationPauseCallback()]  # type: ignore[attr-defined]
+
+    assert adapter.execute_adhoc(_request(application=False).payload) == {
+        "thread_id": "thread-1",
+        "error": "Toolkit authorization is required.",
+        "paused": True,
+        "pause_type": "mcp_auth",
+    }
+    assert len(client.adhoc_executor.calls) == 1
 
 
 def test_sdk_adapter_delegates_pipeline_yaml_through_the_existing_application_api() -> None:
@@ -570,6 +603,98 @@ def test_sdk_adapter_rejects_unimplemented_generic_continue_instead_of_drifting(
 
     with pytest.raises(UnsupportedCapability, match="parity path"):
         _adapter(_Client()).execute_application(request.payload)
+
+
+@pytest.mark.parametrize("application", [True, False])
+def test_sdk_adapter_resumes_declined_toolkit_authorization_from_paused_checkpoint(
+    application: bool,
+) -> None:
+    client = _Client()
+    executor = client.application_executor if application else client.adhoc_executor
+    executor.state_history = [
+        SimpleNamespace(
+            next=("agent",),
+            config={"configurable": {"checkpoint_id": "checkpoint-auth-1"}},
+        )
+    ]
+    payload = _request(application=application).payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "ignored_mcp_servers", ["https://sharepoint.example"])
+    object.__setattr__(
+        payload,
+        "user_declined_mcp_servers",
+        [
+            {
+                "server_url": "https://sharepoint.example",
+                "tool_name": "list_items",
+                "toolkit_type": "sharepoint",
+                "skip_reason": "User skipped toolkit login for this run.",
+            }
+        ],
+    )
+
+    adapter = _adapter(client)
+    if application:
+        adapter.execute_application(payload)
+    else:
+        adapter.execute_adhoc(payload)
+
+    invoke_input, invoke_config = executor.calls[0]
+    assert "declined toolkit authorization" in invoke_input["input"]
+    assert "current" in invoke_input["input"]
+    assert invoke_config["configurable"] == {
+        "thread_id": "thread-1",
+        "checkpoint_id": "checkpoint-auth-1",
+    }
+    assert invoke_config["should_continue"] is True
+
+
+def test_sdk_adapter_resumes_completed_toolkit_authorization_from_paused_checkpoint() -> None:
+    client = _Client()
+    client.adhoc_executor.state_history = [
+        SimpleNamespace(
+            next=("agent",),
+            config={"configurable": {"checkpoint_id": "checkpoint-auth-2"}},
+        )
+    ]
+    payload = _request(application=False).payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(
+        payload,
+        "mcp_tokens",
+        {"sharepoint": {"access_token": "claim-scoped-test-token"}},
+    )
+
+    _adapter(client).execute_adhoc(payload)
+
+    invoke_input, invoke_config = client.adhoc_executor.calls[0]
+    assert "authorization has been completed" in invoke_input["input"]
+    assert invoke_config["configurable"]["checkpoint_id"] == "checkpoint-auth-2"
+
+
+def test_sdk_adapter_does_not_resume_an_older_authorization_pause() -> None:
+    client = _Client()
+    client.adhoc_executor.state_history = [
+        SimpleNamespace(next=(), config={"configurable": {"checkpoint_id": "latest"}}),
+        SimpleNamespace(
+            next=("agent",),
+            config={"configurable": {"checkpoint_id": "stale-auth-pause"}},
+        ),
+    ]
+    payload = _request(application=False).payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(
+        payload,
+        "user_declined_mcp_servers",
+        [{"server_url": "https://sharepoint.example"}],
+    )
+
+    _adapter(client).execute_adhoc(payload)
+
+    invoke_input, invoke_config = client.adhoc_executor.calls[0]
+    assert "messages" in invoke_input
+    assert "checkpoint_id" not in invoke_config["configurable"]
+    assert "should_continue" not in invoke_config
 
 
 @pytest.mark.parametrize("application", [True, False])

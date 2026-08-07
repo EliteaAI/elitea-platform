@@ -55,7 +55,19 @@ _CUSTOM_EVENTS: dict[str, tuple[str, frozenset[str]]] = {
     "swarm_handoff": ("agent_swarm_handoff", frozenset({"from_agent", "to_agent"})),
 }
 _MAX_TRACE_TEXT_BYTES = 128 * 1024
+_MAX_AUTHORIZATION_REQUESTS = 16
 _CUSTOM_STATE_TRANSCRIPT_FIELDS = ("messages", "chat_history")
+_AUTHORIZATION_PRIVATE_KEYS = frozenset(
+    {
+        "access_token",
+        "authorization",
+        "client_secret",
+        "mcp_client_secret",
+        "mcp_tokens",
+        "provided_settings",
+        "refresh_token",
+    }
+)
 
 
 def _normalize_hitl_pause(
@@ -136,9 +148,31 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         self._llm: dict[str, dict[str, Any]] = {}
         self._last_content: dict[str, str] = {}
         self._last_thinking: dict[str, str] = {}
+        self._authorization_requests: dict[str, dict[str, Any]] = {}
+        self._authorization_pause_message: str | None = None
 
     def emit_agent_start(self, *, invoked_skills: list[Any] | None = None) -> None:
         self._emit("agent_start", response_metadata={"invoked_skills": invoked_skills or []})
+
+    def authorization_pause_result(self) -> dict[str, Any] | None:
+        """Return the current SDK-compatible pause marker after a tool callback.
+
+        The SDK reports delegated toolkit authorization as a typed tool error,
+        not as the graph result.  The current indexer converts that callback
+        into an intentional pause after ``invoke`` returns; keep the same
+        ownership here so the SDK remains unchanged.
+        """
+
+        with self._lock:
+            if not self._authorization_requests:
+                return None
+            message = self._authorization_pause_message
+        return {
+            "thread_id": self._context.thread_id,
+            "error": message or "Toolkit authorization is required.",
+            "paused": True,
+            "pause_type": "mcp_auth",
+        }
 
     def emit_terminal(
         self,
@@ -175,6 +209,34 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
                     "edit_state_key": _json_value(
                         hitl_interrupt.get("edit_state_key")
                     ),
+                },
+            )
+
+        if result.get("paused") is True and result.get("pause_type") == "mcp_auth":
+            with self._lock:
+                authorization_requests = [
+                    dict(request)
+                    for request in self._authorization_requests.values()
+                ]
+            if not authorization_requests:
+                raise InvalidInput(
+                    "The delegated authorization request identity is unavailable."
+                )
+            primary = authorization_requests[-1]
+            thread_id = result.get("thread_id")
+            if not isinstance(thread_id, str) or not thread_id:
+                thread_id = self._context.thread_id
+            message = result.get("error")
+            if not isinstance(message, str) or not message:
+                message = "Toolkit authorization is required."
+            return self._emit(
+                "mcp_authorization_required",
+                content=message,
+                response_metadata={
+                    **primary,
+                    "thread_id": thread_id,
+                    "chat_project_id": self._context.chat_project_id,
+                    "authorization_requests": authorization_requests,
                 },
             )
 
@@ -246,6 +308,8 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         _ = input_str, kwargs
+        if self.authorization_pause_result() is not None:
+            return
         self._guard(self._tool_start, serialized, run_id, metadata, inputs)
 
     def _tool_start(self, serialized, run_id, metadata, inputs) -> None:
@@ -280,11 +344,104 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
 
     def on_tool_end(self, output: Any, *, run_id: Any, **kwargs: Any) -> None:
         _ = kwargs
+        if self.authorization_pause_result() is not None:
+            return
         self._guard(self._tool_finish, run_id, output, False)
 
     def on_tool_error(self, error: BaseException, *, run_id: Any, **kwargs: Any) -> None:
-        _ = kwargs
+        if self.authorization_pause_result() is not None:
+            return
+        if _is_mcp_authorization_required(error):
+            self._guard(
+                self._pause_for_authorization,
+                run_id,
+                error,
+                kwargs.get("metadata"),
+                kwargs.get("name"),
+            )
+            return
         self._guard(self._tool_finish, run_id, error, True)
+
+    def _pause_for_authorization(
+        self,
+        run_id: Any,
+        error: BaseException,
+        metadata: Any,
+        callback_name: Any,
+    ) -> None:
+        selected = _run_id(run_id)
+        message = _bounded_text(
+            error.args[0] if error.args else str(error),
+            "Toolkit authorization is required.",
+        )
+        with self._lock:
+            previous = self._tools.get(selected)
+            entry = dict(previous) if previous is not None else {
+                "tool_name": _bounded_text(callback_name, "tool"),
+                "tool_run_id": selected,
+                "run_id": selected,
+                "tool_meta": {},
+                "tool_inputs": None,
+                "metadata": {},
+                "timestamp_start": _now(),
+            }
+            entry["timestamp_finish"] = _now()
+            entry["finish_reason"] = "action_required"
+            entry["tool_output"] = None
+            entry["error"] = message
+            self._tools[selected] = entry
+
+        display = _tool_display_metadata(
+            entry.get("tool_meta") if isinstance(entry.get("tool_meta"), dict) else {},
+            metadata,
+        )
+        stored_metadata = entry.get("metadata")
+        if isinstance(stored_metadata, dict):
+            display = {**stored_metadata, **display}
+        payload = {
+            key: _public_authorization_value(getattr(error, key))
+            for key in (
+                "server_url",
+                "resource_metadata_url",
+                "www_authenticate",
+                "resource_metadata",
+                "authorization_servers",
+            )
+            if getattr(error, key, None) is not None
+        }
+        payload.update(
+            {
+                "tool_run_id": selected,
+                "tool_name": _bounded_text(
+                    getattr(error, "tool_name", None) or entry.get("tool_name"),
+                    "tool",
+                ),
+            }
+        )
+        for key in ("toolkit_name", "toolkit_type"):
+            value = getattr(error, key, None) or display.get(key)
+            if value is not None:
+                payload[key] = _json_value(value)
+        # LangChain's tool-error callback does not consistently repeat the
+        # hierarchy supplied to tool-start.  The start event is the
+        # invocation-authoritative source, so retain its child ownership and
+        # let any error-event metadata override only the keys it actually
+        # carries.  Losing this data makes a nested authorization pause look
+        # root-owned to Go and the UI.
+        hierarchy = _hierarchy(stored_metadata)
+        tool_meta = entry.get("tool_meta")
+        if isinstance(tool_meta, dict):
+            hierarchy.update(_hierarchy(tool_meta.get("metadata")))
+        hierarchy.update(_hierarchy(metadata))
+        payload.update(hierarchy)
+        self._record_authorization_request(payload)
+        with self._lock:
+            self._authorization_pause_message = message
+        self._emit(
+            "mcp_authorization_required",
+            content=message,
+            response_metadata=payload,
+        )
 
     def _tool_finish(self, run_id: Any, value: Any, failed: bool) -> None:
         selected = _run_id(run_id)
@@ -320,10 +477,14 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         _ = prompts, kwargs
+        if self.authorization_pause_result() is not None:
+            return
         self._guard(self._llm_start, serialized, run_id, metadata)
 
     def on_chat_model_start(self, serialized, messages, *, run_id, metadata=None, **kwargs):
         _ = messages, kwargs
+        if self.authorization_pause_result() is not None:
+            return
         self._guard(self._llm_start, serialized, run_id, metadata)
 
     def _llm_start(self, serialized, run_id, metadata) -> None:
@@ -346,6 +507,8 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
 
     def on_llm_new_token(self, token: str, *, run_id: Any, chunk: Any = None, **kwargs: Any) -> None:
         _ = kwargs
+        if self.authorization_pause_result() is not None:
+            return
         self._guard(self._llm_chunk, token, run_id, chunk)
 
     def _llm_chunk(self, token: str, run_id: Any, chunk: Any) -> None:
@@ -368,6 +531,8 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
 
     def on_llm_end(self, response: Any, *, run_id: Any, **kwargs: Any) -> None:
         _ = kwargs
+        if self.authorization_pause_result() is not None:
+            return
         self._guard(self._llm_end, response, run_id)
 
     def _llm_end(self, response: Any, run_id: Any) -> None:
@@ -391,6 +556,8 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         _ = kwargs
+        if self.authorization_pause_result() is not None:
+            return
         self._guard(self._custom_event, name, data, run_id, metadata)
 
     def _custom_event(self, name, data, run_id, metadata) -> None:
@@ -411,7 +578,25 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         if event_type == "agent_swarm_agent_response":
             payload["chat_project_id"] = self._context.chat_project_id
         payload = self._bounded_custom_event_payload(event_type, payload)
+        if event_type == "mcp_authorization_required":
+            self._record_authorization_request(payload)
         self._emit(event_type, response_metadata=payload)
+
+    def _record_authorization_request(self, payload: dict[str, Any]) -> None:
+        request_id = payload.get("tool_run_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise InvalidInput(
+                "The delegated authorization request identity is unavailable."
+            )
+        with self._lock:
+            if (
+                request_id not in self._authorization_requests
+                and len(self._authorization_requests) >= _MAX_AUTHORIZATION_REQUESTS
+            ):
+                raise ResourceExhausted(
+                    "The agent produced too many delegated authorization requests."
+                )
+            self._authorization_requests[request_id] = dict(payload)
 
     def _bounded_custom_event_payload(
         self,
@@ -693,6 +878,25 @@ def _hierarchy(metadata: Any) -> dict[str, Any]:
     return {key: _json_value(metadata[key]) for key in _HIERARCHY_KEYS if key in metadata}
 
 
+def _public_authorization_value(value: Any, *, depth: int = 0) -> Any:
+    """Project only non-secret authorization discovery data to Go and the UI."""
+
+    if depth > 8:
+        return None
+    if isinstance(value, dict):
+        return {
+            str(key): _public_authorization_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:256]
+            if str(key).lower() not in _AUTHORIZATION_PRIVATE_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _public_authorization_value(item, depth=depth + 1)
+            for item in value[:256]
+        ]
+    return _json_value(value, depth=depth)
+
+
 def _tool_display_metadata(serialized: Any, metadata: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for source in (serialized.get("metadata") if isinstance(serialized, dict) else None, metadata):
@@ -702,6 +906,12 @@ def _tool_display_metadata(serialized: Any, metadata: Any) -> dict[str, Any]:
             if key in source:
                 result[key] = _json_value(source[key])
     return result
+
+
+def _is_mcp_authorization_required(error: BaseException) -> bool:
+    """Recognize the current SDK exception across development reloads."""
+
+    return error.__class__.__name__ == "McpAuthorizationRequired"
 
 
 def _model_name(serialized: Any, metadata: Any) -> str:

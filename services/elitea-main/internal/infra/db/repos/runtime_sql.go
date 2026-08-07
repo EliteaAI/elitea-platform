@@ -108,6 +108,13 @@ func (e pgxExecutor) FinalizeCurrentAgentHITLPause(
 	return sqlcgen.New(e.queryer).FinalizeCurrentAgentHITLPause(ctx, arg)
 }
 
+func (e pgxExecutor) FinalizeCurrentAgentAuthorizationPause(
+	ctx context.Context,
+	arg sqlcgen.FinalizeCurrentAgentAuthorizationPauseParams,
+) (int64, error) {
+	return sqlcgen.New(e.queryer).FinalizeCurrentAgentAuthorizationPause(ctx, arg)
+}
+
 func (e pgxExecutor) ResolveCurrentApplicationTurn(
 	ctx context.Context,
 	arg sqlcgen.ResolveCurrentApplicationTurnParams,
@@ -134,6 +141,13 @@ func (e pgxExecutor) ResolveCurrentContinuation(
 	arg sqlcgen.ResolveCurrentContinuationParams,
 ) (sqlcgen.ResolveCurrentContinuationRow, error) {
 	return sqlcgen.New(e.queryer).ResolveCurrentContinuation(ctx, arg)
+}
+
+func (e pgxExecutor) ResolveCurrentAuthorizationContinuation(
+	ctx context.Context,
+	arg sqlcgen.ResolveCurrentAuthorizationContinuationParams,
+) (sqlcgen.ResolveCurrentAuthorizationContinuationRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentAuthorizationContinuation(ctx, arg)
 }
 
 type sharedStore interface {

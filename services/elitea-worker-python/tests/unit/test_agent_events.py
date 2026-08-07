@@ -283,6 +283,141 @@ def test_hitl_terminal_keeps_current_shape_and_is_not_a_full_message() -> None:
     ]
 
 
+def test_delegated_authorization_terminal_preserves_exact_requests() -> None:
+    callback, events = _callback()
+    payload = _request_payload()
+    callback.on_custom_event(
+        "mcp_authorization_required",
+        {
+            "server_url": "https://tool.example.test/mcp",
+            "authorization_servers": ["https://auth.example.test"],
+            "tool_run_id": "auth-call-1",
+            "tool_name": "list_sites",
+            "toolkit_name": "SharePoint",
+            "toolkit_type": "sharepoint",
+        },
+        run_id="callback-run-1",
+        metadata={
+            "parent_agent_name": "researcher",
+            "parent_agent_call_id": "agent-call-1",
+        },
+    )
+
+    terminal = callback.emit_terminal(
+        {
+            "thread_id": "thread-1",
+            "paused": True,
+            "pause_type": "mcp_auth",
+            "error": "SharePoint authorization is required.",
+        },
+        payload,
+    )
+
+    decoded = [_json(event) for event in events]
+    assert [event["type"] for event in decoded] == [
+        "mcp_authorization_required",
+        "mcp_authorization_required",
+    ]
+    event = _json(terminal)
+    assert event["content"] == "SharePoint authorization is required."
+    assert event["response_metadata"]["tool_run_id"] == "auth-call-1"
+    assert event["response_metadata"]["thread_id"] == "thread-1"
+    assert event["response_metadata"]["authorization_requests"] == [
+        decoded[0]["response_metadata"]
+    ]
+
+
+def test_sdk_authorization_tool_error_becomes_an_exact_pause() -> None:
+    callback, events = _callback()
+
+    class McpAuthorizationRequired(RuntimeError):
+        server_url = "https://tenant.example.test/sites/team"
+        resource_metadata_url = "https://login.example.test/discovery"
+        resource_metadata = {
+            "resource_name": "SharePoint",
+            "provided_settings": {
+                "mcp_client_id": "must-not-cross-output",
+                "mcp_client_secret": "must-not-cross-output",
+            },
+        }
+        authorization_servers = ["https://login.example.test"]
+        tool_name = "get_lists"
+
+    callback.on_tool_start(
+        {
+            "name": "mcp_authorize_sharepoint",
+            "metadata": {
+                "display_name": "SharePoint",
+                "toolkit_name": "sharepoint",
+                "toolkit_type": "sharepoint",
+            },
+        },
+        "ignored",
+        run_id="auth-call-1",
+        metadata={
+            "parent_agent_name": "researcher",
+            "parent_agent_call_id": "agent-call-1",
+            "parent_agent_path": [
+                {"name": "researcher", "call_id": "agent-call-1"}
+            ],
+            "child_thread_id": "thread-1:researcher",
+            "checkpoint_ns": "agent:researcher",
+        },
+        inputs={},
+    )
+    callback.on_tool_error(
+        McpAuthorizationRequired("SharePoint authorization is required."),
+        run_id="auth-call-1",
+    )
+
+    assert callback.authorization_pause_result() == {
+        "thread_id": "thread-1",
+        "error": "SharePoint authorization is required.",
+        "paused": True,
+        "pause_type": "mcp_auth",
+    }
+    terminal = callback.emit_terminal(
+        callback.authorization_pause_result(),
+        _request_payload(),
+    )
+    decoded = [_json(event) for event in events]
+    assert [event["type"] for event in decoded] == [
+        "agent_tool_start",
+        "partial_message",
+        "mcp_authorization_required",
+        "mcp_authorization_required",
+    ]
+    authorization = _json(terminal)["response_metadata"]
+    assert authorization["tool_run_id"] == "auth-call-1"
+    assert authorization["tool_name"] == "get_lists"
+    assert authorization["toolkit_name"] == "sharepoint"
+    assert authorization["toolkit_type"] == "sharepoint"
+    assert authorization["parent_agent_name"] == "researcher"
+    assert authorization["parent_agent_call_id"] == "agent-call-1"
+    assert authorization["parent_agent_path"] == [
+        {"name": "researcher", "call_id": "agent-call-1"}
+    ]
+    assert authorization["child_thread_id"] == "thread-1:researcher"
+    assert authorization["checkpoint_ns"] == "agent:researcher"
+    assert "provided_settings" not in authorization
+    assert "provided_settings" not in authorization["resource_metadata"]
+    assert "provided_settings" not in authorization["authorization_requests"][0]["resource_metadata"]
+
+
+def test_delegated_authorization_terminal_requires_callback_identity() -> None:
+    callback, _ = _callback()
+
+    try:
+        callback.emit_terminal(
+            {"paused": True, "pause_type": "mcp_auth"},
+            _request_payload(),
+        )
+    except Exception as error:  # noqa: BLE001 - assert the worker contract error
+        assert "authorization request identity" in str(error)
+    else:
+        raise AssertionError("missing delegated authorization identity was accepted")
+
+
 def test_pipeline_hitl_terminal_uses_execution_identity_when_sdk_omits_one() -> None:
     callback, events = _callback()
     payload = _request_payload()

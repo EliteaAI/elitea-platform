@@ -659,6 +659,8 @@ func agentExecutionResultDomain(result *runtimev1.AgentExecutionResultV1) (outpu
 		terminalState = outputapp.AgentExecutionTerminalCompleted
 	case runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_PAUSED_HITL:
 		terminalState = outputapp.AgentExecutionTerminalPausedHITL
+	case runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_PAUSED_MCP_AUTH:
+		terminalState = outputapp.AgentExecutionTerminalPausedAuthorization
 	default:
 		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
 	}

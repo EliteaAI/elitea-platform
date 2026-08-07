@@ -159,7 +159,7 @@ LEFT JOIN chat_messages_text AS text
 	}
 }
 
-func TestPostgresCurrentApplicationTurnRejectsFeaturesMissingFromTheDirectContract(t *testing.T) {
+func TestPostgresCurrentApplicationTurnAdmitsDefaultInternalMCPAndRejectsUnsupportedFeatures(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -190,19 +190,32 @@ func TestPostgresCurrentApplicationTurnRejectsFeaturesMissingFromTheDirectContra
 		ExecutionGeneration: "50000000-0000-4000-8000-000000000039",
 		ExecutionID:         "execution-agent-unsupported",
 	}
+	if _, err := tx.Exec(t.Context(), "SAVEPOINT default_internal_mcp"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `UPDATE chat_conversations
+SET meta = jsonb_set(meta, '{internal_tools}', '["internal_mcp"]'::jsonb)
+WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queries.ResolveCurrentApplicationTurn(t.Context(), resolve); err != nil {
+		t.Fatalf("resolve selected application with default internal_mcp: %v", err)
+	}
+	if _, err := queries.InsertCurrentApplicationTurn(t.Context(), insert); err != nil {
+		t.Fatalf("insert selected application turn with default internal_mcp: %v", err)
+	}
+	if _, err := tx.Exec(t.Context(), "ROLLBACK TO SAVEPOINT default_internal_mcp"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), "RELEASE SAVEPOINT default_internal_mcp"); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name    string
 		apply   string
 		restore string
 	}{
-		{
-			name: "conversation internal MCP",
-			apply: `UPDATE chat_conversations
-SET meta = jsonb_set(meta, '{internal_tools}', '["internal_mcp"]'::jsonb)
-WHERE id = 1`,
-			restore: `UPDATE chat_conversations SET meta = meta - 'internal_tools' WHERE id = 1`,
-		},
 		{
 			name: "application internal tools",
 			apply: `UPDATE application_versions
@@ -876,6 +889,129 @@ WHERE response.uuid = $1`, responseID).Scan(
 			"streaming=%v task=%q pending=%v resolved=%v traces=%d",
 			isStreaming, taskID, hasPending, resolvedIDs, traceCount,
 		)
+	}
+}
+
+func TestPostgresCurrentAuthorizationContinuationConsumesExactRequestAtomically(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	questionID := "20000000-0000-4000-8000-000000000061"
+	responseID := insertPostgresCurrentApplicationTurn(
+		t, queries, conversationID, questionID,
+		"30000000-0000-4000-8000-000000000061",
+		"40000000-0000-4000-8000-000000000061",
+		"list SharePoint sites", "execution-authorization-paused",
+	)
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = meta || jsonb_build_object(
+        'thread_id', 'thread-authorization-1',
+        'execution_generation', $2::text,
+        'authorization_requests', jsonb_build_array(
+            jsonb_build_object(
+                'tool_run_id', 'tool-run-sharepoint-1',
+                'server_url', 'https://sharepoint.example.test',
+                'toolkit_name', 'SharePoint'
+            ),
+            jsonb_build_object(
+                'tool_run_id', 'tool-run-openapi-2',
+                'server_url', 'https://openapi.example.test',
+                'toolkit_name', 'OpenAPI'
+            )
+        )
+    )
+WHERE uuid = $1`, responseID, questionID); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := sqlcgen.ResolveCurrentAuthorizationContinuationParams{
+		ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
+		ResponseMessageID: responseID, AuthorizationRequestID: "tool-run-sharepoint-1",
+	}
+	resolved, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ContinuationKind != "application" ||
+		resolved.ThreadID != "thread-authorization-1" ||
+		resolved.ExecutionGeneration != questionID ||
+		resolved.UserInput != "list SharePoint sites" ||
+		!json.Valid([]byte(resolved.AuthorizationRequestsJson)) {
+		t.Fatalf("resolved=%+v", resolved)
+	}
+	resolve.ActorUserID = 12
+	if _, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong actor resolve error=%v", err)
+	}
+	resolve.ActorUserID = 11
+	resolve.AuthorizationRequestID = "tool-run-missing"
+	if _, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong request resolve error=%v", err)
+	}
+
+	resume := sqlcgen.ResumeCurrentAgentAuthorizationParams{
+		ActorUserID: 12, ProjectID: 1, TargetParticipantID: 21,
+		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
+		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
+		ResponseMessageID: responseID, ExecutionGeneration: questionID,
+		ThreadID: "thread-authorization-1", AuthorizationRequestID: "tool-run-sharepoint-1",
+		AuthorizationAction: "authorize", ExecutionID: "execution-authorization-resumed",
+	}
+	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong actor resume error=%v", err)
+	}
+	resume.ActorUserID = 11
+	resume.AuthorizationAction = "approve"
+	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("unsupported action resume error=%v", err)
+	}
+	resume.AuthorizationAction = "authorize"
+	row, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ResponseMessageID != responseID || row.ResponseMessageGroupID <= 0 {
+		t.Fatalf("resume row=%+v", row)
+	}
+	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("replayed resume error=%v", err)
+	}
+
+	var isStreaming, hasPending bool
+	var taskID string
+	var resolvedIDs []string
+	if err := tx.QueryRow(t.Context(), `
+SELECT response.is_streaming,
+       response.task_id,
+       response.meta ? 'authorization_requests',
+       ARRAY(
+           SELECT jsonb_array_elements_text(
+               COALESCE(response.meta -> 'resolved_authorization_request_ids', '[]'::jsonb)
+           )
+       )
+FROM chat_message_group AS response
+WHERE response.uuid = $1`, responseID).Scan(
+		&isStreaming, &taskID, &hasPending, &resolvedIDs,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !isStreaming || taskID != "execution-authorization-resumed" || hasPending ||
+		len(resolvedIDs) != 1 || resolvedIDs[0] != "tool-run-sharepoint-1" {
+		t.Fatalf("streaming=%v task=%q pending=%v resolved=%v",
+			isStreaming, taskID, hasPending, resolvedIDs)
 	}
 }
 

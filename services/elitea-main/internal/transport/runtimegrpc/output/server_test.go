@@ -1,6 +1,7 @@
 package output
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -59,6 +60,32 @@ type outputStreamStub struct {
 	acks    []*runtimev1.ExecutionOutputAckV1
 	actions []string
 	index   int
+}
+
+func TestAgentExecutionResultMapsDelegatedAuthorizationPause(t *testing.T) {
+	digest := &runtimev1.DigestV1{
+		Algorithm: runtimev1.DigestAlgorithmV1_DIGEST_ALGORITHM_V1_SHA256,
+		Value:     bytes.Repeat([]byte{1}, 32),
+	}
+	result, err := agentExecutionResultDomain(&runtimev1.AgentExecutionResultV1{
+		InputBundleId:           "bundle-1",
+		InputBundleDigest:       digest,
+		RequestEntryId:          "request-1",
+		RequestImmutableVersion: "version-1",
+		RequestContentDigest:    digest,
+		TerminalState:           runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_PAUSED_MCP_AUTH,
+		ResultArtifact: &runtimev1.AgentExecutionArtifactReferenceV1{
+			ArtifactId:       "artifact-1",
+			ImmutableVersion: "artifact-version-1",
+			MediaType:        outputapp.AgentResultMediaType,
+			ByteLength:       1,
+			Digest:           digest,
+			Classification:   outputapp.AgentResultClassification,
+		},
+	})
+	if err != nil || result.TerminalState != outputapp.AgentExecutionTerminalPausedAuthorization {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
 }
 
 func (s *outputStreamStub) Recv() (*runtimev1.ExecutionOutputFrameV1, error) {

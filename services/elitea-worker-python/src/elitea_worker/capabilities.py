@@ -13,6 +13,9 @@ from elitea.config.v1 import capability_manifest_pb2
 from elitea.runtime.v1 import command_pb2, common_pb2, envelope_pb2, output_pb2
 
 from elitea_worker.constants import (
+    AGENT_EXECUTE_ADHOC_CAPABILITY_ID,
+    AGENT_EXECUTE_APPLICATION_CAPABILITY_ID,
+    AGENT_EXECUTION_CAPABILITY_VERSION,
     CAPABILITY_ID,
     CAPABILITY_VERSION,
     CONFIGURATION_CATALOG_REVISION,
@@ -148,6 +151,50 @@ def capability_message(
                     "typed-inline-terminal-result",
                 ],
             ),
+            capability_manifest_pb2.RuntimeCapabilityV1(
+                capability_id=AGENT_EXECUTE_APPLICATION_CAPABILITY_ID,
+                capability_version=AGENT_EXECUTION_CAPABILITY_VERSION,
+                accepted_command_types=[
+                    command_pb2.WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_APPLICATION,
+                ],
+                emitted_event_types=[
+                    output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_AGENT_EXECUTION_RESULT,
+                    output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR,
+                ],
+                interaction_model="durable_job",
+                resource_classes=["agent-execution"],
+                feature_flags=[
+                    "current-sdk-delegate",
+                    "reference-only-input",
+                    "claim-bound-runtime-context",
+                    "bounded-sync-sdk-execution",
+                    "durable-checkpoint-resume",
+                    "toolkit-authorization-continuation",
+                    "typed-inline-terminal-result",
+                ],
+            ),
+            capability_manifest_pb2.RuntimeCapabilityV1(
+                capability_id=AGENT_EXECUTE_ADHOC_CAPABILITY_ID,
+                capability_version=AGENT_EXECUTION_CAPABILITY_VERSION,
+                accepted_command_types=[
+                    command_pb2.WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_ADHOC,
+                ],
+                emitted_event_types=[
+                    output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_AGENT_EXECUTION_RESULT,
+                    output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR,
+                ],
+                interaction_model="durable_job",
+                resource_classes=["agent-execution"],
+                feature_flags=[
+                    "current-sdk-delegate",
+                    "reference-only-input",
+                    "claim-bound-runtime-context",
+                    "bounded-sync-sdk-execution",
+                    "durable-checkpoint-resume",
+                    "toolkit-authorization-continuation",
+                    "typed-inline-terminal-result",
+                ],
+            ),
         ],
         runtime_constraints=capability_manifest_pb2.RuntimeConstraintsV1(
             isolation_classes=["shared-claim-scoped-authority"],
@@ -164,7 +211,12 @@ def capability_message(
         limits_profiles=capability_manifest_pb2.RuntimeLimitsProfileReferenceV1(
             limits_schema_revision="elitea.runtime.limits.v1",
             limits_revisions=[LIMITS_REVISION],
-            resource_profile_classes=["validation-small", "toolkit-catalog", "indexing"],
+            resource_profile_classes=[
+                "validation-small",
+                "toolkit-catalog",
+                "indexing",
+                "agent-execution",
+            ],
         ),
     )
 

@@ -1,6 +1,7 @@
 package agentexecution
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,13 +19,25 @@ import (
 
 const maxCurrentHITLValueBytes = 256 * 1024
 
-var ErrCurrentAgentHITLAlreadyResolved = errors.New("current agent HITL interrupt is already resolved")
+var (
+	ErrCurrentAgentHITLAlreadyResolved          = errors.New("current agent HITL interrupt is already resolved")
+	ErrCurrentAgentAuthorizationAlreadyResolved = errors.New("current agent authorization request is already resolved")
+)
+
+type CurrentContinuationKind string
+
+const (
+	CurrentContinuationHITL          CurrentContinuationKind = "hitl"
+	CurrentContinuationAuthorization CurrentContinuationKind = "authorization"
+)
 
 type CurrentContinuationResolveRequest struct {
 	ProjectID         int64
 	ActorUserID       int64
 	ConversationUUID  string
 	ResponseMessageID string
+	Kind              CurrentContinuationKind
+	AuthorizationID   string
 }
 
 func (request CurrentContinuationResolveRequest) Validate() error {
@@ -32,13 +45,33 @@ func (request CurrentContinuationResolveRequest) Validate() error {
 		!validUUID(request.ConversationUUID) || !validUUID(request.ResponseMessageID) {
 		return ErrInvalidCurrentAgentStart
 	}
+	if request.normalizedKind() != CurrentContinuationHITL &&
+		request.normalizedKind() != CurrentContinuationAuthorization {
+		return ErrInvalidCurrentAgentStart
+	}
+	if request.normalizedKind() == CurrentContinuationAuthorization &&
+		(request.AuthorizationID == "" || len(request.AuthorizationID) > 512 ||
+			strings.ContainsRune(request.AuthorizationID, '\x00')) {
+		return ErrInvalidCurrentAgentStart
+	}
+	if request.normalizedKind() == CurrentContinuationHITL && request.AuthorizationID != "" {
+		return ErrInvalidCurrentAgentStart
+	}
 	return nil
+}
+
+func (request CurrentContinuationResolveRequest) normalizedKind() CurrentContinuationKind {
+	if request.Kind == "" {
+		return CurrentContinuationHITL
+	}
+	return request.Kind
 }
 
 // CurrentContinuationTarget is reconstructed from the paused response in the
 // current project schema. Browser input never selects the graph checkpoint,
 // execution generation, participant, question, or interrupt identity.
 type CurrentContinuationTarget struct {
+	ContinuationKind    CurrentContinuationKind
 	Kind                CurrentRegenerationKind
 	TargetParticipantID int64
 	QuestionID          string
@@ -50,17 +83,23 @@ type CurrentContinuationTarget struct {
 }
 
 func (target CurrentContinuationTarget) Validate() error {
+	kind := target.ContinuationKind
+	if kind == "" {
+		kind = CurrentContinuationHITL
+	}
 	if (target.Kind != CurrentRegenerationApplication && target.Kind != CurrentRegenerationAdhoc) ||
 		target.TargetParticipantID <= 0 || !validUUID(target.QuestionID) ||
 		!validCurrentAgentText(target.UserInput, maxCurrentAgentUserInputBytes) ||
 		target.ThreadID == "" || len(target.ThreadID) > 256 || strings.ContainsRune(target.ThreadID, '\x00') ||
 		!validUUID(target.ExecutionGeneration) || target.InterruptID == "" ||
 		len(target.InterruptID) > 512 || strings.ContainsRune(target.InterruptID, '\x00') ||
-		len(target.AvailableActions) == 0 || len(target.AvailableActions) > 8 {
+		len(target.AvailableActions) == 0 || len(target.AvailableActions) > 8 ||
+		(kind != CurrentContinuationHITL && kind != CurrentContinuationAuthorization) {
 		return ErrUnsupportedCurrentAgentStart
 	}
 	for _, action := range target.AvailableActions {
-		if !currentRootHITLAction(action) {
+		if (kind == CurrentContinuationHITL && !currentRootHITLAction(action)) ||
+			(kind == CurrentContinuationAuthorization && !currentAuthorizationAction(action)) {
 			return ErrUnsupportedCurrentAgentStart
 		}
 	}
@@ -75,30 +114,53 @@ type CurrentContinuationResolver interface {
 }
 
 type CurrentContinuationRequest struct {
-	ProjectID         int64
-	ActorUserID       int64
-	ConversationUUID  string
-	ResponseMessageID string
-	ThreadID          string
-	Action            string
-	Value             string
+	ProjectID          int64
+	ActorUserID        int64
+	ConversationUUID   string
+	ResponseMessageID  string
+	ThreadID           string
+	Action             string
+	Value              string
+	Kind               CurrentContinuationKind
+	AuthorizationID    string
+	MCPTokens          json.RawMessage
+	IgnoredMCPServers  json.RawMessage
+	DeclinedMCPServers json.RawMessage
 }
 
 func (request CurrentContinuationRequest) Validate() error {
+	kind := request.normalizedKind()
 	if request.ProjectID <= 0 || request.ActorUserID <= 0 ||
 		!validUUID(request.ConversationUUID) || !validUUID(request.ResponseMessageID) ||
-		!currentRootHITLAction(request.Action) || len(request.Value) > maxCurrentHITLValueBytes ||
+		len(request.Value) > maxCurrentHITLValueBytes ||
 		strings.ContainsRune(request.Value, '\x00') ||
 		(request.ThreadID != "" && (len(request.ThreadID) > 256 || strings.ContainsRune(request.ThreadID, '\x00'))) {
 		return ErrInvalidCurrentAgentStart
 	}
-	if (request.Action == "edit" || request.Action == "block_with_comment") && request.Value == "" {
-		return ErrInvalidCurrentAgentStart
+	if kind == CurrentContinuationHITL {
+		if !currentRootHITLAction(request.Action) ||
+			((request.Action == "edit" || request.Action == "block_with_comment") && request.Value == "") ||
+			(request.Action != "edit" && request.Action != "block_with_comment" && request.Value != "") ||
+			request.AuthorizationID != "" || len(request.MCPTokens) != 0 ||
+			len(request.IgnoredMCPServers) != 0 || len(request.DeclinedMCPServers) != 0 {
+			return ErrInvalidCurrentAgentStart
+		}
+		return nil
 	}
-	if request.Action != "edit" && request.Action != "block_with_comment" && request.Value != "" {
+	if kind != CurrentContinuationAuthorization || !currentAuthorizationAction(request.Action) ||
+		request.Value != "" || request.AuthorizationID == "" || len(request.AuthorizationID) > 512 ||
+		strings.ContainsRune(request.AuthorizationID, '\x00') || !validJSONObject(request.MCPTokens) ||
+		!validJSONArray(request.IgnoredMCPServers) || !validJSONArray(request.DeclinedMCPServers) {
 		return ErrInvalidCurrentAgentStart
 	}
 	return nil
+}
+
+func (request CurrentContinuationRequest) normalizedKind() CurrentContinuationKind {
+	if request.Kind == "" {
+		return CurrentContinuationHITL
+	}
+	return request.Kind
 }
 
 // CurrentContinueTurn is the immutable current-schema side of one root HITL
@@ -118,6 +180,7 @@ type CurrentContinueTurn struct {
 	ThreadID             string
 	InterruptID          string
 	Action               string
+	ContinuationKind     CurrentContinuationKind
 }
 
 func (turn CurrentContinueTurn) Validate() error {
@@ -125,8 +188,16 @@ func (turn CurrentContinueTurn) Validate() error {
 		!validUUID(turn.ConversationUUID) || !validUUID(turn.QuestionID) ||
 		!validUUID(turn.ResponseMessageID) || !validUUID(turn.ExecutionGeneration) ||
 		turn.ThreadID == "" || len(turn.ThreadID) > 256 || strings.ContainsRune(turn.ThreadID, '\x00') ||
-		turn.InterruptID == "" || len(turn.InterruptID) > 512 || strings.ContainsRune(turn.InterruptID, '\x00') ||
-		!currentRootHITLAction(turn.Action) {
+		turn.InterruptID == "" || len(turn.InterruptID) > 512 || strings.ContainsRune(turn.InterruptID, '\x00') {
+		return ErrInvalidCurrentAgentStart
+	}
+	kind := turn.ContinuationKind
+	if kind == "" {
+		kind = CurrentContinuationHITL
+	}
+	if (kind == CurrentContinuationHITL && !currentRootHITLAction(turn.Action)) ||
+		(kind == CurrentContinuationAuthorization && !currentAuthorizationAction(turn.Action)) ||
+		(kind != CurrentContinuationHITL && kind != CurrentContinuationAuthorization) {
 		return ErrInvalidCurrentAgentStart
 	}
 	switch turn.Kind {
@@ -165,12 +236,19 @@ func (service *CurrentApplicationStartService) ContinueCurrentAgent(
 			ProjectID: request.ProjectID, ActorUserID: request.ActorUserID,
 			ConversationUUID:  request.ConversationUUID,
 			ResponseMessageID: request.ResponseMessageID,
+			Kind:              request.normalizedKind(),
+			AuthorizationID:   request.AuthorizationID,
 		},
 	)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
-	if err := target.Validate(); err != nil ||
+	targetKind := target.ContinuationKind
+	if targetKind == "" {
+		targetKind = CurrentContinuationHITL
+	}
+	if err := target.Validate(); err != nil || targetKind != request.normalizedKind() ||
+		(request.normalizedKind() == CurrentContinuationAuthorization && target.InterruptID != request.AuthorizationID) ||
 		(request.ThreadID != "" && request.ThreadID != target.ThreadID) ||
 		!slices.Contains(target.AvailableActions, request.Action) ||
 		request.ProjectID > math.MaxInt32 || request.ActorUserID > math.MaxInt32 ||
@@ -220,6 +298,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		QuestionID: target.QuestionID, ResponseMessageID: request.ResponseMessageID,
 		ExecutionGeneration: target.ExecutionGeneration, ThreadID: target.ThreadID,
 		InterruptID: target.InterruptID, Action: request.Action,
+		ContinuationKind: request.normalizedKind(),
 	}
 	var input *runtimev1.AgentExecutionInputV1
 	var capabilityID string
@@ -288,21 +367,34 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		return nil, nil, "", ErrUnsupportedCurrentAgentStart
 	}
 
-	decisions, err := json.Marshal([]map[string]string{{
-		"interrupt_id": target.InterruptID,
-		"action":       request.Action,
-		"value":        request.Value,
-	}})
-	if err != nil {
-		return nil, nil, "", ErrInvalidCurrentAgentStart
-	}
 	input.ThreadId = stringPointer(target.ThreadID)
 	input.ExecutionGeneration = stringPointer(target.ExecutionGeneration)
 	input.ShouldContinue = true
-	input.HitlResume = true
-	input.HitlAction = stringPointer(request.Action)
-	input.HitlValue = stringPointer(request.Value)
-	input.HitlDecisions = decisions
+	if request.normalizedKind() == CurrentContinuationAuthorization {
+		input.HitlResume = false
+		input.HitlAction = nil
+		input.HitlValue = nil
+		// The authoritative wire contract represents collection-valued fields as
+		// JSON arrays even when they are empty. Clearing the field to nil makes a
+		// valid authorization continuation fail admission before dispatch.
+		input.HitlDecisions = []byte(`[]`)
+		input.McpTokens = bytes.Clone(request.MCPTokens)
+		input.IgnoredMcpServers = bytes.Clone(request.IgnoredMCPServers)
+		input.UserDeclinedMcpServers = bytes.Clone(request.DeclinedMCPServers)
+	} else {
+		decisions, err := json.Marshal([]map[string]string{{
+			"interrupt_id": target.InterruptID,
+			"action":       request.Action,
+			"value":        request.Value,
+		}})
+		if err != nil {
+			return nil, nil, "", ErrInvalidCurrentAgentStart
+		}
+		input.HitlResume = true
+		input.HitlAction = stringPointer(request.Action)
+		input.HitlValue = stringPointer(request.Value)
+		input.HitlDecisions = decisions
+	}
 	return input, turn, capabilityID, nil
 }
 
@@ -320,6 +412,10 @@ func currentRootHITLAction(action string) bool {
 	default:
 		return false
 	}
+}
+
+func currentAuthorizationAction(action string) bool {
+	return action == "authorize" || action == "skip"
 }
 
 func currentContinuationIdempotencyKey(responseID, interruptID, action, value string) string {
