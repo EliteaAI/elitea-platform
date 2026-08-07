@@ -400,21 +400,29 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 	}
 	switch contract {
 	case CurrentContinuationContract:
-		if !body.HITLResume || !currentRootHITLAction(body.HITLAction) ||
-			!emptyJSONArray(body.HITLDecisions) || !emptyJSONObject(body.MCPTokens) ||
+		decisions, decisionsValid := currentHITLDecisions(body.HITLDecisions)
+		if !body.HITLResume || !decisionsValid || !emptyJSONObject(body.MCPTokens) ||
 			!emptyJSONArray(body.IgnoredMCPServers) || !emptyJSONArray(body.UserDeclinedMCPServers) ||
 			body.AuthorizationRequestID != "" || body.AuthorizationAction != "" {
 			writeUnsupported(writer)
 			return
 		}
-		value, valid := currentHITLStringValue(body.HITLValue)
-		if !valid {
-			writeUnsupported(writer)
-			return
+		if len(decisions) == 0 {
+			value, valid := currentHITLStringValue(body.HITLValue)
+			if !currentRootHITLAction(body.HITLAction) || !valid {
+				writeUnsupported(writer)
+				return
+			}
+			continuation.Action = body.HITLAction
+			continuation.Value = value
+		} else {
+			if body.HITLAction != "" || !absentJSON(body.HITLValue) {
+				writeUnsupported(writer)
+				return
+			}
+			continuation.HITLDecisions = decisions
 		}
 		continuation.Kind = agentexecutionapp.CurrentContinuationHITL
-		continuation.Action = body.HITLAction
-		continuation.Value = value
 	case CurrentAuthorizationContinuationContract:
 		if body.HITLResume || body.HITLAction != "" || !absentJSON(body.HITLValue) ||
 			!emptyJSONArray(body.HITLDecisions) || !currentJSONObject(body.MCPTokens) ||
@@ -533,6 +541,39 @@ func currentHITLStringValue(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func currentHITLDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLDecision, bool) {
+	if emptyJSONArray(raw) {
+		return nil, true
+	}
+	var objects []map[string]json.RawMessage
+	if json.Unmarshal(raw, &objects) != nil || len(objects) == 0 || len(objects) > 16 {
+		return nil, false
+	}
+	decisions := make([]agentexecutionapp.CurrentHITLDecision, 0, len(objects))
+	for _, object := range objects {
+		for key := range object {
+			switch key {
+			case "interrupt_id", "tool_call_id", "action", "value":
+			default:
+				return nil, false
+			}
+		}
+		var decision agentexecutionapp.CurrentHITLDecision
+		if json.Unmarshal(object["interrupt_id"], &decision.InterruptID) != nil ||
+			json.Unmarshal(object["action"], &decision.Action) != nil {
+			return nil, false
+		}
+		if value, exists := object["tool_call_id"]; exists && json.Unmarshal(value, &decision.ToolCallID) != nil {
+			return nil, false
+		}
+		if value, exists := object["value"]; exists && json.Unmarshal(value, &decision.Value) != nil {
+			return nil, false
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, true
 }
 
 func positiveCanonicalID(raw string) (int64, bool) {

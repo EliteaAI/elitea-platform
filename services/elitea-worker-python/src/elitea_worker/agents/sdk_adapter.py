@@ -445,7 +445,7 @@ def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
             "This agent execution requires a parity path that is not admitted yet."
         )
     if hitl_resume:
-        _require_root_hitl_resume(payload)
+        _require_in_process_hitl_resume(payload)
     elif authorization_resume:
         _require_authorization_resume(payload)
     elif payload.should_continue:
@@ -497,48 +497,59 @@ def _require_authorization_resume(payload: AgentExecutionPayload) -> None:
             )
 
 
-def _require_root_hitl_resume(payload: AgentExecutionPayload) -> None:
-    """Admit one checkpoint-bound sensitive-tool decision, not routed fan-out."""
+def _require_in_process_hitl_resume(payload: AgentExecutionPayload) -> None:
+    """Admit one atomic set of public, checkpoint-bound HITL decisions."""
 
     if not payload.hitl_resume:
         raise UnsupportedCapability("The HITL resume marker is required.")
     if not payload.should_continue:
         raise UnsupportedCapability("The HITL continuation marker is required.")
-    if len(payload.hitl_decisions) != 1:
+    if not 1 <= len(payload.hitl_decisions) <= 16:
         raise UnsupportedCapability(
-            "Exactly one root HITL decision is supported in this execution slice."
+            "Between one and sixteen HITL decisions are supported in one continuation."
         )
-    decision = payload.hitl_decisions[0]
-    if not isinstance(decision, dict):
-        raise UnsupportedCapability("The root HITL decision is malformed.")
-    interrupt_id = decision.get("interrupt_id")
-    if not isinstance(interrupt_id, str) or not interrupt_id.strip():
-        raise UnsupportedCapability("The root HITL interrupt identity is required.")
-    action = payload.hitl_action or decision.get("action")
-    if action not in {
-        "approve",
-        "reject",
-        "edit",
-        "block_with_comment",
-        "reject_with_comment",
-    }:
-        raise UnsupportedCapability("The root HITL action is not supported.")
-    decision_action = decision.get("action")
-    if decision_action is not None and decision_action != action:
-        raise UnsupportedCapability("The root HITL decision action is inconsistent.")
-    if any(
-        decision.get(key)
-        for key in (
-            "child_thread_id",
-            "parent_agent_call_id",
-            "parent_agent_path",
-            "via_call_id",
-            "_via_call_id",
-        )
-    ):
+    if len(payload.hitl_decisions) == 1:
+        decision = payload.hitl_decisions[0]
+        if not isinstance(decision, dict):
+            raise UnsupportedCapability("The HITL decision is malformed.")
+        if payload.hitl_action != decision.get("action"):
+            raise UnsupportedCapability("The HITL decision action is inconsistent.")
+        decision_value = decision.get("value", "")
+        if payload.hitl_value not in (None, decision_value):
+            raise UnsupportedCapability("The HITL decision value is inconsistent.")
+    elif payload.hitl_action is not None or payload.hitl_value is not None:
         raise UnsupportedCapability(
-            "Nested or parallel HITL resume is not admitted in this execution slice."
+            "Parallel HITL decisions cannot contain a scalar HITL decision."
         )
+
+    seen_interrupts: set[str] = set()
+    allowed_keys = {"interrupt_id", "tool_call_id", "action", "value"}
+    for decision in payload.hitl_decisions:
+        if not isinstance(decision, dict) or set(decision) - allowed_keys:
+            raise UnsupportedCapability("The HITL decision is malformed.")
+        interrupt_id = decision.get("interrupt_id")
+        if (
+            not isinstance(interrupt_id, str)
+            or not interrupt_id.strip()
+            or interrupt_id in seen_interrupts
+        ):
+            raise UnsupportedCapability(
+                "Each HITL decision requires one unique interrupt identity."
+            )
+        seen_interrupts.add(interrupt_id)
+        tool_call_id = decision.get("tool_call_id")
+        if tool_call_id is not None and not isinstance(tool_call_id, str):
+            raise UnsupportedCapability("The HITL tool-call identity is malformed.")
+        action = decision.get("action")
+        if action not in {"approve", "reject", "edit", "block_with_comment"}:
+            raise UnsupportedCapability("The HITL action is not supported.")
+        value = decision.get("value", "")
+        if not isinstance(value, str):
+            raise UnsupportedCapability("The HITL decision value is malformed.")
+        if action in {"edit", "block_with_comment"} and not value:
+            raise UnsupportedCapability("The HITL decision value is required.")
+        if action not in {"edit", "block_with_comment"} and value:
+            raise UnsupportedCapability("The HITL decision value is not allowed.")
 
 
 def _llm_kwargs(value: dict[str, Any]) -> dict[str, Any]:

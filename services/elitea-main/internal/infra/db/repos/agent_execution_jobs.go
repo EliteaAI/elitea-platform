@@ -564,8 +564,8 @@ func resumeCurrentAgentHITL(
 			ResponseMessageID: responseMessageID, ContinuationKind: string(turn.Kind),
 			ApplicationID: applicationID, ApplicationVersionID: applicationVersionID,
 			ExecutionGeneration: turn.ExecutionGeneration, ThreadID: turn.ThreadID,
-			InterruptID: turn.InterruptID, HitlAction: turn.Action,
-			ExecutionID: executionID, ProjectID: projectID,
+			HitlDecisions: []byte(turn.HITLDecisions),
+			ExecutionID:   executionID, ProjectID: projectID,
 		},
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

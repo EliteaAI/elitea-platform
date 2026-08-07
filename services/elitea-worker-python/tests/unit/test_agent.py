@@ -219,6 +219,72 @@ def test_agent_input_rejects_wrong_semantic_shapes() -> None:
         )
 
 
+def test_agent_input_accepts_plural_hitl_resume_without_scalar_action() -> None:
+    message = _input()
+    message.hitl_resume = True
+    message.should_continue = True
+    message.hitl_decisions = _json(
+        [
+            {
+                "interrupt_id": "hitl-name",
+                "tool_call_id": "tool-name",
+                "action": "approve",
+                "value": "",
+            },
+            {
+                "interrupt_id": "hitl-surname",
+                "tool_call_id": "tool-surname",
+                "action": "block_with_comment",
+                "value": "Keep the surname artifact for review.",
+            },
+        ]
+    )
+
+    request = request_from(
+        message,
+        kind=AgentExecutionKind.APPLICATION,
+        input_bundle_id="bundle-1",
+        input_bundle_digest=b"b" * 32,
+        request_entry_id="agent-request",
+        request_immutable_version="v1",
+        request_content_digest=b"r" * 32,
+    )
+
+    assert request.payload.hitl_action is None
+    assert request.payload.hitl_value is None
+    assert request.payload.hitl_decisions == [
+        {
+            "interrupt_id": "hitl-name",
+            "tool_call_id": "tool-name",
+            "action": "approve",
+            "value": "",
+        },
+        {
+            "interrupt_id": "hitl-surname",
+            "tool_call_id": "tool-surname",
+            "action": "block_with_comment",
+            "value": "Keep the surname artifact for review.",
+        },
+    ]
+
+
+def test_agent_input_rejects_hitl_resume_without_any_decision() -> None:
+    message = _input()
+    message.hitl_resume = True
+    message.should_continue = True
+
+    with pytest.raises(InvalidInput, match="HITL resume decision"):
+        request_from(
+            message,
+            kind=AgentExecutionKind.APPLICATION,
+            input_bundle_id="bundle-1",
+            input_bundle_digest=b"b" * 32,
+            request_entry_id="agent-request",
+            request_immutable_version="v1",
+            request_content_digest=b"r" * 32,
+        )
+
+
 @pytest.mark.parametrize("application", [True, False])
 def test_signed_agent_command_accepts_exact_current_entrypoint(application: bool) -> None:
     _, command = parse_and_verify_signed_command(
@@ -701,7 +767,7 @@ def test_sdk_adapter_does_not_resume_an_older_authorization_pause() -> None:
 @pytest.mark.parametrize(
     ("action", "value"),
     [
-        ("reject", "not now"),
+        ("reject", ""),
         (
             "block_with_comment",
             "append the requested data before retrying the sensitive action",
@@ -764,11 +830,11 @@ def test_sdk_adapter_rejects_hitl_without_exact_interrupt_identity() -> None:
     object.__setattr__(payload, "hitl_action", "approve")
     object.__setattr__(payload, "hitl_decisions", [])
 
-    with pytest.raises(UnsupportedCapability, match="Exactly one root HITL decision"):
+    with pytest.raises(UnsupportedCapability, match="Between one and sixteen"):
         _adapter(_Client()).execute_application(payload)
 
 
-def test_sdk_adapter_rejects_nested_hitl_route_in_root_slice() -> None:
+def test_sdk_adapter_rejects_private_hitl_route_from_transport() -> None:
     payload = _request().payload
     object.__setattr__(payload, "should_continue", True)
     object.__setattr__(payload, "hitl_resume", True)
@@ -785,8 +851,51 @@ def test_sdk_adapter_rejects_nested_hitl_route_in_root_slice() -> None:
         ],
     )
 
-    with pytest.raises(UnsupportedCapability, match="Nested or parallel HITL"):
+    with pytest.raises(UnsupportedCapability, match="decision is malformed"):
         _adapter(_Client()).execute_application(payload)
+
+
+@pytest.mark.parametrize("application", [True, False])
+def test_sdk_adapter_resumes_one_atomic_parallel_hitl_decision_set(
+    application: bool,
+) -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(
+        [("paused-task", "__interrupt__", {"type": "hitl"})]
+    )
+    adapter._memory = memory  # type: ignore[attr-defined]
+    payload = _request(application=application).payload
+    decisions = [
+        {"interrupt_id": "interrupt-1", "action": "approve"},
+        {
+            "interrupt_id": "interrupt-2",
+            "tool_call_id": "tool-call-2",
+            "action": "block_with_comment",
+            "value": "archive first",
+        },
+    ]
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", None)
+    object.__setattr__(payload, "hitl_value", None)
+    object.__setattr__(payload, "hitl_decisions", decisions)
+
+    if application:
+        adapter.execute_application(payload)
+        invoke_input, invoke_config = client.application_executor.calls[0]
+    else:
+        adapter.execute_adhoc(payload)
+        invoke_input, invoke_config = client.adhoc_executor.calls[0]
+
+    assert memory.deleted_threads == []
+    assert invoke_config["configurable"]["thread_id"] == "thread-1"
+    assert invoke_input["hitl_resume"] is True
+    assert invoke_input["hitl_action"] is None
+    # The current SDK's scalar compatibility field remains a string even when
+    # the authoritative resume is the plural decision set.
+    assert invoke_input["hitl_value"] == ""
+    assert invoke_input["hitl_decisions"] == decisions
 
 
 def test_sdk_adapter_rejects_hitl_without_continuation_marker() -> None:

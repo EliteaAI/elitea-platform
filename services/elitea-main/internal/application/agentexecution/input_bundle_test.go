@@ -114,6 +114,35 @@ func TestInputBundleFactoryRejectsInvalidOrOversizedInput(t *testing.T) {
 	}
 }
 
+func TestInputBundleFactoryAcceptsPluralHITLResumeWithoutScalarAction(t *testing.T) {
+	input := validAgentInput()
+	input.HitlResume = true
+	input.HitlDecisions = []byte(`[
+		{"interrupt_id":"interrupt-name","action":"approve"},
+		{"interrupt_id":"interrupt-surname","action":"reject"}
+	]`)
+
+	factory := testInputBundleFactory(t)
+	if _, _, err := factory.Build(
+		context.Background(), input, "conversation", "message", "chat_continue_predict",
+	); err != nil {
+		t.Fatalf("Build() plural HITL resume error = %v", err)
+	}
+}
+
+func TestInputBundleFactoryRejectsHITLResumeWithoutAnyDecision(t *testing.T) {
+	input := validAgentInput()
+	input.HitlResume = true
+
+	factory := testInputBundleFactory(t)
+	_, _, err := factory.Build(
+		context.Background(), input, "conversation", "message", "chat_continue_predict",
+	)
+	if !errors.Is(err, ErrInvalidAuthoritativeAgentInput) {
+		t.Fatalf("Build() error = %v, want %v", err, ErrInvalidAuthoritativeAgentInput)
+	}
+}
+
 func TestInputBundleFactoryPreservesCancellation(t *testing.T) {
 	factory := testInputBundleFactory(t)
 	ctx, cancel := context.WithCancel(context.Background())

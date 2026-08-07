@@ -320,12 +320,44 @@ func TestCurrentAuthorizationContinuationRouteRejectsAmbiguousAndMissingIdentity
 	}
 }
 
-func TestCurrentContinuationRouteRejectsParallelAndMCPResumeShapes(t *testing.T) {
+func TestCurrentContinuationRouteAcceptsBoundedParallelDecisions(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-parallel", CommandID: "command-parallel",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	body := strings.Replace(validCurrentContinuationBody(), `"hitl_action":"edit",`, `"hitl_action":"",`, 1)
+	body = strings.Replace(body, `"hitl_value":"delete only merged branches",`, ``, 1)
+	body = strings.Replace(
+		body,
+		`"hitl_decisions":[]`,
+		`"hitl_decisions":[{"interrupt_id":"interrupt-1","action":"approve"},{"interrupt_id":"interrupt-2","tool_call_id":"tool-2","action":"block_with_comment","value":"archive first"}]`,
+		1,
+	)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentContinuationRequest(body))
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		len(useCase.continuationRequest.HITLDecisions) != 2 ||
+		useCase.continuationRequest.HITLDecisions[1].InterruptID != "interrupt-2" ||
+		useCase.continuationRequest.HITLDecisions[1].ToolCallID != "tool-2" ||
+		useCase.continuationRequest.HITLDecisions[1].Value != "archive first" {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, useCase.continuationRequest, response.Body.String())
+	}
+}
+
+func TestCurrentContinuationRouteRejectsAmbiguousParallelAndMCPResumeShapes(t *testing.T) {
 	useCase := &currentStartUseCaseStub{}
 	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
 	for name, body := range map[string]string{
-		"parallel": strings.Replace(validCurrentContinuationBody(), `"hitl_decisions":[]`, `"hitl_decisions":[{"interrupt_id":"child","action":"approve"}]`, 1),
-		"mcp":      strings.Replace(validCurrentContinuationBody(), `"mcp_tokens":{}`, `"mcp_tokens":{"server":{"access_token":"not-forwarded"}}`, 1),
+		"plural with scalar": strings.Replace(validCurrentContinuationBody(), `"hitl_decisions":[]`, `"hitl_decisions":[{"interrupt_id":"child","action":"approve"}]`, 1),
+		"private child route": strings.Replace(
+			strings.Replace(strings.Replace(validCurrentContinuationBody(), `"hitl_action":"edit",`, `"hitl_action":"",`, 1), `"hitl_value":"delete only merged branches",`, ``, 1),
+			`"hitl_decisions":[]`,
+			`"hitl_decisions":[{"interrupt_id":"child","action":"approve","child_thread_id":"private"}]`,
+			1,
+		),
+		"mcp": strings.Replace(validCurrentContinuationBody(), `"mcp_tokens":{}`, `"mcp_tokens":{"server":{"access_token":"not-forwarded"}}`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()
