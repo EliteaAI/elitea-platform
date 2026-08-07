@@ -33,19 +33,19 @@ import wiringMap from '../../../parity/route-wiring-map.json';
 
 interface WiringRow {
   readonly routeFile: string;
-  readonly targetPath: string;
-  readonly targetExport: string;
+  readonly targetPath: string | null;
+  readonly targetSpecifier: string | null;
+  readonly targetExport: string | null;
+  readonly bodyShape: string;
   readonly status: string;
   readonly requiredProps: readonly string[];
 }
 
 const rows = wiringMap.routes as readonly WiringRow[];
-const wired = rows.filter((row) => row.status === 'wired');
-
-/** `src/pages/agents/Applications.tsx` -> `@/pages/agents/Applications` */
-function toImportSpecifier(targetPath: string): string {
-  return targetPath.replace(/^src\//, '@/').replace(/\.tsx?$/, '');
-}
+// Driven by what each route actually renders (`bodyShape`), not by the curated
+// `status` field. `status` only covered the 38 hand-listed routes, so the other
+// 38 — `/mcp-auth-callback` among them — were outside every assertion below.
+const wired = rows.filter((row) => row.bodyShape === 'renders-page');
 
 function readRoute(routeFile: string): string {
   return readFileSync(join(process.cwd(), routeFile), 'utf8');
@@ -63,8 +63,9 @@ describe('route wiring', () => {
     '%s imports and renders its mapped page component',
     (_name, row) => {
       const source = readRoute(row.routeFile);
-      const specifier = toImportSpecifier(row.targetPath);
+      const specifier = row.targetSpecifier;
 
+      expect(specifier, `${row.routeFile} has no recorded target specifier`).not.toBeNull();
       expect(
         source.includes(`'${specifier}'`),
         `${row.routeFile} does not import ${specifier}`,
