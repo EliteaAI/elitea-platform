@@ -19,7 +19,7 @@
  * (CI use), so the map cannot silently drift from the routes.
  */
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 const ROUTES = 'src/routes';
 const OUT = 'parity/route-wiring-map.json';
@@ -126,17 +126,159 @@ function walk(dir, acc = []) {
   return acc;
 }
 
+/**
+ * Resolves an import specifier to a repo-relative path, if it names a real file.
+ * `@/x/Y` -> `src/x/Y.tsx`; relative specifiers resolve against the route file.
+ */
+function resolveImport(spec, routeRel) {
+  const base = spec.startsWith('@/')
+    ? join('src', spec.slice(2))
+    : spec.startsWith('.')
+      ? join(ROUTES, dirname(routeRel), spec)
+      : null;
+  if (!base) return null;
+  for (const cand of [`${base}.tsx`, `${base}.ts`, join(base, 'index.tsx'), join(base, 'index.ts')]) {
+    if (existsSync(cand)) return cand;
+  }
+  return null;
+}
+
+/**
+ * Every `import {A, B} from 'spec'` / `import C from 'spec'` in the file,
+ * as a Map of local binding name -> specifier.
+ */
+function importBindings(txt) {
+  const out = new Map();
+  const re = /import\s+(type\s+)?([^;]+?)\s+from\s+['"]([^'"]+)['"]/g;
+  for (const [, isType, clause, spec] of txt.matchAll(re)) {
+    if (isType) continue;
+    for (const name of clause.replace(/[{}]/g, ' ').split(',')) {
+      const local = name.trim().split(/\s+as\s+/).pop()?.trim();
+      if (local && /^[A-Za-z_$][\w$]*$/.test(local)) out.set(local, spec);
+    }
+  }
+  return out;
+}
+
+/**
+ * Slices out the route options object — the `{...}` passed to the second call
+ * of `createFileRoute('/x')({ ... })`. Scoping the `component:` lookup to this
+ * object matters: the route files carry long prose docstrings, and a file-wide
+ * regex happily matched "component: TanStack Router..." out of a comment and
+ * reported a component that does not exist.
+ */
+function routeOptions(txt) {
+  // `createFileRoute('/x')({...})`, and the root's
+  // `createRootRouteWithContext<T>()({...})` / `createRootRoute()({...})`.
+  const m = /(?:createFileRoute\([^)]*\)|createRootRoute(?:WithContext)?(?:<[^>]*>)?\(\s*\))\s*\(/.exec(txt);
+  if (!m) return null;
+  const open = txt.indexOf('{', m.index + m[0].length - 1);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < txt.length; i += 1) {
+    if (txt[i] === '{') depth += 1;
+    else if (txt[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return txt.slice(open, i + 1);
+    }
+  }
+  return null;
+}
+
+/** Slices out `function <name>(...) { ... }` by brace matching. */
+function functionBody(txt, name) {
+  const start = txt.search(new RegExp(`function\\s+${name}\\s*\\(`));
+  if (start < 0) return null;
+  const open = txt.indexOf('{', start);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < txt.length; i += 1) {
+    if (txt[i] === '{') depth += 1;
+    else if (txt[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return txt.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+// Layout/status primitives a route may legitimately render without that
+// counting as "this route renders a real page".
+const NON_PAGE_JSX = new Set([
+  'Outlet', 'ExclusiveOutlet', 'RouteShell', 'RoutePending', 'RouteError',
+  'Fragment', 'Suspense', 'Navigate', 'ScrollRestoration', 'HeadContent', 'Scripts',
+]);
+
 const rows = [];
 for (const file of walk(ROUTES).sort()) {
   const rel = relative(ROUTES, file);
   if (rel.startsWith('-')) continue; // -ui/, -guards/, -search/ helpers
   const txt = readFileSync(file, 'utf8');
-  const key = rel;
-  if (!(key in RESOLUTION)) continue;
 
   const url = txt.match(/createFileRoute\(\s*['"]([^'"]+)/)?.[1] ?? null;
   const doc = txt.match(/ROUTE-(\d+)\s+`([^`]*)`\s*(?:->|->)\s*\n?\s*\*?\s*`([^`]*)`/);
-  const [targetPath, targetExport, requiredProps, status, note] = RESOLUTION[key];
+  const opts = routeOptions(txt) ?? '';
+  const componentRef = /\bcomponent:\s*([^,\n]+)/.exec(opts)?.[1]?.trim() ?? null;
+  // `component: Foo` names a component; `component: () => null` and other inline
+  // forms are recorded as inline rather than mistaken for a missing component.
+  const componentName = componentRef && /^[A-Za-z_$][\w$]*$/.test(componentRef) ? componentRef : null;
+  const hasInlineComponent = !!componentRef && !componentName;
+
+  const imports = importBindings(txt);
+  const body = componentName ? functionBody(txt, componentName) : null;
+
+  // Which JSX elements does the route's component actually render?
+  const rendered = body
+    ? [...new Set([...body.matchAll(/<([A-Z][\w$]*)/g)].map((m) => m[1]))]
+    : [];
+  const pageTags = rendered.filter((tag) => !NON_PAGE_JSX.has(tag));
+
+  // DERIVED target: the first rendered non-primitive component that resolves to
+  // a real module. This is read out of the tree, never out of RESOLUTION, so a
+  // curated row that has drifted cannot disguise what the route really renders.
+  let derivedExport = null;
+  let derivedPath = null;
+  let derivedSpecifier = null;
+  for (const tag of pageTags) {
+    const spec = imports.get(tag);
+    const resolved = spec ? resolveImport(spec, rel) : null;
+    if (resolved) { derivedExport = tag; derivedPath = resolved; derivedSpecifier = spec; break; }
+  }
+  // The component may itself be imported rather than declared locally
+  // (`component: SomePage` with `import { SomePage } from ...`).
+  if (!derivedPath && componentName && imports.has(componentName)) {
+    const spec = imports.get(componentName);
+    const resolved = resolveImport(spec, rel);
+    if (resolved) { derivedExport = componentName; derivedPath = resolved; derivedSpecifier = spec; }
+  }
+
+  /**
+   * bodyShape classifies what the route renders:
+   *   renders-page  - delegates to a resolvable component module
+   *   heading-only  - the exact stub shape: intrinsic markup with a heading and
+   *                   no component delegation. This is what `/mcp-auth-callback`
+   *                   shipped while its real 200-line page was imported by
+   *                   nothing, and what the 38-file allowlist could not see.
+   *   inline-markup - renders intrinsic markup only, without a heading
+   *   layout-only   - renders nothing but Outlet/RouteShell-style primitives
+   *   inline        - `component:` is an inline expression (e.g. `() => null`)
+   *   redirect-only - no `component:` at all; the route only redirects/guards
+   */
+  let bodyShape;
+  // A file under src/routes that creates no route at all (a colocated layout
+  // component, or __404.tsx which is deliberately not a TanStack file-route).
+  if (!routeOptions(txt)) bodyShape = 'not-a-route';
+  else if (hasInlineComponent) bodyShape = 'inline';
+  else if (!componentName) bodyShape = 'redirect-only';
+  else if (derivedPath) bodyShape = 'renders-page';
+  else if (pageTags.length === 0 && rendered.length > 0) bodyShape = 'layout-only';
+  else if (body && /<h[1-6][\s>]/.test(body)) bodyShape = 'heading-only';
+  else bodyShape = 'inline-markup';
+
+  const curated = RESOLUTION[rel];
+  // Only the review fields are consumed here; targetPath/targetExport are
+  // derived from the tree above and cross-checked against RESOLUTION below.
+  const [, , requiredProps, status, note] = curated ?? [];
 
   rows.push({
     routeFile: `${ROUTES}/${rel}`,
@@ -145,16 +287,61 @@ for (const file of walk(ROUTES).sort()) {
     routeNum: doc ? `ROUTE-${doc[1]}` : null,
     specUrl: doc ? doc[2] : null,
     docstringTarget: doc ? doc[3] : null,
-    targetPath: `src/${targetPath}.tsx`,
-    targetExport,
-    requiredProps,
-    status,
+    component: componentName,
+    bodyShape,
+    // Derived from the tree. `targetPath`/`targetExport` keep their names so the
+    // consumers (routeWiring.test.ts, the tracker) keep working, but they are no
+    // longer hand-authored.
+    targetPath: derivedPath,
+    // The literal specifier as written in the route file. Consumers assert on
+    // this rather than reconstructing it from targetPath: `@/widgets/app-shell`
+    // resolves to `.../index.ts`, and reconstruction produced a
+    // `@/widgets/app-shell/index` string that appears nowhere in the source.
+    targetSpecifier: derivedSpecifier,
+    targetExport: derivedExport,
+    requiredProps: requiredProps ?? [],
+    status: status ?? (bodyShape === 'renders-page' ? 'wired' : 'unreviewed'),
     rendersRouteShell: /-ui\/RouteShell'/.test(txt),
-    note,
+    note: note ?? '',
+    curated: !!curated,
   });
 }
 
-const missing = rows.filter((r) => !existsSync(r.targetPath));
+/*
+ * Gate 1 — no route may render the stub shape. A heading with no delegation is
+ * indistinguishable from an unimplemented screen, and every E2E assertion that
+ * falls back to `getByRole('heading')` is satisfied by it.
+ */
+const stubs = rows.filter((r) => r.bodyShape === 'heading-only');
+if (stubs.length) {
+  console.error('Routes whose component body is only a heading (stub shape):');
+  for (const s of stubs) console.error(`  ${s.routeFile}  component=${s.component}`);
+  process.exit(3);
+}
+
+/*
+ * Gate 2 — a curated row that disagrees with the tree is a stale curation, not
+ * a fact. RESOLUTION's targetPath/targetExport were hand-authored and had
+ * drifted; this makes drift fail loudly instead of being served as truth.
+ */
+const curatedDrift = [];
+for (const r of rows) {
+  if (!r.curated) continue;
+  const key = r.routeFile.slice(`${ROUTES}/`.length);
+  const [cPath, cExport] = RESOLUTION[key];
+  if (r.targetPath && r.targetPath !== `src/${cPath}.tsx`) {
+    curatedDrift.push(`${r.routeFile}: renders ${r.targetPath}, RESOLUTION claims src/${cPath}.tsx`);
+  } else if (r.targetExport && cExport && r.targetExport !== cExport) {
+    curatedDrift.push(`${r.routeFile}: renders <${r.targetExport}>, RESOLUTION claims ${cExport}`);
+  }
+}
+if (curatedDrift.length) {
+  console.error('RESOLUTION disagrees with the tree (stale curation):');
+  for (const d of curatedDrift) console.error(`  ${d}`);
+  process.exit(4);
+}
+
+const missing = rows.filter((r) => r.targetPath && !existsSync(r.targetPath));
 if (missing.length) {
   console.error('Unresolvable targets:', missing.map((m) => `${m.routeFile} -> ${m.targetPath}`));
   process.exit(2);
