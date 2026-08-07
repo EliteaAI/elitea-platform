@@ -8,7 +8,23 @@ export interface SkillVersion {
   readonly meta?: Readonly<Record<string, unknown>>;
 }
 
-export interface SkillRecord extends GeneratedSkill {
+/**
+ * `versions` and `version_details` are omitted from the generated base before
+ * being re-declared. Both were added to `Skill` in the spec and only appeared
+ * here when the stale orval client was regenerated in Phase 1c, and both
+ * conflict with this slice's local shapes rather than refining them:
+ *
+ *  - `versions` is generated MUTABLE; a `readonly` array is not assignable to
+ *    a mutable one, so narrowing it in an `extends` clause is an error.
+ *  - `version_details.id` is generated `string | undefined`, while
+ *    `SkillVersion.id` is `string | number | undefined` — the wire carries
+ *    numeric ids for some versions, so widening here is deliberate.
+ *
+ * Omitting first keeps the readonly-by-default convention without weakening
+ * it. If the spec later tightens `version_details.id` to a single type, drop
+ * it from the Omit and delete this note.
+ */
+export interface SkillRecord extends Omit<GeneratedSkill, 'versions' | 'version_details'> {
   readonly versions?: readonly SkillVersion[];
   readonly version_details?: SkillVersion;
 }

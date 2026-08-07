@@ -1,12 +1,11 @@
 import { normaliseArtifactList, type Artifact, type ArtifactListWire } from '@/entities/artifact';
 import { isSystemBucket, normaliseBuckets, type Bucket, type BucketWire, sortBucketsPinnedFirst } from '@/entities/bucket';
 import {
+  batchDeleteObjects,
   createBucket,
-  deleteArtifact,
-  deleteArtifacts,
   deleteBucket,
-  editBucket,
-  updateBucketPin,
+  deleteObject,
+  updateBucket,
 } from '@/shared/api/generated/artifacts/artifacts';
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { listArtifacts, listBuckets } from '@/shared/api/artifacts';
@@ -96,51 +95,70 @@ export async function fetchArtifacts(
   return normaliseArtifactList(result.data);
 }
 
-export async function createArtifactBucket(projectId: string, name: string): Promise<void> {
-  await createBucket(projectId, { name });
+/**
+ * MIGRATION NOTE (Phase 1c) — this module was written against the LEGACY
+ * Pylon artifacts plugin (`legacy/plugins/artifacts`, routes
+ * `/artifacts/buckets/default/{project}`, `/artifacts/artifact(s)/...`).
+ * elitea-main serves a different, newer API (S11): `/api/v2/artifacts/
+ * {buckets,objects,grants}`. The legacy operation names survived here only
+ * because the checked-in orval client was stale and still exported them —
+ * regenerating removed them and surfaced that these four calls had no
+ * endpoint on either side. Mapping applied:
+ *
+ *   editBucket      (PUT, retention)  -> updateBucket  { retention_days }
+ *   updateBucketPin (PATCH, is_pinned)-> updateBucket  { is_pinned }
+ *   deleteArtifact                    -> deleteObject
+ *   deleteArtifacts (URL-chunked)     -> batchDeleteObjects (body, one call)
+ *
+ * `projectId` is a numeric path segment in the new client, so it is parsed
+ * once here rather than threaded as a string through every call site.
+ */
+function toProjectID(projectId: string): number {
+  const parsed = Number(projectId);
+  if (!Number.isInteger(parsed)) throw new Error(`Project id "${projectId}" is not numeric.`);
+  return parsed;
 }
 
-export async function renameArtifactBucket(projectId: string, currentName: string, nextName: string): Promise<void> {
-  await editBucket(projectId, { name: nextName }, { name: currentName });
+export async function createArtifactBucket(projectId: string, name: string): Promise<void> {
+  await createBucket(toProjectID(projectId), { name });
+}
+
+/**
+ * Set a bucket's retention window. NOT a rename: the legacy `editBucket` PUT
+ * configured the S3 lifecycle (`expiration_measure`/`expiration_value` ->
+ * `configure_bucket_lifecycle`, `legacy/plugins/artifacts/api/v2/buckets.py:184`);
+ * the new API models the same thing as `retention_days`. There is no rename
+ * operation in either API — S3 buckets cannot be renamed in place.
+ */
+export async function setArtifactBucketRetention(
+  projectId: string,
+  name: string,
+  retentionDays: number | null,
+): Promise<void> {
+  await updateBucket(toProjectID(projectId), name, { retention_days: retentionDays });
 }
 
 export async function setArtifactBucketPinned(projectId: string, name: string, isPinned: boolean): Promise<void> {
-  await updateBucketPin(projectId, { is_pinned: isPinned }, { name });
+  await updateBucket(toProjectID(projectId), name, { is_pinned: isPinned });
 }
 
 export async function removeArtifactBucket(projectId: string, name: string): Promise<void> {
-  await deleteBucket(projectId, { name });
+  await deleteBucket(toProjectID(projectId), name);
 }
 
 export async function removeArtifact(projectId: string, bucket: string, key: string): Promise<void> {
-  await deleteArtifact(projectId, bucket, { filename: key });
+  await deleteObject(toProjectID(projectId), bucket, key);
 }
 
-const DELETE_ARTIFACTS_MAX_PATH_LENGTH = 1500;
-
-export function chunkArtifactKeys(projectId: string, bucket: string, keys: readonly string[]): string[][] {
-  const baseLength = `/artifacts/artifacts/default/${projectId}/${encodeURI(bucket)}?`.length;
-  const chunks: string[][] = [];
-  let current: string[] = [];
-  let length = baseLength;
-  for (const key of keys) {
-    const parameterLength = `fname[]=${encodeURIComponent(key)}&`.length;
-    if (current.length > 0 && length + parameterLength > DELETE_ARTIFACTS_MAX_PATH_LENGTH) {
-      chunks.push(current);
-      current = [];
-      length = baseLength;
-    }
-    current.push(key);
-    length += parameterLength;
-  }
-  if (current.length > 0) chunks.push(current);
-  return chunks;
-}
-
+/**
+ * Legacy chunked deletion by URL length is gone: `batchDeleteObjects` takes
+ * the keys in a request BODY, so there is no path-length ceiling to work
+ * around. An empty array is a 400 on the server and never means "delete the
+ * bucket", so it is skipped here instead of being sent.
+ */
 export async function removeArtifacts(projectId: string, bucket: string, keys: readonly string[]): Promise<void> {
-  for (const chunk of chunkArtifactKeys(projectId, bucket, keys)) {
-    await deleteArtifacts(projectId, bucket, { 'fname[]': chunk });
-  }
+  if (keys.length === 0) return;
+  await batchDeleteObjects(toProjectID(projectId), bucket, { keys: [...keys] });
 }
 
 function configurationTitle(configuration: ConfigurationWire): string {
