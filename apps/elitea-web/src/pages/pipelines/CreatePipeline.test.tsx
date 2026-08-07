@@ -38,7 +38,13 @@ describe('CreatePipeline', () => {
   });
 
   it('typing a name and description enables Save (the panel is wired, not just present)', async () => {
-    const user = userEvent.setup();
+    // `delay: null`: userEvent's default inter-keystroke delay re-renders the
+    // whole form between characters, and this panel now contains the real
+    // `CreateAgentForm` (several MUI accordions) rather than an empty Box. At
+    // the default delay the two short strings below took over 5s on CI and
+    // timed out. Removing the artificial delay keeps every keystroke — and so
+    // every `onFieldChange` round trip this test exists to prove — intact.
+    const user = userEvent.setup({ delay: null });
     renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
 
     // Save is gated on applicationCreationSchema, which requires BOTH fields.
@@ -51,7 +57,7 @@ describe('CreatePipeline', () => {
 
     await user.type(screen.getByTestId('agent-description-input'), 'does a thing');
     await waitFor(() => expect(screen.getByTestId('pipeline-save-button')).not.toBeDisabled());
-  });
+  }, 20_000);
 
   it('clicking Cancel opens a confirm dialog, and confirming navigates back to /pipelines/:tab', async () => {
     const user = userEvent.setup();
