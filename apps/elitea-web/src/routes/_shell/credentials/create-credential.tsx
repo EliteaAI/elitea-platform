@@ -39,6 +39,18 @@ function CreateCredentialRoute() {
   const leave = useCallback(() => {
     void navigate({ to: '/credentials' });
   }, [navigate]);
+  // Picking a type NAVIGATES to ROUTE-024 rather than setting page state, so
+  // the URL always names the type on screen — the baseline's own model
+  // (`hooks/credentials/useCredentialSearch.js:29` navigates to
+  // `CreateCredentialTypeFromMain` on selection). That is what makes Back
+  // from the form return to the picker, and what makes the resulting URL
+  // shareable — the same URL `CredentialWarningBanner` hands out.
+  const chooseType = useCallback(
+    (type: string) => {
+      void navigate({ to: '/credentials/create-credential/$credentialType', params: { credentialType: type } });
+    },
+    [navigate],
+  );
 
   return (
     <>
@@ -47,6 +59,7 @@ function CreateCredentialRoute() {
         {...(credentialType !== undefined ? { credentialType } : {})}
         onCreated={leave}
         onCancelled={leave}
+        onTypeChosen={chooseType}
       />
       <Outlet />
     </>

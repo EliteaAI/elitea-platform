@@ -33,15 +33,18 @@
  * every route in their families, so an unscoped text query would pass
  * without the page under test rendering at all.
  *
+ * ROUTE-024/064 (`/credentials/create-credential/:credentialType` and
+ * `/settings/create-configuration/:credentialType`) are empty pattern-A
+ * children, so their parents own the param in BOTH directions — reading it
+ * on entry and writing it when a type is picked. Both directions are
+ * asserted below; that param is what decides form-vs-picker.
+ *
  * NOT covered here (deliberate, and not implied by a green run):
- *  - `/credentials/create-credential/:credentialType` and
- *    `/settings/create-configuration/:credentialType` (ROUTE-024/064) are
- *    empty pattern-A children whose parent never reads `:credentialType`;
- *    they render exactly the parent's screen, so they add no callback or
- *    flag behaviour of their own to assert.
  *  - The delete path (`CredentialsControls` -> `onDiscarded`) — same
  *    callback, already driven here through Discard.
- *  - `onTypeChosen`, which no route in this family passes.
+ *  - Search params on these routes (`from`/`prefill_*`/`section`), which the
+ *    create routes do not thread today; `searchParams.credentials.test.tsx`
+ *    covers only their VALIDATION, not their effect on the page.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router';
@@ -381,6 +384,78 @@ describe('ROUTE-024/064 :credentialType deep links skip the type picker', () => 
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/settings/model-configuration');
     });
+  });
+
+  it('an UNKNOWN type in the URL falls back to the picker instead of an empty form', async () => {
+    installHandlers();
+    mountAt('/credentials/create-credential/no-such-type');
+
+    const scope = await main();
+    // The picker's own search box — the form has a "Name" field and no such box.
+    expect(await scope.findByPlaceholderText('Search credentials')).toBeInTheDocument();
+    expect(scope.queryByLabelText('Name')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The other half of the `:credentialType` contract: the URL is not just READ
+ * on entry, it is WRITTEN when a type is picked. The baseline navigates on
+ * selection (`hooks/credentials/useCredentialSearch.js:29`, which switches
+ * between `CreateCredentialTypeFromMain` and `CreateConfigurationWithType`
+ * depending on whether the user is inside settings) rather than holding the
+ * choice in component state.
+ *
+ * That is what these assert, and it is why `useCredentialFormController` no
+ * longer keeps a `selectedType`: with two sources of truth, picking a type
+ * left the URL on the parent, and Back then dropped the param while the form
+ * stayed on screen.
+ */
+describe('picking a type writes it to the URL', () => {
+  it('/credentials/create-credential -> the picked type lands in the URL', async () => {
+    installHandlers();
+    const router = mountAt('/credentials/create-credential');
+
+    fireEvent.click(await (await main()).findByRole('button', { name: 'OpenAI' }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/credentials/create-credential/openai');
+    });
+    expect(await (await main()).findByLabelText('Name')).toBeInTheDocument();
+  });
+
+  it('/settings/create-configuration -> the picked type stays in the SETTINGS route, not the credentials one', async () => {
+    installHandlers();
+    const router = mountAt('/settings/create-configuration');
+
+    fireEvent.click(await (await main()).findByRole('button', { name: 'OpenAI' }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/settings/create-configuration/openai');
+    });
+    // Still the settings screen: configurationMode survives the hop.
+    expect(await (await main()).findByText('Configuration')).toBeInTheDocument();
+  });
+
+  it('going back after picking a type returns to the picker, not a stale form', async () => {
+    installHandlers();
+    const router = mountAt('/credentials/create-credential');
+
+    fireEvent.click(await (await main()).findByRole('button', { name: 'OpenAI' }));
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/credentials/create-credential/openai');
+    });
+    await (await main()).findByLabelText('Name');
+
+    router.history.back();
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/credentials/create-credential');
+    });
+    const scope = await main();
+    await waitFor(() => {
+      expect(scope.queryByLabelText('Name')).not.toBeInTheDocument();
+    });
+    expect(scope.getByRole('button', { name: 'OpenAI' })).toBeInTheDocument();
   });
 });
 

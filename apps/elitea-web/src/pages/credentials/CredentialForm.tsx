@@ -61,7 +61,17 @@ export function CredentialForm(props: CredentialFormProps): ReactNode {
   const c = useCredentialFormController(props);
   const { mode, context, onDiscarded } = props;
 
-  if (mode.kind === 'create' && !c.effectiveType) {
+  // Gate on the RESOLVED descriptor, not on the raw type string: an unknown
+  // `:credentialType` in the URL must fall back to the picker rather than
+  // render an empty form. Same condition the baseline uses —
+  // `pages/Credentials/CreateCredential.jsx`'s `isEditing` (:132) requires
+  // `Object.keys(initialValues).length > 0`, and `initialValues` is `{}`
+  // whenever its `schema` lookup (:60) misses. While the available-types
+  // query is still in flight the descriptor is also absent, so the picker
+  // renders in its own loading state first and then yields to the form —
+  // again matching the baseline, whose `schema` is equally undefined until
+  // `configurationsAsSchema` resolves.
+  if (mode.kind === 'create' && !c.typeDescriptor) {
     return (
       <CredentialTypeSelector
         configurationsData={c.availableTypes.data}

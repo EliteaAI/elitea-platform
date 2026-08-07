@@ -36,6 +36,16 @@ function CreateConfigurationRoute() {
   const leave = useCallback(() => {
     void navigate({ to: '/settings/model-configuration' });
   }, [navigate]);
+  // Navigates to ROUTE-064, not ROUTE-024 — `useCredentialSearch.js:29`
+  // switches destination on `isFromSettings` for exactly this reason: a type
+  // picked inside settings must stay inside settings, or the user lands on
+  // the credentials-domain screen with `configurationMode` silently off.
+  const chooseType = useCallback(
+    (type: string) => {
+      void navigate({ to: '/settings/create-configuration/$credentialType', params: { credentialType: type } });
+    },
+    [navigate],
+  );
 
   return (
     <>
@@ -45,6 +55,7 @@ function CreateConfigurationRoute() {
         configurationMode
         onCreated={leave}
         onCancelled={leave}
+        onTypeChosen={chooseType}
       />
       <Outlet />
     </>
