@@ -214,7 +214,8 @@
         "context",
         "credentialType",
         "onCreated",
-        "onCancelled"
+        "onCancelled",
+        "onTypeChosen"
       ],
       "status": "wired",
       "rendersRouteShell": false,
@@ -368,7 +369,8 @@
         "credentialType",
         "configurationMode",
         "onCreated",
-        "onCancelled"
+        "onCancelled",
+        "onTypeChosen"
       ],
       "status": "wired",
       "rendersRouteShell": false,

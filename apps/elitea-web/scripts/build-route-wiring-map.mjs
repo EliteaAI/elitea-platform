@@ -63,7 +63,7 @@ const RESOLUTION = {
   // ---- credentials (A7) ----
   '_shell/credentials/$tab.tsx': ['pages/credentials/Credentials', 'Credentials', ['tab', 'projectId', 'onSelectCredential', 'onCreateNew'], 'wired', 'Route must supply projectId from context and both navigation callbacks.'],
   '_shell/credentials/$tab.$credential_uid.tsx': ['pages/credentials/EditCredential', 'EditCredential', ['context', 'credentialUid', 'onSaved', 'onDiscarded'], 'wired', 'Docstring target "EditCredentialFromMain" = EditCredential with the main-app context, not a separate component.'],
-  '_shell/credentials/create-credential.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'credentialType', 'onCreated', 'onCancelled'], 'wired', 'Docstring target "CreateCredentialFromMain" = CreateCredential with the main-app context. `credentialType` comes from the ROUTE-024 child match (useParams strict:false) — the child is an empty pattern-A route, so this parent reads its param.'],
+  '_shell/credentials/create-credential.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'credentialType', 'onCreated', 'onCancelled', 'onTypeChosen'], 'wired', 'Docstring target "CreateCredentialFromMain" = CreateCredential with the main-app context. `credentialType` comes from the ROUTE-024 child match (useParams strict:false) — the child is an empty pattern-A route, so this parent reads its param.'],
 
   // ---- misc (A11-A13) ----
   '_shell/help-center.tsx': ['pages/help-center/HelpCenterPage', 'HelpCenterPage', [], 'wired', 'Name drift only: docstring says `Resources`, the built component is HelpCenterPage (also a default export).'],
@@ -80,7 +80,7 @@ const RESOLUTION = {
   '_shell/pipelines/create.tsx': ['pages/pipelines/CreatePipeline', 'CreatePipeline', [], 'wired', ''],
 
   // ---- settings (A9, issue #25) ----
-  '_shell/settings/create-configuration.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'credentialType', 'configurationMode', 'onCreated', 'onCancelled'], 'wired', '`credentialType` comes from the ROUTE-064 child match, same shape as its /credentials twin.'],
+  '_shell/settings/create-configuration.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'credentialType', 'configurationMode', 'onCreated', 'onCancelled', 'onTypeChosen'], 'wired', '`credentialType` comes from the ROUTE-064 child match, same shape as its /credentials twin.'],
   '_shell/settings/edit-configuration.$credential_uid.tsx': ['pages/credentials/EditCredential', 'EditCredential', ['context', 'credentialUid', 'configurationMode', 'onSaved', 'onDiscarded'], 'wired', 'ROUTE-065. Param is $credential_uid, NOT $uid — "the MOUNTED route wins".'],
   '_shell/settings/secrets.tsx': ['pages/settings/Secrets', 'SecretsContent', ['shouldCreate', 'search', 'onSearchChange'], 'wired', 'Renders SecretsContent AND a RouteShell heading. Also passes search="" / onSearchChange={() => {}} — the search control is dead. Route must own search state.'],
   '_shell/settings/model-configuration.tsx': ['pages/settings/AIConfiguration', 'AIConfiguration', ['projectId'], 'wired', 'Renders AIConfiguration AND a RouteShell heading. See also issue #80 (missing ModelConfiguration layer).'],
