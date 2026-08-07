@@ -322,6 +322,68 @@ describe('ROUTE-023 /credentials/create-credential navigation callbacks', () => 
   });
 });
 
+/**
+ * ROUTE-024/064 — the `:credentialType` deep link.
+ *
+ * Both are empty pattern-A children with no component: their parent renders
+ * the screen and reads the param. In the baseline that param is what decides
+ * FORM vs TYPE PICKER (`pages/Credentials/CreateCredential.jsx`'s `isEditing`,
+ * which requires `useParams().credentialType`), and two producers link
+ * straight at it — `CredentialWarningBanner.jsx:43` and
+ * `useCredentialSearch.js:29`. So "does the picker get skipped" is the whole
+ * behaviour of these two routes.
+ *
+ * The complementary "picker still shows when there is NO type segment" case
+ * is not re-asserted here: every test above reaches the form through
+ * `chooseTypeAndName`, which clicks a picker tile and would fail outright if
+ * the parent ever pre-selected a type unconditionally.
+ */
+describe('ROUTE-024/064 :credentialType deep links skip the type picker', () => {
+  it('/credentials/create-credential/:credentialType opens the form directly, titled "Credential"', async () => {
+    installHandlers();
+    mountAt('/credentials/create-credential/openai');
+
+    const scope = await main();
+    expect(await scope.findByLabelText('Name')).toBeInTheDocument();
+    expect(scope.getByText('Credential')).toBeInTheDocument();
+    expect(scope.queryByPlaceholderText('Search credentials')).not.toBeInTheDocument();
+  });
+
+  it('/settings/create-configuration/:credentialType opens the form directly, titled "Configuration"', async () => {
+    installHandlers();
+    mountAt('/settings/create-configuration/openai');
+
+    const scope = await main();
+    expect(await scope.findByLabelText('Name')).toBeInTheDocument();
+    expect(scope.getByText('Configuration')).toBeInTheDocument();
+    expect(scope.queryByPlaceholderText('Search credentials')).not.toBeInTheDocument();
+  });
+
+  it('the parent still owns navigation from the deep-linked URL (/credentials side)', async () => {
+    installHandlers();
+    const router = mountAt('/credentials/create-credential/openai');
+
+    await (await main()).findByLabelText('Name');
+    await discardVia('Cancel');
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/credentials/all');
+    });
+  });
+
+  it('the parent still owns navigation from the deep-linked URL (/settings side)', async () => {
+    installHandlers();
+    const router = mountAt('/settings/create-configuration/openai');
+
+    await (await main()).findByLabelText('Name');
+    await discardVia('Cancel');
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/settings/model-configuration');
+    });
+  });
+});
+
 describe('ROUTE-063 /settings/create-configuration navigation callbacks', () => {
   it('onCancelled returns to the AI-configuration settings screen, NOT to /credentials', async () => {
     installHandlers();
