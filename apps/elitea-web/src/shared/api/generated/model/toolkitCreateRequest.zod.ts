@@ -40,20 +40,28 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
 
-export const ToolkitInstanceListResponse = zod
+export const ToolkitCreateRequest = zod
   .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
+    name: zod.string().min(1),
+    type: zod
+      .string()
+      .describe(
+        "Toolkit type key, e.g. `github`, `slack`, `sql`. The set is open — `toolkit_types` is served by a separate handler that this spec does not yet cover.\n",
+      ),
+    description: zod.string().optional(),
+    settings: zod
+      .record(zod.string(), zod.unknown())
+      .optional()
+      .describe(
+        "Type-specific configuration, stored verbatim into `p_{project_id}.elitea_tools.settings`. Modelled open because the backend only validates it for `type: github`, which requires `repository` (non-empty) and `github_configuration`.\n",
+      ),
   })
   .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
+    "NOTE(1c): the handler decodes into `map[string]any` and the repository reads exactly `name`, `type`, `description` and `settings` (internal\/api\/v2\/toolkits\/handler.go:891-900). There is no Go struct to mirror, so this schema DEFINES the contract rather than reflecting one — keep it in step with pgRepo.CreateToolkit if that changes. `author_id` is deliberately absent: the handler overwrites it from the authenticated principal.\n",
   );
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
->;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
+export type ToolkitCreateRequest = zod.input<typeof ToolkitCreateRequest>;
+export type ToolkitCreateRequestOutput = zod.output<
+  typeof ToolkitCreateRequest
 >;

@@ -40,20 +40,28 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
 
-export const ToolkitInstanceListResponse = zod
-  .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
-  })
-  .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
-  );
+export const TransferGrantResponse = zod.object({
+  grant_id: zod.string(),
+  url: zod
+    .string()
+    .optional()
+    .describe(
+      "Never the physical bucket, backend URL, or a credential — a complete, ready-to-use presigned (or facade) URL (S15). Absent when upload_id is present (S16) — a native multipart upload has no single URL for the whole object, only per-part ones obtained via POST ...\/grants\/{projectID}\/{grantID}\/parts\/{partNumber}.\n",
+    ),
+  method: zod.enum(["GET", "PUT"]),
+  expires_at: zod.iso.datetime({ offset: true }),
+  content_type: zod.string(),
+  max_bytes: zod.int(),
+  upload_id: zod
+    .string()
+    .optional()
+    .describe(
+      "Present only for a native multipart upload (S16) — mutually exclusive with url. Exchange it for part-level presigned URLs, then finish with :completeMultipart or cancel with :abortMultipart.\n",
+    ),
+});
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
->;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
+export type TransferGrantResponse = zod.input<typeof TransferGrantResponse>;
+export type TransferGrantResponseOutput = zod.output<
+  typeof TransferGrantResponse
 >;

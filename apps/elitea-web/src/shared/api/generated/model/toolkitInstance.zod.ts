@@ -50,17 +50,10 @@ export const ToolkitInstance = zod
     settings: zod.record(zod.string(), zod.unknown()),
     meta: zod.record(zod.string(), zod.unknown()),
     created_at: zod.iso.datetime({ offset: true }),
-    updated_at: zod.iso.datetime({ offset: true }).nullish(),
     author_id: zod.int(),
-    shared_id: zod
-      .union([zod.string(), zod.int()])
-      .nullish()
-      .describe(
-        "Nullable forked-from reference. Selected by the query (handler.go:824) but, like updated_at, NOT present anywhere in this repo's elitea_tools migration — see this schema's own description.\n",
-      ),
   })
   .describe(
-    "NOTE(W2): ListToolkits row (internal\/api\/v2\/toolkits\/handler.go:811-860). id\/type\/name are `elitea_tools` columns (internal\/infra\/db\/migrations\/001_initial.sql:177-179); description is COALESCE'd to `''` (never null, handler.go:822). created_at and author_id match the migration's `created_at TIMESTAMP NOT NULL` \/ `author_id INTEGER NOT NULL` (migration :182-183) — typed accordingly. updated_at and shared_id are SELECTed by this query (handler.go:824) but NEITHER column appears in this repo's only migration for `elitea_tools` (:176-188); both are scanned into a bare Go `any` (handler.go:838), consistent with genuine uncertainty about their wire shape on the Go side too. Flagged for a human call: either an out-of-repo\/legacy migration adds these columns, or this query errors in every real deployment and List's error handler (:527-530) silently masks that as an empty `{rows: [], total: 0}` 200 — see the operation's own NOTE(W2).\n",
+    "NOTE(W2): ListToolkits row (internal\/api\/v2\/toolkits\/handler.go:811-860). id\/type\/name are `elitea_tools` columns (internal\/infra\/db\/migrations\/001_initial.sql:177-179); description is COALESCE'd to `''` (never null, handler.go:822). created_at and author_id match the migration's `created_at TIMESTAMP NOT NULL` \/ `author_id INTEGER NOT NULL` (migration :182-183). The listing query intentionally selects only those migrated columns.\n",
   );
 
 export type ToolkitInstance = zod.input<typeof ToolkitInstance>;

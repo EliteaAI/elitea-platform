@@ -63,6 +63,52 @@ export const getListApplicationSkillsResponseMock = (
     type: faker.string.alpha({ length: { min: 10, max: 20 } }),
     config: faker.helpers.arrayElement([{}, undefined]),
     is_default: faker.datatype.boolean(),
+    instructions: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+    tags: faker.helpers.arrayElement([
+      Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+      undefined,
+    ]),
+    versions: faker.helpers.arrayElement([
+      Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        id: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        instructions: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        tags: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+      })),
+      undefined,
+    ]),
+    version_details: faker.helpers.arrayElement([
+      {
+        ...{
+          id: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          instructions: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          tags: Array.from(
+            { length: faker.number.int({ min: 1, max: 10 }) },
+            (_, i) => i + 1,
+          ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+        },
+      },
+      undefined,
+    ]),
     created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     updated_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   })),
@@ -90,6 +136,52 @@ export const getListSkillsResponseMock = (
     type: faker.string.alpha({ length: { min: 10, max: 20 } }),
     config: faker.helpers.arrayElement([{}, undefined]),
     is_default: faker.datatype.boolean(),
+    instructions: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+    tags: faker.helpers.arrayElement([
+      Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+      undefined,
+    ]),
+    versions: faker.helpers.arrayElement([
+      Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        id: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        instructions: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        tags: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+      })),
+      undefined,
+    ]),
+    version_details: faker.helpers.arrayElement([
+      {
+        ...{
+          id: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          instructions: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          tags: Array.from(
+            { length: faker.number.int({ min: 1, max: 10 }) },
+            (_, i) => i + 1,
+          ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+        },
+      },
+      undefined,
+    ]),
     created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     updated_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   })),
@@ -113,6 +205,52 @@ export const getCreateSkillResponseMock = (
   type: faker.string.alpha({ length: { min: 10, max: 20 } }),
   config: faker.helpers.arrayElement([{}, undefined]),
   is_default: faker.datatype.boolean(),
+  instructions: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  tags: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+    undefined,
+  ]),
+  versions: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      instructions: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      tags: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+    })),
+    undefined,
+  ]),
+  version_details: faker.helpers.arrayElement([
+    {
+      ...{
+        id: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+        name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        instructions: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        tags: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+      },
+    },
+    undefined,
+  ]),
   created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   updated_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   ...overrideResponse,

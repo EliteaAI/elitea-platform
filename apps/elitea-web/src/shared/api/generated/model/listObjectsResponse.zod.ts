@@ -40,20 +40,16 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ToolkitInstance } from "./toolkitInstance.zod";
+import { ObjectSummary } from "./objectSummary.zod";
 
-export const ToolkitInstanceListResponse = zod
-  .object({
-    rows: zod.array(ToolkitInstance),
-    total: zod.int(),
-  })
-  .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
-  );
+export const ListObjectsResponse = zod.object({
+  objects: zod.array(ObjectSummary),
+  common_prefixes: zod.array(zod.string()),
+  next_cursor: zod
+    .string()
+    .optional()
+    .describe("Omitted when the listing is exhausted (S9)."),
+});
 
-export type ToolkitInstanceListResponse = zod.input<
-  typeof ToolkitInstanceListResponse
->;
-export type ToolkitInstanceListResponseOutput = zod.output<
-  typeof ToolkitInstanceListResponse
->;
+export type ListObjectsResponse = zod.input<typeof ListObjectsResponse>;
+export type ListObjectsResponseOutput = zod.output<typeof ListObjectsResponse>;

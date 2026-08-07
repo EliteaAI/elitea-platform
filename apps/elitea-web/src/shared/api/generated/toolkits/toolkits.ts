@@ -54,10 +54,16 @@ import type {
 
 import type {
   ListToolkitInstancesParams,
+  N400Response,
   N401Response,
   N403Response,
+  N404Response,
+  N500Response,
+  ToolkitCreateRequest,
+  ToolkitInstance,
   ToolkitInstanceListResponse,
   ToolkitTypeSchemas,
+  ToolkitUpdateRequest,
 } from "../model";
 
 import { eliteaFetch } from ".././mutator";
@@ -81,6 +87,450 @@ const withQueryKey = <T extends object, K>(
   }
   return result;
 };
+
+export type getToolkitResponse200 = {
+  data: ToolkitInstance;
+  status: 200;
+};
+
+export type getToolkitResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getToolkitResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getToolkitResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type getToolkitResponseSuccess = getToolkitResponse200 & {
+  headers: Headers;
+};
+export type getToolkitResponseError = (
+  getToolkitResponse401 | getToolkitResponse403 | getToolkitResponse404
+) & {
+  headers: Headers;
+};
+
+export type getToolkitResponse =
+  getToolkitResponseSuccess | getToolkitResponseError;
+
+export const getGetToolkitUrl = (projectId: string, toolId: number) => {
+  return `/elitea_core/tool/prompt_lib/${projectId}/${toolId}`;
+};
+
+/**
+ * NOTE(1c): internal/api/v2/toolkits/handler.go:586-595 (Get) calling
+ * pgRepo.GetToolkit. Registered at internal/api/router.go:648/673.
+ *
+ * This route has always been mounted; it was simply absent from this
+ * spec, which is why `apps/elitea-web`'s features/toolkits/api/toolkits.ts
+ * calls it handwritten via `eliteaFetch` instead of a generated hook.
+ * Any repository error — including a genuinely missing id — is
+ * flattened to 404 {"error": "not found"} (:590-592); there is no 500
+ * branch on this handler.
+ * @summary Retrieve a single toolkit instance
+ */
+export const getToolkit = async (
+  projectId: string,
+  toolId: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getToolkitResponse> => {
+  return eliteaFetch<getToolkitResponse>(getGetToolkitUrl(projectId, toolId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetToolkitQueryKey = (projectId: string, toolId: number) => {
+  return [`/elitea_core/tool/prompt_lib/${projectId}/${toolId}`] as const;
+};
+
+export const getGetToolkitQueryOptions = <
+  TData = Awaited<ReturnType<typeof getToolkit>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  toolId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetToolkitQueryKey(projectId, toolId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getToolkit>>> = ({
+    signal,
+  }) => getToolkit(projectId, toolId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      toolId !== null &&
+      toolId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getToolkit>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetToolkitQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getToolkit>>
+>;
+export type GetToolkitQueryError = N401Response | N403Response | N404Response;
+
+export function useGetToolkit<
+  TData = Awaited<ReturnType<typeof getToolkit>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  toolId: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getToolkit>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getToolkit>>,
+          TError,
+          Awaited<ReturnType<typeof getToolkit>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetToolkit<
+  TData = Awaited<ReturnType<typeof getToolkit>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  toolId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getToolkit>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getToolkit>>,
+          TError,
+          Awaited<ReturnType<typeof getToolkit>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetToolkit<
+  TData = Awaited<ReturnType<typeof getToolkit>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  toolId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Retrieve a single toolkit instance
+ */
+
+export function useGetToolkit<
+  TData = Awaited<ReturnType<typeof getToolkit>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  toolId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetToolkitQueryOptions(projectId, toolId, options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type updateToolkitResponse200 = {
+  data: ToolkitInstance;
+  status: 200;
+};
+
+export type updateToolkitResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type updateToolkitResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type updateToolkitResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type updateToolkitResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type updateToolkitResponseSuccess = updateToolkitResponse200 & {
+  headers: Headers;
+};
+export type updateToolkitResponseError = (
+  | updateToolkitResponse400
+  | updateToolkitResponse401
+  | updateToolkitResponse403
+  | updateToolkitResponse500
+) & {
+  headers: Headers;
+};
+
+export type updateToolkitResponse =
+  updateToolkitResponseSuccess | updateToolkitResponseError;
+
+export const getUpdateToolkitUrl = (projectId: string, toolId: number) => {
+  return `/elitea_core/tool/prompt_lib/${projectId}/${toolId}`;
+};
+
+/**
+ * NOTE(1c): internal/api/v2/toolkits/handler.go:599-620 (Update) calling
+ * pgRepo.UpdateToolkit. Registered at router.go:649/674.
+ *
+ * PATCH (router.go:650/675) is mounted on the SAME handler with
+ * identical behaviour. Only PUT is spec'd, deliberately: two operations
+ * over one handler would generate two hooks with no behavioural
+ * difference.
+ *
+ * OVERLOADED HANDLER — documented, not modelled. If the body contains a
+ * `has_relation` key the handler does NOT update the toolkit at all; it
+ * dispatches to `updateToolRelation` (:622+), a different operation that
+ * mutates the tool↔entity relation using `entity_version_id`,
+ * `entity_id` and `entity_type` (defaulting to "agent"). That shape is
+ * out of scope for this operation's schema — see issue #38. Callers of
+ * `updateToolkit` must not send `has_relation`.
+ * @summary Update a toolkit instance
+ */
+export const updateToolkit = async (
+  projectId: string,
+  toolId: number,
+  toolkitUpdateRequest: ToolkitUpdateRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<updateToolkitResponse> => {
+  return eliteaFetch<updateToolkitResponse>(
+    getUpdateToolkitUrl(projectId, toolId),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(toolkitUpdateRequest),
+    },
+  );
+};
+
+export const getUpdateToolkitQueryKey = (
+  projectId: string,
+  toolId: number,
+  toolkitUpdateRequest?: ToolkitUpdateRequest,
+) => {
+  return [
+    "PUT",
+    `/elitea_core/tool/prompt_lib/${projectId}/${toolId}`,
+    toolkitUpdateRequest,
+  ] as const;
+};
+
+export const getUpdateToolkitQueryOptions = <
+  TData = Awaited<ReturnType<typeof updateToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolId: number,
+  toolkitUpdateRequest: ToolkitUpdateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof updateToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getUpdateToolkitQueryKey(projectId, toolId, toolkitUpdateRequest);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof updateToolkit>>> = ({
+    signal,
+  }) =>
+    updateToolkit(projectId, toolId, toolkitUpdateRequest, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      toolId !== null &&
+      toolId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof updateToolkit>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type UpdateToolkitQueryResult = NonNullable<
+  Awaited<ReturnType<typeof updateToolkit>>
+>;
+export type UpdateToolkitQueryError =
+  N400Response | N401Response | N403Response | N500Response;
+
+export function useUpdateToolkit<
+  TData = Awaited<ReturnType<typeof updateToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolId: number,
+  toolkitUpdateRequest: ToolkitUpdateRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof updateToolkit>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof updateToolkit>>,
+          TError,
+          Awaited<ReturnType<typeof updateToolkit>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUpdateToolkit<
+  TData = Awaited<ReturnType<typeof updateToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolId: number,
+  toolkitUpdateRequest: ToolkitUpdateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof updateToolkit>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof updateToolkit>>,
+          TError,
+          Awaited<ReturnType<typeof updateToolkit>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUpdateToolkit<
+  TData = Awaited<ReturnType<typeof updateToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolId: number,
+  toolkitUpdateRequest: ToolkitUpdateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof updateToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Update a toolkit instance
+ */
+
+export function useUpdateToolkit<
+  TData = Awaited<ReturnType<typeof updateToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolId: number,
+  toolkitUpdateRequest: ToolkitUpdateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof updateToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getUpdateToolkitQueryOptions(
+    projectId,
+    toolId,
+    toolkitUpdateRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
 
 export type listToolkitsResponse200 = {
   data: ToolkitTypeSchemas;
@@ -271,14 +721,27 @@ export type listToolkitInstancesResponse401 = {
   status: 401;
 };
 
+export type listToolkitInstancesResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type listToolkitInstancesResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
 export type listToolkitInstancesResponseSuccess =
   listToolkitInstancesResponse200 & {
     headers: Headers;
   };
-export type listToolkitInstancesResponseError =
-  listToolkitInstancesResponse401 & {
-    headers: Headers;
-  };
+export type listToolkitInstancesResponseError = (
+  | listToolkitInstancesResponse401
+  | listToolkitInstancesResponse403
+  | listToolkitInstancesResponse500
+) & {
+  headers: Headers;
+};
 
 export type listToolkitInstancesResponse =
   listToolkitInstancesResponseSuccess | listToolkitInstancesResponseError;
@@ -307,9 +770,9 @@ export const getListToolkitInstancesUrl = (
  * pgRepo.ListToolkits (:811-860). limit/offset are read from the query
  * string with their OWN clamp — out-of-[1,100] resets to 20
  * (handler.go:518-520), narrower than the shared Limit parameter's
- * documented [1,1000]/default 20; offset<0 resets to 0 (:521-523). A
- * repository error is swallowed to {rows: [], total: 0} with 200,
- * never surfaced as an error (:527-530).
+ * documented [1,1000]/default 20; offset<0 resets to 0 (:521-523).
+ * The caller must be a member of {project_id} (or a super-admin), and a
+ * repository failure is returned as a safe 500 error.
  * @summary List toolkit (tool) instances for a project
  */
 export const listToolkitInstances = async (
@@ -338,7 +801,7 @@ export const getListToolkitInstancesQueryKey = (
 
 export const getListToolkitInstancesQueryOptions = <
   TData = Awaited<ReturnType<typeof listToolkitInstances>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   params?: ListToolkitInstancesParams,
@@ -379,11 +842,12 @@ export const getListToolkitInstancesQueryOptions = <
 export type ListToolkitInstancesQueryResult = NonNullable<
   Awaited<ReturnType<typeof listToolkitInstances>>
 >;
-export type ListToolkitInstancesQueryError = N401Response;
+export type ListToolkitInstancesQueryError =
+  N401Response | N403Response | N500Response;
 
 export function useListToolkitInstances<
   TData = Awaited<ReturnType<typeof listToolkitInstances>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   params: undefined | ListToolkitInstancesParams,
@@ -411,7 +875,7 @@ export function useListToolkitInstances<
 };
 export function useListToolkitInstances<
   TData = Awaited<ReturnType<typeof listToolkitInstances>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   params?: ListToolkitInstancesParams,
@@ -439,7 +903,7 @@ export function useListToolkitInstances<
 };
 export function useListToolkitInstances<
   TData = Awaited<ReturnType<typeof listToolkitInstances>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   params?: ListToolkitInstancesParams,
@@ -463,7 +927,7 @@ export function useListToolkitInstances<
 
 export function useListToolkitInstances<
   TData = Awaited<ReturnType<typeof listToolkitInstances>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   params?: ListToolkitInstancesParams,
@@ -484,6 +948,237 @@ export function useListToolkitInstances<
   const queryOptions = getListToolkitInstancesQueryOptions(
     projectId,
     params,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type createToolkitResponse201 = {
+  data: ToolkitInstance;
+  status: 201;
+};
+
+export type createToolkitResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type createToolkitResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type createToolkitResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type createToolkitResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type createToolkitResponseSuccess = createToolkitResponse201 & {
+  headers: Headers;
+};
+export type createToolkitResponseError = (
+  | createToolkitResponse400
+  | createToolkitResponse401
+  | createToolkitResponse403
+  | createToolkitResponse500
+) & {
+  headers: Headers;
+};
+
+export type createToolkitResponse =
+  createToolkitResponseSuccess | createToolkitResponseError;
+
+export const getCreateToolkitUrl = (projectId: string) => {
+  return `/elitea_core/tools/prompt_lib/${projectId}`;
+};
+
+/**
+ * NOTE(1c): internal/api/v2/toolkits/handler.go:538-563 (Create) calling
+ * pgRepo.CreateToolkit (:891+). Registered at router.go:647/672.
+ *
+ * `author_id` is NOT accepted from the client: the handler overwrites
+ * `body["_author_id"]` from the authenticated principal, defaulting to
+ * "1" when the context carries no user (:541-544). Sending it has no
+ * effect.
+ *
+ * Type-specific validation lives in `validateToolkitCreate` (:565-584)
+ * and currently covers exactly ONE type: `github` requires
+ * `settings.repository` (non-empty) and `settings.github_configuration`
+ * (present). Every other type passes validation with any settings, so
+ * `settings` is modelled open rather than as a per-type discriminated
+ * union — the union would encode a constraint the backend does not
+ * enforce. Violations return 400 {"error": "<reason>"}.
+ *
+ * Returns 201 with the created record.
+ * @summary Create a toolkit instance
+ */
+export const createToolkit = async (
+  projectId: string,
+  toolkitCreateRequest: ToolkitCreateRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<createToolkitResponse> => {
+  return eliteaFetch<createToolkitResponse>(getCreateToolkitUrl(projectId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(toolkitCreateRequest),
+  });
+};
+
+export const getCreateToolkitQueryKey = (
+  projectId: string,
+  toolkitCreateRequest?: ToolkitCreateRequest,
+) => {
+  return [
+    "POST",
+    `/elitea_core/tools/prompt_lib/${projectId}`,
+    toolkitCreateRequest,
+  ] as const;
+};
+
+export const getCreateToolkitQueryOptions = <
+  TData = Awaited<ReturnType<typeof createToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitCreateRequest: ToolkitCreateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof createToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getCreateToolkitQueryKey(projectId, toolkitCreateRequest);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof createToolkit>>> = ({
+    signal,
+  }) =>
+    createToolkit(projectId, toolkitCreateRequest, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof createToolkit>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type CreateToolkitQueryResult = NonNullable<
+  Awaited<ReturnType<typeof createToolkit>>
+>;
+export type CreateToolkitQueryError =
+  N400Response | N401Response | N403Response | N500Response;
+
+export function useCreateToolkit<
+  TData = Awaited<ReturnType<typeof createToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitCreateRequest: ToolkitCreateRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof createToolkit>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof createToolkit>>,
+          TError,
+          Awaited<ReturnType<typeof createToolkit>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCreateToolkit<
+  TData = Awaited<ReturnType<typeof createToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitCreateRequest: ToolkitCreateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof createToolkit>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof createToolkit>>,
+          TError,
+          Awaited<ReturnType<typeof createToolkit>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCreateToolkit<
+  TData = Awaited<ReturnType<typeof createToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitCreateRequest: ToolkitCreateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof createToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Create a toolkit instance
+ */
+
+export function useCreateToolkit<
+  TData = Awaited<ReturnType<typeof createToolkit>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  toolkitCreateRequest: ToolkitCreateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof createToolkit>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getCreateToolkitQueryOptions(
+    projectId,
+    toolkitCreateRequest,
     options,
   );
 

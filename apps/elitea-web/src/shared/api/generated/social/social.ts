@@ -59,6 +59,7 @@ import type {
   FeedbackListResponse,
   N400Response,
   N401Response,
+  N403Response,
   N500Response,
   OkResponse,
   SocialActionErrorResponse,
@@ -486,10 +487,24 @@ export type listSocialAuthorsResponse401 = {
   status: 401;
 };
 
+export type listSocialAuthorsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type listSocialAuthorsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
 export type listSocialAuthorsResponseSuccess = listSocialAuthorsResponse200 & {
   headers: Headers;
 };
-export type listSocialAuthorsResponseError = listSocialAuthorsResponse401 & {
+export type listSocialAuthorsResponseError = (
+  | listSocialAuthorsResponse401
+  | listSocialAuthorsResponse403
+  | listSocialAuthorsResponse500
+) & {
   headers: Headers;
 };
 
@@ -502,11 +517,8 @@ export const getListSocialAuthorsUrl = (projectId: string) => {
 
 /**
  * NOTE(W2): internal/api/v2/social/handler.go:169-200 (ListAuthors).
- * The {project_id} path segment is captured by the chi route
- * (`/authors/{projectID}`) but never read inside the handler body — the
- * query has no WHERE/project filter and is capped at a hardcoded
- * LIMIT 50 with no pagination. A query error is swallowed to `[]` with
- * 200, never surfaced as an error (:181-184).
+ * The caller must be a member of {project_id} (or a super-admin). The
+ * query is capped at a hardcoded LIMIT 50 with no pagination.
  * @summary List social author profiles (global, not project-scoped)
  */
 export const listSocialAuthors = async (
@@ -528,7 +540,7 @@ export const getListSocialAuthorsQueryKey = (projectId: string) => {
 
 export const getListSocialAuthorsQueryOptions = <
   TData = Awaited<ReturnType<typeof listSocialAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -567,11 +579,12 @@ export const getListSocialAuthorsQueryOptions = <
 export type ListSocialAuthorsQueryResult = NonNullable<
   Awaited<ReturnType<typeof listSocialAuthors>>
 >;
-export type ListSocialAuthorsQueryError = N401Response;
+export type ListSocialAuthorsQueryError =
+  N401Response | N403Response | N500Response;
 
 export function useListSocialAuthors<
   TData = Awaited<ReturnType<typeof listSocialAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options: {
@@ -598,7 +611,7 @@ export function useListSocialAuthors<
 };
 export function useListSocialAuthors<
   TData = Awaited<ReturnType<typeof listSocialAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -625,7 +638,7 @@ export function useListSocialAuthors<
 };
 export function useListSocialAuthors<
   TData = Awaited<ReturnType<typeof listSocialAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -648,7 +661,7 @@ export function useListSocialAuthors<
 
 export function useListSocialAuthors<
   TData = Awaited<ReturnType<typeof listSocialAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -685,14 +698,27 @@ export type getSocialTrendingAuthorsResponse401 = {
   status: 401;
 };
 
+export type getSocialTrendingAuthorsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getSocialTrendingAuthorsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
 export type getSocialTrendingAuthorsResponseSuccess =
   getSocialTrendingAuthorsResponse200 & {
     headers: Headers;
   };
-export type getSocialTrendingAuthorsResponseError =
-  getSocialTrendingAuthorsResponse401 & {
-    headers: Headers;
-  };
+export type getSocialTrendingAuthorsResponseError = (
+  | getSocialTrendingAuthorsResponse401
+  | getSocialTrendingAuthorsResponse403
+  | getSocialTrendingAuthorsResponse500
+) & {
+  headers: Headers;
+};
 
 export type getSocialTrendingAuthorsResponse =
   | getSocialTrendingAuthorsResponseSuccess
@@ -707,14 +733,8 @@ export const getGetSocialTrendingAuthorsUrl = (projectId: string) => {
  * NOT the same operation as the pre-existing getTrendingAuthors
  * (/elitea_core/trending_authors/prompt_lib/{project_id}) — that one is
  * an eliteacore stub always returning [] (eliteacore/handler.go:1582-1584).
- * This handler has real ranking logic (COUNT(sl.id) joined, GROUP BY,
- * ORDER BY like_count DESC LIMIT 10) — BUT see SocialTrendingAuthor's
- * schema description: the join target centry.social_likes does not
- * exist with a project_id column anywhere in this repo's migration
- * history, so the query likely errors on every call and the handler
- * silently swallows that to `[]`, making its real-world output
- * currently identical to the eliteacore stub despite the different
- * path and real Go-side logic. Needs a human call (see W2 report).
+ * This handler ranks social authors by their like activity in the
+ * authorized project schema (COUNT(sl.id), GROUP BY, ORDER BY, LIMIT 10).
  * @summary Get authors ranked by like count for a project
  */
 export const getSocialTrendingAuthors = async (
@@ -736,7 +756,7 @@ export const getGetSocialTrendingAuthorsQueryKey = (projectId: string) => {
 
 export const getGetSocialTrendingAuthorsQueryOptions = <
   TData = Awaited<ReturnType<typeof getSocialTrendingAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -775,11 +795,12 @@ export const getGetSocialTrendingAuthorsQueryOptions = <
 export type GetSocialTrendingAuthorsQueryResult = NonNullable<
   Awaited<ReturnType<typeof getSocialTrendingAuthors>>
 >;
-export type GetSocialTrendingAuthorsQueryError = N401Response;
+export type GetSocialTrendingAuthorsQueryError =
+  N401Response | N403Response | N500Response;
 
 export function useGetSocialTrendingAuthors<
   TData = Awaited<ReturnType<typeof getSocialTrendingAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options: {
@@ -806,7 +827,7 @@ export function useGetSocialTrendingAuthors<
 };
 export function useGetSocialTrendingAuthors<
   TData = Awaited<ReturnType<typeof getSocialTrendingAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -833,7 +854,7 @@ export function useGetSocialTrendingAuthors<
 };
 export function useGetSocialTrendingAuthors<
   TData = Awaited<ReturnType<typeof getSocialTrendingAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -856,7 +877,7 @@ export function useGetSocialTrendingAuthors<
 
 export function useGetSocialTrendingAuthors<
   TData = Awaited<ReturnType<typeof getSocialTrendingAuthors>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -896,6 +917,11 @@ export type likeApplicationResponse401 = {
   status: 401;
 };
 
+export type likeApplicationResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
 export type likeApplicationResponse500 = {
   data: SocialActionErrorResponse;
   status: 500;
@@ -905,7 +931,9 @@ export type likeApplicationResponseSuccess = likeApplicationResponse200 & {
   headers: Headers;
 };
 export type likeApplicationResponseError = (
-  likeApplicationResponse401 | likeApplicationResponse500
+  | likeApplicationResponse401
+  | likeApplicationResponse403
+  | likeApplicationResponse500
 ) & {
   headers: Headers;
 };
@@ -924,17 +952,8 @@ export const getLikeApplicationUrl = (
  * NOTE(W2): internal/api/v2/social/handler.go:239-272 (Like), the
  * application-specific route registration (router-level, handler.go:30)
  * — entityType defaults to "application" and entityID falls back to
- * the {applicationID} path segment (:243-248). INSERTs into
- * centry.social_likes with columns (entity, user_id, project_id,
- * entity_id) — that exact table/column shape does NOT appear anywhere
- * in this repo's migration history
- * (internal/infra/db/migrations/001_initial.sql:315-322 defines a
- * PER-PROJECT %I.social_likes with entity_name/entity_id/user_id and no
- * project_id column, not a global centry.social_likes with these
- * columns). As far as this repo's migrations show, every call likely
- * hits the 500 SocialActionErrorResponse path (:268) rather than the
- * 200 OkResponse path — needs a human call (W2 report); documented per
- * the Go source's declared behavior regardless.
+ * the {applicationID} path segment (:243-248). Writes the migrated
+ * per-project p_{project_id}.social_likes table.
  * @summary Like a published application
  */
 export const likeApplication = async (
@@ -963,7 +982,7 @@ export const getLikeApplicationQueryKey = (
 
 export const getLikeApplicationQueryOptions = <
   TData = Awaited<ReturnType<typeof likeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1009,11 +1028,11 @@ export type LikeApplicationQueryResult = NonNullable<
   Awaited<ReturnType<typeof likeApplication>>
 >;
 export type LikeApplicationQueryError =
-  N401Response | SocialActionErrorResponse;
+  N401Response | N403Response | SocialActionErrorResponse;
 
 export function useLikeApplication<
   TData = Awaited<ReturnType<typeof likeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1041,7 +1060,7 @@ export function useLikeApplication<
 };
 export function useLikeApplication<
   TData = Awaited<ReturnType<typeof likeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1069,7 +1088,7 @@ export function useLikeApplication<
 };
 export function useLikeApplication<
   TData = Awaited<ReturnType<typeof likeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1093,7 +1112,7 @@ export function useLikeApplication<
 
 export function useLikeApplication<
   TData = Awaited<ReturnType<typeof likeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1135,6 +1154,11 @@ export type unlikeApplicationResponse401 = {
   status: 401;
 };
 
+export type unlikeApplicationResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
 export type unlikeApplicationResponse500 = {
   data: SocialActionErrorResponse;
   status: 500;
@@ -1144,7 +1168,9 @@ export type unlikeApplicationResponseSuccess = unlikeApplicationResponse200 & {
   headers: Headers;
 };
 export type unlikeApplicationResponseError = (
-  unlikeApplicationResponse401 | unlikeApplicationResponse500
+  | unlikeApplicationResponse401
+  | unlikeApplicationResponse403
+  | unlikeApplicationResponse500
 ) & {
   headers: Headers;
 };
@@ -1161,9 +1187,8 @@ export const getUnlikeApplicationUrl = (
 
 /**
  * NOTE(W2): internal/api/v2/social/handler.go:274-305 (Unlike), the
- * application-specific route registration. Same centry.social_likes
- * table/column mismatch as likeApplication above — see that
- * operation's NOTE(W2).
+ * application-specific route registration. Deletes from the migrated
+ * per-project p_{project_id}.social_likes table.
  * @summary Unlike a published application
  */
 export const unlikeApplication = async (
@@ -1192,7 +1217,7 @@ export const getUnlikeApplicationQueryKey = (
 
 export const getUnlikeApplicationQueryOptions = <
   TData = Awaited<ReturnType<typeof unlikeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1238,11 +1263,11 @@ export type UnlikeApplicationQueryResult = NonNullable<
   Awaited<ReturnType<typeof unlikeApplication>>
 >;
 export type UnlikeApplicationQueryError =
-  N401Response | SocialActionErrorResponse;
+  N401Response | N403Response | SocialActionErrorResponse;
 
 export function useUnlikeApplication<
   TData = Awaited<ReturnType<typeof unlikeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1270,7 +1295,7 @@ export function useUnlikeApplication<
 };
 export function useUnlikeApplication<
   TData = Awaited<ReturnType<typeof unlikeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1298,7 +1323,7 @@ export function useUnlikeApplication<
 };
 export function useUnlikeApplication<
   TData = Awaited<ReturnType<typeof unlikeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1322,7 +1347,7 @@ export function useUnlikeApplication<
 
 export function useUnlikeApplication<
   TData = Awaited<ReturnType<typeof unlikeApplication>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   applicationId: number,
@@ -1364,6 +1389,11 @@ export type likeEntityResponse401 = {
   status: 401;
 };
 
+export type likeEntityResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
 export type likeEntityResponse500 = {
   data: SocialActionErrorResponse;
   status: 500;
@@ -1373,7 +1403,7 @@ export type likeEntityResponseSuccess = likeEntityResponse200 & {
   headers: Headers;
 };
 export type likeEntityResponseError = (
-  likeEntityResponse401 | likeEntityResponse500
+  likeEntityResponse401 | likeEntityResponse403 | likeEntityResponse500
 ) & {
   headers: Headers;
 };
@@ -1392,9 +1422,7 @@ export const getLikeEntityUrl = (
 /**
  * NOTE(W2): internal/api/v2/social/handler.go:239-272 (Like), the
  * generic route registration (handler.go:32) — entity_type/entity_id
- * read straight from the path (:241-242). Same centry.social_likes
- * table/column mismatch as likeApplication (see that operation's
- * NOTE(W2)); this generic route shares the identical handler body.
+ * read straight from the path (:241-242).
  * @summary Like an arbitrary entity
  */
 export const likeEntity = async (
@@ -1425,7 +1453,7 @@ export const getLikeEntityQueryKey = (
 
 export const getLikeEntityQueryOptions = <
   TData = Awaited<ReturnType<typeof likeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1469,11 +1497,12 @@ export const getLikeEntityQueryOptions = <
 export type LikeEntityQueryResult = NonNullable<
   Awaited<ReturnType<typeof likeEntity>>
 >;
-export type LikeEntityQueryError = N401Response | SocialActionErrorResponse;
+export type LikeEntityQueryError =
+  N401Response | N403Response | SocialActionErrorResponse;
 
 export function useLikeEntity<
   TData = Awaited<ReturnType<typeof likeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1498,7 +1527,7 @@ export function useLikeEntity<
 };
 export function useLikeEntity<
   TData = Awaited<ReturnType<typeof likeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1523,7 +1552,7 @@ export function useLikeEntity<
 };
 export function useLikeEntity<
   TData = Awaited<ReturnType<typeof likeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1544,7 +1573,7 @@ export function useLikeEntity<
 
 export function useLikeEntity<
   TData = Awaited<ReturnType<typeof likeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1584,6 +1613,11 @@ export type unlikeEntityResponse401 = {
   status: 401;
 };
 
+export type unlikeEntityResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
 export type unlikeEntityResponse500 = {
   data: SocialActionErrorResponse;
   status: 500;
@@ -1593,7 +1627,7 @@ export type unlikeEntityResponseSuccess = unlikeEntityResponse200 & {
   headers: Headers;
 };
 export type unlikeEntityResponseError = (
-  unlikeEntityResponse401 | unlikeEntityResponse500
+  unlikeEntityResponse401 | unlikeEntityResponse403 | unlikeEntityResponse500
 ) & {
   headers: Headers;
 };
@@ -1611,9 +1645,7 @@ export const getUnlikeEntityUrl = (
 
 /**
  * NOTE(W2): internal/api/v2/social/handler.go:274-305 (Unlike), the
- * generic route registration (handler.go:33). Same
- * centry.social_likes table/column mismatch — see likeApplication's
- * NOTE(W2).
+ * generic route registration (handler.go:33).
  * @summary Unlike an arbitrary entity
  */
 export const unlikeEntity = async (
@@ -1644,7 +1676,7 @@ export const getUnlikeEntityQueryKey = (
 
 export const getUnlikeEntityQueryOptions = <
   TData = Awaited<ReturnType<typeof unlikeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1691,11 +1723,12 @@ export const getUnlikeEntityQueryOptions = <
 export type UnlikeEntityQueryResult = NonNullable<
   Awaited<ReturnType<typeof unlikeEntity>>
 >;
-export type UnlikeEntityQueryError = N401Response | SocialActionErrorResponse;
+export type UnlikeEntityQueryError =
+  N401Response | N403Response | SocialActionErrorResponse;
 
 export function useUnlikeEntity<
   TData = Awaited<ReturnType<typeof unlikeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1720,7 +1753,7 @@ export function useUnlikeEntity<
 };
 export function useUnlikeEntity<
   TData = Awaited<ReturnType<typeof unlikeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1745,7 +1778,7 @@ export function useUnlikeEntity<
 };
 export function useUnlikeEntity<
   TData = Awaited<ReturnType<typeof unlikeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1766,7 +1799,7 @@ export function useUnlikeEntity<
 
 export function useUnlikeEntity<
   TData = Awaited<ReturnType<typeof unlikeEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1806,6 +1839,11 @@ export type pinEntityResponse401 = {
   status: 401;
 };
 
+export type pinEntityResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
 export type pinEntityResponse500 = {
   data: SocialActionErrorResponse;
   status: 500;
@@ -1815,7 +1853,7 @@ export type pinEntityResponseSuccess = pinEntityResponse200 & {
   headers: Headers;
 };
 export type pinEntityResponseError = (
-  pinEntityResponse401 | pinEntityResponse500
+  pinEntityResponse401 | pinEntityResponse403 | pinEntityResponse500
 ) & {
   headers: Headers;
 };
@@ -1868,7 +1906,7 @@ export const getPinEntityQueryKey = (
 
 export const getPinEntityQueryOptions = <
   TData = Awaited<ReturnType<typeof pinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1910,11 +1948,12 @@ export const getPinEntityQueryOptions = <
 export type PinEntityQueryResult = NonNullable<
   Awaited<ReturnType<typeof pinEntity>>
 >;
-export type PinEntityQueryError = N401Response | SocialActionErrorResponse;
+export type PinEntityQueryError =
+  N401Response | N403Response | SocialActionErrorResponse;
 
 export function usePinEntity<
   TData = Awaited<ReturnType<typeof pinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1939,7 +1978,7 @@ export function usePinEntity<
 };
 export function usePinEntity<
   TData = Awaited<ReturnType<typeof pinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1964,7 +2003,7 @@ export function usePinEntity<
 };
 export function usePinEntity<
   TData = Awaited<ReturnType<typeof pinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -1985,7 +2024,7 @@ export function usePinEntity<
 
 export function usePinEntity<
   TData = Awaited<ReturnType<typeof pinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -2025,6 +2064,11 @@ export type unpinEntityResponse401 = {
   status: 401;
 };
 
+export type unpinEntityResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
 export type unpinEntityResponse500 = {
   data: SocialActionErrorResponse;
   status: 500;
@@ -2034,7 +2078,7 @@ export type unpinEntityResponseSuccess = unpinEntityResponse200 & {
   headers: Headers;
 };
 export type unpinEntityResponseError = (
-  unpinEntityResponse401 | unpinEntityResponse500
+  unpinEntityResponse401 | unpinEntityResponse403 | unpinEntityResponse500
 ) & {
   headers: Headers;
 };
@@ -2084,7 +2128,7 @@ export const getUnpinEntityQueryKey = (
 
 export const getUnpinEntityQueryOptions = <
   TData = Awaited<ReturnType<typeof unpinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -2128,11 +2172,12 @@ export const getUnpinEntityQueryOptions = <
 export type UnpinEntityQueryResult = NonNullable<
   Awaited<ReturnType<typeof unpinEntity>>
 >;
-export type UnpinEntityQueryError = N401Response | SocialActionErrorResponse;
+export type UnpinEntityQueryError =
+  N401Response | N403Response | SocialActionErrorResponse;
 
 export function useUnpinEntity<
   TData = Awaited<ReturnType<typeof unpinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -2157,7 +2202,7 @@ export function useUnpinEntity<
 };
 export function useUnpinEntity<
   TData = Awaited<ReturnType<typeof unpinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -2182,7 +2227,7 @@ export function useUnpinEntity<
 };
 export function useUnpinEntity<
   TData = Awaited<ReturnType<typeof unpinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -2203,7 +2248,7 @@ export function useUnpinEntity<
 
 export function useUnpinEntity<
   TData = Awaited<ReturnType<typeof unpinEntity>>,
-  TError = N401Response | SocialActionErrorResponse,
+  TError = N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   entityType: string,
@@ -2243,10 +2288,22 @@ export type listFeedbacksResponse401 = {
   status: 401;
 };
 
+export type listFeedbacksResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type listFeedbacksResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
 export type listFeedbacksResponseSuccess = listFeedbacksResponse200 & {
   headers: Headers;
 };
-export type listFeedbacksResponseError = listFeedbacksResponse401 & {
+export type listFeedbacksResponseError = (
+  listFeedbacksResponse401 | listFeedbacksResponse403 | listFeedbacksResponse500
+) & {
   headers: Headers;
 };
 
@@ -2263,7 +2320,8 @@ export const getListFeedbacksUrl = (projectId: string) => {
  * (internal/infra/db/migrations/001_initial.sql:337-347). {items,
  * total} envelope where total is simply len(items) (no real COUNT(*),
  * no offset — hardcoded LIMIT 50, :359); a query error is swallowed to
- * items: [] / total: 0 rather than surfaced as an error (:361-377).
+ * items: [] / total: 0 when no feedback exists. Database failures are
+ * returned as safe 500 errors.
  * @summary List feedback entries for a project
  */
 export const listFeedbacks = async (
@@ -2282,7 +2340,7 @@ export const getListFeedbacksQueryKey = (projectId: string) => {
 
 export const getListFeedbacksQueryOptions = <
   TData = Awaited<ReturnType<typeof listFeedbacks>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -2316,11 +2374,12 @@ export const getListFeedbacksQueryOptions = <
 export type ListFeedbacksQueryResult = NonNullable<
   Awaited<ReturnType<typeof listFeedbacks>>
 >;
-export type ListFeedbacksQueryError = N401Response;
+export type ListFeedbacksQueryError =
+  N401Response | N403Response | N500Response;
 
 export function useListFeedbacks<
   TData = Awaited<ReturnType<typeof listFeedbacks>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options: {
@@ -2343,7 +2402,7 @@ export function useListFeedbacks<
 };
 export function useListFeedbacks<
   TData = Awaited<ReturnType<typeof listFeedbacks>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -2366,7 +2425,7 @@ export function useListFeedbacks<
 };
 export function useListFeedbacks<
   TData = Awaited<ReturnType<typeof listFeedbacks>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -2385,7 +2444,7 @@ export function useListFeedbacks<
 
 export function useListFeedbacks<
   TData = Awaited<ReturnType<typeof listFeedbacks>>,
-  TError = N401Response,
+  TError = N401Response | N403Response | N500Response,
 >(
   projectId: string,
   options?: {
@@ -2423,6 +2482,11 @@ export type createFeedbackResponse401 = {
   status: 401;
 };
 
+export type createFeedbackResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
 export type createFeedbackResponse500 = {
   data: SocialActionErrorResponse;
   status: 500;
@@ -2434,6 +2498,7 @@ export type createFeedbackResponseSuccess = createFeedbackResponse201 & {
 export type createFeedbackResponseError = (
   | createFeedbackResponse400
   | createFeedbackResponse401
+  | createFeedbackResponse403
   | createFeedbackResponse500
 ) & {
   headers: Headers;
@@ -2479,7 +2544,8 @@ export const getCreateFeedbackQueryKey = (
 
 export const getCreateFeedbackQueryOptions = <
   TData = Awaited<ReturnType<typeof createFeedback>>,
-  TError = N400Response | N401Response | SocialActionErrorResponse,
+  TError =
+    N400Response | N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   feedbackCreateRequest: FeedbackCreateRequest,
@@ -2520,11 +2586,12 @@ export type CreateFeedbackQueryResult = NonNullable<
   Awaited<ReturnType<typeof createFeedback>>
 >;
 export type CreateFeedbackQueryError =
-  N400Response | N401Response | SocialActionErrorResponse;
+  N400Response | N401Response | N403Response | SocialActionErrorResponse;
 
 export function useCreateFeedback<
   TData = Awaited<ReturnType<typeof createFeedback>>,
-  TError = N400Response | N401Response | SocialActionErrorResponse,
+  TError =
+    N400Response | N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   feedbackCreateRequest: FeedbackCreateRequest,
@@ -2548,7 +2615,8 @@ export function useCreateFeedback<
 };
 export function useCreateFeedback<
   TData = Awaited<ReturnType<typeof createFeedback>>,
-  TError = N400Response | N401Response | SocialActionErrorResponse,
+  TError =
+    N400Response | N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   feedbackCreateRequest: FeedbackCreateRequest,
@@ -2572,7 +2640,8 @@ export function useCreateFeedback<
 };
 export function useCreateFeedback<
   TData = Awaited<ReturnType<typeof createFeedback>>,
-  TError = N400Response | N401Response | SocialActionErrorResponse,
+  TError =
+    N400Response | N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   feedbackCreateRequest: FeedbackCreateRequest,
@@ -2592,7 +2661,8 @@ export function useCreateFeedback<
 
 export function useCreateFeedback<
   TData = Awaited<ReturnType<typeof createFeedback>>,
-  TError = N400Response | N401Response | SocialActionErrorResponse,
+  TError =
+    N400Response | N401Response | N403Response | SocialActionErrorResponse,
 >(
   projectId: string,
   feedbackCreateRequest: FeedbackCreateRequest,
