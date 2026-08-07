@@ -293,6 +293,48 @@ jobs:
       - name: Run complexity budgets
         run: node scripts/check-budgets.mjs
 
+  gate-generated-client:
+    name: Generated client matches the spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      # Regenerates from services/elitea-main/api/openapi/v2.yaml and fails if
+      # the committed client differs. A stale client fails OPEN — it keeps
+      # exporting operations the API no longer has, so callers of removed
+      # endpoints keep type-checking while failing against a real server.
+      # Not hypothetical: four dead artifact operations shipped that way and
+      # were caught only when an unrelated regeneration broke the build. See
+      # the script's own header for the full incident.
+      - name: Check generated client drift
+        run: node scripts/check-generated-client.mjs
+
+  gate-route-wiring-map:
+    name: Route-wiring map matches the routes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      # parity/route-wiring-map.json is generated: its mechanical fields are
+      # re-derived from src/routes/** on every run. `--check` fails when the
+      # committed map no longer matches, so the tracker cannot silently drift
+      # from the routes it claims to describe. The flag existed since the map
+      # was introduced but was never wired into CI.
+      - name: Check route-wiring map drift
+        run: node scripts/build-route-wiring-map.mjs --check
+
   gate-mutator-coverage:
     name: Generated-client mutator coverage
     runs-on: ubuntu-latest
