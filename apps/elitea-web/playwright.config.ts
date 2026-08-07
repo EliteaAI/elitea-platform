@@ -81,8 +81,11 @@ export default defineConfig({
 
   // Bring up the real E2E stack before the test run.
   webServer: {
-    // `e2e-stack.sh up` exits once all services are healthy.
-    command: `${__dirname}/scripts/e2e-stack.sh up`,
+    // `up` exits once all services are healthy; `seed` then applies the DB
+    // schema and creates the OIDC personas + RBAC grants that auth.setup logs
+    // in as. Running only `up` left every persona non-existent, so no clean run
+    // could authenticate (PR #82 validation, blocker 5).
+    command: `${__dirname}/scripts/e2e-stack.sh up && ${__dirname}/scripts/e2e-stack.sh seed`,
     url: BASE_URL + '/app/',
     reuseExistingServer: !process.env['CI'],
     // Allow up to 3 minutes for image builds + postgres migrations on a cold start.

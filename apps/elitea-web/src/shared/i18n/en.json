@@ -1626,5 +1626,9 @@
   "widgets.sidebar.projectSwitcher.label": "Project:",
   "widgets.sidebar.projectSwitcher.none": "No projects",
   "widgets.sidebar.settings": "Settings",
-  "widgets.sidebar.toggle": "Toggle sidebar"
+  "widgets.sidebar.toggle": "Toggle sidebar",
+  "mcp.authCallback.exchangeFailed": "Token exchange failed — please reconnect the MCP.",
+  "mcp.authCallback.failed": "OAuth authorisation failed",
+  "mcp.authCallback.heading": "MCP Auth Callback",
+  "mcp.authCallback.success": "Authentication complete."
 }

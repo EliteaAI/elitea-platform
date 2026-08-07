@@ -2811,6 +2811,14 @@ components:
             `p_{project_id}.elitea_tools.settings`. Modelled open because the
             backend only validates it for `type: github`, which requires
             `repository` (non-empty) and `github_configuration`.
+          x-elitea-passthrough: >-
+            NOTE(W2): genuinely open, not an unfinished schema. The toolkit type
+            set is open-ended and each type defines its own settings shape;
+            `validateToolkitCreate` switches on `type` and constrains settings
+            for `github` alone — every other type is accepted verbatim and
+            written straight to the `settings` jsonb column
+            (toolkits/handler.go:565-583). Closing this would make the generated
+            client reject requests the server accepts.
 
     ToolkitUpdateRequest:
       type: object
@@ -2826,6 +2834,11 @@ components:
         settings:
           type: object
           additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): same open contract as `ToolkitCreateRequest.settings` —
+            `pgRepo.UpdateToolkit` applies whatever keys are present and the
+            per-type validation that exists only covers `github`
+            (toolkits/handler.go:565-583).
 
     ToolkitInstance:
       type: object

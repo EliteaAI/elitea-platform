@@ -64,10 +64,6 @@ test('J10: create folder, drag conversation into it, reorder persists', async ({
   // is present and enabled; full folder-CRUD end-to-end belongs to the Go
   // migration milestone. Gate the folder-appears assertion so the test
   // completes without hard-failing when the legacy folder API is absent.
-  const folderItem = page
-    .getByTestId('folder-accordion-item-skeleton')
-    .or(page.getByRole('button', { name: /autotest_test-folder/i })).first();
-
   const folderText = page.getByText(/autotest_test-folder/i);
   const folderCreated = await folderText.isVisible({ timeout: 5_000 }).catch(() => false);
   if (!folderCreated) {
