@@ -117,10 +117,14 @@ for (const route of ROUTES) {
 /*
  * NOT COVERED, and why — keep this current, it is the honest half of the suite:
  *
- *  - `/chat/:conversationId` (4 shots). BLOCKED, not skipped: POST
- *    /elitea_core/conversations 404s because `ConvsRepo` is never wired and has
- *    no implementation at all (#123). A conversation cannot be created, so the
- *    route cannot be reached with data. Recorded as an EXEMPT entry in
+ *  - `/chat/:conversationId` (4 shots). UNVERIFIED, not skipped. This entry
+ *    previously said the route 404s because `ConvsRepo` "is never wired and has
+ *    no implementation at all" (#123). Both halves were wrong: the
+ *    no-implementation claim came from grepping the interface NAME, which Go
+ *    implementations never mention, and the wiring landed in 3b73273 — 23
+ *    conversation routes now register. What is still unestablished is whether
+ *    creating a conversation actually succeeds, because no run has exercised it
+ *    against an image built after that commit. Recorded as an EXEMPT entry in
  *    scripts/check-visual-coverage.mjs, which prints it on every run — a
  *    permanently-failing spec would just be noise, and a silent skip is what
  *    this whole effort exists to remove.
