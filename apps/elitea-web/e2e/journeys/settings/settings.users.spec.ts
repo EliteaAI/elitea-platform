@@ -159,11 +159,6 @@ test('J22b: invite form enforces its validity contract', async ({ page }) => {
  * empty and nobody noticed".
  */
 test('J22c: roles dropdown is populated from the seeded server roles', async ({ page }) => {
-  // Expected-fail on #130 until the E2E image is rebuilt: the roles body is a BARE
-  // ARRAY and Users.tsx read resp.data.data.rows, so rolesOptions was always empty and
-  // Invite could never be enabled by anyone. Source is fixed; the stack still serves
-  // the old prebuilt image.
-  test.fail();
   test.setTimeout(60_000);
 
   await page.goto(BASE_URL + '/app/settings/users?inviteUsers=1');
@@ -200,9 +195,6 @@ test('J22c: roles dropdown is populated from the seeded server roles', async ({ 
  * test: together they localise the defect to the client mapping.
  */
 test('J22d: member list renders the seeded project members', async ({ page }) => {
-  // Expected-fail on #130 until the E2E image is rebuilt: Users.tsx read one level too
-  // deep (resp.data.data), so rows was permanently [] and every user saw 'No users'.
-  test.fail();
   test.setTimeout(60_000);
 
   const userListResponse = page.waitForResponse(

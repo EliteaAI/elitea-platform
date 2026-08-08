@@ -31,15 +31,6 @@ import { API_BASE, AUTOTEST_PREFIX } from '../../fixtures/api';
 const stamp = (): string => `${Date.now()}-tok`;
 
 test('J23: settings: create personal token', async ({ page }) => {
-  // TEMPORARY — stale image, not a product defect. createToken skipped the
-  // {data,status,headers} unwrap so the generated PAT rendered blank, losing a
-  // once-only secret (#132). Fixed in src/entities/token/api/tokenApi.ts; the shared
-  // stack still serves the pre-fix bundle. With the fix patched into the served
-  // chunk the whole journey passes end to end.
-  //
-  // Remove once the E2E image is rebuilt; test.fail() will report FAILED until then,
-  // so this cannot be left behind by accident.
-  test.fail();
   const seedName = `${AUTOTEST_PREFIX}j23_seed_${stamp()}`;
   let seedUUID = '';
 

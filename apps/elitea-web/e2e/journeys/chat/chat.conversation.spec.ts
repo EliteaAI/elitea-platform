@@ -208,15 +208,6 @@ test('J9: the edit-and-regenerate control opens a dirty-gated editor on the user
 //   wrong." while both underlying API calls return 200.
 // ─────────────────────────────────────────────────────────────────────────────
 test('J11: a server-side rename persists and the conversation opens at its deep link', async ({ page }) => {
-  // TEMPORARY, and unlike the other test.fail()s in this suite it marks a STALE
-  // IMAGE rather than a broken product. The deep-link crash (#132) is already fixed
-  // in src/pages/chat/useChatPageData.ts, but the shared stack serves a prebuilt
-  // ghcr.io/eliteaai/elitea-web:e2e that predates the fix. Verified by patching the
-  // served bundle in flight: J11 goes fully green.
-  //
-  // Remove this line once the E2E image is rebuilt. test.fail() makes that
-  // self-enforcing — after a rebuild the run reports FAILED until it is deleted.
-  test.fail();
   await page.goto(BASE_URL + '/app/chat');
   await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 20_000 });
 
