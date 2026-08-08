@@ -133,7 +133,7 @@ export const SECRETS_SKELETON_TESTID = 'secrets-loading-skeleton';
  * Copy matches the baseline's `emptyMessage="No secrets"`
  * (`apps/elitea-ui/.../SecretsTable.jsx:544`).
  */
-export function NoSecretsOverlay(): React.ReactElement {
+function NoSecretsOverlay(): React.ReactElement {
   return (
     <Box sx={tableStyles.noRowsOverlay}>
       <Typography variant="bodyMedium" color="text.secondary">
