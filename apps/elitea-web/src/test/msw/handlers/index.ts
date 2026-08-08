@@ -31,7 +31,7 @@ import { getToolkitsMock } from '../../../shared/api/generated/toolkits/toolkits
  *
  * `handlers/{transport,upload,artifacts,download}.ts` (units F4/S6) do not
  * export a static `RequestHandler[]` at all — every export is a FACTORY
- * function (`probeOk()`, `chunkAckInProgress(sink?)`, `s3PutOk(sink?)`,
+ * function (`probeOk()`, `chunkAckInProgress(sink?)`, `objectUploadOk(sink?)`,
  * `exportOk(filename, sink?)`, …), several parameterised by mutable
  * `SessionGate`s, call-count sequences, or request-capture sinks that only
  * make sense scoped to ONE test. Their own module docs say so explicitly

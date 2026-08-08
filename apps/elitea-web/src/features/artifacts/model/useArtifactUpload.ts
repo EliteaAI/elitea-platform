@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { useGetChatConfig } from '@/shared/api/generated/chat/chat';
-import { putArtifactToS3 } from '@/shared/api/artifacts';
+import { uploadArtifactObject } from '@/shared/api/artifacts';
 import { getConfig } from '@/shared/config';
 
 import { computeSecurePath, validateFileName, validateFolderPath } from '../lib/pathValidation';
@@ -125,11 +125,11 @@ export function useArtifactUpload(options: UseArtifactUploadOptions) {
       // stop the others (baseline: slices/upload.js:89-159's Promise.allSettled).
       const results = await Promise.allSettled(
         files.map((file) =>
-          putArtifactToS3({
+          uploadArtifactObject({
             baseUrl: config.config.vite_server_url,
-            s3Path: `/artifacts/s3/${bucket}`,
-            fileKey: `${targetPrefix}${file.name}`,
             projectId,
+            bucket,
+            fileKey: `${targetPrefix}${file.name}`,
             file,
           }).then((result) => {
             if (!result.ok) throw new Error(file.name);

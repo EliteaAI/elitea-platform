@@ -1,0 +1,12 @@
+{
+  "recordedAt": "2026-08-08",
+  "synthetic": true,
+  "note": "Shape recorded from the E2E stack (POST /api/v2/artifacts/objects/1/{bucket}?overwrite=true -> 201, objects.go:404-410). uploadArtifactObject (shared/api/artifacts.ts) inspects response.ok/status and never this body; it is fixtured so the handler still answers with the real envelope.",
+  "body": {
+    "key": "a.txt",
+    "size_bytes": 10,
+    "media_type": "text/plain",
+    "etag": "dd7998b55ad2d8c4cca66901e7499ecf",
+    "created_at": "2026-07-20T00:00:00Z"
+  }
+}

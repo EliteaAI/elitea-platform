@@ -1,6 +1,17 @@
 {
-  "recordedAt": "2026-07-27",
+  "recordedAt": "2026-08-08",
   "synthetic": true,
-  "note": "Synthetic (unit S6): GET /artifacts/s3/{bucket} object list (router.go:166, S3Handler.ListObjects, ROOT-LEVEL — no /api/v2 prefix).",
-  "body": { "objects": [{ "key": "notes.md", "size": 128 }] }
+  "note": "Shape recorded from the E2E stack (GET /api/v2/artifacts/objects/1/{bucket}, router.go:285 -> Handler.ListObjects, objects.go:250); keys/dates substituted for stable demo values. Replaces the pre-#138 fixture, which described the legacy root-level /artifacts/s3/{bucket} list.",
+  "body": {
+    "common_prefixes": [],
+    "objects": [
+      {
+        "key": "notes.md",
+        "size_bytes": 128,
+        "media_type": "text/markdown; charset=utf-8",
+        "etag": "dd7998b55ad2d8c4cca66901e7499ecf",
+        "modified_at": "2026-07-20T00:00:00Z"
+      }
+    ]
+  }
 }

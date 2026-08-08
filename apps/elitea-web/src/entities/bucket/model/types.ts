@@ -1,10 +1,10 @@
 /**
- * Bucket domain type — mirrors OpenAPI schema `Bucket`
- * (services/elitea-main/api/openapi/v2.yaml:1702-1713, unit W2), sourced from
- * internal/api/v2/artifacts/handler.go:21-26 (struct json tags, no
- * `omitempty` — all four fields always present on the wire).
+ * Bucket domain type — mirrors the `Bucket` struct the Go handler serialises
+ * (services/elitea-main/internal/api/v2/artifacts/handler.go:27-37), the
+ * element type of `GET /api/v2/artifacts/buckets/{projectID}`'s `buckets`.
  */
 export interface Bucket {
+  /** The bucket NAME — the server exposes no surrogate id, and a name is unique per project. */
   readonly id: string;
   readonly name: string;
   readonly isPinned: boolean;
@@ -14,11 +14,10 @@ export interface Bucket {
 
 /**
  * Wire-shape (snake_case) as returned by the Go handler, before the
- * `lib/normalise.ts` camelCase mapping. Kept alongside `Bucket` so the
- * normaliser's input type is evidenced, not `any`.
+ * `lib/normalise.ts` camelCase mapping. Only the fields the UI reads are
+ * declared; the handler also sends tags/retention/size/counts.
  */
 export interface BucketWire {
-  readonly id: string;
   readonly name: string;
   readonly is_pinned: boolean;
   readonly created_at: string;

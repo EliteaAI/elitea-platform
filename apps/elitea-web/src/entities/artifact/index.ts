@@ -3,9 +3,7 @@
  */
 export type {
   Artifact,
-  ArtifactDeleteResult,
   ArtifactListWire,
-  ArtifactUploadResult,
   ArtifactWireEntry,
 } from './model/types';
 export { filterArtifactsByQuery, formatArtifactSize, sortArtifactsByRecency } from './model/selectors';

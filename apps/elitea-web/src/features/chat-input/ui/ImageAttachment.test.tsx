@@ -129,7 +129,7 @@ describe('ImageAttachment', () => {
     await vi.waitFor(() => expect(sink).toHaveLength(1));
     const request = sink[0];
     if (request === undefined) throw new Error('unreachable');
-    expect(new URL(request.url).pathname).toBe('/api/v2/artifacts/artifact/default/p1/my-bucket/folder%2Fphoto.png');
+    expect(new URL(request.url).pathname).toBe('/api/v2/artifacts/objects/p1/my-bucket/folder/photo.png');
   });
 
   it('reports an error instead of downloading when projectId is missing for an artifact-storage attachment', async () => {

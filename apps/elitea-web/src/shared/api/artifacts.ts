@@ -1,52 +1,40 @@
 /**
- * shared/api/artifacts.ts — spec §5.7 rows 1, 3, 5 (unit S6): the artifacts/
- * S3-proxy transports that cannot go through `createHttpClient` (F4's
- * http.ts) because they need a raw `Blob` request/response body and, for
- * rows 1/5, a base URL with `/api/v2` STRIPPED — the opposite of http.ts's
- * contract, which always targets `/api/v2`. See the `.oxlintrc.json`
- * override comment on this path for why `fetch` is sanctioned here (R-A1).
+ * shared/api/artifacts.ts — the artifact transports that cannot go through
+ * `createHttpClient` (F4's http.ts) because they need a raw `Blob`
+ * request/response body rather than JSON. See the `.oxlintrc.json` override
+ * comment on this path for why `fetch` is sanctioned here (R-A1).
  *
- * Routing fact this file exists to get right (verified against
- * services/elitea-main/internal/api/router.go, 2026-07-27):
- *   - router.go:165-169 mounts `/artifacts/s3/*` at ROOT LEVEL, before the
- *     `/api/v2` group — "S3-compatible artifacts API (root level — UI
- *     fetches via raw fetch, not baseQuery)" per the Go comment itself.
- *     Rows 1 (S3 direct PUT) and 5 (bucket/artifact list) target this group.
- *   - router.go:593-605 mounts `/artifacts/artifact/default/...` INSIDE the
- *     `/api/v2` route group (ArtifactHandler.GetArtifact/ServeFile). Row 3
- *     (artifact content blob) targets this group and must NOT strip
- *     `/api/v2` — `stripBaseUrlSuffix` with no `suffix` argument is a
- *     trailing-slash-only normalisation for exactly this reason.
+ * ROUTING (re-verified against services/elitea-main/internal/api/router.go
+ * and exercised against the running E2E stack, 2026-08-08 — issue #138):
+ * every artifact route lives under `/api/v2/artifacts`, registered by
+ * `mountArtifactRoutes` (router.go:255-311). The base URL this module is
+ * handed (`config.vite_server_url`, e.g. `/api/v2`) is therefore used AS-IS,
+ * with only trailing slashes normalised away.
+ *
+ *   bucket list  GET  /api/v2/artifacts/buckets/{projectID}
+ *   object list  GET  /api/v2/artifacts/objects/{projectID}/{bucket}
+ *   download     GET  /api/v2/artifacts/objects/{projectID}/{bucket}/{key...}
+ *   upload       POST /api/v2/artifacts/objects/{projectID}/{bucket}
+ *
+ * This module previously targeted the LEGACY Pylon plugin's URLs
+ * (`/artifacts/s3/...` at root level, `/artifacts/artifact/default/...`),
+ * citing a router.go:165-169 mount that no longer exists. Those routes 404
+ * on elitea-main, which is why no bucket, file table, preview, download or
+ * ZIP was reachable in the UI at all (issue #138).
  */
 import { resolveCredentialsMode } from './http';
 import type { HttpFailure, HttpResult } from './http';
 
-/* ── base-URL prefix stripping (row 1 + row 5's "un-prefixed path") ──────── */
-
-export const API_V2_SUFFIX = '/api/v2';
+/* ── base URL ─────────────────────────────────────────────────────────────── */
 
 /**
- * Exact port of the old app's `clearBaseUrlPrefix` (common/utils.jsx:26-33),
- * INCLUDING its literal (non-anchored) `String.prototype.replace` quirk:
- * when `suffix` is given, only the FIRST occurrence is removed (not
- * necessarily at the end of the string) — `suffix` is matched as a plain
- * substring, not anchored. Trailing slashes are always stripped afterward.
- * Preserved verbatim rather than "fixed" because it is the exact function
- * the old app's callers relied on; VITE_SERVER_URL is deployment-controlled
- * and never contains `/api/v2` as a coincidental substring elsewhere, so the
- * quirk is inert in practice but kept for byte-for-byte parity.
+ * `config.vite_server_url` (already `/api/v2`-suffixed) with trailing slashes
+ * removed, so the path segments below concatenate cleanly. Nothing is
+ * stripped: unlike the legacy S3-proxy routes, the artifact API is mounted
+ * entirely UNDER `/api/v2`.
  */
-export function stripBaseUrlSuffix(url: string, suffix?: string): string {
-  let result = url;
-  if (suffix !== undefined && suffix !== '') {
-    result = url.endsWith('/') ? url.replace(`${suffix}/`, '') : url.replace(suffix, '');
-  }
-  return result.replace(/\/+$/, '');
-}
-
-/** `stripBaseUrlSuffix(url, '/api/v2')` — rows 1/5's root-level base. */
-export function stripApiV2Prefix(url: string): string {
-  return stripBaseUrlSuffix(url, API_V2_SUFFIX);
+function artifactsBase(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/artifacts`;
 }
 
 /* ── shared plumbing ──────────────────────────────────────────────────────── */
@@ -125,60 +113,80 @@ async function toBlobResult(response: Response): Promise<HttpResult<Blob>> {
   return { ok: true, status: response.status, data: await response.blob(), headers: response.headers };
 }
 
-/* ── row 1: S3 direct PUT ─────────────────────────────────────────────────── */
+/* ── upload ───────────────────────────────────────────────────────────────── */
 
-export interface PutArtifactToS3Params {
-  /** config.vite_server_url, e.g. '/api/v2' — has /api/v2 stripped before use. */
+export interface UploadArtifactObjectParams {
+  /** config.vite_server_url, e.g. '/api/v2' — used as-is. */
   readonly baseUrl: string;
-  /** e.g. '/artifacts/s3/{bucket}' (old app: the `url` arg to uploadFile, features/artifacts/lib/hooks/useFileUpload.hooks.js:140-145). */
-  readonly s3Path: string;
-  /** Unencoded; may contain '/' for a folder path — each segment is encoded separately. */
-  readonly fileKey: string;
   readonly projectId: string;
+  readonly bucket: string;
+  /** Unencoded; may contain '/' for a folder path — sent as the part's filename. */
+  readonly fileKey: string;
   readonly file: Blob;
   readonly contentType?: string;
   readonly devToken?: string;
   readonly signal?: AbortSignal;
 }
 
-/** Exact port of slices/upload.js:107-108's URL assembly. */
-export function buildS3UploadUrl(baseUrl: string, s3Path: string, fileKey: string, projectId: string): string {
-  const base = stripApiV2Prefix(baseUrl);
-  const query = new URLSearchParams({ project_id: projectId });
-  return `${base}${s3Path}/${encodeKeySegments(fileKey)}?${query.toString()}`;
+/**
+ * `POST /api/v2/artifacts/objects/{projectID}/{bucket}` (router.go:288).
+ *
+ * `overwrite=true` (objects.go:301) is unconditional because the caller has
+ * ALREADY resolved duplicates before reaching here: `useArtifactUpload`'s
+ * duplicate dialog either renames the file (`keepBothFileNames`) or the user
+ * chose to replace. Without it the server 409s on the replace branch, which
+ * the UI has no way to interpret as anything but a failure. This also
+ * preserves the legacy S3 PUT's overwrite semantics.
+ */
+export function buildObjectUploadUrl(baseUrl: string, projectId: string, bucket: string): string {
+  return `${artifactsBase(baseUrl)}/objects/${encodeURIComponent(projectId)}/${encodeURIComponent(bucket)}?overwrite=true`;
 }
 
 /**
- * S3 direct PUT (old: slices/upload.js:117's `axios.put`). Uses `fetch`, not
- * axios (R-A2). NOTE (parity gap, flagged for review): `fetch` cannot report
- * upload progress the way `axios`'s `onUploadProgress` did — the per-file
- * progress bar `useFileUpload`'s old counterpart drove is not reproducible
- * here. §2.4 sanctions XMLHttpRequest for upload progress only in
- * `shared/api/upload.ts` (the chunked-attachment path); the S3 bucket-upload
- * path was not included in that carve-out, so this is a genuine, spec-level
- * regression versus the old app, not an S6 implementation gap.
+ * Uploads one object as `multipart/form-data`. The object's KEY is the
+ * part's filename, not a path segment: `UploadObject` parses
+ * `Content-Disposition` directly rather than calling `part.FileName()`,
+ * precisely so a multi-segment key like `folder/a.txt` survives instead of
+ * being truncated to `a.txt` (objects.go:326-344).
+ *
+ * NOTE (parity gap, unchanged from the legacy transport): `fetch` cannot
+ * report upload progress the way the old app's `axios` `onUploadProgress`
+ * did. §2.4 sanctions XMLHttpRequest for upload progress only in
+ * `shared/api/upload.ts` (the chunked-attachment path); the bucket-upload
+ * path was not in that carve-out.
  */
-export async function putArtifactToS3(params: PutArtifactToS3Params): Promise<HttpResult<void>> {
-  const url = buildS3UploadUrl(params.baseUrl, params.s3Path, params.fileKey, params.projectId);
+export async function uploadArtifactObject(params: UploadArtifactObjectParams): Promise<HttpResult<void>> {
+  const url = buildObjectUploadUrl(params.baseUrl, params.projectId, params.bucket);
   const headers = devHeaders(params.devToken);
-  // Parity: slices/upload.js:110 — `normalizedFile.type || 'application/octet-stream'`.
-  headers.set('Content-Type', params.contentType !== undefined && params.contentType !== '' ? params.contentType : (params.file.type !== '' ? params.file.type : 'application/octet-stream'));
-  const credentials = credentialsFor(stripApiV2Prefix(params.baseUrl));
+  // Deliberately NO Content-Type header: fetch must set the multipart
+  // boundary itself, and Go's MultipartReader rejects a body whose declared
+  // boundary does not match.
+  const contentType = params.contentType !== undefined && params.contentType !== ''
+    ? params.contentType
+    : params.file.type;
+  // `Blob.slice` with a type is a zero-copy retype — building a new Blob from
+  // the file's bytes would duplicate the whole payload in memory.
+  const part = contentType === params.file.type ? params.file : params.file.slice(0, params.file.size, contentType);
+  const body = new FormData();
+  // Third argument, not `new File(...)`: the File constructor replaces '/'
+  // with ':' in its name, which would mangle every folder-scoped key.
+  body.append('file', part, params.fileKey);
+  const credentials = credentialsFor(params.baseUrl);
 
   let response: Response;
   try {
-    response = await fetch(url, { method: 'PUT', headers, body: params.file, credentials, signal: params.signal ?? null });
+    response = await fetch(url, { method: 'POST', headers, body, credentials, signal: params.signal ?? null });
   } catch (cause) {
     return { ok: false, error: networkFailure(cause, url) };
   }
   if (!response.ok) {
-    const body = await parseJsonBody(response);
-    return { ok: false, error: { kind: 'http', status: response.status, url: response.url, body } };
+    const errorBody = await parseJsonBody(response);
+    return { ok: false, error: { kind: 'http', status: response.status, url: response.url, body: errorBody } };
   }
   return { ok: true, status: response.status, data: undefined, headers: response.headers };
 }
 
-/* ── row 5: bucket / artifact list (root-level, no /api/v2) ──────────────── */
+/* ── bucket / object list ─────────────────────────────────────────────────── */
 
 export interface ListBucketsParams {
   readonly baseUrl: string;
@@ -186,29 +194,14 @@ export interface ListBucketsParams {
   readonly signal?: AbortSignal;
 }
 
-/**
- * NOT an exact port — a deliberate generalization of api/artifacts.js:25-29's
- * bucketList URL. The old code builds a BARE relative URL
- * (`` `/artifacts/s3/?${params}` ``) with no base-URL computation of any kind
- * — no VITE_SERVER_URL, no clearBaseUrlPrefix call — relying entirely on the
- * browser resolving it against the page's own origin. This version instead
- * computes `stripApiV2Prefix(baseUrl)` from `config.vite_server_url` and
- * prepends it explicitly. The two are only OBSERVABLY equivalent when
- * `VITE_SERVER_URL`'s origin matches the page's own origin (true for the
- * pinned same-origin baseline deployment, but not guaranteed by the config
- * contract — the same cross-origin scenario `credentialsFor` above already
- * treats as real). Still produces the same un-prefixed `/artifacts/s3/...`
- * path either way (row 5's actual requirement).
- */
+/** `GET /api/v2/artifacts/buckets/{projectID}` (router.go:279). */
 export function buildBucketListUrl(baseUrl: string, projectId: string): string {
-  const base = stripApiV2Prefix(baseUrl);
-  const query = new URLSearchParams({ project_id: projectId, format: 'json' });
-  return `${base}/artifacts/s3/?${query.toString()}`;
+  return `${artifactsBase(baseUrl)}/buckets/${encodeURIComponent(projectId)}`;
 }
 
 export async function listBuckets(params: ListBucketsParams): Promise<HttpResult<unknown>> {
   const url = buildBucketListUrl(params.baseUrl, params.projectId);
-  const credentials = credentialsFor(stripApiV2Prefix(params.baseUrl));
+  const credentials = credentialsFor(params.baseUrl);
   let response: Response;
   try {
     response = await fetch(url, { credentials, signal: params.signal ?? null });
@@ -226,24 +219,21 @@ export interface ListArtifactsParams {
 }
 
 /**
- * NOT an exact port — a deliberate generalization of api/artifacts.js:82-86's
- * artifactList URL, same rationale as `buildBucketListUrl` above: the old
- * code builds a BARE relative URL with no base-URL computation at all, while
- * this version explicitly prepends `stripApiV2Prefix(baseUrl)`, which is
- * only observably equivalent when the configured base URL's origin matches
- * the page's own origin. `encodeURI` (not `encodeURIComponent`) on the
- * bucket IS an exact match to the old call site, though — that part is a
- * literal port.
+ * `GET /api/v2/artifacts/objects/{projectID}/{bucket}` (router.go:285).
+ *
+ * The response is FLAT — one page of every key under the bucket, with no
+ * `delimiter`, so nested keys arrive whole (`folder/a.txt`) rather than as
+ * `common_prefixes`. The artifacts table does its own folder grouping from
+ * the key, which is why asking the server to collapse prefixes would hide
+ * the very rows it needs.
  */
 export function buildArtifactListUrl(baseUrl: string, projectId: string, bucket: string): string {
-  const base = stripApiV2Prefix(baseUrl);
-  const query = new URLSearchParams({ project_id: projectId, format: 'json' });
-  return `${base}/artifacts/s3/${encodeURI(bucket)}?${query.toString()}`;
+  return `${artifactsBase(baseUrl)}/objects/${encodeURIComponent(projectId)}/${encodeURIComponent(bucket)}`;
 }
 
 export async function listArtifacts(params: ListArtifactsParams): Promise<HttpResult<unknown>> {
   const url = buildArtifactListUrl(params.baseUrl, params.projectId, params.bucket);
-  const credentials = credentialsFor(stripApiV2Prefix(params.baseUrl));
+  const credentials = credentialsFor(params.baseUrl);
   let response: Response;
   try {
     response = await fetch(url, { credentials, signal: params.signal ?? null });
@@ -253,14 +243,14 @@ export async function listArtifacts(params: ListArtifactsParams): Promise<HttpRe
   return toJsonResult(response);
 }
 
-/* ── row 3: artifact blob fetch + ZIP multi-download ──────────────────────── */
+/* ── object download + ZIP multi-download ─────────────────────────────────── */
 
 export interface FetchArtifactBlobParams {
-  /** config.vite_server_url, used AS-IS (no /api/v2 strip — this endpoint IS under /api/v2). */
+  /** config.vite_server_url, used AS-IS. */
   readonly baseUrl: string;
   readonly projectId: string;
   readonly bucket: string;
-  /** May contain '/' for a nested path; encoded as one component (parity: useArtifactContentFetch.hooks.js:72 encodes the whole remainder). */
+  /** May contain '/' for a nested path; each segment is encoded separately. */
   readonly filePath: string;
   // `| undefined` explicit so downloadArtifactsAsZip can forward its own
   // (already-optional) fields straight through under exactOptionalPropertyTypes.
@@ -268,23 +258,28 @@ export interface FetchArtifactBlobParams {
   readonly signal?: AbortSignal | undefined;
 }
 
-/** Exact port of utils.jsx:386 / useArtifactContentFetch.hooks.js:72's URL — /api/v2 NOT stripped. */
+/**
+ * `GET /api/v2/artifacts/objects/{projectID}/{bucket}/{key...}`
+ * (router.go:288). The key is a trailing chi wildcard, so its '/' separators
+ * must stay literal while each SEGMENT is percent-encoded —
+ * `encodeURIComponent` over the whole key would turn `a/b.txt` into
+ * `a%2Fb.txt` and miss the route. Verified against the running stack: a key
+ * with spaces resolves when its segments are encoded (chi decodes them) and
+ * fails when they are not.
+ */
 export function buildArtifactContentUrl(baseUrl: string, projectId: string, bucket: string, filePath: string): string {
-  const base = stripBaseUrlSuffix(baseUrl);
-  return `${base}/artifacts/artifact/default/${encodeURIComponent(projectId)}/${encodeURIComponent(bucket)}/${encodeURIComponent(filePath)}`;
+  return `${artifactsBase(baseUrl)}/objects/${encodeURIComponent(projectId)}/${encodeURIComponent(bucket)}/${encodeKeySegments(filePath)}`;
 }
 
 /**
- * Unifies utils.jsx:386-406's `fetchArtifactBlobUrl` and
- * useArtifactContentFetch.hooks.js:69-108's fetch — both hit this exact
- * endpoint. `credentials` is resolved dynamically (see `credentialsFor`
- * above), which both preserves and generalises the hook's explicit
- * `credentials: 'include'` (hooks.js:84).
+ * Unifies the preview, download and ZIP-member reads — all three want the
+ * object's raw bytes. `credentials` is resolved dynamically (see
+ * `credentialsFor` above).
  */
 export async function fetchArtifactBlob(params: FetchArtifactBlobParams): Promise<HttpResult<Blob>> {
   const url = buildArtifactContentUrl(params.baseUrl, params.projectId, params.bucket, params.filePath);
   const headers = devHeaders(params.devToken);
-  const credentials = credentialsFor(stripBaseUrlSuffix(params.baseUrl));
+  const credentials = credentialsFor(params.baseUrl);
   let response: Response;
   try {
     response = await fetch(url, { headers, credentials, signal: params.signal ?? null });
