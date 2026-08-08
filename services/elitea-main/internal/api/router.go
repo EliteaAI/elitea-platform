@@ -636,7 +636,21 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Toolkits
 				toolkitHandler := v2toolkits.NewHandler(cfg.Pool, cfg.ToolTester)
-				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills)
+				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills).
+				//
+				// NOTE the split, which was wrong until #129: /tools/ is the
+				// INSTANCE list (toolkitHandler.List) and /toolkits/ is the
+				// TYPE catalogue (toolkitHandler.ListTypeSchemas — a map of
+				// toolkit type name to its settings JSON Schema). That is what
+				// api/openapi/v2.yaml specifies (listToolkits ->
+				// ToolkitTypeSchemas, listToolkitInstances -> the array), what
+				// the generated web client requests (apps/elitea-web/src/
+				// shared/api/generated/toolkits/toolkits.ts:562 vs :764), and
+				// what the legacy runtime served (legacy elitea_core
+				// api/v2/toolkits.py -> get_toolkit_schemas, api/v2/tools.py ->
+				// the instance list). Both /toolkits/ registrations previously
+				// pointed at List, so ListTypeSchemas had no route at all and
+				// the MCP create screen could never show a type.
 				// Gate behind FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS for gradual rollout:
 				// when enabled, enforces project-level access control on all toolkit endpoints.
 				// Until vllm/bifrost integration is ready, set env var to "false" to disable.
@@ -649,7 +663,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 						r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 						r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 						r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-						r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.List)
+						r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
 						r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
 						r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
 						r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
@@ -674,7 +688,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 					r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 					r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 					r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-					r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.List)
+					r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
 					r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
 					r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
 					r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
