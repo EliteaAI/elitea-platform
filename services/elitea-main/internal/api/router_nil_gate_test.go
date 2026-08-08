@@ -45,14 +45,13 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	// field are knowingly absent". Adding one to silence the test, without
 	// meaning it, reintroduces exactly the invisibility this guards against.
 	declaredAbsent := map[string]string{
-		"ConvsRepo":      "#123 — no conversations.Repository implementation exists; 23 routes absent",
-		"SkillsRepo":     "#126 — no skills repository implementation; 12 routes absent",
-		"FoldersRepo":    "#126 — no folders repository implementation; 6 routes absent",
-		"TagsRepo":       "#126 — no tags repository implementation; 3 routes absent",
-		"AnalyticsRepo":  "#126 — no analytics repository implementation; 7 routes absent",
 		"ChatService":    "#126 — chat service not implemented in the Go stack",
 		"Predictor":      "#126 — prediction/completion service not implemented in the Go stack",
 		"PipelineRunner": "#126 — pipeline execution not implemented in the Go stack",
+		// Wired in main.go as of #126 follow-up: ConvsRepo, SkillsRepo, FoldersRepo,
+		// TagsRepo and AnalyticsRepo were all pre-existing repositories with zero
+		// callers. Their entries are gone from this map, and the stale-entry check
+		// below fails if anyone re-adds them.
 		"MCPSyncer":      "#126 — MCP syncer not implemented; 30 routes absent",
 		"WebhookRepo":    "#126 — webhooks not implemented in the Go stack",
 		"LLMProxy":       "optional by design: the LLM proxy is a separate deployment (services/elitea-llm-gateway)",
