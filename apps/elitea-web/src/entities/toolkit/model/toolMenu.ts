@@ -52,6 +52,21 @@ export function nonMcpToolkitTypeSchemas(toolkitSchemas: ToolkitTypeSchemaMap): 
 export interface ToolkitTypeMenuEntry {
   readonly key: string;
   readonly label: string;
+  /**
+   * True when the label came from a real source — this app's `ToolTypes`
+   * override map or the backend's own `metadata.label` — rather than from the
+   * humanised-key fallback.
+   *
+   * This exists because two callers need OPPOSITE things from an unrecognised
+   * type, and the label alone can no longer distinguish them. The toolkit
+   * create page renders every entry as a tile, so an unknown type must still
+   * get a readable accessible name. The agents tool menu deliberately HIDES
+   * unknown types (baseline parity: `!!obj.label`), and used to do it by
+   * testing `label !== ''` — which silently stopped working the moment the
+   * fallback guaranteed a non-empty label. Filter on this flag, not on the
+   * label, so the two behaviours stay independent.
+   */
+  readonly hasKnownLabel: boolean;
 }
 
 /**
@@ -123,8 +138,9 @@ export function toolkitTypeMenuEntries(
        * time without a frontend release, and the failure mode for that must not
        * be a silent a11y regression.
        */
-      const label = overrides[key]?.label ?? (backendLabel || humanizeToolkitTypeKey(key));
-      return { key, label };
+      const knownLabel = overrides[key]?.label ?? backendLabel;
+      const label = knownLabel || humanizeToolkitTypeKey(key);
+      return { key, label, hasKnownLabel: knownLabel !== '' };
     })
     .sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()));
 }
