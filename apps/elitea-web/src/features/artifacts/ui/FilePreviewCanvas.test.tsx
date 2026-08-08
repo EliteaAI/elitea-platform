@@ -2,7 +2,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { fetchArtifactBlob, putArtifactToS3 } from '@/shared/api/artifacts';
+import { fetchArtifactBlob, uploadArtifactObject } from '@/shared/api/artifacts';
 import * as sharedArtifacts from '@/shared/api/artifacts';
 import { getConfig } from '@/shared/config';
 import * as runtimeConfig from '@/shared/config';
@@ -58,7 +58,7 @@ const okBlob = { ok: true, data: textBlob, status: 200, headers: new Headers() }
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(sharedArtifacts, 'fetchArtifactBlob');
-  vi.spyOn(sharedArtifacts, 'putArtifactToS3');
+  vi.spyOn(sharedArtifacts, 'uploadArtifactObject');
   vi.spyOn(runtimeConfig, 'getConfig');
   vi.spyOn(download, 'triggerBlobDownload').mockImplementation(() => undefined);
   vi.spyOn(previewContent, 'ArtifactPreviewContent').mockImplementation(MockArtifactPreviewContent as never);
@@ -72,7 +72,7 @@ beforeEach(() => {
     },
   });
   vi.mocked(fetchArtifactBlob).mockResolvedValue(okBlob);
-  vi.mocked(putArtifactToS3).mockResolvedValue({
+  vi.mocked(uploadArtifactObject).mockResolvedValue({
     ok: true,
     data: undefined,
     status: 200,
@@ -105,7 +105,7 @@ describe('FilePreviewCanvas', () => {
     await user.type(editor, 'updated');
     expect(props.onUnsavedChangesUpdate).toHaveBeenLastCalledWith(true);
     await user.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(putArtifactToS3).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(uploadArtifactObject).toHaveBeenCalledWith(expect.objectContaining({
       fileKey: 'folder/notes.txt',
       projectId: 'p1',
     })));

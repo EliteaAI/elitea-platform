@@ -41,29 +41,24 @@ beforeEach(() => {
 });
 
 describe('artifacts API', () => {
-  it('merges S3 buckets with persisted pin metadata and sorts pinned first', async () => {
+  it('normalises the bucket list and sorts pinned first — one call, no metadata merge', async () => {
     vi.mocked(listBuckets).mockResolvedValue({
       ok: true,
       data: {
         buckets: [
-          { name: 'zeta', creation_date: '2026-01-01T00:00:00Z' },
-          { name: 'alpha', creation_date: '2026-01-02T00:00:00Z' },
+          { name: 'zeta', is_pinned: false, created_at: '2026-01-01T00:00:00Z' },
+          { name: 'alpha', is_pinned: true, created_at: '2026-02-01T00:00:00Z' },
         ],
       },
       status: 200,
       headers: new Headers(),
     });
-    vi.mocked(eliteaFetch).mockResolvedValue({
-      data: {
-        rows: [
-          { id: '1', name: 'alpha', is_pinned: true, created_at: '2026-02-01T00:00:00Z' },
-        ],
-      },
-    });
     await expect(fetchArtifactBuckets('/api/v2', 'p1')).resolves.toEqual([
-      { id: '1', name: 'alpha', isPinned: true, createdAt: '2026-02-01T00:00:00Z' },
+      { id: 'alpha', name: 'alpha', isPinned: true, createdAt: '2026-02-01T00:00:00Z' },
       { id: 'zeta', name: 'zeta', isPinned: false, createdAt: '2026-01-01T00:00:00Z' },
     ]);
+    // The legacy `/artifacts/buckets/default/{projectId}` metadata fetch is gone (#138).
+    expect(eliteaFetch).not.toHaveBeenCalled();
   });
 
   it('excludes internal system buckets (tasks, reports) from the listing', async () => {
@@ -71,9 +66,9 @@ describe('artifacts API', () => {
       ok: true,
       data: {
         buckets: [
-          { name: 'docs', creation_date: '2026-01-01T00:00:00Z' },
-          { name: 'tasks', creation_date: '2026-01-01T00:00:00Z' },
-          { name: 'reports', creation_date: '2026-01-01T00:00:00Z' },
+          { name: 'docs', is_pinned: false, created_at: '2026-01-01T00:00:00Z' },
+          { name: 'tasks', is_pinned: false, created_at: '2026-01-01T00:00:00Z' },
+          { name: 'reports', is_pinned: false, created_at: '2026-01-01T00:00:00Z' },
         ],
       },
       status: 200,
@@ -98,8 +93,8 @@ describe('artifacts API', () => {
     vi.mocked(listArtifacts).mockResolvedValue({
       ok: true,
       data: {
-        name: 'docs',
-        contents: [{ key: 'a.txt', size: 2, lastModified: '2026-01-01T00:00:00Z' }],
+        common_prefixes: [],
+        objects: [{ key: 'a.txt', size_bytes: 2, media_type: 'text/plain', etag: 'e', modified_at: '2026-01-01T00:00:00Z' }],
       },
       status: 200,
       headers: new Headers(),

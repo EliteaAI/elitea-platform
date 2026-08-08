@@ -66,7 +66,14 @@ export function CreateBucket(): ReactNode {
           value={name}
           slotProps={{ htmlInput: { maxLength: 56 } }}
           error={touched && validationError !== ''}
-          helperText={touched
+          // The helper line must never collapse. It used to hold the long
+          // hint until the field blurred and '' afterwards, so FormHelperText
+          // vanished and the button row jumped up 22.9px — and the FIRST
+          // click after typing IS that blur, so mousedown landed on the
+          // button while mouseup landed 23px below it and no click event was
+          // ever generated (#138). Falling back to the hint instead of ''
+          // both reserves the line and keeps the naming rule on screen.
+          helperText={touched && validationError !== ''
             ? validationError
             : t('artifacts.create.nameHelp', 'Bucket names can contain letters, numbers, and hyphens.')}
           onBlur={() => setTouched(true)}

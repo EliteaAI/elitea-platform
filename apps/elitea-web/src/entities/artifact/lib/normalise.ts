@@ -1,15 +1,15 @@
 import type { Artifact, ArtifactListWire } from '../model/types';
 
 /**
- * `S3ObjectListResponse` (v2.yaml:1679-1700) carries the bucket name at the
- * RESPONSE-envelope level (`.name`), not per-item — this flattens it onto
- * each entry so `Artifact` is self-contained.
+ * `ListObjectsResponse` (objects.go:250) carries no bucket name at all — the
+ * bucket is only in the request path — so the caller supplies it here and it
+ * is flattened onto each entry, keeping `Artifact` self-contained.
  */
-export function normaliseArtifactList(wire: ArtifactListWire): Artifact[] {
-  return wire.contents.map((entry) => ({
+export function normaliseArtifactList(wire: ArtifactListWire, bucket: string): Artifact[] {
+  return wire.objects.map((entry) => ({
     key: entry.key,
-    size: entry.size,
-    lastModified: entry.lastModified,
-    bucket: wire.name,
+    size: entry.size_bytes,
+    lastModified: entry.modified_at,
+    bucket,
   }));
 }

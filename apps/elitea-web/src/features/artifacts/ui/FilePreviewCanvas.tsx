@@ -18,7 +18,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { fetchArtifactBlob, putArtifactToS3 } from '@/shared/api/artifacts';
+import { fetchArtifactBlob, uploadArtifactObject } from '@/shared/api/artifacts';
 import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
 import { triggerBlobDownload } from '@/shared/lib/download';
@@ -141,11 +141,11 @@ export function FilePreviewCanvas(props: FilePreviewCanvasProps): ReactNode {
     setSaving(true);
     setError(undefined);
     const blob = new Blob([editedContent], { type: 'text/plain' });
-    const result = await putArtifactToS3({
+    const result = await uploadArtifactObject({
       baseUrl: config.config.vite_server_url,
-      s3Path: `/artifacts/s3/${props.bucket}`,
-      fileKey: props.file.key,
       projectId: props.projectId,
+      bucket: props.bucket,
+      fileKey: props.file.key,
       file: blob,
     });
     setSaving(false);

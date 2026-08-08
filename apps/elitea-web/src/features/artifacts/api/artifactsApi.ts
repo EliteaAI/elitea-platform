@@ -12,17 +12,8 @@ import { listArtifacts, listBuckets } from '@/shared/api/artifacts';
 
 import type { ArtifactStorageConfiguration } from '../model/types';
 
-interface S3BucketWire {
-  readonly name: string;
-  readonly creation_date: string;
-}
-
-interface S3BucketListWire {
-  readonly buckets: readonly S3BucketWire[];
-}
-
-interface BucketMetadataPageWire {
-  readonly rows: readonly BucketWire[];
+interface BucketListWire {
+  readonly buckets: readonly BucketWire[];
 }
 
 interface ConfigurationWire {
@@ -39,48 +30,44 @@ interface ConfigurationPageWire {
   readonly shared?: { readonly items?: readonly ConfigurationWire[] };
 }
 
-function isBucketListWire(value: unknown): value is S3BucketListWire {
+function isBucketListWire(value: unknown): value is BucketListWire {
   if (typeof value !== 'object' || value === null) return false;
   const buckets = (value as { buckets?: unknown }).buckets;
   return Array.isArray(buckets) && buckets.every((bucket) =>
     typeof bucket === 'object' &&
     bucket !== null &&
     typeof (bucket as { name?: unknown }).name === 'string' &&
-    typeof (bucket as { creation_date?: unknown }).creation_date === 'string',
+    typeof (bucket as { is_pinned?: unknown }).is_pinned === 'boolean' &&
+    typeof (bucket as { created_at?: unknown }).created_at === 'string',
   );
 }
 
 function isArtifactListWire(value: unknown): value is ArtifactListWire {
   if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as { name?: unknown; contents?: unknown };
-  return typeof candidate.name === 'string' && Array.isArray(candidate.contents) && candidate.contents.every((entry) =>
+  const objects = (value as { objects?: unknown }).objects;
+  return Array.isArray(objects) && objects.every((entry) =>
     typeof entry === 'object' &&
     entry !== null &&
     typeof (entry as { key?: unknown }).key === 'string' &&
-    typeof (entry as { size?: unknown }).size === 'number' &&
-    typeof (entry as { lastModified?: unknown }).lastModified === 'string',
+    typeof (entry as { size_bytes?: unknown }).size_bytes === 'number' &&
+    typeof (entry as { modified_at?: unknown }).modified_at === 'string',
   );
 }
 
+/**
+ * One call, not two: `GET /api/v2/artifacts/buckets/{projectID}` already
+ * carries `is_pinned` and `created_at` (handler.go:27-37). The second fetch
+ * that used to merge in "bucket metadata" targeted the legacy Pylon route
+ * `/artifacts/buckets/default/{projectId}`, whose literal `default` was
+ * consumed as elitea-main's `{projectID}` segment and answered 403 (#138).
+ */
 export async function fetchArtifactBuckets(baseUrl: string, projectId: string, signal?: AbortSignal): Promise<Bucket[]> {
-  const [result, metadataEnvelope] = await Promise.all([
-    listBuckets({ baseUrl, projectId, ...(signal ? { signal } : {}) }),
-    eliteaFetch<{ data: BucketMetadataPageWire }>(
-      `/artifacts/buckets/default/${encodeURIComponent(projectId)}`,
-      signal ? { signal } : undefined,
-    ),
-  ]);
+  const result = await listBuckets({ baseUrl, projectId, ...(signal ? { signal } : {}) });
   if (!result.ok) throw new Error('Unable to load buckets.');
   if (!isBucketListWire(result.data)) throw new Error('The bucket response has an unexpected shape.');
-  const metadata = new Map(normaliseBuckets(metadataEnvelope.data.rows).map((bucket) => [bucket.name, bucket]));
-  return sortBucketsPinnedFirst(result.data.buckets
-    .filter((bucket) => !isSystemBucket(bucket.name))
-    .map((bucket) => ({
-      id: metadata.get(bucket.name)?.id ?? bucket.name,
-      name: bucket.name,
-      isPinned: metadata.get(bucket.name)?.isPinned ?? false,
-      createdAt: metadata.get(bucket.name)?.createdAt ?? bucket.creation_date,
-    })));
+  return sortBucketsPinnedFirst(
+    normaliseBuckets(result.data.buckets).filter((bucket) => !isSystemBucket(bucket.name)),
+  );
 }
 
 export async function fetchArtifacts(
@@ -92,7 +79,7 @@ export async function fetchArtifacts(
   const result = await listArtifacts({ baseUrl, projectId, bucket, ...(signal ? { signal } : {}) });
   if (!result.ok) throw new Error('Unable to load artifacts.');
   if (!isArtifactListWire(result.data)) throw new Error('The artifact response has an unexpected shape.');
-  return normaliseArtifactList(result.data);
+  return normaliseArtifactList(result.data, bucket);
 }
 
 /**

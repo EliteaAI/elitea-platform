@@ -1,15 +1,15 @@
 /**
- * shared/api/artifacts.ts — spec §5.7 rows 1, 3, 5 (unit S6).
- * Covers: the exact base-URL-prefix-strip logic (row 1), the un-prefixed
- * /artifacts/s3/ path (row 5, RED/GREEN proof b), the artifact-content blob
- * fetch staying under /api/v2 (row 3), credentials resolution, DEV token
- * gating, http/network failure paths, and the ZIP multi-download loop.
+ * shared/api/artifacts.ts.
+ * Covers: every URL landing on elitea-main's real `/api/v2/artifacts/...`
+ * routes (issue #138), the multipart upload envelope, credentials
+ * resolution, DEV token gating, http/network failure paths, and the ZIP
+ * multi-download loop.
  */
-import { Blob as NodeBlob } from 'node:buffer';
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { server } from '../../test/setup';
+import artifactList200 from '../../test/msw/fixtures/artifacts/artifact-list.200.json';
+import bucketList200 from '../../test/msw/fixtures/artifacts/bucket-list.200.json';
 import {
   artifactContentByPath,
   artifactContentNetworkError,
@@ -21,205 +21,178 @@ import {
   bucketListNetworkError,
   bucketListNotFound,
   bucketListOk,
-  s3PutNetworkError,
-  s3PutNotFound,
-  s3PutOk,
+  objectUploadNetworkError,
+  objectUploadNotFound,
+  objectUploadOk,
 } from '../../test/msw/handlers/artifacts';
 import type { CapturedArtifactsRequest } from '../../test/msw/handlers/artifacts';
 
 import {
-  API_V2_SUFFIX,
   buildArtifactContentUrl,
   buildArtifactListUrl,
   buildBucketListUrl,
-  buildS3UploadUrl,
+  buildObjectUploadUrl,
   downloadArtifactsAsZip,
   fetchArtifactBlob,
   listArtifacts,
   listBuckets,
-  putArtifactToS3,
-  stripApiV2Prefix,
-  stripBaseUrlSuffix,
+  uploadArtifactObject,
 } from './artifacts';
 import type { ZipArchiver } from './artifacts';
 
 const ORIGIN = window.location.origin;
 const CROSS_ORIGIN_BASE = `${ORIGIN.replace('localhost', 'cross-origin.example')}/api/v2`;
 
-/**
- * Node's native `fetch`/`Request` (undici) is what `artifacts.ts` actually
- * calls in this test environment (jsdom does not implement `fetch` itself).
- * A `Blob` built from the jsdom-environment global `Blob` is a DIFFERENT
- * class from undici's internal one; undici's `Request` body-extraction does
- * not recognise it and silently serialises the body as the literal string
- * "undefined" (reproduced and confirmed independent of msw — even a bare
- * `new Request(url, {body: new Blob([...])})` exhibits it). Using
- * `node:buffer`'s `Blob` for any test that asserts on REQUEST BODY CONTENT
- * sidesteps the cross-realm gap; response-side Blobs (`fetchArtifactBlob`
- * etc.) are unaffected since those originate from undici's own `Response`.
- */
-function nodeBlob(parts: string[], options?: { type?: string }): Blob {
-  return new NodeBlob(parts, options) as unknown as Blob;
-}
-
 afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe('stripBaseUrlSuffix / stripApiV2Prefix — exact port of clearBaseUrlPrefix (utils.jsx:26-33)', () => {
-  it('strips the suffix and any trailing slash', () => {
-    expect(stripBaseUrlSuffix('/api/v2', '/api/v2')).toBe('');
-    expect(stripBaseUrlSuffix('https://dev.elitea.ai/api/v2', '/api/v2')).toBe('https://dev.elitea.ai');
+describe('buildObjectUploadUrl — POST /api/v2/artifacts/objects/{projectID}/{bucket}', () => {
+  it('keeps /api/v2 and asks for overwrite (router.go:288, objects.go:301)', () => {
+    expect(buildObjectUploadUrl('/api/v2', 'proj 1', 'my bucket'))
+      .toBe('/api/v2/artifacts/objects/proj%201/my%20bucket?overwrite=true');
   });
 
-  it('strips a suffix that already has a trailing slash on the input', () => {
-    expect(stripBaseUrlSuffix('https://dev.elitea.ai/api/v2/', '/api/v2')).toBe('https://dev.elitea.ai');
-  });
-
-  it('with no suffix argument, only strips a trailing slash (row 3 use)', () => {
-    expect(stripBaseUrlSuffix('/api/v2')).toBe('/api/v2');
-    expect(stripBaseUrlSuffix('/api/v2/')).toBe('/api/v2');
-  });
-
-  it('replaces only the FIRST occurrence, unanchored — the preserved old-app quirk', () => {
-    // String.prototype.replace with a string pattern (not regex) is not anchored to
-    // the end of the string; this is byte-for-byte what clearBaseUrlPrefix does.
-    expect(stripBaseUrlSuffix('/api/v2/api/v2', '/api/v2')).toBe('/api/v2');
-  });
-
-  it('API_V2_SUFFIX is the literal /api/v2', () => {
-    expect(API_V2_SUFFIX).toBe('/api/v2');
-  });
-
-  it('stripApiV2Prefix is stripBaseUrlSuffix(url, "/api/v2")', () => {
-    expect(stripApiV2Prefix('/api/v2')).toBe(stripBaseUrlSuffix('/api/v2', API_V2_SUFFIX));
+  it('normalises a trailing slash on the base rather than doubling it', () => {
+    expect(buildObjectUploadUrl('/api/v2/', 'p1', 'b')).toBe('/api/v2/artifacts/objects/p1/b?overwrite=true');
   });
 });
 
-describe('row 1 — buildS3UploadUrl (S3 direct PUT)', () => {
-  it('strips /api/v2, joins the s3Path + per-segment-encoded key + project_id query (parity: slices/upload.js:104-108)', () => {
-    const url = buildS3UploadUrl('/api/v2', '/artifacts/s3/my-bucket', 'folder/my file.txt', 'proj-1');
-    expect(url).toBe('/artifacts/s3/my-bucket/folder/my%20file.txt?project_id=proj-1');
-    expect(url).not.toContain('/api/v2');
-  });
-
-  it('encodes each path segment separately, preserving slashes', () => {
-    const url = buildS3UploadUrl('/api/v2', '/artifacts/s3/b', 'a/b/c', 'p');
-    expect(url).toContain('/a/b/c?');
-  });
-});
-
-describe('row 1 — putArtifactToS3', () => {
-  it('PUTs the raw file body and resolves ok:true, data:undefined on 2xx', async () => {
+describe('uploadArtifactObject', () => {
+  it('POSTs multipart/form-data and resolves ok:true on 201', async () => {
     const sink: CapturedArtifactsRequest[] = [];
-    server.use(s3PutOk(sink));
-    const file = nodeBlob(['file-bytes'], { type: 'text/plain' });
-    const result = await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/bucket', fileKey: 'a.txt', projectId: 'p1', file });
+    server.use(objectUploadOk(sink));
+    const file = new Blob(['file-bytes'], { type: 'text/plain' });
+    const result = await uploadArtifactObject({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'bucket', fileKey: 'a.txt', file });
     if (!result.ok) throw new Error('unreachable');
     expect(result.headers).toBeInstanceOf(Headers);
-    expect(result).toEqual({ ok: true, status: 200, data: undefined, headers: result.headers });
-    expect(sink[0]?.method).toBe('PUT');
-    expect(sink[0]?.bodyText).toBe('file-bytes');
-    expect(sink[0]?.contentType).toBe('text/plain');
+    expect(result).toEqual({ ok: true, status: 201, data: undefined, headers: result.headers });
+    expect(sink[0]?.method).toBe('POST');
+    expect(sink[0]?.contentType).toMatch(/^multipart\/form-data; boundary=/);
+    expect(new URL(sink[0]!.url).pathname).toBe('/api/v2/artifacts/objects/p1/bucket');
+    expect(new URL(sink[0]!.url).searchParams.get('overwrite')).toBe('true');
   });
 
-  it('falls back to application/octet-stream when neither contentType nor file.type is set', async () => {
-    const sink: CapturedArtifactsRequest[] = [];
-    server.use(s3PutOk(sink));
-    const file = nodeBlob(['bytes']); // no type
-    await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/bucket', fileKey: 'a.bin', projectId: 'p1', file });
-    expect(sink[0]?.contentType).toBe('application/octet-stream');
+  /**
+   * The part itself is asserted on the `FormData` handed to `fetch`, not on
+   * the serialised request body: jsdom's `FormData`/`Blob` and Node's undici
+   * `fetch` are different realms, so undici cannot read a jsdom Blob's bytes
+   * and emits an empty part. That is a test-environment artifact — in a
+   * browser both come from the same realm — and inspecting the FormData is
+   * the stronger assertion anyway, since it names the exact part the browser
+   * will encode.
+   */
+  async function uploadedPart(params: { fileKey: string; file: Blob; contentType?: string }): Promise<File> {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    server.use(objectUploadOk());
+    await uploadArtifactObject({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'bucket', ...params });
+    const body = fetchSpy.mock.calls.at(-1)?.[1]?.body;
+    if (!(body instanceof FormData)) throw new Error('upload did not send a FormData body');
+    const part = body.get('file');
+    if (!(part instanceof File)) throw new Error('upload did not send a file part');
+    return part;
+  }
+
+  it("names the part 'file' and uses the object KEY as its filename", async () => {
+    const part = await uploadedPart({ fileKey: 'a.txt', file: new Blob(['file-bytes'], { type: 'text/plain' }) });
+    expect(part.name).toBe('a.txt');
+    expect(part.type).toBe('text/plain');
+    expect(await part.text()).toBe('file-bytes');
   });
 
-  it('an explicit contentType wins over file.type', async () => {
-    const sink: CapturedArtifactsRequest[] = [];
-    server.use(s3PutOk(sink));
-    const file = nodeBlob(['x'], { type: 'text/plain' });
-    await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/bucket', fileKey: 'a', projectId: 'p1', file, contentType: 'application/x-custom' });
-    expect(sink[0]?.contentType).toBe('application/x-custom');
+  it('sends a multi-segment key whole — the server parses Content-Disposition itself so folders survive (objects.go:326-344)', async () => {
+    const part = await uploadedPart({ fileKey: 'folder/a.txt', file: new Blob(['x']) });
+    expect(part.name).toBe('folder/a.txt');
   });
 
-  it('resolves same-origin credentials for the relative /api/v2 base (stripped base is same-origin)', async () => {
+  it('leaves the part untyped when neither contentType nor file.type is set — the server derives it from the extension', async () => {
+    const part = await uploadedPart({ fileKey: 'a.bin', file: new Blob(['bytes']) });
+    expect(part.type).toBe('');
+  });
+
+  it('an explicit contentType wins over file.type, without copying the payload', async () => {
+    const part = await uploadedPart({
+      fileKey: 'a',
+      file: new Blob(['x'], { type: 'text/plain' }),
+      contentType: 'application/x-custom',
+    });
+    expect(part.type).toBe('application/x-custom');
+    expect(await part.text()).toBe('x');
+  });
+
+  it('resolves same-origin credentials for the relative /api/v2 base', async () => {
     const sink: CapturedArtifactsRequest[] = [];
-    server.use(s3PutOk(sink));
-    await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/b', fileKey: 'a', projectId: 'p1', file: nodeBlob(['x']) });
+    server.use(objectUploadOk(sink));
+    await uploadArtifactObject({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'b', fileKey: 'a', file: new Blob(['x']) });
     expect(sink[0]?.credentials).toBe('same-origin');
   });
 
-  it('resolves include credentials for a cross-origin absolute base — F4\'s cross-origin rule applied here (row 1)', async () => {
+  it("resolves include credentials for a cross-origin absolute base — F4's cross-origin rule applied here", async () => {
     const sink: CapturedArtifactsRequest[] = [];
-    server.use(s3PutOk(sink));
-    await putArtifactToS3({ baseUrl: CROSS_ORIGIN_BASE, s3Path: '/artifacts/s3/b', fileKey: 'a', projectId: 'p1', file: nodeBlob(['x']) });
+    server.use(objectUploadOk(sink));
+    await uploadArtifactObject({ baseUrl: CROSS_ORIGIN_BASE, projectId: 'p1', bucket: 'b', fileKey: 'a', file: new Blob(['x']) });
     expect(sink[0]?.credentials).toBe('include');
   });
 
   it('attaches the DEV bearer + Cache-Control only under import.meta.env.DEV', async () => {
     const sink: CapturedArtifactsRequest[] = [];
-    server.use(s3PutOk(sink));
-    await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/b', fileKey: 'a', projectId: 'p1', file: nodeBlob(['x']), devToken: 'dev-secret' });
+    server.use(objectUploadOk(sink));
+    await uploadArtifactObject({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'b', fileKey: 'a', file: new Blob(['x']), devToken: 'dev-secret' });
     expect(sink[0]?.authorization).toBe('Bearer dev-secret');
   });
 
   it('attaches no bearer outside DEV', async () => {
     vi.stubEnv('DEV', false);
     const sink: CapturedArtifactsRequest[] = [];
-    server.use(s3PutOk(sink));
-    await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/b', fileKey: 'a', projectId: 'p1', file: nodeBlob(['x']), devToken: 'dev-secret' });
+    server.use(objectUploadOk(sink));
+    await uploadArtifactObject({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'b', fileKey: 'a', file: new Blob(['x']), devToken: 'dev-secret' });
     expect(sink[0]?.authorization).toBeNull();
   });
 
   it('resolves a kind:http failure for a 404, never throws', async () => {
-    server.use(s3PutNotFound());
-    const result = await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/b', fileKey: 'a', projectId: 'p1', file: nodeBlob(['x']) });
+    server.use(objectUploadNotFound());
+    const result = await uploadArtifactObject({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'b', fileKey: 'a', file: new Blob(['x']) });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
     expect(result.error).toMatchObject({ kind: 'http', status: 404 });
   });
 
   it('resolves a kind:network failure for a network error, never throws', async () => {
-    server.use(s3PutNetworkError());
-    const result = await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/b', fileKey: 'a', projectId: 'p1', file: nodeBlob(['x']) });
+    server.use(objectUploadNetworkError());
+    const result = await uploadArtifactObject({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'b', fileKey: 'a', file: new Blob(['x']) });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
     expect(result.error.kind).toBe('network');
   });
 });
 
-describe('row 5 — un-prefixed /artifacts/s3/ path (RED/GREEN proof b)', () => {
-  it('buildBucketListUrl never contains /api/v2', () => {
-    const url = buildBucketListUrl('/api/v2', 'p1');
-    expect(url).not.toContain(API_V2_SUFFIX);
-    expect(url).toBe('/artifacts/s3/?project_id=p1&format=json');
+describe('bucket / object list URLs land on mountArtifactRoutes', () => {
+  it('buildBucketListUrl targets GET /api/v2/artifacts/buckets/{projectID} (router.go:279)', () => {
+    expect(buildBucketListUrl('/api/v2', 'p1')).toBe('/api/v2/artifacts/buckets/p1');
   });
 
-  it('buildArtifactListUrl never contains /api/v2 and uses encodeURI (not encodeURIComponent) on the bucket, matching api/artifacts.js:86', () => {
-    const url = buildArtifactListUrl('/api/v2', 'p1', 'my bucket');
-    expect(url).not.toContain(API_V2_SUFFIX);
-    expect(url).toBe('/artifacts/s3/my%20bucket?project_id=p1&format=json');
+  it('buildArtifactListUrl targets GET /api/v2/artifacts/objects/{projectID}/{bucket} (router.go:285)', () => {
+    expect(buildArtifactListUrl('/api/v2', 'p1', 'my bucket')).toBe('/api/v2/artifacts/objects/p1/my%20bucket');
   });
 
-  it('listBuckets fetches the un-prefixed root-level URL and parses the JSON body', async () => {
+  it('listBuckets parses the JSON body the Go handler actually returns', async () => {
     const sink: CapturedArtifactsRequest[] = [];
     server.use(bucketListOk(sink));
     const result = await listBuckets({ baseUrl: '/api/v2', projectId: 'p1' });
     if (!result.ok) throw new Error('unreachable');
     expect(result.headers).toBeInstanceOf(Headers);
-    expect(result).toEqual({
-      ok: true,
-      status: 200,
-      data: { buckets: [{ name: 'demo-bucket', created_at: '2026-07-20T00:00:00Z' }] },
-      headers: result.headers,
-    });
-    expect(sink[0]?.url).not.toContain('/api/v2/artifacts');
-    expect(new URL(sink[0]!.url).pathname).toBe('/artifacts/s3/');
+    expect(result.status).toBe(200);
+    expect(result.data).toEqual(bucketList200.body);
+    expect(new URL(sink[0]!.url).pathname).toBe('/api/v2/artifacts/buckets/p1');
   });
 
-  it('listArtifacts fetches the un-prefixed root-level URL', async () => {
+  it('listArtifacts fetches the object-plane collection URL', async () => {
     const sink: CapturedArtifactsRequest[] = [];
     server.use(artifactListOk(sink));
     const result = await listArtifacts({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'demo-bucket' });
-    expect(result.ok).toBe(true);
-    expect(new URL(sink[0]!.url).pathname).toBe('/artifacts/s3/demo-bucket');
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.data).toEqual(artifactList200.body);
+    expect(new URL(sink[0]!.url).pathname).toBe('/api/v2/artifacts/objects/p1/demo-bucket');
   });
 
   it('listBuckets resolves a kind:network failure without throwing', async () => {
@@ -253,19 +226,19 @@ describe('row 5 — un-prefixed /artifacts/s3/ path (RED/GREEN proof b)', () => 
   });
 });
 
-describe('row 3 — buildArtifactContentUrl stays under /api/v2 (no strip, unlike rows 1/5)', () => {
-  it('keeps /api/v2 in the URL', () => {
-    const url = buildArtifactContentUrl('/api/v2', 'p1', 'bucket', 'notes.md');
-    expect(url).toBe('/api/v2/artifacts/artifact/default/p1/bucket/notes.md');
+describe('buildArtifactContentUrl — GET /api/v2/artifacts/objects/{projectID}/{bucket}/{key...}', () => {
+  it('targets the object-item route (router.go:288)', () => {
+    expect(buildArtifactContentUrl('/api/v2', 'p1', 'bucket', 'notes.md'))
+      .toBe('/api/v2/artifacts/objects/p1/bucket/notes.md');
   });
 
-  it('encodes the file path as one component (nested paths become %2F)', () => {
-    const url = buildArtifactContentUrl('/api/v2', 'p1', 'bucket', 'folder/notes.md');
-    expect(url).toBe('/api/v2/artifacts/artifact/default/p1/bucket/folder%2Fnotes.md');
+  it("encodes each key segment but keeps '/' literal — the route is a chi wildcard, so %2F would miss it", () => {
+    expect(buildArtifactContentUrl('/api/v2', 'p1', 'bucket', 'my folder/notes v2.md'))
+      .toBe('/api/v2/artifacts/objects/p1/bucket/my%20folder/notes%20v2.md');
   });
 });
 
-describe('row 3 — fetchArtifactBlob', () => {
+describe('fetchArtifactBlob', () => {
   it('resolves ok:true with the response Blob', async () => {
     server.use(artifactContentOk());
     const result = await fetchArtifactBlob({ baseUrl: '/api/v2', projectId: 'p1', bucket: 'bucket', filePath: 'notes.md' });
@@ -306,7 +279,7 @@ describe('row 3 — fetchArtifactBlob', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
     if (result.error.kind !== 'aborted') throw new Error('unreachable');
-    expect(result.error.url).toContain('/artifacts/artifact/default');
+    expect(result.error.url).toContain('/api/v2/artifacts/objects/p1/b/f.md');
   });
 });
 
@@ -323,9 +296,9 @@ function mockArchiver(): ZipArchiver & { files: Map<string, Blob> } {
   };
 }
 
-describe('row 3 — downloadArtifactsAsZip', () => {
+describe('downloadArtifactsAsZip', () => {
   it('fetches every file, strips currentPrefix from the archive path, and generates the zip blob', async () => {
-    server.use(artifactContentByPath({ 'folder%2Fa.md': 'A content', 'folder%2Fb.md': 'B content' }));
+    server.use(artifactContentByPath({ 'folder/a.md': 'A content', 'folder/b.md': 'B content' }));
     const archiver = mockArchiver();
     const progress: Array<[number, number, string]> = [];
     const result = await downloadArtifactsAsZip({

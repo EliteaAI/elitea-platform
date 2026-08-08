@@ -1,6 +1,21 @@
 {
-  "recordedAt": "2026-07-27",
+  "recordedAt": "2026-08-08",
   "synthetic": true,
-  "note": "Synthetic (unit S6): GET /artifacts/s3/ bucket list (router.go:165, S3Handler.ListBuckets, ROOT-LEVEL — no /api/v2 prefix; this is the exact routing fact spec §5.7 row 5 asks S6 to preserve).",
-  "body": { "buckets": [{ "name": "demo-bucket", "created_at": "2026-07-20T00:00:00Z" }] }
+  "note": "Shape recorded from the E2E stack (GET /api/v2/artifacts/buckets/1, elitea-main mountArtifactRoutes, router.go:279); names/dates substituted for stable demo values. Replaces the pre-#138 fixture, which described the legacy root-level /artifacts/s3/ bucket list elitea-main never served.",
+  "body": {
+    "buckets": [
+      {
+        "name": "demo-bucket",
+        "type": "local",
+        "is_pinned": false,
+        "tags": {},
+        "retention_days": null,
+        "expires_at": null,
+        "size_bytes": 128,
+        "object_count": 1,
+        "created_at": "2026-07-20T00:00:00Z",
+        "updated_at": "2026-07-20T00:00:00Z"
+      }
+    ]
+  }
 }

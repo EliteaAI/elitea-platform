@@ -1,9 +1,10 @@
 import type { Bucket, BucketWire } from '../model/types';
 
-/** snake_case wire shape -> camelCase domain type (`Bucket`, v2.yaml:1702-1713). */
+/** snake_case wire shape -> camelCase domain type (handler.go:27-37). */
 export function normaliseBucket(wire: BucketWire): Bucket {
   return {
-    id: wire.id,
+    // The handler exposes no surrogate id; the name is the bucket's identity.
+    id: wire.name,
     name: wire.name,
     isPinned: wire.is_pinned,
     createdAt: wire.created_at,

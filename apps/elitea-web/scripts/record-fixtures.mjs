@@ -42,10 +42,10 @@
  *     probed paths (`/__transport__/…`) exist on no real endpoint by
  *     construction (unit F4's own module doc) — recording them is
  *     impossible, not merely undone.
- *   - artifacts.s3Put: the real endpoint is a raw S3 PUT byte-proxy whose
- *     response body `putArtifactToS3` never inspects (unit S6's own
- *     comment) — a recording would add a real network dependency for zero
- *     behavioural gain.
+ *   - artifacts.objectUpload: recording it would mean POSTing a real object
+ *     into a real bucket, and `uploadArtifactObject` never inspects the
+ *     response body anyway — a write-side recording for zero behavioural
+ *     gain.
  *   - upload.{chunkInProgress,chunkComplete,smallFile,error}: the real
  *     endpoint requires a genuine multipart/chunked file upload (binary
  *     body, chunk headers) POSTed to `/elitea_core/attachments/prompt_lib/…`
@@ -81,22 +81,22 @@ const TARGETS = [
   {
     id: 'artifacts.bucketList',
     fixture: 'artifacts/bucket-list.200.json',
-    params: {},
-    path: () => '/artifacts/s3/',
+    params: { projectId: null },
+    path: (p) => `/api/v2/artifacts/buckets/${encodeURIComponent(p.projectId)}`,
     parse: 'json',
   },
   {
     id: 'artifacts.artifactList',
     fixture: 'artifacts/artifact-list.200.json',
-    params: { bucket: 'demo-bucket' },
-    path: (p) => `/artifacts/s3/${encodeURIComponent(p.bucket)}`,
+    params: { projectId: null, bucket: 'demo-bucket' },
+    path: (p) => `/api/v2/artifacts/objects/${encodeURIComponent(p.projectId)}/${encodeURIComponent(p.bucket)}`,
     parse: 'json',
   },
   {
     id: 'artifacts.content',
     fixture: 'artifacts/artifact-content.200.json',
     params: { projectId: null, bucket: 'demo-bucket', key: 'notes.md' },
-    path: (p) => `/api/v2/artifacts/artifact/default/${encodeURIComponent(p.projectId)}/${encodeURIComponent(p.bucket)}/${encodeURIComponent(p.key)}`,
+    path: (p) => `/api/v2/artifacts/objects/${encodeURIComponent(p.projectId)}/${encodeURIComponent(p.bucket)}/${p.key.split('/').map(encodeURIComponent).join('/')}`,
     parse: 'text',
   },
   {
@@ -193,7 +193,7 @@ async function main() {
     console.log('record-fixtures targets:');
     for (const t of TARGETS) console.log(`  ${t.id.padEnd(24)} -> src/test/msw/fixtures/${t.fixture}`);
     console.log('\nOut of scope by design (see this script\'s header comment): transport.{probe,echo,loginPage,');
-    console.log('notFound,unauthorized,forbidden}, artifacts.s3Put, upload.{chunkInProgress,chunkComplete,smallFile,error}.');
+    console.log('notFound,unauthorized,forbidden}, artifacts.objectUpload, upload.{chunkInProgress,chunkComplete,smallFile,error}.');
     return;
   }
 

@@ -105,49 +105,55 @@ export function BucketSidebar(props: BucketSidebarProps): ReactNode {
           {visibleBuckets.map((bucket) => (
             // <ListItem disablePadding> wrapper: see ApplicationListPanel for
             // why `component="li"` on the button is not the fix.
+            // `secondaryAction`, not children of the ListItemButton: the
+            // button carries role="button", so nesting the pin/delete
+            // IconButtons inside it is axe's `nested-interactive` (impact:
+            // serious) — "Element has focusable descendants". It only became
+            // observable once the bucket list could load at all (#138), and
+            // `secondaryAction` is MUI's own answer: the actions render as
+            // SIBLINGS of the row button, and MUI reserves the trailing
+            // padding for them.
             <ListItem
               key={bucket.id}
               disablePadding
+              secondaryAction={
+                <>
+                  <Tooltip title={bucket.isPinned
+                    ? t('artifacts.buckets.unpin', 'Unpin bucket')
+                    : t('artifacts.buckets.pin', 'Pin bucket')}
+                  >
+                    <IconButton
+                      size="small"
+                      aria-label={bucket.isPinned ? `Unpin ${bucket.name}` : `Pin ${bucket.name}`}
+                      onClick={() => void props.onPin(bucket).catch(() => undefined)}
+                    >
+                      {bucket.isPinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title={t('artifacts.buckets.delete', 'Delete bucket')}>
+                    <IconButton
+                      size="small"
+                      aria-label={`Delete ${bucket.name}`}
+                      onClick={() => setDeleting(bucket)}
+                    >
+                      <DeleteOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </>
+              }
             >
-            <ListItemButton
-              selected={bucket.name === props.selectedBucket}
-              onClick={() => props.onSelect(bucket)}
-            >
-              <ListItemIcon sx={{ minWidth: '2rem' }}>
-                <FolderOutlinedIcon fontSize="small" />
-              </ListItemIcon>
-              <ListItemText
-                primary={bucket.name}
-                slotProps={{ primary: { noWrap: true } }}
-              />
-              <Tooltip title={bucket.isPinned
-                ? t('artifacts.buckets.unpin', 'Unpin bucket')
-                : t('artifacts.buckets.pin', 'Pin bucket')}
+              <ListItemButton
+                selected={bucket.name === props.selectedBucket}
+                onClick={() => props.onSelect(bucket)}
               >
-                <IconButton
-                  size="small"
-                  aria-label={bucket.isPinned ? `Unpin ${bucket.name}` : `Pin ${bucket.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void props.onPin(bucket).catch(() => undefined);
-                  }}
-                >
-                  {bucket.isPinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
-                </IconButton>
-              </Tooltip>
-              <Tooltip title={t('artifacts.buckets.delete', 'Delete bucket')}>
-                <IconButton
-                  size="small"
-                  aria-label={`Delete ${bucket.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setDeleting(bucket);
-                  }}
-                >
-                  <DeleteOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </ListItemButton>
+                <ListItemIcon sx={{ minWidth: '2rem' }}>
+                  <FolderOutlinedIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText
+                  primary={bucket.name}
+                  slotProps={{ primary: { noWrap: true } }}
+                />
+              </ListItemButton>
             </ListItem>
           ))}
         </List>
