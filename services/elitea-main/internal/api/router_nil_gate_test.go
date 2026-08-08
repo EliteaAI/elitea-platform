@@ -22,8 +22,11 @@ import (
 //
 //	AppsRepo   — a complete 425-line repository existed and nothing called its
 //	             constructor. Agent creation 404'd in every deployment (#115).
-//	ConvsRepo  — no implementation at all; 23 conversation/message routes absent
-//	             (#123).
+//	ConvsRepo  — a 951-line repository existed with zero callers; 23
+//	             conversation/message routes absent (#123). Filed initially as
+//	             "no implementation at all", which was wrong: the check grepped
+//	             for the interface NAME, and Go interfaces are satisfied
+//	             structurally, so an implementation never mentions them.
 //	admin UI   — a different shape of the same class: the E2E image substitutes a
 //	             placeholder for the real admin SPA, so those journeys could never
 //	             have tested it (#122).
@@ -45,14 +48,53 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	// field are knowingly absent". Adding one to silence the test, without
 	// meaning it, reintroduces exactly the invisibility this guards against.
 	declaredAbsent := map[string]string{
-		"ChatService":    "#126 — chat service not implemented in the Go stack",
-		"Predictor":      "#126 — prediction/completion service not implemented in the Go stack",
-		"PipelineRunner": "#126 — pipeline execution not implemented in the Go stack",
+		// Predictor / ChatService / PipelineRunner / MCPSyncer are the flat
+		// projections of RouterConfig.Indexer (router.go defaults them from it).
+		// The earlier reason here — "not implemented in the Go stack" — was
+		// wrong in the same way #123 was wrong: an implementation DOES exist.
+		// *indexersvc.Client structurally satisfies all six IndexerDeps fields
+		// (verified with compile-time assertions, not a grep for the interface
+		// name).
+		//
+		// It is still deliberately not wired, for a reason that is about the
+		// WIRE PROTOCOL rather than about missing code:
+		//
+		//   indexersvc.Client publishes raw JSON to the Redis channel
+		//   "elitea_rpc" and waits for a JSON reply on
+		//   "elitea_main:rpc:reply:<id>".
+		//
+		//   The service actually listening on that channel is pylon-indexer,
+		//   whose pylon.yml sets rpc.redis.queue = ${NAME_PREFIX}_rpc =
+		//   "elitea_rpc". Pylon serves it through arbiter's RedisEventNode,
+		//   whose codec is gzip(pickle(...)) [+ HMAC-SHA512]
+		//   (legacy/plugins/arbiter/arbiter/eventnode/base.py decodes with
+		//   pickle.loads(gzip.decompress(data))). JSON bytes fail
+		//   gzip.decompress and are dropped, and arbiter replies through its own
+		//   id_prefix correlation, never to a caller-supplied reply_channel.
+		//   Nothing anywhere publishes to "elitea_main:rpc:reply:*".
+		//
+		// So wiring these would replace an immediate 404 with a 30s RPC timeout
+		// (120s on the streaming routes) followed by a 500 — strictly worse for
+		// the caller and for the server's connection budget. sibling proof:
+		// elitea-scheduler's internal/rpc/client.go talks to the same channel
+		// and DOES implement gzip+pickle+HMAC.
+		//
+		// The target architecture removes the question rather than fixing the
+		// codec: elitea-docs spec-transport-implementation.mdx lists
+		// internal/infra/indexersvc/rpc.go under "Modify or retire" — "Delete
+		// after bounded dispatch/control/output adapters land". Wiring these
+		// fields is blocked on that transport, not on writing a predictor.
+		"ChatService":    "#126 — indexersvc.Client exists and satisfies it, but speaks JSON to an arbiter pickle channel; see note above",
+		"Predictor":      "#126 — indexersvc.Client exists and satisfies it, but speaks JSON to an arbiter pickle channel; see note above",
+		"PipelineRunner": "#126 — indexersvc.Client exists and satisfies it, but speaks JSON to an arbiter pickle channel; see note above",
+		// Same correction as above: an implementation does exist
+		// (indexersvc.Client.MCPSyncTools); it is unreachable for the protocol
+		// reason described above, not unwritten. 30 routes absent.
+		"MCPSyncer": "#126 — indexersvc.Client satisfies it, but speaks JSON to an arbiter pickle channel; 30 routes absent",
 		// Wired in main.go as of #126 follow-up: ConvsRepo, SkillsRepo, FoldersRepo,
 		// TagsRepo and AnalyticsRepo were all pre-existing repositories with zero
 		// callers. Their entries are gone from this map, and the stale-entry check
 		// below fails if anyone re-adds them.
-		"MCPSyncer":      "#126 — MCP syncer not implemented; 30 routes absent",
 		"WebhookRepo":    "#126 — webhooks not implemented in the Go stack",
 		"LLMProxy":       "optional by design: the LLM proxy is a separate deployment (services/elitea-llm-gateway)",
 		"EventSource":    "optional by design: falls back to RedisClient, see router.go's else-if",
