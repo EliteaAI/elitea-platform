@@ -64,15 +64,28 @@ function isCovered(route) {
 }
 
 /**
- * Routes that are `wired` in the FRONTEND but cannot be snapshotted because a
- * backend they need does not exist. Each needs an issue, and each is printed on
- * every run — an exemption nobody sees is just a silent gap.
+ * Routes that are `wired` in the FRONTEND but are not snapshotted, because
+ * reaching them with real data depends on something outside this suite. Each
+ * needs an issue, and each is printed on every run — an exemption nobody sees is
+ * just a silent gap.
+ *
+ * Keep each reason literally true. The first entry here asserted a backend "has
+ * no implementation" on the strength of a grep that could not have found one,
+ * and that sentence was then copied into a spec file and an issue before anyone
+ * checked it.
  *
  * This is not a general escape hatch. Adding an entry means claiming a specific,
  * externally-tracked blocker; "the spec is fiddly" is not one.
  */
 const EXEMPT = new Map([
-  ['/chat/:conversationId', 'blocked on #123 — POST /elitea_core/conversations 404s; ConvsRepo is never wired and has no implementation'],
+  // The original reason here was wrong twice over, and both errors are worth
+  // keeping visible. It claimed ConvsRepo "has no implementation" — the check
+  // behind that grepped for the interface NAME, and Go interfaces are satisfied
+  // structurally, so a 951-line implementation was invisible to it. It then
+  // claimed ConvsRepo "is never wired", which stopped being true in 3b73273.
+  // What remains true is only that this route has never been snapshotted, and
+  // nobody has confirmed a conversation can actually be created end-to-end.
+  ['/chat/:conversationId', 'not snapshotted — needs a deterministic conversation list, NOT a missing backend. POST /api/v2/elitea_core/conversations/prompt_lib/1 was verified returning 201 against the running stack; the route renders (chat.tsx supplies ChatWithEditors + <Outlet/>, so the child\'s `component: () => null` is by design). The obstacle is that seeding a conversation per run grows the sidebar list, so the snapshot would differ every time. Same class as the rail-collapsed variants: it needs explicit state setup, not a backend.'],
 ]);
 
 const wired = shots.filter((s) => s.wiringStatus === 'wired');
@@ -105,7 +118,7 @@ console.log(
 // read as covered.
 if (exemptWired.length > 0) {
   const routes = [...new Set(exemptWired.map((s) => s.route))].sort();
-  console.log(`check-visual-coverage: ${exemptWired.length} shot(s) across ${routes.length} route(s) EXEMPT — wired in the frontend, blocked on a missing backend:`);
+  console.log(`check-visual-coverage: ${exemptWired.length} shot(s) across ${routes.length} route(s) EXEMPT — wired in the frontend, NOT snapshotted. Reason per route:`);
   for (const r of routes) console.log(`  ${r} — ${EXEMPT.get(r)}`);
 }
 

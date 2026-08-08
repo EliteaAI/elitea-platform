@@ -19,16 +19,22 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
+	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
+	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
+	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
@@ -798,6 +804,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*
 		// route, and creating an agent from the UI 404s (#115).
 		AppsRepo: applicationsRepository(pool),
+		// Same defect class as AppsRepo above, six more times (#126). Each of
+		// these repositories already EXISTED — conversations.go alone is 951
+		// lines — and had zero callers, so router.go dropped their route groups
+		// and the endpoints 404'd in every deployment. Counted at the gates:
+		// conversations 23 routes, skills 12, analytics 7, folders 6, tags 3.
+		ConvsRepo:     conversationsRepository(pool),
+		SkillsRepo:    skillsRepository(pool),
+		FoldersRepo:   foldersRepository(pool),
+		TagsRepo:      tagsRepository(pool),
+		AnalyticsRepo: analyticsRepository(pool),
+		// WebhookRepo is the sixth instance of the same defect, and it hid one
+		// step deeper than the other five. Its gate mounts a subrouter —
+		// `r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(...).Routes())`
+		// — so a count of inline r.Get/r.Post calls inside the gated block
+		// returns zero, and it looked like a field that gated nothing. The five
+		// routes are declared in the handler's own Routes() method.
+		WebhookRepo: webhooksRepository(pool),
 	})
 
 	// Socket.IO remains unmounted until its legacy connection authentication,
@@ -829,6 +852,55 @@ func applicationsRepository(pool *pgxpool.Pool) applications.Repository {
 		return nil
 	}
 	return dbrepos.NewApplicationsRepo(pool)
+}
+
+// The remaining tenant-schema repositories, composed the same way and for the
+// same reason: a nil field makes router.go drop the route group silently, with
+// no startup error and a 404 indistinguishable from a typo'd path.
+//
+// Named functions, not inline constructors, so main_router_wiring_test.go can
+// assert each field is present in the production literal.
+
+func conversationsRepository(pool *pgxpool.Pool) v2convs.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewConversationsRepo(pool)
+}
+
+func skillsRepository(pool *pgxpool.Pool) v2skills.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewSkillsRepo(pool)
+}
+
+func foldersRepository(pool *pgxpool.Pool) v2folders.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewFoldersRepo(pool)
+}
+
+func webhooksRepository(pool *pgxpool.Pool) webhook.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewWebhooksRepo(pool)
+}
+
+func tagsRepository(pool *pgxpool.Pool) v2tags.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewTagsRepo(pool)
+}
+
+func analyticsRepository(pool *pgxpool.Pool) v2analytics.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewAnalyticsRepo(pool)
 }
 
 const maxAuthConfigPathBytes = 4096

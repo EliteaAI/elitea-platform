@@ -17,3 +17,27 @@ apps/elitea-web/src/assets/onboarding/welcome/chat-welcome.png
 # screen above, duplicated locally since this Vite entry point can't import
 # across the src/entries/ boundary; imported by MaintenancePage.tsx.
 apps/elitea-web/src/entries/maintenance/assets/chat-welcome.png
+
+# Playwright visual-regression baselines (Wave 3, issue #61).
+#
+# These are references, not build artifacts: `toHaveScreenshot` compares against
+# them, so a repo without them has a visual suite that cannot fail. They are
+# regenerated only inside the pinned mcr.microsoft.com/playwright:v1.62.0-noble
+# image, never on a developer's host.
+#
+# Deliberately narrow. It matches only the `-snapshots/` directories Playwright
+# creates under e2e/snapshots/visual/, so it cannot quietly admit a stray binary
+# elsewhere in e2e/. Total weight is separately capped: apps/elitea-web/scripts/
+# check-visual-coverage.mjs fails the build if e2e/snapshots exceeds 12MB, which
+# is the guard that actually matters here, since PNGs do not delta-compress and
+# every revision stores a full copy in history.
+#
+# Caveat worth knowing before adding entries here: is_allowlisted() matches with
+# bash's [[ == ]], where `*` crosses `/` — unlike filename globbing. So this also
+# admits anything nested deeper under a `-snapshots/` directory. That is
+# tolerable because Playwright writes baselines flat, but it means a pattern here
+# is broader than it reads, and a `*` early in a path can admit far more than
+# intended. Verified by matching this pattern against the real baseline path plus
+# adversarial ones (e2e/mutant.png, e2e/snapshots/evil.png, src/assets/sneaky.png,
+# dist/bundle.png) — only the baseline matched.
+apps/elitea-web/e2e/snapshots/visual/*-snapshots/*.png
