@@ -104,6 +104,11 @@ function useUsersPageData(projectId: string, canView: boolean): UseUsersPageData
   useEffect(() => {
     const resp = userListQuery.data;
     if (!resp) return;
+    // `eliteaFetch` already unwraps the transport into { data, status, headers },
+    // so `resp.data` IS the response body. The previous `resp.data.data` went one
+    // level too deep, resolved to undefined, and made `rows` permanently [] —
+    // every user saw an empty members table with no error anywhere. Measured
+    // body: {"rows":[…],"total":2}.
     const inner = (resp as { data?: { data?: { rows?: UserRecord[]; total?: number } } }).data?.data;
     const rows = inner?.rows ?? [];
     const total = inner?.total ?? 0;
@@ -121,8 +126,15 @@ function useUsersPageData(projectId: string, canView: boolean): UseUsersPageData
   const rawRoles = useMemo(() => {
     const resp = roleListQuery.data;
     if (!resp) return [] as { id: string; name: string }[];
-    const inner = (resp as { data?: { data?: { rows?: { id: string; name: string }[]; total?: number } } }).data?.data;
-    return inner?.rows ?? [] as { id: string; name: string }[];
+    // Roles differs in shape from users: the body is a BARE ARRAY, not
+    // {rows,total}. Measured: [{"id":"1","name":"admin"},{"id":"2",…}].
+    // The old `resp.data.data.rows` was wrong twice over — too deep AND reading
+    // a `rows` key that does not exist here — so `rolesOptions` was always [],
+    // the role SingleSelect showed only its disabled "No options" entry, and
+    // because Invite is gated on a selected role the invite flow could never be
+    // completed by anyone. This is the more serious half of the bug.
+    const body = (resp as { data?: unknown }).data;
+    return Array.isArray(body) ? (body as { id: string; name: string }[]) : [];
   }, [roleListQuery.data]);
 
   const rolesOptions = useMemo(
