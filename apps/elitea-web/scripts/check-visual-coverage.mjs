@@ -85,7 +85,7 @@ const EXEMPT = new Map([
   // claimed ConvsRepo "is never wired", which stopped being true in 3b73273.
   // What remains true is only that this route has never been snapshotted, and
   // nobody has confirmed a conversation can actually be created end-to-end.
-  ['/chat/:conversationId', 'unverified (#123): ConvsRepo is wired as of 3b73273 and 23 conversation routes now register, but no run has confirmed POST /elitea_core/conversations succeeds. Snapshot this once a journey creates a conversation against the rebuilt image — not before, or the baseline records an error state.'],
+  ['/chat/:conversationId', 'not snapshotted — needs a deterministic conversation list, NOT a missing backend. POST /api/v2/elitea_core/conversations/prompt_lib/1 was verified returning 201 against the running stack; the route renders (chat.tsx supplies ChatWithEditors + <Outlet/>, so the child\'s `component: () => null` is by design). The obstacle is that seeding a conversation per run grows the sidebar list, so the snapshot would differ every time. Same class as the rail-collapsed variants: it needs explicit state setup, not a backend.'],
 ]);
 
 const wired = shots.filter((s) => s.wiringStatus === 'wired');

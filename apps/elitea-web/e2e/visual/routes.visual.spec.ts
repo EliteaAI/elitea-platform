@@ -117,14 +117,20 @@ for (const route of ROUTES) {
 /*
  * NOT COVERED, and why — keep this current, it is the honest half of the suite:
  *
- *  - `/chat/:conversationId` (4 shots). UNVERIFIED, not skipped. This entry
- *    previously said the route 404s because `ConvsRepo` "is never wired and has
- *    no implementation at all" (#123). Both halves were wrong: the
- *    no-implementation claim came from grepping the interface NAME, which Go
- *    implementations never mention, and the wiring landed in 3b73273 — 23
- *    conversation routes now register. What is still unestablished is whether
- *    creating a conversation actually succeeds, because no run has exercised it
- *    against an image built after that commit. Recorded as an EXEMPT entry in
+ *  - `/chat/:conversationId` (4 shots). Not covered, and the reason recorded
+ *    here for a long time was simply false. It said the route 404s because
+ *    `ConvsRepo` "is never wired and has no implementation at all" (#123).
+ *    Measured against the running stack: POST
+ *    /api/v2/elitea_core/conversations/prompt_lib/1 returns 201 and persists a
+ *    row. The no-implementation half came from grepping the interface NAME,
+ *    which a Go implementation never mentions; the never-wired half stopped
+ *    being true in 3b73273.
+ *
+ *    The actual obstacle is determinism. Seeding a conversation on each run adds
+ *    a row to the sidebar list, so consecutive runs render different lists and
+ *    the snapshot diffs for reasons that have nothing to do with the UI. Fixing
+ *    it means seeding to a known list state, which is the same work the
+ *    rail-collapsed variants below need. Recorded as an EXEMPT entry in
  *    scripts/check-visual-coverage.mjs, which prints it on every run — a
  *    permanently-failing spec would just be noise, and a silent skip is what
  *    this whole effort exists to remove.
