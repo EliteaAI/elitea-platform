@@ -34,6 +34,7 @@ import (
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
@@ -813,6 +814,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		FoldersRepo:   foldersRepository(pool),
 		TagsRepo:      tagsRepository(pool),
 		AnalyticsRepo: analyticsRepository(pool),
+		// WebhookRepo is the sixth instance of the same defect, and it hid one
+		// step deeper than the other five. Its gate mounts a subrouter —
+		// `r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(...).Routes())`
+		// — so a count of inline r.Get/r.Post calls inside the gated block
+		// returns zero, and it looked like a field that gated nothing. The five
+		// routes are declared in the handler's own Routes() method.
+		WebhookRepo: webhooksRepository(pool),
 	})
 
 	// Socket.IO remains unmounted until its legacy connection authentication,
@@ -872,6 +880,13 @@ func foldersRepository(pool *pgxpool.Pool) v2folders.Repository {
 		return nil
 	}
 	return dbrepos.NewFoldersRepo(pool)
+}
+
+func webhooksRepository(pool *pgxpool.Pool) webhook.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewWebhooksRepo(pool)
 }
 
 func tagsRepository(pool *pgxpool.Pool) v2tags.Repository {

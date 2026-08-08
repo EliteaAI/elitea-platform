@@ -89,13 +89,34 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 		"PipelineRunner": "#126 — indexersvc.Client exists and satisfies it, but speaks JSON to an arbiter pickle channel; see note above",
 		// Same correction as above: an implementation does exist
 		// (indexersvc.Client.MCPSyncTools); it is unreachable for the protocol
-		// reason described above, not unwritten. 30 routes absent.
-		"MCPSyncer": "#126 — indexersvc.Client satisfies it, but speaks JSON to an arbiter pickle channel; 30 routes absent",
+		// reason described above, not unwritten.
+		//
+		// It also gates ZERO routes, contrary to the "30 routes absent" figure
+		// that circulated in #126 and was repeated here. Its whole gated block
+		// is one setter — `coreHandler.SetMCPSyncer(cfg.MCPSyncer)` at
+		// router.go:508-510. The 30 came from an awk sweep that walked forward
+		// from the `if` without tracking brace depth and kept counting routes
+		// belonging to later blocks. Nothing 404s because of this field; the
+		// failure mode is a handler running without a syncer, which is a
+		// different bug and should not be counted as missing endpoints.
+		"MCPSyncer": "#126 — indexersvc.Client satisfies it, but speaks JSON to an arbiter pickle channel; gates 0 routes (one setter), used by coreHandler",
 		// Wired in main.go as of #126 follow-up: ConvsRepo, SkillsRepo, FoldersRepo,
-		// TagsRepo and AnalyticsRepo were all pre-existing repositories with zero
-		// callers. Their entries are gone from this map, and the stale-entry check
-		// below fails if anyone re-adds them.
-		"WebhookRepo":    "#126 — webhooks not implemented in the Go stack",
+		// TagsRepo, AnalyticsRepo and WebhookRepo were all pre-existing
+		// repositories with zero callers. Their entries are gone from this map,
+		// and the stale-entry check below fails if anyone re-adds them.
+		//
+		// WebhookRepo's entry used to read "webhooks not implemented in the Go
+		// stack" — false, and false in the same way the ConvsRepo and Indexer
+		// claims were. `dbrepos.NewWebhooksRepo(pool)` existed the whole time and
+		// satisfies `webhook.Repository`; that was confirmed with a compile-time
+		// assertion, and the assertion was mutation-checked by pointing it at
+		// TagsRepo, which fails with "missing method Create".
+		//
+		// It hid one level deeper than the other five: its gate MOUNTS a
+		// subrouter rather than declaring routes inline, so counting r.Get/r.Post
+		// within the gated block yields zero and the field looks inert. The five
+		// routes live in the handler's Routes(). Any future audit of this pattern
+		// has to follow Mount targets, or it will undercount exactly here.
 		"LLMProxy":       "optional by design: the LLM proxy is a separate deployment (services/elitea-llm-gateway)",
 		"EventSource":    "optional by design: falls back to RedisClient, see router.go's else-if",
 		"RedisClient":    "optional by design: the EventSource fallback",
