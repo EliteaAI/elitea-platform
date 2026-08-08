@@ -12,3 +12,4 @@ test-results/
 # Playwright: auth storageState carries live session cookies; results are run artifacts.
 .playwright-state/
 playwright-results/
+playwright-report/

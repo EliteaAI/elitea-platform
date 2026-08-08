@@ -1,103 +1,100 @@
 /**
- * Journey 27: Admin: /admin/app/users loads with server-injected config (JRNY-027)
- * Journey 28: Admin: role permission matrix edit (JRNY-028)
+ * Journey 27: Admin SPA is served with server-injected config (JRNY-027)
+ * Journey 28: Admin SPA mounts its roles view (JRNY-028)
  *
- * These journeys require the admin persona (saved in STORAGE_STATE.admin).
- * Spec §8.5 acceptance (from parity/manifest/admin.json JRNY-027/028).
+ * NARROWED, disclosed — read this before widening them again.
+ *
+ * `src/entries/admin/main.tsx` is a 160-line PLACEHOLDER with **zero network
+ * calls**: `DEFAULT_ROLE_PERMISSIONS` is hardcoded in the frontend, toggles are
+ * written to `sessionStorage` under `admin_role_permissions`, and `user_email`
+ * falls back to `'admin@example.com'`. The real admin UI (verified against the
+ * legacy stack on 2026-08-07) has ELEVEN sections — Users, Roles, Projects,
+ * Secrets, LiteLLM, LLM Gateway, App Requests, Configuration, Features, Audit
+ * Trail, System — over ~15k platform users, all database-backed.
+ *
+ * The previous versions of these two journeys asserted PERSISTENCE: J28 toggled
+ * a permission, saved, reloaded, and asserted the new value stuck. It did stick
+ * — in sessionStorage — so the test passed, and would have kept passing with no
+ * admin backend in existence at all. J27 was worse: its only assertions were
+ * `expect(bodyIsVisible).toBe(true)` (always true) and that the URL it had just
+ * navigated to contained the path it had just navigated to.
+ *
+ * What IS real and worth guarding is the server-side integration:
+ * `internal/api/adminui/handler.go` replaces an `<!-- admin_ui_config -->`
+ * marker with a script defining `window.admin_ui_config`
+ * (`vite_server_url`/`vite_base_uri`/`user_id`/`user_name`/`user_email`/
+ * `permissions`/`roles`). That handler, the SPA build, and the route mount can
+ * all break independently, and nothing else covers them.
+ *
+ * So these journeys now assert exactly that, and claim nothing about admin
+ * behaviour. Do NOT add persistence or permission-semantics assertions here
+ * until a real admin backend exists — they would be asserting the placeholder.
  */
 import { test as adminTest, expect } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
 
-// Admin journeys use the admin persona.
 adminTest.use({ storageState: STORAGE_STATE.admin });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Journey 27: Admin users screen loads with server-injected config
-// ─────────────────────────────────────────────────────────────────────────────
-adminTest('J27: admin users screen loads with server-injected config', async ({ page }) => {
-  // The admin UI is served at /admin/app by elitea-main (Go handler).
-  // elitea-main's adminui/handler.go:37-44 injects window.admin_ui_config
-  // into the response HTML.
-  await page.goto(BASE_URL + '/admin/app/users', { waitUntil: 'domcontentloaded' });
+interface AdminUIConfig {
+  readonly vite_server_url?: string;
+  readonly vite_base_uri?: string;
+  readonly user_email?: string;
+  readonly permissions?: readonly string[];
+  readonly roles?: readonly string[];
+}
+
+adminTest('J27: the admin SPA is served with server-injected config', async ({ page }) => {
+  const response = await page.goto(BASE_URL + '/admin/app/users', { waitUntil: 'domcontentloaded' });
+
+  // The Go handler must actually serve it. A 404 here means the route mount or
+  // the static dir is broken — previously this was a `test.skip()`.
+  expect(response?.status(), 'admin SPA must be served, not 404').toBeLessThan(400);
+
+  // The injected config is the real integration: handler.go replaces the
+  // `<!-- admin_ui_config -->` marker at request time. If the marker, the
+  // handler, or the built index.html drift apart, this is the only thing that
+  // notices.
+  const config = await page.evaluate(
+    () => (window as unknown as { admin_ui_config?: AdminUIConfig }).admin_ui_config,
+  );
+  expect(config, 'window.admin_ui_config must be injected by adminui/handler.go').toBeDefined();
+  expect(config?.vite_base_uri, 'vite_base_uri must name the admin base path').toContain('/admin');
+
+  // And the bundle must actually mount — a served-but-blank page is the failure
+  // this whole effort exists to catch.
+  await expect(page.getByText('Elitea Admin').first()).toBeVisible({ timeout: 10_000 });
 
   await checkA11y(page);
+});
 
-  // The page should either:
-  // a) Load the admin users table, OR
-  // b) Show an authentication redirect (if the admin persona isn't in admin mode).
-  // Either way, we must not see a 404 or blank page.
+adminTest('J28: the admin SPA mounts its roles view', async ({ page }) => {
+  const response = await page.goto(BASE_URL + '/admin/app/roles', { waitUntil: 'domcontentloaded' });
+  expect(response?.status(), 'admin roles route must be served, not 404').toBeLessThan(400);
 
-  // The Go handler injects window.admin_ui_config; we verify it without
-  // asserting presence (the A14 SPA may not be built yet).
-  const hasContent = await page.getByRole('main').or(page.locator('body')).first().isVisible();
-  expect(hasContent).toBe(true);
-
-  // Non-admin users should not be able to reach this screen.
-  // (Verified via the admin persona — they should be allowed through.)
-  const url = page.url();
-  // Should not have been redirected to the login page (which means access was denied).
-  // The admin path must be preserved or the admin SPA has loaded.
-  expect(url).toContain('/admin/app');
+  // Client-side routing must resolve /roles to a rendered matrix, not a blank
+  // div. Asserting the ROLE NAMES the placeholder defines, so this fails if the
+  // bundle stops mounting — while deliberately asserting nothing about what
+  // toggling them does, because today it does nothing server-side.
+  const matrix = page.getByRole('table').first();
+  await expect(matrix).toBeVisible({ timeout: 10_000 });
+  for (const role of ['admin', 'editor', 'viewer']) {
+    await expect(matrix.getByText(role, { exact: true }).first()).toBeVisible();
+  }
 
   await checkA11y(page);
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Journey 28: Admin role permission matrix edit
-// ─────────────────────────────────────────────────────────────────────────────
-adminTest('J28: admin role permission matrix edit', async ({ page }) => {
-  await page.goto(BASE_URL + '/admin/app/roles', { waitUntil: 'domcontentloaded' });
-
-  await checkA11y(page);
-
-  // Check if the admin SPA is deployed (it may not be in the E2E stack).
-  const has404 = await page.getByText(/404|page not found/i).isVisible().catch(() => false);
-  if (has404) {
-    adminTest.skip(true, 'Admin SPA not deployed in this E2E stack build');
-    return;
-  }
-
-  // The roles permission matrix should render.
-  // Gate: the admin SPA may be deployed but render a stub UI (Wave-3).
-  // Skip gracefully if no matrix/table content appears within the timeout.
-  const matrixOrContent = page
-    .getByRole('table')
-    .or(page.getByRole('grid'))
-    .or(page.getByText(/permission|role/i)).first();
-
-  const matrixVisible = await matrixOrContent.first().isVisible({ timeout: 5_000 }).catch(() => false);
-  if (!matrixVisible) {
-    adminTest.skip(true, 'Admin roles/permission matrix not yet implemented in this build');
-    return;
-  }
-
-  // Toggle a permission cell.
-  const permissionCell = page
-    .getByRole('checkbox')
-    .or(page.getByRole('switch'))
-    .first();
-
-  const cellVisible = await permissionCell.isVisible().catch(() => false);
-  if (cellVisible) {
-    const wasChecked = await permissionCell.isChecked().catch(() => false);
-    await permissionCell.click();
-
-    // Save the change.
-    const saveButton = page.getByRole('button', { name: /save/i });
-    if (await saveButton.isVisible().catch(() => false)) {
-      await saveButton.click();
-      await page.waitForTimeout(1_000);
-    }
-
-    // Reload and verify the change persisted.
-    await page.reload();
-    await page.waitForURL(`**/admin/app**`, { timeout: 10_000 });
-
-    const cellAfter = await permissionCell.isChecked().catch(() => wasChecked);
-    expect(cellAfter).toBe(!wasChecked);
-  }
-
-  await checkA11y(page);
-});
+/*
+ * NOT COVERED — and deliberately so:
+ *
+ *  - that toggling a permission persists anywhere but sessionStorage
+ *  - that permissions/roles from `window.admin_ui_config` gate anything
+ *  - the ten other admin sections the real product has (Users list, Projects,
+ *    Secrets, LiteLLM, LLM Gateway, App Requests, Configuration, Features,
+ *    Audit Trail, System)
+ *
+ * These need a real admin backend first. Tracked separately — see the admin
+ * placeholder issue rather than widening these journeys.
+ */
