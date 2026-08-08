@@ -109,7 +109,7 @@ function useUsersPageData(projectId: string, canView: boolean): UseUsersPageData
     // level too deep, resolved to undefined, and made `rows` permanently [] —
     // every user saw an empty members table with no error anywhere. Measured
     // body: {"rows":[…],"total":2}.
-    const inner = (resp as { data?: { data?: { rows?: UserRecord[]; total?: number } } }).data?.data;
+    const inner = (resp as { data?: { rows?: UserRecord[]; total?: number } }).data;
     const rows = inner?.rows ?? [];
     const total = inner?.total ?? 0;
     setServerTotal(total);
