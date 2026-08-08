@@ -72,16 +72,33 @@ describe('performLogout', () => {
     expect(window.sessionStorage.getItem('other_app.session')).toBe('keep');
   });
 
-  it('hands the browser to the backend logout (UserButton.jsx:32 parity)', () => {
+  /**
+   * `target_to` names the OIDC login entry point so the signed-out user
+   * actually reaches a login screen (JRNY-004's third acceptance line). See
+   * `logout.ts` for why that is behavioural parity with the old app rather
+   * than an addition: the old edge supplied the same end state implicitly by
+   * gating the SPA, which this stack does not do.
+   */
+  const LOGOUT_URL = '/forward-auth/logout?target_to=%2Fforward-auth%2Fauth_oidc%2Flogin';
+
+  it('hands the browser to the backend logout, targeted at the login screen', () => {
     const redirect = vi.fn();
     performLogout({ redirect, origin: 'https://app.example' });
-    expect(redirect).toHaveBeenCalledExactlyOnceWith('https://app.example/forward-auth/logout');
+    expect(redirect).toHaveBeenCalledExactlyOnceWith('https://app.example' + LOGOUT_URL);
+  });
+
+  it('percent-encodes the target so its leading slash cannot be read as a path segment', () => {
+    const redirect = vi.fn();
+    performLogout({ redirect, origin: 'https://app.example' });
+    const url = new URL(String(redirect.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe('/forward-auth/logout');
+    expect(url.searchParams.get('target_to')).toBe('/forward-auth/auth_oidc/login');
   });
 
   it('defaults the origin to the page origin', () => {
     const redirect = vi.fn();
     performLogout({ redirect });
-    expect(redirect).toHaveBeenCalledExactlyOnceWith('http://localhost:3000/forward-auth/logout');
+    expect(redirect).toHaveBeenCalledExactlyOnceWith('http://localhost:3000' + LOGOUT_URL);
   });
 
   it('defaults the redirect to a window.location.href assignment', () => {

@@ -21,33 +21,21 @@ import { BASE_URL } from '../../../playwright.config';
 // Journey 3: Session expiry → re-auth popup → retry
 // ─────────────────────────────────────────────────────────────────────────────
 test('J3: session expiry triggers re-auth popup and retries original request', async ({ page }) => {
-  // KNOWN-RED. The re-auth popup can never open in this app: nothing wires
-  // the controller into the client that actually makes the requests.
+  // JRNY-003, end to end against the real provider: a 401 mid-session must
+  // open ONE re-auth popup, that popup must complete a real OIDC round trip,
+  // and the original request must then succeed.
   //
-  //   * `src/shared/api/http.ts:139` `needsReauth()` treats 401/403 as
-  //     "re-auth needed", and `http.ts:265-267` runs the flow — but only
-  //     `if (reauthenticate === undefined) return Promise.resolve(false);`
-  //     does not short-circuit first.
-  //   * `src/app/App.tsx:72` is the ONLY bootstrap call site:
-  //     `configureGeneratedClient({ baseUrl: config.config.vite_server_url })`
-  //     — no `reauthenticate` key. Every generated hook shares that one
-  //     client, so `reauthenticate` is `undefined` for the entire app and
-  //     the 401 branch returns false without opening anything.
-  //   * `createAuthPopupController` (`src/shared/api/auth/popup.ts:90`) has
-  //     no production call site at all — `grep -rn 'reauthenticate' src/`
-  //     outside its own module and tests returns only doc comments and
-  //     `routes/auth-callback.tsx:58`, which deliberately omits it.
-  //
-  // The previous revision opened with `page.waitForEvent('popup').catch(() =>
-  // null)` and then wrapped its whole body in `if (popup) { … }`, so the
-  // never-opening popup was simply skipped and the test fell through to a
-  // bare `checkA11y(page)` — it passed by asserting nothing about JRNY-003.
-  // `test.fail()`, never `test.skip()`: the assertions below run for real and
-  // this test flips to FAILED the day the popup is wired.
-  // Tracked as #136: App.tsx:72 configures the client with no `reauthenticate`,
-  // so http.ts:266 returns false immediately and needsReauth() is dead for every
-  // 401/403. createAuthPopupController has no production call site.
-  test.fail();
+  // What had to be wired for this to be reachable at all (issue #136 B), all
+  // of it dead beforehand: `src/app/App.tsx` is the only bootstrap and called
+  // `configureGeneratedClient({ baseUrl })` with no `reauthenticate`, so
+  // `shared/api/http.ts`'s `runReauth()` returned false before doing anything
+  // and `needsReauth()` was dead for every 401/403 in the app;
+  // `createAuthPopupController` had no production call site; and the popup it
+  // builds opened the callback route DIRECTLY, which cannot re-authenticate on
+  // a stack that does not gate the SPA at the edge (the popup is simply served
+  // the app, its session probe reports "no session", and the flight rejects).
+  // The popup now opens `/forward-auth/auth_oidc/login` with the callback
+  // route as `target_to`, which is the flow the assertions below drive.
 
   await page.goto(BASE_URL + '/app/');
   await page.waitForURL('**/chat**', { timeout: 15_000 });
@@ -66,7 +54,13 @@ test('J3: session expiry triggers re-auth popup and retries original request', a
 
   // 1. The re-auth popup must open, at the OIDC authorize endpoint.
   const popup = await popupPromise;
-  await popup.waitForURL(/localhost:9400|oidc-mock|\/forward-auth\/auth_oidc/, { timeout: 15_000 });
+  // The provider's own authorize page, not merely "the popup went somewhere":
+  // `oidc.localhost:9400` is the alias elitea-main hands out (see
+  // `deploy/docker-compose.e2e-standalone.yml`). A popup that stalled on the
+  // app's own `/forward-auth/auth_oidc/login` hop — or on an error page,
+  // which is what happened while the issuer was an unresolvable compose
+  // hostname — does not match.
+  await popup.waitForURL(/oidc\.localhost:9400/, { timeout: 15_000 });
 
   // 2. Completing re-auth in the popup must close it...
   await popup.getByLabel('Subject').fill('e2e-member@autotest.local');

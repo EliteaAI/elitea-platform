@@ -76,8 +76,32 @@ services:
   # ── OIDC mock ───────────────────────────────────────────────────────────────
   # https://github.com/geigerzaehler/oidc-provider-mock
   # Accept any client_id/secret; users provisioned via PUT /users/{email}
+  #
+  # The `oidc.localhost` alias is what makes the provider addressable by ONE
+  # URL from BOTH sides, which the browser-driven journeys require:
+  #
+  #   * elitea-main resolves it through the compose network to this container;
+  #   * the HOST browser resolves it to 127.0.0.1 (RFC 6761: the OS maps every
+  #     `*.localhost` name to loopback — measured on this machine, and it is an
+  #     OS-level answer, so WebKit gets it as well as Chromium), reaching the
+  #     published port below.
+  #
+  # Why it matters: the mock derives its issuer and every endpoint in its
+  # discovery document from the request's Host header (measured), so whatever
+  # host elitea-main discovers it under is the host the BROWSER is then
+  # redirected to. With `OIDC_ISSUER_URL: http://oidc-mock:9400` that was a
+  # compose-internal name the host browser cannot resolve, so every
+  # browser-initiated OIDC navigation died on ERR_NAME_NOT_RESOLVED. Tests that
+  # drive the login endpoint THEMSELVES papered over it by string-rewriting the
+  # hostname (`e2e/auth.setup.ts`), but a redirect the browser follows on its
+  # own — J3's re-auth popup, J4's post-logout hand-off — cannot be rewritten
+  # from the test side.
   oidc-mock:
     image: ghcr.io/geigerzaehler/oidc-provider-mock:latest
+    networks:
+      default:
+        aliases:
+          - oidc.localhost
     ports:
       - "9400:9400"
     healthcheck:
@@ -99,7 +123,10 @@ services:
       ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
       APPLICATION_SECRET_KEY: "changeme-e2e"
       SKIP_MIGRATIONS: "1"
-      OIDC_ISSUER_URL: "http://oidc-mock:9400"
+      # Reachable under this exact name from the container AND from the host
+      # browser — see the oidc-mock service's comment for why that symmetry is
+      # a hard requirement and not a convenience.
+      OIDC_ISSUER_URL: "http://oidc.localhost:9400"
       OIDC_CLIENT_ID: "elitea-e2e-client"
       OIDC_CLIENT_SECRET: "elitea-e2e-secret"
       OIDC_REDIRECT_URI: "http://localhost:${E2E_PORT:-8082}/forward-auth/auth_oidc/callback"

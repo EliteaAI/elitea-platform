@@ -6,6 +6,7 @@ import { getPermissionListMockHandler } from '@/shared/api/generated/auth/auth.m
 import { getGetCurrentAuthorMockHandler } from '@/shared/api/generated/social/social.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { resetConfigForTests } from '@/shared/config/get-config';
+import { BRAND_PACK_GLOBAL, DEFAULT_BRAND_PACK } from '@/shared/brand';
 import { installWebStorageShim } from '@/test/webstorage';
 import { server } from '@/test/setup';
 
@@ -103,6 +104,42 @@ describe('AppShell', () => {
     await waitFor(() => {
       expect(document.title).toContain('Private');
     });
+  });
+
+  /**
+   * The brand pack's `product.name` must reach `document.title` (JRNY-030's
+   * "product name comes from the pack", issue #136 C). Before channel C was
+   * wired the product name appeared in exactly one place — the static
+   * `<title>Elitea</title>` in `index.html` — and the first route change
+   * overwrote it, so nothing observable was ever pack-driven.
+   *
+   * Asserted against a SERVED pack with a distinct name, not the literal
+   * "Elitea": the compiled default carries that same name, so a literal
+   * assertion would pass with channel C entirely unwired.
+   */
+  it("appends the SERVED brand pack's product name to document.title", async () => {
+    (window as unknown as Record<string, unknown>)[BRAND_PACK_GLOBAL] = {
+      ...DEFAULT_BRAND_PACK,
+      id: 'autotest-title',
+      product: { name: 'Contoso Cloud', shortName: 'Contoso' },
+    };
+
+    await renderWithNavigation(
+      <AppShell>
+        <div>page content</div>
+      </AppShell>,
+    );
+
+    // Both halves in ONE waitFor: the product name lands on the first paint
+    // while the project is still resolving, so waiting on it alone would
+    // resolve early and the project assertion below would race.
+    await waitFor(() => {
+      expect(document.title).toContain('Contoso Cloud');
+      // The project half of the title is preserved, not replaced.
+      expect(document.title).toContain('Private');
+    });
+
+    delete (window as unknown as Record<string, unknown>)[BRAND_PACK_GLOBAL];
   });
 
   it('prefers a previously-persisted project selection over the auto-picked default', async () => {

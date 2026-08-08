@@ -49,24 +49,25 @@ async function performOidcLogin(
   email: string,
   storageStatePath: string,
 ): Promise<void> {
-  // Navigate directly to the OIDC login endpoint — elitea-main redirects to
-  // the mock's authorize page (the SPA doesn't do an automatic server redirect).
-  // elitea-main is configured with OIDC_ISSUER_URL=http://oidc-mock:9400, which
-  // causes it to redirect to http://oidc-mock:9400/oauth2/authorize. The browser
-  // cannot resolve that container hostname, so we navigate to the login endpoint
-  // with waitUntil:'commit' which resolves as soon as the server sends a 302.
-  // We then extract the Location header URL and rewrite oidc-mock → localhost.
-  const loginResponse = await page.request.get(BASE_URL + '/forward-auth/auth_oidc/login', {
-    maxRedirects: 0,
-  }).catch(() => null);
-
-  const authorizeURL = loginResponse?.headers()['location']?.replace('oidc-mock:9400', 'localhost:9400')
-    ?? (BASE_URL + '/forward-auth/auth_oidc/login');
-
-  await page.goto(authorizeURL, { waitUntil: 'domcontentloaded' });
+  // Navigate to the OIDC login endpoint — elitea-main redirects to the mock's
+  // authorize page (the SPA does no automatic server redirect of its own).
+  //
+  // No hostname rewrite any more. `OIDC_ISSUER_URL` used to be the
+  // compose-internal `http://oidc-mock:9400`, so the authorize URL
+  // elitea-main handed out was unreachable from the host browser and this
+  // setup had to read the `Location` header itself and rewrite the host. It is
+  // `http://oidc.localhost:9400` now — a network alias on the oidc-mock
+  // service that resolves to the container inside the compose network and to
+  // loopback from the host (see `deploy/docker-compose.e2e-standalone.yml`) —
+  // so a plain navigation follows the whole chain. That change is what made
+  // J3's re-auth popup possible at all: a redirect the BROWSER follows on its
+  // own cannot be rewritten from the test side.
+  await page.goto(BASE_URL + '/forward-auth/auth_oidc/login', {
+    waitUntil: 'domcontentloaded',
+  });
 
   // Wait for the OIDC mock's authorize page.
-  await page.waitForURL(/localhost:9400|oidc-mock/, { timeout: 15_000 });
+  await page.waitForURL(/oidc\.localhost:9400/, { timeout: 15_000 });
 
   // oidc-provider-mock authorize form: fill Subject (the user's email) and submit.
   // The field label is "Subject" per the mock's default template.

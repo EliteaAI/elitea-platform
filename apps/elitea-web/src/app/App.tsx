@@ -3,8 +3,9 @@ import { useEffect, useState } from 'react';
 
 import { getConfig, MissingEnvPage } from '@/shared/config';
 import { configureGeneratedClient } from '@/shared/api/generated/mutator';
+import { createAuthPopupController } from '@/shared/api/auth';
 
-import { AppProviders } from './providers';
+import { AppProviders, getAppBasename } from './providers';
 import { createAppRouter } from './router';
 import { sessionAuthContext, useSessionStore } from './session-store';
 
@@ -54,6 +55,22 @@ export function App() {
   const config = getConfig();
   const [router] = useState(() => createAppRouter());
   const fetchSession = useSessionStore((state) => state.fetchSession);
+  /**
+   * ONE controller for the whole app lifetime (issue #136 B). A controller
+   * created per render would defeat its single-flight slot — `flight` is
+   * closure state — so it is built once by a lazy `useState` initializer,
+   * the same R-S2 shape `router` above uses. Created before the config gate
+   * below because hooks must be unconditional; construction itself touches
+   * neither config nor the DOM.
+   *
+   * `basePath` is trimmed of the trailing slash `VITE_BASE_URI` carries
+   * (`/app/`), because the callback path it is concatenated with already
+   * starts with one — `/app//auth-callback` is a different URL and would not
+   * match ROUTE-001.
+   */
+  const [authPopup] = useState(() =>
+    createAuthPopupController({ basePath: getAppBasename().replace(/\/$/, '') }),
+  );
 
   useEffect(() => {
     void fetchSession().then(() => {
@@ -69,7 +86,21 @@ export function App() {
   // Wire the generated API client with the runtime server URL (R2 gap).
   // Called on every render, but idempotent — configureGeneratedClient replaces
   // the singleton in-place, which is fine since the URL never changes at runtime.
-  configureGeneratedClient({ baseUrl: config.config.vite_server_url });
+  //
+  // `reauthenticate` is what makes §5.4 behaviour 2/3 live: without it
+  // `http.ts`'s `runReauth()` returns false before doing anything, so
+  // `needsReauth()` was dead for every 401/403 in the app and
+  // `createAuthPopupController` had no production call site at all (issue
+  // #136 B). Passing the CONTROLLER's method (not a fresh flight per client)
+  // keeps single-flight intact across the re-configurations this render-time
+  // call performs.
+  configureGeneratedClient({
+    baseUrl: config.config.vite_server_url,
+    // Called through the controller rather than passed as a bare method
+    // reference: the flight slot is closure state on that one object, so it
+    // must stay the receiver (and `typescript(unbound-method)` says so too).
+    reauthenticate: () => authPopup.reauthenticate(),
+  });
 
   return (
     <AppProviders>

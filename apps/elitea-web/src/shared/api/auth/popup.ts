@@ -23,6 +23,8 @@ import {
   AUTH_CHANNEL_PREFIX,
   AUTH_STATE_PARAM,
   AUTH_STATE_STORAGE_KEY,
+  OIDC_LOGIN_PATH,
+  TARGET_TO_PARAM,
   authResultStorageKey,
   isAuthResultMessage,
 } from './constants';
@@ -164,10 +166,17 @@ export function createAuthPopupController(options: AuthPopupOptions = {}): AuthP
         };
       }
 
-      const callbackUrl =
-        `${options.baseOrigin ?? window.location.origin}${options.basePath ?? ''}` +
-        `${AUTH_CALLBACK_PATH}?${AUTH_STATE_PARAM}=${state}`;
-      const popup = openWindow(callbackUrl, 'elitea-auth', popupFeatures());
+      // The popup's landing page: this app's own callback route, correlated
+      // by `auth_state`. It is the OIDC login's `target_to`, NOT the popup's
+      // opening URL — see OIDC_LOGIN_PATH's doc comment for why opening it
+      // directly can never re-authenticate on a stack that does not gate the
+      // SPA at the edge.
+      const callbackTarget =
+        `${options.basePath ?? ''}${AUTH_CALLBACK_PATH}?${AUTH_STATE_PARAM}=${state}`;
+      const popupUrl =
+        `${options.baseOrigin ?? window.location.origin}${OIDC_LOGIN_PATH}` +
+        `?${TARGET_TO_PARAM}=${encodeURIComponent(callbackTarget)}`;
+      const popup = openWindow(popupUrl, 'elitea-auth', popupFeatures());
       if (popup === null) {
         settle(new AuthPopupError('popup_blocked'));
         return;

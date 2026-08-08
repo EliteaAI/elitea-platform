@@ -10,7 +10,7 @@
  */
 import { clearNamespace } from '../../lib/storage';
 
-import { LOGOUT_PATH } from './constants';
+import { LOGOUT_PATH, OIDC_LOGIN_PATH, TARGET_TO_PARAM } from './constants';
 
 export interface LogoutDeps {
   /** Navigation seam; default assigns `window.location.href`. */
@@ -20,9 +20,31 @@ export interface LogoutDeps {
 }
 
 /**
- * Clears the entire `el.` namespace (local + session), then hands the
- * browser to the backend logout (old UserButton.jsx:32 preserved:
- * `{origin}/forward-auth/logout`).
+ * Clears the entire `el.` namespace (local + session), then hands the browser
+ * to the backend logout (old UserButton.jsx:32 preserved:
+ * `{origin}/forward-auth/logout`) with the OIDC login entry point as its
+ * `target_to`.
+ *
+ * The `target_to` is what makes JRNY-004's "…and the login screen is reached"
+ * true, and it is BEHAVIOURAL parity with the old app rather than a new idea.
+ * The old app sent the browser to a bare `/forward-auth/logout` and still
+ * arrived at a login screen, because the old deployment gated the SPA at the
+ * edge: the post-logout landing (`/` → the app) was itself answered with an
+ * OIDC redirect. This stack does not gate `/app/*` at the edge (measured —
+ * an unauthenticated browser is served the SPA shell at any deep link), so a
+ * bare logout clears the cookie and then parks the signed-out user on the
+ * index route's loading state forever. Naming the login endpoint explicitly
+ * reproduces the old END STATE on a stack whose edge no longer supplies it,
+ * and elitea-main accepts it: it is a same-origin absolute path, which is all
+ * `browserflow.CanonicalReturnTarget` requires.
+ *
+ * Verified against the running E2E stack, as a real browser navigation chain:
+ * `/forward-auth/logout?target_to=…` → 302 `/forward-auth/auth_oidc/login`
+ * → 302 the provider's `/oauth2/authorize`. (On that stack the last hop then
+ * fails DNS, because the issuer is the compose hostname `oidc-mock` which the
+ * host browser cannot resolve — the same artifact `e2e/auth.setup.ts` works
+ * around by rewriting the hostname. That is a property of the test stack, not
+ * of this function.)
  */
 export function performLogout(deps: LogoutDeps = {}): void {
   clearNamespace();
@@ -32,5 +54,7 @@ export function performLogout(deps: LogoutDeps = {}): void {
     ((url: string): void => {
       window.location.href = url;
     });
-  redirect(origin + LOGOUT_PATH);
+  redirect(
+    `${origin}${LOGOUT_PATH}?${TARGET_TO_PARAM}=${encodeURIComponent(OIDC_LOGIN_PATH)}`,
+  );
 }

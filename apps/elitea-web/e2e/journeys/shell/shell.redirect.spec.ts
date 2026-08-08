@@ -87,11 +87,15 @@ test('J2: OIDC login honours target_to deep link', async ({ browser }) => {
   // here, no amount of post-login URL checking could tell us why.
   expect(decodeURIComponent(location!)).toContain(targetPath);
 
-  // The browser cannot resolve the `oidc-mock` container hostname (same
-  // rewrite auth.setup.ts performs).
-  await page.goto(location!.replace('oidc-mock:9400', 'localhost:9400'), {
-    waitUntil: 'domcontentloaded',
-  });
+  // No hostname rewrite: `deploy/docker-compose.e2e-standalone.yml` gives the
+  // provider the network alias `oidc.localhost`, which resolves to this
+  // container from inside the compose network AND to loopback from the host
+  // browser, so the authorize URL elitea-main hands out is navigable as-is.
+  // (It used to be `oidc-mock:9400`, a compose-internal name only reachable
+  // from inside, which every test that drove the login endpoint itself had to
+  // string-rewrite — and which J3's browser-initiated popup navigation could
+  // not rewrite at all.)
+  await page.goto(location!, { waitUntil: 'domcontentloaded' });
   await page.getByLabel('Subject').fill('e2e-member@autotest.local');
   await page.getByRole('button', { name: 'Authorize', exact: true }).click();
 
@@ -117,38 +121,46 @@ test('J2: OIDC login honours target_to deep link', async ({ browser }) => {
 // Journey 4: Logout → all el.* storage cleared
 // ─────────────────────────────────────────────────────────────────────────────
 test('J4: logout clears user state and el.* storage', async ({ page }) => {
-  // KNOWN-RED. The app has no working logout.
+  // JRNY-004's three acceptance lines, each asserted separately below:
+  // the user state is cleared, the login screen is reached, and all
+  // application storage keys are removed.
   //
-  //   * `src/routes/_shell/settings/settings-layout.tsx:68-72` renders a
-  //     "Log out" item in the PERSONAL settings section.
-  //   * `settings-layout.tsx:76-83` — its `handleItemClick` does nothing but
-  //     `window.history.replaceState(null, '', '/settings/' + tabId)`. For
-  //     `logout` that pushes a URL with no route behind it, and
-  //     `SettingsRedirect` then bounces the user to
-  //     /app/settings/model-configuration. Measured on this stack: clicking
-  //     it leaves every `el.*` key in place and never leaves the app.
-  //   * `src/shared/api/auth/logout.ts:27` `performLogout()` — the function
-  //     that sweeps the `el.` namespace and hands the browser to
-  //     `/forward-auth/logout` — is exported from
-  //     `src/shared/api/auth/index.ts:32` and has NO call site anywhere in
-  //     `src/` (only its own unit test). It is dead code.
+  // ASSERTION CHANGED FROM `waitForURL` TO NAVIGATION REQUESTS — read this
+  // before "simplifying" it back. The earlier revision asserted
   //
-  // The previous revision hid this behind a try/catch whose `catch` branch
-  // swept `el.*` itself with `page.evaluate` and then asserted that its own
-  // sweep had worked — a test that passed by doing the product's job for it.
-  // `test.fail()`, never `test.skip()`: every assertion still runs, and the
-  // moment logout is wired this test reports FAILED (unexpected pass) instead
-  // of quietly going on lying.
-  // Tracked as #136: performLogout() (shared/api/auth/logout.ts:27) has NO call
-  // site in src/. settings-layout.tsx:76-83 only replaceState()s to a path that
-  // redirects back into the app, so el.* keys survive and the user never leaves.
-  test.fail();
-
+  //   await page.waitForURL(/localhost:9400|oidc-mock|\/forward-auth\/logout/)
+  //
+  // and that matcher cannot express what logout does, for a reason measured
+  // directly rather than assumed. `performLogout()` sends the browser to
+  // `/forward-auth/logout?target_to=/forward-auth/auth_oidc/login`, which
+  // elitea-main answers 302 → `/forward-auth/auth_oidc/login`, itself 302 →
+  // the provider's `/oauth2/authorize`. All three hops were observed as real
+  // navigation requests — but a chain of server-side 302s COMMITS exactly one
+  // document, so `page.url()` and `framenavigated` only ever report the final
+  // landing and both intermediate hops are invisible to a URL matcher.
+  // Measured: with the old bare-logout hand-off the only URL ever reported
+  // was `/app/`.
+  //
+  // So the URL matcher is replaced by an assertion on the navigation requests
+  // themselves, which is STRICTLY STRONGER than the glob it replaces: it
+  // proves the browser left the SPA for the logout endpoint, that the hand-off
+  // named the login screen, and that the chain then reached the identity
+  // provider's authorize endpoint, IN ORDER — none of which the old glob
+  // distinguished (its third alternative, `/forward-auth/logout`, would also
+  // have matched a chain that got no further). Step 2 additionally asserts the
+  // SERVER session is really gone, which the previous revision never checked
+  // at all.
   await page.goto(BASE_URL + '/app/settings/personalization', { waitUntil: 'domcontentloaded' });
 
   // Wait for the settings drawer to be interactive before touching storage.
   const logoutItem = page.getByText('Log out', { exact: true });
   await expect(logoutItem).toBeVisible({ timeout: 20_000 });
+
+  // Precondition: the session this journey is about to destroy really exists.
+  // Without this, every assertion below is also satisfied by a browser that
+  // was never signed in.
+  const before = await page.request.get(BASE_URL + '/forward-auth/info');
+  expect(await before.json()).toMatchObject({ authenticated: true });
 
   // A sentinel in the namespace performLogout() is contracted to sweep, plus
   // the two keys the app itself writes (`el.project.id` / `el.project.name`,
@@ -158,13 +170,37 @@ test('J4: logout clears user state and el.* storage', async ({ page }) => {
     window.sessionStorage.setItem('el.test-sentinel-shell', '1');
   });
 
+  const navigations: string[] = [];
+  page.on('request', (request) => {
+    if (request.isNavigationRequest()) navigations.push(request.url());
+  });
+
   await logoutItem.click();
 
-  // 1. Logout must leave the SPA — /forward-auth/logout, then the OIDC mock
-  //    or the re-login entry point.
-  await page.waitForURL(/localhost:9400|oidc-mock|\/forward-auth\/logout/, { timeout: 15_000 });
+  // 1. Logout must leave the SPA for the backend logout endpoint, and that
+  //    hand-off must carry the browser on to the identity provider.
+  await expect
+    .poll(() => navigations.filter((url) => /\/oauth2\/authorize|\/authorize\?/.test(url)).length, {
+      timeout: 15_000,
+    })
+    .toBeGreaterThan(0);
+  const logoutHop = navigations.find((url) => url.includes('/forward-auth/logout'));
+  expect(logoutHop, 'the browser must navigate to /forward-auth/logout').toBeTruthy();
+  // The hand-off must name the login screen as its target, or the signed-out
+  // user is parked on the index route's loading state instead.
+  expect(new URL(logoutHop!).searchParams.get('target_to')).toBe('/forward-auth/auth_oidc/login');
+  // ...and the login hop must sit BETWEEN the logout and the provider.
+  const order = (predicate: (url: string) => boolean): number => navigations.findIndex(predicate);
+  expect(order((url) => url.includes('/forward-auth/auth_oidc/login'))).toBeGreaterThan(
+    order((url) => url.includes('/forward-auth/logout')),
+  );
 
-  // 2. ...and it must have swept the namespace on the way out. Read from the
+  // 2. The SERVER session must be gone — the "user state is cleared" half.
+  //    A client-side storage sweep alone would leave the user still signed in.
+  const after = await page.request.get(BASE_URL + '/forward-auth/info');
+  expect(await after.json()).toMatchObject({ authenticated: false });
+
+  // 3. ...and it must have swept the namespace on the way out. Read from the
   //    app origin, not from wherever the redirect landed.
   await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded' });
   const survivingElKeys = await page.evaluate(() => {

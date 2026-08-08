@@ -33,7 +33,7 @@ func validPackMap() map[string]any {
 			"scale":          1.25,
 		},
 		"shape": map[string]any{
-			"radiusSm": 2, "radiusMd": 6, "radiusLg": 10,
+			"radiusSm": 2, "radiusMd": 6, "radiusLg": 10, "radiusPill": 500, // 500, not 9999: TestBootstrap_CaseVariantKeyNotServed asserts the served body contains no "999" sentinel, and "9999" contains it.
 			"density": "compact",
 		},
 		"locale": map[string]any{"default": "en-US", "dateLocale": "en-US"},

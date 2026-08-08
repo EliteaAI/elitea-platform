@@ -81,11 +81,22 @@ type Typography struct {
 }
 
 // Shape mirrors BrandPack.shape.
+//
+// RadiusPill was added to the UI schema after this mirror was written
+// (shared/brand/schema.ts's "[S1 Part B] Additive" note — the pill/circle
+// radius MuiButton's icon-only and `maxi` variants need). It is REQUIRED
+// there, not optional, so a pack served without it fails
+// `BrandPack.parse()` outright: the whole point of this mirror is that
+// "any pack this package accepts and re-serialises parses under the UI's
+// zod schema", and omitting the field broke exactly that. Found by wiring
+// channel C into the running app (issue #136 C): the UI silently fell back
+// to its compiled default pack because the served pack would not parse.
 type Shape struct {
-	RadiusSm float64 `json:"radiusSm"`
-	RadiusMd float64 `json:"radiusMd"`
-	RadiusLg float64 `json:"radiusLg"`
-	Density  string  `json:"density"` // enum: comfortable | compact
+	RadiusSm   float64 `json:"radiusSm"`
+	RadiusMd   float64 `json:"radiusMd"`
+	RadiusLg   float64 `json:"radiusLg"`
+	RadiusPill float64 `json:"radiusPill"`
+	Density    string  `json:"density"` // enum: comfortable | compact
 }
 
 // Locale mirrors BrandPack.locale. Both fields default to en-GB.
@@ -153,15 +164,31 @@ func DefaultPack() *Pack {
 			BaseSize:       defaultBaseSize,
 			Scale:          defaultScale,
 		},
-		Shape:  Shape{RadiusSm: 4, RadiusMd: 8, RadiusLg: 12, Density: "comfortable"},
+		// radiusPill is the pill/circle radius; 9999 is the value the UI's
+		// own default pack (shared/brand/tokens/default.pack.json) uses.
+		Shape:  Shape{RadiusSm: 4, RadiusMd: 8, RadiusLg: 12, RadiusPill: 9999, Density: "comfortable"},
 		Locale: Locale{Default: defaultLocale, DateLocale: defaultLocale},
 		// Placeholder hue pending unit T1's hue unification (spec §4.1
 		// blocker 1); any valid value serves, since channel A's compiled-in
 		// pack is the real default the UI renders with.
 		Brand: Brand{Hue: "#C428DD"},
+		// EMPTY, deliberately. The schema permits any token id (the records
+		// are open), but the id VOCABULARY belongs to the UI's default pack,
+		// and the UI expands dotted ids into nested groups
+		// (`shared/brand/toMuiPalette.ts`'s `unflatten`). The previous values
+		// here — `"surface"` and `"text"` — were not real ids: `text` is a
+		// GROUP in that vocabulary (`text.primary`, `text.secondary`, …), so
+		// stating it as a leaf made `unflatten` throw "token id text collides
+		// with a group of the same name", which took down the entire provider
+		// tree the moment channel C was actually wired to the app.
+		//
+		// Empty records are also the RIGHT floor rather than merely a safe
+		// one: with no token stated, every id is derived from `brand.hue`
+		// (`resolveScheme`), so this pack paints a complete, coherent surface
+		// instead of two arbitrary colours plus 360 defaults.
 		Schemes: Schemes{
-			Light: map[string]string{"surface": "#FFFFFF", "text": "#1F2933"},
-			Dark:  map[string]string{"surface": "#121417", "text": "#E8EAED"},
+			Light: map[string]string{},
+			Dark:  map[string]string{},
 		},
 	}
 }
@@ -229,7 +256,7 @@ func ParsePack(data []byte) (*Pack, error) {
 	if err != nil {
 		return nil, err
 	}
-	shkeys, err := sectionKeys(top["shape"], "shape", "radiusSm", "radiusMd", "radiusLg", "density")
+	shkeys, err := sectionKeys(top["shape"], "shape", "radiusSm", "radiusMd", "radiusLg", "radiusPill", "density")
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +324,7 @@ func ParsePack(data []byte) (*Pack, error) {
 		{shkeys, "radiusSm", "shape.radiusSm", &p.Shape.RadiusSm},
 		{shkeys, "radiusMd", "shape.radiusMd", &p.Shape.RadiusMd},
 		{shkeys, "radiusLg", "shape.radiusLg", &p.Shape.RadiusLg},
+		{shkeys, "radiusPill", "shape.radiusPill", &p.Shape.RadiusPill},
 		{shkeys, "density", "shape.density", &p.Shape.Density},
 		{lkeys, "default", "locale.default", &p.Locale.Default},
 		{lkeys, "dateLocale", "locale.dateLocale", &p.Locale.DateLocale},

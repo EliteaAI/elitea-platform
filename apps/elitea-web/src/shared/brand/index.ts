@@ -27,6 +27,9 @@ export {
 /** @public Wave-1 surface — channel A floor; also the derivation reference. */
 export { DEFAULT_BRAND_PACK, BRAND_ANCHOR_TOKEN } from './tokens';
 
+/** Channel C (spec §4.3) — the served per-deployment pack; see `channelC.ts`. */
+export { BRAND_PACK_GLOBAL, parseBrandPack, resolveBrandPack } from './channelC';
+
 /** @public Wave-1 surface — W3/channel B+C validate incoming packs with this. */
 export { BrandPack } from './schema';
 export type { BrandInput, SchemeRecord } from './schema';

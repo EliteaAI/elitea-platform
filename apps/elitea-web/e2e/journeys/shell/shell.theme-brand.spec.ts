@@ -95,35 +95,19 @@ test('J29: theme switch persists across reload', async ({ page }) => {
 test('J30: brand pack loads logo, primary colour, and product name without rebuild', async ({
   page,
 }) => {
-  // KNOWN-RED. The server half of channel C shipped; the client half did not,
-  // so nothing about the running app is brand-pack driven — "without rebuild"
-  // is exactly the property that does NOT hold.
+  // JRNY-030 end to end. Channel C is wired on BOTH halves now (issue #136 C):
+  // `index.html` loads `/api/v2/branding/bootstrap.js` with a blocking script
+  // tag, and `app/providers/AppProviders.tsx` feeds the validated result into
+  // `BrandThemeProvider`'s `pack`. Before that the endpoint served a correct
+  // pack that reached nothing at all — the compiled `DEFAULT_BRAND_PACK` always
+  // won, so "without rebuild" was exactly the property that did not hold.
   //
-  //   * `GET /api/v2/branding/bootstrap.js` returns 200 and a valid
-  //     `window.elitea_brand = {…}` snippet (measured on this stack).
-  //   * `apps/elitea-web/index.html` never loads it — the served document
-  //     pulls only `./config.js` and the app bundle, so `window.elitea_brand`
-  //     is `undefined` in the page (measured).
-  //   * `src/app/providers/AppProviders.tsx:83` renders `<BrandThemeProvider>`
-  //     with no `pack` prop, and `BrandThemeProvider.tsx:81` defaults it to
-  //     the COMPILED-IN `DEFAULT_BRAND_PACK`. Its own doc comment
-  //     (`BrandThemeProvider.tsx:17-26`) states the channel-C wiring is "a
-  //     later concern".
-  //   * The two packs do not even agree: the served pack's `brand.hue` is
-  //     `#C428DD`, `src/shared/brand/tokens/default.pack.json`'s is
-  //     `#6ae8fa`. Any test that asserted a colour without first CHANGING the
-  //     served pack could pass on that coincidence — which is why this test
-  //     serves a pack of its own below rather than checking a literal.
-  //
-  // The previous revision `test.skip()`-ped on a 404 and otherwise asserted
-  // `expect(title.length).toBeGreaterThan(0)` — true of every HTML document
-  // ever served. `test.fail()`, never `test.skip()`.
-  // Tracked as #136: /api/v2/branding/bootstrap.js serves a valid pack, but
-  // index.html never loads it and AppProviders.tsx:83 mounts BrandThemeProvider
-  // with no pack, so the compiled DEFAULT_BRAND_PACK wins. This test SERVES its
-  // own pack rather than asserting a colour literal — the light scheme's compiled
-  // primary coincidentally equals the served hue, so a literal would pass by luck.
-  test.fail();
+  // THIS TEST SERVES ITS OWN PACK. Do not "simplify" it into a colour-literal
+  // assertion against the deployment's pack: the LIGHT scheme's compiled
+  // primary computes to `#C428DD`, which is precisely the hue elitea-main's
+  // built-in default pack ships, so a literal check would have reported the
+  // brand channel as working while it was entirely unwired. Serving a distinct
+  // pack is what makes the assertion discriminating.
 
   // The endpoint itself is real — assert its contract before overriding it.
   const brandResp = await page.request.get(BASE_URL + '/api/v2/branding/bootstrap.js', {

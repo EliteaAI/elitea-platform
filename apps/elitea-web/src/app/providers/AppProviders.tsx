@@ -4,6 +4,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 
 import { I18nProvider } from '@/shared/i18n';
 import { getConfig } from '@/shared/config';
+import { resolveBrandPack } from '@/shared/brand';
 import {
   createNoopSocketClient,
   createSocketClient,
@@ -65,6 +66,23 @@ export interface AppProvidersProps {
 export function AppProviders({ children }: AppProvidersProps) {
   const [queryClient] = useState(createAppQueryClient);
 
+  /**
+   * Channel C, resolved once per mounted tree (issue #136 C). This provider
+   * used to render `<BrandThemeProvider>` with no `pack`, so the compiled
+   * `DEFAULT_BRAND_PACK` always won and the pack elitea-main serves at
+   * `/api/v2/branding/bootstrap.js` reached nothing — exactly the "later
+   * concern" `BrandThemeProvider.tsx`'s prop doc described. `resolveBrandPack()`
+   * returns that same default when no valid served pack exists, so the
+   * no-pack deployment renders byte-identically to before.
+   *
+   * A `useState` initializer, not a `useMemo`: the pack is fixed for the
+   * lifetime of the document (the global is written by a blocking script in
+   * `index.html` before the bundle runs), and a stable object identity is
+   * what keeps `BrandThemeProvider`'s `useMemo(..., [pack])` from rebuilding
+   * the whole theme on unrelated re-renders.
+   */
+  const [brandPack] = useState(resolveBrandPack);
+
   // Create the socket client once per mount. When VITE_SOCKET_SERVER is absent
   // or empty (E2E compose, offline dev), a no-op client is provided so that
   // useSocketClient() callers render in degraded-but-functional state instead
@@ -80,7 +98,7 @@ export function AppProviders({ children }: AppProvidersProps) {
 
   return (
     <AppErrorBoundary>
-      <BrandThemeProvider>
+      <BrandThemeProvider pack={brandPack}>
         <I18nProvider>
           <QueryClientProvider client={queryClient}>
             <SocketClientContext.Provider value={socketClient}>
