@@ -168,4 +168,71 @@ describe('useSaveApplicationVersion', () => {
     expect(result.current.isSaving).toBe(false);
     expect(result.current.error).toBeUndefined();
   });
+
+  // #135: the PUT used to leave the flow graph off the wire entirely, so the
+  // server answered 200 and the edit was gone on reload.
+  it('puts the draft pipelineSettings on the wire as pipeline_settings', async () => {
+    let capturedBody: Record<string, unknown> = {};
+    server.use(
+      getUpdateApplicationVersionMockHandler(async (info) => {
+        capturedBody = (await info.request.json()) as Record<string, unknown>;
+        return { id: '7', application_id: '1', name: 'base', status: 'draft' };
+      }),
+    );
+    const { result } = renderHook(() => useSaveApplicationVersion('p1', 1, 7), { wrapper: createWrapper() });
+
+    await act(async () => {
+      await result.current.save({
+        name: 'base',
+        agentType: 'pipeline',
+        instructions: 'entry_point: Agent 1\n',
+        conversationStarters: [],
+        variables: [],
+        meta: { step_limit: 25, internal_tools: [] },
+        tags: [],
+        tools: [],
+        pipelineSettings: {
+          nodes: [{ id: 'Agent 1' }],
+          edges: [],
+          orientation: 'vertical',
+          layout_version: '1.0',
+        },
+      });
+    });
+
+    expect(capturedBody['pipeline_settings']).toEqual({
+      nodes: [{ id: 'Agent 1' }],
+      edges: [],
+      orientation: 'vertical',
+      layout_version: '1.0',
+    });
+    expect(capturedBody['instructions']).toBe('entry_point: Agent 1\n');
+  });
+
+  it('omits the pipeline_settings key entirely when the draft has none, so an agent save cannot blank a stored graph', async () => {
+    let capturedBody: Record<string, unknown> = {};
+    server.use(
+      getUpdateApplicationVersionMockHandler(async (info) => {
+        capturedBody = (await info.request.json()) as Record<string, unknown>;
+        return { id: '7', application_id: '1', name: 'base', status: 'draft' };
+      }),
+    );
+    const { result } = renderHook(() => useSaveApplicationVersion('p1', 1, 7), { wrapper: createWrapper() });
+
+    await act(async () => {
+      await result.current.save({
+        name: 'base',
+        agentType: undefined,
+        instructions: 'Do the thing',
+        conversationStarters: [],
+        variables: [],
+        meta: { step_limit: 25, internal_tools: [] },
+        tags: [],
+        tools: [],
+        pipelineSettings: undefined,
+      });
+    });
+
+    expect(Object.keys(capturedBody)).not.toContain('pipeline_settings');
+  });
 });

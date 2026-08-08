@@ -61,6 +61,9 @@ function toVersionWriteRequest(draft: ApplicationVersionDraft): VersionWriteRequ
     conversation_starters: [...draft.conversationStarters],
     variables: draft.variables.map((variable) => ({ name: variable.name, value: variable.value })),
     meta: { ...draft.meta },
+    // #135: omitted entirely when the draft has none, so a non-pipeline save
+    // never sends the key and the server leaves the stored column alone.
+    ...(draft.pipelineSettings !== undefined ? { pipeline_settings: { ...draft.pipelineSettings } } : {}),
   };
 }
 
@@ -143,20 +146,21 @@ export interface UseSaveApplicationVersionResult {
  * action, backed by `PUT /elitea_core/version/prompt_lib/{projectId}/
  * {applicationId}/{versionId}` (`useUpdateApplicationVersion`).
  *
- * **Real, documented contract gap:** the baseline's `useSaveVersion.js`
- * also writes `tags`, `tools`, and (for pipelines) `pipeline_settings` in
- * the SAME PUT call. `VersionWriteRequest` — the generated body type for
- * this exact endpoint — has no field for any of the three (verified
- * against `versionWriteRequest.zod.ts`: `name`, `agent_type`,
- * `instructions`, `welcome_message`, `llm_settings`,
- * `conversation_starters`, `variables`, `meta`, nothing else). This hook
- * only sends what the endpoint can actually carry; a caller that needs to
- * change a version's tools must currently go through
+ * **Real, documented contract gap (narrowed for #135):** the baseline's
+ * `useSaveVersion.js` also writes `tags`, `tools`, and (for pipelines)
+ * `pipeline_settings` in the SAME PUT call. `VersionWriteRequest` — the
+ * generated body type for this exact endpoint — used to carry none of the
+ * three, which is why a pipeline's flow-graph edit was accepted with a 200
+ * and then silently lost (#135). `pipeline_settings` now exists on the
+ * contract (`services/elitea-main/api/openapi/v2.yaml`, read by
+ * `internal/api/v2/applications/handler.go`'s `UpdateVersion` and written by
+ * `ApplicationsRepo.UpdateVersion`) and is sent below whenever the draft
+ * carries one. `tags`/`tools` are STILL not on this endpoint: a caller that
+ * needs to change a version's tools must go through
  * `useDeleteApplicationTool` (removal) plus a toolkit-association endpoint
- * (addition) instead of one combined PUT, and there is currently no
- * generated endpoint at all for `pipeline_settings` or `tags` on a version.
- * Flagged, not invented — see the promotion pass's final report for the
- * full list of these gaps.
+ * (addition) instead of one combined PUT, and there is no generated endpoint
+ * at all for `tags` on a version. Flagged, not invented — see the promotion
+ * pass's final report for the full list of these gaps.
  */
 export function useSaveApplicationVersion(
   projectId: string | undefined,

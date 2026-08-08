@@ -457,3 +457,75 @@ func TestHandlerPostgres_NonNumericProjectIDIsRejectedWithoutReachingSQL(t *test
 		t.Fatal("injected SQL executed: the canary table was dropped")
 	}
 }
+
+// TestHandlerPostgres_UpdateVersionPersistsPipelineSettings covers #135: the
+// pipeline editor saved the flow graph, the PUT answered 200/201, and the
+// nodes/edges were never written — pipeline_settings had no read in the
+// handler and no SET clause in the repository.
+func TestHandlerPostgres_UpdateVersionPersistsPipelineSettings(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	_, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("graph-owner"))
+	applicationID := created["id"].(string)
+	versionID := created["version_details"].(map[string]any)["id"].(string)
+
+	graphYAML := "nodes:\n  - id: Agent 1\n    type: llm\nentry_point: Agent 1\n"
+	recorder, _ := do(t, router, http.MethodPut,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID),
+		map[string]any{
+			"name":         "base",
+			"agent_type":   "pipeline",
+			"instructions": graphYAML,
+			"pipeline_settings": map[string]any{
+				"nodes":          []any{map[string]any{"id": "Agent 1", "position": map[string]any{"x": 42, "y": 99}}},
+				"edges":          []any{},
+				"orientation":    "vertical",
+				"layout_version": "1.0",
+			},
+		})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var instructions, pipelineSettings string
+	if err := pool.QueryRow(ctx,
+		`SELECT instructions, pipeline_settings::text FROM p_1.application_versions WHERE id = $1`,
+		versionID).Scan(&instructions, &pipelineSettings); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if instructions != graphYAML {
+		t.Errorf("instructions = %q, want the edited pipeline YAML", instructions)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(pipelineSettings), &stored); err != nil {
+		t.Fatalf("stored pipeline_settings is not JSON (%v): %s", err, pipelineSettings)
+	}
+	if stored["layout_version"] != "1.0" || stored["orientation"] != "vertical" {
+		t.Errorf("pipeline_settings = %s", pipelineSettings)
+	}
+	storedNodes, _ := stored["nodes"].([]any)
+	if len(storedNodes) != 1 {
+		t.Fatalf("pipeline_settings.nodes = %v", stored["nodes"])
+	}
+	if node, _ := storedNodes[0].(map[string]any); node["id"] != "Agent 1" {
+		t.Errorf("pipeline_settings.nodes[0] = %v", storedNodes[0])
+	}
+
+	// The GET the editor reloads through must hand the same graph back.
+	getRecorder, fetched := do(t, router, http.MethodGet,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID), nil)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	settings, ok := fetched["pipeline_settings"].(map[string]any)
+	if !ok || settings["layout_version"] != "1.0" {
+		t.Errorf("GET pipeline_settings = %v", fetched["pipeline_settings"])
+	}
+	if fetched["instructions"] != graphYAML {
+		t.Errorf("GET instructions = %v", fetched["instructions"])
+	}
+}

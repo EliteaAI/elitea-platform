@@ -7,35 +7,21 @@ import { useIsFromChat, useIsFromPipelineDetail } from './lib/routeMatch';
  * `useSaveNewVersion.js`, and `useSaveVersion.js` all call to branch between
  * an agent save and a pipeline save.
  *
- * **Real, disclosed constraint forcing a scope reduction (not a silent
- * reinterpretation) on `nodes`/`edges`/`yamlCode`:** the baseline reads these
- * off Redux (`state.pipelineEditor.{nodes,edges}`, `state.pipeline.
- * {yamlCode,yamlJsonObject}`). This app's equivalent live state is
- * `features/pipelines/model/pipelineEditorStore.ts`'s zustand store — but
- * that store is NOT exported from `features/pipelines/index.ts` as of this
- * unit (A2m) landing (verified directly: the barrel's curated ≤20-export
- * budget currently covers only the A2b fstring-autocomplete/YAML-editor
- * pair — `FStringAutocompletePopper`, `useFStringAutocomplete`,
- * `useFStringInputAutocomplete`, `FStringAutocompleteOption`,
- * `FStringAutocompleteState`, `YamlCodeEditor`, `YamlCodeEditorProps` — no
- * `usePipelineEditorStore`). depcruise's `no-deep-slice-import-cross-slice`
- * rule forbids `pages/pipelines` reaching past that barrel into
- * `features/pipelines/model/pipelineEditorStore.ts` directly.
+ * **STALE-GAP NOTICE (#135).** The paragraphs this comment used to carry
+ * here described `nodes`/`edges`/`yamlCode` as unreachable: the zustand
+ * editor stores were not exported from `features/pipelines/index.ts`, and
+ * the generated `VersionWriteRequest` had no `pipeline_settings` field, so
+ * this hook returned empty values on purpose. BOTH halves of that gap are
+ * now closed — `features/pipelines` exports `usePipelineGraphDraft` (the
+ * live-graph reader, including the `calculateNodesAndEdges` port discussed
+ * below) and `pipeline_settings` is on the endpoint contract
+ * (`services/elitea-main/api/openapi/v2.yaml`). The real save path,
+ * `pages/pipelines/lib/useEditPipelineForm.ts`, uses those directly.
  *
- * Moreover, even were the store reachable, there is currently nowhere for
- * live `nodes`/`edges`/`yamlCode` to be SENT: `entities/application-form/
- * model/mutations.ts`'s own doc comment (this same Wave-2 batch's
- * promotion pass) confirms `VersionWriteRequest` — the generated body type
- * for the one write endpoint this hook's callers ultimately feed — carries
- * no `pipeline_settings`/YAML field at all. Returning fabricated non-empty
- * `nodes`/`edges`/`yamlCode` here would therefore misrepresent both a
- * missing read path AND a missing write path as working; this hook instead
- * returns the same shape with explicit empty/undefined values plus the real
- * `isFromPipeline` routing signal (which IS fully portable — see
- * `./lib/routeMatch.ts`). A sibling A2 sub-unit owning `PipelineEditor.jsx`/
- * `useEditPipeline.js` (this batch's cross-domain "must export via public
- * API" list) promoting `usePipelineEditorStore` to `features/pipelines/
- * index.ts` is the precondition for wiring live values in here.
+ * This hook has no caller in this worktree (verified: `grep -rn
+ * useSavePipeline src` finds only doc-comment references and its own test).
+ * It is left returning the same empty shape rather than rewired into a
+ * second, competing read path — but it is NOT the place to add one.
  *
  * **Not ported: `calculateNodesAndEdges`** (the baseline file's second,
  * named export, `useSavePipeline.js:31-40`). Its only real call sites are

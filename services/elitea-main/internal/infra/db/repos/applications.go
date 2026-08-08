@@ -585,6 +585,13 @@ func (r *ApplicationsRepo) UpdateVersion(ctx context.Context, projectID, applica
 		}
 		appendSet("meta = $%d::jsonb", encoded)
 	}
+	if v.PipelineSettings != nil {
+		encoded, err := encodeJSONObject(v.PipelineSettings)
+		if err != nil {
+			return applications.Version{}, err
+		}
+		appendSet("pipeline_settings = $%d::jsonb", encoded)
+	}
 	if len(setClauses) == 0 {
 		return r.GetVersion(ctx, projectID, applicationID, versionID)
 	}

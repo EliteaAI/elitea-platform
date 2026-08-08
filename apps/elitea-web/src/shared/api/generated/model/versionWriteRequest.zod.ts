@@ -42,6 +42,7 @@
 import { z as zod } from "zod";
 import { ConversationStarters } from "./conversationStarters.zod";
 import { LlmSettings } from "./llmSettings.zod";
+import { PipelineSettings } from "./pipelineSettings.zod";
 import { VersionMeta } from "./versionMeta.zod";
 import { VersionVariable } from "./versionVariable.zod";
 
@@ -59,6 +60,9 @@ export const VersionWriteRequest = zod.object({
   conversation_starters: ConversationStarters.optional(),
   variables: zod.array(VersionVariable).optional(),
   meta: VersionMeta.optional(),
+  pipeline_settings: PipelineSettings.optional().describe(
+    "Pipeline flow-graph layout ({nodes, edges, orientation, layout_version}). Written verbatim to the application_versions.pipeline_settings jsonb column; omit the key to leave the stored value untouched.\n",
+  ),
 });
 
 export type VersionWriteRequest = zod.input<typeof VersionWriteRequest>;

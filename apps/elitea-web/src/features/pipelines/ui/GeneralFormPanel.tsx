@@ -7,6 +7,7 @@ import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrow
 import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { t } from '@/shared/i18n';
 import type { ViewMode } from '@/shared/lib/enums';
 
 import { useIsSmallWindow } from '../lib/hooks/useIsSmallWindow';
@@ -97,6 +98,15 @@ export function GeneralFormPanel({ applicationId, onCollapsed, viewMode, renderC
         <IconButton
           sx={collapseButtonSx}
           onClick={onClickCollapsed}
+          // #135: icon-only, so without a name axe reports a critical
+          // `button-name` (WCAG 4.1.2) failure and a screen reader announces
+          // nothing but "button". The label tracks the state the click
+          // produces, like every other collapse affordance in this app.
+          aria-label={
+            collapsed
+              ? t('features.pipelines.generalFormPanel.expand', 'Expand the configuration panel')
+              : t('features.pipelines.generalFormPanel.collapse', 'Collapse the configuration panel')
+          }
         >
           {!collapsed ? <KeyboardDoubleArrowLeftIcon fontSize="small" /> : <KeyboardDoubleArrowRightIcon fontSize="small" />}
         </IconButton>

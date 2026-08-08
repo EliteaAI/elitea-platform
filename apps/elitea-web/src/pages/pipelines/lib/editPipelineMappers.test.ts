@@ -81,6 +81,36 @@ describe('toVersionDraft', () => {
     });
   });
 
+  // #135: `pipelineSettings` used to be hardcoded `undefined` and
+  // `instructions` always came from the STORED version, so a graph edit could
+  // not reach the wire even in principle.
+  it('prefers the live graph draft for instructions and carries its pipelineSettings', () => {
+    const version = { name: 'base', instructions: 'stale yaml', meta: {} } as unknown as ApplicationVersionDetail;
+    const graph = {
+      instructions: 'entry_point: Agent 1\n',
+      pipelineSettings: {
+        nodes: [{ id: 'Agent 1' }],
+        edges: [],
+        orientation: 'vertical',
+        layout_version: '1.0',
+      },
+    };
+
+    const draft = toVersionDraft(version, [], graph);
+
+    expect(draft.instructions).toBe('entry_point: Agent 1\n');
+    expect(draft.pipelineSettings).toEqual(graph.pipelineSettings);
+  });
+
+  it('keeps the stored instructions and leaves pipelineSettings undefined when no graph draft is supplied', () => {
+    const version = { name: 'base', instructions: 'stale yaml', meta: {} } as unknown as ApplicationVersionDetail;
+
+    const draft = toVersionDraft(version, [], undefined);
+
+    expect(draft.instructions).toBe('stale yaml');
+    expect(draft.pipelineSettings).toBeUndefined();
+  });
+
   it('defaults meta.step_limit/internal_tools when the existing meta lacks them', () => {
     const version = { name: 'base', meta: {} } as unknown as ApplicationVersionDetail;
     const draft = toVersionDraft(version, []);

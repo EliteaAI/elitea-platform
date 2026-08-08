@@ -826,6 +826,14 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 	if meta, ok := body["meta"].(map[string]any); ok {
 		v.Meta = meta
 	}
+	// Pipeline flow-graph layout. Without this the pipeline editor's Save
+	// returned 200 while silently discarding every node/edge edit (#135) —
+	// the graph itself round-trips through `instructions` (the pipeline
+	// YAML), this column carries the laid-out node/edge positions the
+	// editor restores on reload.
+	if pipelineSettings, ok := body["pipeline_settings"].(map[string]any); ok {
+		v.PipelineSettings = pipelineSettings
+	}
 
 	ver, err := h.repo.UpdateVersion(r.Context(), projectID, applicationID, versionID, v)
 	if err != nil {

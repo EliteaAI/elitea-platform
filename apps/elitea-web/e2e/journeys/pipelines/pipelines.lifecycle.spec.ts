@@ -105,26 +105,17 @@ test('J16: create a pipeline through the real form and land on a live flow edito
 
 test('J16: the pipeline editor screen is accessible (spec §6.4)', async ({ page }) => {
   /*
-   * RED BY DESIGN — real, critical `button-name` violations on this screen.
+   * Was RED — two critical `button-name` violations (WCAG 4.1.2) from the
+   * icon-only collapse buttons in `features/pipelines/ui/GeneralFormPanel.tsx`
+   * and `features/pipelines/ui/ChatPanel.tsx`, neither carrying an
+   * `aria-label`, `title`, or visible text. Both now carry a state-tracking
+   * `aria-label` (#135), so axe reports a clean screen.
    *
-   * axe reports two unnamed icon buttons (impact: critical, WCAG 4.1.2):
-   *   - `features/pipelines/ui/GeneralFormPanel.tsx:97` — the left panel's
-   *     collapse `<IconButton onClick={onClickCollapsed}>` wraps an icon only.
-   *   - `features/pipelines/ui/ChatPanel.tsx:182` — the right panel's
-   *     collapse `<IconButton onClick={onClickCollapsed}>`, same shape.
-   * Neither carries `aria-label`, `title`, or visible text, so a screen
-   * reader announces "button".
-   *
-   * Kept as its own test rather than folded into the journey above so the
-   * journey's create/save/render assertions stay honestly GREEN — a
-   * `test.fail()` wrapper around all of them would mask a regression in any
-   * one of them. `checkA11y`'s own rule list is NOT extended to swallow
-   * `button-name`: the violation is a finding, not noise.
+   * Kept as its own test rather than folded into the journey above so a
+   * future a11y regression names itself instead of failing somewhere inside
+   * the create/save path. `checkA11y`'s own rule list is NOT extended to
+   * swallow `button-name`: a violation here is a finding, not noise.
    */
-  // Tracked as #135 (a11y half): two critical button-name violations from
-  // icon-only collapse buttons at GeneralFormPanel.tsx:97 and ChatPanel.tsx:182.
-  test.fail();
-
   const name = `${AUTOTEST_PREFIX}a11y-${Date.now() % 1e9}`;
   await createPipelineThroughUi(page, name);
   await expect(page.getByTestId('rf__wrapper')).toBeVisible({ timeout: 15_000 });
@@ -134,29 +125,17 @@ test('J16: the pipeline editor screen is accessible (spec §6.4)', async ({ page
 
 test('J16: an edited flow graph survives a save + reload', async ({ page }) => {
   /*
-   * RED BY DESIGN — acceptance (1) of JRNY-016 is not implemented.
+   * JRNY-016 acceptance (1). This was RED: the save submitted only
+   * `toVersionDraft(activeVersion, conversationStarters)`, so the PUT carried
+   * no nodes, no edges and no `pipeline_settings`, answered 200, and the
+   * canvas came back as the single default `END` node on reload.
    *
-   * The node CAN be added (the assertion below the `Add node` click passes),
-   * but `pages/pipelines/lib/useEditPipelineForm.ts:67-76` submits only
-   * `toVersionDraft(activeVersion, conversationStarters)` — observed on the
-   * wire as
-   *   PUT /api/v2/elitea_core/version/prompt_lib/1/<id>/<id>
-   *   {"name":"base","agent_type":"pipeline","instructions":"",
-   *    "conversation_starters":[],"variables":[],"meta":{...}}
-   * with no nodes/edges/pipeline_settings field at all. The gap is disclosed
-   * in `EditPipeline.tsx`'s own doc comment ("no live node/edge state is
-   * reachable to send even if the endpoint could carry it") and in
-   * `lib/editPipelineMappers.ts`'s `toVersionDraft`. After a reload the
-   * canvas is back to the single default `END` node.
-   *
-   * `test.fail()`, never `test.skip()`: this runs every assertion and turns
-   * RED the moment graph persistence starts working, so it cannot outlive
-   * the bug.
+   * Fixed end to end in #135 — `pipeline_settings` added to
+   * `VersionWriteRequest` (services/elitea-main/api/openapi/v2.yaml) and
+   * persisted by `UpdateVersion`; the page seeds the flow-editor stores from
+   * the loaded version and sends the live graph (`instructions` = the pipeline
+   * YAML) back on save.
    */
-  // Tracked as #135: useEditPipelineForm.ts:67-76 submits no nodes/edges, so the
-  // PUT succeeds with 200 and the graph edit is silently lost on reload.
-  test.fail();
-
   const name = `${AUTOTEST_PREFIX}graph-${Date.now() % 1e9}`;
   const id = await createPipelineThroughUi(page, name);
 

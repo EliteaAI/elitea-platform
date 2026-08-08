@@ -81,3 +81,23 @@ export { usePipelineCreation } from './model/usePipelineCreation';
  */
 export { ConfigurationTab } from './ui/ConfigurationTab';
 export type { ConfigurationTabProps } from './ui/ConfigurationTab';
+
+/**
+ * The two halves of pipeline-graph PERSISTENCE, spent from this budget for
+ * #135 — where a graph edit was accepted with a 200 and lost on reload.
+ *
+ * `usePipelineVersionSync` is the READ side (parse a loaded version's
+ * `instructions` YAML + saved `pipeline_settings` geometry into the two
+ * zustand stores the flow editor renders from). It already existed for
+ * `ui/PipelineEditor.tsx`'s chat-embedded composition; the STANDALONE editor
+ * page (`pages/pipelines/EditPipeline.tsx`) never had a legal way to call it,
+ * so its canvas always started from an empty document no matter what was
+ * stored.
+ *
+ * `usePipelineGraphDraft` is the WRITE side — see its own doc comment for the
+ * `no-deep-slice-import` fence that made the live stores unreachable from
+ * `pages/pipelines`, which is precisely why every save shipped an empty graph.
+ */
+export { usePipelineVersionSync } from './ui/usePipelineEditorLifecycle';
+export { usePipelineGraphDraft } from './model/usePipelineGraphDraft';
+export type { PipelineGraphDraft } from './model/usePipelineGraphDraft';
