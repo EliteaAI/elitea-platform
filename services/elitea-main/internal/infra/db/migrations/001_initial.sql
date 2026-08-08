@@ -47,6 +47,23 @@ CREATE TABLE IF NOT EXISTS centry.social_users (
     default_summarization JSONB
 );
 
+-- Project secret vault (centry.secrets_key holds the per-project Fernet key,
+-- itself encrypted with SECRETS_MASTER_KEY; centry.secrets_data holds the
+-- Fernet-encrypted {secrets, hidden_secrets} JSON blob). Read and written by
+-- internal/api/v2/secrets/handler.go and internal/infra/centrysecrets.
+-- Column types are copied verbatim from the running legacy centry database —
+-- both tables are `id text PRIMARY KEY, data bytea`. Without them every
+-- secrets write answered 500 "relation centry.secrets_key does not exist".
+CREATE TABLE IF NOT EXISTS centry.secrets_key (
+    id TEXT PRIMARY KEY,
+    data BYTEA
+);
+
+CREATE TABLE IF NOT EXISTS centry.secrets_data (
+    id TEXT PRIMARY KEY,
+    data BYTEA
+);
+
 -- =============================================================================
 -- TENANT SCHEMA FUNCTION
 -- Creates all per-project tables in a given schema (e.g. "p_1")
@@ -356,7 +373,8 @@ CREATE TABLE IF NOT EXISTS auth_core__user (
     id SERIAL PRIMARY KEY,
     email TEXT UNIQUE,
     name TEXT,
-    last_login TIMESTAMP
+    last_login TIMESTAMP,
+    suspended BOOLEAN NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS idx_auth_core_user_email ON auth_core__user(email);
 

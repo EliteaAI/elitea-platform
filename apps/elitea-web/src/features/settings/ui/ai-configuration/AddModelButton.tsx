@@ -42,6 +42,7 @@ export default function AddModelButton() {
       <IconButton
         onClick={handleAdd}
         size="small"
+        aria-label={t('ai-configuration.addModelTooltip', 'Create configuration')}
         sx={(theme) => ({
           width: '2rem',
           height: '2rem',

@@ -15,22 +15,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
+	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
+	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
+	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
+	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
+	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
@@ -224,6 +233,46 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 		authReadiness = formGraph
 		logger.Info("production Form authentication enabled")
+	}
+
+	// Wire OIDC browser-session authentication when OIDC_ISSUER_URL is set.
+	// SessionHandler and OIDCHandler are independent of the FormGraph path and
+	// can coexist with it (both populate RouterConfig.Auth).
+	var oidcSessionHandler *v2auth.SessionHandler
+	var oidcOIDCHandler *v2auth.OIDCHandler
+	oidcCfg, err := v2auth.OIDCConfigFromEnv()
+	if err != nil {
+		return fmt.Errorf("load OIDC configuration: %w", err)
+	}
+	if oidcCfg != nil {
+		appSecretKey := os.Getenv("APPLICATION_SECRET_KEY")
+		if appSecretKey == "" {
+			return errors.New("APPLICATION_SECRET_KEY is required when OIDC_ISSUER_URL is set")
+		}
+		oidcSessionHandler = v2auth.NewSessionHandler(pool, appSecretKey)
+		oidcOIDCHandler, err = v2auth.NewOIDCHandler(ctx, oidcCfg, pool, appSecretKey)
+		if err != nil {
+			return fmt.Errorf("initialize OIDC handler: %w", err)
+		}
+		logger.Info("OIDC authentication enabled", "issuer", oidcCfg.IssuerURL)
+	}
+
+	// Wire currentProjectList with OIDC-only auth when formGraph is absent.
+	// formGraph (ELITEA_AUTH_CONFIG_FILE) wires it above with full validators;
+	// OIDC-only deployments (E2E stack) only have session-cookie auth.
+	if currentProjectList == nil && oidcSessionHandler != nil {
+		var oidcProjectListErr error
+		currentProjectList, oidcProjectListErr = v2projects.NewCurrentProjectListRoute(
+			sqlcgen.New(pool),
+			apimw.AuthConfig{
+				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if oidcProjectListErr != nil {
+			return fmt.Errorf("compose OIDC-only project-list route: %w", oidcProjectListErr)
+		}
+		logger.Info("project-list route enabled (OIDC-only auth)")
 	}
 
 	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
@@ -692,17 +741,38 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		gatewayPrincipalValidator = principalValidator
 		gatewayForwardedIdentityVerifier = forwardedIdentityVerifier
 		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
+	} else if oidcSessionHandler != nil {
+		// OIDC-only deployments (no ELITEA_AUTH_CONFIG_FILE) still need the session
+		// secret in the auth middleware so OIDC session cookies are accepted on
+		// /api/v2 routes. formGraph uses the same APPLICATION_SECRET_KEY.
+		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
+	}
+
+	var adminUICfg *adminui.Config
+	if dir := os.Getenv("ADMIN_UI_STATIC_DIR"); dir != "" {
+		adminUICfg = &adminui.Config{
+			StaticDir:     dir,
+			ViteServerURL: "/api/v2",
+			BasePath:      "/admin/app",
+			SecretKey:     os.Getenv("APPLICATION_SECRET_KEY"),
+		}
 	}
 
 	r := api.NewRouter(api.RouterConfig{
+		AdminUI: adminUICfg,
+		Pool:    pool,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
 		},
-		AuthValidator:                 gatewayAuthValidator,
-		PrincipalValidator:            gatewayPrincipalValidator,
-		Auth:                          api.AuthDeps{ForwardedIdentityVerifier: gatewayForwardedIdentityVerifier},
-		SessionSecret:                 gatewaySessionSecret,
+		AuthValidator:      gatewayAuthValidator,
+		PrincipalValidator: gatewayPrincipalValidator,
+		SessionSecret:      gatewaySessionSecret,
+		Auth: api.AuthDeps{
+			ForwardedIdentityVerifier: gatewayForwardedIdentityVerifier,
+			SessionHandler:            oidcSessionHandler,
+			OIDCHandler:               oidcOIDCHandler,
+		},
 		ProductionAuth:                productionAuth,
 		ProductionRuntime:             productionRuntime,
 		CurrentProjectInfo:            currentProjectInfo,
@@ -730,6 +800,27 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		GatewayProxy:                  gatewayProxy,
 		GatewayProjectResolver:        gatewayProjectResolver,
 		ObjectStore:                   objectStore,
+		// Without AppsRepo, internal/api/router.go silently skips registering
+		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*
+		// route, and creating an agent from the UI 404s (#115).
+		AppsRepo: applicationsRepository(pool),
+		// Same defect class as AppsRepo above, six more times (#126). Each of
+		// these repositories already EXISTED — conversations.go alone is 951
+		// lines — and had zero callers, so router.go dropped their route groups
+		// and the endpoints 404'd in every deployment. Counted at the gates:
+		// conversations 23 routes, skills 12, analytics 7, folders 6, tags 3.
+		ConvsRepo:     conversationsRepository(pool),
+		SkillsRepo:    skillsRepository(pool),
+		FoldersRepo:   foldersRepository(pool),
+		TagsRepo:      tagsRepository(pool),
+		AnalyticsRepo: analyticsRepository(pool),
+		// WebhookRepo is the sixth instance of the same defect, and it hid one
+		// step deeper than the other five. Its gate mounts a subrouter —
+		// `r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(...).Routes())`
+		// — so a count of inline r.Get/r.Post calls inside the gated block
+		// returns zero, and it looked like a field that gated nothing. The five
+		// routes are declared in the handler's own Routes() method.
+		WebhookRepo: webhooksRepository(pool),
 	})
 
 	// Socket.IO remains unmounted until its legacy connection authentication,
@@ -748,6 +839,68 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 	slog.Info("server stopped")
 	return nil
+}
+
+// applicationsRepository composes the tenant-schema applications repository
+// backing RouterConfig.AppsRepo. It is a named function rather than an inline
+// constructor so main_router_wiring_test.go can assert the field is present in
+// the production RouterConfig literal: a nil AppsRepo makes
+// internal/api/router.go drop the whole /elitea_core applications route group
+// without any startup error, which is how #115 stayed invisible.
+func applicationsRepository(pool *pgxpool.Pool) applications.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewApplicationsRepo(pool)
+}
+
+// The remaining tenant-schema repositories, composed the same way and for the
+// same reason: a nil field makes router.go drop the route group silently, with
+// no startup error and a 404 indistinguishable from a typo'd path.
+//
+// Named functions, not inline constructors, so main_router_wiring_test.go can
+// assert each field is present in the production literal.
+
+func conversationsRepository(pool *pgxpool.Pool) v2convs.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewConversationsRepo(pool)
+}
+
+func skillsRepository(pool *pgxpool.Pool) v2skills.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewSkillsRepo(pool)
+}
+
+func foldersRepository(pool *pgxpool.Pool) v2folders.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewFoldersRepo(pool)
+}
+
+func webhooksRepository(pool *pgxpool.Pool) webhook.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewWebhooksRepo(pool)
+}
+
+func tagsRepository(pool *pgxpool.Pool) v2tags.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewTagsRepo(pool)
+}
+
+func analyticsRepository(pool *pgxpool.Pool) v2analytics.Repository {
+	if pool == nil {
+		return nil
+	}
+	return dbrepos.NewAnalyticsRepo(pool)
 }
 
 const maxAuthConfigPathBytes = 4096

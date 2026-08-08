@@ -9,6 +9,11 @@ name: CI — Web
 # the npm cache is keyed on that lockfile.
 
 on:
+  # The e2e job guards on `github.event_name == 'workflow_dispatch'`, which was
+  # unreachable while this block only listed pull_request/push — so the suite had
+  # never executed in CI (PR #82 validation, blocker 4). Manual dispatch is the
+  # only way to exercise it before a release tag.
+  workflow_dispatch:
   pull_request:
     paths:
       - "apps/elitea-web/**"
@@ -293,6 +298,48 @@ jobs:
       - name: Run complexity budgets
         run: node scripts/check-budgets.mjs
 
+  gate-generated-client:
+    name: Generated client matches the spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      # Regenerates from services/elitea-main/api/openapi/v2.yaml and fails if
+      # the committed client differs. A stale client fails OPEN — it keeps
+      # exporting operations the API no longer has, so callers of removed
+      # endpoints keep type-checking while failing against a real server.
+      # Not hypothetical: four dead artifact operations shipped that way and
+      # were caught only when an unrelated regeneration broke the build. See
+      # the script's own header for the full incident.
+      - name: Check generated client drift
+        run: node scripts/check-generated-client.mjs
+
+  gate-route-wiring-map:
+    name: Route-wiring map matches the routes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      # parity/route-wiring-map.json is generated: its mechanical fields are
+      # re-derived from src/routes/** on every run. `--check` fails when the
+      # committed map no longer matches, so the tracker cannot silently drift
+      # from the routes it claims to describe. The flag existed since the map
+      # was introduced but was never wired into CI.
+      - name: Check route-wiring map drift
+        run: node scripts/build-route-wiring-map.mjs --check
+
   gate-mutator-coverage:
     name: Generated-client mutator coverage
     runs-on: ubuntu-latest
@@ -481,6 +528,20 @@ jobs:
       - name: Run knip dead code gate
         run: npx knip --max-issues 0
 
+  gate-playwright-image-tag:
+    name: Playwright image tag
+    # Runs on every PR, unlike the `visual` job that consumes the tag (release
+    # tags only). A drift introduced on a PR must not lie dormant until a
+    # release, when it would surface as an unexplained wall of snapshot diffs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Check the container tag matches package.json
+        run: node scripts/check-playwright-image-tag.mjs
+
   gate-theme:
     name: Theme gate
     runs-on: ubuntu-latest
@@ -600,10 +661,19 @@ jobs:
 
   e2e:
     name: E2E
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Non-blocking on PRs; blocking on release tags and manual dispatch (§6.6/§7.6).
+    # Previously this job ran on every PR because it had no `if:` guard — fixed here
+    # (issue #60 "CI gap" section).
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    # E2E needs Docker + docker-compose for the stack.
+    # GitHub-hosted ubuntu-latest has Docker and docker compose (v2 plugin) pre-installed.
     steps:
       - uses: actions/checkout@v7
+        with:
+          # elitea-web's Containerfile copies from apps/elitea-web/ using repo-root context,
+          # so a full checkout (not shallow) is needed to build the image.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -611,16 +681,79 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Playwright against the real stack
-        # On a release tag this MUST exist (unit V1) — a missing suite fails
-        # the release, it does not skip.
+      - name: Set up Docker Buildx (for elitea-web image build)
+        uses: docker/setup-buildx-action@v3
+      - name: Build elitea-main:e2e and elitea-web:e2e from source
+        # docker-compose.e2e-standalone.yml references elitea-main:e2e and elitea-web:e2e.
+        # Build both locally so the E2E stack does not require pre-published images.
+        # elitea-main: use the `e2e` target which builds the admin SPA from
+        #   apps/elitea-web/src/entries/admin (no admin-ui submodule required).
+        # elitea-web:  the image includes the bundled SPA served by nginx.
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker build \
+            --file services/elitea-main/Containerfile \
+            --target e2e \
+            --tag ghcr.io/eliteaai/elitea-main:e2e \
+            --platform linux/amd64 \
+            .
+          docker buildx bake \
+            --set '*.platform=linux/amd64' \
+            --set 'elitea-web.tags=ghcr.io/eliteaai/elitea-web:e2e' \
+            elitea-web
+      - name: Bring up E2E stack
+        # e2e-stack.sh uses deploy/docker-compose.e2e-standalone.yml which references
+        # elitea-main:e2e (built above) and elitea-web:e2e (also built above).
+        # The script auto-detects `docker compose` (CI) vs `podman compose` (local).
+        # E2E_PORT=8080 is free on ubuntu-latest (no centry stack); 8082 is the local default.
+        env:
+          COMPOSE_BIN: docker compose
+          E2E_PORT: "8080"
         run: |
           test -d e2e || { echo "release tag without an e2e suite (unit V1) — refusing"; exit 1; }
-          npx playwright install --with-deps chromium webkit
-          npm run e2e
+          bash scripts/e2e-stack.sh up
+      - name: Seed E2E users
+        env:
+          COMPOSE_BIN: docker compose
+          E2E_PORT: "8080"
+        run: bash scripts/e2e-stack.sh seed
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+      - name: Playwright against the real stack
+        # webServer in playwright.config.ts has reuseExistingServer: !CI, so
+        # Playwright will use the already-running stack from the seed step above.
+        # The stack teardown is handled by the job's cleanup step below.
+        env:
+          CI: "true"
+          E2E_PORT: "8080"
+          PLAYWRIGHT_BASE_URL: "http://localhost:8080"
+        run: npm run e2e
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: apps/elitea-web/playwright-results/
+          retention-days: 14
+      - name: Upload failed test video recordings
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-failed-videos
+          path: apps/elitea-web/playwright-results/**/*.webm
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Tear down E2E stack
+        if: always()
+        env:
+          COMPOSE_BIN: docker compose
+        run: bash scripts/e2e-stack.sh down
 
   visual:
     name: Visual regression
+    # Release-tag only, per the file header at :5-6 and §6.6/§7.6. The guard was
+    # lost at some point, so this job ran on every PR and hard-failed at the
+    # `test -d e2e/visual` line below (PR #82 validation, blocker 3).
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -632,9 +765,70 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Snapshot suite
+
+      # The tag below is asserted against package.json's pinned
+      # @playwright/test, so a version bump cannot silently leave baselines
+      # being compared against a different browser build (issue #61, item 4).
+      - name: Playwright container tag matches the pinned library
+        run: node scripts/check-playwright-image-tag.mjs
+
+      # The stack comes up on the HOST: scripts/e2e-stack.sh needs a container
+      # runtime, and a job `container:` would be docker-in-docker AND would not
+      # share the runner's network namespace, so BASE_URL=localhost:8082 could
+      # not reach it (issue #61, item 2).
+      - name: Bring up the E2E stack (host)
+        env:
+          COMPOSE_BIN: docker compose
+        run: ./scripts/e2e-stack.sh up && ./scripts/e2e-stack.sh seed
+
+      # Only the TEST RUN is containerised, in the image pinned to the same
+      # Playwright version, because baselines are only comparable when one fixed
+      # font stack rasterises them. A bare `npx playwright test` on the runner's
+      # own OS is what this issue calls "the main thing that will make this suite
+      # useless if skipped" (issue #61, item 1).
+      #
+      # E2E_REUSE_STACK=1 stops Playwright trying to start the stack a second
+      # time from inside a container that has no container runtime — see
+      # playwright.config.ts's webServer.reuseExistingServer comment.
+      - name: Snapshot suite (pinned container, host network)
         run: |
           test -d e2e/visual || { echo "release tag without a visual suite (unit V2) — refusing"; exit 1; }
-          npx playwright install --with-deps chromium
-          npx playwright test --grep @visual
+          docker run --rm --network host \
+            -v "$PWD":/work -w /work \
+            -e CI=1 -e E2E_REUSE_STACK=1 \
+            mcr.microsoft.com/playwright:v1.62.0-noble \
+            npx playwright test --grep @visual
 
+      - name: Upload snapshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-diffs
+          path: apps/elitea-web/playwright-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Tear down E2E stack
+        if: always()
+        env:
+          COMPOSE_BIN: docker compose
+        run: ./scripts/e2e-stack.sh down
+
+  mutation-spotcheck:
+    name: Mutation spot-check
+    # Release-tag only — same lost guard as `visual` above.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Rotating 5% sample over shared/ + entities/
+        run: |
+          test -f scripts/mutate-spotcheck.mjs || { echo "release tag without mutate-spotcheck (unit V3) — refusing"; exit 1; }
+          node scripts/mutate-spotcheck.mjs

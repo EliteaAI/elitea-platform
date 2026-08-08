@@ -48,7 +48,7 @@ export const ToolkitInstanceListResponse = zod
     total: zod.int(),
   })
   .describe(
-    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). A repository error (which, per ToolkitInstance's NOTE(W2), may be the common case if updated_at\/shared_id truly don't exist) is swallowed to `{rows: [], total: 0}` with 200, never surfaced as an error (:527-530).\n",
+    "NOTE(W2): `{rows, total}` envelope (internal\/api\/v2\/toolkits\/handler.go:526-534). Repository failures are returned as a safe 500 error rather than an indistinguishable empty successful listing.\n",
   );
 
 export type ToolkitInstanceListResponse = zod.input<

@@ -20,9 +20,6 @@ type postgresStore interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-// PostgresResolver reads the existing auth_core RBAC tables. It deliberately
-// owns no cache or alternate grants: database errors and missing identities or
-// projects fail closed.
 type PostgresResolver struct {
 	store postgresStore
 }
@@ -94,9 +91,6 @@ func normalizeMode(mode string) (string, error) {
 func (r *PostgresResolver) resolveUserID(ctx context.Context, principal auth.User) (int64, error) {
 	isToken := principal.TokenID != "" || strings.EqualFold(principal.AuthType, "token")
 	if isToken {
-		// Never infer whether the compatibility ID is a token row or a user row.
-		// Trusted authentication paths provide both typed IDs; incomplete or
-		// stale cached token principals are denied before any database lookup.
 		if principal.TokenID == "" || principal.UserID == "" {
 			return 0, ErrPermissionDenied
 		}

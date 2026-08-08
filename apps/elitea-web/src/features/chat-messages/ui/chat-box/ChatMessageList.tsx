@@ -210,7 +210,7 @@ export function ChatMessageList({
         sx={{ px: 2 }}
       >
         {isLoadingMore && (
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, pb: 1 }}>
+          <Box component="li" sx={{ display: 'flex', flexDirection: 'column', gap: 1, pb: 1, listStyle: 'none' }}>
             {Array.from({ length: 3 }).map((_, index) => (
               // eslint-disable-next-line react/no-array-index-key -- fixed-length placeholder rows, no stable identity
               <Skeleton key={index} animation="wave" variant="rounded" sx={{ width: '100%', height: '3rem' }} />
@@ -238,10 +238,11 @@ export function ChatMessageList({
 
           return (
             <Box
+              component="li"
               key={messageId}
               data-testid="chat-message-item"
               ref={setMessageRowRef(messageId)}
-              sx={{ mb: 1 }}
+              sx={{ mb: 1, listStyle: 'none' }}
             >
               {isUser ? (
                 <UserMessage
@@ -288,7 +289,7 @@ export function ChatMessageList({
             </Box>
           );
         })}
-        <Box ref={messagesEndRef} />
+        <Box component="li" ref={messagesEndRef} sx={{ listStyle: 'none' }} />
       </List>
     </ScrollableContainer>
   );

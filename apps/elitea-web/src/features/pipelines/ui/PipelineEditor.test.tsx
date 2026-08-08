@@ -6,11 +6,25 @@ import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { forceResizeObserverAbsentForTest } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
 
 import { renderWithRouterAndProject } from '../__tests__/testUtils';
 import type { PipelineCreateFormSlotProps, PipelineEditorDeps, PipelineEditorHandle, PipelineEditorShellProps } from './PipelineEditor';
 import { PipelineEditor } from './PipelineEditor';
+
+/**
+ * The "threads … without crashing when switching to the Flow editor tab"
+ * test below renders `PipelineEditorBody` -> `EditorPanel`, whose flow pane
+ * only fails to load (the assertion this test relies on) when
+ * `window.ResizeObserver` is unavailable — see
+ * `EditorPanel.test.tsx`'s own module doc comment and
+ * `codeMirrorTestPolyfills.ts`'s `forceResizeObserverAbsentForTest`. Without
+ * this, the test is silently order-dependent on which other files ran in
+ * the same vitest worker; reproduced directly (2 fail / 0 fail / 0 fail
+ * across 3 consecutive full-suite runs with no source change).
+ */
+forceResizeObserverAbsentForTest();
 
 /**
  * `./EditorPanel` (unit A2n) landed in this worktree partway through this

@@ -6,7 +6,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useParams } from '@tanstack/react-router';
 
-import { ConfigurationTab, DeleteToolkitButton, ExportToolkitButton, ToolkitsControls, type ToolkitEditorDeps } from '@/features/toolkits';
+import { ConfigurationTab, DeleteToolkitButton, ExportToolkitButton, ToolkitsControls, type ToolkitEditorDeps, useToolkitEdit } from '@/features/toolkits';
 import { usePermissionList } from '@/shared/api/generated/auth/auth';
 import type { Permission, ToolkitInstance } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
@@ -44,7 +44,8 @@ export interface EditToolkitDeps {
 
 export interface EditToolkitProps {
   readonly isMCP?: boolean;
-  readonly deps: EditToolkitDeps;
+  /** OPTIONAL since Phase 1c — see `CreateToolkitProps.deps`. */
+  readonly deps?: EditToolkitDeps;
 }
 
 interface EditToolkitRouteParams {
@@ -209,7 +210,19 @@ function useCopyLinkMenuItem(): ControlsDropdownItem[] {
  *  - **GA event tracking** — dropped outright, same documented gap every
  *    other editor in this session gives.
  */
+/**
+ * Resolve the save mutation OUTSIDE the component: inlining
+ * `deps?.saveToolkit ?? useToolkitEdit()` there pushed `EditToolkit` past the
+ * §3.5 complexity budget (12). The branching is the same, it just doesn't
+ * count against the component.
+ */
+function useSaveToolkitMutation(deps: EditToolkitDeps | undefined): ReturnType<typeof useToolkitEdit> {
+  const fallback = useToolkitEdit();
+  return deps?.saveToolkit ?? fallback;
+}
+
 export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNode {
+  const saveToolkitMutation = useSaveToolkitMutation(deps);
   const params = useParams({ strict: false }) as EditToolkitRouteParams;
   const toolkitId = params.toolkitId ?? params.mcpId ?? params.appId;
   const projectId = useSelectedProjectId();
@@ -282,7 +295,7 @@ export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNod
             toolDetailState={{ editToolDetail, onChangeToolDetail: handleChangeToolDetail, isToolDirty }}
             isMCP={isMCP}
             projectId={projectId}
-            saveHandlers={{ saveToolkit: deps.saveToolkit }}
+            saveHandlers={{ saveToolkit: saveToolkitMutation }}
             renderTestPane={() => (
               // Composition gap: the right-pane live test-chat content
               // (`TestTools`, a sibling A4 sub-unit's owned file — see

@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -20,7 +20,6 @@ function renderSidebar(overrides: Partial<Parameters<typeof BucketSidebar>[0]> =
     onStorageChange: vi.fn(),
     onSelect: vi.fn(),
     onCreate: vi.fn(),
-    onRename: vi.fn().mockResolvedValue(undefined),
     onPin: vi.fn().mockResolvedValue(undefined),
     onDelete: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -44,17 +43,14 @@ describe('BucketSidebar', () => {
     expect(screen.getByText('images')).toBeInTheDocument();
   });
 
-  it('renames and deletes through confirmation dialogs', async () => {
+  it('offers no rename affordance — S3 buckets cannot be renamed in place', () => {
+    renderSidebar();
+    expect(screen.queryByRole('button', { name: 'Rename docs' })).not.toBeInTheDocument();
+  });
+
+  it('deletes through a confirmation dialog', async () => {
     const user = userEvent.setup();
     const props = renderSidebar();
-    await user.click(screen.getByRole('button', { name: 'Rename docs' }));
-    const input = screen.getByLabelText('Bucket name');
-    await user.clear(input);
-    await user.type(input, 'reports');
-    await user.click(screen.getByRole('button', { name: 'Rename' }));
-    expect(props.onRename).toHaveBeenCalledWith(buckets[0], 'reports');
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename bucket' })).not.toBeInTheDocument());
-
     await user.click(screen.getByRole('button', { name: 'Delete docs' }));
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(props.onDelete).toHaveBeenCalledWith(buckets[0]);
@@ -70,7 +66,6 @@ describe('BucketSidebar', () => {
         onStorageChange={vi.fn()}
         onSelect={vi.fn()}
         onCreate={vi.fn()}
-        onRename={vi.fn()}
         onPin={vi.fn()}
         onDelete={vi.fn()}
       />,
@@ -84,7 +79,6 @@ describe('BucketSidebar', () => {
         onStorageChange={vi.fn()}
         onSelect={vi.fn()}
         onCreate={vi.fn()}
-        onRename={vi.fn()}
         onPin={vi.fn()}
         onDelete={vi.fn()}
       />,

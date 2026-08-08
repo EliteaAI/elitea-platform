@@ -1,10 +1,12 @@
 import { RouterProvider } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { getConfig, MissingEnvPage } from '@/shared/config';
+import { configureGeneratedClient } from '@/shared/api/generated/mutator';
 
 import { AppProviders } from './providers';
 import { createAppRouter } from './router';
+import { sessionAuthContext, useSessionStore } from './session-store';
 
 /**
  * App shell (spec §9.3 units F1/F3/R1/R2).
@@ -51,14 +53,27 @@ import { createAppRouter } from './router';
 export function App() {
   const config = getConfig();
   const [router] = useState(() => createAppRouter());
+  const fetchSession = useSessionStore((state) => state.fetchSession);
+
+  useEffect(() => {
+    void fetchSession().then(() => {
+      // Re-run all active beforeLoad guards now that the session is known.
+      void router.invalidate();
+    });
+  }, [fetchSession, router]);
 
   if (config.status === 'missing') {
     return <MissingEnvPage missing={config.missing} />;
   }
 
+  // Wire the generated API client with the runtime server URL (R2 gap).
+  // Called on every render, but idempotent — configureGeneratedClient replaces
+  // the singleton in-place, which is fine since the URL never changes at runtime.
+  configureGeneratedClient({ baseUrl: config.config.vite_server_url });
+
   return (
     <AppProviders>
-      <RouterProvider router={router} />
+      <RouterProvider router={router} context={{ auth: sessionAuthContext }} />
     </AppProviders>
   );
 }

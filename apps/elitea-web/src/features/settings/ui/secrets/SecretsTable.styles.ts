@@ -29,6 +29,15 @@ export const tableStyles: Record<string, SxProps<Theme>> = {
   },
   dataGrid: {
     border: 'none',
+    // With zero rows the grid would otherwise collapse to its header inside
+    // the flex column and hide the "No secrets" overlay entirely.
+    minHeight: '12rem',
+  },
+  noRowsOverlay: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
   },
   /* Pagination footer */
   pagination: {

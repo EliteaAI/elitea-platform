@@ -44,7 +44,39 @@ import { faker } from "@faker-js/faker";
 import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
-import type { ToolkitInstanceListResponse, ToolkitTypeSchemas } from "../model";
+import type {
+  ToolkitInstance,
+  ToolkitInstanceListResponse,
+  ToolkitTypeSchemas,
+} from "../model";
+
+export const getGetToolkitResponseMock = (
+  overrideResponse: Partial<Extract<ToolkitInstance, object>> = {},
+): ToolkitInstance => ({
+  id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  settings: {},
+  meta: {},
+  created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+  author_id: faker.number.int(),
+  ...overrideResponse,
+});
+
+export const getUpdateToolkitResponseMock = (
+  overrideResponse: Partial<Extract<ToolkitInstance, object>> = {},
+): ToolkitInstance => ({
+  id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  settings: {},
+  meta: {},
+  created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+  author_id: faker.number.int(),
+  ...overrideResponse,
+});
 
 export const getListToolkitsResponseMock = (): ToolkitTypeSchemas => ({
   [faker.string.alphanumeric(5)]: {},
@@ -64,25 +96,77 @@ export const getListToolkitInstancesResponseMock = (
     settings: {},
     meta: {},
     created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
-    updated_at: faker.helpers.arrayElement([
-      faker.helpers.arrayElement([
-        faker.date.past().toISOString().slice(0, 19) + "Z",
-        null,
-      ]),
-      undefined,
-    ]),
     author_id: faker.number.int(),
-    shared_id: faker.helpers.arrayElement([
-      faker.helpers.arrayElement([
-        faker.string.alpha({ length: { min: 10, max: 20 } }),
-        faker.number.int(),
-      ]),
-      null,
-    ]),
   })),
   total: faker.number.int(),
   ...overrideResponse,
 });
+
+export const getCreateToolkitResponseMock = (
+  overrideResponse: Partial<Extract<ToolkitInstance, object>> = {},
+): ToolkitInstance => ({
+  id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  settings: {},
+  meta: {},
+  created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+  author_id: faker.number.int(),
+  ...overrideResponse,
+});
+
+export const getGetToolkitMockHandler = (
+  overrideResponse?:
+    | ToolkitInstance
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ToolkitInstance> | ToolkitInstance),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/tool/prompt_lib/:projectId/:toolId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetToolkitResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getUpdateToolkitMockHandler = (
+  overrideResponse?:
+    | ToolkitInstance
+    | ((
+        info: Parameters<Parameters<typeof http.put>[1]>[0],
+      ) => Promise<ToolkitInstance> | ToolkitInstance),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put(
+    "*/elitea_core/tool/prompt_lib/:projectId/:toolId",
+    async (info: Parameters<Parameters<typeof http.put>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUpdateToolkitResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
 
 export const getListToolkitsMockHandler = (
   overrideResponse?:
@@ -135,7 +219,36 @@ export const getListToolkitInstancesMockHandler = (
     options,
   );
 };
+
+export const getCreateToolkitMockHandler = (
+  overrideResponse?:
+    | ToolkitInstance
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<ToolkitInstance> | ToolkitInstance),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/elitea_core/tools/prompt_lib/:projectId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateToolkitResponseMock(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
 export const getToolkitsMock = () => [
+  getGetToolkitMockHandler(),
+  getUpdateToolkitMockHandler(),
   getListToolkitsMockHandler(),
   getListToolkitInstancesMockHandler(),
+  getCreateToolkitMockHandler(),
 ];

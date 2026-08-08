@@ -74,20 +74,68 @@ const OPENAI_TYPE = {
 };
 
 describe('CredentialForm — create flow', () => {
-  it('shows the type selector first, then the field form once a type is chosen', async () => {
+  /**
+   * The chosen type is OWNED BY THE URL, not by this component: picking a
+   * tile reports upward through `onTypeChosen`, and the form appears only
+   * once the caller feeds that type back in as `mode.credentialType`. The
+   * route does that by navigating to `:credentialType` — the baseline's own
+   * model (`hooks/credentials/useCredentialSearch.js:29`).
+   *
+   * This used to be one assertion ("click the tile, the form appears"),
+   * which passed against a local `selectedType` that shadowed the prop.
+   * Both halves are asserted separately now, because the interesting failure
+   * is the component satisfying the first half on its own — that is exactly
+   * the state/URL divergence that let Back leave a stale form on screen.
+   */
+  it('reports the picked type upward and renders the form only when that type is fed back in', async () => {
     configureGeneratedClient({ baseUrl: BASE });
     server.use(http.get(`${BASE}/configurations/available/`, () => HttpResponse.json([OPENAI_TYPE])));
-    renderForm(
+    const onTypeChosen = vi.fn();
+    const { rerender } = renderForm(
       <CredentialForm
         context={CONTEXT}
         mode={{ kind: 'create' }}
         onSaved={vi.fn()}
         onDiscarded={vi.fn()}
+        onTypeChosen={onTypeChosen}
       />,
     );
     await waitFor(() => expect(screen.getByText('OpenAI')).toBeInTheDocument());
     fireEvent.click(screen.getByText('OpenAI'));
+
+    expect(onTypeChosen).toHaveBeenCalledWith('openai');
+    // Still the picker: the component does NOT promote its own selection.
+    expect(screen.queryByText('API Key')).not.toBeInTheDocument();
+
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <CredentialForm
+          context={CONTEXT}
+          mode={{ kind: 'create', credentialType: 'openai' }}
+          onSaved={vi.fn()}
+          onDiscarded={vi.fn()}
+          onTypeChosen={onTypeChosen}
+        />
+      </QueryClientProvider>,
+    );
     expect(await screen.findByText('API Key')).toBeInTheDocument();
+  });
+
+  it('falls back to the type selector when the requested type is not a known one', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(http.get(`${BASE}/configurations/available/`, () => HttpResponse.json([OPENAI_TYPE])));
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'create', credentialType: 'no-such-type' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+    // The picker, not an empty form — matches the baseline, whose `schema`
+    // lookup misses and leaves `initialValues` empty.
+    expect(await screen.findByText('OpenAI')).toBeInTheDocument();
+    expect(screen.queryByText('API Key')).not.toBeInTheDocument();
   });
 
   it('skips the type selector when mode.credentialType is already set', async () => {

@@ -2777,6 +2777,69 @@ components:
         (not just wrong field types) is the only 400 case (:398-401).
 
     # ---- Toolkit instances ------------------------------------------------
+    ToolkitCreateRequest:
+      type: object
+      required: [type]
+      description: >
+        NOTE(1c): the handler decodes into `map[string]any` and the repository
+        reads exactly `name`, `type`, `description` and `settings`
+        (internal/api/v2/toolkits/handler.go:891-900). There is no Go struct
+        to mirror, so this schema DEFINES the contract rather than reflecting
+        one — keep it in step with pgRepo.CreateToolkit if that changes.
+        `author_id` is deliberately absent: the handler overwrites it from the
+        authenticated principal.
+
+        Only `type` is required. `name` is NOT enforced by the backend —
+        `validateToolkitCreate` checks settings for `type: github` and nothing
+        else, and the repository stores whatever `name` it is given, including
+        an empty one. Marking `name` required here would make the generated
+        client stricter than the server and reject requests the API accepts.
+      properties:
+        name: { type: string, minLength: 1 }
+        type:
+          type: string
+          description: >
+            Toolkit type key, e.g. `github`, `slack`, `sql`. The set is
+            open — `toolkit_types` is served by a separate handler that this
+            spec does not yet cover.
+        description: { type: string }
+        settings:
+          type: object
+          additionalProperties: true
+          description: >
+            Type-specific configuration, stored verbatim into
+            `p_{project_id}.elitea_tools.settings`. Modelled open because the
+            backend only validates it for `type: github`, which requires
+            `repository` (non-empty) and `github_configuration`.
+          x-elitea-passthrough: >-
+            NOTE(W2): genuinely open, not an unfinished schema. The toolkit type
+            set is open-ended and each type defines its own settings shape;
+            `validateToolkitCreate` switches on `type` and constrains settings
+            for `github` alone — every other type is accepted verbatim and
+            written straight to the `settings` jsonb column
+            (toolkits/handler.go:565-583). Closing this would make the generated
+            client reject requests the server accepts.
+
+    ToolkitUpdateRequest:
+      type: object
+      description: >
+        NOTE(1c): all fields optional — `pgRepo.UpdateToolkit` applies only
+        the keys present. Must NOT contain `has_relation`: that key makes the
+        handler dispatch to a different operation entirely (tool↔entity
+        relation, see the `updateToolkit` description and issue #38).
+      properties:
+        name: { type: string, minLength: 1 }
+        type: { type: string }
+        description: { type: string }
+        settings:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): same open contract as `ToolkitCreateRequest.settings` —
+            `pgRepo.UpdateToolkit` applies whatever keys are present and the
+            per-type validation that exists only covers `github`
+            (toolkits/handler.go:565-583).
+
     ToolkitInstance:
       type: object
       required: [id, type, name, description, settings, meta, created_at, author_id]
@@ -3666,6 +3729,69 @@ paths:
         in: path
         required: true
         schema: { type: integer }
+
+    get:
+      operationId: getToolkit
+      summary: Retrieve a single toolkit instance
+      description: |
+        NOTE(1c): internal/api/v2/toolkits/handler.go:586-595 (Get) calling
+        pgRepo.GetToolkit. Registered at internal/api/router.go:648/673.
+
+        This route has always been mounted; it was simply absent from this
+        spec, which is why `apps/elitea-web`'s features/toolkits/api/toolkits.ts
+        calls it handwritten via `eliteaFetch` instead of a generated hook.
+        Any repository error — including a genuinely missing id — is
+        flattened to 404 {"error": "not found"} (:590-592); there is no 500
+        branch on this handler.
+      tags: [toolkits]
+      responses:
+        '200':
+          description: Toolkit instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitInstance'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+
+    put:
+      operationId: updateToolkit
+      summary: Update a toolkit instance
+      description: |
+        NOTE(1c): internal/api/v2/toolkits/handler.go:599-620 (Update) calling
+        pgRepo.UpdateToolkit. Registered at router.go:649/674.
+
+        PATCH (router.go:650/675) is mounted on the SAME handler with
+        identical behaviour. Only PUT is spec'd, deliberately: two operations
+        over one handler would generate two hooks with no behavioural
+        difference.
+
+        OVERLOADED HANDLER — documented, not modelled. If the body contains a
+        `has_relation` key the handler does NOT update the toolkit at all; it
+        dispatches to `updateToolRelation` (:622+), a different operation that
+        mutates the tool↔entity relation using `entity_version_id`,
+        `entity_id` and `entity_type` (defaulting to "agent"). That shape is
+        out of scope for this operation's schema — see issue #38. Callers of
+        `updateToolkit` must not send `has_relation`.
+      tags: [toolkits]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolkitUpdateRequest'
+      responses:
+        '200':
+          description: Updated toolkit instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitInstance'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
 
     delete:
       operationId: deleteApplicationTool
@@ -6149,6 +6275,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ToolkitInstanceListResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    post:
+      operationId: createToolkit
+      summary: Create a toolkit instance
+      description: |
+        NOTE(1c): internal/api/v2/toolkits/handler.go:538-563 (Create) calling
+        pgRepo.CreateToolkit (:891+). Registered at router.go:647/672.
+
+        `author_id` is NOT accepted from the client: the handler overwrites
+        `body["_author_id"]` from the authenticated principal, defaulting to
+        "1" when the context carries no user (:541-544). Sending it has no
+        effect.
+
+        Type-specific validation lives in `validateToolkitCreate` (:565-584)
+        and currently covers exactly ONE type: `github` requires
+        `settings.repository` (non-empty) and `settings.github_configuration`
+        (present). Every other type passes validation with any settings, so
+        `settings` is modelled open rather than as a per-type discriminated
+        union — the union would encode a constraint the backend does not
+        enforce. Violations return 400 {"error": "<reason>"}.
+
+        Returns 201 with the created record.
+      tags: [toolkits]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolkitCreateRequest'
+      responses:
+        '201':
+          description: Created toolkit instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitInstance'
+        '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }

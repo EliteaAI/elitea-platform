@@ -14,7 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"errors"
+
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/oauth2"
 )
@@ -44,11 +47,12 @@ func OIDCConfigFromEnv() (*OIDCConfig, error) {
 }
 
 type OIDCHandler struct {
-	provider  *oidc.Provider
-	verifier  *oidc.IDTokenVerifier
-	oauth2Cfg *oauth2.Config
-	pool      *pgxpool.Pool
-	secretKey string
+	provider      *oidc.Provider
+	verifier      *oidc.IDTokenVerifier
+	oauth2Cfg     *oauth2.Config
+	pool          *pgxpool.Pool
+	secretKey     string
+	secureCookies bool
 }
 
 func NewOIDCHandler(ctx context.Context, cfg *OIDCConfig, pool *pgxpool.Pool, secretKey string) (*OIDCHandler, error) {
@@ -67,12 +71,17 @@ func NewOIDCHandler(ctx context.Context, cfg *OIDCConfig, pool *pgxpool.Pool, se
 
 	verifier := provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
 
+	// COOKIE_SECURE=false disables the Secure flag — useful for E2E stacks
+	// that run over plain HTTP on localhost.
+	secureCookies := os.Getenv("COOKIE_SECURE") != "false"
+
 	return &OIDCHandler{
-		provider:  provider,
-		verifier:  verifier,
-		oauth2Cfg: oauth2Cfg,
-		pool:      pool,
-		secretKey: secretKey,
+		provider:      provider,
+		verifier:      verifier,
+		oauth2Cfg:     oauth2Cfg,
+		pool:          pool,
+		secretKey:     secretKey,
+		secureCookies: secureCookies,
 	}, nil
 }
 
@@ -98,7 +107,7 @@ func (h *OIDCHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    cookieValue,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   h.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   300,
 	})
@@ -145,7 +154,7 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   h.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -203,6 +212,11 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := h.provisionUser(ctx, claims.Sub, claims.Email, claims.Name)
 	if err != nil {
+		if errors.Is(err, errUserSuspended) {
+			slog.Warn("OIDC: suspended user attempted login", "email", claims.Email)
+			http.Error(w, "account suspended", http.StatusForbidden)
+			return
+		}
 		slog.Error("OIDC: user provisioning failed", "err", err, "email", claims.Email)
 		http.Error(w, "user provisioning failed", http.StatusInternalServerError)
 		return
@@ -214,7 +228,7 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   h.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	})
@@ -222,6 +236,8 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	slog.Info("OIDC login successful", "email", claims.Email, "user_id", userID)
 	http.Redirect(w, r, targetTo, http.StatusFound)
 }
+
+var errUserSuspended = errors.New("user account is suspended")
 
 func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string) (string, error) {
 	tx, err := h.pool.Begin(ctx)
@@ -240,6 +256,9 @@ func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string
 		email, name, time.Now(),
 	).Scan(&userID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", errUserSuspended
+		}
 		return "", fmt.Errorf("upsert user: %w", err)
 	}
 

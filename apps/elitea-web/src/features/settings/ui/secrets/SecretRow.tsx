@@ -101,7 +101,13 @@ export const SecretRowComponent = memo(function SecretRowComponent({
   /* ── value cell ────────────────────────────────────────────────────── */
 
   const renderValueCell = useCallback(() => {
-    const isValueEditing = isEditing && !row.isNew;
+    // Editable for BOTH cases of edit mode. A prior `isEditing && !row.isNew`
+    // left a brand-new row's value cell on the read-only `SecretValueCell`,
+    // so a new secret's value could never be typed; `onSave`'s
+    // `if (row.name && row.secretValue)` guard (entities/secret/model/
+    // hooks.ts) then never held and `createSecret` was never called, the row
+    // being dropped from state silently (#137).
+    const isValueEditing = isEditing;
     if (isValueEditing) {
       return (
         <EditSecretInputGridTable

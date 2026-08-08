@@ -9,9 +9,10 @@
  */
 import { createFileRoute } from '@tanstack/react-router';
 
+import { Artifacts } from '@/pages/artifacts/Artifacts';
+
 import { requireArtifactsPermission } from '../../-guards/requirePermission';
 import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
 import { pickParams } from '../../-search/params';
 
 export const Route = createFileRoute('/_shell/artifacts/')({
@@ -19,5 +20,5 @@ export const Route = createFileRoute('/_shell/artifacts/')({
   beforeLoad: requireArtifactsPermission,
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => <RouteShell routeId="artifacts" fallback="Artifacts" />,
+  component: Artifacts,
 });

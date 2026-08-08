@@ -15,9 +15,10 @@
  */
 import { createFileRoute } from '@tanstack/react-router';
 
+import { Applications } from '@/pages/agents/Applications';
+
 import { ExclusiveOutlet } from '../../-ui/ExclusiveOutlet';
 import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
 import { pickParams } from '../../-search/params';
 
 export const Route = createFileRoute('/_shell/agents/$tab')({
@@ -35,9 +36,13 @@ export const Route = createFileRoute('/_shell/agents/$tab')({
   ),
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => (
-    <ExclusiveOutlet>
-      <RouteShell routeId="agents.tab" fallback="Applications" />
-    </ExclusiveOutlet>
-  ),
+  component: ApplicationsRoute,
 });
+
+function ApplicationsRoute() {
+  return (
+    <ExclusiveOutlet>
+      <Applications />
+    </ExclusiveOutlet>
+  );
+}

@@ -52,12 +52,26 @@ func TestPermissionListReturnsOnlyResolvedPermissions(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var permissions []string
+	// The wire shape is an array of Permission objects, not of bare strings —
+	// v2.yaml's permissionList response is `array of #/components/schemas/
+	// Permission` {name, enabled}. Decoding into []string silently passed while
+	// the handler returned strings and started failing when it began returning
+	// objects; assert the object shape so the two cannot drift apart again.
+	var permissions []struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
 	if err := json.NewDecoder(rec.Body).Decode(&permissions); err != nil {
 		t.Fatal(err)
 	}
-	if len(permissions) != 1 || permissions[0] != "configurations.configurations.list" {
-		t.Fatalf("permissions = %v", permissions)
+	if len(permissions) != 1 {
+		t.Fatalf("permissions = %v, want exactly 1", permissions)
+	}
+	if permissions[0].Name != "configurations.configurations.list" {
+		t.Fatalf("permissions[0].Name = %q", permissions[0].Name)
+	}
+	if !permissions[0].Enabled {
+		t.Fatalf("permissions[0].Enabled = false, want true (a resolved permission is granted)")
 	}
 }
 

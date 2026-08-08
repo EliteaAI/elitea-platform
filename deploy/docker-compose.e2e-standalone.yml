@@ -1,0 +1,171 @@
+# Standalone E2E compose (issue #60, unit V1).
+#
+# A COMPLETE, self-contained stack — NOT an overlay.
+# Use this instead of layering on docker-compose.yml when local ports conflict
+# (e.g. centry's pylon_main already holds 8080).
+#
+# Ports used (all non-default to avoid clashing with centry/dev stacks):
+#   8082 → traefik (E2E entry point)  — set via E2E_PORT env (default 8082)
+#   9400 → oidc-provider-mock
+#   15432 → postgres                  (separate from centry's 5432)
+#   16379 → redis                     (separate from centry's 6379)
+#
+# Usage:
+#   E2E_PORT=8082 podman compose -f deploy/docker-compose.e2e-standalone.yml \
+#     -p elitea-e2e up -d
+#   E2E_PORT=8082 PLAYWRIGHT_BASE_URL=http://localhost:8082 npx playwright test
+#
+# In CI (ubuntu-latest, no conflicting stack):
+#   E2E_PORT=8080 COMPOSE_BIN="docker compose" … up -d
+#   PLAYWRIGHT_BASE_URL=http://localhost:8080 npx playwright test
+
+name: elitea-e2e
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:18
+    shm_size: '2g'
+    environment:
+      POSTGRES_USER: elitea
+      POSTGRES_PASSWORD: elitea
+      POSTGRES_DB: elitea
+    ports:
+      - "${E2E_PG_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U elitea"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${E2E_REDIS_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: elitea
+      RUSTFS_SECRET_KEY: elitea-dev-secret
+    healthcheck:
+      test: ["CMD-SHELL", "out=$$(wget -q -O /dev/null http://127.0.0.1:9000/ 2>&1); [ $$? -eq 0 ] || echo \"$$out\" | grep -q 'server returned error'"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  rustfs-bucket-init:
+    image: docker.io/minio/mc:latest
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mc alias set rustfs http://rustfs:9000 elitea elitea-dev-secret &&
+        mc mb --ignore-existing rustfs/elitea-artifacts
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: "no"
+
+  # ── OIDC mock ───────────────────────────────────────────────────────────────
+  # https://github.com/geigerzaehler/oidc-provider-mock
+  # Accept any client_id/secret; users provisioned via PUT /users/{email}
+  oidc-mock:
+    image: ghcr.io/geigerzaehler/oidc-provider-mock:latest
+    ports:
+      - "9400:9400"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9400/.well-known/openid-configuration')\""]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # ── Application services ────────────────────────────────────────────────────
+
+  elitea-main:
+    image: ghcr.io/eliteaai/elitea-main:e2e
+    environment:
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      REDIS_URL: "redis:6379"
+      SHADOW_ENABLED: "false"
+      LEGACY_URL: ""
+      ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
+      APPLICATION_SECRET_KEY: "changeme-e2e"
+      SKIP_MIGRATIONS: "1"
+      OIDC_ISSUER_URL: "http://oidc-mock:9400"
+      OIDC_CLIENT_ID: "elitea-e2e-client"
+      OIDC_CLIENT_SECRET: "elitea-e2e-secret"
+      OIDC_REDIRECT_URI: "http://localhost:${E2E_PORT:-8082}/forward-auth/auth_oidc/callback"
+      COOKIE_SECURE: "false"
+      # Object storage: point at the local rustfs S3-compatible store
+      STORAGE_BACKEND: "s3"
+      STORAGE_CONTAINER: "elitea-artifacts"
+      S3_ENDPOINT_URL: "http://rustfs:9000"
+      S3_ACCESS_KEY: "elitea"
+      S3_SECRET_KEY: "elitea-dev-secret"
+      S3_REGION: "us-east-1"
+      S3_FORCE_PATH_STYLE: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      oidc-mock:
+        condition: service_healthy
+      rustfs-bucket-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/elitea-main", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  elitea-web:
+    image: ghcr.io/eliteaai/elitea-web:e2e
+    environment:
+      VITE_SERVER_URL: "/api/v2"
+      VITE_BASE_URI: "/app/"
+      VITE_SOCKET_SERVER: ""
+      VITE_SOCKET_PATH: "/socket.io"
+      # NOT "1". The seeded working project is id 1 (scripts/e2e-stack.sh), and
+      # `isPublicAgentsProject` compares the selected project against this value
+      # — so setting both to 1 made every agents/pipelines/skills page render the
+      # PUBLIC view (Latest/MyLiked/Trending, backed by
+      # /elitea_core/public_applications) and made the private list
+      # unreachable. J14 created an agent successfully and then could not find
+      # it, because the tab it looked at can only ever show public rows.
+      # 99 is an id no fixture creates, so project 1 behaves as an ordinary
+      # private project and the public surface stays addressable for a journey
+      # that wants to test it.
+      VITE_PUBLIC_PROJECT_ID: "99"
+    depends_on:
+      elitea-main:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/app/ || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── Traefik: routes /app → elitea-web, /api → elitea-main ──────────────────
+  traefik:
+    image: traefik:v3.4
+    ports:
+      - "${E2E_PORT:-8082}:80"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.e2e.yml:/etc/traefik/dynamic.yml:ro
+    depends_on:
+      elitea-main:
+        condition: service_healthy
+      elitea-web:
+        condition: service_healthy

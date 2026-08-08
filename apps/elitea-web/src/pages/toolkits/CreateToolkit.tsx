@@ -6,7 +6,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useParams } from '@tanstack/react-router';
 
-import { CreateToolkitToolTabBar, ToolkitForm, ToolkitTypeSelector, type ToolkitEditorDeps } from '@/features/toolkits';
+import { CreateToolkitToolTabBar, ToolkitForm, ToolkitTypeSelector, type ToolkitEditorDeps, useToolkitCreate } from '@/features/toolkits';
 import { t } from '@/shared/i18n';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
@@ -34,7 +34,14 @@ export interface CreateToolkitDeps {
 export interface CreateToolkitProps {
   readonly isMCP?: boolean;
   readonly isApplication?: boolean;
-  readonly deps: CreateToolkitDeps;
+  /**
+   * OPTIONAL since Phase 1c. `createToolkit` is now a real generated
+   * operation, so this page supplies `useToolkitCreate()` itself and callers
+   * only pass `deps` to override it (tests, or a caller that needs to wrap
+   * the write). It used to be required because no generated endpoint
+   * existed — see the CORRECTION in `features/toolkits/api/toolkits.ts`.
+   */
+  readonly deps?: CreateToolkitDeps;
 }
 
 interface CreateToolkitRouteParams {
@@ -122,6 +129,8 @@ function resolveCreateTitle(isApplication: boolean, isMCP: boolean): string {
  *    make unilaterally. Flagged, not silently re-architected.
  */
 export function CreateToolkit({ isMCP = false, isApplication = false, deps }: CreateToolkitProps): ReactNode {
+  const defaultCreateToolkit = useToolkitCreate();
+  const createToolkitMutation = deps?.createToolkit ?? defaultCreateToolkit;
   const params = useParams({ strict: false }) as CreateToolkitRouteParams;
   const projectId = useSelectedProjectId();
 
@@ -162,7 +171,7 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
     try {
       const name = toolkitNameFromSettings(editToolDetail) ?? (formValues['name'] as string | undefined);
       const description = formValues['description'] as string | undefined;
-      await deps.createToolkit({
+      await createToolkitMutation({
         projectId,
         type: editToolDetail.type,
         ...(name !== undefined ? { name } : {}),
@@ -175,7 +184,7 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
     } finally {
       setIsCreating(false);
     }
-  }, [projectId, editToolDetail, formValues, deps]);
+  }, [projectId, editToolDetail, formValues, createToolkitMutation]);
 
   const title = useMemo(() => resolveCreateTitle(isApplication, isMCP), [isApplication, isMCP]);
 

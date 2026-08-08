@@ -1,0 +1,242 @@
+/**
+ * Journey 21: Settings: create secret (JRNY-021)
+ *
+ * Spec §8.5 acceptance (from parity/manifest/secrets.json JRNY-021).
+ * Acceptance: it appears in the list with its value hidden;
+ * the create modal is reachable directly by URL.
+ *
+ * ── WHAT CHANGED, AND WHY ────────────────────────────────────────────────
+ * The previous revision opened with `createButton.waitFor(...).catch(() => {})`
+ * followed by `test.skip(true, 'Create secret button not found in this build')`,
+ * then a second `.catch(() => false)` guard that `return`ed early with the
+ * comment "Wave-3 acceptance: create button present and clickable", then a
+ * third that made the "value must be hidden" assertion conditional on the row
+ * having appeared. Net effect: the journey reported GREEN while creating a
+ * secret was impossible end to end.
+ *
+ * It was impossible for three independent reasons, each pinned by its own
+ * `test.fail()` here (issue #137): the secrets routes were double-mounted so
+ * every call 404'd, an empty list rendered a permanent skeleton, and a new
+ * row's value cell was read-only so `createSecret` was never called. All
+ * three are fixed and the markers are gone — these are ordinary passing
+ * tests now. Nothing here is skipped: every assertion runs on every run.
+ *
+ * SECRET HYGIENE: the only secret value this file ever handles is a literal
+ * created by the test itself. It is never printed, never asserted on by
+ * value except as a NEGATIVE (`toHaveCount(0)` — "this must not be on
+ * screen"), and every `autotest_*-sec` secret is deleted by the `afterAll`
+ * sweep at the bottom of this file.
+ */
+import { test, expect } from '@playwright/test';
+
+import { checkA11y } from '../../fixtures/axe';
+import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
+import { API_BASE, AUTOTEST_PREFIX, DEFAULT_PROJECT_ID } from '../../fixtures/api';
+
+const SECRETS_PAGE = `${BASE_URL}/app/settings/secrets`;
+
+/**
+ * The list URL `entities/secret/api/secretApi.ts:54-56` actually builds
+ * (`secretsBasePath()` → `/secrets/{mode}/{projectID}`, resolved against
+ * `shared/api/http.ts`'s `/api/v2` base).
+ */
+const CLIENT_LIST_URL = `${API_BASE}/secrets/prompt_lib/${DEFAULT_PROJECT_ID}`;
+const CLIENT_LIST_GLOB = '**/api/v2/secrets/prompt_lib/*';
+
+/**
+ * The served paths, used by the cleanup sweep. The secrets handler is now
+ * Register()ed onto the /api/v2 router rather than Mount()ed under
+ * `/secrets` (services/elitea-main/internal/api/router.go), so its three
+ * prefixes — `/secrets`, `/secret`, `/hide` — sit at the v2 root and the
+ * served list path is the same one the client calls.
+ */
+const SERVED_BASE = CLIENT_LIST_URL;
+const SERVED_ITEM = (name: string): string =>
+  `${API_BASE}/secret/prompt_lib/${DEFAULT_PROJECT_ID}/${encodeURIComponent(name)}`;
+
+/** Unique per run AND per file (`-sec`) so concurrent agents never collide. */
+const secretName = (): string => `${AUTOTEST_PREFIX}j21_${Date.now()}-sec`;
+
+/* ────────────────────────────────────────────────────────────────────────
+ * J21a — the page is real UI, not a stub. Asserted on form controls, not on
+ * a heading: a bare `<h1>Secrets</h1>` satisfies a heading check.
+ * ──────────────────────────────────────────────────────────────────────── */
+test('J21a: settings/secrets renders its real page chrome', async ({ page }) => {
+  await page.goto(SECRETS_PAGE);
+
+  // `DrawerPageHeader` with showSearchInput + showAddButton (Secrets.tsx:298-324).
+  const search = page.getByRole('textbox', { name: 'Search', exact: true });
+  await expect(search).toBeVisible();
+  await expect(search).toHaveAttribute('placeholder', 'Search secrets');
+  await expect(search).toHaveValue('');
+  // The header owns this input's state (routes/_shell/settings/secrets.tsx:37) —
+  // a decorative copy would not accept and keep a value.
+  await search.fill('probe-sec');
+  await expect(search).toHaveValue('probe-sec');
+  await search.fill('');
+
+  // `disabled: isFetching` — becoming enabled proves the list query SETTLED,
+  // which a page that never issues a request cannot demonstrate.
+  const add = page.getByRole('button', { name: 'Create new secret', exact: true });
+  await expect(add).toBeEnabled({ timeout: 15_000 });
+
+  // The header's own title, scoped to the header row that owns the search
+  // input — an unscoped `getByText('Secrets')` also matches the settings
+  // sidebar link, which is present on every settings route.
+  await expect(search.locator('../..').getByText('Secrets', { exact: true })).toBeVisible();
+
+  await checkA11y(page);
+});
+
+/* ────────────────────────────────────────────────────────────────────────
+ * J21b — the failure path. A list error must surface as a toast, not as a
+ * silent empty screen. Forced with an induced 500 so this test keeps its
+ * meaning after the routing defect in J21c is fixed.
+ * ──────────────────────────────────────────────────────────────────────── */
+test('J21b: a failing secrets list surfaces an error toast', async ({ page }) => {
+  await page.route(CLIENT_LIST_GLOB, (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"induced failure"}' }),
+  );
+
+  await page.goto(SECRETS_PAGE);
+
+  // Secrets.tsx:143-152 — the non-403 branch of the list-error effect.
+  const toast = page.getByRole('alert');
+  await expect(toast).toHaveText('Failed to load secrets', { timeout: 15_000 });
+
+  await checkA11y(page);
+});
+
+/* ────────────────────────────────────────────────────────────────────────
+ * J21c — regression guard for DEFECT 1 (routing, fixed). The client calls
+ * `/api/v2/secrets/prompt_lib/1` (`entities/secret/api/secretApi.ts:54-56`).
+ * The handler used to be Mount()ed under `/secrets` while registering
+ * absolute `/secrets/{mode}/{projectID}` patterns inside the mount, so it
+ * answered at `/api/v2/secrets/secrets/prompt_lib/1` and every secrets read
+ * and write in the product 404'd. It is now Register()ed onto the /api/v2
+ * router (router.go), keeping all three prefixes — /secrets, /secret, /hide
+ * — at the root.
+ * ──────────────────────────────────────────────────────────────────────── */
+test('J21c: the secrets list endpoint the client calls is registered', async ({ page }) => {
+  await page.goto(SECRETS_PAGE);
+  const resp = await page.request.get(CLIENT_LIST_URL);
+  expect(resp.status()).toBe(200);
+  expect(Array.isArray(await resp.json())).toBe(true);
+});
+
+/* ────────────────────────────────────────────────────────────────────────
+ * J21d — regression guard for DEFECT 2 (empty state, fixed). It used to be
+ *
+ *     if (isFetching || rows.length === 0) { …render 8 skeletons… }
+ *
+ * so a project with NO secrets — the normal first-run state, and exactly
+ * what a fixed backend returns — rendered a loading skeleton that never
+ * resolved: no empty state, no column header, no pagination footer. The
+ * guard now branches on `isFetching` alone and the grid shows an explicit
+ * "No secrets" overlay.
+ *
+ * Driven here with a stubbed 200 `[]` so the assertion isolates this defect
+ * from the routing one above and stays meaningful after J21c is fixed.
+ * ──────────────────────────────────────────────────────────────────────── */
+test('J21d: an empty secrets list renders a table, not a permanent skeleton', async ({ page }) => {
+  await page.route(CLIENT_LIST_GLOB, (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
+  );
+
+  await page.goto(SECRETS_PAGE);
+  await expect(page.getByRole('button', { name: 'Create new secret', exact: true })).toBeEnabled({
+    timeout: 15_000,
+  });
+
+  // The grid and its footer, which only render past the skeleton guard.
+  await expect(page.locator('.MuiSkeleton-root')).toHaveCount(0);
+  await expect(page.getByRole('grid')).toBeVisible();
+  await expect(page.getByText('Rows per page', { exact: true })).toBeVisible();
+});
+
+/* ────────────────────────────────────────────────────────────────────────
+ * J21 — the journey itself, end to end, against the real backend.
+ *
+ * Both acceptance clauses are asserted: the create entry point is reachable
+ * DIRECTLY BY URL (`?createSecret=1`, PARAM-060 → Secrets.tsx:182-195), and
+ * the saved secret appears in the list with its value hidden.
+ *
+ * It used to fail for DEFECT 3 as well, independent of the other two: a NEW
+ * row's value cell was never editable — `SecretRow.tsx` computed
+ * `isValueEditing = isEditing && !row.isNew`, so the `secretValue` column of
+ * a brand-new row rendered the read-only `SecretValueCell`. `onSave` then
+ * guards on `if (row.name && row.secretValue)`
+ * (`entities/secret/model/hooks.ts:205-209`), which could never hold for a
+ * new row, so `createSecret` was NEVER called and the row was silently
+ * dropped from state.
+ * ──────────────────────────────────────────────────────────────────────── */
+test('J21: settings: create secret', async ({ page }) => {
+  // 60s, and every action below carries its own short timeout, so a
+  // regression lands as a bounded assertion/action error naming the step that
+  // broke rather than as an opaque suite-level timeout.
+  test.setTimeout(60_000);
+
+  const name = secretName();
+  // Value is a literal owned by the test; never logged, only asserted absent.
+  const value = 'e2e-secret-value-sec';
+
+  /* ── clause 2: the create entry point is reachable directly by URL ──── */
+  await page.goto(`${SECRETS_PAGE}?createSecret=1`);
+  await expect(page.getByRole('button', { name: 'Create new secret', exact: true })).toBeEnabled({
+    timeout: 15_000,
+  });
+
+  // Short, explicit timeouts throughout, for the same reason: a regression
+  // should surface as an assertion failure on a named locator.
+  const grid = page.getByRole('grid');
+  await expect(grid).toBeVisible({ timeout: 5_000 });
+  const nameInput = grid.getByRole('textbox').first();
+  await expect(nameInput).toBeVisible({ timeout: 2_000 });
+  await nameInput.fill(name, { timeout: 3_000 });
+
+  const valueInput = grid.getByRole('textbox').nth(1);
+  await expect(valueInput).toBeVisible({ timeout: 2_000 });
+  await valueInput.fill(value, { timeout: 3_000 });
+
+  await grid.getByRole('button', { name: 'Save', exact: true }).click({ timeout: 3_000 });
+
+  /* ── clause 1: it appears in the list with its value hidden ─────────── */
+  const row = page.getByRole('row').filter({ hasText: name });
+  await expect(row).toHaveCount(1, { timeout: 5_000 });
+  // The list endpoint returns only `{{secret.<name>}}` placeholders
+  // (handler.go's SecretListItem), never the plaintext.
+  await expect(row.getByText(`{{secret.${name}}}`, { exact: true })).toBeVisible({ timeout: 2_000 });
+  // The plaintext must not be anywhere in the document.
+  await expect(page.getByText(value, { exact: false })).toHaveCount(0);
+
+  // And the server agrees the secret exists.
+  const listed = await page.request.get(CLIENT_LIST_URL);
+  expect(listed.status()).toBe(200);
+  expect(((await listed.json()) as { name: string }[]).map((s) => s.name)).toContain(name);
+
+  await checkA11y(page);
+
+  // Deleted by the afterAll sweep below, NOT in a `finally`: a cleanup call
+  // inside the test body runs against an already-exhausted test budget once
+  // an assertion above fails slowly, and a timeout is not an expected failure.
+});
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Session-scoped safety net: sweep any `autotest_*-sec` secret this file
+ * left behind, through whichever path is served.
+ * ──────────────────────────────────────────────────────────────────────── */
+test.afterAll(async ({ browser }) => {
+  // Authenticated context: `browser.newContext()` with no storageState is
+  // anonymous, so the sweep would silently 401 and delete nothing.
+  const context = await browser.newContext({ storageState: STORAGE_STATE.member });
+  const resp = await context.request.get(SERVED_BASE);
+  if (resp.ok()) {
+    const items = (await resp.json()) as { name: string }[];
+    for (const item of items) {
+      if (item.name.startsWith(AUTOTEST_PREFIX) && item.name.endsWith('-sec')) {
+        await context.request.delete(SERVED_ITEM(item.name));
+      }
+    }
+  }
+  await context.close();
+});

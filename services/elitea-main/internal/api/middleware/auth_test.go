@@ -3,6 +3,7 @@ package middleware_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -81,6 +82,10 @@ func TestAuth_UnsupportedScheme(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", rec.Code)
 	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	assertJSONErrorBody(t, rec.Body.Bytes())
 }
 
 func TestAuth_InvalidBasicEncoding(t *testing.T) {
@@ -99,6 +104,10 @@ func TestAuth_InvalidBasicEncoding(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", rec.Code)
 	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	assertJSONErrorBody(t, rec.Body.Bytes())
 }
 
 func TestAuth_BasicAuthExtractsUsername(t *testing.T) {
@@ -386,5 +395,28 @@ func TestAuth_TraefikHeaders_MissingID(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", rec.Code)
+	}
+}
+
+func assertJSONErrorBody(t *testing.T, body []byte) {
+	t.Helper()
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("body is not valid JSON: %s", body)
+	}
+	if envelope.Error.Message == "" {
+		t.Error("error.message is empty")
+	}
+	if envelope.Error.Type == "" {
+		t.Error("error.type is empty")
+	}
+	if envelope.Error.Code == "" {
+		t.Error("error.code is empty")
 	}
 }

@@ -28,7 +28,7 @@
  */
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 
-import { ChatWithEditors } from '@/processes/chat';
+import { ChatWithEditors } from '@/processes/chat/ui/ChatWithEditors';
 
 import { requireChatPermission } from '../-guards/requirePermission';
 import { RouteError, RoutePending } from '../-ui/RouteStatus';

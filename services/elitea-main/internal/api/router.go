@@ -413,6 +413,13 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	// Authorization header.
 	r.Get("/icons/{projectID}/{filename}", v2core.DownloadIcon(cfg.ObjectStore))
 
+	// CurrentProjectList: self-contained auth+RBAC chain; registered at the top
+	// level so it shadows the broad /api/v2/projects mount below (chi matches
+	// the most-specific registered route first).
+	if cfg.CurrentProjectList != nil {
+		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
+	}
+
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
 	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})
@@ -577,7 +584,13 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			).Routes())
 
 			// === Secrets ===
-			r.Mount("/secrets", v2secrets.NewHandler(cfg.Pool).Routes())
+			// Registered onto this router, NOT mounted under "/secrets": the
+			// domain serves three sibling prefixes at the v2 root —
+			// /secrets/{mode}/{projectID}, /secret/{mode}/{projectID}/{name}
+			// and /hide/{mode}/{projectID}/{name} — which is what
+			// entities/secret/api/secretApi.ts calls. A Mount prefixed all
+			// three (#137: the list answered at /secrets/secrets/...).
+			v2secrets.NewHandler(cfg.Pool).Register(r)
 
 			// === Notifications ===
 			r.Route("/notifications", func(r chi.Router) {
@@ -592,7 +605,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			r.Route("/elitea_core", func(r chi.Router) {
 				// Applications
 				if cfg.AppsRepo != nil {
-					appHandler := v2apps.NewHandler(cfg.AppsRepo)
+					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
 					r.Get("/applications/prompt_lib/{projectID}", appHandler.List)
 					r.Post("/applications/prompt_lib/{projectID}", appHandler.Create)
 					r.Get("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Get)
@@ -629,7 +642,21 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Toolkits
 				toolkitHandler := v2toolkits.NewHandler(cfg.Pool, cfg.ToolTester)
-				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills)
+				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills).
+				//
+				// NOTE the split, which was wrong until #129: /tools/ is the
+				// INSTANCE list (toolkitHandler.List) and /toolkits/ is the
+				// TYPE catalogue (toolkitHandler.ListTypeSchemas — a map of
+				// toolkit type name to its settings JSON Schema). That is what
+				// api/openapi/v2.yaml specifies (listToolkits ->
+				// ToolkitTypeSchemas, listToolkitInstances -> the array), what
+				// the generated web client requests (apps/elitea-web/src/
+				// shared/api/generated/toolkits/toolkits.ts:562 vs :764), and
+				// what the legacy runtime served (legacy elitea_core
+				// api/v2/toolkits.py -> get_toolkit_schemas, api/v2/tools.py ->
+				// the instance list). Both /toolkits/ registrations previously
+				// pointed at List, so ListTypeSchemas had no route at all and
+				// the MCP create screen could never show a type.
 				// Gate behind FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS for gradual rollout:
 				// when enabled, enforces project-level access control on all toolkit endpoints.
 				// Until vllm/bifrost integration is ready, set env var to "false" to disable.
@@ -642,7 +669,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 						r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 						r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 						r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-						r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.List)
+						r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
 						r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
 						r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
 						r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
@@ -667,7 +694,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 					r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 					r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 					r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-					r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.List)
+					r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
 					r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
 					r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
 					r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
@@ -765,7 +792,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Batch version replacement
 				if cfg.AppsRepo != nil {
-					appHandler := v2apps.NewHandler(cfg.AppsRepo)
+					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
 					r.Post("/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}", appHandler.BatchReplaceVersion)
 				}
 

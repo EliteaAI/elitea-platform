@@ -11,7 +11,40 @@ import { setupServer } from 'msw/node';
 // authored rather than being re-imported per test file.
 import '@testing-library/jest-dom/vitest';
 
+// [M1 carry-forward] Node 24 ships an experimental `localStorage` global that
+// shadows jsdom's and resolves to `undefined` without `--localstorage-file`,
+// so `window.localStorage` is undefined in the `node` project and any
+// component reading it during an effect throws (`<Sidebar>`, `<AppShell>`).
+// Installed here — not per test file — so every unit inherits it; see the
+// shim's own module comment for the full diagnosis. No-ops when the
+// environment already provides working storage.
+import { installWebStorageShim } from '@/shared/lib/webstorage.testshim';
+
 import { handlers } from './msw/handlers/index';
+
+const shimmedStorages = installWebStorageShim();
+
+/**
+ * jsdom ships no `ResizeObserver`, and several components create one
+ * unconditionally on mount (`useTextOverflow` via
+ * `TypographyWithConditionalTooltip`, reached from any tree containing
+ * `EllipsisTypography`). Individual test files used to stub it themselves with
+ * `vi.stubGlobal`, which leaks across files in the same worker: a test that
+ * needed the stub but did not install it passed locally — because a file that
+ * DID install it happened to run first in that worker — and failed in CI, where
+ * the shard split put it in a worker on its own. `EditApplication.test.tsx` hit
+ * exactly that after it began rendering `CreateAgentForm`.
+ *
+ * Installing it here makes the environment deterministic instead of dependent
+ * on file ordering. Per-file `vi.stubGlobal` calls still override this.
+ */
+if (!('ResizeObserver' in globalThis)) {
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  };
+}
 
 /**
  * Global test bootstrap for the `node` (jsdom) vitest project (spec §6.3).
@@ -33,6 +66,15 @@ afterEach(() => {
   // Removes runtime handlers added via server.use() so network behaviour
   // never leaks between tests.
   server.resetHandlers();
+
+  // The shim above installs ONE storage instance for the whole worker, where
+  // a working jsdom would hand each test file its own `window`. Without this
+  // reset, storage written by one test is visible to every later test in the
+  // same worker — an isolation leak that shows up as tests passing alone and
+  // failing in-suite. Clearing here restores per-test isolation.
+  for (const name of shimmedStorages) {
+    (globalThis as unknown as Record<string, Storage | undefined>)[name]?.clear();
+  }
 });
 
 afterAll(() => {

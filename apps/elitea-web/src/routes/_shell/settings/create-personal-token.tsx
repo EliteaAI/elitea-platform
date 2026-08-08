@@ -102,6 +102,7 @@ function CreatePersonalTokenPage() {
     register,
     handleSubmit,
     watch,
+    control,
     formState: { errors, isValid },
   } = form;
 
@@ -126,7 +127,7 @@ function CreatePersonalTokenPage() {
     }
   }, [createMutation]);
 
-  const expirationValue = useWatch({ name: 'expiration' }) as number | null;
+  const expirationValue = useWatch({ name: 'expiration', control }) as number | null;
   const hasChanged = useMemo(
     () => name !== '' || measure !== 'days' || expirationValue !== DEFAULT_TOKEN_EXPIRATION_VALUE,
     [name, measure, expirationValue],

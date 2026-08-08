@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -137,6 +138,10 @@ func TestProject_UnresolvableProject_Returns400(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	assertProjectJSONErrorBody(t, rec.Body.Bytes())
 	if invoked {
 		t.Error("next handler must not be invoked when project is unresolvable")
 	}
@@ -159,6 +164,10 @@ func TestProject_ResolverError_Returns400(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	assertProjectJSONErrorBody(t, rec.Body.Bytes())
 	if invoked {
 		t.Error("next handler must not be invoked on resolver error")
 	}
@@ -339,4 +348,27 @@ func TestPublicProjectIDFromEnv(t *testing.T) {
 			t.Errorf("got %d, want %d", got, defaultPublicProjectID)
 		}
 	})
+}
+
+func assertProjectJSONErrorBody(t *testing.T, body []byte) {
+	t.Helper()
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("body is not valid JSON: %s", body)
+	}
+	if envelope.Error.Message == "" {
+		t.Error("error.message is empty")
+	}
+	if envelope.Error.Type == "" {
+		t.Error("error.type is empty")
+	}
+	if envelope.Error.Code == "" {
+		t.Error("error.code is empty")
+	}
 }

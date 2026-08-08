@@ -10,10 +10,11 @@
  */
 import { createFileRoute } from '@tanstack/react-router';
 
+import { Skills } from '@/pages/skills/Skills';
+
 import { skillsGuardBeforeLoad } from '../../-guards/skillsGuard';
 import { ExclusiveOutlet } from '../../-ui/ExclusiveOutlet';
 import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
 import { pickParams } from '../../-search/params';
 
 export const Route = createFileRoute('/_shell/skills/$tab')({
@@ -21,9 +22,13 @@ export const Route = createFileRoute('/_shell/skills/$tab')({
   beforeLoad: skillsGuardBeforeLoad,
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => (
-    <ExclusiveOutlet>
-      <RouteShell routeId="skills.tab" fallback="Skills" />
-    </ExclusiveOutlet>
-  ),
+  component: SkillsRoute,
 });
+
+function SkillsRoute() {
+  return (
+    <ExclusiveOutlet>
+      <Skills />
+    </ExclusiveOutlet>
+  );
+}

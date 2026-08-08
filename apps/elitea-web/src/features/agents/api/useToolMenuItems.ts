@@ -122,7 +122,13 @@ export function useToolMenuItems({ projectId, isMCP = false, isApplication = fal
   }, [allSchemas, isMCP]);
 
   const entries = useMemo(
-    () => toolkitTypeMenuEntries(activeSchemas, { isApplication }).filter((entry) => entry.label !== ''),
+    () =>
+      // Filter on hasKnownLabel, NOT on `label !== ''`. Entries now always carry
+      // a non-empty label (an unknown type falls back to a humanised key, so a
+      // toolkit tile can never be a nameless button — see toolMenu.ts). That
+      // made the old empty-string test match nothing and would have silently
+      // surfaced unknown backend types in this menu, which the baseline hides.
+      toolkitTypeMenuEntries(activeSchemas, { isApplication }).filter((entry) => entry.hasKnownLabel),
     [activeSchemas, isApplication],
   );
 
@@ -135,7 +141,10 @@ export function useToolMenuItems({ projectId, isMCP = false, isApplication = fal
     for (const entry of entries) {
       if (!seenKeys.has(entry.key)) {
         seenKeys.add(entry.key);
-        merged.push(entry);
+        // Project to {key,label} explicitly. `hasKnownLabel` is an entities-layer
+        // detail used only by the filter above; letting it ride along would widen
+        // this hook's public ToolMenuItem shape by accident.
+        merged.push({ key: entry.key, label: entry.label });
       }
     }
     return merged.sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()));
