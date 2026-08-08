@@ -79,15 +79,6 @@ function typeSearchBox(page: Page) {
 }
 
 test('J17.1: an empty toolkit list redirects to the create page', async ({ page }) => {
-  // The redirect assertions themselves PASS. This is expected-fail only on the
-  // closing checkA11y, which reports a critical `button-name` violation against
-  // the two label-less tiles #129 D2 produces by iterating the `rows`/`total`
-  // envelope keys as if they were toolkit types.
-  //
-  // Worth recording: the ORIGINAL version of this spec was already failing here,
-  // on the same two tiles. It was red for a reason nobody could read off the
-  // failure — which is the condition this rewrite exists to end.
-  test.fail();
   // Behaviour under test: Toolkits.tsx's shouldRedirectToCreatePage gate
   // (pages/toolkits/Toolkits.tsx:57-67) driven by the REAL list response
   // (GET /elitea_core/tools/prompt_lib/{id} -> total 0). A stub page cannot
@@ -113,34 +104,47 @@ test('J17.1: an empty toolkit list redirects to the create page', async ({ page 
 });
 
 test('J17.2: the create page offers real, server-supplied toolkit types', async ({ page }) => {
-  // Expected-fail on #129 defect D2: ListTypeSchemas is routed nowhere, so the page
-  // receives the pagination envelope and renders label-less tiles for the keys 'rows'
-  // and 'total'. No real toolkit type is selectable anywhere in the product.
-  test.fail();
-  // KNOWN-FAILING — defect A above. The tile label "GitHub" is derivable ONLY
-  // from a schema map that contains the key `github`
-  // (entities/toolkit toolMenu.ts labels each map key through ToolTypes).
-  // Today the endpoint returns {rows,total}, so the selector renders two
-  // label-less tiles and "Custom" only.
+  // PASSES as of the #129 route fix. The tile label "GitHub" is derivable ONLY
+  // from a schema map that actually contains the key `github`
+  // (entities/toolkit/model/toolMenu.ts labels each map key through ToolTypes),
+  // so this cannot be satisfied by a stub or by the pagination envelope the
+  // endpoint used to return.
   await page.goto(BASE_URL + '/app/toolkits/create');
   await expect(typeSearchBox(page)).toBeVisible({ timeout: 15_000 });
 
   await expect(page.getByRole('button', { name: 'GitHub', exact: true })).toBeVisible({ timeout: 15_000 });
 
-  // The ghost tiles are ALSO an a11y defect and checkA11y is what catches
-  // them: axe reports `button-name` (critical) on exactly two nodes,
-  // `<button class="MuiButtonBase-root css-2qa3o"><span aria-label=""></span></button>`
-  // — the "rows"/"total" tiles. (A dedicated nameless-button count was tried
-  // and REMOVED as vacuous: Playwright's getByRole(..., {name: ''}) does not
-  // match empty accessible names, so it asserted nothing.)
+  // checkA11y earns its place here and has now caught TWO different causes of the
+  // same critical `button-name` violation, which is why it stays unconditional:
+  //   1. before #129, the page iterated the {rows,total} pagination envelope and
+  //      rendered a nameless tile per envelope KEY;
+  //   2. after #129 served real types, `database` and `datasource` had no entry
+  //      in the frontend ToolTypes map and the label fell back to '' — still two
+  //      nameless tiles, entirely different cause.
+  // Fixed by making the label fall back to a humanised key, so a backend type the
+  // frontend has never heard of degrades to a readable name instead of nothing.
+  //
+  // (A dedicated nameless-button count was tried and REMOVED as vacuous:
+  // Playwright's getByRole(..., {name: ''}) does not match empty accessible
+  // names, so it asserted nothing.)
   await checkA11y(page);
 });
 
 test('J17.3: create a toolkit, persist it, and reopen it from the list', async ({ page }) => {
-  // Expected-fail on #129 defect D1: POST .../tools/prompt_lib/{id} 500s because
-  // owner_id is NOT NULL and CreateToolkit never inserts it. ForkToolkit does, so
-  // Create is the outlier. Everything after the POST was verified green against a
-  // hand-inserted row, so the tail of this test is known-good and blocked, not wrong.
+  // Expected-fail, but NOT for the reason first recorded here. The original
+  // annotation blamed the #129 owner_id 500 on POST .../tools/prompt_lib/{id}.
+  // That is fixed and verified (POST now returns 201), and this test consequently
+  // gets much further: the type selector is replaced by the real form and Save is
+  // enabled.
+  //
+  // It now fails one assertion later, at line ~150 — the CodeMirror document does
+  // not contain `"type": "custom"` after picking the Custom type. Whether that is
+  // a changed serialisation (spacing), CodeMirror virtualising the text out of the
+  // DOM, or the type genuinely not being written into the draft is NOT yet
+  // established, so no issue is cited: recording a cause I have not measured is
+  // exactly the failure mode this suite exists to remove.
+  //
+  // See #129 for the create-path history.
   test.fail();
   const name = toolkitName();
 
