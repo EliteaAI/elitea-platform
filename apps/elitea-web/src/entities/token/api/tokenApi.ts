@@ -69,8 +69,18 @@ export interface CreatedTokenResponse {
   readonly expires: string | null;
 }
 
+/*
+ * NOTE: this MUST go through `fetchJson`, not `eliteaFetch` directly.
+ * `eliteaFetch` always returns orval's `{ data, status, headers }` envelope
+ * (shared/api/generated/mutator.ts:170-172) — never the bare body. Calling it
+ * directly here returned the envelope as if it were the token, so
+ * `resp.token` / `resp.name` were `undefined` and `GeneratedTokenDialog`
+ * rendered an EMPTY name and an EMPTY token value: the freshly minted PAT was
+ * never shown to the user, and it is only ever shown once. Caught by
+ * e2e/journeys/settings/settings.tokens.spec.ts.
+ */
 export async function createToken(params: CreateTokenParams): Promise<CreatedTokenResponse> {
-  return eliteaFetch<CreatedTokenResponse>('/auth/token/', {
+  return fetchJson<CreatedTokenResponse>('/auth/token/', {
     method: 'POST',
     body: JSON.stringify(params),
     headers: { 'Content-Type': 'application/json' },

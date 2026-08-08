@@ -888,6 +888,57 @@ func isSensitiveSettingKey(key string) bool {
 		strings.Contains(key, "api_key") || strings.Contains(key, "apikey")
 }
 
+// tenantOwnerID converts a tenant project id into the integer written to the
+// tenant tables' owner_id column. The p_<id> schema name is the project id, so
+// a schema we can address is by definition a project id we can store.
+func tenantOwnerID(projectID string) (int, error) {
+	ownerID, err := strconv.Atoi(projectID)
+	if err != nil || ownerID <= 0 {
+		return 0, fmt.Errorf("create toolkit: %q is not a project id", projectID)
+	}
+	return ownerID, nil
+}
+
+// createToolkitInsertSQL builds the elitea_tools INSERT for one tenant schema.
+//
+// owner_id is the OWNING PROJECT id, not the creating user. author_id is the
+// creating user. The two are different columns because they are different
+// things, and copying author_id into owner_id would write a user id into a
+// project-id column. Evidence, in order of weight:
+//
+//   - The legacy runtime's tenant tables that DO have owner_id store the
+//     project id there: every row of p_1.applications in the legacy database
+//     has owner_id = 1, and legacy elitea_core queries filter with
+//     `Skill.owner_id == project_id` and construct rows with
+//     `{'owner_id': project_id}` (utils/skill_utils.py:1066,1114;
+//     utils/application_utils.py:273).
+//   - Publishing writes `{'owner_id': public_project_id, 'shared_owner_id':
+//     src['project_id']}` (utils/publish_utils.py:1010-1011) — both halves of
+//     the owner_id/shared_owner_id pair are project ids.
+//   - elitea_tools' own sibling column shared_owner_id is unambiguously a
+//     project id (utils/fork.py:143-146 uses it as parent_project_id), and
+//     owner_id is the same name without the "shared" qualifier.
+//   - ForkToolkit already carries owner_id across a same-schema copy
+//     (handler.go, `SELECT ... owner_id ... FROM %q.elitea_tools`), which is
+//     only coherent if the value is a property of the project, not of the
+//     user who happens to be forking.
+//
+// Note that legacy's elitea_tools table has no owner_id column at all (checked
+// against the running legacy database: id, created_at, updated_at, type, name,
+// description, settings, author_id, shared_owner_id, shared_id, meta). The
+// NOT NULL column is an invention of migrations/001_initial.sql. Because that
+// migration has already been applied everywhere, the fix is to populate the
+// column with the value its name means in this schema family rather than to
+// alter the shipped DDL.
+func createToolkitInsertSQL(schema string) string {
+	return fmt.Sprintf(`
+		INSERT INTO %q.elitea_tools (name, type, description, settings, meta, owner_id, author_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, type, name, COALESCE(description,''),
+		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
+		       created_at, author_id`, schema)
+}
+
 func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[string]any) (map[string]any, error) {
 	s := fmt.Sprintf("p_%s", projectID)
 	name, _ := body["name"].(string)
@@ -906,16 +957,19 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 	if metaJSON == nil || string(metaJSON) == "null" {
 		metaJSON = []byte("{}")
 	}
-	q := fmt.Sprintf(`
-		INSERT INTO %q.elitea_tools (name, type, description, settings, meta, author_id)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, type, name, COALESCE(description,''),
-		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
-		       created_at, author_id`, s)
+	// owner_id is the OWNING PROJECT, not the creating user — see
+	// createToolkitInsertSQL for the evidence. author_id already carries the
+	// principal; the project is exactly the tenant schema we are writing into.
+	ownerID, err := tenantOwnerID(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	q := createToolkitInsertSQL(s)
 	var id, retType, retName, retDesc string
 	var settingsRaw, metaRaw []byte
 	var createdAt, authorID any
-	err := r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), authorIDStr).Scan(
+	err = r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), ownerID, authorIDStr).Scan(
 		&id, &retType, &retName, &retDesc, &settingsRaw, &metaRaw,
 		&createdAt, &authorID)
 	if err != nil {

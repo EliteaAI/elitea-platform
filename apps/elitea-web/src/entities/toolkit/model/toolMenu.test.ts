@@ -54,7 +54,7 @@ describe('toolkitTypeMenuEntries', () => {
       github: { metadata: { label: 'GitHub' } },
       sub_agent: { metadata: { label: 'Sub Agent', application: true } },
     };
-    expect(toolkitTypeMenuEntries(schemas)).toEqual([{ key: 'github', label: 'GitHub' }]);
+    expect(toolkitTypeMenuEntries(schemas)).toEqual([{ key: 'github', label: 'GitHub', hasKnownLabel: true }]);
   });
 
   it('keeps only application entries when isApplication is true', () => {
@@ -62,17 +62,17 @@ describe('toolkitTypeMenuEntries', () => {
       github: { metadata: { label: 'GitHub' } },
       sub_agent: { metadata: { label: 'Sub Agent', application: true } },
     };
-    expect(toolkitTypeMenuEntries(schemas, { isApplication: true })).toEqual([{ key: 'sub_agent', label: 'Sub Agent' }]);
+    expect(toolkitTypeMenuEntries(schemas, { isApplication: true })).toEqual([{ key: 'sub_agent', label: 'Sub Agent', hasKnownLabel: true }]);
   });
 
   it('overrides the backend label with ToolTypes when a FE override exists', () => {
     const schemas = { jira: { metadata: { label: 'Jira Backend Label' } } };
-    expect(toolkitTypeMenuEntries(schemas)).toEqual([{ key: 'jira', label: 'Jira' }]);
+    expect(toolkitTypeMenuEntries(schemas)).toEqual([{ key: 'jira', label: 'Jira', hasKnownLabel: true }]);
   });
 
   it('falls back to the backend label when there is no FE override', () => {
     const schemas = { totally_unknown_type: { metadata: { label: 'Backend Label' } } };
-    expect(toolkitTypeMenuEntries(schemas)).toEqual([{ key: 'totally_unknown_type', label: 'Backend Label' }]);
+    expect(toolkitTypeMenuEntries(schemas)).toEqual([{ key: 'totally_unknown_type', label: 'Backend Label', hasKnownLabel: true }]);
   });
 
   it('sorts entries alphabetically by label, case-insensitively', () => {

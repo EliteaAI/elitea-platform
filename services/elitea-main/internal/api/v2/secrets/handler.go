@@ -51,8 +51,16 @@ func NewHandler(pool *pgxpool.Pool) *Handler {
 	return h
 }
 
-func (h *Handler) Routes() chi.Router {
-	r := chi.NewRouter()
+// Register attaches the secrets routes to r, which must be the /api/v2
+// router itself — the patterns below are absolute, and the domain spans
+// THREE sibling prefixes (/secrets, /secret, /hide), only one of which is
+// "secrets".  Registering onto the caller's router (the convention
+// gateway.GovernanceHandler.Register already uses in internal/api/router.go)
+// is what keeps all three at the v2 root; a Mount("/secrets", …) would have
+// prefixed every one of them, which is exactly the defect in #137 —
+// GET /api/v2/secrets/{mode}/{projectID} 404'd while the client called it
+// and the handler answered at /api/v2/secrets/secrets/{mode}/{projectID}.
+func (h *Handler) Register(r chi.Router) {
 	// GET  /secrets/{mode}/{projectID}            – list secret names
 	r.Get("/secrets/{mode}/{projectID}", h.List)
 	// POST /secrets/{mode}/{projectID}            – create a new secret
@@ -65,7 +73,6 @@ func (h *Handler) Routes() chi.Router {
 	r.Delete("/secret/{mode}/{projectID}/{name}", h.Delete)
 	// POST /hide/{mode}/{projectID}/{name}        – move secret to hidden_secrets
 	r.Post("/hide/{mode}/{projectID}/{name}", h.Hide)
-	return r
 }
 
 // ─── response models ─────────────────────────────────────────────────────────

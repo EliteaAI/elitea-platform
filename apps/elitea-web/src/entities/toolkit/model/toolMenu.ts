@@ -52,6 +52,35 @@ export function nonMcpToolkitTypeSchemas(toolkitSchemas: ToolkitTypeSchemaMap): 
 export interface ToolkitTypeMenuEntry {
   readonly key: string;
   readonly label: string;
+  /**
+   * True when the label came from a real source — this app's `ToolTypes`
+   * override map or the backend's own `metadata.label` — rather than from the
+   * humanised-key fallback.
+   *
+   * This exists because two callers need OPPOSITE things from an unrecognised
+   * type, and the label alone can no longer distinguish them. The toolkit
+   * create page renders every entry as a tile, so an unknown type must still
+   * get a readable accessible name. The agents tool menu deliberately HIDES
+   * unknown types (baseline parity: `!!obj.label`), and used to do it by
+   * testing `label !== ''` — which silently stopped working the moment the
+   * fallback guaranteed a non-empty label. Filter on this flag, not on the
+   * label, so the two behaviours stay independent.
+   */
+  readonly hasKnownLabel: boolean;
+}
+
+/**
+ * Turn a raw toolkit-type key into a readable label: `ado_boards` -> `Ado
+ * Boards`. Used only as a last resort, when neither the frontend override map
+ * nor the backend metadata supplies a name — its job is to guarantee that a
+ * toolkit tile always has a non-empty accessible name.
+ */
+function humanizeToolkitTypeKey(key: string): string {
+  return key
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 /**
@@ -91,7 +120,27 @@ export function toolkitTypeMenuEntries(
     .map(([key, value]) => {
       const metadata = metadataOf(value);
       const backendLabel = typeof metadata['label'] === 'string' ? metadata['label'] : '';
-      return { key, label: overrides[key]?.label ?? backendLabel };
+      /*
+       * A tile's label is its ONLY accessible name, so an empty one is a
+       * critical `button-name` violation, not a cosmetic gap.
+       *
+       * Both prior sources can be empty at once. The backend's type schemas
+       * carry no `metadata.label` at all (measured: every type returns
+       * `metadata: {}`), so the label came solely from the frontend ToolTypes
+       * map — and the catalogue serves `database` and `datasource`, which that
+       * map has no entry for. The result was two buttons with `aria-label=""`
+       * and an empty span: unreachable by name, invisible to a screen reader,
+       * and axe-critical.
+       *
+       * Falling back to the humanised key means a type the frontend has never
+       * heard of degrades to a plain readable name rather than to nothing. That
+       * matters more than the two known keys: the backend can add a type at any
+       * time without a frontend release, and the failure mode for that must not
+       * be a silent a11y regression.
+       */
+      const knownLabel = overrides[key]?.label ?? backendLabel;
+      const label = knownLabel || humanizeToolkitTypeKey(key);
+      return { key, label, hasKnownLabel: knownLabel !== '' };
     })
     .sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()));
 }

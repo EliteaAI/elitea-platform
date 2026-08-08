@@ -4,91 +4,191 @@
  * Spec §8.5 acceptance (from parity/manifest/tokens.json JRNY-023).
  * Acceptance: the token value is shown once and the list updates;
  * navigation away with unsaved input is blocked.
+ *
+ * COVERAGE GAP (product, not test): the second acceptance clause —
+ * "navigation away with unsaved input is blocked" — CANNOT be asserted,
+ * because the guard does not exist. `src/routes/_shell/settings/
+ * create-personal-token.tsx` says so in its own header ("No `useNavBlocker`
+ * hook (Wave-2 concern)"), and the only `useNavBlockerStore.setBlockNav`
+ * callers are in `src/processes/chat/**`, none on a settings route. So
+ * `widgets/app-shell/ui/NavBlockerDialog.tsx` (data-testid
+ * "nav-blocker-dialog") can never appear from this form. The nearest real
+ * affordance is the in-page DiscardButton, whose enabled-state transition IS
+ * asserted below — it is NOT a substitute for the nav guard, and this journey
+ * is deliberately left short of that clause rather than faking it.
+ *
+ * Everything else runs unconditionally: no test.skip, no early return, no
+ * `.catch(() => false)`, no `.or()` fallback. Every wait is a web-first
+ * expect on a URL, a value, or a row count.
  */
 import { test, expect } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
-import { AUTOTEST_PREFIX } from '../../fixtures/api';
+import { API_BASE, AUTOTEST_PREFIX } from '../../fixtures/api';
+
+/** Unique per run AND per file (`-tok`) so concurrent agents never collide. */
+const stamp = (): string => `${Date.now()}-tok`;
+
+/**
+ * Navigate into the shell and WAIT FOR THE ROUTER'S SEARCH-PARAM NORMALIZATION
+ * to land before returning.
+ *
+ * Every `/app/*` route rewrites a bare URL to the shell's full default search
+ * schema (`?author_id=&...&viewMode=owner&page_size=20&createSecret="0"`) with a
+ * client-side replace that fires AFTER the `load` event `page.goto` waits for.
+ * On chromium that replace wins the race with whatever the test does next; on
+ * webkit it lands late and aborts the NEXT `page.goto` with
+ * `Navigation to "…/app/settings/tokens" is interrupted by another navigation
+ * to "…/app/settings/tokens?author_id=&…"` (reproduced 4/6 webkit runs,
+ * 0/6 chromium). Nothing browser-specific happens in the app: the rewrite is
+ * identical and deterministic on both engines, so this is a test-side race.
+ *
+ * Waiting on `viewMode=owner` is not a sleep — it is the router's own
+ * post-normalization URL, so it also pins that the normalization happened.
+ */
+async function gotoSettled(page: import('@playwright/test').Page, url: string): Promise<void> {
+  await page.goto(url);
+  await expect(page).toHaveURL(/[?&]viewMode=owner(&|$)/);
+}
 
 test('J23: settings: create personal token', async ({ page }) => {
-  await page.goto(BASE_URL + '/app/settings/tokens');
-  await page.waitForURL('**/settings**', { timeout: 15_000 });
+  const seedName = `${AUTOTEST_PREFIX}j23_seed_${stamp()}`;
+  let seedUUID = '';
 
-  await checkA11y(page);
+  try {
+    /* ── seed one token via the real API ───────────────────────────────────
+     * The tokens page renders its empty state (and NO DrawerPageHeader, so no
+     * "Generate new token" button) while the list is empty — scripts/
+     * e2e-stack.sh seeds no tokens. Seeding through POST /auth/token/ both
+     * guarantees the table path and proves the create endpoint end-to-end.
+     */
+    await gotoSettled(page, BASE_URL + '/app/settings/tokens');
+    const created = await page.request.post(`${API_BASE}/auth/token/`, {
+      data: { name: seedName, expires: { measure: 'days', value: 30 } },
+    });
+    expect(created.status()).toBe(200);
+    const createdBody = (await created.json()) as { uuid: string; name: string; token: string };
+    seedUUID = createdBody.uuid;
+    expect(createdBody.name).toBe(seedName);
+    expect(createdBody.uuid).toMatch(/^[0-9a-f-]{36}$/i);
+    // HS512 PAT minted by internal/infra/authsvc/pat_issuer.go — a shape no
+    // stub can fabricate. Asserted on the API response only; the value itself
+    // is never logged.
+    expect(createdBody.token).toMatch(/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/);
 
-  // The tokens page has two create paths:
-  //   1. Empty-state <Paper> with text "Create token" (when token list is empty)
-  //   2. DrawerPageHeader AddButton with aria-label="Generate new token" (when tokens exist)
-  // Both fire onAddPersonalToken which navigates to /settings/create-personal-token.
-  const createButton = page
-    .getByRole('button', { name: /generate new token/i })
-    .or(page.getByText(/^create token$/i))
-    .first();
-  const createVisible = await createButton.isVisible({ timeout: 5_000 }).catch(() => false);
-  if (!createVisible) {
-    test.skip(true, 'Create token button not found in this build');
-    return;
+    /* ── the list renders the seeded token, from the server ───────────────── */
+    await gotoSettled(page, BASE_URL + '/app/settings/tokens');
+    const table = page.getByRole('table');
+    await expect(table.getByRole('columnheader', { name: 'Token value' })).toBeVisible();
+
+    const seedRow = table.getByRole('row').filter({ hasText: seedName });
+    await expect(seedRow).toHaveCount(1);
+    // maskedTokenValue (entities/token/model/selectors.ts:41) = '...' + last 4
+    // chars of the already-server-masked value. Only a real round trip
+    // produces it.
+    await expect(seedRow.getByText(/^\.\.\..{4}$/)).toBeVisible();
+    // ExpiryCell (TokenRow.tsx:36-40) derives this from the server `expires`
+    // timestamp; 30 days out is "Safe".
+    await expect(seedRow.getByText('Safe', { exact: true })).toBeVisible();
+
+    await checkA11y(page);
+
+    /* ── the real entry point (no fallback to the empty-state <div>) ─────── */
+    const add = page.getByRole('button', { name: 'Generate new token' });
+    await expect(add).toBeEnabled();
+    await add.click();
+    await expect(page).toHaveURL(/\/settings\/create-personal-token(\?|$)/);
+
+    /* ── the create form is POPULATED, not merely present ────────────────── */
+    const nameInput = page.getByRole('textbox', { name: 'Name', exact: true });
+    const measure = page.getByRole('combobox', { name: 'Expiration period', exact: true });
+    const expiration = page.getByRole('spinbutton', { name: 'Value', exact: true });
+    const generate = page.getByRole('button', { name: 'Generate', exact: true });
+    const discard = page.getByRole('button', { name: 'Discard', exact: true });
+
+    await expect(measure).toHaveValue('days');
+    await expect(expiration).toHaveValue('30');
+    // isGenerateDisabled = !isValid || isGenerating || !hasChanged
+    await expect(generate).toBeDisabled();
+    await expect(discard).toBeDisabled();
+
+    await checkA11y(page);
+
+    /* ── live zod validation (TOKEN_NAME_PATTERN, mode: 'onChange') ──────── */
+    await nameInput.fill('bad name!');
+    await expect(
+      page.getByText('Only alphanumeric characters, underscore and hyphen are allowed'),
+    ).toBeVisible();
+    await expect(generate).toBeDisabled();
+
+    /* ── conditional render a stub cannot fake ───────────────────────────── */
+    await measure.selectOption('never');
+    await expect(expiration).toHaveCount(0);
+    await measure.selectOption('days');
+    await expect(expiration).toHaveValue('30');
+
+    /* ── the enable transition, then submit ──────────────────────────────── */
+    const uiName = `${AUTOTEST_PREFIX}j23ui_${stamp()}`;
+    await nameInput.fill(uiName);
+    await expect(
+      page.getByText('Only alphanumeric characters, underscore and hyphen are allowed'),
+    ).toHaveCount(0);
+    await expect(discard).toBeEnabled();
+    await expect(generate).toBeEnabled();
+    await generate.click();
+
+    /* ── the token value is shown ONCE, inside the dialog ────────────────── */
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('New token generated!')).toBeVisible();
+    await expect(
+      dialog.getByText('This token will only be shown once, so make sure to copy and save it.'),
+    ).toBeVisible();
+    await expect(dialog.getByText(uiName, { exact: true })).toBeVisible();
+    // The generated PAT: same HS512 JWT shape, only obtainable from a real
+    // POST /auth/token/ that revealed the full value.
+    await expect(dialog.getByText(/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/)).toHaveCount(1);
+
+    /* ── the copy affordance's state machine ─────────────────────────────── */
+    const copy = dialog.getByRole('button', { name: 'Copy', exact: true });
+    await expect(copy).toBeEnabled();
+    await copy.click();
+    await expect(dialog.getByRole('button', { name: 'Copied!', exact: true })).toBeDisabled();
+
+    /* ── dismissal auto-navigates and the list refetches ──────────────────
+     * Escape is dispatched ON THE DIALOG, not via page.keyboard, and that is
+     * a product defect worth recording: after the Copy button disables itself
+     * (GeneratedTokenDialog.tsx:53-62) keyboard focus is dropped to <body>,
+     * outside MUI's modal root, so a plain page-level Escape no longer
+     * reaches the dialog's keydown handler and the dialog cannot be dismissed
+     * from the keyboard. Verified directly: Escape closes the dialog when
+     * Copy has NOT been clicked, and does nothing once it has.
+     * No page.goto here on purpose: the route change must come from
+     * onClose -> onCancel -> navigate(), and the new row can only appear
+     * because invalidateQueries refetched from the server.
+     */
+    await dialog.press('Escape');
+    await expect(page).toHaveURL(/\/settings\/tokens(\?|$)/);
+    const uiRow = page.getByRole('table').getByRole('row').filter({ hasText: uiName });
+    await expect(uiRow).toHaveCount(1);
+    await expect(uiRow.getByText(/^\.\.\..{4}$/)).toBeVisible();
+
+    /* ── close the loop: delete round trip through the UI ────────────────── */
+    await uiRow.getByRole('button', { name: 'Delete token', exact: true }).click();
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+    // Wait for the table to SETTLE on the seeded row first: a bare
+    // `toHaveCount(0)` on the deleted row is also satisfied by the transient
+    // loading skeleton (TokensTable renders no table while isFetching), which
+    // made a failed DELETE look like a successful one.
+    await expect(
+      page.getByRole('table').getByRole('row').filter({ hasText: seedName }),
+    ).toHaveCount(1);
+    await expect(
+      page.getByRole('table').getByRole('row').filter({ hasText: uiName }),
+    ).toHaveCount(0);
+  } finally {
+    if (seedUUID !== '') {
+      await page.request.delete(`${API_BASE}/auth/token/${seedUUID}`);
+    }
   }
-
-  await createButton.click();
-
-  // Wait for the create-personal-token route to render (separate page, not dialog).
-  // The tokens empty-state Paper fires navigate({ to: '/settings/create-personal-token' })
-  // which requires a JS route transition; wait for the URL before inspecting the DOM.
-  await page.waitForURL('**/create-personal-token**', { timeout: 10_000 }).catch(() => {});
-  await page.waitForTimeout(500);
-
-  const isOnCreatePage = page.url().includes('create-personal-token');
-  const dialog = page.getByRole('dialog');
-  const dialogVisible = await dialog.isVisible().catch(() => false);
-
-  if (!isOnCreatePage && !dialogVisible) {
-    test.skip(true, 'Create token form not accessible in this build');
-    return;
-  }
-
-  // Fill the token name.
-  const nameInput = page
-    .getByRole('textbox', { name: /name/i }).first();
-  await expect(nameInput).toBeVisible({ timeout: 10_000 });
-  await nameInput.fill(`${AUTOTEST_PREFIX}e2e-token`);
-
-  // Save the token — the Generate button has exact text "Generate" (DrawerPageHeader extraContent).
-  // Use an exact match to avoid picking up the global sidebar "Create" button.
-  const saveButton = page
-    .getByRole('button', { name: /^generate$/i })
-    .or(page.getByRole('button', { name: /^save$/i }))
-    .first();
-  await saveButton.click();
-
-  // The token value should be shown exactly once (in a "copy" dialog or inline).
-  const tokenValue = page
-    .getByRole('textbox', { name: /token|value/i })
-    .or(page.locator('code'))
-    .or(page.getByTestId('token-value'))
-    .or(page.locator('[data-testid="generated-token"]')).first();
-
-  const tokenVisible = await tokenValue.isVisible({ timeout: 10_000 }).catch(() => false);
-  if (tokenVisible) {
-    const tokenText = await tokenValue.textContent();
-    expect(tokenText?.length).toBeGreaterThan(10);
-
-    // Close the dialog / copy view.
-    await page.getByRole('button', { name: /close|done|ok/i }).click().catch(() => {});
-  }
-
-  // Navigate back to tokens list and verify the token appears.
-  if (isOnCreatePage) {
-    await page.goto(BASE_URL + '/app/settings/tokens');
-    await page.waitForURL('**/settings**', { timeout: 10_000 });
-  }
-  // If the API created the token, it should appear in the list.
-  // If the API is unavailable in this build (stub/404), the token won't appear — skip assertion.
-  const tokenInList = await page.getByText(`${AUTOTEST_PREFIX}e2e-token`).isVisible({ timeout: 5_000 }).catch(() => false);
-  if (tokenInList) {
-    expect(tokenInList).toBe(true);
-  }
-
-  await checkA11y(page);
 });
