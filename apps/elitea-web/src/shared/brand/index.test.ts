@@ -12,6 +12,7 @@ import * as brand from './index';
 const PUBLIC_SURFACE = [
   'BRAND_ANCHOR_TOKEN',
   'BREAKPOINT_VALUES',
+  'BRAND_PACK_GLOBAL',
   'BrandPack',
   'COLOR_SCHEME_ATTRIBUTE',
   'COLOR_SCHEME_SELECTOR',
@@ -22,6 +23,8 @@ const PUBLIC_SURFACE = [
   'buildEliteaTheme',
   'catalogueFor',
   'hueDeltaFor',
+  'parseBrandPack',
+  'resolveBrandPack',
   'resolveScheme',
   'toMuiPalette',
 ] as const;

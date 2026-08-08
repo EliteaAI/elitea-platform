@@ -29,7 +29,7 @@ const minimalValidBrandPack = `{
   "product": {"name": "Router Wired", "shortName": "RW"},
   "assets": {"logoFull": "/app/brand/l.svg", "logoMark": "/app/brand/m.svg", "favicon": "/app/brand/f.svg"},
   "typography": {"fontFamily": "sans-serif", "fontFamilyMono": "monospace"},
-  "shape": {"radiusSm": 2, "radiusMd": 4, "radiusLg": 8, "density": "comfortable"},
+  "shape": {"radiusSm": 2, "radiusMd": 4, "radiusLg": 8, "radiusPill": 9999, "density": "comfortable"},
   "locale": {},
   "brand": {"hue": "#123456"},
   "schemes": {"light": {"surface": "#FFFFFF"}, "dark": {"surface": "#000000"}}

@@ -25,6 +25,30 @@ export const AUTH_CALLBACK_PATH = '/auth-callback'; // ROUTE-001
 export const AUTH_CHANNEL_PREFIX = 'elitea-auth-';
 export const LOGOUT_PATH = '/forward-auth/logout'; // old UserButton.jsx:32
 
+/**
+ * OIDC login entry point, and the `target_to` query parameter it honours.
+ *
+ * The re-auth popup opens THIS, not the callback page directly. Measured on
+ * the E2E stack (issue #136 B): nothing gates `/app/*` at the edge — an
+ * unauthenticated browser is served the SPA shell at any deep link — so a
+ * popup pointed straight at `/app/auth-callback` is answered with the app
+ * itself and no OIDC round trip ever happens. Its session probe then reports
+ * "no session", the flight rejects, and the popup could never restore
+ * anything. `/forward-auth/auth_oidc/login?target_to=<callback>` is the one
+ * path that does re-authenticate: elitea-main encodes the target into the
+ * OIDC `state` (`state=<nonce>|<target_to>`,
+ * `internal/api/v2/auth/oidc.go`'s `Login`) and its callback redirects the
+ * freshly-authenticated browser back to it verbatim — query string included,
+ * which is what carries `auth_state` through (`safeRedirectTarget` returns
+ * the value unchanged, `internal/api/v2/auth/util.go`).
+ *
+ * `/forward-auth/login` is NOT used: it redirects to the path below while
+ * dropping `target_to` (`internal/api/api/router.go`), which would land the
+ * popup on `/` instead of the callback page and strand the flight.
+ */
+export const OIDC_LOGIN_PATH = '/forward-auth/auth_oidc/login';
+export const TARGET_TO_PARAM = 'target_to';
+
 export interface AuthResultMessage {
   type: typeof AUTH_MESSAGE_TYPE;
   state: string;

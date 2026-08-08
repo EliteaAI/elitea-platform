@@ -14,6 +14,21 @@
     <!-- Runtime config (contract C5): nginx serves /app/config.js from the container;
          the relative src survives deep links via the depth-tolerant alias (contract C8). -->
     <script src="./config.js" vite-ignore></script>
+    <!-- Brand pack, delivery channel C (spec §4.3): elitea-main serves
+         `window.elitea_brand = {...};` at this exact path, PUBLIC and
+         unauthenticated on purpose ("The UI loads branding before a browser
+         session exists", internal/api/router.go). Root-absolute, not
+         `./`-relative like config.js above: this one is an API route, not a
+         file the SPA container serves, so the depth-tolerant nginx alias
+         (contract C8) does not and should not apply to it.
+
+         Blocking, and NOT `defer`/`type="module"`: `shared/brand/channelC.ts`
+         reads the global while the provider tree mounts, so it has to be set
+         before the bundle below evaluates. A failure to load is a handled
+         outcome, not a break — the app falls back to the compiled-in default
+         pack (channel A). Without this tag the served pack was unreachable
+         and channel C was server-only (issue #136 C). -->
+    <script src="/api/v2/branding/bootstrap.js" vite-ignore></script>
   </head>
   <body>
     <div id="root"></div>

@@ -65,11 +65,19 @@ function harness(overrides: Partial<AuthPopupOptions> = {}): Harness {
     openedFeatures,
     channels,
     popup,
+    /**
+     * The popup opens the OIDC login endpoint, so the correlated
+     * `auth_state` lives one level in — inside the `target_to` that names
+     * this app's callback route. See `constants.ts`'s `OIDC_LOGIN_PATH` for
+     * why the popup cannot open the callback route directly.
+     */
     stateOf(index = 0) {
       const url = openedUrls[index];
       if (url === undefined) throw new Error(`no popup ${index} opened`);
-      const state = new URL(url).searchParams.get('auth_state');
-      if (state === null) throw new Error('no auth_state in popup URL');
+      const target = new URL(url).searchParams.get('target_to');
+      if (target === null) throw new Error('no target_to in popup URL');
+      const state = new URLSearchParams(target.slice(target.indexOf('?'))).get('auth_state');
+      if (state === null) throw new Error('no auth_state in popup target_to');
       return state;
     },
   };
@@ -122,11 +130,30 @@ describe('behaviour 4 — crypto.randomUUID state', () => {
     expect(h.stateOf(0)).not.toBe(h.stateOf(1));
   });
 
-  it('builds the callback URL from baseOrigin + basePath (ROUTE-001)', async () => {
+  /**
+   * The popup opens the OIDC LOGIN endpoint with the callback route
+   * (`baseOrigin + basePath + ROUTE-001 + ?auth_state=`) as its `target_to`,
+   * NOT the callback route itself. Opening the callback route directly can
+   * never re-authenticate on a stack that does not gate the SPA at the edge —
+   * the popup is simply served the app, its session probe reports "no
+   * session", and the flight rejects. Measured on the E2E stack; see
+   * `constants.ts`'s `OIDC_LOGIN_PATH`.
+   *
+   * Asserted as an exact URL, and the `target_to` is decoded and compared in
+   * full: a percent-encoding slip here (or a `/app//auth-callback` double
+   * slash from a `VITE_BASE_URI` that ends in `/`) produces a target that
+   * elitea-main accepts and redirects to but that matches no route, which
+   * would strand every flight in `popup_closed` with nothing to point at.
+   */
+  it('opens the OIDC login endpoint with the callback URL as target_to (ROUTE-001)', async () => {
     const h = harness({ baseOrigin: 'https://backend.example', basePath: '/elitea_ui' });
     const flight = h.controller.reauthenticate();
     const url = h.openedUrls[0] ?? '';
-    expect(url).toBe(`https://backend.example/elitea_ui/auth-callback?auth_state=${h.stateOf()}`);
+    const target = `/elitea_ui/auth-callback?auth_state=${h.stateOf()}`;
+    expect(url).toBe(
+      `https://backend.example/forward-auth/auth_oidc/login?target_to=${encodeURIComponent(target)}`,
+    );
+    expect(new URL(url).searchParams.get('target_to')).toBe(target);
     expect(h.openedFeatures[0]).toContain('width=500,height=600'); // clamped minimums
     h.channels[0]?.onmessage?.({ data: resultMessage(h.stateOf()) });
     await flight;
