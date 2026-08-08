@@ -77,6 +77,19 @@ describe('ChatPanel', () => {
     expect(onCollapsed).toHaveBeenCalledWith(true);
   });
 
+  // #135: icon-only collapse button with no accessible name — the second of
+  // the two critical `button-name` violations on the pipeline editor screen.
+  it('names the collapse toggle for a screen reader, and the name follows the state', async () => {
+    const user = userEvent.setup();
+    renderChatPanel();
+
+    await screen.findByTestId('chat-slot');
+    const button = screen.getByRole('button', { name: 'Collapse the chat panel' });
+    await user.click(button);
+
+    expect(screen.getByRole('button', { name: 'Expand the chat panel' })).toBeInTheDocument();
+  });
+
   it('renders ViewRunHistoryButton only when onShowHistory is given', async () => {
     const { rerender: _unused } = renderChatPanel({ onShowHistory: undefined });
     await screen.findByTestId('chat-slot');

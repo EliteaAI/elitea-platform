@@ -1,6 +1,6 @@
 import type { ApplicationCreationInput, ApplicationVersionDraft } from '@/entities/application-form';
 import type { VersionSummary } from '@/entities/version';
-import type { ConfigurationTabProps } from '@/features/pipelines';
+import type { ConfigurationTabProps, PipelineGraphDraft } from '@/features/pipelines';
 import type {
   ApplicationDetail,
   ApplicationVersionDetail,
@@ -67,20 +67,21 @@ export function toFormValues(
  * undefined`), this file's only caller (`EditPipeline.tsx`) is by
  * definition already on the pipelines domain's own edit route.
  *
- * **`pipelineSettings` is always `undefined` — a real, doubly-disclosed
- * gap, not a placeholder:** (1) there is no legally-reachable live
- * node/edge editor state to read into it — see `useSavePipeline.ts`'s (this
- * same unit) doc comment for the full `features/pipelines/index.ts`
- * export-budget citation; (2) even were it reachable,
- * `entities/application-form/model/mutations.ts`'s own doc comment confirms
- * the generated `VersionWriteRequest` this draft is eventually sent through
- * has no `pipeline_settings` field to carry it on write anyway. Populating
- * this field with fabricated or stale data would misrepresent both gaps as
- * closed.
+ * **`graph` — the live flow-editor state, both halves of #135's fix.** Both
+ * gaps this parameter closes were real and are now closed at the source
+ * rather than papered over here: the live node/edge state is reachable
+ * (`features/pipelines`' `usePipelineGraphDraft`, exported from that slice's
+ * barrel), and the endpoint can carry it (`pipeline_settings` on
+ * `VersionWriteRequest`, `services/elitea-main/api/openapi/v2.yaml`). When
+ * `graph` is `undefined` — no flow editor mounted, or its stores not seeded
+ * yet — the version's already-loaded `instructions` are re-sent unchanged and
+ * no `pipeline_settings` key is written, so a save can never blank a stored
+ * graph it was not showing.
  */
 export function toVersionDraft(
   version: ApplicationVersionDetail,
   conversationStarters: readonly string[],
+  graph?: PipelineGraphDraft,
 ): ApplicationVersionDraft {
   const metaRecord: Record<string, unknown> = version.meta ?? {};
   const stepLimit = typeof metaRecord['step_limit'] === 'number' ? metaRecord['step_limit'] : 25;
@@ -91,7 +92,10 @@ export function toVersionDraft(
   return {
     name: version.name,
     agentType: 'pipeline',
-    instructions: version.instructions ?? '',
+    // Baseline `useSaveVersion.js:96`: `instructions: !isFromPipeline ?
+    // version_details.instructions : yamlCode` — the pipeline graph IS the
+    // YAML, so a pipeline save writes the editor's live document.
+    instructions: graph?.instructions ?? version.instructions ?? '',
     conversationStarters,
     variables: (version.variables ?? []).map((variable) => ({
       name: variable.name ?? '',
@@ -102,7 +106,7 @@ export function toVersionDraft(
       .map((tag) => tag.name)
       .filter((name): name is string => typeof name === 'string'),
     tools: version.tools ?? [],
-    pipelineSettings: undefined,
+    pipelineSettings: graph?.pipelineSettings,
   };
 }
 

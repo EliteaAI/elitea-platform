@@ -807,12 +807,19 @@ components:
           items: { $ref: '#/components/schemas/VersionVariable' }
         meta:
           allOf: [{ $ref: '#/components/schemas/VersionMeta' }]
+        pipeline_settings:
+          allOf: [{ $ref: '#/components/schemas/PipelineSettings' }]
+          description: >
+            Pipeline flow-graph layout ({nodes, edges, orientation,
+            layout_version}). Written verbatim to the
+            application_versions.pipeline_settings jsonb column; omit the key
+            to leave the stored value untouched.
       additionalProperties: true
       x-elitea-passthrough: >-
         NOTE(W2): decoded into map[string]any; the handlers read
         name/agent_type/instructions/welcome_message/llm_settings/
-        conversation_starters/variables/meta and ignore the rest
-        (internal/api/v2/applications/handler.go:700-781, 828-887).
+        conversation_starters/variables/meta/pipeline_settings and ignore the
+        rest (internal/api/v2/applications/handler.go:700-781, 828-887).
 
     SetDefaultVersionRequest:
       type: object

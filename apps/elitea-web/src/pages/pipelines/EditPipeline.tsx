@@ -8,7 +8,7 @@ import { useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
 import { CreateApplicationTabBar } from '@/entities/application-form';
-import { ConfigurationTab } from '@/features/pipelines';
+import { ConfigurationTab, usePipelineVersionSync } from '@/features/pipelines';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 
@@ -125,13 +125,12 @@ function EditPipelineSaveBar({ onSave, canSave, isSaving }: EditPipelineSaveBarP
  *    available.
  *  - Nav-blocking-when-dirty (`useNavBlocker`, baseline) is dropped: not in
  *    this unit's owned-file list and no promoted equivalent exists.
- *  - Only the version-level fields `useSaveApplicationVersion` can actually
- *    carry (`conversation_starters` here) are saved — see `entities/
- *    application-form/model/mutations.ts`'s own doc comment for the
- *    `tags`/`tools`/`pipeline_settings` gap on this same endpoint, and
- *    `lib/editPipelineMappers.ts`'s `toVersionDraft` doc comment for the
- *    pipeline-specific doubling of that gap (no live node/edge state is
- *    reachable to send even if the endpoint could carry it).
+ *  - The flow GRAPH now round-trips (#135): `usePipelineVersionSync` seeds
+ *    the editor stores from this version's `instructions` YAML + saved
+ *    `pipeline_settings`, and `useEditPipelineForm` reads the live graph back
+ *    out through `usePipelineGraphDraft` on save. `tags`/`tools` still have
+ *    no field on this endpoint — see `entities/application-form/model/
+ *    mutations.ts`'s own doc comment for what remains of that gap.
  *
  * **Read-only (public-viewer) gating, save-failure feedback, and the
  * detail-404 page** (adversarial-review fixes, reproduced verbatim from
@@ -178,12 +177,19 @@ export function EditPipeline(): ReactNode {
 
   useCorrectUserNameInUrl(detail?.name);
 
+  // #135 (read half): parse this version's `instructions` YAML and its saved
+  // `pipeline_settings` geometry into the two flow-editor stores `ConfigurationTab`
+  // -> `EditorPanel` render from. Without this the standalone editor page always
+  // started from an empty document — a stored pipeline's graph was never shown,
+  // so a save could only ever have written an empty graph back.
+  usePipelineVersionSync({ isCreateMode: false, versionDetails: activeVersion, versionId: activeVersion?.id });
+
   const { form, handleSave, isSaving, saveError } = useEditPipelineForm(detail, activeVersion, projectId, applicationId);
   const { setFieldValue, versionDetails } = useEditPipelineConfigurationTabBridge(activeVersion, form.setValue);
-  // Only a setter — nothing in this page reads YAML dirtiness yet (see
-  // `EditPipeline`'s own doc comment: `useSaveApplicationVersion` cannot
-  // carry live node/edge state either way, so there is nothing for a
-  // "block save while the canvas has unsaved YAML" check to gate here).
+  // Only a setter — nothing in this page reads YAML dirtiness yet. The save
+  // path now DOES carry the live graph (#135), so a "block save while the
+  // canvas has unsaved YAML" gate would be actively wrong here: unsaved YAML
+  // is exactly what Save is for. A dirty-state indicator is still unbuilt.
   const [, setIsYamlDirty] = useState(false);
 
   // Old app: `useViewMode.js` — `viewMode` defaults to `ViewMode.Public`

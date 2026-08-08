@@ -61,6 +61,12 @@ type Version struct {
 	LLMSettings          map[string]any `json:"llm_settings,omitempty"`
 	ConversationStarters []any          `json:"conversation_starters,omitempty"`
 	Meta                 map[string]any `json:"meta,omitempty"`
+	// PipelineSettings is the pipeline flow-graph layout ({nodes, edges,
+	// orientation, layout_version}) stored verbatim in the
+	// application_versions.pipeline_settings jsonb column. Nil means "the
+	// caller did not send the key"; the repository then leaves the stored
+	// value alone rather than blanking it.
+	PipelineSettings map[string]any `json:"pipeline_settings,omitempty"`
 }
 
 // VersionConfig is a derived projection over the application_versions columns

@@ -66,9 +66,13 @@ import { useApplicationsStore } from './applicationsStore';
  * - `webhook_secret` has no field on `ApplicationUpdateRequest` — same gap
  *   `entities/application-form/model/mutations.ts`'s `useCreateApplicationDraft`
  *   discloses for CREATE; confirmed here it is equally absent on UPDATE.
- * - `pipeline_settings` has no write endpoint anywhere in the generated
- *   client — see `useCreateApplication.ts`'s doc comment point 3 for the
- *   full trace; not resent here either.
+ * - `pipeline_settings` DOES have a write field now (`VersionWriteRequest`,
+ *   added for #135) but is still not sent from this agents-domain hook: it
+ *   has no live flow-editor state to read. The pipelines domain's own save
+ *   path (`pages/pipelines/lib/useEditPipelineForm.ts` +
+ *   `features/pipelines`' `usePipelineGraphDraft`) is where a pipeline graph
+ *   is written; an agent version has no graph. Omitting the key leaves the
+ *   stored column untouched, so this hook cannot blank one.
  * - Tool changes (`selected_tools`) go through `useSaveChangedTools`'s
  *   `onSaveTools` gate FIRST, exactly like the baseline's `onSave`
  *   (`useSaveVersion.js:57-60`) gates on `onSaveTools()` before its own

@@ -136,9 +136,13 @@ describe('EditorPanel', () => {
 
   it('shows the error-boundary fallback for the flow pane, reflecting the real current state of the sibling FlowEditor dependency chain', async () => {
     renderEditorPanel();
-    expect(await screen.findByText('Failed to load the flow editor', {}, { timeout: 5000 })).toBeInTheDocument();
+    // Generous wait window, same reason `PipelineEditor.test.tsx` documents:
+    // the first worker file to trigger the lazy `./FlowWrapper` import pays
+    // the transform cost for the whole chain before it can reject. The
+    // assertion is unchanged — only the time it is given.
+    expect(await screen.findByText('Failed to load the flow editor', {}, { timeout: 20000 })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reload page' })).toBeInTheDocument();
-  }, 10000);
+  }, 30000);
 
   it('the error-boundary reload button calls window.location.reload', async () => {
     const reloadSpy = vi.fn();

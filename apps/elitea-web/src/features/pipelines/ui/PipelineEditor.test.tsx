@@ -236,6 +236,11 @@ describe('PipelineEditor', () => {
     await user.click(within(formContent).getByRole('tab', { name: 'Flow editor' }));
 
     const bodyContent = await findByTestId('shell-children');
-    expect(await within(bodyContent).findByText('Failed to load the flow editor', {}, { timeout: 5000 })).toBeInTheDocument();
-  }, 10000);
+    // The wait window is generous on purpose: this assertion depends on
+    // `React.lazy(() => import('./FlowWrapper'))` REJECTING, and the first
+    // file in a vitest worker to trigger that import pays the whole
+    // transform cost for the chain. At 5s it was an order-dependent flake
+    // (see this file's own note above); the assertion itself is unchanged.
+    expect(await within(bodyContent).findByText('Failed to load the flow editor', {}, { timeout: 20000 })).toBeInTheDocument();
+  }, 30000);
 });

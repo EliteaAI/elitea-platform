@@ -27,21 +27,32 @@ export interface ApplicationVersionDraft {
    * **Backend-contract gap, not a porting shortcut.** The baseline's
    * `useApplicationInitialValues.jsx` (`useCreateApplicationInitialValues`)
    * seeds `tags: []`, `tools: []` and (for pipelines)
-   * `pipeline_settings: { nodes: [], edges: [] }` on the draft. Neither the
-   * generated `VersionWriteRequest` (`shared/api/generated/model/
-   * versionWriteRequest.zod.ts`) nor `ApplicationCreateRequest`'s embedded
-   * version entry carries a `tags`, `tools`, or `pipeline_settings` field —
-   * grepped directly against the generated client, not assumed. A caller
-   * that needs those three fields on create has no generated endpoint to
-   * send them through yet; they are typed here (rather than silently
-   * dropped) so a future caller sees the gap at the type level instead of
-   * rediscovering it by reading network traffic. `tools` are attached
-   * post-create via toolkit-association endpoints instead (see the Part 3
-   * `useLibraryToolkits` note in the promotion report).
+   * `pipeline_settings: { nodes: [], edges: [] }` on the draft. The generated
+   * `ApplicationCreateRequest`'s embedded version entry carries none of the
+   * three, and `VersionWriteRequest` (`shared/api/generated/model/
+   * versionWriteRequest.zod.ts`) carries only `pipeline_settings` — added to
+   * `api/openapi/v2.yaml` for #135, where a pipeline's saved flow graph was
+   * dropped on the wire. `tags`/`tools` are still typed here (rather than
+   * silently dropped) so a future caller sees the gap at the type level
+   * instead of rediscovering it by reading network traffic; `tools` are
+   * attached post-create via toolkit-association endpoints instead (see the
+   * Part 3 `useLibraryToolkits` note in the promotion report).
    */
   readonly tags: readonly string[];
   readonly tools: readonly unknown[];
-  readonly pipelineSettings: { readonly nodes: readonly unknown[]; readonly edges: readonly unknown[] } | undefined;
+  /**
+   * The pipeline flow-graph layout — `{ nodes, edges }` on create (a new
+   * pipeline has no graph yet) plus `orientation`/`layout_version` on save,
+   * matching the baseline's `useSaveVersion.js:97-105` body exactly.
+   */
+  readonly pipelineSettings:
+    | {
+        readonly nodes: readonly unknown[];
+        readonly edges: readonly unknown[];
+        readonly orientation?: string;
+        readonly layout_version?: string;
+      }
+    | undefined;
 }
 
 export interface ApplicationDraft {

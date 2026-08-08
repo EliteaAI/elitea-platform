@@ -9,6 +9,11 @@ import { resetConfigForTests } from '@/shared/config/get-config';
 import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
 
+// Deep import into the slice's own store: test files are excluded from
+// dependency-cruiser's `no-deep-slice-import` fence, and the store is the
+// observable effect of the seeding this page now performs.
+import { usePipelineYamlStore } from '@/features/pipelines/model/pipelineYamlStore';
+
 import { EditPipeline } from './EditPipeline';
 import { renderPipelinesRoute, renderPipelinesRouteWithoutSocket } from './__tests__/testRouter';
 
@@ -71,6 +76,29 @@ afterEach(() => {
 });
 
 describe('EditPipeline', () => {
+  // #135 (read half): the standalone editor page never seeded the flow-editor
+  // stores, so a stored pipeline's graph was never shown — the canvas always
+  // started from an empty document regardless of what the version held.
+  it('seeds the flow-editor YAML store from the loaded version instructions', async () => {
+    usePipelineYamlStore.setState({ yamlCode: '', yamlJsonObject: {}, layoutVersion: undefined });
+    const graphYaml = 'entry_point: Agent 1\nnodes:\n  - id: Agent 1\n    type: llm\n';
+    const base = detail();
+    const withGraph = {
+      ...base,
+      version_details: {
+        ...base.version_details,
+        instructions: graphYaml,
+        pipeline_settings: { layout_version: '1.0' },
+      },
+    };
+    server.use(getGetApplicationMockHandler(withGraph));
+
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    await waitFor(() => expect(usePipelineYamlStore.getState().yamlCode).toBe(graphYaml));
+    expect(usePipelineYamlStore.getState().layoutVersion).toBe('1.0');
+  });
+
   it('renders the pipeline name once it loads', async () => {
     server.use(getGetApplicationMockHandler(detail()));
     renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
