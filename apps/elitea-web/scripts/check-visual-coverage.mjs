@@ -17,7 +17,7 @@
  *
  * Run: node scripts/check-visual-coverage.mjs [--json]
  */
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -113,6 +113,52 @@ if (uncoveredRoutes.length > 0) {
   console.error('check-visual-coverage: FAIL — these routes are wired but have no @visual spec:');
   for (const r of uncoveredRoutes) console.error(`  ${r}`);
   console.error('Add a spec in e2e/visual/, or correct wiringStatus if the route is not actually wired.');
+  process.exit(1);
+}
+
+/*
+ * Baseline weight tripwire.
+ *
+ * PNGs do not delta-compress, so every revision of a baseline stores a full copy
+ * in history. Today: 5 baselines, ~400KB, and full coverage of all 63 indexed
+ * shots projects to ~5MB — comfortably inside what git handles well, so this
+ * repo deliberately does NOT use git-lfs for them.
+ *
+ * That decision is fine until it silently isn't. LFS would also introduce a
+ * failure mode worse than the size it solves: without LFS configured on a
+ * runner, checkout yields POINTER FILES, and either the comparison fails
+ * confusingly or someone "fixes" it with --update-snapshots and overwrites every
+ * pointer with a fresh baseline — a green suite whose references mean nothing.
+ * Since the visual job runs on release tags only, that could sit undetected.
+ *
+ * So: fail loudly at a threshold that is generous for full coverage but far
+ * below the point where lfs is genuinely warranted (~100MB of binary history).
+ * If this fires, decide deliberately — prune, or adopt lfs with the pointer
+ * hazard handled — rather than discovering the weight later.
+ */
+const SNAPSHOT_BUDGET_BYTES = 12 * 1024 * 1024;
+const SNAPSHOT_DIR = path.join(appRoot, 'e2e/snapshots');
+
+function dirBytes(dir) {
+  if (!existsSync(dir)) return 0;
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    total += entry.isDirectory() ? dirBytes(p) : statSync(p).size;
+  }
+  return total;
+}
+
+const snapshotBytes = dirBytes(SNAPSHOT_DIR);
+const mb = (n) => `${(n / 1024 / 1024).toFixed(2)}MB`;
+console.log(`check-visual-coverage: baselines occupy ${mb(snapshotBytes)} of a ${mb(SNAPSHOT_BUDGET_BYTES)} budget.`);
+if (snapshotBytes > SNAPSHOT_BUDGET_BYTES) {
+  console.error(
+    `check-visual-coverage: FAIL — e2e/snapshots is ${mb(snapshotBytes)}, over the ${mb(SNAPSHOT_BUDGET_BYTES)} budget.\n` +
+    'Decide deliberately: prune baselines that no longer earn their weight, or adopt git-lfs —\n' +
+    'and if lfs, make CI fail when a baseline is a pointer file, because --update-snapshots\n' +
+    'against pointers silently destroys the whole reference set.',
+  );
   process.exit(1);
 }
 
