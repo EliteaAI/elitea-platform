@@ -30,6 +30,28 @@ import { API_BASE, AUTOTEST_PREFIX } from '../../fixtures/api';
 /** Unique per run AND per file (`-tok`) so concurrent agents never collide. */
 const stamp = (): string => `${Date.now()}-tok`;
 
+/**
+ * Navigate into the shell and WAIT FOR THE ROUTER'S SEARCH-PARAM NORMALIZATION
+ * to land before returning.
+ *
+ * Every `/app/*` route rewrites a bare URL to the shell's full default search
+ * schema (`?author_id=&...&viewMode=owner&page_size=20&createSecret="0"`) with a
+ * client-side replace that fires AFTER the `load` event `page.goto` waits for.
+ * On chromium that replace wins the race with whatever the test does next; on
+ * webkit it lands late and aborts the NEXT `page.goto` with
+ * `Navigation to "…/app/settings/tokens" is interrupted by another navigation
+ * to "…/app/settings/tokens?author_id=&…"` (reproduced 4/6 webkit runs,
+ * 0/6 chromium). Nothing browser-specific happens in the app: the rewrite is
+ * identical and deterministic on both engines, so this is a test-side race.
+ *
+ * Waiting on `viewMode=owner` is not a sleep — it is the router's own
+ * post-normalization URL, so it also pins that the normalization happened.
+ */
+async function gotoSettled(page: import('@playwright/test').Page, url: string): Promise<void> {
+  await page.goto(url);
+  await expect(page).toHaveURL(/[?&]viewMode=owner(&|$)/);
+}
+
 test('J23: settings: create personal token', async ({ page }) => {
   const seedName = `${AUTOTEST_PREFIX}j23_seed_${stamp()}`;
   let seedUUID = '';
@@ -41,7 +63,7 @@ test('J23: settings: create personal token', async ({ page }) => {
      * e2e-stack.sh seeds no tokens. Seeding through POST /auth/token/ both
      * guarantees the table path and proves the create endpoint end-to-end.
      */
-    await page.goto(BASE_URL + '/app/settings/tokens');
+    await gotoSettled(page, BASE_URL + '/app/settings/tokens');
     const created = await page.request.post(`${API_BASE}/auth/token/`, {
       data: { name: seedName, expires: { measure: 'days', value: 30 } },
     });
@@ -56,7 +78,7 @@ test('J23: settings: create personal token', async ({ page }) => {
     expect(createdBody.token).toMatch(/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/);
 
     /* ── the list renders the seeded token, from the server ───────────────── */
-    await page.goto(BASE_URL + '/app/settings/tokens');
+    await gotoSettled(page, BASE_URL + '/app/settings/tokens');
     const table = page.getByRole('table');
     await expect(table.getByRole('columnheader', { name: 'Token value' })).toBeVisible();
 

@@ -7,9 +7,10 @@
  *
  * Every assertion below is anchored to something a stubbed route cannot
  * produce: the attach control's real accessible name, the capacity counter
- * the component computes from its own attachment state, the multipart body
- * of the upload request, and the status codes + JSON bodies elitea-main
- * really returns (202 chunk ack / 201 final array).
+ * the component computes from its own attachment state, the multipart FIELD
+ * LAYOUT of the upload request, the bytes read back out of object storage
+ * afterwards, and the status codes + JSON bodies elitea-main really returns
+ * (202 chunk ack / 201 final array).
  *
  * PRODUCT GAPS deliberately NOT asserted around (verified 2026-08-08):
  *  - There is no pre-send attachment preview: ChatBox never passes
@@ -48,7 +49,7 @@ import * as fs from 'fs';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
-import { DEFAULT_PROJECT_ID, deleteConversation } from '../../fixtures/api';
+import { API_BASE, DEFAULT_PROJECT_ID, deleteConversation } from '../../fixtures/api';
 
 /** Exact accessible name of the attach control (AttachmentButton.tsx:147 + en.json:759). */
 const ATTACH_NAME = 'attach files';
@@ -85,8 +86,8 @@ async function send(page: import('@playwright/test').Page, question: string): Pr
 // ─────────────────────────────────────────────────────────────────────────────
 test('J12: attach a small file to a chat message', async ({ page }) => {
   const tmpFile = path.join(os.tmpdir(), 'e2e-small-file-attach.txt');
-  // ASCII only: the captured multipart body is decoded as latin1 (it is
-  // binary), so a non-ASCII byte would not round-trip through toContain.
+  // ASCII only: the stored object is read back as raw bytes and decoded as
+  // latin1, so a non-ASCII byte would not round-trip through the comparison.
   const contents = 'E2E test attachment content - small file.';
   fs.writeFileSync(tmpFile, contents);
   const byteLength = Buffer.byteLength(contents);
@@ -143,7 +144,6 @@ test('J12: attach a small file to a chat message', async ({ page }) => {
     // CHUNK_SIZE, so a regressed threshold would show up as chunk_index here.
     expect(body).toContain('name="overwrite_attachments"');
     expect(body).toContain('filename="e2e-small-file-attach.txt"');
-    expect(body).toContain(contents);
     expect(body).not.toContain('name="chunk_index"');
 
     // The server round trip: 201 + [{filepath, file_size}] (attachments.go).
@@ -155,6 +155,30 @@ test('J12: attach a small file to a chat message', async ({ page }) => {
     expect(uploaded).toHaveLength(1);
     expect(uploaded[0]!.filepath).toBe(`/chat-attachments/${convId}/e2e-small-file-attach.txt`);
     expect(uploaded[0]!.file_size).toBe(byteLength);
+
+    // BYTE IDENTITY — the bytes STORED are the bytes CHOSEN.
+    //
+    // This used to be `expect(body).toContain(contents)` on the captured
+    // multipart body. That is not portable: chromium exposes the whole encoded
+    // body through CDP, but WebKit surfaces only the part HEADERS — the
+    // received body there is literally
+    //   `…name="file"; filename="e2e-small-file-attach.txt"\r\n
+    //    Content-Type: text/plain\r\n\r\n\r\n--…`
+    // with an EMPTY payload between the blank line and the next boundary,
+    // because the File/Blob part is never read back into the protocol message.
+    // The app sends the bytes on both engines; only Playwright's view differs.
+    //
+    // So the guarantee moves one hop further out, where it is stronger and
+    // engine-independent: read the object back out of storage and compare
+    // bytes. `file_size` above pins the LENGTH, this pins the CONTENT — a
+    // build that uploaded a same-length wrong buffer passes the former and
+    // fails this. Key layout from finalizeAttachment (conversations/
+    // attachments.go:433) — bucket `chat-attachments`, key `<convId>/<name>`.
+    const stored = await page.request.get(
+      `${API_BASE}/artifacts/objects/${DEFAULT_PROJECT_ID}/chat-attachments/${convId}/e2e-small-file-attach.txt`,
+    );
+    expect(stored.status()).toBe(200);
+    expect((await stored.body()).toString('latin1')).toBe(contents);
 
     // The send went through: the question is in the transcript.
     await expect(page.getByTestId('chat-message-list')).toContainText('autotest_attach small file journey');
