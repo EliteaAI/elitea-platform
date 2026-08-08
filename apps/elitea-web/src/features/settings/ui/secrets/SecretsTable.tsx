@@ -120,6 +120,29 @@ const COLUMNS: GridColDef[] = [
   },
 ];
 
+/** Test hook for the loading skeletons — lets tests tell "loading" from the
+ * settled-empty state without reaching for an internal MUI class (R-T6). */
+export const SECRETS_SKELETON_TESTID = 'secrets-loading-skeleton';
+
+/* ── empty state ───────────────────────────────────────────────────────── */
+
+/**
+ * Shown by the DataGrid when the list settled with no secrets — the normal
+ * first-run state. Before #137 this state was indistinguishable from loading
+ * because the table short-circuited to skeletons on `rows.length === 0`.
+ * Copy matches the baseline's `emptyMessage="No secrets"`
+ * (`apps/elitea-ui/.../SecretsTable.jsx:544`).
+ */
+export function NoSecretsOverlay(): React.ReactElement {
+  return (
+    <Box sx={tableStyles.noRowsOverlay}>
+      <Typography variant="bodyMedium" color="text.secondary">
+        {t('entities.secret.table.empty', 'No secrets')}
+      </Typography>
+    </Box>
+  );
+}
+
 /* ── component ─────────────────────────────────────────────────────────── */
 
 export const SecretsTable = memo(function SecretsTable({
@@ -207,12 +230,19 @@ export const SecretsTable = memo(function SecretsTable({
 
   /* ── loading state ────────────────────────────────────────────────── */
 
-  if (isFetching || rows.length === 0) {
+  // ONLY genuine loading. A prior version also skeletoned `rows.length === 0`,
+  // which made the normal first-run state (and every project with no secrets,
+  // i.e. exactly what a working backend returns) an indefinite loading screen
+  // with no grid, no column headers and no footer (#137). The baseline
+  // (`apps/elitea-ui/.../SecretsTable.jsx:535`) branches on `isFetching`
+  // alone and renders an explicit "No secrets" empty state instead.
+  if (isFetching) {
     return (
       <Box sx={styles.skeletonContainer}>
         {Array.from({ length: 8 }).map((_, i) => (
           <Skeleton
             key={`skeleton-${i}`}
+            data-testid={SECRETS_SKELETON_TESTID}
             variant="rectangular"
             width="100%"
             height={48}
@@ -233,6 +263,7 @@ export const SecretsTable = memo(function SecretsTable({
         rowHeight={48}
         hideFooter
         getRowId={(row: SecretRow) => row.id}
+        slots={{ noRowsOverlay: NoSecretsOverlay }}
         sx={styles.dataGrid!}
       />
 

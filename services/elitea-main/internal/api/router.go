@@ -584,7 +584,13 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			).Routes())
 
 			// === Secrets ===
-			r.Mount("/secrets", v2secrets.NewHandler(cfg.Pool).Routes())
+			// Registered onto this router, NOT mounted under "/secrets": the
+			// domain serves three sibling prefixes at the v2 root —
+			// /secrets/{mode}/{projectID}, /secret/{mode}/{projectID}/{name}
+			// and /hide/{mode}/{projectID}/{name} — which is what
+			// entities/secret/api/secretApi.ts calls. A Mount prefixed all
+			// three (#137: the list answered at /secrets/secrets/...).
+			v2secrets.NewHandler(cfg.Pool).Register(r)
 
 			// === Notifications ===
 			r.Route("/notifications", func(r chi.Router) {
