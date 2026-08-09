@@ -16,6 +16,8 @@
 // failmode.Params.DegradedCapNano before the GovernanceStore is constructed.
 // FIX #9: startup guard — GATEWAY_IDENTITY_SECRET must be non-empty when
 // GATEWAY_NATS_URL is set (enforcement on), otherwise the HMAC is bypassable.
+// Issue #11 widened that guard: the credential-backed Account is a second,
+// independent reason the secret is mandatory (see startupIdentityCheck).
 package main
 
 import (
@@ -50,13 +52,6 @@ func main() {
 	level.Set(parseLevel(cfg.LogLevel))
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
-
-	// FIX #9: if NATS enforcement is on, a missing identity secret lets any caller
-	// forge the X-Elitea-Project-Id header and bypass per-project budget caps.
-	if cfg.NATSURL != "" && cfg.IdentitySecret == "" {
-		slog.Error("FATAL: GATEWAY_IDENTITY_SECRET required when budget enforcement is enabled (GATEWAY_NATS_URL is set); refusing to start")
-		os.Exit(1)
-	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -94,6 +89,15 @@ func main() {
 			DB:     llmproxy.NewModelPoolQuerier(pool),
 			Logger: logger,
 		})
+	}
+
+	// Issue #11: the identity-secret guard MUST run once the two conditions that
+	// make the secret mandatory are both known — budget enforcement (NATSURL)
+	// and the credential-backed Account (pool). It runs here, before
+	// server.New and therefore before the listener accepts a single request.
+	if err := startupIdentityCheck(cfg.IdentitySecret, cfg.NATSURL != "", pool != nil); err != nil {
+		slog.Error("FATAL: refusing to start", "err", err)
+		os.Exit(1)
 	}
 
 	// BFF.6: assemble the vault-backed Account (BF0.2-account) so bifrost can
@@ -306,6 +310,50 @@ func shutdownSequence(
 		srv.Close()
 	}
 	return err
+}
+
+// startupIdentityCheck returns a non-nil error when the gateway would serve
+// traffic with identity verification switched off while something downstream
+// depends on that identity being authentic. main() turns the error into a FATAL
+// log + exit(1) BEFORE the listener is created.
+//
+// verifySignature (internal/llmproxy/identity.go) treats an EMPTY secret as
+// "verification disabled" and returns true unconditionally. Whatever the caller
+// puts in X-Elitea-Project-Id is then taken as the project identity verbatim.
+// Two independent consumers make that fatal rather than merely degraded:
+//
+//   - budgetEnforcement (GATEWAY_NATS_URL set) — an unverified project id lets
+//     any caller spend against any project's budget (the original FIX #9).
+//   - credentialAccount (a Postgres pool, so the vault-backed Account is wired)
+//     — GetKeysForProvider resolves and DECRYPTS that project's provider keys
+//     from the Fernet vault. An unverified project id therefore hands any
+//     caller any tenant's decrypted provider credentials (issue #11). This is
+//     the case the NATS-only condition missed: a NATS-less deployment with a
+//     database still wires the Account.
+//
+// Note the operational consequence, recorded in DECISIONS.md: DATABASE_URL has
+// a non-empty default and pgxpool.New only PARSES the DSN (it does not dial),
+// so credentialAccount is true in effectively every deployment. The guard is
+// therefore unconditional in practice — GATEWAY_IDENTITY_SECRET is a required
+// setting, and the Helm chart marks its Secret non-optional to match.
+func startupIdentityCheck(identitySecret string, budgetEnforcement, credentialAccount bool) error {
+	if identitySecret != "" {
+		return nil
+	}
+	switch {
+	case credentialAccount && budgetEnforcement:
+		return fmt.Errorf("GATEWAY_IDENTITY_SECRET is empty: identity verification is disabled while the " +
+			"vault-backed Account resolves per-project provider credentials AND budget enforcement is on — " +
+			"an unauthenticated X-Elitea-Project-Id would select any tenant's decrypted credentials and budget")
+	case credentialAccount:
+		return fmt.Errorf("GATEWAY_IDENTITY_SECRET is empty: identity verification is disabled while the " +
+			"vault-backed Account resolves per-project provider credentials from the Fernet vault — " +
+			"an unauthenticated X-Elitea-Project-Id would select any tenant's decrypted credentials (issue #11)")
+	case budgetEnforcement:
+		return fmt.Errorf("GATEWAY_IDENTITY_SECRET is empty: identity verification is disabled while budget " +
+			"enforcement is enabled (GATEWAY_NATS_URL is set) — the per-project HMAC would be bypassable")
+	}
+	return nil
 }
 
 // buildGovernance assembles the full governance engine (failmode primitives +

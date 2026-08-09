@@ -122,11 +122,26 @@ env:
 # secrets operator / sealed-secrets), e.g.:
 #   kubectl create secret generic elitea-llm-gateway-secrets \
 #     --from-literal=identity-secret=... --from-literal=secrets-master-key=...
+#
+# BREAKING (issue #11, 2026-08-09): GATEWAY_IDENTITY_SECRET is now REQUIRED —
+# `optional: false`. An empty secret disables identity verification, and the
+# gateway then takes X-Elitea-Project-Id at face value to select which tenant's
+# provider credentials it decrypts out of the Fernet vault. The binary refuses
+# to start (FATAL) in that state, so a pod without the Secret would crash-loop;
+# `optional: false` moves the failure earlier and makes it legible
+# (CreateContainerConfigError naming the missing Secret key) instead.
+#
+# OPERATIONAL CONSEQUENCE: `helm install` with no
+# `elitea-llm-gateway-secrets/identity-secret` no longer produces a running pod.
+# Provision the Secret BEFORE installing/upgrading, and set the SAME value on
+# elitea-main (`secrets.GATEWAY_IDENTITY_SECRET`, also non-optional) — the edge
+# signs the identity headers the gateway verifies, so a mismatched or one-sided
+# secret makes every /llm request fail verification.
 secrets:
   GATEWAY_IDENTITY_SECRET:
     secretName: elitea-llm-gateway-secrets
     key: identity-secret
-    optional: true    # REQUIRED in prod when enforcement is on — set false
+    optional: false   # issue #11 — empty secret ⇒ any caller picks any tenant's credentials
   SECRETS_MASTER_KEY:
     secretName: elitea-llm-gateway-secrets
     key: secrets-master-key

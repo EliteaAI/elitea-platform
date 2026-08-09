@@ -129,6 +129,33 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   all client-supplied auth material before proxying. Rationale: without the CIDR
   gate, any pod with network reach could assert an arbitrary project identity.
   Operators MUST set TRUSTED_PROXY_CIDRS to their ingress range.
+- **[human decision] 2026-08-09 — `GATEWAY_IDENTITY_SECRET` is REQUIRED, and a
+  default install without it does NOT boot (issue #11).** The old startup guard
+  fired only when `GATEWAY_NATS_URL` was set, but the vault-backed Account is
+  wired on `pool != nil`. `verifySignature` treats an empty secret as
+  "verification disabled" and returns true, so a NATS-less deployment with a
+  database took `X-Elitea-Project-Id` at face value and used *that* project's
+  decrypted Fernet-vault provider credentials — unauthenticated cross-tenant
+  credential use. The guard now also covers the Account path
+  (`startupIdentityCheck`, `cmd/elitea-llm-gateway/main.go`), FATAL + exit(1)
+  before `server.New` creates a listener.
+  **Consequence, chosen deliberately over the alternatives:** `DATABASE_URL` has
+  a non-empty default and `pgxpool.New` only parses the DSN (it never dials), so
+  `credentialAccount` is true in effectively every deployment — the secret is now
+  unconditionally required in practice. The chart therefore flips
+  `secrets.GATEWAY_IDENTITY_SECRET.optional` to `false` in BOTH
+  `deploy/helm/elitea-llm-gateway` and `deploy/helm/elitea-main` (the two sides
+  must carry the same value; the edge signs what the gateway verifies). A
+  `helm install` with no `identity-secret` key now fails at container creation
+  with a message naming the Secret, instead of silently starting a gateway that
+  hands any caller any tenant's credentials. Dev/compose/CI runs must set
+  `GATEWAY_IDENTITY_SECRET` to any non-empty value.
+  Rejected alternatives: (a) keep booting and merely drop the credential-backed
+  Account — a silent, hard-to-diagnose loss of all provider calls that still
+  leaves budget identity unverified; (b) keep `optional: true` and let the
+  binary crash-loop — same outcome, worse diagnostics.
+  Guarded by `TestStartupIdentityCheck` + the `startupIdentityCheck(` entry in
+  `TestMainWiring`; both mutation-verified 2026-08-09.
 
 ## Topology / build
 - Gateway is a standalone Go 1.26.4 module, deliberately OUT of the root go.work
@@ -176,9 +203,11 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   elitea-main-only or chart-only change — see the next line).
 
 ## Known follow-ups (not blocking, need a human)
-- Set `secrets.*.optional: false` in a production values overlay so a missing
-  Secret fails the pod instead of running degraded (identity HMAC bypassable /
-  vault single-level). Left `true` in the base chart for local/dev.
+- ~~Set `secrets.*.optional: false` ... for `GATEWAY_IDENTITY_SECRET`~~ — DONE
+  2026-08-09 (issue #11, see the Trust-boundary entry above): it is `false` in
+  the base chart for both the gateway and elitea-main. `SECRETS_MASTER_KEY`
+  remains `optional: true` (unset ⇒ Fernet vault degraded single-level mode);
+  making that one mandatory is still open and needs a human.
 - elitea-main env-drift is still WARN-heavy for vars read via a default
   (`ELITEA_RUNTIME_ENABLED`, `REDIS_URL`, and ~19 others) with no chart
   override knob at all — real, now-visible (the two bugs above previously

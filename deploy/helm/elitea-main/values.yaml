@@ -138,10 +138,15 @@ secrets:
     secretName: elitea-main-storage-secrets
     key: azure-storage-key
     optional: true
+  # Issue #11: the gateway now REFUSES TO START without this secret, and it must
+  # hold the SAME value on both sides — the edge signs the X-Elitea-* identity
+  # headers the gateway verifies. Leaving the edge unsigned while the gateway
+  # verifies makes every /llm request fail verification, so this side is
+  # non-optional too. Provision before install/upgrade.
   GATEWAY_IDENTITY_SECRET:
     secretName: elitea-main-llm-gateway-secrets
     key: gateway-identity-secret
-    optional: true
+    optional: false
   LLM_GATEWAY_CLIENT_CERT:
     secretName: elitea-main-llm-gateway-secrets
     key: llm-gateway-client-cert
