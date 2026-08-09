@@ -169,6 +169,28 @@ type Config struct {
 	// #1). Empty = the request-time guard is inert (the upsert-time guard in
 	// elitea-main still applies).
 	SelfLLMOrigins []string
+
+	// EgressAllowlist enumerates the hosts a TENANT-AUTHORED credential
+	// `api_base` may point at (comma-separated in GATEWAY_EGRESS_ALLOWLIST,
+	// e.g. "vllm.ml.svc.cluster.local:8000,*.openai.azure.com"). Entries are
+	// `host` or `host:port`, with an optional leading "*." wildcard covering
+	// exactly one or more leading labels.
+	//
+	// Issue #13. This is the operator's egress policy for the three provider
+	// classes whose endpoint is tenant-supplied (Ollama, Azure, vLLM), and it
+	// controls TWO things in internal/account:
+	//
+	//   empty (default) — no host restriction, AND bifrost's SSRF-safe dialer
+	//     stays ON for every provider (AllowPrivateNetwork is never set). A
+	//     default install therefore cannot be steered at an RFC-1918 address at
+	//     all; self-hosted vLLM/Ollama on a private network does not work until
+	//     an operator opts in below.
+	//   non-empty — every credential api_base must match an entry (checked
+	//     BEFORE the Fernet vault resolves its secret, so a non-allowlisted
+	//     destination never sees a decrypted key), and private-network dialing
+	//     is enabled for the self-hosted classes, whose destinations are now
+	//     operator-enumerated.
+	EgressAllowlist []string
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -201,6 +223,7 @@ func FromEnv() Config {
 		StreamGrace:             millisOr("LLM_STREAM_GRACE_MS", DefaultStreamGrace, MaxStreamGrace),
 		StreamDrainLimit:        intOr("LLM_STREAM_DRAIN_MAX_INFLIGHT", DefaultStreamDrainLimit),
 		SelfLLMOrigins:          csvOr("GATEWAY_SELF_LLM_ORIGINS"),
+		EgressAllowlist:         csvOr("GATEWAY_EGRESS_ALLOWLIST"),
 	}
 }
 

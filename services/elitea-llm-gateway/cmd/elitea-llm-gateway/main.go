@@ -119,6 +119,7 @@ func main() {
 			Vault:               vault,
 			ProviderConcurrency: cfg.ProviderConcurrency,
 			SelfOrigins:         cfg.SelfLLMOrigins,
+			EgressAllowlist:     cfg.EgressAllowlist,
 			Logger:              logger,
 		})
 		if aerr != nil {
@@ -128,6 +129,18 @@ func main() {
 		acct = eliteaAcct
 		if len(cfg.SelfLLMOrigins) == 0 {
 			logger.Warn("GATEWAY_SELF_LLM_ORIGINS is empty — the request-time SELF_REFERENTIAL_CREDENTIAL guard (spec §2.6 guard #1) is inert")
+		}
+		// Issue #13: the two egress policy modes differ in whether a tenant can
+		// steer the gateway at a private address at all. Say which one is armed
+		// at startup — an operator must not have to read the code to find out.
+		if eliteaAcct.EgressAllowlistConfigured() {
+			logger.Info("EGRESS ALLOWLIST ARMED: tenant-authored api_base hosts are restricted to GATEWAY_EGRESS_ALLOWLIST; "+
+				"private-network destinations are permitted for the self-hosted provider classes (vLLM, Ollama)",
+				"entries", len(cfg.EgressAllowlist))
+		} else {
+			logger.Warn("GATEWAY_EGRESS_ALLOWLIST is empty — tenant-authored api_base hosts are UNRESTRICTED (public only). " +
+				"bifrost's SSRF-safe dialer stays on for every provider, so self-hosted vLLM/Ollama on a private " +
+				"network will NOT work until the allowlist names those hosts (issue #13)")
 		}
 		logger.Info("vault-backed Account ENABLED", "self_origins", len(cfg.SelfLLMOrigins))
 	} else {

@@ -111,6 +111,27 @@ env:
   # e.g. "https://dev.elitea.ai/llm/v1,http://elitea-main:8080/llm/v1"
   GATEWAY_SELF_LLM_ORIGINS: ""
 
+  # Issue #13 — egress allowlist for TENANT-AUTHORED credential `api_base`
+  # values. Comma-separated `host`, `host:port`, `*.domain` or `*.domain:port`.
+  # An unparsable entry is FATAL at startup (a typo must not silently narrow or
+  # widen the policy).
+  #
+  # Two modes, and there is deliberately no third:
+  #   ""       (default) api_base hosts are unrestricted, and bifrost's
+  #            SSRF-safe dialer stays ON for every provider — so no tenant can
+  #            steer the gateway at an RFC-1918 address. Self-hosted vLLM /
+  #            Ollama on a private network does NOT work in this mode.
+  #   non-empty  every credential api_base must match an entry (checked BEFORE
+  #            the Fernet vault decrypts its api_key, so a non-allowlisted
+  #            destination never receives a resolved secret), and private
+  #            destinations become reachable for the self-hosted classes only.
+  #
+  # Pin the port where you can. Setting this is also the only way to stop a
+  # tenant shipping its own vault secrets to an arbitrary PUBLIC host as a
+  # Bearer token — leaving it empty accepts that risk.
+  # e.g. "vllm.ml.svc.cluster.local:8000,ollama.ml.svc.cluster.local:11434"
+  GATEWAY_EGRESS_ALLOWLIST: ""
+
 # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
 # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map above.
 # Each entry maps the ENV VAR NAME the binary reads → the Secret name + key.
@@ -146,6 +167,53 @@ secrets:
     secretName: elitea-llm-gateway-secrets
     key: secrets-master-key
     optional: true    # unset ⇒ Fernet vault degraded single-level mode
+
+# networkPolicy: egress containment, defence in depth for issue #13 (the
+# tenant-authored api_base SSRF). The in-process control is
+# GATEWAY_EGRESS_ALLOWLIST above; this is the second layer, for the case where
+# that one is bypassed or a future carve-out widens it.
+#
+# OPT-IN, because attaching ANY egress rule to a pod denies everything not
+# listed, and this chart cannot know where your Postgres, NATS and OTLP
+# collector live. Enable it only after filling in `egress` below — otherwise the
+# gateway loses its own dependencies. Requires a CNI that enforces
+# NetworkPolicy; on one that does not, the object renders but does nothing.
+networkPolicy:
+  enabled: false
+  # allowPublicEgress opens 0.0.0.0/0 minus every private/link-local range, so
+  # cloud provider APIs work but nothing in-cluster is reachable. Set false only
+  # for an install that talks exclusively to self-hosted models.
+  allowPublicEgress: true
+  publicEgressPorts:
+    - protocol: TCP
+      port: 443
+  # In-cluster dependencies, rendered verbatim under spec.egress. Worked
+  # example — replace the selectors and ports with your own topology, and add
+  # an entry for every self-hosted model host GATEWAY_EGRESS_ALLOWLIST names:
+  #
+  # egress:
+  #   - to:
+  #       - podSelector:
+  #           matchLabels:
+  #             app.kubernetes.io/name: postgresql
+  #     ports:
+  #       - protocol: TCP
+  #         port: 5432
+  #   - to:
+  #       - podSelector:
+  #           matchLabels:
+  #             app.kubernetes.io/name: nats
+  #     ports:
+  #       - protocol: TCP
+  #         port: 4222
+  #   - to:
+  #       - podSelector:
+  #           matchLabels:
+  #             app.kubernetes.io/name: vllm
+  #     ports:
+  #       - protocol: TCP
+  #         port: 8000
+  egress: []
 
 # elitea-llm-gateway-svc: mTLS-only ClusterIP (NOT public), port 8083 (design
 # §9.1). Named explicitly so the edge/runbook references resolve.

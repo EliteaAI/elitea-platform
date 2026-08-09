@@ -114,6 +114,11 @@ type EliteaAccount struct {
 	// rejected by the self-referential guard.
 	selfOrigins map[string]struct{}
 
+	// egress is the operator's allowlist for tenant-authored api_base hosts
+	// (issue #13). Never nil after New; `configured()` reports whether the
+	// operator supplied any entry.
+	egress *egressAllowlist
+
 	logger *slog.Logger
 }
 
@@ -134,6 +139,14 @@ type Config struct {
 	// SELF_REFERENTIAL_CREDENTIAL. Values are normalised (scheme+host+path,
 	// trailing slash stripped) before comparison.
 	SelfOrigins []string
+	// EgressAllowlist enumerates the hosts a tenant-authored credential
+	// api_base may name: `host`, `host:port`, `*.domain`, `*.domain:port`
+	// (issue #13, GATEWAY_EGRESS_ALLOWLIST). Empty leaves api_base hosts
+	// unrestricted AND keeps bifrost's SSRF-safe dialer on for every provider,
+	// so no tenant can reach a private address. Non-empty restricts api_base to
+	// these hosts and, for the self-hosted classes only, permits private
+	// destinations. See egress.go for why this is a NAME allowlist.
+	EgressAllowlist []string
 	// Logger is used for structured logging; never logs secret material. When
 	// nil, slog.Default is used.
 	Logger *slog.Logger
@@ -157,14 +170,25 @@ func New(cfg Config) (*EliteaAccount, error) {
 			origins[n] = struct{}{}
 		}
 	}
+	egress, err := newEgressAllowlist(cfg.EgressAllowlist)
+	if err != nil {
+		return nil, fmt.Errorf("account: %w", err)
+	}
 	return &EliteaAccount{
 		db:                  cfg.DB,
 		vault:               cfg.Vault,
 		providerConcurrency: cfg.ProviderConcurrency,
 		selfOrigins:         origins,
+		egress:              egress,
 		logger:              logger,
 	}, nil
 }
+
+// EgressAllowlistConfigured reports whether an operator egress allowlist is in
+// force. main() logs this at startup: the two policy modes differ in whether a
+// tenant can reach a private network at all, and an operator must be able to
+// see which one is armed without reading the code (issue #13).
+func (a *EliteaAccount) EgressAllowlistConfigured() bool { return a.egress.configured() }
 
 // GetConfiguredProviders returns the static supported-provider set. Per-project
 // availability is enforced in GetKeysForProvider (which returns zero keys for a
@@ -193,9 +217,23 @@ func (a *EliteaAccount) GetConfigForProvider(provider schemas.ModelProvider) (*s
 	// the guard: an api_base for openai/anthropic/etc. must never resolve to
 	// a private address (that shape is exactly the SSRF the dialer exists to
 	// stop, and the SELF_REFERENTIAL guard's runtime backstop).
+	//
+	// ISSUE #13: that carve-out used to be unconditional, and the URL those
+	// classes dial is TENANT-AUTHORED — any user who could author a credential
+	// row could make the gateway open a connection to any address the pod can
+	// reach. The exemption is now gated on the operator having enumerated the
+	// legitimate destinations in GATEWAY_EGRESS_ALLOWLIST; GetKeysForProvider
+	// refuses every credential whose api_base is not on that list, so the only
+	// private addresses reachable are ones an operator named. With no
+	// allowlist the dialer's guard stays on for EVERY provider and no tenant
+	// can steer the gateway into the cluster at all.
+	//
+	// This method takes no context and no key, so it cannot decide per
+	// credential — which is exactly why the per-credential half of the policy
+	// has to live in GetKeysForProvider.
 	switch provider {
 	case schemas.VLLM, schemas.Ollama:
-		cfg.NetworkConfig.AllowPrivateNetwork = true
+		cfg.NetworkConfig.AllowPrivateNetwork = a.egress.configured()
 	}
 	return cfg, nil
 }
@@ -231,6 +269,26 @@ func (a *EliteaAccount) GetKeysForProvider(ctx context.Context, provider schemas
 				"config_id", c.configID,
 			)
 			return nil, fmt.Errorf("account: credential %s: %w", c.configID, ErrSelfReferentialCredential)
+		}
+
+		// Egress allowlist (issue #13). This MUST stay above the vault resolve:
+		// api_key may be a {{secret.NAME}} reference, and the resolved plaintext
+		// is shipped to whatever host api_base names as a Bearer token. Checking
+		// after the resolve would still stop the connection, but only after the
+		// tenant's own vault secret had been decrypted for a destination the
+		// operator never sanctioned. Rejecting first means a non-allowlisted
+		// destination never causes a decrypt at all.
+		if !a.egress.allows(c.apiBase) {
+			// The host is deliberately absent from the log line's structured
+			// fields for a caller to read back; operators get the config_id and
+			// can look the row up. The error carries no host either.
+			a.logger.WarnContext(ctx, "rejected provider credential: api_base host is not on the egress allowlist",
+				"reason", EgressNotAllowedReason,
+				"project_id", projectID,
+				"provider", string(provider),
+				"config_id", c.configID,
+			)
+			return nil, fmt.Errorf("account: credential %s: %w", c.configID, ErrEgressNotAllowed)
 		}
 
 		apiKey, err := a.vault.Resolve(ctx, projectID, c.apiKeyRef)

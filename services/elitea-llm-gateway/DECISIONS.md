@@ -157,6 +157,46 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   Guarded by `TestStartupIdentityCheck` + the `startupIdentityCheck(` entry in
   `TestMainWiring`; both mutation-verified 2026-08-09.
 
+- **[human decision] 2026-08-09 — Tenant-authored `api_base` may reach a private
+  network ONLY through an operator egress allowlist (issue #13).** The previous
+  `AllowPrivateNetwork = true` carve-out for the vLLM/Ollama classes was
+  unconditional, and the URL those classes dial comes from the tenant's own
+  `p_{id}.configuration` row — so any user who could author a credential could
+  make the gateway open a connection to any address the pod can reach. Two
+  modes now, and deliberately no third:
+  - `GATEWAY_EGRESS_ALLOWLIST` empty (default): hosts unrestricted, but
+    bifrost's SSRF-safe dialer stays armed for EVERY provider class. No tenant
+    can reach RFC-1918. **Self-hosted vLLM/Ollama on a private network stops
+    working until an operator opts in** — that is the accepted cost.
+  - non-empty: every `api_base` must match an entry, and private destinations
+    become reachable for the self-hosted classes only.
+  It is a HOST-NAME allowlist, not an IP-range check, on purpose: an IP check
+  here would be a check-then-dial race (DNS rebinding), whereas a name the
+  operator sanctioned is sanctioned whatever it resolves to, and the dialer's
+  own check happens at connect time with no race. The check runs BEFORE
+  `vault.Resolve`, so a non-allowlisted destination never causes a decrypt of
+  the tenant's `{{secret.NAME}}` key material.
+- **[human decision] 2026-08-09 — Upstream response bodies are NEVER echoed to
+  callers (issue #13).** bifrost/core puts an unparsable non-2xx body verbatim
+  into `Error.Message` (`core@v1.7.3 providers/utils/utils.go`, prefix
+  `"provider API error: "`), and the gateway copied it into the client-visible
+  envelope — turning a blind SSRF into a full read of anything the pod can
+  reach. `sanitiseUpstreamMessage` (internal/llmproxy/httpio.go) replaces that
+  form with a status-only message and caps every other upstream message at 256
+  bytes as a second line of defence. Messages bifrost PARSED out of a structured
+  provider error (quota text, rate-limit detail) are preserved — those are the
+  tenant's own useful diagnostics.
+  Guarded by `TestOpenAIErrorBody_DoesNotEchoUpstreamBody`,
+  `TestGetConfigForProvider_PrivateNetworkGatedOnAllowlist` and
+  `TestGetKeysForProvider_EgressGuardBeforeVault`; all mutation-verified
+  2026-08-09.
+  **Residual, NOT fixed here:** with no allowlist configured, a tenant can still
+  ship its own vault-resolved secret to an arbitrary PUBLIC host as a Bearer
+  token (`api_base: https://attacker.example/v1`). Setting the allowlist closes
+  it; making that mandatory would break every cloud-provider install and is a
+  separate human call. The chart's opt-in `networkPolicy` is defence in depth,
+  not the primary control — see values.yaml for why it cannot default to on.
+
 ## Topology / build
 - Gateway is a standalone Go 1.26.4 module, deliberately OUT of the root go.work
   (which stays 1.25.8 for elitea-main/scheduler). Build with GOWORK=off. Rationale:

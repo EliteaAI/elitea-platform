@@ -1,7 +1,9 @@
 package llmproxy
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -120,5 +122,89 @@ func TestErrHelpers(t *testing.T) {
 	}
 	if wrapInvalid("n").Error() != "invalid n value" {
 		t.Errorf("wrapInvalid = %q", wrapInvalid("n").Error())
+	}
+}
+
+// ─── issue #13: upstream response bodies must not be echoed to callers ──────
+
+// TestOpenAIErrorBody_DoesNotEchoUpstreamBody is the issue #13 read-primitive
+// regression guard.
+//
+// The destination the gateway dials for the self-hosted provider classes is a
+// TENANT-AUTHORED api_base. bifrost/core, when an upstream returns a non-2xx
+// body that is neither valid JSON nor HTML, puts the ENTIRE body verbatim into
+// Error.Message (core@v1.7.3 providers/utils/utils.go: `fmt.Sprintf("provider
+// API error: %s", string(decodedBody))`). openAIErrorBody used to copy that
+// straight into the client-visible envelope, which turned a blind SSRF into a
+// full READ of anything the gateway pod can reach.
+//
+// Mutation: restore `message = bErr.Error.Message` in openAIErrorBody (drop the
+// sanitiseUpstreamMessage call) — the first two subtests MUST fail.
+func TestOpenAIErrorBody_DoesNotEchoUpstreamBody(t *testing.T) {
+	// A plaintext body of the shape an in-cluster Go service emits.
+	const internalBody = "404 page not found\nX-Internal-Token: topsecret-do-not-leak"
+
+	t.Run("raw upstream body is replaced, not echoed", func(t *testing.T) {
+		body := openAIErrorBody(bErr(404, "api_error", "", rawUpstreamBodyPrefix+internalBody))
+		if strings.Contains(body.Error.Message, "404 page not found") ||
+			strings.Contains(body.Error.Message, "topsecret-do-not-leak") {
+			t.Fatalf("upstream response body echoed to the caller: %q — this is an SSRF read primitive (issue #13)",
+				body.Error.Message)
+		}
+		if !strings.Contains(body.Error.Message, "404") {
+			t.Fatalf("the replacement should still report the upstream status; got %q", body.Error.Message)
+		}
+	})
+
+	t.Run("no fragment of a long body survives truncation", func(t *testing.T) {
+		long := strings.Repeat("SECRET", 500)
+		body := openAIErrorBody(bErr(500, "api_error", "", rawUpstreamBodyPrefix+long))
+		if strings.Contains(body.Error.Message, "SECRET") {
+			t.Fatalf("a fragment of the upstream body survived: %q", body.Error.Message)
+		}
+	})
+
+	t.Run("an unrecognised long message is capped", func(t *testing.T) {
+		// Second line of defence: a future bifrost verbatim-body path with a
+		// different prefix must not leak an unbounded read.
+		long := strings.Repeat("A", maxUpstreamMessage*4)
+		body := openAIErrorBody(bErr(500, "api_error", "", long))
+		if len(body.Error.Message) > maxUpstreamMessage+len("… (truncated)") {
+			t.Fatalf("upstream message not capped: %d bytes", len(body.Error.Message))
+		}
+	})
+
+	t.Run("a parsed provider message is preserved", func(t *testing.T) {
+		// Messages bifrost extracted from a STRUCTURED provider error are the
+		// tenant's own useful diagnostics; sanitising them too would be a
+		// regression in its own right.
+		const parsed = "You exceeded your current quota, please check your plan and billing details."
+		body := openAIErrorBody(bErr(429, "insufficient_quota", "insufficient_quota", parsed))
+		if body.Error.Message != parsed {
+			t.Fatalf("parsed provider message was mangled: got %q, want %q", body.Error.Message, parsed)
+		}
+	})
+
+	t.Run("bifrost's body-free fallbacks are preserved", func(t *testing.T) {
+		// "provider API error (status 502)" carries no body and must NOT be
+		// caught by the prefix rule (the colon-space is what distinguishes it).
+		const fallback = "provider API error (status 502)"
+		body := openAIErrorBody(bErr(502, "api_error", "", fallback))
+		if body.Error.Message != fallback {
+			t.Fatalf("body-free fallback was rewritten: got %q", body.Error.Message)
+		}
+	})
+}
+
+// TestRawUpstreamBodyPrefix_MatchesBifrost pins the prefix constant to the
+// format string bifrost actually uses. If a core upgrade changes it, the
+// sanitiser silently stops matching and the read primitive returns — so assert
+// the exact literal here, where a diff is visible in review.
+func TestRawUpstreamBodyPrefix_MatchesBifrost(t *testing.T) {
+	want := fmt.Sprintf("provider API error: %s", "")
+	if rawUpstreamBodyPrefix != want {
+		t.Fatalf("rawUpstreamBodyPrefix = %q, want %q — re-check "+
+			"providers/utils/utils.go HandleProviderAPIError in the vendored bifrost/core version",
+			rawUpstreamBodyPrefix, want)
 	}
 }
