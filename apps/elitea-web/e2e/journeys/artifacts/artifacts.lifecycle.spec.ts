@@ -95,6 +95,23 @@ async function readDownload(download: { createReadStream: () => Promise<NodeJS.R
 }
 
 test.describe('J20 artifacts lifecycle', () => {
+  /*
+   * Serial, because these five tests share two FIXED bucket names and a fixed
+   * set of object keys (see the header note). That design is deliberate, but it
+   * only works in a defined order: J20d DELETES `j20-art.txt`, and the header's
+   * own reasoning — "seedBucketWithFiles is idempotent and re-uploads the
+   * objects J20d deletes, so J20e still finds them" — is a statement about
+   * sequence. The root config sets `fullyParallel: true`, which parallelises
+   * tests WITHIN a file too, so on CI's 4 workers J20d and J20e raced over the
+   * same object: J20d's download and its :batchDelete both timed out, at a
+   * different point on each of the three attempts.
+   *
+   * Invisible locally because the documented local command is `--workers=1`,
+   * which serialises the file by accident. This makes the ordering the spec
+   * already depends on explicit instead of accidental. No assertion changes.
+   */
+  test.describe.configure({ mode: 'serial' });
+
   /**
    * The create-bucket screen is a real form, not scaffolding.
    *
