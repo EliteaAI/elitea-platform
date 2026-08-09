@@ -182,6 +182,19 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 	request CurrentRegenerationRequest,
 	target CurrentRegenerationTarget,
 ) (*runtimev1.AgentExecutionInputV1, *CurrentRegenerateTurn, string, error) {
+	// Narrow the ids once, before the branch, because BOTH arms freeze a version
+	// with them. int64->int32 truncates silently and these address rows, so an
+	// out-of-range value would freeze against a DIFFERENT, valid project rather
+	// than fail. Refusing is the only correct answer: the columns are Postgres
+	// `integer`, so such an id cannot denote a real row.
+	projectID32, ok := narrowRowID(request.ProjectID)
+	if !ok {
+		return nil, nil, "", ErrInvalidCurrentAgentStart
+	}
+	actorUserID32, ok := narrowRowID(request.ActorUserID)
+	if !ok {
+		return nil, nil, "", ErrInvalidCurrentAgentStart
+	}
 	turn := &CurrentRegenerateTurn{
 		ProjectID: request.ProjectID, ActorUserID: request.ActorUserID,
 		ConversationUUID:    target.ConversationUUID,
@@ -204,7 +217,7 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 		frozen, err := service.freezer.FreezeCurrentApplicationVersion(
 			ctx,
 			CurrentApplicationVersionFreezeRequest{
-				ProjectID: int32(request.ProjectID), ActorUserID: int32(request.ActorUserID),
+				ProjectID: projectID32, ActorUserID: actorUserID32,
 				VersionDetails: resolved.VersionDetails,
 			},
 		)
@@ -240,7 +253,7 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 		frozen, err := service.freezer.FreezeCurrentApplicationVersion(
 			ctx,
 			CurrentApplicationVersionFreezeRequest{
-				ProjectID: int32(request.ProjectID), ActorUserID: int32(request.ActorUserID),
+				ProjectID: projectID32, ActorUserID: actorUserID32,
 				VersionDetails: snapshot,
 			},
 		)
@@ -257,4 +270,24 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 	default:
 		return nil, nil, "", errors.New("unsupported current regeneration kind")
 	}
+}
+
+// narrowRowID converts a domain id (int64) to the int32 the freeze request and
+// the sqlc params use, refusing anything the target type cannot hold.
+//
+// Go's int64->int32 conversion is a SILENT TRUNCATION and these ids address
+// rows: 4294967300 becomes 4, so an out-of-range id would not fail — it would
+// freeze a version against a DIFFERENT, valid project. The columns are Postgres
+// `integer`, so a value above MaxInt32 cannot denote a real row and refusing is
+// the only correct answer.
+//
+// The API boundary (positiveCanonicalID) already bounds ids on the way in; this
+// is defence in depth at the point of narrowing, and unlike the boundary check
+// it is local enough for CodeQL's dataflow to see
+// (go/incorrect-integer-conversion).
+func narrowRowID(value int64) (int32, bool) {
+	if value < 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
 }
