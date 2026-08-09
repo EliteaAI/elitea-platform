@@ -1,5 +1,46 @@
 name: CI — Web mutation spot-check
 
+# CANONICAL COPY. An identical job also existed in ci-web.yml until issue #157;
+# both fired on `v*` tags, so a tag would have run the spot-check twice, and the
+# ci-web.yml copy lacked the `issues: write` below — its incident escalation
+# would have failed on permissions. The ci-web.yml copy is deleted; this file
+# has been on main since 9e7d6644 and, unlike that copy, carries no job-level
+# `if:`, so it is dispatchable and schedulable today.
+#
+# ── DECISION: this job is ADVISORY, not a gate (issue #160) ──────────────────
+#
+# It has run: EliteaAI/elitea-platform actions run 31148549304, job 92773164195,
+# 11m08s wall clock (635.5s inside the script). Score 74% — 135 killed of 183
+# mutants, 48 survived, over a 19-file slice of src/shared/** + src/entities/**.
+# The "has never executed" premise in #160 was wrong.
+#
+# scripts/mutate-spotcheck.mjs has three `process.exit(` calls and all three are
+# `exit(0)`, including the top-level `.catch()`. That is deliberate (script
+# header, spec §6.7: "not as a build failure") and it stays, because:
+#
+#   • The sample ROTATES — parity/mutation-rotation-state.json advances the
+#     cursor every run, so consecutive runs mutate different files. A pass/fail
+#     threshold over a moving sample fails or passes on which slice came up, not
+#     on whether the PR under test made anything worse. That is a coin flip
+#     wearing a gate's clothing.
+#   • It never runs on a PR (schedule + tag + dispatch only, ~11 min), so a red
+#     result would land on a release tag or a Wednesday cron — the two worst
+#     places to discover a test-quality drift that nobody's change caused.
+#   • 74% against a 70% floor is not the margin you build a blocking gate on.
+#
+# Accountability instead comes from the script's own escalation tiers:
+#   ≥70% pass · 60–70% warn (Step Summary) · <60% incident (Step Summary with
+#   per-mutant detail AND a GitHub issue filed against this repo).
+# The incident issue is the thing somebody is answerable to. It needs the
+# `issues: write` permission below AND the GITHUB_TOKEN env on the step below —
+# without the env, createOrUpdateGitHubIssue() logs "GITHUB_TOKEN /
+# GITHUB_REPOSITORY not set — skipping issue creation" and the escalation is a
+# no-op. It was missing until #160.
+#
+# Revisit if the score drops toward 60%, or if per-mutant test selection gets
+# cheap enough to sample a fixed slice on PRs — then a gate has something
+# deterministic to gate on.
+
 on:
   schedule:
     - cron: "47 8 * * 3"   # Wednesdays 08:47 UTC
@@ -10,6 +51,8 @@ on:
 
 permissions:
   contents: read
+  # Needed by the <60% incident tier, which files/updates an issue. Paired with
+  # GITHUB_TOKEN on the step below — the permission alone does nothing.
   issues: write
 
 defaults:
@@ -30,6 +73,10 @@ jobs:
       - name: Install (locked)
         run: npm ci
       - name: Rotating 5% sample over shared/ + entities/
+        # Exits 0 whatever the score, by design — see the DECISION block above.
+        # ~11 min at the current sample size.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           test -f scripts/mutate-spotcheck.mjs || { echo "release tag without mutate-spotcheck (unit V3) — refusing"; exit 1; }
           node scripts/mutate-spotcheck.mjs

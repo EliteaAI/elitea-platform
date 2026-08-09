@@ -12,14 +12,19 @@
  *
  * Run: node scripts/check-playwright-image-tag.mjs
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(appRoot, '../..');
-const WORKFLOW = path.join(repoRoot, '.github/workflows/ci-web.yml');
+// EVERY workflow, not just ci-web.yml. This used to read ci-web.yml alone; when
+// issue #157 moved the `visual` job to ci-web-e2e.yml the gate found zero
+// references and reported "OK — visual suite pending", i.e. it silently stopped
+// checking anything while still printing green. Scanning the directory means
+// the gate follows the reference wherever the job lives.
+const WORKFLOW_DIR = path.join(repoRoot, '.github/workflows');
 
 const pkg = JSON.parse(readFileSync(path.join(appRoot, 'package.json'), 'utf8'));
 const pinned = pkg.devDependencies?.['@playwright/test'] ?? pkg.dependencies?.['@playwright/test'];
@@ -35,21 +40,42 @@ if (!/^\d+\.\d+\.\d+$/.test(pinned)) {
   process.exit(2);
 }
 
-const workflow = readFileSync(WORKFLOW, 'utf8');
-const refs = [...workflow.matchAll(/mcr\.microsoft\.com\/playwright:v(\d+\.\d+\.\d+)-noble/g)];
+const refs = [];
+for (const entry of readdirSync(WORKFLOW_DIR).sort()) {
+  if (!/\.ya?ml$/.test(entry)) continue;
+  const text = readFileSync(path.join(WORKFLOW_DIR, entry), 'utf8');
+  for (const m of text.matchAll(/mcr\.microsoft\.com\/playwright:v(\d+\.\d+\.\d+)-noble/g)) {
+    refs.push({ file: entry, version: m[1] });
+  }
+}
 
 if (refs.length === 0) {
-  console.log('check-playwright-image-tag: OK — no Playwright container reference in ci-web.yml yet (visual suite pending)');
+  // Zero references is only benign while there is no visual suite to pin. Once
+  // e2e/visual exists, zero means the container reference was lost or renamed —
+  // exactly the state the #157 split briefly produced — and reporting OK there
+  // is how this gate stopped gating without anyone noticing.
+  if (existsSync(path.join(appRoot, 'e2e/visual'))) {
+    console.error('check-playwright-image-tag: FAIL — e2e/visual exists but no workflow references');
+    console.error('  mcr.microsoft.com/playwright:v<x.y.z>-noble.');
+    console.error('  The snapshot suite must run inside the pinned container; an unpinned run');
+    console.error('  rasterises baselines with the runner\'s own font stack. Searched:');
+    console.error(`  ${WORKFLOW_DIR}`);
+    process.exit(1);
+  }
+  console.log('check-playwright-image-tag: OK — no Playwright container reference and no e2e/visual suite yet');
   process.exit(0);
 }
 
-const wrong = refs.filter((m) => m[1] !== pinned);
+const wrong = refs.filter((r) => r.version !== pinned);
 if (wrong.length > 0) {
   console.error('check-playwright-image-tag: FAIL — container tag does not match the pinned library version');
   console.error(`  package.json @playwright/test: ${pinned}`);
-  for (const m of wrong) console.error(`  ci-web.yml references:        ${m[1]}`);
+  for (const r of wrong) console.error(`  ${r.file} references:${' '.repeat(Math.max(1, 22 - r.file.length))}${r.version}`);
   console.error('  Baselines rendered by one browser build and compared against another will diff for no real reason.');
   process.exit(1);
 }
 
-console.log(`check-playwright-image-tag: OK — ${refs.length} container reference(s) all pinned to v${pinned}-noble`);
+console.log(
+  `check-playwright-image-tag: OK — ${refs.length} container reference(s) all pinned to v${pinned}-noble ` +
+    `(${[...new Set(refs.map((r) => r.file))].join(', ')})`,
+);

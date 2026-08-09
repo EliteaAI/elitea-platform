@@ -35,7 +35,12 @@
  *   60–70%     → warn (GitHub Step Summary flagged, exit 0)
  *   <60%       → incident (GitHub Step Summary with per-file detail, exit 0)
  *
- * The script ALWAYS exits 0 (spec §6.7: "not as a build failure").
+ * The script ALWAYS exits 0 (spec §6.7: "not as a build failure"). This was
+ * re-examined in issue #160 and deliberately kept: the sampled slice rotates,
+ * so a threshold over it would gate on which files came up rather than on the
+ * change under test. Accountability lives in the <60% incident tier, which
+ * files a GitHub issue. The full reasoning is recorded in the DECISION block of
+ * .github/workflows/ci-web-mutation.yml — read it before making this gating.
  *
  * Rotation state: parity/mutation-rotation-state.json (checked in).
  *   Pure rotation arithmetic lives in scripts/lib/mutation-rotation.mjs.
