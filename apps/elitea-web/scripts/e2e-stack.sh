@@ -229,7 +229,15 @@ CROSS JOIN (VALUES
     ('configuration.artifacts.buckets.edit'),
     ('configuration.artifacts.buckets.delete'),
     ('configurations.configuration.update'),
-    ('configurations.configuration.delete')
+    ('configurations.configuration.delete'),
+    -- The notification SSE stream
+    -- (GET /api/v2/notifications/events/prompt_lib/{projectID}) resolves this
+    -- exact string in `currentNotificationEventsHandler.authorize`. Absent, the
+    -- stream answers 403 — which is what it did the moment the route was first
+    -- mounted (#152), and which is indistinguishable in the browser from the
+    -- 404 it used to answer, since useNotificationsSSE treats every failed
+    -- stream the same way.
+    ('models.notifications.notifications.list')
 ) AS p(permission)
 WHERE r.project_id = 1
 ON CONFLICT (project_id, role_id, permission) DO NOTHING;

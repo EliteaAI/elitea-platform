@@ -64,6 +64,39 @@ CREATE TABLE IF NOT EXISTS centry.secrets_data (
     data BYTEA
 );
 
+-- User notifications. Same omission as centry.secrets_key above, found the same
+-- way (#152): THREE Go call sites already query this table and none of them
+-- could ever have worked against a database this file bootstrapped —
+--   internal/api/v2/eliteacore/handler.go:393        (the list endpoint)
+--   internal/db/sqlcgen/current_notification_events.sql.go  (HighWater + ListAfter,
+--                                                    behind the notification SSE stream)
+-- The list endpoint hid it: it runs the query under `if err == nil` and returns
+-- 200 with an empty array on ANY failure, so a missing table is indistinguishable
+-- from "no notifications". The SSE stream does not swallow, and answered 503 the
+-- moment it was first mounted — which is what exposed this.
+--
+-- Column set is dictated by those queries (id, uuid, is_seen, project_id,
+-- user_id, meta, event_type, created_at, updated_at); event_type values are the
+-- legacy NotificationEventTypes enum
+-- (legacy/plugins/elitea_core/models/enums/all.py), kept as TEXT rather than a
+-- PG enum so a new legacy event type does not require a migration here.
+CREATE TABLE IF NOT EXISTS centry.notifications (
+    id SERIAL PRIMARY KEY,
+    uuid UUID NOT NULL DEFAULT gen_random_uuid(),
+    is_seen BOOLEAN NOT NULL DEFAULT FALSE,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    meta JSONB,
+    event_type TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Both readers are user-scoped and ordered by id: the list endpoint filters
+-- (project_id, user_id), the SSE stream filters user_id and pages on id > cursor.
+CREATE INDEX IF NOT EXISTS notifications_user_id_id_idx
+    ON centry.notifications (user_id, id);
+
 -- =============================================================================
 -- TENANT SCHEMA FUNCTION
 -- Creates all per-project tables in a given schema (e.g. "p_1")

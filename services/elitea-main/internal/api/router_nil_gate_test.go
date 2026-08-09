@@ -117,9 +117,19 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 		// within the gated block yields zero and the field looks inert. The five
 		// routes live in the handler's Routes(). Any future audit of this pattern
 		// has to follow Mount targets, or it will undercount exactly here.
-		"LLMProxy":       "optional by design: the LLM proxy is a separate deployment (services/elitea-llm-gateway)",
-		"EventSource":    "optional by design: falls back to RedisClient, see router.go's else-if",
-		"RedisClient":    "optional by design: the EventSource fallback",
+		"LLMProxy": "optional by design: the LLM proxy is a separate deployment (services/elitea-llm-gateway)",
+		// EventSource is the NATS arm of the project-SSE fallback pair. It is
+		// genuinely optional — but ONLY because RedisClient, the other arm, is
+		// now wired (see the fallback-pair check below, which is what makes
+		// this entry safe). No elitea-main deployment is given a NATS endpoint:
+		// deploy/helm/nats is the LLM gateway's broker and elitea-main's only
+		// NATS-shaped variable is GATEWAY_NATS_URL, the gateway *client*.
+		//
+		// The previous pair of entries here read "falls back to RedisClient"
+		// and "the EventSource fallback" — each justified by the other, so both
+		// being nil satisfied the allowlist while the route they gate was
+		// entirely absent (#152). That is the hole the check below closes.
+		"EventSource":    "#152 — the NATS arm; no elitea-main deployment runs NATS, and the Redis arm of this pair IS wired",
 		"Shadow":         "cutover machinery, enabled per-deployment",
 		"ShadowMetrics":  "cutover machinery, enabled per-deployment",
 		"CutoverRouter":  "cutover machinery, enabled per-deployment",
@@ -140,16 +150,74 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 			"either the pattern changed or the regex is wrong. Do not delete this test without replacing the guarantee.")
 	}
 
+	assigned := func(field string) bool {
+		// Assigned in the RouterConfig literal, e.g. "\tAppsRepo:  appsRepo,"
+		return regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(field) + `:\s`).MatchString(mainSrc)
+	}
+
+	// --- Fallback pairs -------------------------------------------------
+	//
+	// The per-field allowlist above cannot see a two-arm gate:
+	//
+	//	if cfg.EventSource != nil      { r.Mount("/events/…", …) }
+	//	else if cfg.RedisClient != nil { r.Mount("/events/…", …) }
+	//
+	// Each arm is individually "optional" — either one alone registers the
+	// route — so each got an allowlist entry justified by the other, and the
+	// pair passed the gate with BOTH nil and the route registered by neither.
+	// That is #152, and it is a strictly worse failure than a single unwired
+	// field: the reason text actively asserts the feature is fine.
+	//
+	// So: a fallback chain is only satisfiable by at least one member being
+	// wired. The pairs are read out of router.go rather than listed here, so a
+	// chain added later is covered without anyone remembering this test.
+	// Matched by locating each `} else if cfg.B != nil {` and walking BACK to the
+	// nearest preceding `if cfg.A != nil {`, rather than with one `(?s)if …
+	// .*? … else if …` regex. The single-regex form silently mis-pairs: `.*?`
+	// is leftmost-first, so an unrelated earlier `if cfg.X != nil {` claims the
+	// match and the real chain is consumed inside it. That version passed this
+	// very mutation (both arms nil, both allowlisted) — the bug it exists to
+	// catch — while reporting a pair that was never there.
+	ifGateRe := regexp.MustCompile(`if cfg\.([A-Za-z][A-Za-z0-9]*) != nil \{`)
+	elseIfGateRe := regexp.MustCompile(`\}\s*else if cfg\.([A-Za-z][A-Za-z0-9]*) != nil \{`)
+
+	var pairs [][2]string
+	for _, loc := range elseIfGateRe.FindAllStringSubmatchIndex(routerSrc, -1) {
+		second := routerSrc[loc[2]:loc[3]]
+		prior := ifGateRe.FindAllStringSubmatch(routerSrc[:loc[0]], -1)
+		if len(prior) == 0 {
+			continue
+		}
+		pairs = append(pairs, [2]string{prior[len(prior)-1][1], second})
+	}
+	if len(pairs) == 0 {
+		t.Fatal("found no `if cfg.A != nil { … } else if cfg.B != nil { … }` fallback chains in router.go — " +
+			"either the last one was removed (delete this block) or the pattern changed. " +
+			"Do not delete this without replacing the guarantee: a fallback pair with both arms nil " +
+			"is how #152 shipped a route that existed in no deployment.")
+	}
+	for _, pair := range pairs {
+		first, second := pair[0], pair[1]
+		if assigned(first) || assigned(second) {
+			continue
+		}
+		t.Errorf("RouterConfig.%s and RouterConfig.%s form a fallback pair in router.go "+
+			"(`if cfg.%s != nil … else if cfg.%s != nil …`) and NEITHER is assigned in cmd/elitea-main/main.go.\n"+
+			"  The routes behind that chain are registered by no arm and answer 404 in every deployment.\n"+
+			"  An allowlist entry for one arm that points at the other is circular and does NOT satisfy this:\n"+
+			"  at least one member has to be genuinely wired. (#152)",
+			first, second, first, second)
+	}
+
 	var unwired, staleAllowlist []string
 	for field := range seen {
-		// Assigned in the RouterConfig literal, e.g. "\tAppsRepo:  appsRepo,"
-		assigned := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(field) + `:\s`).MatchString(mainSrc)
+		isAssigned := assigned(field)
 		_, declared := declaredAbsent[field]
 
 		switch {
-		case assigned && declared:
+		case isAssigned && declared:
 			staleAllowlist = append(staleAllowlist, field)
-		case !assigned && !declared:
+		case !isAssigned && !declared:
 			unwired = append(unwired, field)
 		}
 	}
