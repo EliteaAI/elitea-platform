@@ -96,45 +96,35 @@ test('J14: create agent, save, and persist it', async ({ page }) => {
  * NARROWED, disclosed. JRNY-015 names "set default" and "delete old version".
  * Both were wrapped in `if (await x.isVisible().catch(() => false))`, so the
  * test passed whether or not those menu items existed. Rather than keep
- * assertions that cannot fail, this now hard-asserts the part that is real —
- * the version selector exists and lists the saved agent's version — and stops
- * claiming the rest. Set-default and delete-version need their own journey
- * written against the actual menu once its items are confirmed present.
+ * assertions that cannot fail, this hard-asserts the part that is real — the
+ * version selector exists and lists the saved agent's version — and stops
+ * claiming the rest.
+ *
+ * STILL NOT COVERED after #134, and still a real product gap, not a test one:
+ * the mounted menu lists versions and switches between them, but carries no
+ * per-version "set as default" or "delete" item. The baseline reaches those
+ * through `entities/version`'s `VersionSelect` (`useSetDefaultVersion` +
+ * a delete dialog); this app has the endpoints generated
+ * (`useDeleteApplicationVersion`, `setDefaultVersionRequest`) and
+ * `features/agents` even exports `useDeleteVersion`, but no UI reaches them.
+ * Deliberately NOT asserted here with an `if (visible)` block — that shape is
+ * exactly what made the absence invisible in the first place. Tracked as #147,
+ * to be covered by its own journey rather than smuggled into this one.
  */
 test('J15: a saved agent exposes a version selector listing its versions', async ({ page }) => {
   /*
-   * EXPECTED-FAIL — PRODUCT DEFECT, not a test bug. The agent edit page mounts
-   * no version-selection control of any kind.
+   * Was EXPECTED-FAIL until #134. The agent edit page mounted no
+   * version-selection control at all: it fetched the version list and spent it
+   * solely on `useIsVersionNotFound`'s 404 check, while both halves of the
+   * baseline's version bar sat in the tree unreachable —
+   * `AgentPipelineVersionSelector` importable only from `ToolCardBody`
+   * (a TOOL card, not the agent's own page) and `SaveNewVersionButton` with no
+   * production importer whatsoever. `pages/agents/EditApplication.tsx` now
+   * mounts `features/agents`' `AgentVersionControls`, which composes both.
    *
-   * Evidence:
-   *  - `src/pages/agents/EditApplication.tsx:254-294` is the whole rendered
-   *    tree: heading, `EditApplicationSaveBar`, error banners, and a
-   *    `CreateAgentForm` inside `edit-application-configuration-tab-panel`.
-   *    It DOES compute `versionSummaries` (line 161) but consumes them only in
-   *    `useIsVersionNotFound` (line 162) — the versions are fetched and then
-   *    used for nothing but a 404 check.
-   *  - The one component that renders `data-testid="version-selector-trigger"`
-   *    is `src/features/agents/ui/AgentPipelineVersionSelector.tsx:110`, and its
-   *    only production importer is `src/features/agents/ui/ToolCardBody.tsx:13,72`
-   *    — i.e. it renders inside a TOOL CARD (an agent/pipeline attached as a
-   *    tool), never on the agent's own edit page.
-   *  - `src/features/agents/ui/SaveNewVersionButton.tsx` (the "save as new
-   *    version" affordance JRNY-015 also needs) has ZERO production importers
-   *    — grep finds only doc-comment mentions.
-   *  - Live confirmation: the failure's error-context accessibility tree for
-   *    this page contains exactly `heading` + `Save` + Name/Description
-   *    textboxes. No version control is on screen.
-   *
-   * The locator is NOT wrong: mutation-verified by injecting a
-   * `version-selector-trigger` + `role=menuitem` menu into
-   * `edit-application-configuration-tab-panel` on the served page — every
-   * assertion below then passed. So this flips to reported-FAILED the moment
-   * the selector is mounted, which is the point of test.fail() over test.skip().
-   *
-   * Tracked as #134. The sibling agents-UI hole (publish / unpublish,
-   * referenced above) is #120.
+   * The control asserted on below is the REAL production selector: nothing in
+   * this file stubs, injects or rewrites the served bundle.
    */
-  test.fail();
   await page.goto(BASE_URL + '/app/agents/my');
   await page.waitForURL('**/agents**', { timeout: 15_000 });
 
@@ -152,12 +142,42 @@ test('J15: a saved agent exposes a version selector listing its versions', async
   const versionTrigger = page.getByTestId('version-selector-trigger');
   await expect(versionTrigger).toBeVisible({ timeout: 10_000 });
 
-  // The saved agent starts at exactly one version, and the selector must name
-  // it. A control that renders but lists nothing fails here.
+  // The saved agent starts at exactly one version, and the selector must NAME
+  // it. `count > 0` alone does not prove that: with an empty version list the
+  // menu still renders one `menuitem` — its own disabled "No versions
+  // available" placeholder — so a selector wired to nothing satisfied the old
+  // assertion. Mutation-verified both ways (see the PR): forcing
+  // `versions={[]}` into `AgentVersionControls` keeps the count assertion
+  // green and fails only the two below.
   await versionTrigger.click();
   const versionOptions = page.getByRole('menuitem');
   await expect(versionOptions.first()).toBeVisible({ timeout: 5_000 });
-  expect(await versionOptions.count()).toBeGreaterThan(0);
+  await expect(page.getByRole('menuitem', { name: /no versions available/i })).toHaveCount(0);
+  const optionNames = (await versionOptions.allInnerTexts()).map((text) => text.trim()).filter((text) => text !== '');
+  expect(optionNames.length).toBeGreaterThan(0);
+
+  await page.keyboard.press('Escape');
+
+  // The other half of #134: `SaveNewVersionButton` had no production importer
+  // at all. Assert it end to end — the button, its dialog, the POST, and the
+  // resulting version appearing in the selector — rather than merely that a
+  // button is on screen, which a disconnected render would also satisfy.
+  await page.getByRole('button', { name: /save as version/i }).click();
+  const versionDialog = page.getByRole('dialog');
+  await expect(versionDialog).toBeVisible({ timeout: 5_000 });
+  await versionDialog.getByRole('textbox').fill('v2');
+  await versionDialog.getByRole('button', { name: /^save$/i }).click();
+
+  // A real server round trip: the created version must be addressable, i.e.
+  // the page navigates onto `/agents/:tab/:id/:version` with the NEW id.
+  await page.waitForURL(/\/agents\/[^/]+\/[^/]+\/\d+/, { timeout: 15_000 });
+
+  // …and the dropdown must now list both versions, which only holds if the
+  // detail query was invalidated after the POST.
+  await expect(versionTrigger).toBeVisible({ timeout: 10_000 });
+  await versionTrigger.click();
+  await expect(page.getByRole('menuitem', { name: /v2/i })).toBeVisible({ timeout: 10_000 });
+  expect(await page.getByRole('menuitem').count()).toBeGreaterThan(1);
 
   await page.keyboard.press('Escape');
   await checkA11y(page);

@@ -33,7 +33,26 @@ export { CreateAgentForm } from './ui/CreateAgentForm';
 export type { CreateAgentFormProps } from './ui/CreateAgentForm';
 
 export { VersionReplacementModal } from './ui/VersionReplacementModal';
-export type { VersionReplacementModalProps } from './ui/VersionReplacementModal';
+
+/**
+ * #134 — `AgentVersionControls` (the agent editor's version dropdown +
+ * "Save As Version" pair) is the composition root `pages/agents/
+ * EditApplication.tsx` needs; without it both halves were already-ported
+ * dead code (the selector reachable only from a TOOL card, the button from
+ * nowhere at all). One symbol, not two — `AgentPipelineVersionSelector` and
+ * `SaveNewVersionButton` stay intra-slice and are composed behind it.
+ *
+ * The slot it occupies came from dropping `VersionReplacementModalProps`
+ * (the TYPE, not the component — the batch brief's "MUST EXPORT VIA PUBLIC
+ * API" list names `VersionReplacementModal` itself, which is untouched
+ * above). Verified before removal: a whole-tree grep for
+ * `VersionReplacementModalProps` across `src/` and `e2e/` finds only its own
+ * declaration and this line — zero consumers, in production or in tests. A
+ * future cross-slice caller can type its props structurally off the
+ * component, exactly as this barrel's `AgentEditor` doc comment already
+ * argues for `AgentEditorDeps`.
+ */
+export { AgentVersionControls } from './ui/AgentVersionControls';
 
 /**
  * Sub-unit A1a's ("Application data layer + version-lifecycle hooks")

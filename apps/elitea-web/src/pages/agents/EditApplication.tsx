@@ -8,7 +8,7 @@ import { useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
 import { CreateApplicationTabBar } from '@/entities/application-form';
-import { CreateAgentForm } from '@/features/agents';
+import { AgentVersionControls, CreateAgentForm } from '@/features/agents';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 import { useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
@@ -19,6 +19,7 @@ import { useCorrectUserNameInUrl } from './lib/useCorrectUserNameInUrl';
 import { useEditApplicationData } from './lib/useEditApplicationData';
 import { useEditApplicationEditorBridge } from './lib/useEditApplicationEditorBridge';
 import { useEditApplicationForm } from './lib/useEditApplicationForm';
+import { useEditApplicationVersionControls } from './lib/useEditApplicationVersionControls';
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { useDiscardApplicationChanges } from './useDiscardApplicationChanges';
@@ -191,6 +192,41 @@ export function EditApplication(): ReactNode {
    */
   useUnsavedChangesNavBlocker(form.formState.isDirty);
 
+  // Old app: `useViewMode.js` — `viewMode` defaults to `ViewMode.Public`
+  // whenever the currently selected project equals `PUBLIC_PROJECT_ID`.
+  // `ApplicationTabBar.jsx:65` only renders the Save/Save-New-Version
+  // buttons when `viewMode !== ViewMode.Public` — every viewer reaching
+  // this page through this unit's own public-project tabs (`Latest`/
+  // `MyLiked`/`Trending`/the public "Admin" `PrivateAgentsList`, none of
+  // which pass a `viewMode` override on navigation) is a read-only viewer
+  // of someone else's public agent, not its owner. (Hoisted above the
+  // version bar in #134: `AgentVersionControls` gates its own
+  // "Save As Version" on the same flag, so it must be resolved first.)
+  const isReadOnlyView = isPublicAgentsProject(projectId);
+
+  /*
+   * #134 — the version bar. `versionSummaries` above used to be this page's
+   * ONLY use of the fetched version list, and it spent them on a 404 check:
+   * versions were loaded and never shown. Both halves of the control the
+   * baseline puts here (`ApplicationTabBar.jsx:58-68`) were already ported
+   * and unreachable — `AgentPipelineVersionSelector` only from a tool card,
+   * `SaveNewVersionButton` from nowhere at all.
+   *
+   * Route/clone/cache decisions all live in the hook — see its own doc
+   * comment for why a version switch is a NAVIGATION here rather than the
+   * baseline's in-place cache rewrite.
+   */
+  const versionControls = useEditApplicationVersionControls({
+    projectId,
+    applicationId,
+    tab: params.tab,
+    versions,
+    activeVersion,
+    control: form.control,
+    isReadOnly: isReadOnlyView,
+    isFetching,
+  });
+
   /*
    * The configuration panel used to be `<Box data-testid=… />` — self-closing
    * and empty — on the grounds that the baseline's `ConfigurationTab` belonged
@@ -232,23 +268,6 @@ export function EditApplication(): ReactNode {
    * showing the agent's real identity is the point of the page, but edits to
    * them are NOT yet persisted. Wiring that endpoint is its own change.
    */
-  // `useWatch`, not `form.watch(...)`. This page's form is fed by `useForm({
-  // values })` — the values arrive asynchronously, after the agent detail
-  // resolves. `form.watch()` read in the render body did NOT pick that up here:
-  // the page re-rendered (the heading showed the agent's name) and
-  // `formState.isValid` flipped true (Save became enabled), proving the form
-  // held the values, while `watch()` still returned ''. `useWatch` subscribes to
-  // the control properly and re-renders on the change.
-  // Old app: `useViewMode.js` — `viewMode` defaults to `ViewMode.Public`
-  // whenever the currently selected project equals `PUBLIC_PROJECT_ID`.
-  // `ApplicationTabBar.jsx:65` only renders the Save/Save-New-Version
-  // buttons when `viewMode !== ViewMode.Public` — every viewer reaching
-  // this page through this unit's own public-project tabs (`Latest`/
-  // `MyLiked`/`Trending`/the public "Admin" `PrivateAgentsList`, none of
-  // which pass a `viewMode` override on navigation) is a read-only viewer
-  // of someone else's public agent, not its owner.
-  const isReadOnlyView = isPublicAgentsProject(projectId);
-
   if (isDetailNotFound) {
     return (
       <Box sx={pageSx}>
@@ -278,6 +297,18 @@ export function EditApplication(): ReactNode {
           <Typography variant="headingSmall">
             {detail ? applicationDetailDisplayName(detail) : t('pages.agents.editApplication.title', 'Agent')}
           </Typography>
+          {versionControls.showVersionControls && (
+            <AgentVersionControls
+              applicationId={versionControls.applicationIdText}
+              projectId={projectId}
+              versions={versionControls.versionOptions}
+              activeVersionId={versionControls.activeVersionId}
+              onSelectVersion={versionControls.handleSelectVersion}
+              versionBody={versionControls.versionBody}
+              canSaveNewVersion={versionControls.canSaveNewVersion}
+              onNewVersionSaved={versionControls.handleNewVersionSaved}
+            />
+          )}
           {!isFetching && !isReadOnlyView && (
             <EditApplicationSaveBar
               onSave={handleSave}

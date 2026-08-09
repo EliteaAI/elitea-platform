@@ -4,6 +4,7 @@ import type {
   ApplicationDetail,
   ApplicationVersionDetail,
   ApplicationVersionSummary,
+  VersionWriteRequest,
 } from '@/shared/api/generated/model';
 
 /**
@@ -34,6 +35,83 @@ export function toVersionSummaries(versions: readonly ApplicationVersionSummary[
     agentType: version.agent_type,
     createdAt: version.created_at,
   }));
+}
+
+/**
+ * Generated `ApplicationVersionSummary[]` -> the dropdown-option shape
+ * `features/agents`' `AgentVersionControls` (and, behind it,
+ * `AgentPipelineVersionSelector`) takes. Distinct from `toVersionSummaries`
+ * above, which produces `entities/version`'s camelCase `VersionSummary` for
+ * the 404 check — the selector was ported against the baseline's raw
+ * snake_case `applicationData.versions[]` entry and reads `created_at`
+ * directly (`features/agents/lib/types.ts`'s `AgentPipelineVersionOption`).
+ * Both mappings are one-liners over the same source; converging them would
+ * mean re-shaping one consumer's contract for no behavioural gain.
+ *
+ * `EditApplicationVersionOption` is declared here rather than imported from
+ * `features/agents` because that slice's curated public API (§3.3, ≤20
+ * symbols) is full and this page does not need a second slot spent on a
+ * four-field record: TypeScript checks the two structurally at the
+ * `<AgentVersionControls versions={…}/>` call site in `EditApplication.tsx`,
+ * so any drift in `AgentPipelineVersionOption` fails the build there rather
+ * than passing silently.
+ */
+export interface EditApplicationVersionOption {
+  readonly id: number;
+  readonly name: string;
+  readonly created_at?: string | undefined;
+  readonly status?: string | undefined;
+}
+
+export function toVersionOptions(
+  versions: readonly ApplicationVersionSummary[],
+): EditApplicationVersionOption[] {
+  return versions.map((version) => ({
+    // `ApplicationVersionSummary.id` is "numeric id serialized as string
+    // (strconv.Itoa)" per the generated schema's own description, while the
+    // selector's option id (and its `applicationVersionId` comparison) is a
+    // number — the same `Number(version.id)` narrowing `useEditApplicationForm`
+    // already applies to `activeVersion.id`. Both sides of the "is this the
+    // selected version" check must be the same primitive or the tick never
+    // renders and the trigger falls back to the first option's label.
+    id: Number(version.id),
+    name: version.name,
+    created_at: version.created_at,
+    status: version.status,
+  }));
+}
+
+/**
+ * The active version's own fields, as the body a "Save As Version" POST
+ * clones onto the new version (`name` excluded — `SaveNewVersionButton`'s
+ * dialog supplies it). Old app: `SaveNewVersionButton.jsx` sends
+ * `{...values.version_details, id: undefined, name: newVersion}` — i.e. the
+ * CURRENTLY EDITED form state, not the server's last-saved copy, which is
+ * why `conversationStarters` is threaded in from the live form here rather
+ * than read off `version`.
+ *
+ * Only the keys the Go `CreateVersion` handler actually reads are sent
+ * (`agent_type`/`instructions`/`welcome_message`/`llm_settings`/
+ * `conversation_starters`/`variables`, handler.go:723-747) — see
+ * `features/agents/model/useSaveNewVersion.ts`'s doc comment for the full
+ * trace, including why `meta`/`tags`/`tools` are deliberately omitted
+ * (the handler discards them).
+ */
+export function toVersionWriteBody(
+  version: ApplicationVersionDetail,
+  conversationStarters: readonly string[],
+): Omit<VersionWriteRequest, 'name'> {
+  return {
+    ...(version.agent_type === undefined ? {} : { agent_type: version.agent_type }),
+    instructions: version.instructions ?? '',
+    welcome_message: version.welcome_message ?? '',
+    ...(version.llm_settings === undefined ? {} : { llm_settings: version.llm_settings }),
+    conversation_starters: [...conversationStarters],
+    variables: (version.variables ?? []).map((variable) => ({
+      name: variable.name ?? '',
+      value: variable.value ?? '',
+    })),
+  };
 }
 
 /**
