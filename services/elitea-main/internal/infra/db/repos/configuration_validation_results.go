@@ -485,6 +485,13 @@ WHERE agent.execution_id = $1
 	if err != nil {
 		return fmt.Errorf("finalize current agent terminal state: %w", err)
 	}
+	if result.RowsAffected() == 0 && failureCode == "CANCELLED" {
+		// The synchronous Stop projection intentionally removes an empty response
+		// group (and its question) instead of leaving a blank cancelled turn in
+		// the current chat schema. The later canonical runtime cancellation still
+		// has to settle the durable execution and replay stream.
+		return nil
+	}
 	if result.RowsAffected() != 1 {
 		return errors.New("current agent terminal response message group is unavailable")
 	}

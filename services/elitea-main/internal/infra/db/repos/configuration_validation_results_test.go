@@ -67,6 +67,42 @@ func TestCurrentAgentCancellationSettlesWithoutFailureMetadata(t *testing.T) {
 	}
 }
 
+func TestCurrentAgentCancellationSettlesAfterEmptyResponseWasRemoved(t *testing.T) {
+	executor := &scriptedExecutor{
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 0")},
+	}
+	err := persistCurrentAgentRuntimeTerminal(
+		t.Context(),
+		executor,
+		7,
+		executiondomain.AgentAdhocCapability,
+		outputRecord{ExecutionID: "execution-1", Generation: 3},
+		"CANCELLED",
+		"Execution was cancelled.",
+	)
+	if err != nil {
+		t.Fatalf("canonical cancellation did not settle after Stop removed an empty response: %v", err)
+	}
+}
+
+func TestCurrentAgentFailureRequiresExistingResponse(t *testing.T) {
+	executor := &scriptedExecutor{
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 0")},
+	}
+	err := persistCurrentAgentRuntimeTerminal(
+		t.Context(),
+		executor,
+		7,
+		executiondomain.AgentApplicationCapability,
+		outputRecord{ExecutionID: "execution-1", Generation: 3},
+		"INTERNAL",
+		"Execution failed.",
+	)
+	if err == nil || err.Error() != "current agent terminal response message group is unavailable" {
+		t.Fatalf("missing failure response was not rejected: %v", err)
+	}
+}
+
 func TestConfigurationValidationProjectionUsesOneTenantTransaction(t *testing.T) {
 	frame := testValidationFrame(t)
 	executor := &scriptedExecutor{
