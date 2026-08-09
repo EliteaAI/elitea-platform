@@ -71,6 +71,8 @@ describe('AppShell', () => {
   // personal/private project, never to the first entry of the public/shared
   // project list — even when that first entry (`id: 11`, 'Public') would
   // sort ahead of the personal one in `useProjectOptions`' ordering.
+  // The default fixture's `personal_project_id` ('99') is deliberately absent
+  // from the project list, so this exercises the FALLBACK name specifically.
   it("auto-selects the caller's own personal project, not the first public-pinned project in the list", async () => {
     await renderWithNavigation(
       <AppShell>
@@ -82,6 +84,30 @@ describe('AppShell', () => {
     });
     expect(window.localStorage.getItem('el.project.id')).toBe('99');
     expect(window.localStorage.getItem('el.project.name')).toBe('Private');
+  });
+
+  // Issue #161 regression. This widget and `widgets/sidebar`'s
+  // `ProjectSwitcher` both persist `el.project.name` for the same id;
+  // `ProjectSwitcher` has always written the project's real `name`, while
+  // this one wrote the literal 'Private' regardless. Whichever wrote first
+  // decided what every reader of that key displayed — most visibly the
+  // Analytics header's "Project: {name}" — so the label depended on stored
+  // state and mount order rather than on the project. Both paths must now
+  // resolve the same name from the same list.
+  it("auto-selects the personal project under its REAL name when the project list contains it", async () => {
+    server.use(authorHandler('2'));
+    await renderWithNavigation(
+      <AppShell>
+        <div>page content</div>
+      </AppShell>,
+    );
+    await waitFor(() => {
+      expect(useSelectedProjectStore.getState().project).toEqual({ id: '2', name: 'Acme' });
+    });
+    expect(window.localStorage.getItem('el.project.name')).toBe('Acme');
+    // The name the switcher would have written for that same id, so the two
+    // writers cannot disagree.
+    expect(await screen.findByRole('button', { name: /Project:\s*Acme/ })).toBeInTheDocument();
   });
 
   it('does not auto-select any project until the personal-project signal (GET /social/author) resolves', async () => {

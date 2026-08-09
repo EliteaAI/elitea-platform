@@ -103,10 +103,13 @@ test('J24: settings: analytics overview renders the KPI values the backend retur
   const payload = (await (await usage).json()) as { kpis: Kpis; models: unknown[] };
 
   // Chrome that only the real container renders (AnalyticsContainer.tsx:159-236).
-  // 15s, not the 5s default: `projectName` reaches the header only after
-  // `useSelectedProject`'s hydration effect pushes the persisted selection into
-  // the store (widgets/app-shell/model/useSelectedProject.hooks.ts:22-29), which
-  // is a mount-order race against the route component on a loaded stack.
+  // 15s, not the 5s default: the header's name comes from the selected-project
+  // store, which is populated by a mount effect reading persisted storage
+  // (widgets/app-shell/model/useSelectedProject.hooks.ts:22-29) — so this text
+  // lands a render after the route body, and webkit on a loaded runner is the
+  // slow case. Headroom for a slow boot, NOT a correctness race: which NAME
+  // gets stored is no longer order-dependent (issue #161 — AppShell and
+  // ProjectSwitcher both resolve it from the project list now).
   await expect(page.getByText('Project: Default Project', { exact: true })).toBeVisible({ timeout: 15_000 });
   for (const preset of ['Last 24h', 'Last 7d', 'Last 30d', 'Last 90d']) {
     await expect(page.getByRole('button', { name: preset, exact: true })).toBeVisible();

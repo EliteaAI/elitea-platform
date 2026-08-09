@@ -2,23 +2,27 @@ name: CI — Web
 
 # apps/elitea-web quality gates (spec §7.6, unit F2). Replaces ci-ui.yml at
 # cutover step 8 — until then both run side by side. Jobs quality/gates/
-# build/image/parity block PRs; e2e/visual/mutation-spotcheck run only on
-# release tags (non-blocking for PRs, blocking for the release, §6.6).
+# build/image/parity block PRs; e2e also runs on PRs (issue #158). visual/
+# mutation-spotcheck still run only on release tags (§6.6).
 #
 # npm ci works here because the lockfile is committed (fixes the old D4);
 # the npm cache is keyed on that lockfile.
 
 on:
-  # The e2e job guards on `github.event_name == 'workflow_dispatch'`, which was
-  # unreachable while this block only listed pull_request/push — so the suite had
-  # never executed in CI (PR #82 validation, blocker 4). Manual dispatch is the
-  # only way to exercise it before a release tag.
+  # The `paths` filters below are what actually decide whether the E2E job gets
+  # a chance to run, now that the job itself is unguarded (issue #158). The E2E
+  # stack builds and runs elitea-main alongside elitea-web, so a change to the
+  # BACKEND or to the compose/build definitions can break a journey while
+  # touching nothing under apps/elitea-web — those paths are listed here for
+  # that reason, not because the web unit tests read them.
   workflow_dispatch:
   pull_request:
     paths:
       - "apps/elitea-web/**"
       - "tools/uictl/**"
-      - "services/elitea-main/api/openapi/**"
+      - "services/elitea-main/**"
+      - "deploy/**"
+      - "docker-bake.hcl"
       - ".github/workflows/ci-web.yml"
   push:
     branches:
@@ -26,7 +30,9 @@ on:
     paths:
       - "apps/elitea-web/**"
       - "tools/uictl/**"
-      - "services/elitea-main/api/openapi/**"
+      - "services/elitea-main/**"
+      - "deploy/**"
+      - "docker-bake.hcl"
       - ".github/workflows/ci-web.yml"
     tags:
       - "v*"
@@ -661,10 +667,14 @@ jobs:
 
   e2e:
     name: E2E (${{ matrix.engine }})
-    # Non-blocking on PRs; blocking on release tags and manual dispatch (§6.6/§7.6).
-    # Previously this job ran on every PR because it had no `if:` guard — fixed here
-    # (issue #60 "CI gap" section).
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Runs on pull requests (issue #158). It previously carried
+    #   if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # which skipped it on every PR — confirmed on runs 31335173296 and
+    # 31331494389. A 30-journey suite that only executes on a release tag
+    # cannot block the regression it exists to catch, and the tag build is
+    # the worst possible place to first learn a journey broke. ~6-7 min per
+    # engine leg is affordable on every PR; both legs stay in the matrix
+    # below so chromium and webkit are each still validated (§6.6/§7.6).
     runs-on: ubuntu-latest
     strategy:
       # Both engines are validated independently. Issue #60 requires chromium AND
