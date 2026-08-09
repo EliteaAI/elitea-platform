@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"mime"
 	"net/http"
 	"strconv"
@@ -576,9 +577,29 @@ func currentHITLDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLD
 	return decisions, true
 }
 
+// positiveCanonicalID parses a path/body id and rejects anything that cannot
+// address a real row.
+//
+// The upper bound is not cosmetic and not merely a CodeQL appeasement. Every id
+// parsed here is eventually narrowed to int32 for sqlc (the underlying columns
+// are Postgres `integer` — see sqlcgen's ProjectID/ActorUserID/ApplicationID
+// int32 fields), and in Go that narrowing is a silent truncation. Without this
+// bound, `4294967301` truncates to `5`, so a caller could address a DIFFERENT,
+// VALID row by sending an out-of-range id — an aliasing bug, not just a lossy
+// conversion. CodeQL flagged the five int32() sites downstream
+// (go/incorrect-integer-conversion, alerts 74-78); fixing it here fixes the
+// cause rather than each symptom, because this is the only ParseInt in the
+// agentexecution request path.
+//
+// Rejecting is correct rather than clamping: an id above MaxInt32 cannot
+// correspond to any row in an `integer` column, so the honest answer to the
+// caller is "no such id", which is what the false return produces.
+//
+// The FormatInt round-trip additionally rejects non-canonical spellings
+// ("007", "+5"), so two different strings can never denote the same entity.
 func positiveCanonicalID(raw string) (int64, bool) {
 	id, err := strconv.ParseInt(raw, 10, 64)
-	return id, err == nil && id > 0 && strconv.FormatInt(id, 10) == raw
+	return id, err == nil && id > 0 && id <= math.MaxInt32 && strconv.FormatInt(id, 10) == raw
 }
 
 func writeError(writer http.ResponseWriter, status int, message string) {
