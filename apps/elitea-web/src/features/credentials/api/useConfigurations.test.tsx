@@ -126,6 +126,36 @@ describe('useCreateConfiguration', () => {
     expect(invalidated).toContainEqual(['credentials', 'configurations']);
     expect(invalidated).toContainEqual(['credentials', 'models']);
   });
+
+  /**
+   * #131: the AI-Configuration screen reads the same server resource under
+   * `['settings', 'configurations', ...]` (useConfigurationsBySection) and
+   * `['models', ...]` (shared/api/configurationsApi). Invalidating only the
+   * `credentials` roots left those caches untouched, so after saving a
+   * credential the app navigated back to that screen and fired NO list
+   * request — the new row stayed invisible until a full page reload.
+   */
+  it('also invalidates the settings namespace the AI-Configuration screen reads', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(
+      http.post(`${BASE}/configurations/configurations/7`, () => HttpResponse.json({ uid: 'new-1', type: 'openai' })),
+    );
+    const { wrapper, client } = createWrapper();
+    const invalidated: unknown[] = [];
+    const originalInvalidate = client.invalidateQueries.bind(client);
+    client.invalidateQueries = (filters?: Parameters<typeof originalInvalidate>[0]) => {
+      invalidated.push(filters?.queryKey);
+      return originalInvalidate(filters);
+    };
+
+    const { result } = renderHook(() => useCreateConfiguration(), { wrapper });
+    result.current.mutate({ projectId: 7, body: { elitea_title: 'a', type: 'openai', data: {} } });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invalidated).toContainEqual(['settings', 'configurations']);
+    expect(invalidated).toContainEqual(['settings', 'availableTypes']);
+    expect(invalidated).toContainEqual(['models']);
+  });
 });
 
 describe('useDeleteConfiguration', () => {
@@ -136,5 +166,27 @@ describe('useDeleteConfiguration', () => {
     const { result } = renderHook(() => useDeleteConfiguration(), { wrapper });
     result.current.mutate({ projectId: 7, configId: 'abc' });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+
+  // Removal has the same two-namespace problem as creation (#131): the list
+  // the user is returned to must refetch, not keep showing the deleted row.
+  it('invalidates the settings namespace so the deleted row leaves the list', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(http.delete(`${BASE}/configurations/configuration/7/abc`, () => HttpResponse.json({})));
+    const { wrapper, client } = createWrapper();
+    const invalidated: unknown[] = [];
+    const originalInvalidate = client.invalidateQueries.bind(client);
+    client.invalidateQueries = (filters?: Parameters<typeof originalInvalidate>[0]) => {
+      invalidated.push(filters?.queryKey);
+      return originalInvalidate(filters);
+    };
+
+    const { result } = renderHook(() => useDeleteConfiguration(), { wrapper });
+    result.current.mutate({ projectId: 7, configId: 'abc' });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invalidated).toContainEqual(['credentials', 'configurations']);
+    expect(invalidated).toContainEqual(['settings', 'configurations']);
+    expect(invalidated).toContainEqual(['models']);
   });
 });

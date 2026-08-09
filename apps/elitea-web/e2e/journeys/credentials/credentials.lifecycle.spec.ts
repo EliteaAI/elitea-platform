@@ -66,72 +66,32 @@ test('J19a: the AI-Configuration screen offers credential creation and routes to
  * schema-driven form → POST → see the row → re-open it with server-seeded
  * values → delete it and see it gone.
  *
- * ⚠ THIS TEST FAILS TODAY, AND THAT FAILURE IS THE POINT. Four real defects
- * make the journey impossible to complete in the E2E stack; none of them is
- * worked around here, because working around them is exactly what made the
- * old version of this file green while testing nothing.
+ * Green as of the #131 fix. It was written red on purpose and every
+ * assertion below is the original one — nothing was softened to land it.
  *
- * Every locator below was validated against the running stack by replaying
- * this body with GET /configurations/available/ fulfilled from the pinned
- * catalog snapshot (i.e. simulating ELITEA_CONFIGURATIONS_ENABLED=true).
- * With that one substitution every step passes — tiles, search filter, type
- * URL, schema fields, save gate, POST 201, edit-form seeding, the delete
- * dropdown, the type-to-confirm modal and the DELETE round trip — EXCEPT the
- * "row appears in the list" step, which fails on defect 4.
+ * What it now pins, and what each step would catch if it regressed:
  *
- *  1. GET /configurations/available/ serves the WRONG payload. The mounted
- *     route is the prototype `configurations.Handler.Available`
- *     (services/elitea-main/internal/api/v2/configurations/handler.go:108,
- *     mounted at internal/api/router.go:574) which returns 9 hardcoded rows
- *     of shape {type, display_name, section} and NO `config_schema`. The
- *     snapshot-backed route that does carry `config_schema`
- *     (current_available_route.go, 49 entries) is composed in main.go:371
- *     only when ELITEA_CONFIGURATIONS_ENABLED=true, and that variable is set
- *     in no compose file, deploy manifest or e2e-stack.sh.
- *  2. Consequently `CredentialTypeSelector.tsx:33-38` dereferences
- *     `item.config_schema.metadata` / `.properties` on entries that have no
- *     `config_schema`, throwing "Cannot read properties of undefined
- *     (reading 'metadata')". The whole /settings/create-configuration route
- *     renders the error boundary ("Something went wrong."). Note this is an
- *     UNGUARDED deref of a field the wire type marks as required — the client
- *     crashes rather than degrading, which is a defect in its own right.
- *  3. POST /configurations/configurations/{projectId} writes the
- *     `elitea_title` column from the request body's `name` key
- *     (handler.go:451 `strVal(body, "name")`), but the client — and the
- *     documented contract — send `elitea_title`. Every created row therefore
- *     lands with elitea_title = '' , and because that column is UNIQUE the
- *     SECOND configuration created in a project fails with 500
- *     {"error":"create failed"}. Verified directly against the running stack.
- *     Related: GET/DELETE /configurations/configuration/{project}/{id} match
- *     on the numeric id only and 404 on the `uuid` the POST response returns.
- *  4. The same handler writes the `section` column from body["section"]
- *     (handler.go:453), which the client never sends — `performSave` posts
- *     {elitea_title, label, data, shared, type} only. Rows therefore land with
- *     section = '' and belong to NONE of the seven sections
- *     `useConfigurationsBySection.ts:15-23` queries, so a credential created
- *     through the UI is INVISIBLE in the UI forever. The backend should derive
- *     `section` from the catalog entry for `type` (open_ai → ai_credentials).
- *     This is the direct failure of JRNY-019's "is persisted and selectable".
- *
- * Do NOT make this test pass by softening it. It goes green when the catalog
- * route is enabled and the create handler reads `elitea_title` and derives
- * `section`.
+ *  1. The tiles come from GET /configurations/available/, which must serve
+ *     the pinned 49-entry registry snapshot WITH `config_schema`. The route
+ *     used to serve eight hardcoded {type, display_name, section} rows and no
+ *     schema at all — "OpenAI"/"Azure OpenAI"/"Vertex AI" below are
+ *     `config_schema.title`s that only the snapshot carries.
+ *  2. `CredentialTypeSelector` must survive a schema-less entry rather than
+ *     throwing past a route with no error boundary. That crash is what made
+ *     /settings/create-configuration render "Something went wrong.", so the
+ *     tile assertions double as the regression guard for it.
+ *  3. POST must write `elitea_title` from the body key the client actually
+ *     sends. Reading `name` wrote "" into a UNIQUE column, so the SECOND
+ *     configuration in a project 500'd permanently — which is why this spec
+ *     is safe to run repeatedly, and why it is worth running repeatedly.
+ *  4. The saved row must appear in the list without a page reload. Three
+ *     independent things have to hold: the server derives `section` from the
+ *     type's registry entry (open_ai -> ai_credentials) and honours the
+ *     ?section= filter, the list client unwraps the transport envelope, and
+ *     the create mutation invalidates the cache namespace the
+ *     AI-Configuration screen actually reads.
  */
 test('J19b: create a credential, verify it persisted, then delete it', async ({ page }) => {
-  // Expected-fail on #131. Four stacked defects: the prototype /configurations/available/
-  // route is mounted instead of the 49-entry snapshot route (ELITEA_CONFIGURATIONS_ENABLED
-  // is set nowhere), CredentialTypeSelector then crashes on the schema-less payload,
-  // create writes elitea_title from the wrong body key so the SECOND config in a
-  // project 500s forever on a UNIQUE column, and section is written empty so saved
-  // rows appear in none of the 7 queried sections.
-  //
-  // Not a guess: replaying the catalogue from the pinned snapshot made this entire
-  // journey pass — POST 201, edit-form seeding, DELETE 204 — with only the list-row
-  // step still red. The spec is right; the product is not.
-  //
-  // test.fail() rather than test.skip(): a skip runs nothing and reports green. This
-  // runs every assertion and turns CI red the moment #131 is fixed.
-  test.fail();
   // `elitea_title` carries a UNIQUE index (scripts/e2e-stack.sh:252) and the
   // create path submits the typed name as both `label` and `elitea_title`
   // (useCredentialFormController.ts buildTitle), so the name must be unique
@@ -152,9 +112,8 @@ test('J19b: create a credential, verify it persisted, then delete it', async ({ 
 
   // ── The type picker is built from GET /configurations/available/ ─────────
   // These labels come from the catalog's `config_schema.title`
-  // (CredentialTypeSelector.tsx:33-35). A static route body cannot produce
-  // them, and — see defect 1/2 above — neither can the currently mounted
-  // backend route.
+  // (CredentialTypeSelector.tsx displayLabel). A static route body cannot
+  // produce them, and neither can a catalogue entry without a schema.
   const openAiTile = page.getByRole('button', { name: 'OpenAI', exact: true });
   await expect(openAiTile).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('button', { name: 'Azure OpenAI', exact: true })).toBeVisible();
@@ -206,7 +165,8 @@ test('J19b: create a credential, verify it persisted, then delete it', async ({ 
   ]);
   expect(createResponse.ok()).toBe(true);
   const created = (await createResponse.json()) as { id?: string | number; uuid?: string };
-  // The detail/delete routes match on the numeric id, not the uuid (defect 3).
+  // The detail/delete routes accept either the numeric id or the uuid; this
+  // uses the id, so `uuid` is exercised by the Go unit tests rather than here.
   const configId = String(created.id ?? '');
   expect(configId).not.toBe('');
 
