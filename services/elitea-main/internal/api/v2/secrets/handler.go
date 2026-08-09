@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -505,7 +506,10 @@ func fernetEncrypt(key, plaintext []byte) ([]byte, error) {
 	encKey := key[16:]
 
 	// PKCS7-pad plaintext to a multiple of 16.
-	padded := pkcs7Pad(plaintext, aes.BlockSize)
+	padded, err := pkcs7Pad(plaintext, aes.BlockSize)
+	if err != nil {
+		return nil, err
+	}
 
 	iv := make([]byte, aes.BlockSize)
 	if _, err := rand.Read(iv); err != nil {
@@ -582,14 +586,34 @@ func fernetDecrypt(key, token []byte) ([]byte, error) {
 }
 
 // pkcs7Pad pads data to a multiple of blockSize using PKCS#7.
-func pkcs7Pad(data []byte, blockSize int) []byte {
+//
+// Returns an error rather than padding blindly, for two reasons the previous
+// signature could not express:
+//
+//   - blockSize must be in 1..255. PKCS#7 encodes the pad length in a single
+//     byte, so a larger block size cannot be represented and `byte(pad)` would
+//     silently truncate — producing padding that pkcs7Unpad rejects, or worse,
+//     padding that unpads to the wrong length. The only current caller passes
+//     aes.BlockSize, but a future one passing 256 would get silent corruption
+//     of a SECRET rather than a loud failure.
+//   - len(data)+pad must not overflow int (CodeQL go/allocation-size-overflow,
+//     alert 11). Unreachable with today's caller, since data is a secret value
+//     bounded long before here — but the guard costs one comparison and removes
+//     the need for anyone to re-derive that reasoning.
+func pkcs7Pad(data []byte, blockSize int) ([]byte, error) {
+	if blockSize <= 0 || blockSize > 255 {
+		return nil, fmt.Errorf("pkcs7: block size %d out of range (1..255)", blockSize)
+	}
 	pad := blockSize - (len(data) % blockSize)
+	if len(data) > math.MaxInt-pad {
+		return nil, fmt.Errorf("pkcs7: input too large to pad")
+	}
 	result := make([]byte, len(data)+pad)
 	copy(result, data)
 	for i := len(data); i < len(result); i++ {
 		result[i] = byte(pad)
 	}
-	return result
+	return result, nil
 }
 
 // pkcs7Unpad removes PKCS#7 padding.
