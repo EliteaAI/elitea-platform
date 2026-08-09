@@ -263,13 +263,17 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	participants, _ := h.repo.ListParticipants(r.Context(), projectID, conversationID)
+	// Every downstream lookup keys off `conv.ID`, not the path segment: the
+	// path may carry a UUID (see the repo's idPredicate), and participants
+	// and message groups are joined on the numeric conversation id only.
+	participants, _ := h.repo.ListParticipants(r.Context(), projectID, conv.ID)
 	if participants == nil {
 		participants = []Participant{}
 	}
 
 	resp := map[string]any{
 		"id":            conv.ID,
+		"uuid":          conv.UUID,
 		"project_id":    conv.ProjectID,
 		"name":          conv.Name,
 		"description":   conv.Description,
@@ -278,13 +282,17 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		"created_by":    conv.CreatedBy,
 		"message_count": conv.MessageCount,
 		"participants":  participants,
+		// Null when the conversation sits outside every folder. Absent
+		// entirely before #128, so a client could not tell which folder a
+		// conversation belonged to from its own details response.
+		"folder_id": conv.FolderID,
 	}
 
 	// UI passes messages_limit to embed message_groups in the conversation response
 	messagesLimit, _ := strconv.Atoi(r.URL.Query().Get("messages_limit"))
 	if messagesLimit > 0 {
 		sortOrder := r.URL.Query().Get("sort_order")
-		groups, _ := h.repo.ListMessageGroups(r.Context(), projectID, conversationID, messagesLimit, sortOrder)
+		groups, _ := h.repo.ListMessageGroups(r.Context(), projectID, conv.ID, messagesLimit, sortOrder)
 		if groups == nil {
 			groups = []map[string]any{}
 		}

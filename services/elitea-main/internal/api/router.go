@@ -714,7 +714,13 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Folders
 				if cfg.FoldersRepo != nil {
-					folderHandler := v2folders.NewHandler(cfg.FoldersRepo)
+					// WithPool is what makes the grouped sidebar have any
+					// content at all: every conversation the listing
+					// groups is read through it, and without it the
+					// endpoint answered 200 with empty folders and empty
+					// date_groups for a project with nine conversations
+					// (#128 defects 1 and 2).
+					folderHandler := v2folders.NewHandler(cfg.FoldersRepo).WithPool(cfg.Pool)
 					r.Get("/folder/prompt_lib/{projectID}", folderHandler.List)
 					r.Post("/folder/prompt_lib/{projectID}", folderHandler.Create)
 					r.Get("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Get)
