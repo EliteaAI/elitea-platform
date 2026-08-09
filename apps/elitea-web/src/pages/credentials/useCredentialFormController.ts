@@ -259,7 +259,10 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   // (verified against `CredentialTypeSelector.tsx`'s identical unwrap and
   // `useMultiSectionConfigurations.js`'s `config_schema.properties.data
   // .metadata.hidden` read in the baseline).
-  const dataSchema = typeDescriptor?.config_schema.properties?.['data'];
+  // `?.` on `config_schema` as well: the field is required by the wire type
+  // but not by the wire, and an entry without one must yield an empty form
+  // rather than throw past the route's non-existent error boundary (#131).
+  const dataSchema = typeDescriptor?.config_schema?.properties?.['data'];
   // Memoized (not `?? {}` inline): a fresh `{}` every render would defeat
   // `save`'s `useCallback` memoization below (react-hooks/exhaustive-deps
   // correctly flags a dependency that "changes every render" as a real bug,

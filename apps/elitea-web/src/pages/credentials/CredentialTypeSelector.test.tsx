@@ -81,6 +81,55 @@ describe('CredentialTypeSelector', () => {
     await waitFor(() => expect(screen.getByText('No credentials found')).toBeInTheDocument());
   });
 
+  /**
+   * #131: the mounted /configurations/available/ route returned rows with no
+   * `config_schema` at all, and the unguarded `item.config_schema.metadata`
+   * read threw "Cannot read properties of undefined (reading 'metadata')" —
+   * taking out the whole /settings/create-configuration route, which has no
+   * error boundary below it. The cast is deliberate: `config_schema` is
+   * REQUIRED by `ConfigurationTypeDescriptor`, so this is exactly the
+   * type-system-versus-wire mismatch the guard exists for.
+   */
+  it('renders a schema-less catalogue entry by type instead of crashing', () => {
+    const onSelectType = vi.fn();
+    const malformed = [
+      { type: 'openai', display_name: 'OpenAI', section: 'llm' },
+      { type: 'chroma', display_name: 'Chroma', section: 'vectorstorage' },
+    ] as unknown as ConfigurationTypeDescriptor[];
+
+    renderWithTheme(
+      <CredentialTypeSelector
+        configurationsData={malformed}
+        isFetching={false}
+        onSelectType={onSelectType}
+      />,
+    );
+
+    expect(screen.getByText('openai')).toBeInTheDocument();
+    expect(screen.getByText('chroma')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('openai'));
+    expect(onSelectType).toHaveBeenCalledWith('openai');
+  });
+
+  it('keeps rendering well-formed entries when one entry has no config_schema', () => {
+    const mixed = [
+      ...TYPES,
+      { type: 'broken_one' },
+    ] as unknown as ConfigurationTypeDescriptor[];
+
+    renderWithTheme(
+      <CredentialTypeSelector
+        configurationsData={mixed}
+        isFetching={false}
+        onSelectType={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('OpenAI')).toBeInTheDocument();
+    expect(screen.getByText('Azure')).toBeInTheDocument();
+    expect(screen.getByText('broken_one')).toBeInTheDocument();
+  });
+
   it('handles an undefined configurationsData without crashing', () => {
     renderWithTheme(
       <CredentialTypeSelector

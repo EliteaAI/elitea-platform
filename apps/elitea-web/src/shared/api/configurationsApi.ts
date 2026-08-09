@@ -21,6 +21,22 @@ import {
 
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 
+/**
+ * `eliteaFetch` resolves to the ENVELOPED shape `{data, status, headers}`,
+ * never the bare body (`generated/mutator.ts`'s own contract comment). The
+ * three readers below returned that envelope straight to their callers, so
+ * `response.items` / `response.default_model_name` were always `undefined`:
+ * `useConfigurationsBySection` read `q.data.items` on all seven sections and
+ * got nothing, and the AI-Configuration page rendered no configuration card
+ * at all — a saved credential was invisible however correct the row was
+ * (#131). `features/credentials/api/configurations.ts` already unwraps at
+ * exactly one place for this reason; this is the same helper.
+ */
+async function fetchData<T>(url: string, options?: RequestInit): Promise<T> {
+  const envelope = await eliteaFetch<{ data: T }>(url, options);
+  return envelope.data;
+}
+
 /* ── type shapes ──────────────────────────────────────────────────────── */
 
 /** A single configuration item returned by the server. */
@@ -117,10 +133,9 @@ export async function getConfigurationsList(
     sort_by: 'created_at',
     sort_order: 'desc',
   });
-  const resp = await eliteaFetch<ConfigurationsListResponse>(
+  return fetchData<ConfigurationsListResponse>(
     `${configurationsPath(params.projectId)}?${qs}`,
   );
-  return resp;
 }
 
 export function useGetConfigurationsListQuery(
@@ -143,10 +158,9 @@ export async function getAvailableConfigurationsType(
   params: AvailableConfigurationsTypeParams,
 ): Promise<AvailableConfigurationType[]> {
   const qs = new URLSearchParams({ section: params.section });
-  const resp = await eliteaFetch<AvailableConfigurationType[]>(
+  return fetchData<AvailableConfigurationType[]>(
     `${availableTypesPath()}?${qs}`,
   );
-  return resp;
 }
 
 export function useGetAvailableConfigurationsTypeQuery(
@@ -265,10 +279,9 @@ export async function listModels(
     sort_by: 'created_at',
     sort_order: 'desc',
   });
-  const resp = await eliteaFetch<ConfigModelsListResponse>(
+  return fetchData<ConfigModelsListResponse>(
     `${configurationsPath(params.projectId)}?${qs}`,
   );
-  return resp;
 }
 
 export function useListModelsQuery(

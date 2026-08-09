@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,6 +27,13 @@ const (
 type Handler struct {
 	pool               *pgxpool.Pool
 	permissionResolver auth.PermissionResolver
+	// catalog is the same pinned, embedded registry snapshot that
+	// CurrentAvailableRoute serves. It is a static, global, credential-free
+	// artifact — no pool, no vault, no feature flag — so this router serves
+	// it unconditionally rather than behind ELITEA_CONFIGURATIONS_ENABLED
+	// (#131: that flag gates the *production* router, which this compatibility
+	// router is not, so no environment ever reached the real catalogue).
+	catalog *configurationapp.CurrentAvailableCatalog
 }
 
 type Option func(*Handler)
@@ -38,6 +46,15 @@ func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 
 func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	handler := &Handler{pool: pool}
+	// A malformed embedded snapshot must not stop the process: every other
+	// route in this handler is independent of the catalogue. Available alone
+	// reports the failure, as an explicit "catalog is unavailable" error
+	// rather than as a silently degraded list.
+	if catalog, err := configurationapp.LoadPinnedCurrentAvailableCatalog(); err == nil {
+		handler.catalog = catalog
+	} else {
+		slog.Error("failed to load pinned configuration catalog", "err", err)
+	}
 	for _, opt := range opts {
 		opt(handler)
 	}
@@ -98,68 +115,23 @@ func (h *Handler) require(permission string) func(http.Handler) http.Handler {
 	)
 }
 
-type ConfigurationType struct {
-	Type        string `json:"type"`
-	DisplayName string `json:"display_name"`
-	Section     string `json:"section"`
-	Description string `json:"description,omitempty"`
-}
-
+// Available serves the pinned registry snapshot — the same entries, with the
+// same `config_schema`, that CurrentAvailableRoute serves. It replaces a
+// hardcoded eight-row list of `{type, display_name, section}` that carried no
+// schema at all, which the credential type picker cannot render a form from
+// (#131). Section filtering follows Flask request.args.getlist semantics, as
+// on the production route.
 func (h *Handler) Available(w http.ResponseWriter, r *http.Request) {
-	hardcoded := []ConfigurationType{
-		{Type: "openai", DisplayName: "OpenAI", Section: "llm"},
-		{Type: "azure_openai", DisplayName: "Azure OpenAI", Section: "llm"},
-		{Type: "anthropic", DisplayName: "Anthropic", Section: "llm"},
-		{Type: "google_ai", DisplayName: "Google AI", Section: "llm"},
-		{Type: "openai_embedding", DisplayName: "OpenAI Embedding", Section: "embedding"},
-		{Type: "chroma", DisplayName: "Chroma", Section: "vectorstorage"},
-		{Type: "pinecone", DisplayName: "Pinecone", Section: "vectorstorage"},
-		{Type: "weaviate", DisplayName: "Weaviate", Section: "vectorstorage"},
-	}
-
-	// Build a set of known types to avoid duplicates
-	known := make(map[string]bool)
-	for _, t := range hardcoded {
-		known[t.Type] = true
-	}
-
-	displayNames := map[string]string{
-		"llm_model":              "LLM Model",
-		"embedding_model":        "Embedding Model",
-		"asr_model":              "ASR Model",
-		"tts_model":              "TTS Model",
-		"image_generation_model": "Image Generation Model",
-	}
-
-	// Until the versioned catalog is composed, supplement the compatibility
-	// response only when a database is configured. Never make p_1 availability
-	// a process-start requirement for static handler tests or tooling.
-	if h.pool != nil {
-		ctx := r.Context()
-		dbQ := `SELECT DISTINCT type, section FROM "p_1".configuration WHERE type IS NOT NULL ORDER BY type`
-		rows, err := h.pool.Query(ctx, dbQ)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var typeName, section string
-				if err := rows.Scan(&typeName, &section); err != nil || known[typeName] {
-					continue
-				}
-				displayName := displayNames[typeName]
-				if displayName == "" {
-					displayName = typeName
-				}
-				hardcoded = append(hardcoded, ConfigurationType{
-					Type:        typeName,
-					DisplayName: displayName,
-					Section:     section,
-				})
-				known[typeName] = true
-			}
+	entries, err := h.catalog.CompleteEntries(r.URL.Query()["section"]...)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, configurationapp.ErrCurrentAvailableCatalogPartial) {
+			status = http.StatusServiceUnavailable
 		}
+		writeCurrentConfigurationError(w, status, "configuration catalog is unavailable")
+		return
 	}
-
-	writeJSON(w, http.StatusOK, hardcoded)
+	writeJSON(w, http.StatusOK, newCurrentAvailableConfigurationTypesDTO(entries))
 }
 
 type Configuration struct {
@@ -223,10 +195,18 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	schema := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
 
+	// The client always sends ?section= (it fires one request per section),
+	// and this handler ignored it: every section received the whole table, so
+	// one credential rendered under all seven headings — LLM, Embedding, TTS
+	// and the rest alike (#131, measured: 7 copies of a single row).
+	sections := r.URL.Query()["section"]
+	countFilter, countArgs := configurationSectionFilter(sections, 1)
+	listFilter, listArgs := configurationSectionFilter(sections, 3)
+
 	// Count
 	var total int
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = false`, schema)
-	if err := h.pool.QueryRow(ctx, countQ).Scan(&total); err != nil {
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = false%s`, schema, countFilter)
+	if err := h.pool.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
 		// Schema may not exist yet — return empty
 		writeJSON(w, http.StatusOK, ListResponse{
 			Items: []Configuration{}, Total: 0, Offset: offset, Limit: limit,
@@ -241,12 +221,12 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
 			created_at, updated_at
 		FROM %q.configuration
-		WHERE shared = false
+		WHERE shared = false%s
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
-	`, schema)
+	`, schema, listFilter)
 
-	rows, err := h.pool.Query(ctx, listQ, limit, offset)
+	rows, err := h.pool.Query(ctx, listQ, append([]any{limit, offset}, listArgs...)...)
 	if err != nil {
 		writeJSON(w, http.StatusOK, ListResponse{
 			Items: []Configuration{}, Total: 0, Offset: offset, Limit: limit,
@@ -288,8 +268,8 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	// Shared configs
 	var sharedTotal int
-	sharedCountQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = true`, schema)
-	if err := h.pool.QueryRow(ctx, sharedCountQ).Scan(&sharedTotal); err != nil {
+	sharedCountQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = true%s`, schema, countFilter)
+	if err := h.pool.QueryRow(ctx, sharedCountQ, countArgs...).Scan(&sharedTotal); err != nil {
 		http.Error(w, `{"error":"list failed"}`, http.StatusInternalServerError)
 		return
 	}
@@ -299,13 +279,13 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
 			created_at, updated_at
 		FROM %q.configuration
-		WHERE shared = true
+		WHERE shared = true%s
 		ORDER BY created_at DESC
 		LIMIT 20
-	`, schema)
+	`, schema, countFilter)
 
 	sharedItems := make([]Configuration, 0)
-	sharedRows, err := h.pool.Query(ctx, sharedQ)
+	sharedRows, err := h.pool.Query(ctx, sharedQ, countArgs...)
 	if err == nil {
 		defer sharedRows.Close()
 		for sharedRows.Next() {
@@ -362,8 +342,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		SELECT id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
 			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
 			created_at, updated_at
-		FROM %q.configuration WHERE id = $1
-	`, schema)
+		FROM %q.configuration WHERE %s = $1
+	`, schema, configurationIDColumn(configID))
 
 	var c Configuration
 	var data, meta []byte
@@ -442,15 +422,19 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			authorID = owningUserID
 		}
 	}
+	configType := strVal(body, "type")
+	title := firstStrVal(body, "elitea_title", "name")
+	section := h.sectionFor(configType, strVal(body, "section"))
+
 	var id int
 	var uuid string
 	var createdAt time.Time
 	err = h.pool.QueryRow(ctx, q,
 		pID,
 		strVal(body, "label"),
-		strVal(body, "name"),
-		strVal(body, "type"),
-		strVal(body, "section"),
+		title,
+		configType,
+		section,
 		dataBytes,
 		metaBytes,
 		shared,
@@ -465,9 +449,9 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		ID:        id,
 		UUID:      uuid,
 		ProjectID: projectID,
-		Name:      strVal(body, "name"),
-		Type:      strVal(body, "type"),
-		Section:   strVal(body, "section"),
+		Name:      title,
+		Type:      configType,
+		Section:   section,
 		Shared:    shared,
 		Source:    "user",
 		CreatedAt: createdAt.Format(time.RFC3339),
@@ -482,6 +466,24 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, c)
+}
+
+// sectionFor resolves the `section` column for a configuration. The UI never
+// sends one — it posts {elitea_title, label, data, shared, type} — so the
+// column was written empty and the row belonged to none of the sections the
+// AI-Configuration page queries (#131). The registry entry for the type is
+// the authority (open_ai → ai_credentials), matching what the current
+// mutation service does (application/configurations/current_mutation.go).
+// An explicit body value still wins, and an unknown type still stores "".
+func (h *Handler) sectionFor(configType, requested string) string {
+	if requested != "" {
+		return requested
+	}
+	entry, ok := h.catalog.EntryByType(configType)
+	if !ok {
+		return ""
+	}
+	return entry.Section
 }
 
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
@@ -526,19 +528,20 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			meta = $6,
 			shared = $7,
 			updated_at = now()
-		WHERE id = $8
+		WHERE %s = $8
 		RETURNING id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
 			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id, created_at, updated_at
-	`, schema)
+	`, schema, configurationIDColumn(configID))
 
 	var c Configuration
 	var data2, meta2 []byte
 	var createdAt, updatedAt *time.Time
+	updatedType := strVal(body, "type")
 	err = h.pool.QueryRow(ctx, q,
-		strVal(body, "label"),
-		strVal(body, "name"),
-		strVal(body, "type"),
-		strVal(body, "section"),
+		nullableStrVal(strVal(body, "label")),
+		nullableStrVal(firstStrVal(body, "elitea_title", "name")),
+		nullableStrVal(updatedType),
+		nullableStrVal(h.sectionFor(updatedType, strVal(body, "section"))),
 		dataBytes,
 		metaBytes,
 		shared,
@@ -575,7 +578,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	schema := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
 
-	q := fmt.Sprintf(`DELETE FROM %q.configuration WHERE id = $1`, schema)
+	q := fmt.Sprintf(`DELETE FROM %q.configuration WHERE %s = $1`, schema, configurationIDColumn(configID))
 	ct, err := h.pool.Exec(ctx, q, configID)
 	if err != nil || ct.RowsAffected() == 0 {
 		http.Error(w, `{"error":"configuration not found"}`, http.StatusNotFound)

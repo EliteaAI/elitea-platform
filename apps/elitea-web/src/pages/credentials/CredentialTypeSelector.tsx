@@ -30,19 +30,29 @@ export interface CredentialTypeSelectorProps {
   readonly onSelectType: (type: string) => void;
 }
 
+/**
+ * `config_schema` is REQUIRED by `ConfigurationTypeDescriptor`, but the wire
+ * is not the type system: a catalogue entry that omits it used to throw
+ * "Cannot read properties of undefined (reading 'metadata')" out of these two
+ * readers, which the route has no boundary below, so the whole
+ * /settings/create-configuration page rendered "Something went wrong."
+ * (#131). One malformed row must not take out the picker — an entry with no
+ * schema degrades to its raw `type` under "Other", and the rest of the
+ * catalogue still renders.
+ */
 function displayLabel(item: ConfigurationTypeDescriptor): string {
-  return item.config_schema.metadata?.label ?? item.config_schema.title ?? item.type;
+  return item.config_schema?.metadata?.label ?? item.config_schema?.title ?? item.type;
 }
 
 function category(item: ConfigurationTypeDescriptor): string {
-  return item.config_schema.properties?.['data']?.metadata?.categories?.[0] ?? 'Other';
+  return item.config_schema?.properties?.['data']?.metadata?.categories?.[0] ?? 'Other';
 }
 
 export function CredentialTypeSelector({ configurationsData, isFetching, onSelectType }: CredentialTypeSelectorProps): ReactNode {
   const [query, setQuery] = useState('');
 
   const visibleItems = useMemo(() => {
-    const items = (configurationsData ?? []).filter((item) => item.config_schema.metadata?.hidden !== true);
+    const items = (configurationsData ?? []).filter((item) => item.config_schema?.metadata?.hidden !== true);
     const needle = query.trim().toLowerCase();
     const filtered = needle === '' ? items : items.filter((item) => displayLabel(item).toLowerCase().includes(needle));
     return [...filtered].sort((a, b) => displayLabel(a).toLowerCase().localeCompare(displayLabel(b).toLowerCase()));

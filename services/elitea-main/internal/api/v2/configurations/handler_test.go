@@ -132,59 +132,108 @@ func TestConfigurationCRUDRoutesUseExactLegacyPermissionNames(t *testing.T) {
 
 // ---- Available ---------------------------------------------------------------
 
-func TestAvailable_Success(t *testing.T) {
+// availableEntry mirrors the wire shape of one /configurations/available/ row.
+// It is deliberately declared here rather than reusing an exported handler
+// type: the response contract is what the credential type picker parses
+// (features/credentials/api/configurations.ts ConfigurationTypeDescriptor),
+// and a test that decodes into the handler's own struct cannot notice a field
+// being renamed on both sides at once.
+type availableEntry struct {
+	Type              string          `json:"type"`
+	Section           string          `json:"section"`
+	ConfigSchema      json.RawMessage `json:"config_schema"`
+	HasTestConnection bool            `json:"has_test_connection"`
+}
+
+func decodeAvailable(t *testing.T, query string) []availableEntry {
+	t.Helper()
 	r := setupConfigRouter()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/available/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/available/"+query, nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
 	}
-
-	var types []handler.ConfigurationType
+	var types []availableEntry
 	if err := json.NewDecoder(rec.Body).Decode(&types); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if len(types) == 0 {
-		t.Error("expected non-empty list of available configuration types")
-	}
+	return types
+}
 
-	// Verify well-known types are present.
-	found := make(map[string]bool)
+// The route must serve the pinned registry snapshot, not the hardcoded
+// eight-row list it used to (#131). The type names below are the snapshot's
+// (`open_ai`), not the old list's (`openai`), so a regression to the hardcoded
+// payload fails here rather than only in the browser.
+func TestAvailableServesPinnedRegistrySnapshot(t *testing.T) {
+	types := decodeAvailable(t, "")
+
+	found := make(map[string]availableEntry, len(types))
 	for _, ct := range types {
-		found[ct.Type] = true
+		found[ct.Type] = ct
 	}
-	for _, want := range []string{"openai", "anthropic", "chroma"} {
-		if !found[want] {
+	for _, want := range []string{"open_ai", "azure_open_ai", "vertex_ai", "llm_model", "github"} {
+		if _, ok := found[want]; !ok {
 			t.Errorf("expected type %q in available list", want)
+		}
+	}
+	// The old payload had eight static rows plus whatever the DB happened to
+	// hold; the snapshot is a fixed 49.
+	if len(types) != 49 {
+		t.Errorf("expected the 49 pinned entries, got %d", len(types))
+	}
+	if got := found["open_ai"].Section; got != "ai_credentials" {
+		t.Errorf("open_ai section = %q, want ai_credentials", got)
+	}
+	if !found["open_ai"].HasTestConnection {
+		t.Error("open_ai must advertise has_test_connection; the form renders Test connection from it")
+	}
+}
+
+// Every entry must carry a usable `config_schema`. Its absence is what crashed
+// CredentialTypeSelector and made credential creation unreachable (#131).
+func TestAvailableEntriesCarryConfigSchema(t *testing.T) {
+	types := decodeAvailable(t, "")
+
+	for _, ct := range types {
+		if ct.Type == "" {
+			t.Error("entry type must not be empty")
+		}
+		if ct.Section == "" {
+			t.Errorf("entry section must not be empty for type %q", ct.Type)
+		}
+		var schema struct {
+			Title      string                     `json:"title"`
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(ct.ConfigSchema, &schema); err != nil {
+			t.Errorf("config_schema for %q is not a JSON object: %v", ct.Type, err)
+			continue
+		}
+		if schema.Title == "" {
+			t.Errorf("config_schema.title must not be empty for %q; it is the picker's tile label", ct.Type)
+		}
+		if _, ok := schema.Properties["data"]; !ok {
+			t.Errorf("config_schema.properties.data missing for %q; the form is built from it", ct.Type)
 		}
 	}
 }
 
-func TestAvailable_ContainsRequiredFields(t *testing.T) {
-	r := setupConfigRouter()
+func TestAvailableFiltersBySection(t *testing.T) {
+	types := decodeAvailable(t, "?section=ai_credentials")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/available/", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	var types []handler.ConfigurationType
-	if err := json.NewDecoder(rec.Body).Decode(&types); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+	if len(types) == 0 {
+		t.Fatal("expected at least one ai_credentials entry")
 	}
-
 	for _, ct := range types {
-		if ct.Type == "" {
-			t.Error("ConfigurationType.Type must not be empty")
+		if ct.Section != "ai_credentials" {
+			t.Errorf("type %q has section %q, want only ai_credentials", ct.Type, ct.Section)
 		}
-		if ct.DisplayName == "" {
-			t.Errorf("ConfigurationType.DisplayName must not be empty for type %q", ct.Type)
-		}
-		if ct.Section == "" {
-			t.Errorf("ConfigurationType.Section must not be empty for type %q", ct.Type)
-		}
+	}
+	if len(types) == len(decodeAvailable(t, "")) {
+		t.Error("section filter returned the whole catalog")
 	}
 }
 
