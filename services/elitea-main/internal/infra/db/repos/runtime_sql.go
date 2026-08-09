@@ -157,6 +157,27 @@ func (e pgxExecutor) ResolveCurrentAuthorizationContinuation(
 	return sqlcgen.New(e.queryer).ResolveCurrentAuthorizationContinuation(ctx, arg)
 }
 
+func (e pgxExecutor) CancelCurrentAgentExecution(
+	ctx context.Context,
+	arg sqlcgen.CancelCurrentAgentExecutionParams,
+) (sqlcgen.CancelCurrentAgentExecutionRow, error) {
+	return sqlcgen.New(e.queryer).CancelCurrentAgentExecution(ctx, arg)
+}
+
+func (e pgxExecutor) ProjectCurrentAgentStop(
+	ctx context.Context,
+	arg sqlcgen.ProjectCurrentAgentStopParams,
+) (sqlcgen.ProjectCurrentAgentStopRow, error) {
+	return sqlcgen.New(e.queryer).ProjectCurrentAgentStop(ctx, arg)
+}
+
+func (e pgxExecutor) IsCurrentAgentCancellationReplay(
+	ctx context.Context,
+	arg sqlcgen.IsCurrentAgentCancellationReplayParams,
+) (bool, error) {
+	return sqlcgen.New(e.queryer).IsCurrentAgentCancellationReplay(ctx, arg)
+}
+
 type sharedStore interface {
 	sqlExecutor
 	WithinTx(ctx context.Context, opts pgx.TxOptions, fn func(sqlExecutor) error) error

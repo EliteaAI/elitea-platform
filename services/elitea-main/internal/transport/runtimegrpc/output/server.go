@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -157,6 +158,18 @@ func (s *Server) Publish(stream grpc.BidiStreamingServer[runtimev1.ExecutionOutp
 		outcome, err := s.ingestMessage(stream.Context(), message, workloadIdentity)
 		if err != nil {
 			code, safeMessage, retryable := safeOutputError(err)
+			slog.WarnContext(
+				stream.Context(),
+				"runtime output frame rejected",
+				"execution_id", identity.GetExecutionId(),
+				"generation", identity.GetGeneration(),
+				"event_type", message.GetEventType().String(),
+				"sequence", message.GetSequence(),
+				"handoff_watermark", message.GetClaimHandoffWatermark(),
+				"terminal", message.GetTerminal(),
+				"error_code", code.String(),
+				"cause", err,
+			)
 			ack := rejectionAck(message, code, safeMessage, retryable)
 			if errors.Is(err, outputapp.ErrOutputCancelled) {
 				// This exact, fully bound response is the output linearization
