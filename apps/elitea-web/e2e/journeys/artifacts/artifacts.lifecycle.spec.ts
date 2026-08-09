@@ -23,19 +23,18 @@
  * and `deploy/docker-compose.e2e-standalone.yml` never sets it, so
  * elitea-main boots with a live rustfs-backed object store.
  *
- * NOT ASSERTED — JRNY-020's final "delete" step. DELETE
- * /api/v2/artifacts/buckets/... and DELETE .../objects/... return 403 for
- * BOTH personas, because `apps/elitea-web/scripts/e2e-stack.sh` seeds only
- * `configuration.artifacts.artifacts.{create,view}` and
- * `configuration.artifacts.buckets.{create,view}` (lines 210-213) — never
- * `.delete` or `.edit`, which `router.go:259-262` requires. A delete test
- * here would assert an environment gap, not app behaviour; the fix is to add
- * the two permissions to the seed, at which point the delete step belongs in
- * J20d. This is an E2E-stack defect, not an app defect.
+ * JRNY-020's final "delete" step IS asserted, in J20d. It used to be
+ * unassertable: `apps/elitea-web/scripts/e2e-stack.sh` seeded only
+ * `configuration.artifacts.{artifacts,buckets}.{create,view}`, never `.edit`
+ * or `.delete`, so every destructive artifact route 403'd for both personas —
+ * an E2E-stack gap, not an app defect. The seed now grants all four
+ * `configuration.artifacts.artifacts.*` strings that
+ * `mountArtifactRoutes` (router.go:255-262) gates on; measured before/after,
+ * DELETE /api/v2/artifacts/buckets/1/<name> went 403 -> 204.
  *
- * NO CLEANUP IS POSSIBLE from this spec for the same reason, so the two
- * buckets it touches use FIXED names and are reused across runs rather than
- * accumulating one per run.
+ * The two buckets this spec touches still use FIXED names and are reused
+ * across runs (rather than one per run): `seedBucketWithFiles` is idempotent
+ * and re-uploads the objects J20d deletes, so J20e still finds them.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
@@ -234,6 +233,32 @@ test.describe('J20 artifacts lifecycle', () => {
     ]);
     expect(download.suggestedFilename()).toBe(FILE_NAME);
     expect((await readDownload(download)).toString()).toBe(FILE_BODY);
+
+    // ── JRNY-020's final "delete" step, now that the E2E seed grants
+    // `configuration.artifacts.artifacts.delete` (e2e-stack.sh) and the route
+    // no longer 403s. Driven entirely through the UI: the row's own Delete
+    // affordance (ArtifactTable.tsx:295-300) opens the confirm dialog
+    // (Artifacts.tsx:298-314), and only the dialog's Delete issues the call.
+    // The wire call is POST `.../objects/{projectID}/{bucket}:batchDelete`
+    // (keys in a JSON body), NOT a DELETE verb — `removeArtifacts`
+    // (artifactsApi.ts:146-149) routes every deletion, single or multi,
+    // through the batch endpoint.
+    const [deleteResp] = await Promise.all([
+      page.waitForResponse((r) => /\/api\/v2\/artifacts\/objects\/.*:batchDelete/.test(r.url()), { timeout: 15_000 }),
+      (async () => {
+        await page.getByRole('button', { name: `Delete ${FILE_NAME}`, exact: true }).click();
+        await page.getByRole('button', { name: 'Delete', exact: true }).click();
+      })(),
+    ]);
+    expect(deleteResp.status(), await deleteResp.text()).toBe(200);
+
+    // The row is gone from the table…
+    await expect(row).toBeHidden({ timeout: 15_000 });
+    // …and gone from the BACKEND, not just from a client-side cache: a fresh
+    // API listing must no longer contain it.
+    const listing = await request.get(`/api/v2/artifacts/objects/${projectId}/${READ_BUCKET}`);
+    expect(listing.status()).toBe(200);
+    expect(await listing.text()).not.toContain(FILE_NAME);
   });
 
   /**

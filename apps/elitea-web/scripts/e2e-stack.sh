@@ -207,10 +207,21 @@ CROSS JOIN (VALUES
     ('configuration.secrets.secret.edit'),
     ('configuration.secrets.secret.create'),
     ('configuration.secrets.secret.delete'),
+    -- mountArtifactRoutes (services/elitea-main/internal/api/router.go:255-262)
+    -- gates EVERY artifact route — buckets included — on the four
+    -- `configuration.artifacts.artifacts.*` strings. `edit` (PATCH: retention,
+    -- pin) and `delete` (DELETE, :batchDelete) were missing here, so every
+    -- destructive artifact route 403'd and the specs could not clean up after
+    -- themselves. The `buckets.*` pair mirrors the legacy permission catalogue;
+    -- the Go router does not read it.
     ('configuration.artifacts.artifacts.create'),
     ('configuration.artifacts.artifacts.view'),
+    ('configuration.artifacts.artifacts.edit'),
+    ('configuration.artifacts.artifacts.delete'),
     ('configuration.artifacts.buckets.create'),
     ('configuration.artifacts.buckets.view'),
+    ('configuration.artifacts.buckets.edit'),
+    ('configuration.artifacts.buckets.delete'),
     ('configurations.configuration.update'),
     ('configurations.configuration.delete')
 ) AS p(permission)

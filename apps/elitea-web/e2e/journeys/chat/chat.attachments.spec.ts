@@ -311,6 +311,11 @@ test('J13: attach a large file chunked upload with progress', async ({ page }) =
 // indicator → reconnect → rejoin acceptance needs a socket server in
 // deploy/docker-compose.e2e-standalone.yml; until then it lives at the unit
 // level (shared/api/socket/client.test.ts, rooms.test.ts).
+//
+// Tracked as #152, which also records WHY this is not the env-var fix it looks
+// like: `services/elitea-main/internal/api/socketio/server.go` has zero callers
+// (`socketio.NewServer` is never constructed, `Handler()` never mounted), so
+// there is no server to point VITE_SOCKET_SERVER at.
 test('J26: sidebar connection indicator reports the real socket state', async ({ page }) => {
   // Pin the precondition: this stack genuinely has no socket server. When one
   // is added, this assertion fails and this journey must be rewritten to the

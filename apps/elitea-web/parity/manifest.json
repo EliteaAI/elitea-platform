@@ -65,7 +65,7 @@
     {
       "path": "manifest/secrets.json",
       "domain": "secrets",
-      "items": 12
+      "items": 18
     },
     {
       "path": "manifest/users.json",
