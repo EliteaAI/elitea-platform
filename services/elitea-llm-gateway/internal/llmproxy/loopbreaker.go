@@ -55,7 +55,14 @@ const (
 	// number's containment was illusory (it could not distinguish a loop) while
 	// its false positives were real and measured.
 	//
-	// 0 disables the breaker entirely; main() logs the disarmed state loudly.
+	// An unset or 0 LLM_LOOP_BREAKER_THRESHOLD means "use this default"; a
+	// NEGATIVE value disarms the breaker entirely (WithLoopBreakerParams). Either
+	// way main() logs the resulting mode loudly (logLoopBreakerMode).
+	//
+	// Documented for operators in elitea-docs: spec-bifrost-migration §2.6 and
+	// runbook-bifrost-cutover ("circular-routing failure mode"). Those pages name
+	// this file as the source of truth — when these numbers change, change them
+	// there too (issue #164).
 	DefaultLoopBreakerThreshold = 1000
 	// DefaultLoopBreakerWindow is the sliding observation window
 	// (LLM_LOOP_BREAKER_WINDOW_MS).
@@ -99,9 +106,11 @@ type loopBreaker struct {
 }
 
 // LoopBreakerParams are the operator-settable breaker numbers (issue #12).
-// A zero or negative field falls back to its Default* value; Threshold is the
-// one exception — an explicit 0 DISABLES the breaker, which newLoopBreaker
-// signals by returning nil.
+// A zero or negative field falls back to its Default* value — including
+// Threshold: 0 means "unset, use the default", NOT "disabled". Disarming is a
+// NEGATIVE Threshold, and it is handled one level up in WithLoopBreakerParams
+// (which drops the guard entirely) so that a disarmed deployment is a logged
+// startup decision rather than an invisible property of a nil pointer.
 type LoopBreakerParams struct {
 	Threshold int
 	Window    time.Duration
