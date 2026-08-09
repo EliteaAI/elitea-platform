@@ -2962,7 +2962,7 @@ components:
     SecretListItem:
       type: object
       description: >
-        NOTE(#151): internal/api/v2/secrets/handler.go's SecretListItem —
+        NOTE(issue 151): internal/api/v2/secrets/handler.go's SecretListItem —
         the list element AND the body returned by create and update. It
         NEVER carries a value; the plaintext is reachable only through the
         single-secret GET.
@@ -6386,19 +6386,19 @@ paths:
         '500': { $ref: '#/components/responses/500' }
 
   # ==========================================================================
-  # SECRETS (#151)
+  # SECRETS (issue 151)
   #
   # pylon serves /api/v2/<plugin>/<resource-module>/<mode>/<params>. The
   # plugin is `secrets`; its resource modules are
   # legacy/plugins/secrets/api/v2/{secrets,secret,hide}.py — hence the
   # doubled first segment, which is the REAL legacy shape and not the
-  # double-mount bug #137 took it for. Every consumer agrees: the pinned
+  # double-mount bug issue 137 took it for. Every consumer agrees: the pinned
   # baseline client (apps/elitea-ui/src/api/secrets.js:3), elitea-sdk
   # (runtime/clients/{client,sandbox_client}.py), admin_ui
   # (frontend/src/api/secretsApi.js) and qa/elitea-api-testing
   # (utils/utils.py:322).
   #
-  # This domain was absent from this spec entirely until #151, which is why
+  # This domain was absent from this spec entirely until issue 151, which is why
   # nothing generated or contract-tested caught the divergence.
   #
   # `mode` is a real dispatch key, not decoration: pylon's
