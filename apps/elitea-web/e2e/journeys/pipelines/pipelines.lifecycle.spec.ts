@@ -160,3 +160,49 @@ test('J16: an edited flow graph survives a save + reload', async ({ page }) => {
   // Acceptance (1): the saved pipeline reloads with the SAME graph.
   await expect(addedNode).toBeVisible({ timeout: 10_000 });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Journey 25 (pipelines half): Unsaved-changes navigation block
+// ─────────────────────────────────────────────────────────────────────────────
+test('J25: unsaved-changes nav block: navigate away from a dirty pipeline → dialog → cancel → stay', async ({
+  page,
+}) => {
+  /*
+   * The `/pipelines` half of #133. The issue's agents half was measured (J25
+   * in `agents.lifecycle.spec.ts`); the pipelines half was INFERENCE — the
+   * identical "nav-blocking-when-dirty is dropped" disclosure sat in
+   * `EditPipeline.tsx` with no test exercising it. This journey measures it.
+   *
+   * The dialog asserted on is the REAL production `NavBlockerDialog`
+   * (`widgets/app-shell`), armed by `CreatePipeline.tsx`'s own
+   * `useUnsavedChangesNavBlocker` call. Nothing here stubs the served bundle.
+   */
+  await page.goto(BASE_URL + '/app/pipelines/my');
+  await page.waitForURL('**/pipelines**', { timeout: 15_000 });
+
+  await clickCreateButton(page);
+  await page.waitForURL('**/app/pipelines/create**', { timeout: 15_000 });
+
+  const panel = page.getByTestId('create-pipeline-form-panel');
+  const nameInput = panel.getByTestId('agent-name-input');
+  await expect(nameInput).toBeVisible({ timeout: 10_000 });
+
+  // Dirty the form.
+  const dirtyName = `${AUTOTEST_PREFIX}dirty-pipe`;
+  await nameInput.fill(dirtyName);
+
+  // A real in-app link. A `goto()` fallback would bypass the router's blocker
+  // entirely and pass against an app with no guard at all.
+  await page.getByRole('link', { name: /chat/i }).first().click();
+
+  const navBlockerDialog = page.getByRole('dialog');
+  await expect(navBlockerDialog).toBeVisible({ timeout: 10_000 });
+  await checkA11y(page);
+
+  // Cancelling keeps us on the pipeline form with the typed value intact.
+  await navBlockerDialog.getByRole('button', { name: /cancel|stay|no/i }).first().click();
+  await expect(nameInput).toHaveValue(dirtyName);
+  expect(page.url()).toContain('/pipelines');
+
+  await checkA11y(page);
+});

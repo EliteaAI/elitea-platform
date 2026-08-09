@@ -9,7 +9,7 @@ import { test, expect } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
-import { AUTOTEST_PREFIX, clickCreateButton } from '../../fixtures/api';
+import { AUTOTEST_PREFIX, clickCreateButton, createAgent, deleteAgent } from '../../fixtures/api';
 
 import type { Page } from '@playwright/test';
 
@@ -170,43 +170,18 @@ test('J25: unsaved-changes nav block: navigate away from dirty agent → dialog 
   page,
 }) => {
   /*
-   * EXPECTED-FAIL — PRODUCT DEFECT, not a test bug. The unsaved-changes guard
-   * is HALF built: the dialog and the router blocker are real and mounted, but
-   * no agent editor ever raises the flag that arms them.
+   * Was EXPECTED-FAIL until #133. The guard was half built: `NavBlockerDialog`
+   * held a real TanStack `useBlocker` and `AppShell` mounted it under every
+   * page, but `setBlockNav` had only three production call sites — all in
+   * `processes/chat/ui/ChatWithEditors.hooks.ts`, the CHAT-embedded editors —
+   * so the standalone `/agents` pages never armed it and a typed edit was
+   * discarded silently on any nav-link click. `pages/agents/
+   * CreateApplication.tsx` and `EditApplication.tsx` now arm it from their own
+   * dirty state via `widgets/app-shell`'s `useUnsavedChangesNavBlocker`.
    *
-   * Evidence:
-   *  - `src/widgets/app-shell/ui/NavBlockerDialog.tsx:54-57` calls TanStack
-   *    Router's `useBlocker({ shouldBlockFn: () => (isBlockNav || isStreaming)
-   *    && current.pathname !== next.pathname })`, and `AppShell.tsx:153` mounts
-   *    it under every page. So the mechanism works — it is simply never armed
-   *    here.
-   *  - `setBlockNav` has exactly three production call sites, all in
-   *    `src/processes/chat/ui/ChatWithEditors.hooks.ts:64,114,148` (the agent /
-   *    pipeline / toolkit editors embedded in the CHAT process). Neither
-   *    `src/pages/agents/CreateApplication.tsx` nor
-   *    `src/pages/agents/EditApplication.tsx` touches the nav-blocker store.
-   *  - `EditApplication.tsx:118-120` states it outright: "Nav-blocking-when-dirty
-   *    (`useNavBlocker`, baseline) is dropped: that hook is not in this unit's
-   *    owned-file list and no promoted equivalent exists."
-   *    `EditPipeline.tsx:126` carries the same disclosure.
-   *  - `navBlocker.store.ts`'s own header concedes the gap: the dialog has "a
-   *    real, working default (nothing blocks) with zero features setting the
-   *    flags yet".
-   *  - Live confirmation: at the failing assertion the browser is already on the
-   *    chat page ("No messages yet", message composer in the error-context
-   *    tree) — navigation went through unblocked and the typed name was lost.
-   *
-   * The locators are NOT wrong: mutation-verified by rewriting the SERVED
-   * bundle so `NavBlockerDialog`'s `shouldBlockFn` guard also honours a
-   * test-set flag (standing in for a dirty editor calling `setBlockNav(true)`).
-   * The REAL production dialog then appeared and every assertion below —
-   * `getByRole('dialog')`, the cancel button, the preserved input value, the
-   * unchanged URL — passed.
-   *
-   * Tracked as #133 — a data-loss bug, not merely a missing dialog: the
-   * navigation goes through and the typed edit is lost.
+   * The dialog asserted on below is the REAL production `NavBlockerDialog`,
+   * not a fixture: nothing in this file stubs or rewrites the served bundle.
    */
-  test.fail();
   await page.goto(BASE_URL + '/app/agents/my');
   await page.waitForURL('**/agents**', { timeout: 15_000 });
 
@@ -233,4 +208,40 @@ test('J25: unsaved-changes nav block: navigate away from dirty agent → dialog 
   expect(page.url()).toContain('/agents');
 
   await checkA11y(page);
+});
+
+/*
+ * The issue's literal repro (#133): "/agents/<id>", the EDIT page, not the
+ * create form the journey above drives. Both pages had the same hole and both
+ * are now armed, but only the create page was measured — this closes that.
+ * The agent is minted through the API so the test is about the guard, not
+ * about the create flow J14 already covers.
+ */
+test('J25: unsaved-changes nav block also guards the standalone agent EDIT page', async ({ page }) => {
+  const name = `${AUTOTEST_PREFIX}edit-${Date.now() % 1e9}`;
+  const { id } = await createAgent(page.request, name);
+  try {
+    await page.goto(BASE_URL + `/app/agents/latest/${id}`);
+
+    // The real edit page, not the create form still mounted under the parent
+    // route — this testid exists only on `EditApplication`.
+    const editPanel = page.getByTestId('edit-application-configuration-tab-panel');
+    await expect(editPanel).toBeVisible({ timeout: 15_000 });
+    const nameInput = editPanel.getByTestId('agent-name-input');
+    await expect(nameInput).toHaveValue(name, { timeout: 15_000 });
+
+    const edited = `${name}-x`;
+    await nameInput.fill(edited);
+
+    await page.getByRole('link', { name: /chat/i }).first().click();
+
+    const navBlockerDialog = page.getByRole('dialog');
+    await expect(navBlockerDialog).toBeVisible({ timeout: 10_000 });
+
+    await navBlockerDialog.getByRole('button', { name: /cancel|stay|no/i }).first().click();
+    await expect(nameInput).toHaveValue(edited);
+    expect(page.url()).toContain(`/agents/latest/${id}`);
+  } finally {
+    await deleteAgent(page.request, id);
+  }
 });
