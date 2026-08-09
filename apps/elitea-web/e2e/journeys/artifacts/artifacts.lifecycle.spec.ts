@@ -244,14 +244,9 @@ test.describe('J20 artifacts lifecycle', () => {
 
     // Download must deliver the exact bytes that were uploaded.
     //
-    // Re-enter the bucket by URL rather than `page.goBack()`. History
-    // navigation was incidental — the step needs the file table, not the
-    // previous history entry — and in CI it left the table re-rendering: the
-    // download landed, but the row's Delete button below never became
-    // actionable, so the :batchDelete wait timed out on all three attempts
-    // while the failure snapshot showed the table present and no dialog open
-    // (issue #154, run 31329658116). Waiting for the row makes the precondition
-    // explicit instead of assuming the view has settled.
+    // Re-enter the bucket by URL rather than `page.goBack()`: the step needs
+    // the file table, not the previous history entry, and waiting for the row
+    // states that precondition instead of assuming the view has settled.
     await page.goto(`${BASE_URL}/app/artifacts?bucket=${READ_BUCKET}`);
     await expect(row).toBeVisible({ timeout: 15_000 });
     const [download] = await Promise.all([
@@ -260,6 +255,28 @@ test.describe('J20 artifacts lifecycle', () => {
     ]);
     expect(download.suggestedFilename()).toBe(FILE_NAME);
     expect((await readDownload(download)).toString()).toBe(FILE_BODY);
+
+    // Dismiss the MUI tooltip the Download button just opened, before touching
+    // the Delete button sitting immediately to its right.
+    //
+    // This is what made J20d fail on BOTH engines in CI, deterministically, on
+    // all three attempts (issue #154, runs 31329658116 and 31330333209). The
+    // failure snapshot ends with:
+    //
+    //     - tooltip "Download" [ref=f2e274]
+    //
+    // — a portal-rendered popper still mounted over its neighbour, with
+    // `Download j20-art.txt` still `[active]` and no confirm dialog open. The
+    // Delete click never passed Playwright's hit-target check, so it retried
+    // silently until the :batchDelete wait timed out, and the timeout error
+    // pointed at the response wait rather than at the click that was stuck.
+    //
+    // Invisible locally: the pointer ends up elsewhere and the tooltip has
+    // closed by the time the next click is issued. Moving the pointer off the
+    // control and waiting for the popper to unmount is what the app's own user
+    // does implicitly.
+    await page.mouse.move(0, 0);
+    await expect(page.getByRole('tooltip')).toBeHidden({ timeout: 15_000 });
 
     // ── JRNY-020's final "delete" step, now that the E2E seed grants
     // `configuration.artifacts.artifacts.delete` (e2e-stack.sh) and the route
