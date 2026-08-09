@@ -82,10 +82,12 @@ export default defineConfig({
       },
       // [F2] Extra project, not in §6.3: the gate scripts' own test suites
       // (§9.3 unit F2 requires 100% coverage of scripts' decision logic; the
-      // spec's include only matches src/**). Coverage thresholds below are
-      // untouched — the 100% floor on scripts/lib/** is enforced by the
-      // "Gate-script decision-logic coverage" step in ci-web.yml's gates job
-      // (CLI-scoped --coverage.include with 100% thresholds).
+      // spec's include only matches src/**). The `coverage` block below is
+      // untouched by this project — the 100% floor on scripts/lib/** is
+      // enforced by the "Gate-script decision-logic coverage" job in
+      // ci-web.yml, which re-runs this project with a CLI-scoped
+      // --coverage.include and 100% thresholds. That job's thresholds were 0
+      // and its report reader was broken until #73; the floor is real now.
       {
         extends: true,
         test: {

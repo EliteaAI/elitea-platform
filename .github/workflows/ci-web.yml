@@ -255,45 +255,65 @@ jobs:
         run: npm ci
       - name: Check gate-script coverage thresholds
         working-directory: apps/elitea-web
-        # Run a focused scripts coverage run then read back the JSON to check
-        # thresholds. The scripts project's test files don't import scripts/lib/
-        # modules, so vitest can't instrument them — coverage data is always 0.
-        # Thresholds are set to 0 (not 100) to verify the coverage pipeline
-        # runs successfully; real decision-logic coverage is tested by the
-        # gate-script-coverage's own unit tests (258 passing tests).
+        # Run a focused scripts coverage run, then read the JSON back and
+        # re-check the numbers independently.
+        #
+        # The scripts project's *-core.test.mjs files DO import their
+        # scripts/lib/*-core.mjs modules, and v8 instruments them: measured
+        # coverage is 712/712 statements, 431/431 branches, 155/155 functions,
+        # 607/607 lines — 100% on all four (#73). The pre-#73 version of this
+        # step claimed the opposite ("coverage data is always 0") and set every
+        # threshold to 0. It also filtered the report with
+        # `file.startsWith("scripts/lib/")` while v8 writes ABSOLUTE path keys,
+        # so the filter matched nothing, `statements` stayed 0, and the
+        # short-circuit below it exited 0. The step could never fail — the
+        # coverage numbers were fine all along, the gate reading them was not.
+        #
+        # coverage.all=true (was false): a new scripts/lib module that NO test
+        # imports must count as 0%, not vanish from the report.
         run: |
           npx vitest run --config vitest.config.ts --project scripts \
-            --coverage.enabled=true --coverage.all=false \
-            --coverage.include='scripts/lib/**' \
-            --coverage.reporter=json --coverage.reportsDirectory=coverage-scripts \
-            --coverage.thresholds.lines=0 \
-            --coverage.thresholds.functions=0 \
-            --coverage.thresholds.branches=0 \
-            --coverage.thresholds.statements=0
+            --coverage.enabled=true --coverage.all=true \
+            --coverage.include='scripts/lib/**/*.mjs' \
+            --coverage.exclude='scripts/lib/**/*.test.mjs' \
+            --coverage.reporter=json --coverage.reporter=text \
+            --coverage.reportsDirectory=coverage-scripts \
+            --coverage.thresholds.lines=100 \
+            --coverage.thresholds.functions=100 \
+            --coverage.thresholds.branches=100 \
+            --coverage.thresholds.statements=100
           node -e '
-            const fs = require("fs");
+            const path = require("path");
             let data;
             try { data = require("./coverage-scripts/coverage-final.json"); } catch {
-              console.error("No scripts coverage report found — pipeline OK (scripts/lib files not imported by tests)");
-              process.exit(0);
+              console.error("FAIL: no coverage-scripts/coverage-final.json — the coverage run produced nothing to gate on");
+              process.exit(1);
             }
-            let lines = 0, functions = 0, branches = 0, statements = 0;
-            for (const [file, f] of Object.entries(data)) {
-              if (!file.startsWith("scripts/lib/")) continue;
-              const s = f.s || [];
-              const b = f.b || [];
-              const fn = f.f || [];
-              lines += s.reduce((a, v) => a + (v > 0 ? 1 : 0), 0);
-              branches += b.reduce((a, row) => a + row.reduce((a2, v) => a2 + (v > 0 ? 1 : 0), 0), 0);
-              functions += fn.reduce((a, v) => a + (v > 0 ? 1 : 0), 0);
+            let lines = 0, functions = 0, branches = 0, statements = 0, files = 0;
+            for (const [abs, f] of Object.entries(data)) {
+              // Keys are absolute; relativise against cwd (apps/elitea-web).
+              const rel = path.relative(process.cwd(), abs).split(path.sep).join("/");
+              if (!rel.startsWith("scripts/lib/")) continue;
+              files += 1;
+              const s = Object.values(f.s || {});
+              const b = Object.values(f.b || {});
+              const fn = Object.values(f.f || {});
+              lines += s.filter((v) => v > 0).length;
               statements += s.length;
+              for (const row of b) { branches += row.filter((v) => v > 0).length; }
+              functions += fn.filter((v) => v > 0).length;
             }
-            if (statements === 0) { console.log("No scripts/lib coverage data (tests do not import scripts/lib modules)"); process.exit(0); }
-            function pct(covered, total) { return total ? Math.round(covered / total * 100) : 100; }
-            const lp = pct(lines, statements);
-            console.log("Gate-script coverage — lines: " + lp + "%");
-            if (lp < 100) { console.error("Lines below 100% threshold (" + lp + "%)"); process.exit(1); }
-            console.log("OK — 100% lines threshold met");
+            if (files === 0 || statements === 0) {
+              console.error("FAIL: coverage report contains no scripts/lib files (" + files + " files, " + statements + " statements) — the gate would be vacuous");
+              process.exit(1);
+            }
+            // Only statements is re-derivable from coverage-final.json alone
+            // (b/f hold hit counts, not totals-vs-covered); the other three
+            // metrics are enforced by the --coverage.thresholds.* flags above.
+            const sp = (lines / statements) * 100;
+            console.log("Gate-script coverage over " + files + " scripts/lib files — statements: " + sp.toFixed(2) + "% (" + lines + "/" + statements + "), functions covered: " + functions + ", branches covered: " + branches);
+            if (sp < 100) { console.error("FAIL: statements below the 100% threshold (" + sp.toFixed(2) + "%)"); process.exit(1); }
+            console.log("OK — 100% statement threshold met");
           '
 
   gate-complexity-budgets:
