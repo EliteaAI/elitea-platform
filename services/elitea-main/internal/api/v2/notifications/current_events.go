@@ -49,10 +49,23 @@ func NewCurrentNotificationEventsRoute(
 	authConfig apimw.AuthConfig,
 	permissions auth.PermissionResolver,
 ) (*CurrentNotificationEventsRoute, error) {
-	if reader == nil || authConfig.PrincipalValidator == nil ||
-		authConfig.ForwardedIdentityVerifier == nil || permissions == nil {
+	if reader == nil || permissions == nil {
 		return nil, ErrInvalidCurrentNotificationEventsRoute
 	}
+	// PrincipalValidator and ForwardedIdentityVerifier are optional — when nil
+	// the auth middleware falls back to session-cookie verification, which is
+	// the only credential OIDC-only deployments have (no
+	// ELITEA_AUTH_CONFIG_FILE, hence no FormGraph). Requiring them made this
+	// route composable ONLY under Form auth, so `GET /api/v2/notifications/
+	// events/prompt_lib/{projectID}` — the URL useNotificationsSSE actually
+	// opens — 404'd in the E2E stack and in every other OIDC-only deployment
+	// (#152). Same relaxation, and the same reason, as
+	// v2projects.NewCurrentProjectListRoute.
+	//
+	// This does NOT weaken authorization: apimw.Auth still rejects an
+	// unauthenticated request, serve() still requires a runtime principal, and
+	// authorize() still resolves models.notifications.notifications.list
+	// against the requested project.
 	stream := &currentNotificationEventsHandler{
 		reader:      reader,
 		permissions: permissions,

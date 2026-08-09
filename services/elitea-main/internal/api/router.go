@@ -28,6 +28,7 @@ import (
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	v2pipelines "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/pipelines"
 	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
@@ -418,6 +419,25 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	// the most-specific registered route first).
 	if cfg.CurrentProjectList != nil {
 		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
+	}
+
+	// CurrentNotificationEvents: the notification SSE stream that
+	// `useNotificationsSSE` opens on every page carrying the sidebar. Same
+	// treatment as CurrentProjectList above — it owns its whole auth+RBAC chain
+	// — and registered HERE, at the top level, for the same reason the artifact
+	// routes are hoisted below: the shadow comparator wrapping the /api/v2
+	// group buffers the entire response and does not implement Unwrap, so an
+	// http.Flusher never reaches the handler and a stream inside that group
+	// could not flush an event.
+	//
+	// It was previously mounted only by the production router
+	// (production_router.go), which NewRouter never reaches while
+	// prototypeCompatibilityRequested(cfg) holds — i.e. in every deployment
+	// today. Composed or not, `GET /api/v2/notifications/events/prompt_lib/
+	// {projectID}` answered 404, and the client fell back to its list query
+	// with a console warning as the only signal (#152).
+	if cfg.CurrentNotificationEvents != nil {
+		r.Method(http.MethodGet, notificationsapi.CurrentNotificationEventsPath, cfg.CurrentNotificationEvents)
 	}
 
 	// The UI loads branding before a browser session exists, so this exact

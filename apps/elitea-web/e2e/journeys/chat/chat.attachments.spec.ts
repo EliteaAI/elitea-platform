@@ -1,7 +1,8 @@
 /**
  * Journey 12: Attach a file <5 MiB (JRNY-012)
  * Journey 13: Attach a file >5 MiB chunked with progress (JRNY-013)
- * Journey 26: Socket disconnect → sidebar indicator → reconnect → rooms rejoined (JRNY-026)
+ * Journey 26: Live-push stream drop → automatic reconnect (JRNY-026, rescoped
+ *             from socket.io to SSE by #152 — see the block above the test)
  *
  * Spec §8.5 acceptance (from parity/manifest/chat.json JRNY-012/013/026).
  *
@@ -294,32 +295,189 @@ test('J13: attach a large file chunked upload with progress', async ({ page }) =
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Journey 26: Socket disconnect → sidebar indicator → reconnect → rooms rejoined
+// Journey 26: Live-push stream drops → client re-opens it automatically (SSE)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// JRNY-026 CANNOT BE COVERED END-TO-END IN THIS STACK, and this test does not
-// pretend otherwise. The E2E deployment serves /app/config.js with
-// `vite_socket_server: ""`, so AppProviders installs createNoopSocketClient:
-// its connection state is hardcoded 'disconnected', emit/on/off are no-ops, no
-// room is ever joined, and therefore nothing can be rejoined. The previous
-// version of this test drove `window.__elitea_socket`, which is assigned
-// nowhere in src — both "disconnect" and "reconnect" steps were no-ops, and
-// the acceptance was two identical toBeVisible() calls.
+// RESCOPED (#152). The original acceptance — "socket disconnect → sidebar
+// indicator → reconnect → rooms rejoined" — describes an architecture the
+// product no longer uses for this surface. Chat live-push moved to SSE (#92 /
+// #93); socket.io is retained only for voice and video, neither of which is
+// implemented in the Go stack (internal/api/socketio/server.go still has zero
+// callers). So there are no rooms to rejoin, and asserting the old wording
+// against the new mechanism would be a test that reads as coverage and proves
+// nothing. Rewritten here against SSE reconnect semantics rather than retired,
+// because the underlying user-visible guarantee — "the connection drops, live
+// updates come back on their own" — is unchanged; only the mechanism moved.
+// parity/manifest/chat.json records the decision the way its schema provides
+// for: JRNY-026 is `waived` with a `replacesBehaviour` naming this journey. The
+// acceptance text is left byte-for-byte alone because uictl holds it immutable
+// against the git baseline — editing it in place to describe SSE is exactly the
+// "old wording pointing at the new mechanism" this rescope exists to avoid.
 //
-// What IS assertable — and asserted below — is that the indicator reports the
-// real connection state rather than merely existing. The disconnect →
-// indicator → reconnect → rejoin acceptance needs a socket server in
-// deploy/docker-compose.e2e-standalone.yml; until then it lives at the unit
-// level (shared/api/socket/client.test.ts, rooms.test.ts).
+// The observable is genuinely different, and that difference IS the journey:
 //
-// Tracked as #152, which also records WHY this is not the env-var fix it looks
-// like: `services/elitea-main/internal/api/socketio/server.go` has zero callers
-// (`socketio.NewServer` is never constructed, `Handler()` never mounted), so
-// there is no server to point VITE_SOCKET_SERVER at.
-test('J26: sidebar connection indicator reports the real socket state', async ({ page }) => {
-  // Pin the precondition: this stack genuinely has no socket server. When one
-  // is added, this assertion fails and this journey must be rewritten to the
-  // full disconnect/reconnect acceptance instead of quietly passing.
+//   * socket.io reconnected AND re-emitted a join for every room it had been
+//     in — hence "rooms rejoined". Nothing equivalent exists here.
+//   * `EventSource` reconnects on a transport-level drop entirely inside the
+//     browser: no application code runs, and `useEventSource` observes nothing
+//     (see its own doc comment — an HTTP error STATUS is terminal, a dropped
+//     connection is not). The only thing an end-to-end test can see is a new
+//     request to the same stream URL.
+//
+// The precondition is inverted rather than dropped. It used to pin "this stack
+// has no socket server", so a socket-shaped journey could not silently pass;
+// it now pins "the notification SSE stream really is mounted and streaming", so
+// this journey cannot pass against a stack where live push is dead. That was
+// not a hypothetical: before #152 this endpoint answered 404 in every
+// deployment — RouterConfig.CurrentNotificationEvents was mounted only by
+// production_router.go, which NewRouter never reaches — and the client's only
+// signal was a console warning.
+//
+// NOT COVERED HERE, deliberately:
+//  - "a notification created mid-stream arrives live". No API creates a
+//    notification: the /api/v2/notifications routes are list/update/delete only
+//    (router.go:598-603) and every emitter is legacy Python, so driving one
+//    would need a DB write no fixture here has.
+//  - The socket.io half of JRNY-026 (voice/video). There is no server to
+//    connect to, so it stays uncovered rather than faked; the connection dot's
+//    real state is asserted instead, and it is CORRECT state on a chat-only
+//    stack rather than a defect.
+
+/** The stream `useNotificationsSSE` opens, minus its project id. */
+const SSE_PATH_PREFIX = '/notifications/events/prompt_lib/';
+const SSE_URL = `${API_BASE}${SSE_PATH_PREFIX}${DEFAULT_PROJECT_ID}`;
+
+/**
+ * J26.1 — the platform contract: the stream is mounted, and a transport-level
+ * drop is recovered by the browser with no application code involved.
+ *
+ * Driven through a real `EventSource` in the page rather than through the
+ * sidebar's own subscription, because the sidebar subscribes with a DIFFERENT
+ * project id and cannot connect at all today — that is J26.2 below, and it is
+ * why this half is written against the URL a user WITH access resolves to. The
+ * server, the auth cookie, the RBAC check and the reconnect are all real; only
+ * the subscriber is the test's own.
+ */
+test('J26.1: the notification SSE stream is mounted, and a dropped connection is re-opened automatically', async ({ page }) => {
+  test.setTimeout(90_000);
+
+  const streamRequests: string[] = [];
+  page.on('request', (request: Request) => {
+    if (request.url().includes(SSE_PATH_PREFIX)) streamRequests.push(request.url());
+  });
+
+  // Drop the FIRST attempt at the transport level. `route.abort()` is a
+  // connection failure, not an HTTP status — precisely the case WHATWG says
+  // EventSource must retry. A status would be terminal, and a test built on one
+  // would assert the opposite of this journey while looking identical.
+  let dropped = 0;
+  await page.route(`**${SSE_PATH_PREFIX}${DEFAULT_PROJECT_ID}`, async (route) => {
+    if (dropped === 0) {
+      dropped += 1;
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(BASE_URL + '/app/chat');
+
+  const outcome = await page.evaluate(
+    async ({ url, budgetMs }) =>
+      new Promise<{ ready: boolean; errors: number; readyState: number }>((resolve) => {
+        const source = new EventSource(url, { withCredentials: true });
+        let errors = 0;
+        const finish = (ready: boolean): void => {
+          const readyState = source.readyState;
+          source.close();
+          resolve({ ready, errors, readyState });
+        };
+        source.addEventListener('error', () => {
+          errors += 1;
+          // CLOSED means the browser gave up (an HTTP status) — report it
+          // rather than sitting out the budget, so the failure names itself.
+          if (source.readyState === EventSource.CLOSED) finish(false);
+        });
+        // The opening handshake of services/elitea-main/internal/api/v2/
+        // notifications/current_events.go. Receiving it proves a real stream
+        // from elitea-main, not a 404 the client tolerates in silence.
+        source.addEventListener('notifications_ready', () => finish(true));
+        setTimeout(() => finish(false), budgetMs);
+      }),
+    { url: SSE_URL, budgetMs: 30_000 },
+  );
+
+  expect(dropped).toBe(1);
+  // The abort produced an error event, and the browser retried anyway: more
+  // than one request to the same URL is the only end-to-end evidence of the
+  // reconnect, since no application code runs for it.
+  expect(outcome.errors).toBeGreaterThan(0);
+  expect(streamRequests.filter((url) => url.includes(SSE_PATH_PREFIX)).length).toBeGreaterThan(1);
+  expect(outcome.ready).toBe(true);
+});
+
+/**
+ * J26.2 — the app's OWN subscription. Currently red, and red for a reason that
+ * has nothing to do with SSE wiring.
+ *
+ * `NotificationButton` passes `personal_project_id` (NotificationButton.tsx:171
+ * → useNotificationsSSE), and `app/session-store.ts:67` fills that field with
+ * the USER ID, with a comment saying so: `/forward-auth/info` (internal/api/v2/
+ * auth/session.go:77-81) returns only `authenticated`/`user_id`/`email`, so
+ * there is no personal project id to send. The stream's authorize() resolves
+ * `models.notifications.notifications.list` against whatever project id is in
+ * the URL, so the sidebar asks about a project the user is not a member of and
+ * gets 403 — terminal for EventSource, no retry, one console warning.
+ *
+ * Marked failing rather than asserted around: the route is mounted and correct
+ * (J26.1 proves it end-to-end), and giving `/forward-auth/info` a real personal
+ * project id is a separate product decision about what a personal project IS in
+ * the Go stack. When that lands, this reports "Expected to fail, but passed".
+ */
+test('J26.2: the sidebar live-push subscription connects', async ({ page }) => {
+  test.fail();
+  test.setTimeout(60_000);
+
+  const requests: string[] = [];
+  const failures: string[] = [];
+  const responses: Array<{ url: string; status: number }> = [];
+  page.on('request', (request: Request) => {
+    if (request.url().includes(SSE_PATH_PREFIX)) requests.push(request.url());
+  });
+  // Chromium surfaces the rejected stream as a 403 RESPONSE; WebKit surfaces it
+  // as a failed request ('cancelled') with no response at all. Both are watched
+  // so this fails fast and by name on either engine — measured, not assumed: a
+  // stream that really establishes yields a 200 response on both.
+  page.on('requestfailed', (request: Request) => {
+    if (request.url().includes(SSE_PATH_PREFIX)) {
+      failures.push(`${request.url()} (${request.failure()?.errorText ?? 'unknown'})`);
+    }
+  });
+  page.on('response', (response) => {
+    if (response.url().includes(SSE_PATH_PREFIX)) {
+      responses.push({ url: response.url(), status: response.status() });
+    }
+  });
+
+  await page.goto(BASE_URL + '/app/chat');
+
+  // The client half is live regardless: the sidebar really does open a stream.
+  // This part passes today and is what makes the failure below specific — the
+  // subscription exists, it just cannot be authorized.
+  await expect.poll(() => requests.length, { timeout: 20_000 }).toBeGreaterThan(0);
+
+  expect(failures, `the sidebar's notification stream was dropped: ${failures.join(', ')}`).toEqual([]);
+  await expect.poll(() => responses[0]?.status, { timeout: 15_000 }).toBe(200);
+});
+
+/**
+ * The socket.io indicator, kept from the original journey and re-read rather
+ * than deleted. On a chat-only stack `vite_socket_server` is empty, the noop
+ * client reports `disconnected`, and the dot is telling the truth — socket.io
+ * is retained for voice/video only. This is the tripwire that fires the day a
+ * socket server is added and JRNY-026's voice/video half becomes writable.
+ */
+test('J26.3: the sidebar connection indicator reports the real socket state', async ({ page }) => {
   const cfg = await page.request.get(`${BASE_URL}/app/config.js`);
   expect(cfg.status()).toBe(200);
   expect(await cfg.text()).toContain('vite_socket_server: ""');

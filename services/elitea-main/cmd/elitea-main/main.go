@@ -275,6 +275,37 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		logger.Info("project-list route enabled (OIDC-only auth)")
 	}
 
+	// Same shape, same reason, for the notification SSE stream (#152). This is
+	// the route `useNotificationsSSE` opens on every page that mounts the
+	// sidebar — GET /api/v2/notifications/events/prompt_lib/{projectID} — and
+	// it was composed ONLY inside the `authEnabled` (ELITEA_AUTH_CONFIG_FILE)
+	// branch above. OIDC-only deployments, which is what the E2E stack and any
+	// SSO-only install are, therefore 404'd it on every load, and the client
+	// degraded to its list-query fallback with only a console warning to show
+	// for it. That 404 was previously attributed to RouterConfig.EventSource /
+	// RedisClient being unwired; those gate a DIFFERENT route
+	// (/api/v2/events/prompt_lib/{projectID}, no client) and fixing them alone
+	// would not have moved this one.
+	if currentNotificationEvents == nil && oidcSessionHandler != nil {
+		notificationEventsRepository, repositoryErr :=
+			dbrepos.NewCurrentNotificationEventRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose OIDC-only notification events repository: %w", repositoryErr)
+		}
+		var oidcNotificationEventsErr error
+		currentNotificationEvents, oidcNotificationEventsErr = notificationsapi.NewCurrentNotificationEventsRoute(
+			notificationEventsRepository,
+			apimw.AuthConfig{
+				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if oidcNotificationEventsErr != nil {
+			return fmt.Errorf("compose OIDC-only notification events route: %w", oidcNotificationEventsErr)
+		}
+		logger.Info("notification events route enabled (OIDC-only auth)")
+	}
+
 	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("load current project-info settings: %w", err)
@@ -758,6 +789,24 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 	}
 
+	// Project SSE stream transport (#152). Without this, router.go's
+	// `if cfg.EventSource != nil { … } else if cfg.RedisClient != nil { … }`
+	// falls through on both arms and /api/v2/events/prompt_lib/{projectID} is
+	// never registered — a 404 indistinguishable from a typo'd path. See
+	// newEventStreamRedisClient for why Redis is the correct arm here.
+	eventStreamRedis, err := newEventStreamRedisClient(ctx, os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("compose project event stream: %w", err)
+	}
+	if eventStreamRedis != nil {
+		defer func() {
+			if err := eventStreamRedis.Close(); runErr == nil && err != nil {
+				runErr = fmt.Errorf("close project event stream: %w", err)
+			}
+		}()
+		logger.Info("project SSE stream enabled (redis transport)")
+	}
+
 	r := api.NewRouter(api.RouterConfig{
 		AdminUI: adminUICfg,
 		Pool:    pool,
@@ -821,6 +870,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// returns zero, and it looked like a field that gated nothing. The five
 		// routes are declared in the handler's own Routes() method.
 		WebhookRepo: webhooksRepository(pool),
+		// The project SSE stream's transport. Nil-gated in router.go behind a
+		// two-arm fallback (EventSource → RedisClient) whose members were BOTH
+		// unassigned, so the endpoint 404'd everywhere (#152).
+		RedisClient: eventStreamRedis,
 	})
 
 	// Socket.IO remains unmounted until its legacy connection authentication,
