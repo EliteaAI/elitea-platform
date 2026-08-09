@@ -394,12 +394,13 @@ func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Cont
 		}); err != nil {
 			return err
 		}
-		if err := persistCurrentAgentRuntimeFailure(
+		if err := persistCurrentAgentRuntimeTerminal(
 			ctx,
 			tx,
 			projectID,
 			projection.CapabilityID,
 			record,
+			projection.Frame.Failure.Code,
 			projection.Frame.Failure.SafeMessage,
 		); err != nil {
 			return err
@@ -433,12 +434,13 @@ func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Cont
 	return outcome, nil
 }
 
-func persistCurrentAgentRuntimeFailure(
+func persistCurrentAgentRuntimeTerminal(
 	ctx context.Context,
 	tx sqlExecutor,
 	projectID int64,
 	capabilityID string,
 	record outputRecord,
+	failureCode string,
 	safeMessage string,
 ) error {
 	if capabilityID != executiondomain.AgentApplicationCapability &&
@@ -455,10 +457,13 @@ func persistCurrentAgentRuntimeFailure(
 	result, err := tx.Exec(ctx, fmt.Sprintf(`
 UPDATE %s AS message_group
 SET is_streaming = FALSE,
-    meta = message_group.meta || jsonb_build_object(
-        'is_error', TRUE,
-        'error', $3::text
-    ),
+    meta = CASE
+        WHEN $4::boolean THEN message_group.meta - 'is_error' - 'error'
+        ELSE message_group.meta || jsonb_build_object(
+            'is_error', TRUE,
+            'error', $3::text
+        )
+    END,
     updated_at = clock_timestamp()
 FROM elitea_runtime.agent_execution_jobs AS agent,
      %s AS conversation
@@ -476,12 +481,12 @@ WHERE agent.execution_id = $1
       agent.client_execution_generation`,
 		schema+".chat_message_group",
 		schema+".chat_conversations",
-	), record.ExecutionID, int64(record.Generation), safeMessage)
+	), record.ExecutionID, int64(record.Generation), safeMessage, failureCode == "CANCELLED")
 	if err != nil {
-		return fmt.Errorf("finalize current agent failure: %w", err)
+		return fmt.Errorf("finalize current agent terminal state: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return errors.New("current agent failure response message group is unavailable")
+		return errors.New("current agent terminal response message group is unavailable")
 	}
 	return nil
 }
