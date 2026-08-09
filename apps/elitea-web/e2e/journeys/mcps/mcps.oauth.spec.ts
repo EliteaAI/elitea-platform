@@ -26,36 +26,43 @@
  *    `GET /elitea_core/toolkits/prompt_lib/{projectId}` response.
  *
  * ── Known app defects this file now surfaces instead of hiding ──────────
- * D1 (backend, blocks `J18: seed an MCP …`): `POST /elitea_core/tools/
- *    prompt_lib/{projectId}` ALWAYS returns 500. `pgRepo.CreateToolkit`
- *    (services/elitea-main/internal/api/v2/toolkits/handler.go:908-911)
- *    INSERTs `(name, type, description, settings, meta, author_id)` but
- *    `p_<id>.elitea_tools.owner_id` is `INTEGER NOT NULL` with no default
- *    (internal/infra/db/migrations/001_initial.sql:181), so every create
- *    fails with `null value in column "owner_id" … (SQLSTATE 23502)`.
- *    Toolkit/MCP creation is therefore impossible through the product.
- * D2 (backend, keeps the MCP create page permanently empty):
- *    `GET /elitea_core/toolkits/prompt_lib/{projectID}` is routed to
- *    `toolkitHandler.List` (router.go:645 and :670) — the *instance* list,
- *    which answers `{"rows":[],"total":0}`. The handler that returns the
- *    type→schema map the UI needs, `ListTypeSchemas`
- *    (toolkits/handler.go:231), has NO route registration anywhere. The
- *    generated client's `NOTE(W2)` claiming router.go:375 wires it is stale.
- *    Consequence: `useGetCurrentMCPSchemas` filters the keys `rows`/`total`,
- *    finds no mcp-flavoured key, and `/app/mcps/create` can never offer a
- *    type to pick. The catalogue test below asserts the rendered set equals
- *    the backend-derived set, so it passes today AND starts asserting real
- *    types the moment the route is fixed — it does not cement the bug.
+ * D1 — FIXED (#129), re-measured 2026-08-09 against the standalone e2e
+ *    stack. It used to read: `POST /elitea_core/tools/prompt_lib/{projectId}`
+ *    ALWAYS returns 500, because `pgRepo.CreateToolkit` never INSERTed the
+ *    NOT-NULL `owner_id`, so no toolkit or MCP could be created at all. That
+ *    is no longer true: the POST returns 201 with the minted row, the row
+ *    comes back from `GET /elitea_core/tools/prompt_lib/{projectId}`, and
+ *    `GET /elitea_core/tool/prompt_lib/{projectId}/{id}` serves its detail.
+ *    The seed test below now gets all the way to the Indexes tab (see D3).
+ * D2 — FIXED, same measurement. It used to read: `GET /elitea_core/toolkits/
+ *    prompt_lib/{projectID}` is routed to the *instance* list and answers
+ *    `{"rows":[],"total":0}`, so the type→schema map the create page needs
+ *    was unreachable and no MCP type could ever be offered. That endpoint now
+ *    returns the real type→schema map (`application`, `artifact`, … each with
+ *    their `properties`/`args_schemas`). The catalogue test below was written
+ *    against the backend-DERIVED set rather than against "empty", so it kept
+ *    its teeth across the fix instead of cementing the bug — which is the
+ *    only reason this correction was cheap to make.
+ * D3 (frontend, the one still standing — #149): `pages/toolkits/
+ *    EditToolkit.tsx:313-314` renders the Indexes tab as
+ *    `{tab === 1 && <Box data-testid="edit-toolkit-indexes-tab-panel" />}` —
+ *    a real, clickable tab label in front of an empty Box.
+ *    `features/toolkits/indexes/ui/IndexesContainer.tsx` is fully ported
+ *    (list, selection, delete-confirm, notification-link alert) and has ZERO
+ *    production importers. Same shape as #134/#126/#129.
  *
  * ── Genuinely untestable here ──────────────────────────────────────────
  * The end-to-end "MCP becomes usable after authorization" half of JRNY-018
- * cannot be exercised: the receiving end of the relay is
- * `features/mcps`' `McpAuthModal`/`createAuthorizationMonitor`, which is
- * only reachable from an MCP toolkit's edit screen — and no MCP toolkit can
- * exist while D1 stands. `src/features/mcps/ui/OAuthFormFields.tsx` also has
- * no production caller, so there is no OAuth-configuring form to drive. This
- * is stated here and in the run report rather than hidden behind a
- * `test.skip()`.
+ * still cannot be exercised — but NOT for the reason recorded here before.
+ * The old reason ("no MCP toolkit can exist while D1 stands") died with D1.
+ * The real one, re-grepped: the receiving end of the relay is
+ * `features/mcps`' `McpAuthModal`/`useMcpAuthModal`, and neither has any
+ * production call site — every hit outside `features/mcps/ui/McpAuthModal.*`
+ * is a doc comment citing it as a known gap (`ToolActionsSelector.tsx:28-33`,
+ * `ToolBase.tsx:123`, `TestTools.tsx:48-54`). `OAuthFormFields.tsx` is
+ * reachable only from that unmounted modal. So there is no OAuth-configuring
+ * form to drive. Stated here and in the run report rather than hidden behind
+ * a `test.skip()`.
  */
 import { expect, test } from '@playwright/test';
 
@@ -192,10 +199,12 @@ test.describe('JRNY-018 — MCP OAuth callback round trip', () => {
   });
 
   test('J18: the MCP create page offers exactly the MCP types the catalogue endpoint returns', async ({ page }) => {
-    // See D2 in the module comment: this endpoint currently answers with an
-    // instance envelope instead of the type→schema map, so the derived set is
-    // empty today. The assertion is written against the derived set, not
-    // against "empty", so it keeps its teeth once the route is fixed.
+    // D2 is fixed (see the module comment): this endpoint now returns the real
+    // type→schema map, not the instance envelope, so `mcpTypeKeys` below is
+    // derived from live schemas rather than from an empty list. Because the
+    // assertion was always written against the derived set — never against
+    // "empty" — it survived the backend fix without editing, and now asserts
+    // the real catalogue. Whichever side is empty, the two must agree.
     const resp = await page.request.get(`${API_BASE}/elitea_core/toolkits/prompt_lib/${DEFAULT_PROJECT_ID}`);
     expect(resp.status(), 'GET /elitea_core/toolkits/prompt_lib feeds the MCP type selector').toBe(200);
     const schemas = (await resp.json()) as Record<string, { type?: string } | undefined>;
@@ -229,19 +238,34 @@ test.describe('JRNY-018 — MCP OAuth callback round trip', () => {
   });
 
   test('J18: an MCP created through the API is listed and opens on its own detail screen', async ({ page }) => {
-    // Fails today at the seed step with HTTP 500 — see D1 in the module comment
-    // and #129: `owner_id` is never INSERTed, so no MCP or toolkit can be
-    // created at all. Left failing on purpose; weakening the seed assertion
-    // would make a completely broken create endpoint look green.
-    //
-    // test.fail() rather than test.skip(): a skip runs nothing and reports
-    // green, which is the exact defect this rewrite removes. This runs every
-    // assertion, expects failure, and turns the suite RED the moment #129 is
-    // fixed — so the annotation cannot outlive the bug unnoticed.
-    //
-    // Caveat, stated because a green suite must not imply more than it proves:
-    // every assertion AFTER the seed is unreachable while D1 stands, so those
-    // are unexecuted and unproven, not verified coverage.
+    /*
+     * STILL EXPECTED-FAIL, but for a different defect than the one recorded
+     * here until 2026-08-09 — and this is exactly the failure mode a stale
+     * `test.fail()` produces, so the correction is written out in full.
+     *
+     * OLD reason (D1/#129): the seed 500'd because `owner_id` was never
+     * INSERTed, so no MCP could be created and every assertion after the seed
+     * was unreachable. Re-measured on the standalone stack: the POST returns
+     * 201, and the list/detail round trip works.
+     *
+     * MEASURED reason today (D3/#149): the seed, the list card, the
+     * backend-minted id in the URL, the detail name and the test-pane slot all
+     * PASS. It fails on the last assertion — the Indexes tab panel is an empty
+     * `<Box/>` (`EditToolkit.tsx:313-314`) because `IndexesContainer` has no
+     * production importer, so it resolves to a zero-box element and is never
+     * visible. Verified by removing this annotation and reading the failure:
+     *
+     *   14 × locator resolved to
+     *   <div class="MuiBox-root css-0" data-testid="edit-toolkit-indexes-tab-panel"></div>
+     *
+     * The annotation stays because the test genuinely still fails; only the
+     * cause moved. `test.fail()` rather than `test.skip()`: this runs every
+     * assertion and turns the suite RED the moment #149 lands.
+     *
+     * Coverage claim, narrowed accordingly: everything up to and including the
+     * detail screen IS now executed and proven. Only the Indexes-tab assertion
+     * and the `checkA11y` after it are unreached.
+     */
     test.fail();
     const name = `${AUTOTEST_PREFIX}j18-oauth-mcp`;
     const createResp = await page.request.post(
