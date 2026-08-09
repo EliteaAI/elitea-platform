@@ -64,7 +64,21 @@ export function useEditApplicationForm(
       const conversationStarters = (values.version_details?.conversation_starters ?? []).filter(
         (entry): entry is string => typeof entry === 'string',
       );
-      await save(toVersionDraft(activeVersion, conversationStarters));
+      const saved = await save(toVersionDraft(activeVersion, conversationStarters));
+      /*
+       * #133 — the page now arms the app-wide unsaved-changes guard off
+       * `formState.isDirty`, so a successful save MUST clear that dirtiness
+       * or the very next nav-away is prompted about changes already
+       * persisted. `useSaveApplicationVersion` deliberately invalidates no
+       * GET-side cache (see its own doc comment), so the `values` prop
+       * feeding `useForm` below does not change on its own and RHF has no
+       * other reason to reset. Reset to the values just submitted — NOT to
+       * the server's echo, which carries only the version-level fields this
+       * endpoint accepts and would blank out the name/description the page
+       * still shows. Left dirty on failure, which is correct: the edits
+       * really are still unsaved.
+       */
+      if (saved !== undefined) form.reset(form.getValues());
     })();
   }, [form, save, activeVersion]);
 

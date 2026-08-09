@@ -11,6 +11,7 @@ import { CreateApplicationTabBar } from '@/entities/application-form';
 import { CreateAgentForm } from '@/features/agents';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
+import { useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { applicationDetailDisplayName, toVersionSummaries } from './lib/editApplicationMappers';
 import { isPublicAgentsProject } from './lib/isPublicAgentsProject';
@@ -115,9 +116,13 @@ function EditApplicationSaveBar({ onSave, canSave, isSaving }: EditApplicationSa
  *    itself, which builds its OWN inline `handleDiscard`), so wiring it
  *    here is the closest faithful home available for an owned hook that
  *    would otherwise have no real call site in this unit.
- *  - Nav-blocking-when-dirty (`useNavBlocker`, baseline) is dropped: that
- *    hook is not in this unit's owned-file list and no promoted equivalent
- *    exists.
+ *  - Nav-blocking-when-dirty (`useNavBlocker`, baseline) is CLOSED (#133).
+ *    It used to be dropped here on the grounds that no promoted equivalent
+ *    existed; in fact `widgets/app-shell`'s `NavBlockerDialog` had a real,
+ *    app-wide TanStack `useBlocker` all along and only lacked a setter
+ *    outside the chat process, so a dirty agent edit was silently lost on
+ *    any nav-link click. This page now arms it through
+ *    `useUnsavedChangesNavBlocker` (see the call site below).
  *  - Only the version-level fields `useSaveApplicationVersion` can actually
  *    carry (`conversation_starters` here, since name/description are
  *    APPLICATION-level fields — `ApplicationUpdateRequest`, a different,
@@ -170,6 +175,21 @@ export function EditApplication(): ReactNode {
   useCorrectUserNameInUrl(detail?.name);
 
   const { form, handleSave, isSaving, saveError } = useEditApplicationForm(detail, activeVersion, projectId, applicationId);
+
+  /*
+   * #133 — arm the app-wide unsaved-changes guard from this page's own dirty
+   * state. `widgets/app-shell`'s `NavBlockerDialog` and its TanStack
+   * `useBlocker` are mounted under every page and have always worked; the
+   * standalone agent editor simply never raised the flag, so editing an
+   * agent and clicking any nav link navigated through and lost the edit.
+   * (This replaces the "nav-blocking-when-dirty is dropped" gap this file's
+   * header used to disclose.) `formState.isDirty` covers exactly the fields
+   * this page routes back into the form — `name`/`description`, per
+   * `useEditApplicationEditorBridge`'s `shouldDirty: true`. The hook
+   * disarms on unmount; `useEditApplicationForm` clears dirtiness after a
+   * successful save so saving is not itself prompted about.
+   */
+  useUnsavedChangesNavBlocker(form.formState.isDirty);
 
   /*
    * The configuration panel used to be `<Box data-testid=… />` — self-closing

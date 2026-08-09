@@ -76,7 +76,17 @@ export function useEditPipelineForm(
       const conversationStarters = (values.version_details?.conversation_starters ?? []).filter(
         (entry): entry is string => typeof entry === 'string',
       );
-      await save(toVersionDraft(activeVersion, conversationStarters, readGraphDraft()));
+      const saved = await save(toVersionDraft(activeVersion, conversationStarters, readGraphDraft()));
+      /*
+       * #133 — the page now arms the app-wide unsaved-changes guard off
+       * `formState.isDirty`, so a successful save must clear that dirtiness
+       * or the next nav-away is prompted about changes already persisted.
+       * `useSaveApplicationVersion` invalidates no GET-side cache by design
+       * (its own doc comment), so the `values` prop feeding `useForm` above
+       * never changes and RHF has no other reason to reset. Left dirty on
+       * failure — those edits really are still unsaved.
+       */
+      if (saved !== undefined) form.reset(form.getValues());
     })();
   }, [form, save, activeVersion, readGraphDraft]);
 

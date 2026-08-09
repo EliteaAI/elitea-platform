@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -18,6 +18,7 @@ import {
 import { CreateAgentForm } from '@/features/agents';
 import { EliteaApiError } from '@/shared/api/generated/mutator';
 import { t } from '@/shared/i18n';
+import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 
@@ -39,6 +40,30 @@ interface CreateAgentFormExtraFields {
   readonly welcomeMessage: string;
   readonly variables: { readonly name: string; readonly value: string }[];
   readonly stepLimit: number | undefined;
+}
+
+/**
+ * The `extraFields` half of "is this draft dirty?" (#133).
+ *
+ * RHF's `formState.isDirty` only covers the three fields
+ * `applicationCreationSchema` validates (`name`, `description`,
+ * `version_details.conversation_starters`); the four in
+ * `CreateAgentFormExtraFields` are deliberately held OUTSIDE the form (see
+ * that interface's own doc comment), so a user who typed only instructions
+ * or a welcome message would be invisible to `isDirty` and would lose that
+ * work on nav-away. Compared field-by-field against the values this page
+ * started from rather than tracked with a sticky "user touched something"
+ * boolean, so undoing an edit correctly disarms the guard again.
+ */
+function areExtraFieldsEqual(a: CreateAgentFormExtraFields, b: CreateAgentFormExtraFields): boolean {
+  if (a.instructions !== b.instructions) return false;
+  if (a.welcomeMessage !== b.welcomeMessage) return false;
+  if (a.stepLimit !== b.stepLimit) return false;
+  if (a.variables.length !== b.variables.length) return false;
+  return a.variables.every((variable, index) => {
+    const other = b.variables[index];
+    return other !== undefined && variable.name === other.name && variable.value === other.value;
+  });
 }
 
 interface CreateApplicationFieldErrors {
@@ -202,6 +227,19 @@ export function CreateApplication(): ReactNode {
     stepLimit: draftDefaults.versionDetails.meta.step_limit,
   });
 
+  /*
+   * #133 — arm the app-wide unsaved-changes guard. `widgets/app-shell`'s
+   * `NavBlockerDialog` + its TanStack `useBlocker` have always been mounted
+   * under this page; nothing on the standalone `/agents` editors ever raised
+   * the flag, so typing a name here and clicking any nav link navigated
+   * through silently and threw the draft away. `useRef`'s initialiser is
+   * only kept from the first render, so this holds the values the page
+   * opened with. Guard is disarmed on unmount by the hook itself.
+   */
+  const initialExtraFields = useRef(extraFields);
+  const isDraftDirty = form.formState.isDirty || !areExtraFieldsEqual(extraFields, initialExtraFields.current);
+  useUnsavedChangesNavBlocker(isDraftDirty);
+
   const name = form.watch('name') ?? '';
   const description = form.watch('description') ?? '';
 
@@ -277,6 +315,9 @@ export function CreateApplication(): ReactNode {
       // `createDraftError`) carries the real failure — rendered below,
       // field-attributed where possible. Nothing further to do here.
       if (created === undefined) return;
+      // #133: the draft is persisted — this navigation is the SAVE's own,
+      // not a nav-away from unsaved work, so it must not be prompted about.
+      disarmUnsavedChangesNavBlocker();
       void navigate({
         to: '/agents/$tab/$agentId',
         params: { tab: params.tab ?? 'latest', agentId: created.id },
@@ -286,6 +327,10 @@ export function CreateApplication(): ReactNode {
   }, [form, create, draftDefaults, extraFields, navigate, params.tab]);
 
   const handleCancel = useCallback(() => {
+    // #133: Cancel IS the explicit "throw this draft away" action, so it
+    // does not also get the unsaved-changes prompt — same as the
+    // chat-embedded editors, which lower the flag when their editor closes.
+    disarmUnsavedChangesNavBlocker();
     void navigate({ to: '/agents/$tab', params: { tab: params.tab ?? 'latest' } });
   }, [navigate, params.tab]);
 

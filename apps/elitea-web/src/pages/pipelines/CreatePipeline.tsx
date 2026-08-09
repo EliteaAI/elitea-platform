@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -17,6 +17,7 @@ import {
 } from '@/entities/application-form';
 import { CreateAgentForm } from '@/features/agents';
 import { t } from '@/shared/i18n';
+import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 
@@ -32,6 +33,30 @@ interface CreatePipelineFormExtraFields {
   readonly welcomeMessage: string;
   readonly variables: { readonly name: string; readonly value: string }[];
   readonly stepLimit: number | undefined;
+}
+
+/**
+ * The `extraFields` half of "is this draft dirty?" (#133) — RHF's
+ * `formState.isDirty` only sees the three schema-validated fields, so a user
+ * who typed only instructions would otherwise lose that work unprompted.
+ *
+ * Duplicated from `pages/agents/CreateApplication.tsx`'s
+ * `areExtraFieldsEqual` rather than shared: `entities/application-form`'s
+ * barrel — the only slice both pages could legally reach for it — is at its
+ * §3.5 export budget (exactly 20, its own header says so), and a
+ * `pages/pipelines` -> `pages/agents` import is a sideways page import. The
+ * whole surrounding adapter is already deliberately duplicated between these
+ * two files for the same reason (see this file's own header).
+ */
+function areExtraFieldsEqual(a: CreatePipelineFormExtraFields, b: CreatePipelineFormExtraFields): boolean {
+  if (a.instructions !== b.instructions) return false;
+  if (a.welcomeMessage !== b.welcomeMessage) return false;
+  if (a.stepLimit !== b.stepLimit) return false;
+  if (a.variables.length !== b.variables.length) return false;
+  return a.variables.every((variable, index) => {
+    const other = b.variables[index];
+    return other !== undefined && variable.name === other.name && variable.value === other.value;
+  });
 }
 
 const pageSx: SxProps<Theme> = {
@@ -135,6 +160,18 @@ export function CreatePipeline(): ReactNode {
     stepLimit: draftDefaults.versionDetails.meta.step_limit,
   });
 
+  /*
+   * #133 — arm the app-wide unsaved-changes guard, exactly as
+   * `pages/agents/CreateApplication.tsx` now does. `widgets/app-shell`'s
+   * `NavBlockerDialog` was mounted under this page all along but nothing on
+   * the standalone `/pipelines` editors ever raised the flag, so a typed
+   * draft was thrown away on any nav-link click. `useRef`'s initialiser is
+   * kept only from the first render, so this holds the opening values.
+   */
+  const initialExtraFields = useRef(extraFields);
+  const isDraftDirty = form.formState.isDirty || !areExtraFieldsEqual(extraFields, initialExtraFields.current);
+  useUnsavedChangesNavBlocker(isDraftDirty);
+
   const name = form.watch('name') ?? '';
   const description = form.watch('description') ?? '';
 
@@ -204,6 +241,9 @@ export function CreatePipeline(): ReactNode {
         setCreateError(new Error('createFailed'));
         return;
       }
+      // #133: the draft is persisted — this is the SAVE's own navigation,
+      // not a nav-away from unsaved work.
+      disarmUnsavedChangesNavBlocker();
       void navigate({
         to: '/pipelines/$tab/$agentId',
         params: { tab: params.tab ?? 'latest', agentId: created.id },
@@ -213,6 +253,8 @@ export function CreatePipeline(): ReactNode {
   }, [form, create, draftDefaults, navigate, params.tab]);
 
   const handleCancel = useCallback(() => {
+    // #133: Cancel IS the explicit discard, so it is not also prompted.
+    disarmUnsavedChangesNavBlocker();
     void navigate({ to: '/pipelines/$tab', params: { tab: params.tab ?? 'latest' } });
   }, [navigate, params.tab]);
 

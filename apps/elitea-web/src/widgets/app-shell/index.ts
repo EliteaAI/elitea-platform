@@ -20,6 +20,11 @@ export { PageTitleSetter } from './ui/PageTitleSetter';
 export { derivePageTitle } from './lib/pageTitle';
 export { useNavBlockerStore } from './model/navBlocker.store';
 export type { StreamingType } from './model/navBlocker.store';
+export {
+  useUnsavedChangesNavBlocker,
+  disarmUnsavedChangesNavBlocker,
+  UNSAVED_CHANGES_WARNING,
+} from './model/useUnsavedChangesNavBlocker';
 export { useSelectedProjectStore } from './model/selectedProject.store';
 export type { SelectedProject } from './model/selectedProject.store';
 export { useSelectedProject } from './model/useSelectedProject.hooks';
