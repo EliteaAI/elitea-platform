@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
@@ -71,11 +72,12 @@ func TestCurrentAgentCancelRouteRejectsInvalidForbiddenAndNonOwner(t *testing.T)
 		permissions []string
 		cancelErr   error
 		wantStatus  int
+		wantBody    string
 	}{
 		{name: "invalid project", projectID: "no", responseID: "10000000-0000-4000-8000-000000000042", permissions: []string{CurrentAgentCancelPermission}, wantStatus: http.StatusForbidden},
 		{name: "invalid response", projectID: "7", responseID: "not-a-uuid", permissions: []string{CurrentAgentCancelPermission}, wantStatus: http.StatusBadRequest},
 		{name: "permission denied", projectID: "7", responseID: "10000000-0000-4000-8000-000000000042", wantStatus: http.StatusForbidden},
-		{name: "not author", projectID: "7", responseID: "10000000-0000-4000-8000-000000000042", permissions: []string{CurrentAgentCancelPermission}, cancelErr: agentexecutionapp.ErrCurrentAgentCancelNotAllowed, wantStatus: http.StatusBadRequest},
+		{name: "inactive stale or not author", projectID: "7", responseID: "10000000-0000-4000-8000-000000000042", permissions: []string{CurrentAgentCancelPermission}, cancelErr: agentexecutionapp.ErrCurrentAgentCancelNotAllowed, wantStatus: http.StatusConflict, wantBody: "Message is not active or cannot be stopped by this user"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			canceller := &currentAgentCancellerStub{err: test.cancelErr}
@@ -92,6 +94,9 @@ func TestCurrentAgentCancelRouteRejectsInvalidForbiddenAndNonOwner(t *testing.T)
 			route.ServeHTTP(response, currentAgentCancelRequest(http.MethodDelete, test.projectID, test.responseID))
 			if response.Code != test.wantStatus {
 				t.Fatalf("status=%d want=%d body=%q", response.Code, test.wantStatus, response.Body.String())
+			}
+			if test.wantBody != "" && !strings.Contains(response.Body.String(), test.wantBody) {
+				t.Fatalf("body=%q does not contain %q", response.Body.String(), test.wantBody)
 			}
 			if test.cancelErr == nil && canceller.calls != 0 {
 				t.Fatalf("rejected request reached canceller %d times", canceller.calls)

@@ -107,7 +107,10 @@ func writeCurrentAgentCancelError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, agentexecutionapp.ErrInvalidCurrentAgentCancel):
 		writeError(writer, http.StatusBadRequest, "Invalid agent cancellation request")
 	case errors.Is(err, agentexecutionapp.ErrCurrentAgentCancelNotAllowed):
-		writeError(writer, http.StatusBadRequest, "Message can be stopped only by message or conversation author")
+		// The repository deliberately does not disclose whether a response is
+		// absent, already terminal, stale, or owned by another actor. Do not turn
+		// that safe ambiguity into a false claim that another user owns the run.
+		writeError(writer, http.StatusConflict, "Message is not active or cannot be stopped by this user")
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		writeError(writer, http.StatusGatewayTimeout, "Agent cancellation request timed out")
 	default:
