@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -73,17 +74,51 @@ func (r *ConversationsRepo) List(ctx context.Context, projectID string, page, pa
 	}, nil
 }
 
+// idPredicate picks the column a conversation identifier addresses.
+//
+// `chat_conversations.id` is a SERIAL, so handing it a UUID made Postgres
+// raise a type error and the route answered 500 — #128 defect 5, a status
+// that says "the server is broken" for what is really "look this up
+// differently". A conversation's UUID is a real, unique identity for the same
+// row, so it resolves against `uuid` instead; an identifier that is neither
+// is a 404, because no row can ever carry it.
+func idPredicate(conversationID string) (predicate string, ok bool) {
+	if conversationID == "" {
+		return "", false
+	}
+	numeric := true
+	for i := 0; i < len(conversationID); i++ {
+		if conversationID[i] < '0' || conversationID[i] > '9' {
+			numeric = false
+			break
+		}
+	}
+	if numeric {
+		return "c.id = $1::bigint", true
+	}
+	if _, err := uuid.Parse(conversationID); err == nil {
+		return "c.uuid = $1::uuid", true
+	}
+	return "", false
+}
+
 func (r *ConversationsRepo) Get(ctx context.Context, projectID, conversationID string) (conversations.Conversation, error) {
 	s := schema(projectID)
+	predicate, ok := idPredicate(conversationID)
+	if !ok {
+		return conversations.Conversation{}, apierr.NotFound("conversation not found")
+	}
+
 	q := fmt.Sprintf(`
-		SELECT c.id::text, c.name, COALESCE(c.uuid::text, ''), c.author_id, c.created_at, COALESCE(c.updated_at, c.created_at),
+		SELECT c.id::text, c.name, COALESCE(c.uuid::text, ''), c.author_id, c.folder_id::text, c.created_at, COALESCE(c.updated_at, c.created_at),
 			(SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
-		FROM %q.chat_conversations c WHERE c.id = $1`, s, s)
+		FROM %q.chat_conversations c WHERE %s`, s, s, predicate)
 
 	var c conversations.Conversation
 	var authorID int
+	var folderID *string
 	err := r.pool.QueryRow(ctx, q, conversationID).Scan(
-		&c.ID, &c.Name, &c.UUID, &authorID, &c.CreatedAt, &c.UpdatedAt, &c.MessageCount,
+		&c.ID, &c.Name, &c.UUID, &authorID, &folderID, &c.CreatedAt, &c.UpdatedAt, &c.MessageCount,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -93,6 +128,7 @@ func (r *ConversationsRepo) Get(ctx context.Context, projectID, conversationID s
 	}
 	c.ProjectID = projectID
 	c.CreatedBy = fmt.Sprintf("%d", authorID)
+	c.FolderID = folderID
 	return c, nil
 }
 
@@ -190,13 +226,19 @@ func (r *ConversationsRepo) Update(ctx context.Context, projectID, conversationI
 	}
 
 	args = append(args, conversationID)
+	// `author_id` and `folder_id` are returned so the PUT response describes
+	// the same conversation the GET does. Omitting author_id was #128 defect
+	// 6: every update answered with `"created_by": ""`, so a client that
+	// refreshed its cache from the mutation response lost the owner.
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET %s WHERE id = $%d
-		RETURNING id::text, name, COALESCE(uuid::text, ''), created_at, COALESCE(updated_at, created_at)`,
+		RETURNING id::text, name, COALESCE(uuid::text, ''), author_id, folder_id::text, created_at, COALESCE(updated_at, created_at)`,
 		s, setClauses, argIdx)
 
 	var c conversations.Conversation
+	var authorID int
+	var folderID *string
 	err := r.pool.QueryRow(ctx, q, args...).Scan(
-		&c.ID, &c.Name, &c.UUID, &c.CreatedAt, &c.UpdatedAt,
+		&c.ID, &c.Name, &c.UUID, &authorID, &folderID, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -205,6 +247,8 @@ func (r *ConversationsRepo) Update(ctx context.Context, projectID, conversationI
 		return conversations.Conversation{}, fmt.Errorf("conversations: update: %w", err)
 	}
 	c.ProjectID = projectID
+	c.CreatedBy = fmt.Sprintf("%d", authorID)
+	c.FolderID = folderID
 	return c, nil
 }
 

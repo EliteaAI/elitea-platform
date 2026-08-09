@@ -12,9 +12,16 @@
  * escape hatches (test.skip, two early returns, four `.catch(() => false)`
  * downgrades, three `.or()` fallbacks and two unfalsifiable assertions)
  * meant a blank page satisfied it. Every hatch is gone. What is left are
- * unconditional assertions, three of which fail — each failure is a real,
- * measured product gap, not a test defect. Do NOT "fix" them by loosening
- * the assertion.
+ * unconditional assertions, ONE of which still fails — a real, measured
+ * product gap, not a test defect. Do NOT "fix" it by loosening the
+ * assertion.
+ *
+ * Gaps 2 and 3 below were the backend halves, and are CLOSED by #128: the
+ * grouped listing now returns each folder's conversations and its date
+ * groups, and a reorder PUT resolves and persists a position. Their two
+ * tests are green and no longer annotated. Gap 1 is a UI-wiring gap and is
+ * untouched — the first test stays test.fail() until a composition root
+ * mounts <Conversations>.
  *
  * Gap 1 — the conversation-list sidebar is never mounted (UI wiring gap).
  *   `src/features/chat-conversation-list` has no importer anywhere in src:
@@ -29,19 +36,19 @@
  *   model-selector-button, model-selector-name — and zero buttons matching
  *   /folder/i. So no folder UI exists to drive.
  *
- * Gap 2 — moving a conversation into a folder has no server-side effect.
- *   PUT /elitea_core/conversation/prompt_lib/{p}/{id} with `folder_id`
- *   returns 200 but the folder's `conversations` array stays [] and its
- *   `total` stays 0 in GET /elitea_core/folder/prompt_lib/{p}?grouped=true,
- *   and the conversation-details response carries no folder_id at all.
+ * Gap 2 (CLOSED, #128) — moving a conversation into a folder had no
+ *   server-side effect: PUT .../conversation/.../{id} with `folder_id`
+ *   returned 200 but the folder's `conversations` stayed [] and `total`
+ *   stayed 0. The folder handler was never handed a DB pool, so the grouped
+ *   listing read no conversations at all — which is also why `date_groups`
+ *   came back empty for a project with nine conversations.
  *
- * Gap 3 — folder ordering is not modelled by the backend.
- *   PUT .../folder/prompt_lib/{p}/{id} with position/neighbor_above_id/
- *   neighbor_below_id (exactly the payload useReorderFolders.ts:79-97 sends)
- *   returns 200, but the response carries no `position` field and the list
- *   order is unaffected by it.
+ * Gap 3 (CLOSED, #128) — folder ordering was not modelled: a PUT carrying
+ *   position/neighbor_above_id/neighbor_below_id returned 200 with no
+ *   `position` in the response and no change in list order. Positions are
+ *   now stored, resolved from the neighbour pair, and ordered DESC.
  *
- * What DOES work, and is asserted green below: folder create / list /
+ * What ALSO works, and is asserted green below: folder create / list /
  * rename / delete round-trip through the real backend.
  *
  * Deliberately NOT asserted (no reachable selector exists yet, so an
@@ -167,11 +174,6 @@ test('J10: folder create/list/rename/delete round-trip through the backend', asy
 });
 
 test('J10: a conversation moved into a folder is grouped under it', async ({ page }) => {
-  // Expected-fail, blocked on #128 defect 1: PUT .../conversation/.../{id} with
-  // folder_id returns 200, but the folder's `conversations` stays [] and
-  // `total` stays 0. This is the literal JRNY-010 acceptance criterion. See the
-  // note above the first test for why this is test.fail() and not test.skip().
-  test.fail();
   const request = page.request;
   const conversationName = uniq('grouped-conv');
   const conversationId = await createConversation(request, conversationName);
@@ -184,25 +186,67 @@ test('J10: a conversation moved into a folder is grouped under it', async ({ pag
   });
   expect(move.status()).toBe(200);
 
-  // RED — Gap 2. This is the literal JRNY-010 acceptance ("the conversation
-  // is grouped under the folder") and the backend does not implement it: the
-  // PUT is accepted and then discarded.
+  // The literal JRNY-010 acceptance: "the conversation is grouped under the
+  // folder".
   const folders = await listFolders(request);
   const row = folders.find((f) => f.id === folder.id);
   expect(row, `folder ${folder.id} missing from grouped listing`).toBeDefined();
   expect(
     (row?.conversations ?? []).map((c) => c.name),
-    'conversation moved via folder_id is not returned under its folder — see Gap 2',
+    'conversation moved via folder_id is not returned under its folder',
   ).toContain(conversationName);
   expect(row?.total, 'folder.total must count the moved conversation').toBeGreaterThan(0);
+
+  // The conversation's own details must agree with the grouping — the two
+  // used to disagree (the listing knew nothing, and details carried no
+  // folder_id field at all), so asserting only the listing would let a
+  // half-applied move pass.
+  const details = await request.get(`${CONVERSATION_ROOT}/${conversationId}`);
+  expect(details.status()).toBe(200);
+  expect((await details.json()).folder_id, 'conversation details must report the folder it was moved into').toBe(folder.id);
+
+  // The single-folder pagination fetcher (folderApi.folderConversations) must
+  // see it too: it is a separate code path from the grouped listing and used
+  // to ignore folder_id entirely, returning the folder list instead.
+  const page1 = await request.get(`${FOLDER_ROOT}?grouped=true&folder_id=${folder.id}&limit=10&offset=0`);
+  expect(page1.status()).toBe(200);
+  const body = (await page1.json()) as { conversations?: readonly { name?: string }[]; total?: number };
+  expect((body.conversations ?? []).map((c) => c.name), 'folder_id filter must return that folder\'s conversations').toContain(conversationName);
+  expect(body.total).toBeGreaterThan(0);
+});
+
+test('J10: a conversation is addressable by uuid and keeps its owner across an update', async ({ page }) => {
+  const request = page.request;
+  const conversationName = uniq('ident');
+  const conversationId = await createConversation(request, conversationName);
+
+  // The numeric-id form is the one the app uses everywhere; read the uuid off it.
+  const byId = await request.get(`${CONVERSATION_ROOT}/${conversationId}`);
+  expect(byId.status()).toBe(200);
+  const detail = (await byId.json()) as { uuid?: string; created_by?: string };
+  expect(detail.uuid, 'conversation details must expose the uuid this test addresses it by').toBeTruthy();
+  expect(detail.created_by, 'a conversation must report its owner').toBeTruthy();
+
+  // Addressing the SAME conversation by uuid used to be a 500 — the id column
+  // is a SERIAL, so Postgres raised a type error and the route reported the
+  // server as broken. A uuid identifies the row, so it must resolve to it.
+  const byUuid = await request.get(`${CONVERSATION_ROOT}/${detail.uuid}`);
+  expect(byUuid.status(), `GET by uuid: ${(await byUuid.text()).slice(0, 200)}`).toBe(200);
+  expect((await byUuid.json()).id, 'the uuid must resolve to the same conversation').toBe(conversationId);
+
+  // An identifier that can never name a row is a 404, not a 500 — the
+  // distinction between "no such conversation" and "the server broke".
+  const garbage = await request.get(`${CONVERSATION_ROOT}/definitely-not-an-identifier`);
+  expect(garbage.status(), 'an unsupported identifier must be 404, not 500').toBe(404);
+
+  // The PUT response used to drop created_by (returning ""), so a client that
+  // refreshed its cache from the mutation response lost the owner.
+  const put = await request.put(`${CONVERSATION_ROOT}/${conversationId}`, { data: { name: `${conversationName}-renamed` } });
+  expect(put.status()).toBe(200);
+  expect((await put.json()).created_by, 'PUT must report the same created_by the details endpoint does').toBe(detail.created_by);
 });
 
 test('J10: folder reordering persists', async ({ page }) => {
-  // Expected-fail, blocked on #128 defect 3: a PUT carrying position /
-  // neighbor_above_id / neighbor_below_id — the exact payload
-  // useReorderFolders.ts:79-97 sends — returns 200, the response carries no
-  // `position`, and list order is unchanged. Ordering is not modelled at all.
-  test.fail();
   const request = page.request;
   const first = await createFolder(request, uniq('order-a'));
   const second = await createFolder(request, uniq('order-b'));
@@ -221,8 +265,34 @@ test('J10: folder reordering persists', async ({ page }) => {
   });
   expect(reorder.status()).toBe(200);
 
-  // RED — Gap 3. "Reordering persists" means the listing order changed and
-  // stays changed. Order comparison, not visibility: two fresh GETs.
-  expect(orderOf(await listFolders(request)), 'reorder had no effect on list order — see Gap 3').toEqual([second.id, first.id]);
-  expect(orderOf(await listFolders(request)), 'reordered order did not survive a refetch — see Gap 3').toEqual([second.id, first.id]);
+  // "Reordering persists" means the listing order changed and stays changed.
+  // Order comparison, not visibility: two fresh GETs.
+  expect(orderOf(await listFolders(request)), 'reorder had no effect on list order').toEqual([second.id, first.id]);
+  expect(orderOf(await listFolders(request)), 'reordered order did not survive a refetch').toEqual([second.id, first.id]);
+
+  // The leg above is NOT on its own discriminating: a freshly created folder
+  // already sorts above an older one, so `[second, first]` is also the order
+  // a server that ignored the PUT entirely would report. Moving `first` back
+  // to the top is the assertion that can only pass if the reorder is real —
+  // it demands an order the creation sequence never produces.
+  const reorderBack = await request.put(`${FOLDER_ROOT}/${first.id}`, {
+    data: {
+      name: first.name,
+      position: 0,
+      neighbor_above_id: null,
+      neighbor_below_id: second.id,
+    },
+  });
+  expect(reorderBack.status()).toBe(200);
+  expect(reorderBack.status() === 200 && 'position' in (await reorderBack.json()), 'reorder response must report the resolved position').toBe(true);
+
+  expect(orderOf(await listFolders(request)), 'reordering the older folder to the top had no effect').toEqual([first.id, second.id]);
+  expect(orderOf(await listFolders(request)), 'the re-reordered order did not survive a refetch').toEqual([first.id, second.id]);
+
+  // A rename must not disturb the order it just established — the two share
+  // one PUT route, and a full-replacement PUT that defaulted the missing
+  // `position` to 0 would silently send the folder to the bottom.
+  const rename = await request.put(`${FOLDER_ROOT}/${first.id}`, { data: { name: `${first.name}-renamed` } });
+  expect(rename.status()).toBe(200);
+  expect(orderOf(await listFolders(request)), 'a rename moved the folder').toEqual([first.id, second.id]);
 });
