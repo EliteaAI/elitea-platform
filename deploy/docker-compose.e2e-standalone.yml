@@ -115,6 +115,23 @@ services:
 
   elitea-main:
     image: ghcr.io/eliteaai/elitea-main:e2e
+    # `image:` alone made compose PULL when the tag was absent locally, and the
+    # tag has never been published — so CI died at bring-up with
+    # `Head https://ghcr.io/v2/eliteaai/elitea-main/manifests/e2e: denied`
+    # (issue #154). With `build:` present compose builds the missing tag from
+    # this very commit instead of reaching for a registry, so the local and CI
+    # paths are identical and no `:e2e` tag ever has to be published. An image
+    # that IS already present is still reused as before — compose does not
+    # rebuild without `--build`.
+    #
+    # Context is `..` because build contexts resolve relative to THIS file's
+    # directory (deploy/), and both Containerfiles expect the repo root.
+    build:
+      context: ..
+      dockerfile: services/elitea-main/Containerfile
+      # `e2e` builds the admin SPA from apps/elitea-web/src/entries/admin, so no
+      # admin-ui submodule checkout is required.
+      target: e2e
     environment:
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
       REDIS_URL: "redis:6379"
@@ -157,6 +174,10 @@ services:
 
   elitea-web:
     image: ghcr.io/eliteaai/elitea-web:e2e
+    # See the elitea-main `build:` comment above (issue #154).
+    build:
+      context: ..
+      dockerfile: apps/elitea-web/Containerfile
     environment:
       VITE_SERVER_URL: "/api/v2"
       VITE_BASE_URI: "/app/"
