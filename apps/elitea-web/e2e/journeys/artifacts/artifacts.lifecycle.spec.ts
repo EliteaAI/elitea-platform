@@ -243,7 +243,17 @@ test.describe('J20 artifacts lifecycle', () => {
     await checkA11y(page);
 
     // Download must deliver the exact bytes that were uploaded.
-    await page.goBack();
+    //
+    // Re-enter the bucket by URL rather than `page.goBack()`. History
+    // navigation was incidental — the step needs the file table, not the
+    // previous history entry — and in CI it left the table re-rendering: the
+    // download landed, but the row's Delete button below never became
+    // actionable, so the :batchDelete wait timed out on all three attempts
+    // while the failure snapshot showed the table present and no dialog open
+    // (issue #154, run 31329658116). Waiting for the row makes the precondition
+    // explicit instead of assuming the view has settled.
+    await page.goto(`${BASE_URL}/app/artifacts?bucket=${READ_BUCKET}`);
+    await expect(row).toBeVisible({ timeout: 15_000 });
     const [download] = await Promise.all([
       page.waitForEvent('download', { timeout: 15_000 }),
       page.getByRole('button', { name: `Download ${FILE_NAME}`, exact: true }).click(),
