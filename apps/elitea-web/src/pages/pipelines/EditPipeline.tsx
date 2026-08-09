@@ -8,9 +8,10 @@ import { useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
 import { CreateApplicationTabBar } from '@/entities/application-form';
-import { ConfigurationTab } from '@/features/pipelines';
+import { ConfigurationTab, usePipelineVersionSync } from '@/features/pipelines';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
+import { useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { pipelineDetailDisplayName, toVersionSummaries } from './lib/editPipelineMappers';
 import { isPublicPipelinesProject } from './lib/isPublicPipelinesProject';
@@ -26,6 +27,17 @@ import { useEditPipelineForm } from './lib/useEditPipelineForm';
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { useDiscardPipelineChanges } from './useDiscardPipelineChanges';
+
+/**
+ * The `||` lives here rather than inline in `EditPipeline` purely to keep
+ * that component under the §3.5 oxlint cyclomatic-complexity budget (12) —
+ * the same reason `./lib/useEditPipelineData.ts` splits half its body into
+ * one-line helpers. Behaviour is exactly `useUnsavedChangesNavBlocker(
+ * isFormDirty || isYamlDirty)`; see the call site for what each half means.
+ */
+function useEditPipelineNavBlocker(isFormDirty: boolean, isYamlDirty: boolean): void {
+  useUnsavedChangesNavBlocker(isFormDirty || isYamlDirty);
+}
 
 const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
 const tabBarSx: SxProps<Theme> = {
@@ -123,15 +135,18 @@ function EditPipelineSaveBar({ onSave, canSave, isSaving }: EditPipelineSaveBarP
  *    (`useDiscardApplicationChanges`) is in fact `ApplicationTabBar`
  *    (grepped directly), so wiring it here is the closest faithful home
  *    available.
- *  - Nav-blocking-when-dirty (`useNavBlocker`, baseline) is dropped: not in
- *    this unit's owned-file list and no promoted equivalent exists.
- *  - Only the version-level fields `useSaveApplicationVersion` can actually
- *    carry (`conversation_starters` here) are saved — see `entities/
- *    application-form/model/mutations.ts`'s own doc comment for the
- *    `tags`/`tools`/`pipeline_settings` gap on this same endpoint, and
- *    `lib/editPipelineMappers.ts`'s `toVersionDraft` doc comment for the
- *    pipeline-specific doubling of that gap (no live node/edge state is
- *    reachable to send even if the endpoint could carry it).
+ *  - Nav-blocking-when-dirty (`useNavBlocker`, baseline) is CLOSED (#133).
+ *    It was disclosed here as dropped for want of a promoted equivalent;
+ *    in fact `widgets/app-shell`'s `NavBlockerDialog` held a real app-wide
+ *    TanStack `useBlocker` all along and only lacked a setter outside the
+ *    chat process. Armed below off `formState.isDirty || isYamlDirty` —
+ *    see that call site for the one residual it discloses.
+ *  - The flow GRAPH now round-trips (#135): `usePipelineVersionSync` seeds
+ *    the editor stores from this version's `instructions` YAML + saved
+ *    `pipeline_settings`, and `useEditPipelineForm` reads the live graph back
+ *    out through `usePipelineGraphDraft` on save. `tags`/`tools` still have
+ *    no field on this endpoint — see `entities/application-form/model/
+ *    mutations.ts`'s own doc comment for what remains of that gap.
  *
  * **Read-only (public-viewer) gating, save-failure feedback, and the
  * detail-404 page** (adversarial-review fixes, reproduced verbatim from
@@ -178,13 +193,48 @@ export function EditPipeline(): ReactNode {
 
   useCorrectUserNameInUrl(detail?.name);
 
+  // #135 (read half): parse this version's `instructions` YAML and its saved
+  // `pipeline_settings` geometry into the two flow-editor stores `ConfigurationTab`
+  // -> `EditorPanel` render from. Without this the standalone editor page always
+  // started from an empty document — a stored pipeline's graph was never shown,
+  // so a save could only ever have written an empty graph back.
+  usePipelineVersionSync({ isCreateMode: false, versionDetails: activeVersion, versionId: activeVersion?.id });
+
   const { form, handleSave, isSaving, saveError } = useEditPipelineForm(detail, activeVersion, projectId, applicationId);
   const { setFieldValue, versionDetails } = useEditPipelineConfigurationTabBridge(activeVersion, form.setValue);
-  // Only a setter — nothing in this page reads YAML dirtiness yet (see
-  // `EditPipeline`'s own doc comment: `useSaveApplicationVersion` cannot
-  // carry live node/edge state either way, so there is nothing for a
-  // "block save while the canvas has unsaved YAML" check to gate here).
-  const [, setIsYamlDirty] = useState(false);
+  /*
+   * #133 — this used to be a write-only `const [, setIsYamlDirty]`: the
+   * flow editor reported its dirtiness and the page dropped it. It is now
+   * half of the page's answer to "does this editor hold unsaved work?".
+   * (It is still NOT a save gate — the save path carries the live graph
+   * since #135, so blocking save on unsaved YAML would be actively wrong:
+   * unsaved YAML is exactly what Save is for. A visible dirty-state
+   * indicator is still unbuilt.)
+   */
+  const [isYamlDirty, setIsYamlDirty] = useState(false);
+
+  /*
+   * #133 — arm the app-wide unsaved-changes guard. `widgets/app-shell`'s
+   * `NavBlockerDialog` + its TanStack `useBlocker` are mounted under every
+   * page and work; nothing on the standalone `/pipelines` editors ever
+   * raised the flag, so a nav-link click discarded the edit silently. This
+   * closes the "nav-blocking-when-dirty is dropped" gap this file's header
+   * used to disclose.
+   *
+   * DISCLOSED, and deliberately in the OVER-prompting direction: a
+   * successful save clears the RHF half (`useEditPipelineForm` resets the
+   * form) but NOT `isYamlDirty`, because `useIsPipelineYamlCodeDirty`
+   * compares the live `yamlCode` against `initYamlCode`, and the save path
+   * invalidates no GET-side query (`useSaveApplicationVersion`'s own doc
+   * comment) so nothing re-seeds that baseline. A user who edited the
+   * canvas and saved therefore still gets one "unsaved changes?" prompt on
+   * their next nav-away. That is the fail-safe direction — the same one
+   * `NavBlockerDialog`'s header argues for — and strictly better than the
+   * silent data loss it replaces. The real fix is re-seeding the editor
+   * stores from the save's response; that needs a `features/pipelines`
+   * export this page does not have.
+   */
+  useEditPipelineNavBlocker(form.formState.isDirty, isYamlDirty);
 
   // Old app: `useViewMode.js` — `viewMode` defaults to `ViewMode.Public`
   // whenever the currently selected project equals `PUBLIC_PROJECT_ID`.

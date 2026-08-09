@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -51,21 +52,95 @@ func NewHandler(pool *pgxpool.Pool) *Handler {
 	return h
 }
 
+// Legacy pylon API modes (legacy/plugins/shared/tools/config.py:40-41).
+// `mode` is a real path segment that SELECTS THE HANDLER in pylon
+// (api_tools.APIBase.proxy_method looks it up in mode_handlers and
+// abort(404)s on a miss), not decoration.
+const (
+	// modeDefault is pylon's c.DEFAULT_MODE: the project-scoped vault
+	// (VaultClient.from_project(project_id)).  It is also what pylon uses
+	// when the segment is omitted entirely — proxy_method's `mode` kwarg
+	// defaults to "default", and api_tools.with_modes registers both the
+	// mode-ful and the mode-less URL for every resource.
+	modeDefault = "default"
+	// modeAdministration is pylon's c.ADMINISTRATION_MODE: a DIFFERENT
+	// handler over the GLOBAL vault (a bare VaultClient(), project_id nil
+	// → row id "project-None"), with different request/response shapes.
+	// This Go handler implements the project handler only; see requireMode.
+	modeAdministration = "administration"
+)
+
+// Routes returns the secrets subrouter.  It is Mount()ed at "/secrets" by
+// internal/api/router.go, which reproduces the pylon URL shape exactly:
+//
+//	/api/v2/<plugin>/<resource-module>/<mode>/<params>
+//
+// The plugin is `secrets` (the mount prefix) and the resource modules are
+// legacy/plugins/secrets/api/v2/{secrets,secret,hide}.py, so the served
+// paths are /api/v2/secrets/{secrets,secret,hide}/…  The doubled "secrets"
+// is the REAL legacy shape, not the double-mount bug #137 took it for: the
+// pinned baseline client agrees (apps/elitea-ui/src/api/secrets.js:3 sets
+// apiSlicePath = '/secrets' and appends '/secrets/default/<id>'), and so do
+// elitea-sdk (runtime/clients/{client,sandbox_client}.py), admin_ui
+// (frontend/src/api/secretsApi.js) and qa/elitea-api-testing
+// (utils/utils.py:322).  #137 moved these routes to the v2 root and broke
+// all four; #151 restores them and moves the new client onto this shape.
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	// GET  /secrets/{mode}/{projectID}            – list secret names
-	r.Get("/secrets/{mode}/{projectID}", h.List)
+	r.Get("/secrets/{mode}/{projectID}", requireMode(h.List))
 	// POST /secrets/{mode}/{projectID}            – create a new secret
-	r.Post("/secrets/{mode}/{projectID}", h.Create)
+	r.Post("/secrets/{mode}/{projectID}", requireMode(h.Create))
 	// GET  /secret/{mode}/{projectID}/{name}      – get a single secret (with value)
-	r.Get("/secret/{mode}/{projectID}/{name}", h.Get)
+	r.Get("/secret/{mode}/{projectID}/{name}", requireMode(h.Get))
 	// PUT  /secret/{mode}/{projectID}/{name}      – rename / update a secret
-	r.Put("/secret/{mode}/{projectID}/{name}", h.Update)
+	r.Put("/secret/{mode}/{projectID}/{name}", requireMode(h.Update))
 	// DELETE /secret/{mode}/{projectID}/{name}    – delete a secret
-	r.Delete("/secret/{mode}/{projectID}/{name}", h.Delete)
+	r.Delete("/secret/{mode}/{projectID}/{name}", requireMode(h.Delete))
 	// POST /hide/{mode}/{projectID}/{name}        – move secret to hidden_secrets
-	r.Post("/hide/{mode}/{projectID}/{name}", h.Hide)
+	r.Post("/hide/{mode}/{projectID}/{name}", requireMode(h.Hide))
+
+	// The mode-LESS form of the show route, which pylon also serves
+	// (with_modes registers `<project_id>/<secret>` alongside
+	// `<mode>/<project_id>/<secret>`) and which elitea-sdk is the sole
+	// caller of: elitea_sdk/runtime/clients/client.py:108 and
+	// sandbox_client.py:237 build
+	// {api_v2}/secrets/secret/{project_id} and append /{name}.
+	// Only this one variant is registered: pylon serves the mode-less form
+	// of every route, but no consumer in the workspace calls any of the
+	// others, and a route with no caller is a route no test can discriminate.
+	r.Get("/secret/{projectID}/{name}", h.Get)
 	return r
+}
+
+// requireMode reproduces pylon's mode dispatch for the routes that carry a
+// {mode} segment.  Anything other than the two modes pylon defines is a 404,
+// exactly as APIBase.proxy_method's `abort(404)` on an unknown mode — which
+// is what makes the third convention the new client had invented
+// (`prompt_lib`, #151) a hard error rather than a silently-accepted alias.
+//
+// `administration` is deliberately 501, NOT served: pylon's AdminAPI reads
+// and writes the GLOBAL vault (VaultClient() with no project → row id
+// "project-None") with its own request/response shapes, while every method
+// on this Handler is the project handler keyed by dbKey(projectID).  Serving
+// admin_ui's /secrets/secret/administration/0/{name} from this handler would
+// answer with project 0's vault — the wrong store — and its PUT/DELETE would
+// WRITE it.  A 501 says "not implemented here" instead of quietly returning
+// and mutating the wrong secrets.
+func requireMode(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch chi.URLParam(r, "mode") {
+		case modeDefault:
+			next(w, r)
+		case modeAdministration:
+			writeJSON(w, http.StatusNotImplemented, map[string]string{
+				"error": "administration mode is not implemented by elitea-main; " +
+					"it addresses the global vault, not a project vault",
+			})
+		default:
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown mode"})
+		}
+	}
 }
 
 // ─── response models ─────────────────────────────────────────────────────────
@@ -431,7 +506,10 @@ func fernetEncrypt(key, plaintext []byte) ([]byte, error) {
 	encKey := key[16:]
 
 	// PKCS7-pad plaintext to a multiple of 16.
-	padded := pkcs7Pad(plaintext, aes.BlockSize)
+	padded, err := pkcs7Pad(plaintext, aes.BlockSize)
+	if err != nil {
+		return nil, err
+	}
 
 	iv := make([]byte, aes.BlockSize)
 	if _, err := rand.Read(iv); err != nil {
@@ -508,14 +586,34 @@ func fernetDecrypt(key, token []byte) ([]byte, error) {
 }
 
 // pkcs7Pad pads data to a multiple of blockSize using PKCS#7.
-func pkcs7Pad(data []byte, blockSize int) []byte {
+//
+// Returns an error rather than padding blindly, for two reasons the previous
+// signature could not express:
+//
+//   - blockSize must be in 1..255. PKCS#7 encodes the pad length in a single
+//     byte, so a larger block size cannot be represented and `byte(pad)` would
+//     silently truncate — producing padding that pkcs7Unpad rejects, or worse,
+//     padding that unpads to the wrong length. The only current caller passes
+//     aes.BlockSize, but a future one passing 256 would get silent corruption
+//     of a SECRET rather than a loud failure.
+//   - len(data)+pad must not overflow int (CodeQL go/allocation-size-overflow,
+//     alert 11). Unreachable with today's caller, since data is a secret value
+//     bounded long before here — but the guard costs one comparison and removes
+//     the need for anyone to re-derive that reasoning.
+func pkcs7Pad(data []byte, blockSize int) ([]byte, error) {
+	if blockSize <= 0 || blockSize > 255 {
+		return nil, fmt.Errorf("pkcs7: block size %d out of range (1..255)", blockSize)
+	}
 	pad := blockSize - (len(data) % blockSize)
+	if len(data) > math.MaxInt-pad {
+		return nil, fmt.Errorf("pkcs7: input too large to pad")
+	}
 	result := make([]byte, len(data)+pad)
 	copy(result, data)
 	for i := len(data); i < len(result); i++ {
 		result[i] = byte(pad)
 	}
-	return result
+	return result, nil
 }
 
 // pkcs7Unpad removes PKCS#7 padding.

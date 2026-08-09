@@ -7,6 +7,7 @@ import { getArtifactsMock } from '../../../shared/api/generated/artifacts/artifa
 import { getAuthMock } from '../../../shared/api/generated/auth/auth.msw';
 import { getChatMock } from '../../../shared/api/generated/chat/chat.msw';
 import { getDefaultMock } from '../../../shared/api/generated/default/default.msw';
+import { getSecretsMock } from '../../../shared/api/generated/secrets/secrets.msw';
 import { getSettingsMock } from '../../../shared/api/generated/settings/settings.msw';
 import { getSkillsMock } from '../../../shared/api/generated/skills/skills.msw';
 import { getTagsMock } from '../../../shared/api/generated/tags/tags.msw';
@@ -20,9 +21,11 @@ import { getToolkitsMock } from '../../../shared/api/generated/toolkits/toolkits
  * `handlers` is the DEFAULT registry `src/test/setup.ts` boots via
  * `setupServer(...handlers)`. It is populated ENTIRELY from orval's
  * generated `*.msw.ts` mock skeletons (`src/shared/api/generated/<tag>/
- * <tag>.msw.ts`, 11 tags / 78 operations — see orval.config.ts's
- * `output.mock` and endpoints.manifest.json). Every generated tag exports a
- * `get<Tag>Mock()` aggregate (e.g. `getAuthMock`); spreading all 11 covers
+ * <tag>.msw.ts`, 12 tags — see orval.config.ts's
+ * `output.mock` and endpoints.manifest.json; the operation count is not
+ * restated here because it drifts every time the spec grows, as it did
+ * when #151 added the `secrets` tag). Every generated tag exports a
+ * `get<Tag>Mock()` aggregate (e.g. `getAuthMock`); spreading all 12 covers
  * every endpoint the manifest knows about with a self-consistent, always-
  * in-sync-with-the-OpenAPI-spec default response.
  *
@@ -31,7 +34,7 @@ import { getToolkitsMock } from '../../../shared/api/generated/toolkits/toolkits
  *
  * `handlers/{transport,upload,artifacts,download}.ts` (units F4/S6) do not
  * export a static `RequestHandler[]` at all — every export is a FACTORY
- * function (`probeOk()`, `chunkAckInProgress(sink?)`, `s3PutOk(sink?)`,
+ * function (`probeOk()`, `chunkAckInProgress(sink?)`, `objectUploadOk(sink?)`,
  * `exportOk(filename, sink?)`, …), several parameterised by mutable
  * `SessionGate`s, call-count sequences, or request-capture sinks that only
  * make sense scoped to ONE test. Their own module docs say so explicitly
@@ -58,7 +61,7 @@ import { getToolkitsMock } from '../../../shared/api/generated/toolkits/toolkits
  * prepends runtime handlers ahead of the base list, so the hand-authored,
  * real-shape response is what that test actually receives regardless of
  * what this file exports. This file only has to be internally
- * non-contradictory with ITSELF, and it is (11 domains, no duplicate tags).
+ * non-contradictory with ITSELF, and it is (12 domains, no duplicate tags).
  *
  * ── R-M3 (validate every handler response against its zod schema AT
  *    REGISTRATION TIME) for generated vs. hand-authored handlers ─────────
@@ -122,6 +125,7 @@ export const handlers: RequestHandler[] = [
   ...getAuthMock(),
   ...getChatMock(),
   ...getDefaultMock(),
+  ...getSecretsMock(),
   ...getSettingsMock(),
   ...getSkillsMock(),
   ...getTagsMock(),

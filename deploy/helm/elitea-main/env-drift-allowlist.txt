@@ -84,3 +84,8 @@ ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA
 # --- behavior for production is a call for whoever owns the rollout, not
 # --- something to guess while fixing an unrelated PR's merge conflict.
 FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS
+
+# --- OIDC cookie security flag. Default (empty/unset) = Secure=true, which is
+# --- the correct production default. COOKIE_SECURE=false is only appropriate
+# --- for plain-HTTP localhost E2E runs and must never appear in production values.
+COOKIE_SECURE

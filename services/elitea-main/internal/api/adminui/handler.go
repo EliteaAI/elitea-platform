@@ -27,7 +27,7 @@ type Config struct {
 type Handler struct {
 	cfg       Config
 	indexOnce sync.Once
-	indexHTML  string
+	indexHTML string
 }
 
 func NewHandler(cfg Config) *Handler {
@@ -102,8 +102,26 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	indexHTML = strings.ReplaceAll(indexHTML, `src="./assets`, fmt.Sprintf(`src="%s/assets`, h.cfg.BasePath))
 	indexHTML = strings.ReplaceAll(indexHTML, `href="./assets`, fmt.Sprintf(`href="%s/assets`, h.cfg.BasePath))
 
-	// Inject config
-	configScript := fmt.Sprintf(`<script>window.admin_ui_config = JSON.parse('%s');</script>`, string(cfgJSON))
+	// Inject config.
+	//
+	// Emitted as a bare JS object literal, NOT as JSON.parse('...'). The quoted
+	// form was a script-injection hole (CodeQL go/unsafe-quoting, critical): a
+	// single quote anywhere in the payload closes the JS string literal early
+	// and everything after it is executed as code. That is reachable, not
+	// theoretical — cfg.UserEmail/UserName come from the session JWT's `email`
+	// claim, and a single quote is legal in an email local part
+	// (o'brien@example.com), so a user whose address contains one injects script
+	// into the ADMIN page.
+	//
+	// Two properties make the bare form safe, and both matter:
+	//   1. No surrounding quotes, so there is no string literal to break out of.
+	//      JSON has been a syntactic subset of JavaScript since ES2019, so the
+	//      value parses as an object literal directly.
+	//   2. encoding/json escapes <, > and & to <, > and & by
+	//      default, so a payload containing "</script>" cannot terminate the
+	//      enclosing tag. Do NOT switch this to a json.Encoder with
+	//      SetEscapeHTML(false) — that silently reopens the tag-breakout half.
+	configScript := fmt.Sprintf(`<script>window.admin_ui_config = %s;</script>`, string(cfgJSON))
 	indexHTML = strings.Replace(indexHTML, "<!-- admin_ui_config -->", configScript, 1)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

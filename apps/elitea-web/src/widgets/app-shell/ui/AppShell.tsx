@@ -40,6 +40,26 @@ function personalProjectIdOf(data: unknown): string | undefined {
 const ONBOARDING_PATHNAME = '/onboarding';
 
 /**
+ * Display name for the caller's personal project when the project list
+ * genuinely has no entry for `personal_project_id` — the old app's own
+ * literal (`settings.js`'s `authorDetails.matchFulfilled` extraReducer
+ * writes `{id: payload.personal_project_id, name: 'Private'}`).
+ *
+ * This is a LAST RESORT, not the normal path (issue #161). When the list
+ * does contain the personal project — the ordinary case, since
+ * `useProjectOptions` returns every project the caller can see — its real
+ * `name` is used instead, so this widget and `widgets/sidebar`'s
+ * `ProjectSwitcher` (which has always written `project.name`) resolve the
+ * SAME name for the same id. They both persist to `el.project.name`, and
+ * before this constant existed whichever ran first decided what every
+ * reader of that key showed — the Analytics header's "Project: {name}",
+ * the switcher's own accessible name and collapsed tooltip. The id was
+ * identical on both paths, so nothing ever read the wrong project's data;
+ * the divergence was the LABEL only.
+ */
+const PERSONAL_PROJECT_FALLBACK_NAME = 'Private';
+
+/**
  * The app shell every page composes inside (task brief: "every other page
  * in the whole app composes inside app-shell's layout"). Ported from
  * `[fsd]/app/layout/{AppLayout,MainPanel,MainSidebar}.jsx`.
@@ -100,7 +120,7 @@ export function AppShell({ children }: AppShellProps): ReactNode {
   const publicProjectId = configResult.status === 'ok' ? configResult.config.vite_public_project_id : '';
 
   const { project, selectProject } = useSelectedProject();
-  const { projects } = useProjectOptions(publicProjectId);
+  const { projects, isLoading: projectsLoading } = useProjectOptions(publicProjectId);
   const permissions = usePermissionSet(project?.id);
   const collapsed = useSidebarCollapsedStore((state) => state.collapsed);
   const authorQuery = useGetCurrentAuthor();
@@ -118,11 +138,23 @@ export function AppShell({ children }: AppShellProps): ReactNode {
   // useChatPageData.ts` reads the exact same `useGetCurrentAuthor()` query
   // for the exact same fallback. Until that query resolves, nothing is
   // selected (matching the old app's own brief pre-load window).
+  //
+  // The NAME, unlike the id, is resolved from the project list rather than
+  // written as a literal (issue #161) — see PERSONAL_PROJECT_FALLBACK_NAME.
+  // The list is also what gates this effect: writing before it settles
+  // would persist the fallback name for a project whose real name was
+  // merely one request away, and this effect never revisits a selection it
+  // has already made (`project !== null` returns above). `isLoading` is
+  // false — not stuck true — when the underlying query is disabled, so an
+  // unusable `publicProjectId` degrades to the fallback rather than
+  // deadlocking the auto-selection.
   useEffect(() => {
     if (project !== null) return;
     if (!personalProjectId) return;
-    selectProject(personalProjectId, 'Private');
-  }, [project, personalProjectId, selectProject]);
+    if (projectsLoading) return;
+    const personalProject = projects.find((candidate) => String(candidate.id) === personalProjectId);
+    selectProject(personalProjectId, personalProject?.name ?? PERSONAL_PROJECT_FALLBACK_NAME);
+  }, [project, personalProjectId, projects, projectsLoading, selectProject]);
 
   const sidebarWidth = isOnboardingPage ? 0 : collapsed ? COLLAPSED_SIDE_BAR_WIDTH_PX : SIDE_BAR_WIDTH_PX;
 

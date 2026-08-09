@@ -28,6 +28,7 @@ import (
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	v2pipelines "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/pipelines"
 	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
@@ -414,6 +415,32 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	// Authorization header.
 	r.Get("/icons/{projectID}/{filename}", v2core.DownloadIcon(cfg.ObjectStore))
 
+	// CurrentProjectList: self-contained auth+RBAC chain; registered at the top
+	// level so it shadows the broad /api/v2/projects mount below (chi matches
+	// the most-specific registered route first).
+	if cfg.CurrentProjectList != nil {
+		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
+	}
+
+	// CurrentNotificationEvents: the notification SSE stream that
+	// `useNotificationsSSE` opens on every page carrying the sidebar. Same
+	// treatment as CurrentProjectList above — it owns its whole auth+RBAC chain
+	// — and registered HERE, at the top level, for the same reason the artifact
+	// routes are hoisted below: the shadow comparator wrapping the /api/v2
+	// group buffers the entire response and does not implement Unwrap, so an
+	// http.Flusher never reaches the handler and a stream inside that group
+	// could not flush an event.
+	//
+	// It was previously mounted only by the production router
+	// (production_router.go), which NewRouter never reaches while
+	// prototypeCompatibilityRequested(cfg) holds — i.e. in every deployment
+	// today. Composed or not, `GET /api/v2/notifications/events/prompt_lib/
+	// {projectID}` answered 404, and the client fell back to its list query
+	// with a console warning as the only signal (#152).
+	if cfg.CurrentNotificationEvents != nil {
+		r.Method(http.MethodGet, notificationsapi.CurrentNotificationEventsPath, cfg.CurrentNotificationEvents)
+	}
+
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
 	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})
@@ -578,6 +605,14 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			).Routes())
 
 			// === Secrets ===
+			// Mounted under "/secrets" — the pylon PLUGIN name — while the
+			// subrouter's own three prefixes are the plugin's RESOURCE
+			// MODULES (secrets.py / secret.py / hide.py). The doubled
+			// "secrets" in /api/v2/secrets/secrets/{mode}/{projectID} is the
+			// real legacy shape, shared by apps/elitea-ui, elitea-sdk,
+			// admin_ui and qa/elitea-api-testing. #137 read it as a
+			// double-mount bug and moved the routes to the v2 root, which
+			// broke every consumer outside apps/elitea-web; #151 restores it.
 			r.Mount("/secrets", v2secrets.NewHandler(cfg.Pool).Routes())
 
 			// === Notifications ===
@@ -593,7 +628,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			r.Route("/elitea_core", func(r chi.Router) {
 				// Applications
 				if cfg.AppsRepo != nil {
-					appHandler := v2apps.NewHandler(cfg.AppsRepo)
+					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
 					r.Get("/applications/prompt_lib/{projectID}", appHandler.List)
 					r.Post("/applications/prompt_lib/{projectID}", appHandler.Create)
 					r.Get("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Get)
@@ -630,7 +665,21 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Toolkits
 				toolkitHandler := v2toolkits.NewHandler(cfg.Pool, cfg.ToolTester)
-				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills)
+				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills).
+				//
+				// NOTE the split, which was wrong until #129: /tools/ is the
+				// INSTANCE list (toolkitHandler.List) and /toolkits/ is the
+				// TYPE catalogue (toolkitHandler.ListTypeSchemas — a map of
+				// toolkit type name to its settings JSON Schema). That is what
+				// api/openapi/v2.yaml specifies (listToolkits ->
+				// ToolkitTypeSchemas, listToolkitInstances -> the array), what
+				// the generated web client requests (apps/elitea-web/src/
+				// shared/api/generated/toolkits/toolkits.ts:562 vs :764), and
+				// what the legacy runtime served (legacy elitea_core
+				// api/v2/toolkits.py -> get_toolkit_schemas, api/v2/tools.py ->
+				// the instance list). Both /toolkits/ registrations previously
+				// pointed at List, so ListTypeSchemas had no route at all and
+				// the MCP create screen could never show a type.
 				// Gate behind FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS for gradual rollout:
 				// when enabled, enforces project-level access control on all toolkit endpoints.
 				// Until vllm/bifrost integration is ready, set env var to "false" to disable.
@@ -643,7 +692,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 						r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 						r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 						r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-						r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.List)
+						r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
 						r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
 						r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
 						r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
@@ -668,7 +717,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 					r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 					r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 					r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-					r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.List)
+					r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
 					r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
 					r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
 					r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
@@ -688,7 +737,13 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Folders
 				if cfg.FoldersRepo != nil {
-					folderHandler := v2folders.NewHandler(cfg.FoldersRepo)
+					// WithPool is what makes the grouped sidebar have any
+					// content at all: every conversation the listing
+					// groups is read through it, and without it the
+					// endpoint answered 200 with empty folders and empty
+					// date_groups for a project with nine conversations
+					// (#128 defects 1 and 2).
+					folderHandler := v2folders.NewHandler(cfg.FoldersRepo).WithPool(cfg.Pool)
 					r.Get("/folder/prompt_lib/{projectID}", folderHandler.List)
 					r.Post("/folder/prompt_lib/{projectID}", folderHandler.Create)
 					r.Get("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Get)
@@ -766,7 +821,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Batch version replacement
 				if cfg.AppsRepo != nil {
-					appHandler := v2apps.NewHandler(cfg.AppsRepo)
+					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
 					r.Post("/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}", appHandler.BatchReplaceVersion)
 				}
 

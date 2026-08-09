@@ -75,7 +75,7 @@ func (h *Handler) PermissionList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectID := chi.URLParam(r, "projectID")
-	permissions := []string{}
+	result := []Permission{}
 	if h.permissions != nil {
 		resolution, err := h.permissions.ResolvePermissions(
 			r.Context(),
@@ -84,11 +84,14 @@ func (h *Handler) PermissionList(w http.ResponseWriter, r *http.Request) {
 			projectID,
 		)
 		if err == nil {
-			permissions = resolution.Permissions
+			result = make([]Permission, 0, len(resolution.Permissions))
+			for _, p := range resolution.Permissions {
+				result = append(result, Permission{Name: p, Enabled: true})
+			}
 		}
 	}
 
-	writeJSON(w, http.StatusOK, permissions)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -3,7 +3,6 @@ import { useMemo, useState } from 'react';
 
 import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
 import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
-import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import PushPinIcon from '@mui/icons-material/PushPin';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
@@ -16,12 +15,12 @@ import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import IconButton from '@mui/material/IconButton';
 import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
-import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
@@ -41,16 +40,13 @@ interface BucketSidebarProps {
   readonly onStorageChange: (id: string) => void;
   readonly onSelect: (bucket: Bucket) => void;
   readonly onCreate: () => void;
-  readonly onRename: (bucket: Bucket, nextName: string) => Promise<unknown>;
   readonly onPin: (bucket: Bucket) => Promise<unknown>;
   readonly onDelete: (bucket: Bucket) => Promise<unknown>;
 }
 
 export function BucketSidebar(props: BucketSidebarProps): ReactNode {
   const [query, setQuery] = useState('');
-  const [renaming, setRenaming] = useState<Bucket>();
   const [deleting, setDeleting] = useState<Bucket>();
-  const [nextName, setNextName] = useState('');
   const visibleBuckets = useMemo(() => filterBucketsByQuery(props.buckets, query), [props.buckets, query]);
 
   return (
@@ -94,99 +90,74 @@ export function BucketSidebar(props: BucketSidebarProps): ReactNode {
       <Divider />
       {props.loading ? (
         <Typography sx={{ p: 2 }}>{t('artifacts.buckets.loading', 'Loading buckets…')}</Typography>
+      ) : visibleBuckets.length === 0 ? (
+        // Rendered OUTSIDE the <List>. MUI's List emits a <ul>, and a <p> as its
+        // direct child is an axe `list` violation (impact: serious) — caught by
+        // J20's checkA11y the first time the E2E suite was able to run. An empty
+        // list element is also meaningless to a screen reader, so there is no
+        // reason to emit one when there is nothing to list.
+        <Typography sx={{ p: 2 }}>{t('artifacts.buckets.empty', 'No buckets found.')}</Typography>
       ) : (
         <List
           dense
           sx={{ overflowY: 'auto' }}
         >
           {visibleBuckets.map((bucket) => (
-            <ListItemButton
+            // <ListItem disablePadding> wrapper: see ApplicationListPanel for
+            // why `component="li"` on the button is not the fix.
+            // `secondaryAction`, not children of the ListItemButton: the
+            // button carries role="button", so nesting the pin/delete
+            // IconButtons inside it is axe's `nested-interactive` (impact:
+            // serious) — "Element has focusable descendants". It only became
+            // observable once the bucket list could load at all (#138), and
+            // `secondaryAction` is MUI's own answer: the actions render as
+            // SIBLINGS of the row button, and MUI reserves the trailing
+            // padding for them.
+            <ListItem
               key={bucket.id}
-              selected={bucket.name === props.selectedBucket}
-              onClick={() => props.onSelect(bucket)}
+              disablePadding
+              secondaryAction={
+                <>
+                  <Tooltip title={bucket.isPinned
+                    ? t('artifacts.buckets.unpin', 'Unpin bucket')
+                    : t('artifacts.buckets.pin', 'Pin bucket')}
+                  >
+                    <IconButton
+                      size="small"
+                      aria-label={bucket.isPinned ? `Unpin ${bucket.name}` : `Pin ${bucket.name}`}
+                      onClick={() => void props.onPin(bucket).catch(() => undefined)}
+                    >
+                      {bucket.isPinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title={t('artifacts.buckets.delete', 'Delete bucket')}>
+                    <IconButton
+                      size="small"
+                      aria-label={`Delete ${bucket.name}`}
+                      onClick={() => setDeleting(bucket)}
+                    >
+                      <DeleteOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </>
+              }
             >
-              <ListItemIcon sx={{ minWidth: '2rem' }}>
-                <FolderOutlinedIcon fontSize="small" />
-              </ListItemIcon>
-              <ListItemText
-                primary={bucket.name}
-                slotProps={{ primary: { noWrap: true } }}
-              />
-              <Tooltip title={bucket.isPinned
-                ? t('artifacts.buckets.unpin', 'Unpin bucket')
-                : t('artifacts.buckets.pin', 'Pin bucket')}
+              <ListItemButton
+                selected={bucket.name === props.selectedBucket}
+                onClick={() => props.onSelect(bucket)}
               >
-                <IconButton
-                  size="small"
-                  aria-label={bucket.isPinned ? `Unpin ${bucket.name}` : `Pin ${bucket.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void props.onPin(bucket).catch(() => undefined);
-                  }}
-                >
-                  {bucket.isPinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
-                </IconButton>
-              </Tooltip>
-              <Tooltip title={t('artifacts.buckets.rename', 'Rename bucket')}>
-                <IconButton
-                  size="small"
-                  aria-label={`Rename ${bucket.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setRenaming(bucket);
-                    setNextName(bucket.name);
-                  }}
-                >
-                  <EditOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title={t('artifacts.buckets.delete', 'Delete bucket')}>
-                <IconButton
-                  size="small"
-                  aria-label={`Delete ${bucket.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setDeleting(bucket);
-                  }}
-                >
-                  <DeleteOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </ListItemButton>
+                <ListItemIcon sx={{ minWidth: '2rem' }}>
+                  <FolderOutlinedIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText
+                  primary={bucket.name}
+                  slotProps={{ primary: { noWrap: true } }}
+                />
+              </ListItemButton>
+            </ListItem>
           ))}
-          {visibleBuckets.length === 0 && (
-            <Typography sx={{ p: 2 }}>{t('artifacts.buckets.empty', 'No buckets found.')}</Typography>
-          )}
         </List>
       )}
-      <Dialog
-        open={renaming !== undefined}
-        onClose={() => setRenaming(undefined)}
-      >
-        <DialogTitle>{t('artifacts.buckets.rename', 'Rename bucket')}</DialogTitle>
-        <DialogContent>
-          <TextField
-            label={t('artifacts.buckets.nameLabel', 'Bucket name')}
-            value={nextName}
-            onChange={(event) => setNextName(event.target.value)}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setRenaming(undefined)}>{t('common.cancel', 'Cancel')}</Button>
-          <Button
-            variant="contained"
-            disabled={nextName.trim() === '' || nextName === renaming?.name}
-            onClick={() => {
-              if (renaming === undefined) return;
-              void props.onRename(renaming, nextName.trim())
-                .then(() => setRenaming(undefined))
-                .catch(() => undefined);
-            }}
-          >
-            {t('common.rename', 'Rename')}
-          </Button>
-        </DialogActions>
-      </Dialog>
       <Dialog
         open={deleting !== undefined}
         onClose={() => setDeleting(undefined)}

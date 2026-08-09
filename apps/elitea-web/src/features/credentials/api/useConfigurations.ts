@@ -62,6 +62,36 @@ import type {
 const CONFIGURATIONS_QUERY_ROOT = ['credentials', 'configurations'] as const;
 const MODELS_QUERY_ROOT = ['credentials', 'models'] as const;
 
+/**
+ * The AI-Configuration screen reads the SAME server resource under a
+ * different key namespace: `features/settings/lib/ai-configuration/
+ * useConfigurationsBySection.ts` fires seven queries keyed
+ * `['settings', 'configurations', projectId, section]`, and
+ * `shared/api/configurationsApi.ts` keys the model list `['models', ...]`.
+ * Invalidating only the `credentials` roots left every one of those caches
+ * untouched — after saving a credential the app navigated straight back to
+ * that screen and issued NO list request at all, so the row the POST had
+ * just created was invisible until a full page reload (#131; measured: one
+ * POST and zero GETs after save).
+ *
+ * Two namespaces over one resource is the actual defect; unifying them is a
+ * cross-feature refactor. Until then every configuration mutation must
+ * invalidate both, and this list is the one place that records why.
+ */
+const CONFIGURATION_RESOURCE_ROOTS = [
+  CONFIGURATIONS_QUERY_ROOT,
+  MODELS_QUERY_ROOT,
+  ['settings', 'configurations'],
+  ['settings', 'availableTypes'],
+  ['models'],
+] as const;
+
+function invalidateConfigurationResource(queryClient: ReturnType<typeof useQueryClient>): void {
+  for (const queryKey of CONFIGURATION_RESOURCE_ROOTS) {
+    void queryClient.invalidateQueries({ queryKey });
+  }
+}
+
 /* ── API-145 ───────────────────────────────────────────────────────────── */
 
 export function useAvailableConfigurationsType(
@@ -99,8 +129,7 @@ export function useCreateConfiguration(): UseMutationResult<
   return useMutation({
     mutationFn: ({ projectId, body }) => createConfiguration(projectId, body),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: CONFIGURATIONS_QUERY_ROOT });
-      void queryClient.invalidateQueries({ queryKey: MODELS_QUERY_ROOT });
+      invalidateConfigurationResource(queryClient);
     },
   });
 }
@@ -130,7 +159,7 @@ export function useUpdateConfiguration(): UseMutationResult<
   return useMutation({
     mutationFn: ({ projectId, configId, body }) => updateConfiguration(projectId, configId, body),
     onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({ queryKey: CONFIGURATIONS_QUERY_ROOT });
+      invalidateConfigurationResource(queryClient);
       void queryClient.invalidateQueries({
         queryKey: [...CONFIGURATIONS_QUERY_ROOT, 'detail', variables.projectId, variables.configId],
       });
@@ -149,8 +178,7 @@ export function useDeleteConfiguration(): UseMutationResult<
   return useMutation({
     mutationFn: ({ projectId, configId }) => deleteConfiguration(projectId, configId),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: CONFIGURATIONS_QUERY_ROOT });
-      void queryClient.invalidateQueries({ queryKey: MODELS_QUERY_ROOT });
+      invalidateConfigurationResource(queryClient);
     },
   });
 }

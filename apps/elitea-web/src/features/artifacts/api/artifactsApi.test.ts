@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  batchDeleteObjects,
   createBucket,
-  deleteArtifact,
-  deleteArtifacts,
   deleteBucket,
-  editBucket,
-  updateBucketPin,
+  deleteObject,
+  updateBucket,
 } from '@/shared/api/generated/artifacts/artifacts';
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { listArtifacts, listBuckets } from '@/shared/api/artifacts';
@@ -15,7 +14,6 @@ import * as generatedMutator from '@/shared/api/generated/mutator';
 import * as sharedArtifacts from '@/shared/api/artifacts';
 
 import {
-  chunkArtifactKeys,
   createArtifactBucket,
   fetchArtifacts,
   fetchArtifactBuckets,
@@ -23,8 +21,8 @@ import {
   removeArtifact,
   removeArtifacts,
   removeArtifactBucket,
-  renameArtifactBucket,
   setArtifactBucketPinned,
+  setArtifactBucketRetention,
 } from './artifactsApi';
 
 const okResponse = { data: {}, status: 200, headers: new Headers() };
@@ -32,11 +30,10 @@ const okResponse = { data: {}, status: 200, headers: new Headers() };
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(generatedArtifacts, 'createBucket');
-  vi.spyOn(generatedArtifacts, 'deleteArtifact');
-  vi.spyOn(generatedArtifacts, 'deleteArtifacts');
+  vi.spyOn(generatedArtifacts, 'deleteObject');
+  vi.spyOn(generatedArtifacts, 'batchDeleteObjects');
   vi.spyOn(generatedArtifacts, 'deleteBucket');
-  vi.spyOn(generatedArtifacts, 'editBucket');
-  vi.spyOn(generatedArtifacts, 'updateBucketPin');
+  vi.spyOn(generatedArtifacts, 'updateBucket');
   vi.spyOn(generatedMutator, 'eliteaFetch');
   vi.spyOn(sharedArtifacts, 'listArtifacts');
   vi.spyOn(sharedArtifacts, 'listBuckets');
@@ -44,29 +41,24 @@ beforeEach(() => {
 });
 
 describe('artifacts API', () => {
-  it('merges S3 buckets with persisted pin metadata and sorts pinned first', async () => {
+  it('normalises the bucket list and sorts pinned first — one call, no metadata merge', async () => {
     vi.mocked(listBuckets).mockResolvedValue({
       ok: true,
       data: {
         buckets: [
-          { name: 'zeta', creation_date: '2026-01-01T00:00:00Z' },
-          { name: 'alpha', creation_date: '2026-01-02T00:00:00Z' },
+          { name: 'zeta', is_pinned: false, created_at: '2026-01-01T00:00:00Z' },
+          { name: 'alpha', is_pinned: true, created_at: '2026-02-01T00:00:00Z' },
         ],
       },
       status: 200,
       headers: new Headers(),
     });
-    vi.mocked(eliteaFetch).mockResolvedValue({
-      data: {
-        rows: [
-          { id: '1', name: 'alpha', is_pinned: true, created_at: '2026-02-01T00:00:00Z' },
-        ],
-      },
-    });
     await expect(fetchArtifactBuckets('/api/v2', 'p1')).resolves.toEqual([
-      { id: '1', name: 'alpha', isPinned: true, createdAt: '2026-02-01T00:00:00Z' },
+      { id: 'alpha', name: 'alpha', isPinned: true, createdAt: '2026-02-01T00:00:00Z' },
       { id: 'zeta', name: 'zeta', isPinned: false, createdAt: '2026-01-01T00:00:00Z' },
     ]);
+    // The legacy `/artifacts/buckets/default/{projectId}` metadata fetch is gone (#138).
+    expect(eliteaFetch).not.toHaveBeenCalled();
   });
 
   it('excludes internal system buckets (tasks, reports) from the listing', async () => {
@@ -74,9 +66,9 @@ describe('artifacts API', () => {
       ok: true,
       data: {
         buckets: [
-          { name: 'docs', creation_date: '2026-01-01T00:00:00Z' },
-          { name: 'tasks', creation_date: '2026-01-01T00:00:00Z' },
-          { name: 'reports', creation_date: '2026-01-01T00:00:00Z' },
+          { name: 'docs', is_pinned: false, created_at: '2026-01-01T00:00:00Z' },
+          { name: 'tasks', is_pinned: false, created_at: '2026-01-01T00:00:00Z' },
+          { name: 'reports', is_pinned: false, created_at: '2026-01-01T00:00:00Z' },
         ],
       },
       status: 200,
@@ -101,8 +93,8 @@ describe('artifacts API', () => {
     vi.mocked(listArtifacts).mockResolvedValue({
       ok: true,
       data: {
-        name: 'docs',
-        contents: [{ key: 'a.txt', size: 2, lastModified: '2026-01-01T00:00:00Z' }],
+        common_prefixes: [],
+        objects: [{ key: 'a.txt', size_bytes: 2, media_type: 'text/plain', etag: 'e', modified_at: '2026-01-01T00:00:00Z' }],
       },
       status: 200,
       headers: new Headers(),
@@ -116,35 +108,35 @@ describe('artifacts API', () => {
 
   it('delegates bucket and artifact mutations to generated endpoints', async () => {
     vi.mocked(createBucket).mockResolvedValue(okResponse as never);
-    vi.mocked(editBucket).mockResolvedValue(okResponse as never);
-    vi.mocked(updateBucketPin).mockResolvedValue(okResponse as never);
+    vi.mocked(updateBucket).mockResolvedValue(okResponse as never);
     vi.mocked(deleteBucket).mockResolvedValue(okResponse as never);
-    vi.mocked(deleteArtifact).mockResolvedValue(okResponse as never);
-    vi.mocked(deleteArtifacts).mockResolvedValue({ data: undefined, status: 204, headers: new Headers() });
+    vi.mocked(deleteObject).mockResolvedValue(okResponse as never);
+    vi.mocked(batchDeleteObjects).mockResolvedValue(okResponse as never);
 
-    await createArtifactBucket('p1', 'docs');
-    await renameArtifactBucket('p1', 'docs', 'reports');
-    await setArtifactBucketPinned('p1', 'reports', true);
-    await removeArtifactBucket('p1', 'reports');
-    await removeArtifact('p1', 'docs', 'a.txt');
-    await removeArtifacts('p1', 'docs', ['a.txt', 'b.txt']);
+    await createArtifactBucket('1', 'docs');
+    await setArtifactBucketRetention('1', 'docs', 30);
+    await setArtifactBucketPinned('1', 'reports', true);
+    await removeArtifactBucket('1', 'reports');
+    await removeArtifact('1', 'docs', 'a.txt');
+    await removeArtifacts('1', 'docs', ['a.txt', 'b.txt']);
 
-    expect(createBucket).toHaveBeenCalledWith('p1', { name: 'docs' });
-    expect(editBucket).toHaveBeenCalledWith('p1', { name: 'reports' }, { name: 'docs' });
-    expect(updateBucketPin).toHaveBeenCalledWith('p1', { is_pinned: true }, { name: 'reports' });
-    expect(deleteBucket).toHaveBeenCalledWith('p1', { name: 'reports' });
-    expect(deleteArtifact).toHaveBeenCalledWith('p1', 'docs', { filename: 'a.txt' });
-    expect(deleteArtifacts).toHaveBeenCalledWith('p1', 'docs', { 'fname[]': ['a.txt', 'b.txt'] });
+    // projectId is a NUMERIC path segment in the S11 artifacts API.
+    expect(createBucket).toHaveBeenCalledWith(1, { name: 'docs' });
+    expect(updateBucket).toHaveBeenCalledWith(1, 'docs', { retention_days: 30 });
+    expect(updateBucket).toHaveBeenCalledWith(1, 'reports', { is_pinned: true });
+    expect(deleteBucket).toHaveBeenCalledWith(1, 'reports');
+    expect(deleteObject).toHaveBeenCalledWith(1, 'docs', 'a.txt');
+    expect(batchDeleteObjects).toHaveBeenCalledWith(1, 'docs', { keys: ['a.txt', 'b.txt'] });
   });
 
-  it('chunks long bulk-delete URLs', () => {
-    const chunks = chunkArtifactKeys('p1', 'docs', [
-      `a-${'x'.repeat(900)}`,
-      `b-${'y'.repeat(900)}`,
-      'short',
-    ]);
-    expect(chunks).toHaveLength(2);
-    expect(chunks.flat()).toHaveLength(3);
+  it('rejects a non-numeric project id rather than building a bad URL', async () => {
+    await expect(createArtifactBucket('not-a-number', 'docs')).rejects.toThrow('not numeric');
+  });
+
+  it('skips the bulk delete entirely when no keys are given (an empty array is a 400)', async () => {
+    vi.mocked(batchDeleteObjects).mockResolvedValue(okResponse as never);
+    await removeArtifacts('1', 'docs', []);
+    expect(batchDeleteObjects).not.toHaveBeenCalled();
   });
 
   it('loads and normalizes regular and shared S3 configurations', async () => {

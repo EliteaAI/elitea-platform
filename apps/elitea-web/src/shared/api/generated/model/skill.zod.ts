@@ -40,6 +40,7 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { SkillVersion } from "./skillVersion.zod";
 
 export const Skill = zod
   .object({
@@ -50,11 +51,32 @@ export const Skill = zod
     type: zod.string(),
     config: zod.record(zod.string(), zod.unknown()).optional(),
     is_default: zod.boolean(),
+    instructions: zod
+      .string()
+      .optional()
+      .describe(
+        "The base version's instructions (also available at version_details.instructions).",
+      ),
+    tags: zod
+      .array(zod.string())
+      .optional()
+      .describe(
+        "The base version's tags (also available at version_details.tags).",
+      ),
+    versions: zod
+      .array(SkillVersion)
+      .optional()
+      .describe(
+        "Always the single base version today — see SkillVersion.name.",
+      ),
+    version_details: SkillVersion.optional().describe(
+      "Convenience alias for versions[0].",
+    ),
     created_at: zod.iso.datetime({ offset: true }),
     updated_at: zod.iso.datetime({ offset: true }),
   })
   .describe(
-    'NOTE(W2): internal\/api\/v2\/skills\/handler.go:15-25 (json tags; description\/config omitempty). Degenerate constants with the wired Pg repository (repos\/skills.go:42-53, 79-92, 102-112, 122-135; DDL migrations\/001_initial.sql:128-136 — no updated_at\/is_default columns): `config` is never populated in responses, `is_default` is always false, `type` is always the literal \"skill\", and `updated_at` is always the zero sentinel \"0001-01-01T00:00:00Z\". Wire shape still matches this schema; typed clients should not rely on those fields carrying data yet.\n',
+    'NOTE(W2): `config` is never populated in responses, `is_default` is always false, `type` is always the literal \"skill\", and `updated_at` is always the zero sentinel \"0001-01-01T00:00:00Z\" — the skills table itself has no updated_at\/is_default columns (migrations\/001_initial.sql). instructions\/tags\/versions\/ version_details, in contrast, DO round-trip: they\'re read from a joined skill_versions + skill_version_tag_association row (repos\/skills.go Get\/List), not discarded.\n',
   );
 
 export type Skill = zod.input<typeof Skill>;

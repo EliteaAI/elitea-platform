@@ -1,0 +1,531 @@
+package applications_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applications"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
+)
+
+// These tests drive the HTTP handler over the real repository against the
+// PostgreSQL service the Test job in .github/workflows/ci-go.yml provisions
+// (ELITEA_TEST_DATABASE_URL), so they cover the wiring the unit tests' mock
+// repository cannot: which user id reaches applications.owner_id, and whether
+// the version SQL matches the actual DDL.
+
+const postgresIntegrationDatabaseURL = "ELITEA_TEST_DATABASE_URL"
+
+func newHandlerTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	databaseURL := os.Getenv(postgresIntegrationDatabaseURL)
+	if databaseURL == "" && os.Getenv("ELITEA_TEST_USE_SERVICE_DATABASE_URL") == "1" {
+		databaseURL = os.Getenv("DATABASE_URL")
+	}
+	if databaseURL == "" {
+		t.Skipf("set %s to run the PostgreSQL service-integration test", postgresIntegrationDatabaseURL)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	adminConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse %s: %v", postgresIntegrationDatabaseURL, err)
+	}
+	adminConfig.MaxConns = 4
+	adminPool, err := pgxpool.NewWithConfig(ctx, adminConfig)
+	if err != nil {
+		t.Fatalf("open PostgreSQL admin pool: %v", err)
+	}
+	databaseName := fmt.Sprintf("elitea_apps_it_%d_%d", os.Getpid(), time.Now().UnixNano())
+	quoted := pgx.Identifier{databaseName}.Sanitize()
+	if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
+		adminPool.Close()
+		t.Fatalf("create isolated database: %v", err)
+	}
+	testConfig := adminConfig.Copy()
+	testConfig.ConnConfig.Database = databaseName
+	testConfig.MaxConns = 8
+	pool, err := pgxpool.NewWithConfig(ctx, testConfig)
+	if err != nil {
+		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE "+quoted+" WITH (FORCE)")
+		adminPool.Close()
+		t.Fatalf("open isolated database: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer dropCancel()
+		if _, err := adminPool.Exec(dropCtx, "DROP DATABASE "+quoted+" WITH (FORCE)"); err != nil {
+			t.Errorf("drop isolated database: %v", err)
+		}
+		adminPool.Close()
+	})
+	if err := db.RunMigrations(ctx, pool); err != nil {
+		t.Fatalf("run baseline migrations: %v", err)
+	}
+	return pool
+}
+
+// newHandlerTestServer mounts the same route table internal/api/router.go
+// registers behind cfg.AppsRepo, with `user` as the authenticated principal.
+func newHandlerTestServer(t *testing.T, pool *pgxpool.Pool, user auth.User) *chi.Mux {
+	t.Helper()
+	h := handler.NewHandler(repos.NewApplicationsRepo(pool), pool)
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if user.ID == "" {
+				next.ServeHTTP(w, req)
+				return
+			}
+			next.ServeHTTP(w, req.WithContext(auth.ContextWithUser(req.Context(), user)))
+		})
+	})
+	r.Get("/applications/prompt_lib/{projectID}", h.List)
+	r.Post("/applications/prompt_lib/{projectID}", h.Create)
+	r.Get("/application/prompt_lib/{projectID}/{applicationID}", h.Get)
+	r.Put("/application/prompt_lib/{projectID}/{applicationID}", h.Update)
+	r.Delete("/application/prompt_lib/{projectID}/{applicationID}", h.Delete)
+	r.Get("/versions/prompt_lib/{projectID}/{applicationID}", h.ListVersions)
+	r.Post("/versions/prompt_lib/{projectID}/{applicationID}", h.CreateVersion)
+	r.Get("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.GetVersion)
+	r.Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.UpdateVersion)
+	r.Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.DeleteVersion)
+	r.Get("/default_version/prompt_lib/{projectID}/{applicationID}", h.GetDefaultVersion)
+	r.Patch("/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.SetDefaultVersion)
+	return r
+}
+
+func seedHandlerUser(t *testing.T, pool *pgxpool.Pool, id int64, email string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO public.auth_core__user (id, email, name) VALUES ($1, $2, $3)
+		 ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email`, id, email, "User "+email); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+}
+
+func do(t *testing.T, router *chi.Mux, method, path string, body any) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	var reader *bytes.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encode body: %v", err)
+		}
+		reader = bytes.NewReader(encoded)
+	} else {
+		reader = bytes.NewReader(nil)
+	}
+	request := httptest.NewRequest(method, path, reader)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	decoded := map[string]any{}
+	if recorder.Body.Len() > 0 {
+		_ = json.Unmarshal(recorder.Body.Bytes(), &decoded)
+	}
+	return recorder, decoded
+}
+
+// j14CreateBody is the shape apps/elitea-web sends from the create-agent form
+// (entities/application-form/model/mutations.ts toVersionWriteRequest).
+func j14CreateBody(name string) map[string]any {
+	return map[string]any{
+		"name":        name,
+		"description": "created by the journey",
+		"type":        "agent",
+		"versions": []any{map[string]any{
+			"name":                  "base",
+			"agent_type":            "openai",
+			"instructions":          "Follow the brief.",
+			"conversation_starters": []any{"hello"},
+			"variables":             []any{map[string]any{"name": "k", "value": "v"}},
+			"meta":                  map[string]any{"step_limit": float64(25)},
+		}},
+	}
+}
+
+func TestHandlerPostgres_CreatePersistsTheAuthenticatedPrincipalAsOwner(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 42, "fortytwo@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "42", UserID: "42", Email: "fortytwo@elitea.ai"})
+
+	recorder, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("owned"))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	applicationID, _ := created["id"].(string)
+	if applicationID == "" {
+		t.Fatalf("response carries no application id: %s", recorder.Body.String())
+	}
+	if created["owner_id"] != "42" {
+		t.Errorf("response owner_id = %v, want \"42\"", created["owner_id"])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var ownerID, authorID int64
+	if err := pool.QueryRow(ctx, `
+		SELECT a.owner_id, v.author_id
+		FROM p_1.applications a JOIN p_1.application_versions v ON v.application_id = a.id
+		WHERE a.id = $1`, applicationID).Scan(&ownerID, &authorID); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if ownerID != 42 {
+		t.Errorf("applications.owner_id = %d, want 42 — not the hardcoded user 1", ownerID)
+	}
+	if authorID != 42 {
+		t.Errorf("application_versions.author_id = %d, want 42", authorID)
+	}
+}
+
+func TestHandlerPostgres_CreateWithoutAPrincipalIsRefused(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	router := newHandlerTestServer(t, pool, auth.User{})
+
+	recorder, _ := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("anonymous"))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM p_1.applications`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("%d applications created without a principal, want 0", count)
+	}
+}
+
+// TestHandlerPostgres_CreateThenReadBackIsWhatJourney14Asserts follows the
+// exact request sequence the Playwright journey drives: POST the create form,
+// then land on /agents/$tab/$agentId, which GETs the application and expects
+// its versions and version_details back.
+func TestHandlerPostgres_CreateThenReadBackIsWhatJourney14Asserts(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	recorder, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("autotest-e2e-agent"))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	applicationID := created["id"].(string)
+
+	versionDetails, ok := created["version_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("create response has no version_details: %s", recorder.Body.String())
+	}
+	if versionDetails["instructions"] != "Follow the brief." {
+		t.Errorf("version_details.instructions = %v", versionDetails["instructions"])
+	}
+	if variables, _ := versionDetails["variables"].([]any); len(variables) != 1 {
+		t.Errorf("version_details.variables = %v, want the one variable that was sent", versionDetails["variables"])
+	}
+
+	// The agent editor immediately re-reads the application by the id it was
+	// handed. A create that returned the wrong identifier, or that skipped
+	// the version row, does not survive this.
+	recorder, fetched := do(t, router, http.MethodGet, "/application/prompt_lib/1/"+applicationID, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if fetched["name"] != "autotest-e2e-agent" {
+		t.Errorf("fetched name = %v", fetched["name"])
+	}
+	versions, _ := fetched["versions"].([]any)
+	if len(versions) != 1 {
+		t.Fatalf("fetched versions = %v, want exactly the initial version", fetched["versions"])
+	}
+	if _, ok := fetched["version_details"].(map[string]any); !ok {
+		t.Errorf("fetched response has no version_details: %s", recorder.Body.String())
+	}
+
+	// And the agent list the journey returns to must contain it.
+	recorder, listed := do(t, router, http.MethodGet, "/applications/prompt_lib/1?limit=20&offset=0", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list status = %d", recorder.Code)
+	}
+	rows, _ := listed["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("list rows = %v, want the created agent", listed["rows"])
+	}
+	if row, _ := rows[0].(map[string]any); row["name"] != "autotest-e2e-agent" {
+		t.Errorf("listed row = %v", rows[0])
+	}
+}
+
+// TestHandlerPostgres_UpdateVersionPersists covers the regression where the
+// handler opened its SET list with `updated_at = now()` — a column
+// application_versions does not have — so every version save returned a 500.
+func TestHandlerPostgres_UpdateVersionPersists(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	_, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("editable"))
+	applicationID := created["id"].(string)
+	versionID := created["version_details"].(map[string]any)["id"].(string)
+
+	recorder, updated := do(t, router, http.MethodPut,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID),
+		map[string]any{
+			"instructions":    "Revised brief.",
+			"welcome_message": "hey",
+			"llm_settings":    map[string]any{"model_name": "gpt-4o"},
+		})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if updated["instructions"] != "Revised brief." || updated["welcome_message"] != "hey" {
+		t.Errorf("update response = %s", recorder.Body.String())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var instructions, welcome, llm string
+	if err := pool.QueryRow(ctx,
+		`SELECT instructions, welcome_message, llm_settings::text FROM p_1.application_versions WHERE id = $1`,
+		versionID).Scan(&instructions, &welcome, &llm); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if instructions != "Revised brief." || welcome != "hey" || !strings.Contains(llm, "gpt-4o") {
+		t.Errorf("row = instructions=%q welcome=%q llm=%s", instructions, welcome, llm)
+	}
+}
+
+// TestHandlerPostgres_UpdateReportsTheRowOwner pins that editing an
+// application does not transfer or misreport its ownership: the prototype
+// echoed whoever was making the request back as owner_id.
+func TestHandlerPostgres_UpdateReportsTheRowOwner(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 11, "eleven@elitea.ai")
+	seedHandlerUser(t, pool, 12, "twelve@elitea.ai")
+
+	owner := newHandlerTestServer(t, pool, auth.User{ID: "11", UserID: "11", Email: "eleven@elitea.ai"})
+	_, created := do(t, owner, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("owned-by-eleven"))
+	applicationID, _ := created["id"].(string)
+	if applicationID == "" {
+		t.Fatalf("create failed: %v", created)
+	}
+
+	editor := newHandlerTestServer(t, pool, auth.User{ID: "12", UserID: "12", Email: "twelve@elitea.ai"})
+	recorder, updated := do(t, editor, http.MethodPut, "/application/prompt_lib/1/"+applicationID,
+		map[string]any{"name": "renamed-by-twelve"})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if updated["owner_id"] != "11" {
+		t.Errorf("update response owner_id = %v, want the row's owner \"11\"", updated["owner_id"])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var ownerID int64
+	if err := pool.QueryRow(ctx, `SELECT owner_id FROM p_1.applications WHERE id = $1`, applicationID).Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if ownerID != 11 {
+		t.Errorf("applications.owner_id = %d after an edit by user 12, want 11", ownerID)
+	}
+}
+
+func TestHandlerPostgres_SetAndGetDefaultVersion(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	_, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("defaults"))
+	applicationID := created["id"].(string)
+
+	recorder, second := do(t, router, http.MethodPost, "/versions/prompt_lib/1/"+applicationID,
+		map[string]any{"name": "v2", "agent_type": "openai"})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create version status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	secondID := second["id"].(string)
+
+	// Before any default is set, the resolution falls back to the version
+	// named "base" — the same rule the UI's selectDefaultVersion applies.
+	_, fallback := do(t, router, http.MethodGet, "/default_version/prompt_lib/1/"+applicationID, nil)
+	if fallback["name"] != "base" {
+		t.Errorf("fallback default version = %v, want the version named base", fallback["name"])
+	}
+
+	recorder, _ = do(t, router, http.MethodPatch,
+		fmt.Sprintf("/default_version/prompt_lib/1/%s/%s", applicationID, secondID), nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("set default status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	_, resolved := do(t, router, http.MethodGet, "/default_version/prompt_lib/1/"+applicationID, nil)
+	if resolved["id"] != secondID {
+		t.Errorf("default version = %v, want %q", resolved["id"], secondID)
+	}
+	if resolved["is_default"] != true {
+		t.Errorf("default version is_default = %v, want true", resolved["is_default"])
+	}
+}
+
+func TestHandlerPostgres_NonNumericProjectIDIsRejectedWithoutReachingSQL(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `CREATE TABLE p_1.handler_canary (id int)`); err != nil {
+		t.Fatalf("create canary: %v", err)
+	}
+
+	// Percent-encoded in the request target; chi decodes it back to the raw
+	// text before the handler ever sees it, which is exactly the path a real
+	// hostile request takes.
+	// chi routes on the raw path, so a handler receives the project id still
+	// percent-encoded. Both shapes are covered: the long encoded injection
+	// attempt, and short non-numeric ids that no length bound would catch.
+	projectIDs := []string{
+		url.PathEscape(`1"."applications"; DROP TABLE p_1.handler_canary; SELECT * FROM "p_1"."applications`),
+		"abc",
+		"1a",
+		"-1",
+		"1.0",
+	}
+
+	for _, projectID := range projectIDs {
+		for _, request := range []struct {
+			method string
+			path   string
+			body   any
+		}{
+			{http.MethodGet, "/applications/prompt_lib/" + projectID, nil},
+			{http.MethodPost, "/applications/prompt_lib/" + projectID, j14CreateBody("x")},
+			{http.MethodGet, "/application/prompt_lib/" + projectID + "/1", nil},
+			{http.MethodPut, "/application/prompt_lib/" + projectID + "/1", map[string]any{"name": "x"}},
+			{http.MethodDelete, "/application/prompt_lib/" + projectID + "/1", nil},
+			{http.MethodGet, "/versions/prompt_lib/" + projectID + "/1", nil},
+			{http.MethodPost, "/versions/prompt_lib/" + projectID + "/1", map[string]any{"name": "v"}},
+			{http.MethodGet, "/version/prompt_lib/" + projectID + "/1/1", nil},
+			{http.MethodPut, "/version/prompt_lib/" + projectID + "/1/1", map[string]any{"name": "v"}},
+			{http.MethodDelete, "/version/prompt_lib/" + projectID + "/1/1", nil},
+			{http.MethodGet, "/default_version/prompt_lib/" + projectID + "/1", nil},
+			{http.MethodPatch, "/default_version/prompt_lib/" + projectID + "/1/1", nil},
+		} {
+			name := fmt.Sprintf("%s %s %s", projectID[:min(len(projectID), 12)],
+				request.method, strings.SplitN(request.path, "/", 3)[1])
+			t.Run(name, func(t *testing.T) {
+				recorder, decoded := do(t, router, request.method, request.path, request.body)
+				if recorder.Code < 400 || recorder.Code >= 500 {
+					t.Errorf("status = %d, want a 4xx rejection; body = %s", recorder.Code, recorder.Body.String())
+				}
+				if message, _ := decoded["error"].(string); strings.Contains(message, "SQLSTATE") {
+					t.Errorf("error body leaks a SQL error: %s", message)
+				}
+			})
+		}
+	}
+
+	var canaryAlive bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.tables WHERE table_schema='p_1' AND table_name='handler_canary')`,
+	).Scan(&canaryAlive); err != nil {
+		t.Fatal(err)
+	}
+	if !canaryAlive {
+		t.Fatal("injected SQL executed: the canary table was dropped")
+	}
+}
+
+// TestHandlerPostgres_UpdateVersionPersistsPipelineSettings covers #135: the
+// pipeline editor saved the flow graph, the PUT answered 200/201, and the
+// nodes/edges were never written — pipeline_settings had no read in the
+// handler and no SET clause in the repository.
+func TestHandlerPostgres_UpdateVersionPersistsPipelineSettings(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	_, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("graph-owner"))
+	applicationID := created["id"].(string)
+	versionID := created["version_details"].(map[string]any)["id"].(string)
+
+	graphYAML := "nodes:\n  - id: Agent 1\n    type: llm\nentry_point: Agent 1\n"
+	recorder, _ := do(t, router, http.MethodPut,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID),
+		map[string]any{
+			"name":         "base",
+			"agent_type":   "pipeline",
+			"instructions": graphYAML,
+			"pipeline_settings": map[string]any{
+				"nodes":          []any{map[string]any{"id": "Agent 1", "position": map[string]any{"x": 42, "y": 99}}},
+				"edges":          []any{},
+				"orientation":    "vertical",
+				"layout_version": "1.0",
+			},
+		})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var instructions, pipelineSettings string
+	if err := pool.QueryRow(ctx,
+		`SELECT instructions, pipeline_settings::text FROM p_1.application_versions WHERE id = $1`,
+		versionID).Scan(&instructions, &pipelineSettings); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if instructions != graphYAML {
+		t.Errorf("instructions = %q, want the edited pipeline YAML", instructions)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(pipelineSettings), &stored); err != nil {
+		t.Fatalf("stored pipeline_settings is not JSON (%v): %s", err, pipelineSettings)
+	}
+	if stored["layout_version"] != "1.0" || stored["orientation"] != "vertical" {
+		t.Errorf("pipeline_settings = %s", pipelineSettings)
+	}
+	storedNodes, _ := stored["nodes"].([]any)
+	if len(storedNodes) != 1 {
+		t.Fatalf("pipeline_settings.nodes = %v", stored["nodes"])
+	}
+	if node, _ := storedNodes[0].(map[string]any); node["id"] != "Agent 1" {
+		t.Errorf("pipeline_settings.nodes[0] = %v", storedNodes[0])
+	}
+
+	// The GET the editor reloads through must hand the same graph back.
+	getRecorder, fetched := do(t, router, http.MethodGet,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID), nil)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	settings, ok := fetched["pipeline_settings"].(map[string]any)
+	if !ok || settings["layout_version"] != "1.0" {
+		t.Errorf("GET pipeline_settings = %v", fetched["pipeline_settings"])
+	}
+	if fetched["instructions"] != graphYAML {
+		t.Errorf("GET instructions = %v", fetched["instructions"])
+	}
+}

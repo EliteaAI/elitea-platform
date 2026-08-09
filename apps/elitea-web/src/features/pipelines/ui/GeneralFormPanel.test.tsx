@@ -50,6 +50,24 @@ describe('GeneralFormPanel', () => {
     expect(screen.queryByTestId('form-slot')).not.toBeInTheDocument();
   });
 
+  // #135: this button was icon-only with no aria-label/title/text, which axe
+  // reports as a critical `button-name` (WCAG 4.1.2) failure.
+  it('names the collapse toggle for a screen reader, and the name follows the state', async () => {
+    const user = userEvent.setup();
+    renderWithTheme(
+      <GeneralFormPanel
+        applicationId="42"
+        onCollapsed={vi.fn()}
+        renderConfigurationForm={() => <div data-testid="form-slot" />}
+      />,
+    );
+
+    const button = screen.getByRole('button', { name: 'Collapse the configuration panel' });
+    await user.click(button);
+
+    expect(screen.getByRole('button', { name: 'Expand the configuration panel' })).toBeInTheDocument();
+  });
+
   it('clicking the collapse toggle a second time expands again', async () => {
     const user = userEvent.setup();
     const onCollapsed = vi.fn();

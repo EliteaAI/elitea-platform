@@ -500,16 +500,34 @@ func resetCurrentAgentResponse(
 	if err != nil {
 		return executionapp.ErrInvalidAdmission
 	}
+	// Narrow every id explicitly. int64->int32 truncates silently, and these
+	// address rows — see narrowRowID.
+	targetParticipantID, ok := narrowRowID(turn.TargetParticipantID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
+	applicationID, ok := narrowRowID(turn.ApplicationID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
+	applicationVersionID, ok := narrowRowID(turn.ApplicationVersionID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
+	projectID, ok := narrowRowID(turn.ProjectID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
 	row, err := queries.ResetCurrentAgentResponse(
 		ctx,
 		sqlcgen.ResetCurrentAgentResponseParams{
-			ActorUserID: turn.ActorUserID, TargetParticipantID: int32(turn.TargetParticipantID),
+			ActorUserID: turn.ActorUserID, TargetParticipantID: targetParticipantID,
 			ConversationUuid: conversationUUID, QuestionID: questionID,
 			ResponseMessageID: responseMessageID, RegenerationKind: string(turn.Kind),
-			ApplicationID:        int32(turn.ApplicationID),
-			ApplicationVersionID: int32(turn.ApplicationVersionID),
+			ApplicationID:        applicationID,
+			ApplicationVersionID: applicationVersionID,
 			ExecutionGeneration:  turn.ExecutionGeneration, ExecutionID: executionID,
-			ProjectID: int32(turn.ProjectID),
+			ProjectID: projectID,
 		},
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -658,15 +676,34 @@ func insertCurrentApplicationTurn(
 	if err != nil {
 		return executionapp.ErrInvalidAdmission
 	}
+	// Same narrowing discipline as the reset path: these ids address rows and
+	// int64->int32 truncates silently. CodeQL flagged only the reset call site,
+	// but the exposure is identical here.
+	targetParticipantID, ok := narrowRowID(turn.TargetParticipantID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
+	applicationVersionID, ok := narrowRowID(turn.ApplicationVersionID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
+	applicationID, ok := narrowRowID(turn.ApplicationID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
+	projectID, ok := narrowRowID(turn.ProjectID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
 	row, err := queries.InsertCurrentApplicationTurn(
 		ctx,
 		sqlcgen.InsertCurrentApplicationTurnParams{
 			ActorUserID:          turn.ActorUserID,
-			TargetParticipantID:  int32(turn.TargetParticipantID),
-			ApplicationVersionID: int32(turn.ApplicationVersionID),
-			ApplicationID:        int32(turn.ApplicationID),
+			TargetParticipantID:  targetParticipantID,
+			ApplicationVersionID: applicationVersionID,
+			ApplicationID:        applicationID,
 			ConversationUuid:     conversationUUID,
-			ProjectID:            int32(turn.ProjectID),
+			ProjectID:            projectID,
 			QuestionID:           questionID,
 			QuestionMeta:         append([]byte(nil), turn.QuestionMeta...),
 			QuestionItemID:       questionItemID,
@@ -710,11 +747,19 @@ func insertCurrentAdhocTurn(
 	if err != nil {
 		return executionapp.ErrInvalidAdmission
 	}
+	adhocTargetParticipantID, ok := narrowRowID(turn.TargetParticipantID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
+	adhocProjectID, ok := narrowRowID(turn.ProjectID)
+	if !ok {
+		return executionapp.ErrInvalidAdmission
+	}
 	row, err := queries.InsertCurrentAdhocTurn(
 		ctx,
 		sqlcgen.InsertCurrentAdhocTurnParams{
-			ActorUserID: turn.ActorUserID, TargetParticipantID: int32(turn.TargetParticipantID),
-			ConversationUuid: conversationUUID, ProjectID: int32(turn.ProjectID),
+			ActorUserID: turn.ActorUserID, TargetParticipantID: adhocTargetParticipantID,
+			ConversationUuid: conversationUUID, ProjectID: adhocProjectID,
 			QuestionID: questionID, QuestionMeta: append([]byte(nil), turn.QuestionMeta...),
 			QuestionItemID: questionItemID, UserInput: turn.UserInput,
 			ResponseMessageID: responseMessageID, ExecutionGeneration: turn.QuestionID,
@@ -825,3 +870,23 @@ func agentExecutionCapability(capabilityID string) bool {
 }
 
 var _ agentexecutionapp.AtomicAdmissionStore = (*AgentExecutionJobsRepository)(nil)
+
+// narrowRowID converts a domain id (int64) to the int32 the sqlc params use,
+// refusing anything the target type cannot hold.
+//
+// Go's int64->int32 conversion is a SILENT TRUNCATION, and these ids address
+// rows: 4294967300 becomes 4, so an out-of-range id would not fail — it would
+// read or WRITE a different, entirely valid row. The columns are Postgres
+// `integer`, so a value above MaxInt32 cannot correspond to any row and
+// refusing is the only correct answer.
+//
+// The API boundary (positiveCanonicalID) already bounds ids on the way in.
+// This is deliberate defence in depth at the point of narrowing: it also covers
+// callers that do not come through that route, and unlike the boundary check it
+// is local enough for CodeQL's dataflow to see (go/incorrect-integer-conversion).
+func narrowRowID(value int64) (int32, bool) {
+	if value < 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
+}

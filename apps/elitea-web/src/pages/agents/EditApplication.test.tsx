@@ -60,14 +60,27 @@ describe('EditApplication', () => {
     server.use(getGetApplicationMockHandler(detail()));
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
 
-    expect(await screen.findByText('My Agent')).toBeInTheDocument();
+    // 5s, not the 1s default: the configuration panel now renders the real
+    // `CreateAgentForm` (several MUI accordions) instead of an empty Box, so the
+    // first paint is much heavier. This passed locally and failed on CI at the
+    // default timeout, with the DOM showing the fallback `<h3>Agent</h3>` — the
+    // query had simply not resolved yet. The assertion is unchanged; only the
+    // wait is realistic for a slower machine.
+    expect(await screen.findByText('My Agent', {}, { timeout: 5_000 })).toBeInTheDocument();
   });
 
-  it('renders the (composition-gap) configuration tab panel', async () => {
+  it('renders the configuration tab panel with the real agent fields in it', async () => {
     server.use(getGetApplicationMockHandler(detail()));
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
 
-    expect(await screen.findByTestId('edit-application-configuration-tab-panel')).toBeInTheDocument();
+    // Asserting the panel is `toBeInTheDocument()` is what let this page ship a
+    // self-closing `<Box data-testid=… />` for so long — an empty div is in the
+    // document. Assert it CONTAINS the fields, so a hollow panel fails here
+    // rather than waiting for an E2E journey to notice.
+    const panel = await screen.findByTestId('edit-application-configuration-tab-panel', {}, { timeout: 5_000 });
+    expect(await screen.findByTestId('agent-name-input', {}, { timeout: 5_000 })).toBeInTheDocument();
+    expect(panel).toContainElement(screen.getByTestId('agent-name-input'));
+    expect(panel).toContainElement(screen.getByTestId('agent-description-input'));
   });
 
   it('shows the not-found state when the URL version is not in the versions list', async () => {
@@ -106,6 +119,48 @@ describe('EditApplication', () => {
 
     expect(await screen.findByTestId('agent-save-button')).toBeInTheDocument();
     expect(screen.getByText('Cancel')).toBeInTheDocument();
+  });
+
+  /*
+   * #134 — the page fetched `versions[]` and spent it exclusively on
+   * `useIsVersionNotFound`'s 404 check; nothing on screen ever showed a
+   * version. Both of these assert on the MOUNTED control, not on a component
+   * existing somewhere in the tree, which is precisely the distinction that
+   * the dead `SaveNewVersionButton` (zero importers) slipped through.
+   */
+  it('mounts the version selector and lists the agent\'s versions', async () => {
+    server.use(
+      getGetApplicationMockHandler(
+        detail({
+          versions: [
+            { id: '1', name: 'base', status: 'draft', agent_type: 'classic', created_at: '2026-01-01T00:00:00Z' },
+            { id: '2', name: 'v1', status: 'draft', agent_type: 'classic', created_at: '2026-01-02T00:00:00Z' },
+          ],
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    await user.click(await screen.findByTestId('version-selector-trigger', {}, { timeout: 5_000 }));
+
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringContaining('base'),
+      expect.stringContaining('v1'),
+    ]);
+  });
+
+  it('mounts "Save As Version" for an owner and withholds it from a read-only viewer', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const owner = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    expect(await owner.findByRole('button', { name: /save as version/i }, { timeout: 5_000 })).toBeInTheDocument();
+    owner.unmount();
+
+    setPublicProjectId('9');
+    const viewer = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    await viewer.findByTestId('version-selector-trigger', {}, { timeout: 5_000 });
+    expect(viewer.queryByRole('button', { name: /save as version/i })).not.toBeInTheDocument();
   });
 
   it('clicking Cancel does not throw and keeps the page mounted', async () => {

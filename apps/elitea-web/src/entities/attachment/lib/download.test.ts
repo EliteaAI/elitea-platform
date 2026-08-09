@@ -117,7 +117,7 @@ describe('downloadAttachmentFromArtifact — downloadFileFromArtifact-equivalent
     expect(onError).not.toHaveBeenCalled();
     const request = sink[0];
     if (request === undefined) throw new Error('unreachable');
-    expect(new URL(request.url).pathname).toBe('/api/v2/artifacts/artifact/default/p1/my-bucket/folder%2Fphoto.png');
+    expect(new URL(request.url).pathname).toBe('/api/v2/artifacts/objects/p1/my-bucket/folder/photo.png');
   });
 
   it('reports an error for a filepath that does not start with "/"', async () => {

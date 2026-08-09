@@ -14,11 +14,19 @@
  * - This component itself is a self-contained tab content renderer that
  *   hosts its own sub-tabs (Model Configuration / OpenAI Template),
  *   matching the old app's two-tab inner structure.
+ *
+ * Phase 2: the `RouteShell` heading that used to sit above `AIConfiguration`
+ * is removed. It emitted an `<h1>AI Configuration</h1>` that production does
+ * not have — checked against the captured baseline
+ * (`parity/screenshot-index.json`, `settings-ai-configuration.dark.jpeg`):
+ * the content pane starts directly with this page's own
+ * "AI Configuration"/"OpenAI Template" sub-tabs, and the settings drawer
+ * already carries the label. No replacement header is added, because adding
+ * one would introduce a title the baseline never shows.
  */
 import { createFileRoute } from '@tanstack/react-router';
 
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
-import { RouteShell } from '@/routes/-ui/RouteShell';
 
 import { AIConfiguration } from '@/pages/settings/AIConfiguration';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
@@ -32,10 +40,5 @@ export const Route = createFileRoute('/_shell/settings/model-configuration')({
 function ModelConfigurationShell() {
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
 
-  return (
-    <>
-      <RouteShell routeId="settings.model-configuration" fallback="AI Configuration" />
-      <AIConfiguration projectId={projectId} />
-    </>
-  );
+  return <AIConfiguration projectId={projectId} />;
 }

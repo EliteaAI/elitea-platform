@@ -8,6 +8,7 @@ import {
   useSaveApplicationVersion,
   type ApplicationCreationInput,
 } from '@/entities/application-form';
+import { usePipelineGraphDraft } from '@/features/pipelines';
 import type { ApplicationDetail, ApplicationVersionDetail } from '@/shared/api/generated/model';
 
 import { EMPTY_FORM_VALUES, toFormValues, toVersionDraft } from './editPipelineMappers';
@@ -63,6 +64,11 @@ export function useEditPipelineForm(
 
   const versionId = activeVersion ? Number(activeVersion.id) : undefined;
   const { save, isSaving, error: saveError } = useSaveApplicationVersion(projectId, applicationId, versionId);
+  // #135 (write half): read the flow editor's LIVE graph at click time. This
+  // used to submit `toVersionDraft(activeVersion, conversationStarters)` and
+  // nothing else — no nodes, no edges, no `pipeline_settings` — so the PUT
+  // answered 200 and every graph edit was gone on the next reload.
+  const readGraphDraft = usePipelineGraphDraft();
 
   const handleSave = useCallback(() => {
     void form.handleSubmit(async (values) => {
@@ -70,9 +76,19 @@ export function useEditPipelineForm(
       const conversationStarters = (values.version_details?.conversation_starters ?? []).filter(
         (entry): entry is string => typeof entry === 'string',
       );
-      await save(toVersionDraft(activeVersion, conversationStarters));
+      const saved = await save(toVersionDraft(activeVersion, conversationStarters, readGraphDraft()));
+      /*
+       * #133 — the page now arms the app-wide unsaved-changes guard off
+       * `formState.isDirty`, so a successful save must clear that dirtiness
+       * or the next nav-away is prompted about changes already persisted.
+       * `useSaveApplicationVersion` invalidates no GET-side cache by design
+       * (its own doc comment), so the `values` prop feeding `useForm` above
+       * never changes and RHF has no other reason to reset. Left dirty on
+       * failure — those edits really are still unsaved.
+       */
+      if (saved !== undefined) form.reset(form.getValues());
     })();
-  }, [form, save, activeVersion]);
+  }, [form, save, activeVersion, readGraphDraft]);
 
   return { form, handleSave, isSaving, saveError };
 }

@@ -807,12 +807,19 @@ components:
           items: { $ref: '#/components/schemas/VersionVariable' }
         meta:
           allOf: [{ $ref: '#/components/schemas/VersionMeta' }]
+        pipeline_settings:
+          allOf: [{ $ref: '#/components/schemas/PipelineSettings' }]
+          description: >
+            Pipeline flow-graph layout ({nodes, edges, orientation,
+            layout_version}). Written verbatim to the
+            application_versions.pipeline_settings jsonb column; omit the key
+            to leave the stored value untouched.
       additionalProperties: true
       x-elitea-passthrough: >-
         NOTE(W2): decoded into map[string]any; the handlers read
         name/agent_type/instructions/welcome_message/llm_settings/
-        conversation_starters/variables/meta and ignore the rest
-        (internal/api/v2/applications/handler.go:700-781, 828-887).
+        conversation_starters/variables/meta/pipeline_settings and ignore the
+        rest (internal/api/v2/applications/handler.go:700-781, 828-887).
 
     SetDefaultVersionRequest:
       type: object
@@ -2777,6 +2784,69 @@ components:
         (not just wrong field types) is the only 400 case (:398-401).
 
     # ---- Toolkit instances ------------------------------------------------
+    ToolkitCreateRequest:
+      type: object
+      required: [type]
+      description: >
+        NOTE(1c): the handler decodes into `map[string]any` and the repository
+        reads exactly `name`, `type`, `description` and `settings`
+        (internal/api/v2/toolkits/handler.go:891-900). There is no Go struct
+        to mirror, so this schema DEFINES the contract rather than reflecting
+        one — keep it in step with pgRepo.CreateToolkit if that changes.
+        `author_id` is deliberately absent: the handler overwrites it from the
+        authenticated principal.
+
+        Only `type` is required. `name` is NOT enforced by the backend —
+        `validateToolkitCreate` checks settings for `type: github` and nothing
+        else, and the repository stores whatever `name` it is given, including
+        an empty one. Marking `name` required here would make the generated
+        client stricter than the server and reject requests the API accepts.
+      properties:
+        name: { type: string, minLength: 1 }
+        type:
+          type: string
+          description: >
+            Toolkit type key, e.g. `github`, `slack`, `sql`. The set is
+            open — `toolkit_types` is served by a separate handler that this
+            spec does not yet cover.
+        description: { type: string }
+        settings:
+          type: object
+          additionalProperties: true
+          description: >
+            Type-specific configuration, stored verbatim into
+            `p_{project_id}.elitea_tools.settings`. Modelled open because the
+            backend only validates it for `type: github`, which requires
+            `repository` (non-empty) and `github_configuration`.
+          x-elitea-passthrough: >-
+            NOTE(W2): genuinely open, not an unfinished schema. The toolkit type
+            set is open-ended and each type defines its own settings shape;
+            `validateToolkitCreate` switches on `type` and constrains settings
+            for `github` alone — every other type is accepted verbatim and
+            written straight to the `settings` jsonb column
+            (toolkits/handler.go:565-583). Closing this would make the generated
+            client reject requests the server accepts.
+
+    ToolkitUpdateRequest:
+      type: object
+      description: >
+        NOTE(1c): all fields optional — `pgRepo.UpdateToolkit` applies only
+        the keys present. Must NOT contain `has_relation`: that key makes the
+        handler dispatch to a different operation entirely (tool↔entity
+        relation, see the `updateToolkit` description and issue #38).
+      properties:
+        name: { type: string, minLength: 1 }
+        type: { type: string }
+        description: { type: string }
+        settings:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): same open contract as `ToolkitCreateRequest.settings` —
+            `pgRepo.UpdateToolkit` applies whatever keys are present and the
+            per-type validation that exists only covers `github`
+            (toolkits/handler.go:565-583).
+
     ToolkitInstance:
       type: object
       required: [id, type, name, description, settings, meta, created_at, author_id]
@@ -2887,6 +2957,65 @@ components:
         with 200 (:392-395) instead of a 404 — every property above is
         therefore genuinely optional (no `required` list); a real author
         response always includes all of them.
+
+    # ---- Secrets (v2/secrets) ---------------------------------------------
+    SecretListItem:
+      type: object
+      description: >
+        NOTE(issue 151): internal/api/v2/secrets/handler.go's SecretListItem —
+        the list element AND the body returned by create and update. It
+        NEVER carries a value; the plaintext is reachable only through the
+        single-secret GET.
+      properties:
+        name:
+          type: string
+          description: The secret's canonical name (the vault map key).
+        secret_name:
+          type: string
+          description: The `{{secret.<name>}}` placeholder, for display.
+        is_default:
+          type: boolean
+          description: >
+            BUG-FOR-BUG: always false from the Go handler. pylon sets it
+            from elitea_core's `default_secret_keys` config
+            (legacy/plugins/secrets/api/v2/secrets.py), which elitea-main
+            does not read.
+      required: [name, secret_name, is_default]
+
+    SecretDetail:
+      type: object
+      description: >
+        The single-secret GET response — the ONLY endpoint in this domain
+        that returns plaintext.
+      properties:
+        name: { type: string }
+        secret_name: { type: string }
+        is_default: { type: boolean }
+        is_hidden:
+          type: boolean
+          description: True when the secret was found in `hidden_secrets`.
+        value:
+          type: string
+          description: The plaintext secret value.
+      required: [name, secret_name, is_default, is_hidden, value]
+
+    SecretCreateRequest:
+      type: object
+      properties:
+        name: { type: string }
+        value: { type: string }
+      required: [name, value]
+
+    SecretUpdateRequest:
+      type: object
+      description: >
+        `name` is the NEW name — sending a different one renames the secret
+        addressed by the `{name}` path parameter. Omitting it (or sending
+        "") keeps the path name (handler.go's Update).
+      properties:
+        name: { type: string }
+        value: { type: string }
+      required: [value]
 
   responses:
     400:
@@ -3666,6 +3795,69 @@ paths:
         in: path
         required: true
         schema: { type: integer }
+
+    get:
+      operationId: getToolkit
+      summary: Retrieve a single toolkit instance
+      description: |
+        NOTE(1c): internal/api/v2/toolkits/handler.go:586-595 (Get) calling
+        pgRepo.GetToolkit. Registered at internal/api/router.go:648/673.
+
+        This route has always been mounted; it was simply absent from this
+        spec, which is why `apps/elitea-web`'s features/toolkits/api/toolkits.ts
+        calls it handwritten via `eliteaFetch` instead of a generated hook.
+        Any repository error — including a genuinely missing id — is
+        flattened to 404 {"error": "not found"} (:590-592); there is no 500
+        branch on this handler.
+      tags: [toolkits]
+      responses:
+        '200':
+          description: Toolkit instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitInstance'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+
+    put:
+      operationId: updateToolkit
+      summary: Update a toolkit instance
+      description: |
+        NOTE(1c): internal/api/v2/toolkits/handler.go:599-620 (Update) calling
+        pgRepo.UpdateToolkit. Registered at router.go:649/674.
+
+        PATCH (router.go:650/675) is mounted on the SAME handler with
+        identical behaviour. Only PUT is spec'd, deliberately: two operations
+        over one handler would generate two hooks with no behavioural
+        difference.
+
+        OVERLOADED HANDLER — documented, not modelled. If the body contains a
+        `has_relation` key the handler does NOT update the toolkit at all; it
+        dispatches to `updateToolRelation` (:622+), a different operation that
+        mutates the tool↔entity relation using `entity_version_id`,
+        `entity_id` and `entity_type` (defaulting to "agent"). That shape is
+        out of scope for this operation's schema — see issue #38. Callers of
+        `updateToolkit` must not send `has_relation`.
+      tags: [toolkits]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolkitUpdateRequest'
+      responses:
+        '200':
+          description: Updated toolkit instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitInstance'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
 
     delete:
       operationId: deleteApplicationTool
@@ -6152,3 +6344,298 @@ paths:
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }
+
+    post:
+      operationId: createToolkit
+      summary: Create a toolkit instance
+      description: |
+        NOTE(1c): internal/api/v2/toolkits/handler.go:538-563 (Create) calling
+        pgRepo.CreateToolkit (:891+). Registered at router.go:647/672.
+
+        `author_id` is NOT accepted from the client: the handler overwrites
+        `body["_author_id"]` from the authenticated principal, defaulting to
+        "1" when the context carries no user (:541-544). Sending it has no
+        effect.
+
+        Type-specific validation lives in `validateToolkitCreate` (:565-584)
+        and currently covers exactly ONE type: `github` requires
+        `settings.repository` (non-empty) and `settings.github_configuration`
+        (present). Every other type passes validation with any settings, so
+        `settings` is modelled open rather than as a per-type discriminated
+        union — the union would encode a constraint the backend does not
+        enforce. Violations return 400 {"error": "<reason>"}.
+
+        Returns 201 with the created record.
+      tags: [toolkits]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolkitCreateRequest'
+      responses:
+        '201':
+          description: Created toolkit instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitInstance'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  # ==========================================================================
+  # SECRETS (issue 151)
+  #
+  # pylon serves /api/v2/<plugin>/<resource-module>/<mode>/<params>. The
+  # plugin is `secrets`; its resource modules are
+  # legacy/plugins/secrets/api/v2/{secrets,secret,hide}.py — hence the
+  # doubled first segment, which is the REAL legacy shape and not the
+  # double-mount bug issue 137 took it for. Every consumer agrees: the pinned
+  # baseline client (apps/elitea-ui/src/api/secrets.js:3), elitea-sdk
+  # (runtime/clients/{client,sandbox_client}.py), admin_ui
+  # (frontend/src/api/secretsApi.js) and qa/elitea-api-testing
+  # (utils/utils.py:322).
+  #
+  # This domain was absent from this spec entirely until issue 151, which is why
+  # nothing generated or contract-tested caught the divergence.
+  #
+  # `mode` is a real dispatch key, not decoration: pylon's
+  # APIBase.proxy_method looks it up in mode_handlers and abort(404)s on a
+  # miss. Only two modes exist — `default` (project vault) and
+  # `administration` (the GLOBAL vault, a different handler with different
+  # shapes). elitea-main implements `default`; it answers `administration`
+  # with 501 rather than serving project 0's vault in the global vault's
+  # place, and any other mode with 404. See requireMode in
+  # internal/api/v2/secrets/handler.go.
+  # ==========================================================================
+  /secrets/secrets/{mode}/{projectID}:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema: { type: string, enum: [default, administration] }
+      - name: projectID
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: listSecrets
+      summary: List a project's secret names
+      description: >
+        Values are never returned here — only `{{secret.<name>}}`
+        placeholders. A project with no vault yet returns `[]` with 200,
+        not a 404 (handler.go's List).
+      tags: [secrets]
+      responses:
+        '200':
+          description: Secret names
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SecretListItem' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '501':
+          description: >
+            `administration` mode — the global vault, not implemented by
+            elitea-main.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+    post:
+      operationId: createSecret
+      summary: Create a project secret
+      description: >
+        A duplicate name is a 400, never an overwrite (handler.go's
+        Create). Returns the created item WITHOUT its value.
+      tags: [secrets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecretCreateRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecretListItem' }
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '500': { $ref: '#/components/responses/500' }
+        '501':
+          description: '`administration` mode — not implemented.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /secrets/secret/{mode}/{projectID}/{name}:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema: { type: string, enum: [default, administration] }
+      - name: projectID
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+
+    get:
+      operationId: showSecret
+      summary: Read one secret, including its plaintext value
+      tags: [secrets]
+      responses:
+        '200':
+          description: The secret
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecretDetail' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '501':
+          description: '`administration` mode — not implemented.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+    put:
+      operationId: updateSecret
+      summary: Rename and/or re-value a secret
+      description: >
+        BUG-FOR-BUG: a missing secret is a 400, not a 404 (handler.go's
+        Update). A rename to an existing name overwrites it silently — the
+        duplicate check exists only on create.
+      tags: [secrets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecretUpdateRequest' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecretListItem' }
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '500': { $ref: '#/components/responses/500' }
+        '501':
+          description: '`administration` mode — not implemented.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+    delete:
+      operationId: deleteSecret
+      summary: Delete a secret
+      description: >
+        Idempotent: deleting a name that does not exist — or a project with
+        no vault at all — is still a 204 (handler.go's Delete). Removes the
+        name from both `secrets` and `hidden_secrets`.
+      tags: [secrets]
+      responses:
+        '204':
+          description: Deleted
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '501':
+          description: '`administration` mode — not implemented.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /secrets/hide/{mode}/{projectID}/{name}:
+    parameters:
+      - name: mode
+        in: path
+        required: true
+        schema: { type: string, enum: [default, administration] }
+      - name: projectID
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+
+    post:
+      operationId: hideSecret
+      summary: Move a secret into hidden_secrets
+      description: >
+        A hidden secret disappears from the list endpoint but is still
+        readable by name through the single-secret GET, which reports
+        `is_hidden: true`. BUG-FOR-BUG: a missing secret is a 400, not a
+        404 (handler.go's Hide) — matching pylon's hide.py.
+      tags: [secrets]
+      responses:
+        '200':
+          description: Hidden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                required: [message]
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '500': { $ref: '#/components/responses/500' }
+        '501':
+          description: '`administration` mode — not implemented.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /secrets/secret/{projectID}/{name}:
+    parameters:
+      - name: projectID
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+
+    get:
+      operationId: showSecretWithoutMode
+      summary: Read one secret — the mode-less legacy form
+      description: >
+        pylon's api_tools.with_modes registers the mode-less URL alongside
+        the mode-ful one for every resource, and proxy_method defaults
+        `mode` to "default", so this is the project handler under another
+        URL. It is spelled out here because elitea-sdk is a live caller:
+        elitea_sdk/runtime/clients/client.py:108 and sandbox_client.py:237
+        build {api_v2}/secrets/secret/{project_id} and append /{name}.
+        pylon serves the mode-less form of the other five routes too;
+        elitea-main does not, because nothing in the workspace calls them.
+      tags: [secrets]
+      responses:
+        '200':
+          description: The secret
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecretDetail' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }

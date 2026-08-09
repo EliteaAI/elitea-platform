@@ -15,14 +15,15 @@ import {
 export interface BrandThemeProviderProps {
   children: ReactNode;
   /**
-   * Wave-1 state (spec §4.3): only channel A (the compiled-in default pack)
-   * is wired. Channel C (`GET /api/v2/branding/bootstrap.js`, unit W3)
-   * resolving a per-tenant pack into `window.elitea_brand` is a later
-   * concern — when it lands, the caller (this prop's default) becomes
-   * `BrandPack.parse(window.elitea_brand ?? DEFAULT_BRAND_PACK)` instead of
-   * the bare constant, with no change to this component's shape. The prop
-   * exists now (rather than being added later) so that day-one change is a
-   * one-line default, not a new parameter.
+   * The resolved brand pack. Channel C (`GET /api/v2/branding/bootstrap.js`,
+   * unit W3) is now wired: `AppProviders` passes
+   * `shared/brand/channelC.ts`'s `resolveBrandPack()`, which validates
+   * `window.elitea_brand` and falls back to the compiled-in
+   * `DEFAULT_BRAND_PACK` (channel A) when no valid pack was served. Until
+   * that wiring landed this prop had no caller at all and the default below
+   * always won, so nothing about the running app was pack-driven (issue #136
+   * C). The default is retained for tests and stories that render the
+   * provider standalone.
    */
   pack?: BrandPack;
 }

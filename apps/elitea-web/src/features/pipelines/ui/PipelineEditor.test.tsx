@@ -6,11 +6,25 @@ import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { forceResizeObserverAbsentForTest } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
 
 import { renderWithRouterAndProject } from '../__tests__/testUtils';
 import type { PipelineCreateFormSlotProps, PipelineEditorDeps, PipelineEditorHandle, PipelineEditorShellProps } from './PipelineEditor';
 import { PipelineEditor } from './PipelineEditor';
+
+/**
+ * The "threads … without crashing when switching to the Flow editor tab"
+ * test below renders `PipelineEditorBody` -> `EditorPanel`, whose flow pane
+ * only fails to load (the assertion this test relies on) when
+ * `window.ResizeObserver` is unavailable — see
+ * `EditorPanel.test.tsx`'s own module doc comment and
+ * `codeMirrorTestPolyfills.ts`'s `forceResizeObserverAbsentForTest`. Without
+ * this, the test is silently order-dependent on which other files ran in
+ * the same vitest worker; reproduced directly (2 fail / 0 fail / 0 fail
+ * across 3 consecutive full-suite runs with no source change).
+ */
+forceResizeObserverAbsentForTest();
 
 /**
  * `./EditorPanel` (unit A2n) landed in this worktree partway through this
@@ -222,6 +236,11 @@ describe('PipelineEditor', () => {
     await user.click(within(formContent).getByRole('tab', { name: 'Flow editor' }));
 
     const bodyContent = await findByTestId('shell-children');
-    expect(await within(bodyContent).findByText('Failed to load the flow editor', {}, { timeout: 5000 })).toBeInTheDocument();
-  }, 10000);
+    // The wait window is generous on purpose: this assertion depends on
+    // `React.lazy(() => import('./FlowWrapper'))` REJECTING, and the first
+    // file in a vitest worker to trigger that import pays the whole
+    // transform cost for the chain. At 5s it was an order-dependent flake
+    // (see this file's own note above); the assertion itself is unchanged.
+    expect(await within(bodyContent).findByText('Failed to load the flow editor', {}, { timeout: 20000 })).toBeInTheDocument();
+  }, 30000);
 });

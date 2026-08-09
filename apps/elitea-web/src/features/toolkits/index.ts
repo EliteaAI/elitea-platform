@@ -31,7 +31,7 @@
  * one of them standalone.
  */
 export { ToolkitsList } from './ui/list/ToolkitsList';
-export type { ToolkitsListProps, ToolkitListItem, ToolkitsEmptyStateConfig } from './ui/list/ToolkitsList';
+export type { ToolkitsListProps, ToolkitListItem } from './ui/list/ToolkitsList';
 export type { ToolkitTypeTag } from './ui/list/ToolkitTypesPanel';
 /**
  * `ToolkitsListState`/`ToolkitsListTypeFilter` (the two grouped-prop types
@@ -47,7 +47,6 @@ export type { ToolkitTypeTag } from './ui/list/ToolkitTypesPanel';
  */
 
 export { ToolkitsTabBar } from './ui/toolkits-tab-bar/ToolkitsTabBar';
-export type { ToolkitsTabBarProps } from './ui/toolkits-tab-bar/ToolkitsTabBar';
 
 export { ToolkitsControls } from './ui/toolkits-tab-bar/ToolkitsControls';
 export type { ToolkitsControlsProps } from './ui/toolkits-tab-bar/ToolkitsControls';
@@ -88,3 +87,19 @@ export { ToolkitForm } from './ui/form/ToolkitForm/ToolkitForm';
 export { ToolkitTypeSelector } from './ui/ToolkitTypeSelector';
 export { CreateToolkitToolTabBar } from './ui/CreateToolkitToolTabBar';
 export { ConfigurationTab } from './ui/ConfigurationTab';
+
+/**
+ * Phase 1c: the real create/edit mutations. These replace the injected
+ * `deps.createToolkit`/`deps.saveToolkit` stubs that existed only because the
+ * operations were missing from the OpenAPI spec — the handlers were always
+ * mounted. See the CORRECTION in `api/toolkits.ts`.
+ */
+export { useToolkitCreate, useToolkitEdit } from './api/toolkits';
+
+/*
+ * Budget note (§3.5, ≤20): adding the two hooks above took this API to 22, so
+ * `ToolkitsEmptyStateConfig` and `ToolkitsTabBarProps` were dropped. Both had
+ * ZERO consumers anywhere in `src/` — inside or outside this slice — so this
+ * is the curation the budget is meant to force, not a capability removal.
+ * They remain exported from their own modules for in-slice use.
+ */

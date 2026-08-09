@@ -71,7 +71,29 @@ function useActiveConversation(projectId: string | undefined, conversationId: st
     if (!conversationId) return { isNew: true };
     if (!detailsQuery.data) return undefined;
     const response = messageListQuery.data;
-    const rows = response ? ('rows' in response ? response.rows : response) : [];
+    /*
+     * The message list is paginated as {items,total,page,page_size,total_pages}
+     * — measured, not assumed. The previous unwrap tried `rows` and otherwise
+     * fell through to the response itself, so neither branch matched and the
+     * ENVELOPE OBJECT was handed to ChatBox as `message_groups`.
+     * convertMessagesToChatHistory then did `[...(messageGroups ?? [])]` on a
+     * non-iterable and threw, so every deep link to /app/chat/:conversationId
+     * hit the route error boundary — while both API calls returned 200, which
+     * is why it read as a frontend mystery rather than a shape mismatch.
+     *
+     * All three shapes are handled rather than just swapping `rows` for
+     * `items`: `rows` is the envelope other list endpoints in this API use, and
+     * a bare array is what the generated client returns for some. Falling back
+     * to [] instead of to `response` is the important part — an unrecognised
+     * shape must not become the data.
+     */
+    const rows = Array.isArray(response)
+      ? response
+      : response && typeof response === 'object'
+        ? ((response as { items?: unknown; rows?: unknown }).items ??
+           (response as { rows?: unknown }).rows ??
+           [])
+        : [];
     return {
       id: detailsQuery.data.id,
       ...(detailsQuery.data.uuid !== undefined ? { uuid: detailsQuery.data.uuid } : {}),

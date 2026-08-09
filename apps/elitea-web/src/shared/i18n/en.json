@@ -1626,5 +1626,11 @@
   "widgets.sidebar.projectSwitcher.label": "Project:",
   "widgets.sidebar.projectSwitcher.none": "No projects",
   "widgets.sidebar.settings": "Settings",
-  "widgets.sidebar.toggle": "Toggle sidebar"
+  "widgets.sidebar.toggle": "Toggle sidebar",
+  "entities.secret.table.empty": "No secrets",
+  "features.pipelines.chatPanel.collapse": "Collapse the chat panel",
+  "features.pipelines.chatPanel.expand": "Expand the chat panel",
+  "features.pipelines.generalFormPanel.collapse": "Collapse the configuration panel",
+  "features.pipelines.generalFormPanel.expand": "Expand the configuration panel",
+  "widgets.appShell.navBlocker.unsavedChanges": "You have unsaved changes in the editor. Are you sure you want to leave?"
 }

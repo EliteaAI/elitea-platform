@@ -83,6 +83,35 @@ function warnPayloadMismatch(direction: 'emit' | 'receive', event: string, issue
   console.warn(`socket/client: ${direction}("${event}") payload failed schema validation`, issues);
 }
 
+/**
+ * A no-op SocketClient for environments where VITE_SOCKET_SERVER is absent or
+ * empty (e.g. E2E compose, offline dev). The connection state is permanently
+ * 'disconnected'; emit/on/off are harmless no-ops. `useSocketClient()` callers
+ * receive this instead of throwing, so socket-dependent UI renders in a
+ * degraded-but-functional state rather than crashing.
+ */
+export function createNoopSocketClient(): SocketClient {
+  const useConnectionStore = create<ConnectionStoreState>(() => ({ status: 'disconnected', lastError: null }));
+  const noopSocket = {
+    on: () => { /* noop */ },
+    off: () => { /* noop */ },
+    emit: () => false,
+    disconnect: () => { /* noop */ },
+    // Manager is needed for socket.io-client's Socket shape only
+    io: { on: () => { /* noop */ }, off: () => { /* noop */ } },
+  } as unknown as Socket;
+
+  return {
+    socket: noopSocket,
+    getConnectionState: () => 'disconnected',
+    useConnectionState: () => useConnectionStore((s) => s.status),
+    emit: () => false,
+    on: () => { /* noop */ },
+    off: () => { /* noop */ },
+    disconnect: () => { /* noop */ },
+  };
+}
+
 export function createSocketClient(cfg: SocketClientConfig): SocketClient {
   if (typeof cfg.url !== 'string' || cfg.url === '') {
     throw new TypeError('socket/client: SocketClientConfig.url is required'); // programmer error, mirrors http.ts's createHttpClient

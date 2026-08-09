@@ -3,32 +3,40 @@
  *
  * Source: `apps/elitea-ui/src/api/secrets.js` — RTK Query endpoints
  * (`secretsList` / `secretCreate` / `secretShow` / `secretEdit` /
- * `secretDelete` / `secretHide`). Every route below maps to a real,
- * wired Go handler (`services/elitea-main/internal/api/v2/secrets/
- * handler.go:59-67`):
+ * `secretDelete` / `secretHide`).
  *
- *  - GET  `/secrets/{mode}/{projectID}`          → list (masked names only)
- *  - POST `/secrets/{mode}/{projectID}`          → create
- *  - GET  `/secret/{mode}/{projectID}/{name}`    → show (plaintext value)
- *  - PUT  `/secret/{mode}/{projectID}/{name}`    → rename / update
- *  - DELETE `/secret/{mode}/{projectID}/{name}`  → delete
- *  - POST `/hide/{mode}/{projectID}/{name}`      → hide (move to
+ * URL SHAPE (#151). pylon serves `/api/v2/<plugin>/<resource-module>/<mode>/
+ * <params>`. The plugin is `secrets`; its resource modules are
+ * `legacy/plugins/secrets/api/v2/{secrets,secret,hide}.py`. So the doubled
+ * segment is real, and the baseline client agrees
+ * (`apps/elitea-ui/src/api/secrets.js:3` → `apiSlicePath = '/secrets'`):
+ *
+ *  - GET  `/secrets/secrets/default/{projectID}`         → list (names only)
+ *  - POST `/secrets/secrets/default/{projectID}`         → create
+ *  - GET  `/secrets/secret/default/{projectID}/{name}`   → show (plaintext)
+ *  - PUT  `/secrets/secret/default/{projectID}/{name}`   → rename / update
+ *  - DELETE `/secrets/secret/default/{projectID}/{name}` → delete
+ *  - POST `/secrets/hide/default/{projectID}/{name}`     → hide (move to
  *    `hidden_secrets`)
  *
- * WHY HAND-WRITTEN, NOT GENERATED: the `/secrets` family does not appear
- * in `services/elitea-main/api/openapi/v2.yaml` (spec-coverage gap), so
- * orval never generates a client. Same handwritten-manifest rationale as
- * `entities/conversation/api/contextManagementApi.ts` — this unit appends
- * one manifest entry per endpoint with `source:"handwritten"` (R-A5).
+ * An earlier revision of this file invented `/secrets/{mode}/…` with mode
+ * `prompt_lib`; #137 then read the resulting 404s as a Go double-mount bug
+ * and moved the server to match, breaking elitea-sdk, admin_ui and
+ * qa/elitea-api-testing, which had always used the shape above. #151
+ * restored the server and corrected this client. `secretApi.contract.test.ts`
+ * pins these exact strings so the next drift fails a unit test, not a
+ * cross-repo integration.
  *
- * The `/secrets` routes mount under `elitea-main/internal/api/v2/secrets`
- * (handler.go:59-67), NOT under the `/prompt_lib` path segments that
- * context-management uses.  The URL pattern below matches the raw Go
- * handler routes verbatim.
+ * WHY HAND-WRITTEN, NOT GENERATED: these paths are now IN
+ * `services/elitea-main/api/openapi/v2.yaml` (#151 added them), so orval
+ * does generate a `secrets` tag — but this slice keeps its hand-written
+ * client for its bespoke envelope unwrapping (`fetchJson`) and
+ * `normaliseSecrets` shaping, the same handwritten-manifest arrangement as
+ * `entities/conversation/api/contextManagementApi.ts`. Migrating onto the
+ * generated hooks is deliberately left out of #151's scope.
  *
  * Per R-A5, every endpoint below is reported for merge into
- * `src/shared/api/endpoints.manifest.json` as `source: "handwritten"`
- * (not edited directly here — see this unit's report).
+ * `src/shared/api/endpoints.manifest.json` as `source: "handwritten"`.
  */
 import { useMutation, useQuery, useQueryClient, type UseMutationResult, type UseQueryResult } from '@tanstack/react-query';
 
@@ -45,19 +53,32 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return envelope.data;
 }
 
-/** The `mode` parameter used across the project-scoped settings routes. */
-const SETTINGS_MODE = 'prompt_lib';
+/**
+ * The pylon PLUGIN prefix for this domain. Every path below is
+ * `/secrets/<resource-module>/<mode>/<params>` — see the module header.
+ */
+const PLUGIN_PREFIX = '/secrets';
+
+/**
+ * pylon's `c.DEFAULT_MODE` — the project-scoped handler
+ * (`legacy/plugins/shared/tools/config.py:41`). The only other mode the
+ * plugin defines is `administration`, which addresses the global vault and
+ * is admin_ui's, not this app's. `prompt_lib` — which this client used
+ * until #151 — is not a mode of this plugin at all; elitea-main now 404s it
+ * rather than accepting a third convention.
+ */
+const SETTINGS_MODE = 'default';
 
 function secretsBasePath(projectId: string | number): string {
-  return `/secrets/${SETTINGS_MODE}/${projectId}`;
+  return `${PLUGIN_PREFIX}/secrets/${SETTINGS_MODE}/${projectId}`;
 }
 
 function secretPath(projectId: string | number, name: string): string {
-  return `/secret/${SETTINGS_MODE}/${projectId}/${encodeURIComponent(name)}`;
+  return `${PLUGIN_PREFIX}/secret/${SETTINGS_MODE}/${projectId}/${encodeURIComponent(name)}`;
 }
 
 function hidePath(projectId: string | number, name: string): string {
-  return `/hide/${SETTINGS_MODE}/${projectId}/${encodeURIComponent(name)}`;
+  return `${PLUGIN_PREFIX}/hide/${SETTINGS_MODE}/${projectId}/${encodeURIComponent(name)}`;
 }
 
 /* ── query key ─────────────────────────────────────────────────────────── */

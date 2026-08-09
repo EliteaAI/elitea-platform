@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applications"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
@@ -126,6 +127,15 @@ func (m *mockRepo) BatchReplaceVersion(_ context.Context, _, _, _ string, _ bool
 func setupRouter(repo applications.Repository) *chi.Mux {
 	r := chi.NewRouter()
 	h := handler.NewHandler(repo)
+	// Every /elitea_core route is inside the authenticated group in
+	// internal/api/router.go, so the handler now requires a principal and a
+	// numeric tenant project id (#115). These doubles supply both.
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			next.ServeHTTP(w, req.WithContext(auth.ContextWithUser(req.Context(),
+				auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})))
+		})
+	})
 	r.Route("/api/v2/projects/{projectID}/applications", func(r chi.Router) {
 		r.Mount("/", h.Routes())
 	})
@@ -141,7 +151,7 @@ func TestList_Success(t *testing.T) {
 	}
 	r := setupRouter(repo)
 
-	req := httptest.NewRequest("GET", "/api/v2/projects/proj-1/applications?page=1&page_size=20", nil)
+	req := httptest.NewRequest("GET", "/api/v2/projects/1/applications?page=1&page_size=20", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -171,7 +181,7 @@ func TestGet_NotFound(t *testing.T) {
 	repo := &mockRepo{apps: nil}
 	r := setupRouter(repo)
 
-	req := httptest.NewRequest("GET", "/api/v2/projects/proj-1/applications/nonexistent", nil)
+	req := httptest.NewRequest("GET", "/api/v2/projects/1/applications/nonexistent", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -185,7 +195,7 @@ func TestCreate_Success(t *testing.T) {
 	r := setupRouter(repo)
 
 	body, _ := json.Marshal(map[string]string{"name": "New Agent", "type": "chat"})
-	req := httptest.NewRequest("POST", "/api/v2/projects/proj-1/applications", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/v2/projects/1/applications", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -205,7 +215,7 @@ func TestCreate_InvalidBody(t *testing.T) {
 	repo := &mockRepo{}
 	r := setupRouter(repo)
 
-	req := httptest.NewRequest("POST", "/api/v2/projects/proj-1/applications", bytes.NewReader([]byte("not json")))
+	req := httptest.NewRequest("POST", "/api/v2/projects/1/applications", bytes.NewReader([]byte("not json")))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -219,7 +229,7 @@ func TestDelete_Success(t *testing.T) {
 	repo := &mockRepo{}
 	r := setupRouter(repo)
 
-	req := httptest.NewRequest("DELETE", "/api/v2/projects/proj-1/applications/app-1", nil)
+	req := httptest.NewRequest("DELETE", "/api/v2/projects/1/applications/app-1", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -238,7 +248,7 @@ func TestUpdate_Success(t *testing.T) {
 	r := setupRouter(repo)
 
 	body, _ := json.Marshal(map[string]*string{"name": &name})
-	req := httptest.NewRequest("PUT", "/api/v2/projects/proj-1/applications/app-1", bytes.NewReader(body))
+	req := httptest.NewRequest("PUT", "/api/v2/projects/1/applications/app-1", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -253,5 +263,90 @@ func TestUpdate_Success(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&app)
 	if app.Name != "Updated Name" {
 		t.Errorf("expected updated name, got %q", app.Name)
+	}
+}
+
+// recordingRepo captures the applications.Version the handler builds from the
+// request body, so a test can assert on what the handler decided to write
+// rather than on what the repository happened to echo back.
+type recordingRepo struct {
+	mockRepo
+	lastUpdate applications.Version
+}
+
+func (m *recordingRepo) UpdateVersion(_ context.Context, _, _, _ string, v applications.Version) (applications.Version, error) {
+	m.lastUpdate = v
+	return applications.Version{ID: "7", Name: v.Name}, nil
+}
+
+func setupVersionRouter(repo applications.Repository) *chi.Mux {
+	r := chi.NewRouter()
+	h := handler.NewHandler(repo)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			next.ServeHTTP(w, req.WithContext(auth.ContextWithUser(req.Context(),
+				auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})))
+		})
+	})
+	r.Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.UpdateVersion)
+	return r
+}
+
+// #135: the pipeline editor's Save returned 200 while the flow graph was
+// discarded, because UpdateVersion read no pipeline_settings key off the body.
+func TestUpdateVersion_ForwardsPipelineSettings(t *testing.T) {
+	repo := &recordingRepo{}
+	r := setupVersionRouter(repo)
+
+	body, _ := json.Marshal(map[string]any{
+		"name":         "base",
+		"instructions": "nodes:\n  - id: Agent 1\n",
+		"pipeline_settings": map[string]any{
+			"nodes":          []any{map[string]any{"id": "Agent 1"}},
+			"edges":          []any{},
+			"orientation":    "vertical",
+			"layout_version": "1.0",
+		},
+	})
+	req := httptest.NewRequest("PUT", "/version/prompt_lib/1/2/3", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if repo.lastUpdate.PipelineSettings == nil {
+		t.Fatalf("pipeline_settings was dropped; version = %+v", repo.lastUpdate)
+	}
+	nodes, ok := repo.lastUpdate.PipelineSettings["nodes"].([]any)
+	if !ok || len(nodes) != 1 {
+		t.Errorf("pipeline_settings.nodes = %v", repo.lastUpdate.PipelineSettings["nodes"])
+	}
+	if repo.lastUpdate.PipelineSettings["layout_version"] != "1.0" {
+		t.Errorf("pipeline_settings.layout_version = %v", repo.lastUpdate.PipelineSettings["layout_version"])
+	}
+	if repo.lastUpdate.Instructions != "nodes:\n  - id: Agent 1\n" {
+		t.Errorf("instructions = %q", repo.lastUpdate.Instructions)
+	}
+}
+
+// A body with no pipeline_settings key must leave the stored value alone —
+// nil, not an empty map that would blank the column.
+func TestUpdateVersion_OmittedPipelineSettingsStaysNil(t *testing.T) {
+	repo := &recordingRepo{}
+	r := setupVersionRouter(repo)
+
+	body, _ := json.Marshal(map[string]any{"name": "base"})
+	req := httptest.NewRequest("PUT", "/version/prompt_lib/1/2/3", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if repo.lastUpdate.PipelineSettings != nil {
+		t.Errorf("expected nil pipeline_settings, got %v", repo.lastUpdate.PipelineSettings)
 	}
 }

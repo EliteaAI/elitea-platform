@@ -8,6 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
+import { forceResizeObserverAbsentForTest } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 
 import { usePipelineYamlStore } from '../model/pipelineYamlStore';
 import { EditorPanel } from './EditorPanel';
@@ -36,6 +37,19 @@ function installRangeMeasurementPolyfills(): void {
   }
 }
 installRangeMeasurementPolyfills();
+
+/**
+ * This file's "shows the error-boundary fallback"/"reload button"/
+ * "onRcvAgentEvent…"/"accepts versionTools/llmSettings…" tests all depend on
+ * `window.ResizeObserver` being unavailable (see the module doc comment
+ * above and `codeMirrorTestPolyfills.ts`'s own doc comment on
+ * `forceResizeObserverAbsentForTest`). Other test files in the same vitest
+ * worker permanently define it via `installCodeMirrorTestPolyfills()`, so
+ * this is required for every test in this file, not just the four that read
+ * it directly — reproduced as a real, order-dependent flake, not a
+ * hypothetical one.
+ */
+forceResizeObserverAbsentForTest();
 
 /**
  * No `vi.mock()` here (`no-vi-mock`/R-M1 forbids it outright, verified via
@@ -122,9 +136,13 @@ describe('EditorPanel', () => {
 
   it('shows the error-boundary fallback for the flow pane, reflecting the real current state of the sibling FlowEditor dependency chain', async () => {
     renderEditorPanel();
-    expect(await screen.findByText('Failed to load the flow editor', {}, { timeout: 5000 })).toBeInTheDocument();
+    // Generous wait window, same reason `PipelineEditor.test.tsx` documents:
+    // the first worker file to trigger the lazy `./FlowWrapper` import pays
+    // the transform cost for the whole chain before it can reject. The
+    // assertion is unchanged — only the time it is given.
+    expect(await screen.findByText('Failed to load the flow editor', {}, { timeout: 20000 })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reload page' })).toBeInTheDocument();
-  }, 10000);
+  }, 30000);
 
   it('the error-boundary reload button calls window.location.reload', async () => {
     const reloadSpy = vi.fn();

@@ -10,6 +10,13 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import type { ApplicationDetail, ApplicationVersionDetail } from '@/shared/api/generated/model';
 import { server } from '@/test/setup';
 
+// Deep imports into the slice's own stores: test files are excluded from
+// dependency-cruiser's `no-deep-slice-import` fence (.dependency-cruiser.cjs
+// `options.exclude`), and driving the real stores is the only honest way to
+// assert what the save handler reads out of the live editor.
+import { usePipelineEditorStore } from '@/features/pipelines/model/pipelineEditorStore';
+import { usePipelineYamlStore } from '@/features/pipelines/model/pipelineYamlStore';
+
 import { useEditPipelineForm } from './useEditPipelineForm';
 
 const DETAIL: ApplicationDetail = {
@@ -43,6 +50,10 @@ beforeEach(() => {
 
 afterEach(() => {
   resetGeneratedClient();
+  // Both stores are session-wide singletons — reset so one test's live-editor
+  // state cannot leak into the next.
+  usePipelineYamlStore.setState({ yamlCode: '' });
+  usePipelineEditorStore.setState({ nodes: [], edges: [] });
 });
 
 describe('useEditPipelineForm', () => {
@@ -92,6 +103,52 @@ describe('useEditPipelineForm', () => {
     });
 
     await waitFor(() => expect(sentAgentType).toBe('pipeline'));
+  });
+
+  // #135: handleSave used to submit `toVersionDraft(activeVersion,
+  // conversationStarters)` and nothing else — the live canvas never reached
+  // the wire, the PUT answered 200, and the graph was gone on reload.
+  it('handleSave sends the LIVE editor YAML as instructions plus the laid-out pipeline_settings', async () => {
+    const liveYaml = 'entry_point: Agent 1\nnodes:\n  - id: Agent 1\n    type: llm\n';
+    usePipelineYamlStore.setState({ yamlCode: liveYaml });
+    usePipelineEditorStore.setState({ nodes: [], edges: [] });
+
+    let body: Record<string, unknown> = {};
+    server.use(
+      getUpdateApplicationVersionMockHandler(async (info) => {
+        body = (await info.request.json()) as Record<string, unknown>;
+        return { id: '1', application_id: '42', name: 'base', status: 'draft' };
+      }),
+    );
+    const { result } = renderHook(() => useEditPipelineForm(DETAIL, VERSION, '9', 42), { wrapper });
+
+    act(() => {
+      result.current.handleSave();
+    });
+
+    await waitFor(() => expect(body['instructions']).toBe(liveYaml));
+    const settings = body['pipeline_settings'] as { nodes: readonly { id: string }[] };
+    expect(settings.nodes.map((node) => node.id)).toContain('Agent 1');
+  });
+
+  it('handleSave falls back to the stored instructions and sends no pipeline_settings when the editor holds nothing', async () => {
+    usePipelineYamlStore.setState({ yamlCode: '' });
+
+    let body: Record<string, unknown> = {};
+    server.use(
+      getUpdateApplicationVersionMockHandler(async (info) => {
+        body = (await info.request.json()) as Record<string, unknown>;
+        return { id: '1', application_id: '42', name: 'base', status: 'draft' };
+      }),
+    );
+    const { result } = renderHook(() => useEditPipelineForm(DETAIL, VERSION, '9', 42), { wrapper });
+
+    act(() => {
+      result.current.handleSave();
+    });
+
+    await waitFor(() => expect(body['instructions']).toBe('Be helpful.'));
+    expect(Object.keys(body)).not.toContain('pipeline_settings');
   });
 
   it('isSaving reflects the in-flight save state', () => {

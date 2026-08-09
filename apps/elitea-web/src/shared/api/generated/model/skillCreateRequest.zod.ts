@@ -40,6 +40,7 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { SkillVersion } from "./skillVersion.zod";
 
 export const SkillCreateRequest = zod
   .object({
@@ -48,15 +49,33 @@ export const SkillCreateRequest = zod
     type: zod
       .string()
       .optional()
-      .describe("Accepted but NOT persisted (repos\/skills.go:97-112)."),
+      .describe("Accepted but NOT persisted (repos\/skills.go)."),
     config: zod.record(zod.string(), zod.unknown()).optional(),
     is_default: zod
       .boolean()
       .optional()
-      .describe("Accepted but NOT persisted (repos\/skills.go:97-112)."),
+      .describe("Accepted but NOT persisted (repos\/skills.go)."),
+    instructions: zod
+      .string()
+      .optional()
+      .describe(
+        "Flat shape (as sent by updateSkill()); ignored if versions[0].instructions is present.",
+      ),
+    tags: zod
+      .array(zod.string())
+      .optional()
+      .describe(
+        "Flat shape (as sent by updateSkill()); ignored if versions[0].tags is present.",
+      ),
+    versions: zod
+      .array(SkillVersion)
+      .optional()
+      .describe(
+        "Shape sent by createSkill(): versions[0].instructions\/tags take precedence over the flat instructions\/tags fields above when both are present.",
+      ),
   })
   .describe(
-    'NOTE(W2): decoded into the Skill struct (internal\/api\/v2\/skills\/handler.go:95-99), but the wired Pg repository persists ONLY name and description (repos\/skills.go: 97-105, wired via internal\/api\/router.go:351 cfg.SkillsRepo); type\/config\/is_default are silently discarded, and the response Type is hardcoded \"skill\" (:110-112).\n',
+    'Decoded into the `createRequest` struct (internal\/api\/v2\/skills\/handler.go:57-63), not the Skill struct; name\/description persist onto the skills row; instructions\/tags (from either the flat fields or versions[0]) upsert the base skill_versions row and its tag associations in the same transaction (repos\/skills.go Create\/Update). type\/config\/is_default remain silently discarded, and the response Type is hardcoded \"skill\".\n',
   );
 
 export type SkillCreateRequest = zod.input<typeof SkillCreateRequest>;

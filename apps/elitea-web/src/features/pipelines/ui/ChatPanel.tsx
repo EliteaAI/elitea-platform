@@ -7,6 +7,7 @@ import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrow
 import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { t } from '@/shared/i18n';
 import { ViewRunHistoryButton } from '@/shared/ui/ViewRunHistoryButton';
 
 import { useIsSmallWindow } from '../lib/hooks/useIsSmallWindow';
@@ -182,6 +183,13 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
         <IconButton
           sx={collapseButtonSx}
           onClick={onClickCollapsed}
+          // #135: same critical `button-name` violation as
+          // `GeneralFormPanel.tsx`'s own collapse button — see its comment.
+          aria-label={
+            collapsed
+              ? t('features.pipelines.chatPanel.expand', 'Expand the chat panel')
+              : t('features.pipelines.chatPanel.collapse', 'Collapse the chat panel')
+          }
         >
           {collapsed ? <KeyboardDoubleArrowLeftIcon fontSize="small" /> : <KeyboardDoubleArrowRightIcon fontSize="small" />}
         </IconButton>

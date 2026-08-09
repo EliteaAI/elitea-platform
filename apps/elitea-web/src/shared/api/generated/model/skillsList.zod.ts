@@ -51,7 +51,7 @@ export const SkillsList = zod
     total_pages: zod.int(),
   })
   .describe(
-    "NOTE(W2): internal\/api\/v2\/skills\/handler.go:27-33, returned whole by List (:72-77). Pagination comes from ?page\/?page_size (:63-70) — the limit\/offset params are accepted for old-SPA parity but not read.\n",
+    "Returned whole by List (internal\/api\/v2\/skills\/handler.go). Pagination comes from ?page\/?page_size; ?query does an ILIKE search over name\/description, and ?sort_by (name|created_at)\/?sort_order (asc|desc) drive ORDER BY (repos\/skills.go List — sort_by is whitelisted, never interpolated raw).\n",
   );
 
 export type SkillsList = zod.input<typeof SkillsList>;

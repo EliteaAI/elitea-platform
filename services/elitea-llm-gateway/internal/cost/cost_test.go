@@ -5,11 +5,11 @@ import (
 	"errors"
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"sync/atomic"
 )
 
 // fakeRow is a canned pgxRow: it copies srcInput/srcOutput into the *int64
@@ -37,10 +37,11 @@ func (r fakeRow) Scan(dest ...any) error {
 type fakeDB struct {
 	rows map[string]fakeRow
 	def  fakeRow // returned when key not present (defaults to pgx.ErrNoRows)
-	// calls is atomic: TestPrice_ConcurrentCacheDoesNotOverwriteFresher drives
-	// QueryRow from several goroutines at once, and a plain int++ here is a data
-	// race that `go test -race` reports intermittently (roughly 1 run in 6).
-	// The race was in the FAKE, not in cost.Calculator.
+	// calls is atomic: TestPrice_ConcurrentCacheDoesNotOverwriteFresher drives 50
+	// goroutines through Price, and every cache miss reaches QueryRow. A plain
+	// int++ here is a read-modify-write race that `go test -race` reports
+	// intermittently — roughly 1 run in 6. The race was in the FAKE, not in
+	// cost.Calculator, whose own locking was never implicated.
 	calls atomic.Int64
 }
 

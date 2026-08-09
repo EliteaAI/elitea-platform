@@ -16,11 +16,18 @@
  */
 import { createFileRoute } from '@tanstack/react-router';
 
+import { Apps } from '@/pages/apps/Apps';
+
 import { RouteError, RoutePending } from '../../-ui/RouteStatus';
-import { RouteShell } from '../../-ui/RouteShell';
 
 export const Route = createFileRoute('/_shell/apps/')({
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: () => <RouteShell routeId="apps" fallback="Apps" />,
+  component: AppsRoute,
 });
+
+function AppsRoute() {
+  return (
+    <Apps />
+  );
+}

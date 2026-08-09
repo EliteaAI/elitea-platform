@@ -223,7 +223,6 @@ function useFormSeeding(
 export function useCredentialFormController(props: CredentialFormControllerProps) {
   const { context, mode, onSaved, onDiscarded, prefill, onTypeChosen } = props;
 
-  const [selectedType, setSelectedType] = useState<string | undefined>(mode.credentialType);
   const [name, setName] = useState(prefill?.name ?? '');
   const [eliteaTitle, setEliteaTitle] = useState<string | undefined>(undefined);
   const [shared, setShared] = useState(false);
@@ -236,7 +235,23 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   const availableTypes = useAvailableConfigurationsType(prefill?.section !== undefined ? { section: prefill.section } : {});
   const detail = useConfigurationDetail(context.projectId, mode.configId, { enabled: mode.kind === 'edit' });
 
-  const effectiveType = mode.kind === 'edit' ? detail.data?.type : selectedType;
+  /**
+   * On create, the chosen type comes from `mode.credentialType` — which the
+   * route reads off the `:credentialType` URL segment — and NOT from local
+   * state. Single source of truth, matching the baseline, where
+   * `pages/Credentials/CreateCredential.jsx:24` reads `useParams()` and
+   * `CredentialTypeSelector` selection NAVIGATES to that URL rather than
+   * setting component state (`hooks/credentials/useCredentialSearch.js:29`).
+   *
+   * A local `selectedType` used to shadow this. It made the two disagree the
+   * moment the URL changed underneath the mounted component: picking a type
+   * left the URL on the parent, and pressing Back then dropped the param
+   * while the form stayed on screen. The baseline needs an explicit
+   * "clear the form when the param disappears" effect
+   * (`CreateCredential.jsx:160`) precisely because it keeps a parallel copy;
+   * deriving straight from the prop means there is nothing to resynchronise.
+   */
+  const effectiveType = mode.kind === 'edit' ? detail.data?.type : mode.credentialType;
   const typeDescriptor = findTypeDescriptor(availableTypes.data, effectiveType);
   // The wire schema nests the actual configurable fields one level down, at
   // `config_schema.properties.data.properties.<field>` — the top-level
@@ -244,7 +259,10 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   // (verified against `CredentialTypeSelector.tsx`'s identical unwrap and
   // `useMultiSectionConfigurations.js`'s `config_schema.properties.data
   // .metadata.hidden` read in the baseline).
-  const dataSchema = typeDescriptor?.config_schema.properties?.['data'];
+  // `?.` on `config_schema` as well: the field is required by the wire type
+  // but not by the wire, and an entry without one must yield an empty form
+  // rather than throw past the route's non-existent error boundary (#131).
+  const dataSchema = typeDescriptor?.config_schema?.properties?.['data'];
   // Memoized (not `?? {}` inline): a fresh `{}` every render would defeat
   // `save`'s `useCallback` memoization below (react-hooks/exhaustive-deps
   // correctly flags a dependency that "changes every render" as a real bug,
@@ -274,9 +292,15 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   // itself re-derived only when one of the four fields actually changes).
   const formValues = useMemo(() => ({ name, eliteaTitle, shared, data }), [name, eliteaTitle, shared, data]);
 
+  /**
+   * Reports the pick upward and nothing else — the caller owns the URL, and
+   * the URL owns `effectiveType` (see its doc comment above). A route that
+   * forgets to pass `onTypeChosen` therefore has an inert picker, which is
+   * the correct failure mode: it is visible immediately, unlike the silent
+   * URL/state divergence the previous local-state version produced.
+   */
   const chooseType = useCallback(
     (type: string) => {
-      setSelectedType(type);
       onTypeChosen?.(type);
     },
     [onTypeChosen],

@@ -3,7 +3,10 @@ package repos
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,243 +23,380 @@ func NewApplicationsRepo(pool *pgxpool.Pool) *ApplicationsRepo {
 	return &ApplicationsRepo{pool: pool}
 }
 
-func schema(projectID string) string {
-	return fmt.Sprintf("p_%s", projectID)
+const (
+	defaultListPageSize = 20
+	defaultVersionName  = "base"
+	defaultAgentType    = "openai"
+	// defaultVersionMetaKey is the applications.meta key that records which
+	// version is the application's default. application_versions has no
+	// is_default column; see SetDefaultVersion.
+	defaultVersionMetaKey = "default_version_id"
+)
+
+// versionColumns is the read projection of application_versions. `v` is the
+// version alias, `a` the owning applications row (needed for is_default).
+const versionColumns = `v.id, v.application_id, v.name, v.status, v.created_at,
+	v.author_id, COALESCE(v.agent_type, ''), COALESCE(v.instructions, ''),
+	COALESCE(v.welcome_message, ''), COALESCE(v.llm_settings::text, '{}'),
+	COALESCE(v.conversation_starters::text, '[]'), COALESCE(v.meta::text, '{}'),
+	COALESCE(a.meta->>'` + defaultVersionMetaKey + `', '')`
+
+// rowScanner is satisfied by both pgx.Row and pgx.Rows, so the single-row and
+// multi-row read paths share one scan projection.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanVersion(row rowScanner) (applications.Version, error) {
+	var (
+		ver              applications.Version
+		llmJSON          string
+		startersJSON     string
+		metaJSON         string
+		defaultVersionID string
+	)
+	if err := row.Scan(
+		&ver.ID, &ver.ApplicationID, &ver.Name, &ver.Status, &ver.CreatedAt,
+		&ver.AuthorID, &ver.AgentType, &ver.Instructions, &ver.WelcomeMessage,
+		&llmJSON, &startersJSON, &metaJSON, &defaultVersionID,
+	); err != nil {
+		return applications.Version{}, err
+	}
+	ver.LLMSettings = decodeJSONObject(llmJSON)
+	ver.ConversationStarters = decodeJSONArray(startersJSON)
+	ver.Meta = decodeJSONObject(metaJSON)
+	ver.IsDefault = defaultVersionID != "" && defaultVersionID == ver.ID
+	ver.Config = configFromColumns(ver.LLMSettings, ver.Instructions)
+	return ver, nil
+}
+
+func decodeJSONObject(raw string) map[string]any {
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+func decodeJSONArray(raw string) []any {
+	var out []any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || out == nil {
+		return []any{}
+	}
+	return out
+}
+
+// configFromColumns builds the derived VersionConfig projection documented on
+// applications.VersionConfig. Fields with no column stay zero.
+func configFromColumns(llm map[string]any, instructions string) applications.VersionConfig {
+	cfg := applications.VersionConfig{SystemPrompt: instructions}
+	if model, ok := llm["model_name"].(string); ok {
+		cfg.Model = model
+	}
+	if temperature, ok := llm["temperature"].(float64); ok {
+		cfg.Temperature = temperature
+	}
+	if maxTokens, ok := llm["max_tokens"].(float64); ok {
+		cfg.MaxTokens = int(maxTokens)
+	}
+	return cfg
+}
+
+// rejectDerivedConfig refuses a write that carries VersionConfig. Model,
+// Temperature, MaxTokens and SystemPrompt are projections of llm_settings and
+// instructions — set those fields instead; Tools, Skills, Datasources and
+// Guardrails have no storage at all and would be silently dropped.
+func rejectDerivedConfig(cfg applications.VersionConfig) error {
+	if cfg.Model == "" && cfg.Temperature == 0 && cfg.MaxTokens == 0 &&
+		cfg.SystemPrompt == "" && len(cfg.Tools) == 0 && len(cfg.Skills) == 0 &&
+		len(cfg.Datasources) == 0 && cfg.Guardrails == nil {
+		return nil
+	}
+	return apierr.BadRequest(
+		"version config is a derived read-only projection: set llm_settings/instructions instead; " +
+			"tools, skills, datasources and guardrails have no storage in application_versions")
+}
+
+func encodeJSONObject(v map[string]any) (string, error) {
+	if v == nil {
+		return "{}", nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", apierr.BadRequest("version payload is not encodable as JSON")
+	}
+	return string(b), nil
+}
+
+func encodeJSONArray(v []any) (string, error) {
+	if v == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", apierr.BadRequest("version payload is not encodable as JSON")
+	}
+	return string(b), nil
 }
 
 func (r *ApplicationsRepo) List(ctx context.Context, req applications.ListRequest) (applications.ListResponse, error) {
-	s := schema(req.ProjectID)
-
-	// Build agent_type filter: "classic" means non-pipeline, "pipeline" means pipeline
-	agentTypeFilter := ""
-	switch req.AgentsType {
-	case "pipeline":
-		agentTypeFilter = "pipeline"
-	case "classic", "":
-		agentTypeFilter = "classic"
+	s, err := tenantSchema(req.ProjectID)
+	if err != nil {
+		return applications.ListResponse{}, err
 	}
-
-	var join string
-	switch agentTypeFilter {
-	case "pipeline":
-		join = fmt.Sprintf(` JOIN %q.application_versions av ON av.application_id = a.id AND av.agent_type = 'pipeline'`, s)
-	case "classic":
-		join = fmt.Sprintf(` JOIN %q.application_versions av ON av.application_id = a.id AND av.agent_type != 'pipeline'`, s)
-	default:
-		join = fmt.Sprintf(` LEFT JOIN %q.application_versions av ON av.application_id = a.id`, s)
+	page, pageSize := req.Page, req.PageSize
+	if page < 1 {
+		page = 1
 	}
+	if pageSize < 1 {
+		pageSize = defaultListPageSize
+	}
+	empty := applications.ListResponse{Rows: []applications.Application{}, Page: page, PageSize: pageSize}
 
-	// Count query
-	countQuery := fmt.Sprintf(`SELECT COUNT(DISTINCT a.id) FROM %q.applications a`, s) + join
-	args := []any{}
-	argIdx := 1
+	// "pipeline" lists pipeline versions, anything else lists classic agents.
+	// Both are INNER JOINs: an application with no version row is not a
+	// listable agent (and cannot be opened in the editor either).
+	join := fmt.Sprintf(` JOIN %s.application_versions av ON av.application_id = a.id AND av.agent_type %s 'pipeline'`,
+		s, map[bool]string{true: "=", false: "!="}[req.AgentsType == "pipeline"])
+
 	where := ""
-
+	args := []any{}
 	if req.Search != "" {
-		where += fmt.Sprintf(` WHERE (a.name ILIKE $%d OR a.description ILIKE $%d)`, argIdx, argIdx)
+		where = ` WHERE (a.name ILIKE $1 OR a.description ILIKE $1)`
 		args = append(args, "%"+req.Search+"%")
 	}
 
 	var total int
-	if err := r.pool.QueryRow(ctx, countQuery+where, args...).Scan(&total); err != nil {
-		return applications.ListResponse{Rows: []applications.Application{}, Total: 0, Page: req.Page, PageSize: req.PageSize}, nil
+	countQuery := fmt.Sprintf(`SELECT COUNT(DISTINCT a.id) FROM %s.applications a`, s) + join + where
+	if err := r.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return empty, fmt.Errorf("applications: list count: %w", err)
 	}
 
-	offset := (req.Page - 1) * req.PageSize
+	selectArgs := append([]any{}, args...)
+	limitIdx := len(selectArgs) + 1
 	query := fmt.Sprintf(`
 		SELECT DISTINCT ON (a.id) a.id, a.name, COALESCE(a.description, ''), COALESCE(a.icon, ''),
 			a.owner_id, a.created_at, COALESCE(a.shared_id, 0),
 			COALESCE(a.meta, '{}'::jsonb)::text,
-			COALESCE(av.agent_type, 'openai'),
+			COALESCE(av.agent_type, '`+defaultAgentType+`'),
 			COALESCE(u.id, 0), COALESCE(u.email, ''), COALESCE(u.name, '')
-		FROM %q.applications a`, s) + join +
-		` LEFT JOIN public.auth_core__user u ON u.id = a.owner_id`
-
-	selectArgs := []any{}
-	selectIdx := 1
-	selectWhere := ""
-
-	if req.Search != "" {
-		selectWhere += fmt.Sprintf(` WHERE (a.name ILIKE $%d OR a.description ILIKE $%d)`, selectIdx, selectIdx)
-		selectArgs = append(selectArgs, "%"+req.Search+"%")
-		selectIdx++
-	}
-
-	query += selectWhere + fmt.Sprintf(` ORDER BY a.id DESC LIMIT $%d OFFSET $%d`, selectIdx, selectIdx+1)
-	selectArgs = append(selectArgs, req.PageSize, offset)
+		FROM %s.applications a`, s) + join +
+		` LEFT JOIN public.auth_core__user u ON u.id = a.owner_id` + where +
+		fmt.Sprintf(` ORDER BY a.id DESC LIMIT $%d OFFSET $%d`, limitIdx, limitIdx+1)
+	selectArgs = append(selectArgs, pageSize, (page-1)*pageSize)
 
 	rows, err := r.pool.Query(ctx, query, selectArgs...)
 	if err != nil {
-		return applications.ListResponse{Rows: []applications.Application{}, Total: 0, Page: req.Page, PageSize: req.PageSize}, nil
+		return empty, fmt.Errorf("applications: list: %w", err)
 	}
 	defer rows.Close()
 
-	var items []applications.Application
+	items := []applications.Application{}
 	for rows.Next() {
-		var app applications.Application
-		var sharedID int
-		var metaStr string
-		var authorID int
-		var authorEmail, authorName string
+		var (
+			app         applications.Application
+			sharedID    int
+			metaStr     string
+			authorID    int
+			authorEmail string
+			authorName  string
+		)
 		if err := rows.Scan(
 			&app.ID, &app.Name, &app.Description, &app.Icon,
 			&app.OwnerID, &app.CreatedAt, &sharedID,
 			&metaStr, &app.AgentType,
 			&authorID, &authorEmail, &authorName,
 		); err != nil {
-			continue
+			return empty, fmt.Errorf("applications: list scan: %w", err)
 		}
 		app.ProjectID = req.ProjectID
 		app.IsForked = sharedID > 0
-		app.HasInterrupt = false
-
-		// Parse meta JSON
-		var meta map[string]any
-		if err := json.Unmarshal([]byte(metaStr), &meta); err == nil {
-			app.Meta = meta
-		} else {
-			app.Meta = map[string]any{}
-		}
-
-		// Build authors list
+		app.Meta = decodeJSONObject(metaStr)
+		app.Authors = []applications.Author{}
 		if authorID > 0 {
-			app.Authors = []applications.Author{{
-				ID:    fmt.Sprintf("%d", authorID),
-				Email: authorEmail,
-				Name:  authorName,
-			}}
-		} else {
-			app.Authors = []applications.Author{}
+			app.Authors = append(app.Authors, applications.Author{
+				ID: strconv.Itoa(authorID), Email: authorEmail, Name: authorName,
+			})
 		}
-
 		items = append(items, app)
 	}
-	if items == nil {
-		items = []applications.Application{}
+	if err := rows.Err(); err != nil {
+		return empty, fmt.Errorf("applications: list rows: %w", err)
 	}
 
-	totalPages := total / req.PageSize
-	if total%req.PageSize > 0 {
+	totalPages := total / pageSize
+	if total%pageSize > 0 {
 		totalPages++
 	}
-
 	return applications.ListResponse{
-		Rows:       items,
-		Total:      total,
-		Page:       req.Page,
-		PageSize:   req.PageSize,
-		TotalPages: totalPages,
+		Rows: items, Total: total, Page: page, PageSize: pageSize, TotalPages: totalPages,
 	}, nil
 }
 
-func (r *ApplicationsRepo) Get(ctx context.Context, projectID, applicationID string) (applications.Application, error) {
-	s := schema(projectID)
-	query := fmt.Sprintf(`
-		SELECT id, name, COALESCE(description, ''), COALESCE(icon, ''), owner_id,
-			created_at, uuid
-		FROM %q.applications WHERE id = $1`, s)
+const applicationColumns = `id, name, COALESCE(description, ''), COALESCE(icon, ''),
+	owner_id, created_at, COALESCE(uuid::text, '')`
 
+func scanApplication(row rowScanner, projectID string) (applications.Application, error) {
 	var app applications.Application
-	err := r.pool.QueryRow(ctx, query, applicationID).Scan(
-		&app.ID, &app.Name, &app.Description,
-		&app.Icon, &app.CreatedBy, &app.CreatedAt, &app.ProjectID,
-	)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return applications.Application{}, apierr.NotFound("application not found")
-		}
-		return applications.Application{}, fmt.Errorf("applications: get: %w", err)
+	if err := row.Scan(
+		&app.ID, &app.Name, &app.Description, &app.Icon,
+		&app.OwnerID, &app.CreatedAt, &app.UUID,
+	); err != nil {
+		return applications.Application{}, err
 	}
+	// CreatedBy mirrors OwnerID: applications has one owner_id column and no
+	// separate creator. Both are populated so neither response field lies.
+	app.CreatedBy = app.OwnerID
 	app.ProjectID = projectID
 	return app, nil
 }
 
-func (r *ApplicationsRepo) Create(ctx context.Context, req applications.CreateRequest) (applications.Application, error) {
-	s := schema(req.ProjectID)
-	query := fmt.Sprintf(`
-		INSERT INTO %q.applications (name, description, icon, owner_id)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, name, COALESCE(description, ''), COALESCE(icon, ''), owner_id, created_at, uuid`, s)
+func (r *ApplicationsRepo) Get(ctx context.Context, projectID, applicationID string) (applications.Application, error) {
+	s, err := tenantSchema(projectID)
+	if err != nil {
+		return applications.Application{}, err
+	}
+	if !isNumericRowID(applicationID) {
+		return applications.Application{}, apierr.NotFound("application not found")
+	}
+	query := fmt.Sprintf(`SELECT `+applicationColumns+` FROM %s.applications WHERE id = $1`, s)
+	app, err := scanApplication(r.pool.QueryRow(ctx, query, applicationID), projectID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return applications.Application{}, apierr.NotFound("application not found")
+		}
+		return applications.Application{}, fmt.Errorf("applications: get: %w", err)
+	}
+	return app, nil
+}
 
-	var app applications.Application
-	err := r.pool.QueryRow(ctx, query,
-		req.Name, req.Description, req.Icon, 1,
-	).Scan(
-		&app.ID, &app.Name, &app.Description,
-		&app.Icon, &app.CreatedBy, &app.CreatedAt, &app.ProjectID,
+func (r *ApplicationsRepo) Create(ctx context.Context, req applications.CreateRequest) (applications.Application, error) {
+	s, err := tenantSchema(req.ProjectID)
+	if err != nil {
+		return applications.Application{}, err
+	}
+	if req.OwnerID <= 0 {
+		return applications.Application{}, apierr.Unauthorized("an authenticated owner is required to create an application")
+	}
+	if req.Config != nil {
+		if err := rejectDerivedConfig(*req.Config); err != nil {
+			return applications.Application{}, err
+		}
+	}
+	if req.InitialVersion != nil {
+		if err := rejectDerivedConfig(req.InitialVersion.Config); err != nil {
+			return applications.Application{}, err
+		}
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return applications.Application{}, fmt.Errorf("applications: create: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s.applications (name, description, icon, owner_id)
+		VALUES ($1, $2, $3, $4)
+		RETURNING `+applicationColumns, s)
+	app, err := scanApplication(
+		tx.QueryRow(ctx, query, req.Name, req.Description, req.Icon, req.OwnerID),
+		req.ProjectID,
 	)
 	if err != nil {
 		return applications.Application{}, fmt.Errorf("applications: create: %w", err)
 	}
-	app.ProjectID = req.ProjectID
+
+	if req.InitialVersion != nil {
+		version := *req.InitialVersion
+		if version.AuthorID <= 0 {
+			version.AuthorID = req.OwnerID
+		}
+		created, err := insertVersion(ctx, tx, s, app.ID, version)
+		if err != nil {
+			return applications.Application{}, err
+		}
+		app.Versions = []applications.Version{created}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return applications.Application{}, fmt.Errorf("applications: create: commit: %w", err)
+	}
 	return app, nil
 }
 
 func (r *ApplicationsRepo) Update(ctx context.Context, req applications.UpdateRequest) (applications.Application, error) {
-	s := schema(req.ProjectID)
-	query := fmt.Sprintf(`UPDATE %q.applications SET`, s)
-	args := []any{}
-	argIdx := 1
-	setClauses := ""
+	s, err := tenantSchema(req.ProjectID)
+	if err != nil {
+		return applications.Application{}, err
+	}
+	if !isNumericRowID(req.ApplicationID) {
+		return applications.Application{}, apierr.NotFound("application not found")
+	}
 
+	setClauses := []string{}
+	args := []any{}
+	appendSet := func(column string, value any) {
+		args = append(args, value)
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", column, len(args)))
+	}
 	if req.Name != nil {
-		setClauses += fmt.Sprintf(` name = $%d,`, argIdx)
-		args = append(args, *req.Name)
-		argIdx++
+		appendSet("name", *req.Name)
 	}
 	if req.Description != nil {
-		setClauses += fmt.Sprintf(` description = $%d,`, argIdx)
-		args = append(args, *req.Description)
-		argIdx++
+		appendSet("description", *req.Description)
 	}
 	if req.Icon != nil {
-		setClauses += fmt.Sprintf(` icon = $%d,`, argIdx)
-		args = append(args, *req.Icon)
-		argIdx++
+		appendSet("icon", *req.Icon)
 	}
-
-	if setClauses == "" {
+	if len(setClauses) == 0 {
 		return r.Get(ctx, req.ProjectID, req.ApplicationID)
 	}
 
-	// Remove trailing comma
-	setClauses = setClauses[:len(setClauses)-1]
-	query += setClauses + fmt.Sprintf(` WHERE id = $%d RETURNING id, name, COALESCE(description, ''), COALESCE(icon, ''), owner_id, created_at, uuid`, argIdx)
 	args = append(args, req.ApplicationID)
-
-	var app applications.Application
-	err := r.pool.QueryRow(ctx, query, args...).Scan(
-		&app.ID, &app.Name, &app.Description,
-		&app.Icon, &app.CreatedBy, &app.CreatedAt, &app.ProjectID,
-	)
+	query := fmt.Sprintf(`UPDATE %s.applications SET %s WHERE id = $%d RETURNING `+applicationColumns,
+		s, strings.Join(setClauses, ", "), len(args))
+	app, err := scanApplication(r.pool.QueryRow(ctx, query, args...), req.ProjectID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return applications.Application{}, apierr.NotFound("application not found")
 		}
 		return applications.Application{}, fmt.Errorf("applications: update: %w", err)
 	}
-	app.ProjectID = req.ProjectID
 	return app, nil
 }
 
 func (r *ApplicationsRepo) Delete(ctx context.Context, projectID, applicationID string) error {
-	s := schema(projectID)
-	// Delete child records first (application_tools, application_variables, tag associations).
-	// Errors here are best-effort cascades; we propagate any failure.
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID); err != nil {
-		return fmt.Errorf("applications: delete tools: %w", err)
+	s, err := tenantSchema(projectID)
+	if err != nil {
+		return err
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_variables WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID); err != nil {
-		return fmt.Errorf("applications: delete variables: %w", err)
+	if !isNumericRowID(applicationID) {
+		return apierr.NotFound("application not found")
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_version_tag_association WHERE version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID); err != nil {
-		return fmt.Errorf("applications: delete tag associations: %w", err)
+
+	// application_versions, application_variables and
+	// application_version_tag_association all cascade from applications
+	// (migrations/001_initial.sql), so one DELETE is enough for the schema
+	// this service creates. application_tools exists only in pylon-migrated
+	// databases and has no cascade there, so it is cleared first when
+	// present. The previous unconditional DELETE FROM ...application_tools
+	// made every Delete fail with 42P01 on a schema created from 001_initial.
+	var applicationTools *string
+	if err := r.pool.QueryRow(ctx, `SELECT to_regclass($1)::text`,
+		"p_"+projectID+".application_tools").Scan(&applicationTools); err != nil {
+		return fmt.Errorf("applications: delete: probe application_tools: %w", err)
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_versions WHERE application_id = $1`, s), applicationID); err != nil {
-		return fmt.Errorf("applications: delete versions: %w", err)
+	if applicationTools != nil {
+		if _, err := r.pool.Exec(ctx, fmt.Sprintf(
+			`DELETE FROM %s.application_tools WHERE application_version_id IN
+				(SELECT id FROM %s.application_versions WHERE application_id = $1)`, s, s),
+			applicationID); err != nil {
+			return fmt.Errorf("applications: delete tools: %w", err)
+		}
 	}
-	query := fmt.Sprintf(`DELETE FROM %q.applications WHERE id = $1`, s)
-	ct, err := r.pool.Exec(ctx, query, applicationID)
+
+	ct, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.applications WHERE id = $1`, s), applicationID)
 	if err != nil {
 		return fmt.Errorf("applications: delete: %w", err)
 	}
@@ -267,19 +407,20 @@ func (r *ApplicationsRepo) Delete(ctx context.Context, projectID, applicationID 
 }
 
 func (r *ApplicationsRepo) GetVersion(ctx context.Context, projectID, applicationID, versionID string) (applications.Version, error) {
-	s := schema(projectID)
-	query := fmt.Sprintf(`
-		SELECT id, application_id, name, status, created_at
-		FROM %q.application_versions
-		WHERE application_id = $1 AND id = $2`, s)
-
-	var ver applications.Version
-	err := r.pool.QueryRow(ctx, query, applicationID, versionID).Scan(
-		&ver.ID, &ver.ApplicationID, &ver.Name,
-		&ver.Status, &ver.CreatedAt,
-	)
+	s, err := tenantSchema(projectID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		return applications.Version{}, err
+	}
+	if !isNumericRowID(applicationID) || !isNumericRowID(versionID) {
+		return applications.Version{}, apierr.NotFound("version not found")
+	}
+	query := fmt.Sprintf(`SELECT `+versionColumns+`
+		FROM %s.application_versions v
+		JOIN %s.applications a ON a.id = v.application_id
+		WHERE v.application_id = $1 AND v.id = $2`, s, s)
+	ver, err := scanVersion(r.pool.QueryRow(ctx, query, applicationID, versionID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return applications.Version{}, apierr.NotFound("version not found")
 		}
 		return applications.Version{}, fmt.Errorf("applications: get version: %w", err)
@@ -288,47 +429,105 @@ func (r *ApplicationsRepo) GetVersion(ctx context.Context, projectID, applicatio
 }
 
 func (r *ApplicationsRepo) ListVersions(ctx context.Context, projectID, applicationID string) ([]applications.Version, error) {
-	s := schema(projectID)
-	query := fmt.Sprintf(`
-		SELECT id, application_id, name, status, created_at
-		FROM %q.application_versions
-		WHERE application_id = $1
-		ORDER BY created_at DESC`, s)
+	s, err := tenantSchema(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !isNumericRowID(applicationID) {
+		return []applications.Version{}, nil
+	}
+	query := fmt.Sprintf(`SELECT `+versionColumns+`
+		FROM %s.application_versions v
+		JOIN %s.applications a ON a.id = v.application_id
+		WHERE v.application_id = $1
+		ORDER BY v.created_at DESC, v.id DESC`, s, s)
 
 	rows, err := r.pool.Query(ctx, query, applicationID)
 	if err != nil {
-		return []applications.Version{}, nil
+		return nil, fmt.Errorf("applications: list versions: %w", err)
 	}
 	defer rows.Close()
 
-	var versions []applications.Version
+	versions := []applications.Version{}
 	for rows.Next() {
-		var ver applications.Version
-		if err := rows.Scan(
-			&ver.ID, &ver.ApplicationID, &ver.Name,
-			&ver.Status, &ver.CreatedAt,
-		); err != nil {
-			continue
+		ver, err := scanVersion(rows)
+		if err != nil {
+			return nil, fmt.Errorf("applications: list versions scan: %w", err)
 		}
 		versions = append(versions, ver)
 	}
-	if versions == nil {
-		versions = []applications.Version{}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("applications: list versions rows: %w", err)
 	}
 	return versions, nil
 }
 
 func (r *ApplicationsRepo) CreateVersion(ctx context.Context, projectID, applicationID string, v applications.Version) (applications.Version, error) {
-	s := schema(projectID)
-	query := fmt.Sprintf(`
-		INSERT INTO %q.application_versions (application_id, name, status, author_id, llm_settings, conversation_starters, welcome_message, agent_type, meta, pipeline_settings)
-		VALUES ($1, $2, 'draft', 1, '{}', '[]', '', 'openai', '{}', '{}')
-		RETURNING id, application_id, name, status, created_at`, s)
+	s, err := tenantSchema(projectID)
+	if err != nil {
+		return applications.Version{}, err
+	}
+	if !isNumericRowID(applicationID) {
+		return applications.Version{}, apierr.NotFound("application not found")
+	}
+	if err := rejectDerivedConfig(v.Config); err != nil {
+		return applications.Version{}, err
+	}
+	if v.AuthorID <= 0 {
+		return applications.Version{}, apierr.Unauthorized("an authenticated author is required to create a version")
+	}
+	return insertVersion(ctx, r.pool, s, applicationID, v)
+}
 
-	var ver applications.Version
-	err := r.pool.QueryRow(ctx, query, applicationID, v.Name).Scan(
-		&ver.ID, &ver.ApplicationID, &ver.Name, &ver.Status, &ver.CreatedAt,
-	)
+// querier is the subset of pgxpool.Pool / pgx.Tx insertVersion needs, so the
+// same statement runs inside Create's transaction and standalone.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func insertVersion(ctx context.Context, q querier, s, applicationID string, v applications.Version) (applications.Version, error) {
+	name := v.Name
+	if name == "" {
+		name = defaultVersionName
+	}
+	agentType := v.AgentType
+	if agentType == "" {
+		agentType = defaultAgentType
+	}
+	status := v.Status
+	if status == "" {
+		status = "draft"
+	}
+	llmJSON, err := encodeJSONObject(v.LLMSettings)
+	if err != nil {
+		return applications.Version{}, err
+	}
+	startersJSON, err := encodeJSONArray(v.ConversationStarters)
+	if err != nil {
+		return applications.Version{}, err
+	}
+	metaJSON, err := encodeJSONObject(v.Meta)
+	if err != nil {
+		return applications.Version{}, err
+	}
+
+	// The INSERT ... RETURNING is wrapped in a CTE so the read projection —
+	// which needs the owning applications row for is_default — is the same
+	// SQL as GetVersion's.
+	query := fmt.Sprintf(`
+		WITH v AS (
+			INSERT INTO %s.application_versions
+				(application_id, name, status, author_id, agent_type, instructions,
+				 welcome_message, llm_settings, conversation_starters, meta)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)
+			RETURNING *
+		)
+		SELECT `+versionColumns+` FROM v JOIN %s.applications a ON a.id = v.application_id`, s, s)
+
+	ver, err := scanVersion(q.QueryRow(ctx, query,
+		applicationID, name, status, v.AuthorID, agentType, v.Instructions,
+		v.WelcomeMessage, llmJSON, startersJSON, metaJSON,
+	))
 	if err != nil {
 		return applications.Version{}, fmt.Errorf("applications: create version: %w", err)
 	}
@@ -336,33 +535,80 @@ func (r *ApplicationsRepo) CreateVersion(ctx context.Context, projectID, applica
 }
 
 func (r *ApplicationsRepo) UpdateVersion(ctx context.Context, projectID, applicationID, versionID string, v applications.Version) (applications.Version, error) {
-	s := schema(projectID)
+	s, err := tenantSchema(projectID)
+	if err != nil {
+		return applications.Version{}, err
+	}
+	if !isNumericRowID(applicationID) || !isNumericRowID(versionID) {
+		return applications.Version{}, apierr.NotFound("version not found")
+	}
+	if err := rejectDerivedConfig(v.Config); err != nil {
+		return applications.Version{}, err
+	}
 
-	// Build dynamic SET clause
 	setClauses := []string{}
 	args := []any{}
-	argIdx := 1
-
+	appendSet := func(clause string, value any) {
+		args = append(args, value)
+		setClauses = append(setClauses, fmt.Sprintf(clause, len(args)))
+	}
 	if v.Name != "" {
-		setClauses = append(setClauses, fmt.Sprintf("name = $%d", argIdx))
-		args = append(args, v.Name)
-		argIdx++
+		appendSet("name = $%d", v.Name)
 	}
-
+	if v.AgentType != "" {
+		appendSet("agent_type = $%d", v.AgentType)
+	}
+	if v.Instructions != "" {
+		appendSet("instructions = $%d", v.Instructions)
+	}
+	if v.WelcomeMessage != "" {
+		appendSet("welcome_message = $%d", v.WelcomeMessage)
+	}
+	if v.LLMSettings != nil {
+		encoded, err := encodeJSONObject(v.LLMSettings)
+		if err != nil {
+			return applications.Version{}, err
+		}
+		appendSet("llm_settings = $%d::jsonb", encoded)
+	}
+	if v.ConversationStarters != nil {
+		encoded, err := encodeJSONArray(v.ConversationStarters)
+		if err != nil {
+			return applications.Version{}, err
+		}
+		appendSet("conversation_starters = $%d::jsonb", encoded)
+	}
+	if v.Meta != nil {
+		encoded, err := encodeJSONObject(v.Meta)
+		if err != nil {
+			return applications.Version{}, err
+		}
+		appendSet("meta = $%d::jsonb", encoded)
+	}
+	if v.PipelineSettings != nil {
+		encoded, err := encodeJSONObject(v.PipelineSettings)
+		if err != nil {
+			return applications.Version{}, err
+		}
+		appendSet("pipeline_settings = $%d::jsonb", encoded)
+	}
 	if len(setClauses) == 0 {
-		setClauses = append(setClauses, "name = name")
+		return r.GetVersion(ctx, projectID, applicationID, versionID)
 	}
 
-	query := fmt.Sprintf(`UPDATE %q.application_versions SET %s WHERE application_id = $%d AND id = $%d RETURNING id, application_id, name, status, created_at`,
-		s, joinStrings(setClauses, ", "), argIdx, argIdx+1)
 	args = append(args, applicationID, versionID)
+	query := fmt.Sprintf(`
+		WITH v AS (
+			UPDATE %s.application_versions SET %s
+			WHERE application_id = $%d AND id = $%d
+			RETURNING *
+		)
+		SELECT `+versionColumns+` FROM v JOIN %s.applications a ON a.id = v.application_id`,
+		s, strings.Join(setClauses, ", "), len(args)-1, len(args), s)
 
-	var ver applications.Version
-	err := r.pool.QueryRow(ctx, query, args...).Scan(
-		&ver.ID, &ver.ApplicationID, &ver.Name, &ver.Status, &ver.CreatedAt,
-	)
+	ver, err := scanVersion(r.pool.QueryRow(ctx, query, args...))
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return applications.Version{}, apierr.NotFound("version not found")
 		}
 		return applications.Version{}, fmt.Errorf("applications: update version: %w", err)
@@ -370,21 +616,17 @@ func (r *ApplicationsRepo) UpdateVersion(ctx context.Context, projectID, applica
 	return ver, nil
 }
 
-func joinStrings(s []string, sep string) string {
-	result := ""
-	for i, v := range s {
-		if i > 0 {
-			result += sep
-		}
-		result += v
-	}
-	return result
-}
-
 func (r *ApplicationsRepo) DeleteVersion(ctx context.Context, projectID, applicationID, versionID string) error {
-	s := schema(projectID)
-	query := fmt.Sprintf(`DELETE FROM %q.application_versions WHERE application_id = $1 AND id = $2`, s)
-	ct, err := r.pool.Exec(ctx, query, applicationID, versionID)
+	s, err := tenantSchema(projectID)
+	if err != nil {
+		return err
+	}
+	if !isNumericRowID(applicationID) || !isNumericRowID(versionID) {
+		return apierr.NotFound("version not found")
+	}
+	ct, err := r.pool.Exec(ctx,
+		fmt.Sprintf(`DELETE FROM %s.application_versions WHERE application_id = $1 AND id = $2`, s),
+		applicationID, versionID)
 	if err != nil {
 		return fmt.Errorf("applications: delete version: %w", err)
 	}
@@ -394,32 +636,89 @@ func (r *ApplicationsRepo) DeleteVersion(ctx context.Context, projectID, applica
 	return nil
 }
 
+// SetDefaultVersion records the application's default version in
+// applications.meta->>'default_version_id'.
+//
+// application_versions has no is_default column and its only state column,
+// status, is the publish lifecycle (draft/published/embedded) that the
+// transport layer's publish guards read — overloading it would conflate two
+// independent state machines. meta is the schema's own extension point, the
+// cardinality is right (one default per application, not a flag per version),
+// and it is already the contract the UI reads: apps/elitea-web/src/entities/
+// version/model/selectors.ts resolves the default from the owning entity's
+// meta.default_version_id, falling back to the version named "base".
 func (r *ApplicationsRepo) SetDefaultVersion(ctx context.Context, projectID, applicationID, versionID string) error {
-	s := schema(projectID)
-	// Update the application's meta to mark default version
-	query := fmt.Sprintf(`
-		UPDATE %q.applications SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{default_version_id}', to_jsonb($1::int))
-		WHERE id = $2`, s)
-	_, err := r.pool.Exec(ctx, query, versionID, applicationID)
+	s, err := tenantSchema(projectID)
+	if err != nil {
+		return err
+	}
+	if !isNumericRowID(applicationID) || !isNumericRowID(versionID) {
+		return apierr.NotFound("version not found")
+	}
+
+	// The version must exist and belong to this application; otherwise the
+	// previous implementation reported success while writing a dangling id.
+	var exists bool
+	if err := r.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS (SELECT 1 FROM %s.application_versions WHERE application_id = $1 AND id = $2)`, s),
+		applicationID, versionID).Scan(&exists); err != nil {
+		return fmt.Errorf("applications: set default version: %w", err)
+	}
+	if !exists {
+		return apierr.NotFound("version not found")
+	}
+
+	ct, err := r.pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s.applications
+		SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{`+defaultVersionMetaKey+`}', to_jsonb($1::text))
+		WHERE id = $2`, s), versionID, applicationID)
 	if err != nil {
 		return fmt.Errorf("applications: set default version: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return apierr.NotFound("application not found")
 	}
 	return nil
 }
 
 func (r *ApplicationsRepo) BatchReplaceVersion(ctx context.Context, projectID, oldVersionID, newVersionID string, deleteOld bool) error {
-	s := schema(projectID)
-	query := fmt.Sprintf(`
-		UPDATE %q.entity_tool_mapping SET entity_version_id = $1 WHERE entity_version_id = $2`, s)
-	_, err := r.pool.Exec(ctx, query, newVersionID, oldVersionID)
+	s, err := tenantSchema(projectID)
 	if err != nil {
+		return err
+	}
+	if !isNumericRowID(oldVersionID) || !isNumericRowID(newVersionID) {
+		return apierr.NotFound("version not found")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("applications: batch replace version: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var bothExist bool
+	if err := tx.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COUNT(*) = 2 FROM %s.application_versions WHERE id = ANY($1::int[])`, s),
+		[]string{oldVersionID, newVersionID}).Scan(&bothExist); err != nil {
+		return fmt.Errorf("applications: batch replace version: %w", err)
+	}
+	if !bothExist {
+		return apierr.NotFound("version not found")
+	}
+
+	if _, err := tx.Exec(ctx, fmt.Sprintf(
+		`UPDATE %s.entity_tool_mapping SET entity_version_id = $1 WHERE entity_version_id = $2`, s),
+		newVersionID, oldVersionID); err != nil {
 		return fmt.Errorf("applications: batch replace version: %w", err)
 	}
 	if deleteOld {
-		delQ := fmt.Sprintf(`DELETE FROM %q.application_versions WHERE id = $1`, s)
-		if _, err := r.pool.Exec(ctx, delQ, oldVersionID); err != nil {
+		if _, err := tx.Exec(ctx,
+			fmt.Sprintf(`DELETE FROM %s.application_versions WHERE id = $1`, s), oldVersionID); err != nil {
 			return fmt.Errorf("applications: batch replace version delete old: %w", err)
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("applications: batch replace version: commit: %w", err)
 	}
 	return nil
 }

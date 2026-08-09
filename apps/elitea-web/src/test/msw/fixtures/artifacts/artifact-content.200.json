@@ -1,6 +1,6 @@
 {
-  "recordedAt": "2026-07-27",
+  "recordedAt": "2026-08-08",
   "synthetic": true,
-  "note": "Synthetic (unit S6): GET /api/v2/artifacts/artifact/default/{projectID}/{bucket}/* content body (router.go:604-605, ArtifactHandler.GetArtifact/ServeFile — mounted UNDER /api/v2, unlike the root-level S3-proxy routes in the sibling fixtures).",
+  "note": "Synthetic: GET /api/v2/artifacts/objects/{projectID}/{bucket}/{key...} response body (router.go:288 -> Handler.DownloadObject). The body is the object's own bytes, so any content is representative.",
   "body": "hello artifact content"
 }

@@ -18,6 +18,9 @@ const PUBLIC_SURFACE = [
   'useEditPipeline',
   'usePipelineCreation',
   'ConfigurationTab',
+  // #135 — the read/write halves of pipeline-graph persistence.
+  'usePipelineVersionSync',
+  'usePipelineGraphDraft',
 ] as const;
 
 describe('features/pipelines public surface', () => {

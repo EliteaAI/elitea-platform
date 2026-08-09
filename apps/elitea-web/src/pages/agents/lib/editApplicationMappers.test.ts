@@ -6,8 +6,60 @@ import {
   applicationDetailDisplayName,
   toFormValues,
   toVersionDraft,
+  toVersionOptions,
   toVersionSummaries,
+  toVersionWriteBody,
 } from './editApplicationMappers';
+
+describe('toVersionOptions', () => {
+  it('narrows the wire\'s string ids to numbers so the selector can match the active version', () => {
+    const wire: readonly ApplicationVersionSummary[] = [
+      { id: '7', name: 'base', status: 'draft', agent_type: 'classic', created_at: '2026-01-01T00:00:00Z' },
+    ];
+    expect(toVersionOptions(wire)).toEqual([
+      { id: 7, name: 'base', status: 'draft', created_at: '2026-01-01T00:00:00Z' },
+    ]);
+  });
+
+  it('maps an empty list to an empty list', () => {
+    expect(toVersionOptions([])).toEqual([]);
+  });
+});
+
+describe('toVersionWriteBody', () => {
+  it('clones the fields the CreateVersion handler actually reads, with the live starters', () => {
+    const version = {
+      id: '1',
+      name: 'base',
+      agent_type: 'classic',
+      instructions: 'be helpful',
+      welcome_message: 'hi',
+      llm_settings: { model_name: 'gpt' },
+      variables: [{ name: 'k', value: 'v' }],
+      meta: { step_limit: 25 },
+      tags: [{ name: 'x' }],
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toVersionWriteBody(version, ['s1'])).toEqual({
+      agent_type: 'classic',
+      instructions: 'be helpful',
+      welcome_message: 'hi',
+      llm_settings: { model_name: 'gpt' },
+      conversation_starters: ['s1'],
+      variables: [{ name: 'k', value: 'v' }],
+    });
+  });
+
+  it('omits keys the handler discards and defaults absent text fields to empty strings', () => {
+    const version = { id: '1', name: 'base' } as ApplicationVersionDetail;
+    const body = toVersionWriteBody(version, []);
+
+    expect(body).toEqual({ instructions: '', welcome_message: '', conversation_starters: [], variables: [] });
+    expect(body).not.toHaveProperty('meta');
+    expect(body).not.toHaveProperty('tags');
+    expect(body).not.toHaveProperty('agent_type');
+  });
+});
 
 describe('toVersionSummaries', () => {
   it('maps snake_case fields to the camelCase VersionSummary shape', () => {

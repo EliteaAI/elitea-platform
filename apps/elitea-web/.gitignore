@@ -8,3 +8,8 @@ test-results/
 # per-fixture-case configs generated (and normally cleaned) by
 # scripts/check-gates-selftest.mjs — never commit a crash leftover
 .oxlintrc.gen.json
+
+# Playwright: auth storageState carries live session cookies; results are run artifacts.
+.playwright-state/
+playwright-results/
+playwright-report/

@@ -185,18 +185,7 @@ func main() {
 	// budget-enforcement path is dead (breaker open/half-open) stays in the
 	// load-balancer rotation. govStore is nil when enforcement is disabled, in
 	// which case the route reports healthy unconditionally.
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if govStore != nil {
-			if err := govStore.Ping(r.Context()); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = w.Write([]byte(`{"error":"nats unavailable"}`))
-				return
-			}
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	mux.HandleFunc("/healthz", makeHealthzHandler(govStore))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert
@@ -552,5 +541,24 @@ func drainForShutdown(h billingDrainer, gov govDrainer) {
 			return
 		}
 		gov.Drain()
+	}
+}
+
+type pinger interface {
+	Ping(context.Context) error
+}
+
+func makeHealthzHandler(p pinger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if p != nil {
+			if err := p.Ping(r.Context()); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"nats unavailable"}`))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
 	}
 }

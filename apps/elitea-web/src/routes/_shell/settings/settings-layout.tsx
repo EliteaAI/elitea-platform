@@ -3,6 +3,7 @@ import { Outlet } from '@tanstack/react-router';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { performLogout } from '@/shared/api/auth';
 import { SETTINGS_LAYOUT } from '@/shared/ui/settings/settings.constants';
 import { type SettingsSection, SettingsDrawer } from '@/shared/ui/settings/SettingsDrawer';
 import { SettingsRedirect } from '@/shared/ui/settings/SettingsRedirect';
@@ -17,6 +18,9 @@ import { SettingsRedirect } from '@/shared/ui/settings/SettingsRedirect';
  *
  * Ported from `apps/elitea-ui/src/[fsd]/pages/settings/index.jsx`.
  */
+/** The PERSONAL section's action item that is not a route (see `handleItemClick`). */
+const LOGOUT_TAB_ID = 'logout';
+
 export function SettingsLayout() {
   const sections: SettingsSection[] = [
     {
@@ -68,7 +72,7 @@ export function SettingsLayout() {
           label: 'Notifications',
         },
         {
-          id: 'logout',
+          id: LOGOUT_TAB_ID,
           label: 'Log out',
         },
       ],
@@ -76,6 +80,17 @@ export function SettingsLayout() {
   ];
 
   const handleItemClick = (tabId: string) => {
+    // "Log out" is not a tab: there is no `routes/_shell/settings/logout.tsx`,
+    // so treating it like one only pushed a URL with no route behind it and
+    // `SettingsRedirect` bounced the user straight back into the app with
+    // every `el.*` key intact (issue #136 A). `performLogout()` is the real
+    // implementation — the `el.` namespace sweep in both storage areas plus
+    // the `/forward-auth/logout` handoff that clears the server session
+    // cookie — and this is its call site.
+    if (tabId === LOGOUT_TAB_ID) {
+      performLogout();
+      return;
+    }
     // For now, navigate to the tab route. Later: add permissions, public project,
     // and analytics checks here, same as the old app's `useMemo` filter.
     window.history.replaceState(

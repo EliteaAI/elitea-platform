@@ -9,7 +9,6 @@ import {
   removeArtifact,
   removeArtifacts,
   removeArtifactBucket,
-  renameArtifactBucket,
   setArtifactBucketPinned,
 } from '../api/artifactsApi';
 import * as artifactsApi from '../api/artifactsApi';
@@ -32,7 +31,6 @@ beforeEach(() => {
   vi.spyOn(artifactsApi, 'removeArtifact');
   vi.spyOn(artifactsApi, 'removeArtifacts');
   vi.spyOn(artifactsApi, 'removeArtifactBucket');
-  vi.spyOn(artifactsApi, 'renameArtifactBucket');
   vi.spyOn(artifactsApi, 'setArtifactBucketPinned');
   vi.spyOn(runtimeConfig, 'getConfig').mockReturnValue({
     status: 'ok',
@@ -71,7 +69,6 @@ describe('artifact query hooks', () => {
 
   it('exposes all CRUD mutations and invalidates the affected scopes', async () => {
     vi.mocked(createArtifactBucket).mockResolvedValue();
-    vi.mocked(renameArtifactBucket).mockResolvedValue();
     vi.mocked(setArtifactBucketPinned).mockResolvedValue();
     vi.mocked(removeArtifactBucket).mockResolvedValue();
     vi.mocked(removeArtifact).mockResolvedValue();
@@ -82,14 +79,12 @@ describe('artifact query hooks', () => {
     const hook = renderHookWithProviders(() => useArtifactMutations('p1'), client);
 
     await act(() => hook.result.current.createBucket.mutateAsync('docs'));
-    await act(() => hook.result.current.renameBucket.mutateAsync({ currentName: 'docs', nextName: 'reports' }));
     await act(() => hook.result.current.pinBucket.mutateAsync({ name: 'reports', isPinned: true }));
     await act(() => hook.result.current.deleteBucket.mutateAsync('reports'));
     await act(() => hook.result.current.deleteFile.mutateAsync({ bucket: 'docs', key: 'a.txt' }));
     await act(() => hook.result.current.deleteMany.mutateAsync({ bucket: 'docs', keys: ['a.txt'] }));
 
     expect(createArtifactBucket).toHaveBeenCalledWith('p1', 'docs');
-    expect(renameArtifactBucket).toHaveBeenCalledWith('p1', 'docs', 'reports');
     expect(setArtifactBucketPinned).toHaveBeenCalledWith('p1', 'reports', true);
     expect(removeArtifactBucket).toHaveBeenCalledWith('p1', 'reports');
     expect(removeArtifact).toHaveBeenCalledWith('p1', 'docs', 'a.txt');

@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -15,9 +15,49 @@ import {
   useCreateApplicationInitialValues,
   type ApplicationCreationInput,
 } from '@/entities/application-form';
+import { CreateAgentForm } from '@/features/agents';
 import { t } from '@/shared/i18n';
+import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
+
+/**
+ * The `version_details` subset `CreateAgentForm` reads/writes that
+ * `applicationCreationSchema` (name/description/conversation_starters only)
+ * does not validate — held as local state rather than widening the RHF form's
+ * generic. Same adapter, same reasoning as
+ * `pages/agents/CreateApplication.tsx`'s `CreateAgentFormExtraFields`.
+ */
+interface CreatePipelineFormExtraFields {
+  readonly instructions: string;
+  readonly welcomeMessage: string;
+  readonly variables: { readonly name: string; readonly value: string }[];
+  readonly stepLimit: number | undefined;
+}
+
+/**
+ * The `extraFields` half of "is this draft dirty?" (#133) — RHF's
+ * `formState.isDirty` only sees the three schema-validated fields, so a user
+ * who typed only instructions would otherwise lose that work unprompted.
+ *
+ * Duplicated from `pages/agents/CreateApplication.tsx`'s
+ * `areExtraFieldsEqual` rather than shared: `entities/application-form`'s
+ * barrel — the only slice both pages could legally reach for it — is at its
+ * §3.5 export budget (exactly 20, its own header says so), and a
+ * `pages/pipelines` -> `pages/agents` import is a sideways page import. The
+ * whole surrounding adapter is already deliberately duplicated between these
+ * two files for the same reason (see this file's own header).
+ */
+function areExtraFieldsEqual(a: CreatePipelineFormExtraFields, b: CreatePipelineFormExtraFields): boolean {
+  if (a.instructions !== b.instructions) return false;
+  if (a.welcomeMessage !== b.welcomeMessage) return false;
+  if (a.stepLimit !== b.stepLimit) return false;
+  if (a.variables.length !== b.variables.length) return false;
+  return a.variables.every((variable, index) => {
+    const other = b.variables[index];
+    return other !== undefined && variable.name === other.name && variable.value === other.value;
+  });
+}
 
 const pageSx: SxProps<Theme> = {
   height: '100%',
@@ -76,17 +116,24 @@ const contentSx: SxProps<Theme> = {
  * gap — only a currently-mounted flow-editor widget's own state (owned by a
  * sibling A2 sub-unit) would be.
  *
- * **Composition gap, disclosed:** the baseline's actual field content
- * (`CreateAgentForm`, `@/[fsd]/features/agent/ui/agent-details/
- * configurations/form/CreateAgentForm.jsx`, shared verbatim between the
- * agents and pipelines create pages via `entityType`) is owned by a sibling
- * `agents`-domain Wave-2 sub-unit — `src/features/agents/` has no `ui/`
- * directory or public `index.ts` export for it as of this unit landing
- * (verified directly), and even once it lands, `features/pipelines` may not
- * import `features/agents` (`no-sideways-features`) — so this page cannot
- * legally compose it regardless of landing order. The `FormProvider` this
- * page sets up is exactly the seam a pipelines-domain form panel would need
- * (a `useFormContext()` read) once one exists.
+ * **Composition gap, CLOSED.** This page previously rendered
+ * `<Box data-testid="create-pipeline-form-panel" />` — a self-closing, empty
+ * element — on the stated grounds that (a) `features/agents` had no public
+ * `CreateAgentForm` export, and (b) `no-sideways-features` would forbid the
+ * import anyway. Both were stale by the time the E2E suite first ran and
+ * failed here (J16: the testid resolved 24× to an empty div, never visible):
+ *
+ *  - `CreateAgentForm` IS a public export of `features/agents`
+ *    (`features/agents/index.ts:32`), and `pages/agents/CreateApplication.tsx`
+ *    already imports it.
+ *  - `no-sideways-features` is scoped `from: ^src/features/([^/]+)/`
+ *    (`.dependency-cruiser.cjs:54`). This file is a PAGE, not a feature, and
+ *    `page -> feature` is the ordinary layer direction (§3.2).
+ *
+ * The adapter below mirrors `pages/agents/CreateApplication.tsx`'s: the RHF
+ * form owns name/description (the only fields `applicationCreationSchema`
+ * validates) and local state owns the version_details fields the schema does
+ * not cover, exactly as the agents page does and for the same reason.
  */
 export function CreatePipeline(): ReactNode {
   const navigate = useNavigate();
@@ -106,6 +153,76 @@ export function CreatePipeline(): ReactNode {
     },
   });
 
+  const [extraFields, setExtraFields] = useState<CreatePipelineFormExtraFields>({
+    instructions: draftDefaults.versionDetails.instructions,
+    welcomeMessage: '',
+    variables: draftDefaults.versionDetails.variables.map((variable) => ({ ...variable })),
+    stepLimit: draftDefaults.versionDetails.meta.step_limit,
+  });
+
+  /*
+   * #133 — arm the app-wide unsaved-changes guard, exactly as
+   * `pages/agents/CreateApplication.tsx` now does. `widgets/app-shell`'s
+   * `NavBlockerDialog` was mounted under this page all along but nothing on
+   * the standalone `/pipelines` editors ever raised the flag, so a typed
+   * draft was thrown away on any nav-link click. `useRef`'s initialiser is
+   * kept only from the first render, so this holds the opening values.
+   */
+  const initialExtraFields = useRef(extraFields);
+  const isDraftDirty = form.formState.isDirty || !areExtraFieldsEqual(extraFields, initialExtraFields.current);
+  useUnsavedChangesNavBlocker(isDraftDirty);
+
+  const name = form.watch('name') ?? '';
+  const description = form.watch('description') ?? '';
+
+  const pipelineDraftValues = {
+    name,
+    description,
+    version_details: {
+      instructions: extraFields.instructions,
+      welcome_message: extraFields.welcomeMessage,
+      variables: extraFields.variables,
+      meta: { step_limit: extraFields.stepLimit },
+    },
+  };
+
+  const handlePipelineFieldChange = useCallback(
+    (path: string, value: unknown) => {
+      switch (path) {
+        case 'name':
+          form.setValue('name', typeof value === 'string' ? value : '', { shouldValidate: true, shouldDirty: true });
+          return;
+        case 'description':
+          form.setValue('description', typeof value === 'string' ? value : '', {
+            shouldValidate: true,
+            shouldDirty: true,
+          });
+          return;
+        case 'version_details.instructions':
+          setExtraFields((previous) => ({ ...previous, instructions: typeof value === 'string' ? value : '' }));
+          return;
+        case 'version_details.welcome_message':
+          setExtraFields((previous) => ({ ...previous, welcomeMessage: typeof value === 'string' ? value : '' }));
+          return;
+        case 'version_details.variables':
+          setExtraFields((previous) => ({
+            ...previous,
+            variables: Array.isArray(value) ? (value as { name: string; value: string }[]) : previous.variables,
+          }));
+          return;
+        case 'version_details.meta.step_limit':
+          setExtraFields((previous) => ({
+            ...previous,
+            stepLimit: typeof value === 'number' ? value : undefined,
+          }));
+          return;
+        default:
+          return;
+      }
+    },
+    [form],
+  );
+
   const handleSave = useCallback(() => {
     void form.handleSubmit(async (values) => {
       setCreateError(undefined);
@@ -124,6 +241,9 @@ export function CreatePipeline(): ReactNode {
         setCreateError(new Error('createFailed'));
         return;
       }
+      // #133: the draft is persisted — this is the SAVE's own navigation,
+      // not a nav-away from unsaved work.
+      disarmUnsavedChangesNavBlocker();
       void navigate({
         to: '/pipelines/$tab/$agentId',
         params: { tab: params.tab ?? 'latest', agentId: created.id },
@@ -133,6 +253,8 @@ export function CreatePipeline(): ReactNode {
   }, [form, create, draftDefaults, navigate, params.tab]);
 
   const handleCancel = useCallback(() => {
+    // #133: Cancel IS the explicit discard, so it is not also prompted.
+    disarmUnsavedChangesNavBlocker();
     void navigate({ to: '/pipelines/$tab', params: { tab: params.tab ?? 'latest' } });
   }, [navigate, params.tab]);
 
@@ -158,8 +280,13 @@ export function CreatePipeline(): ReactNode {
               {t('pages.pipelines.createPipeline.error', 'Failed to create the pipeline.')}
             </Typography>
           )}
-          {/* Composition gap: the shared agents/pipelines CreateAgentForm has not landed as a features/agents public export — see doc comment above. */}
-          <Box data-testid="create-pipeline-form-panel" />
+          <Box data-testid="create-pipeline-form-panel">
+            <CreateAgentForm
+              values={pipelineDraftValues}
+              onFieldChange={handlePipelineFieldChange}
+              disabled={isCreating}
+            />
+          </Box>
         </Box>
       </Box>
     </FormProvider>

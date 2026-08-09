@@ -43,10 +43,11 @@ export interface UsersTableProps {
   selectedUsers: { id: string }[];
   onSelectRow?: (user: { id: string }, selected: boolean) => void;
   sorting?: UsersTableSortingProps;
+  /** `null` while nothing is selected — `useUsersActions` returns `batchAction ?? singleAction`, and both are null at 0 selected rows. */
   actions: {
     edit: EditUsersButtonProps | null;
     delete: Record<string, unknown>;
-  };
+  } | null;
   /** Old-app parity: `UsersTable.jsx`'s `renderActions` wraps the per-row edit button in `checkPermission(PERMISSIONS.users.edit)`. */
   canEdit: boolean;
   isLoading?: boolean;
@@ -214,7 +215,13 @@ export const UsersTable = memo(function UsersTable({
           const rowUser = users.find((u) => u.id === rowId);
           if (!rowUser) return null;
 
-          const editProp = actions.edit;
+          // `useUsersActions` returns `actions: null` whenever fewer than one
+          // user is selected — i.e. the default state of this page. This
+          // deref crashed the whole route the moment ANY row rendered; it was
+          // invisible only because the members-body depth bug kept `users`
+          // permanently empty, and `renderCell` never ran. Optional chaining
+          // matches the guard on the very next line.
+          const editProp = actions?.edit;
           if (!editProp?.userIds?.includes(rowId)) return null;
 
           const editRowProps: import('@/shared/ui/settings/EditUsersButton').EditUsersButtonProps = {

@@ -47,6 +47,56 @@ CREATE TABLE IF NOT EXISTS centry.social_users (
     default_summarization JSONB
 );
 
+-- Project secret vault (centry.secrets_key holds the per-project Fernet key,
+-- itself encrypted with SECRETS_MASTER_KEY; centry.secrets_data holds the
+-- Fernet-encrypted {secrets, hidden_secrets} JSON blob). Read and written by
+-- internal/api/v2/secrets/handler.go and internal/infra/centrysecrets.
+-- Column types are copied verbatim from the running legacy centry database —
+-- both tables are `id text PRIMARY KEY, data bytea`. Without them every
+-- secrets write answered 500 "relation centry.secrets_key does not exist".
+CREATE TABLE IF NOT EXISTS centry.secrets_key (
+    id TEXT PRIMARY KEY,
+    data BYTEA
+);
+
+CREATE TABLE IF NOT EXISTS centry.secrets_data (
+    id TEXT PRIMARY KEY,
+    data BYTEA
+);
+
+-- User notifications. Same omission as centry.secrets_key above, found the same
+-- way (#152): THREE Go call sites already query this table and none of them
+-- could ever have worked against a database this file bootstrapped —
+--   internal/api/v2/eliteacore/handler.go:393        (the list endpoint)
+--   internal/db/sqlcgen/current_notification_events.sql.go  (HighWater + ListAfter,
+--                                                    behind the notification SSE stream)
+-- The list endpoint hid it: it runs the query under `if err == nil` and returns
+-- 200 with an empty array on ANY failure, so a missing table is indistinguishable
+-- from "no notifications". The SSE stream does not swallow, and answered 503 the
+-- moment it was first mounted — which is what exposed this.
+--
+-- Column set is dictated by those queries (id, uuid, is_seen, project_id,
+-- user_id, meta, event_type, created_at, updated_at); event_type values are the
+-- legacy NotificationEventTypes enum
+-- (legacy/plugins/elitea_core/models/enums/all.py), kept as TEXT rather than a
+-- PG enum so a new legacy event type does not require a migration here.
+CREATE TABLE IF NOT EXISTS centry.notifications (
+    id SERIAL PRIMARY KEY,
+    uuid UUID NOT NULL DEFAULT gen_random_uuid(),
+    is_seen BOOLEAN NOT NULL DEFAULT FALSE,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    meta JSONB,
+    event_type TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Both readers are user-scoped and ordered by id: the list endpoint filters
+-- (project_id, user_id), the SSE stream filters user_id and pages on id > cursor.
+CREATE INDEX IF NOT EXISTS notifications_user_id_id_idx
+    ON centry.notifications (user_id, id);
+
 -- =============================================================================
 -- TENANT SCHEMA FUNCTION
 -- Creates all per-project tables in a given schema (e.g. "p_1")
@@ -356,7 +406,8 @@ CREATE TABLE IF NOT EXISTS auth_core__user (
     id SERIAL PRIMARY KEY,
     email TEXT UNIQUE,
     name TEXT,
-    last_login TIMESTAMP
+    last_login TIMESTAMP,
+    suspended BOOLEAN NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS idx_auth_core_user_email ON auth_core__user(email);
 
@@ -480,8 +531,26 @@ ON CONFLICT (id) DO NOTHING;
 SELECT create_tenant_schema('p_1');
 
 -- Reset sequences
+--
+-- Every INSERT above supplies an explicit id, which does NOT advance the
+-- table's SERIAL sequence — so the next id-less INSERT collides on the primary
+-- key. The three centry sequences were reset here from the start; the three
+-- auth_core ones were not, and auth_core__user is the one that bit.
+--
+-- Symptom (issue #154, first CI run of the E2E job on a fresh database): the
+-- E2E seed's member-persona `INSERT INTO auth_core__user (email, name)` drew
+-- nextval = 1, collided with the dev user seeded at id 1 here, and failed. The
+-- admin persona then drew 2 and succeeded, so the stack came up with exactly
+-- one of the two personas — `project_user_role rows for the two personas: 1
+-- (want 2)`. Running the seed a SECOND time appeared to fix it, because by then
+-- the sequence had been dragged past the collision; that is why the failure
+-- stayed invisible on a long-lived developer database and only ever showed up
+-- on a database created from scratch.
 SELECT setval('centry.project_id_seq', (SELECT COALESCE(MAX(id), 0) FROM centry.project) + 1, false);
 SELECT setval('centry.project_group_id_seq', (SELECT COALESCE(MAX(id), 0) FROM centry.project_group) + 1, false);
 SELECT setval('centry.social_users_id_seq', (SELECT COALESCE(MAX(id), 0) FROM centry.social_users) + 1, false);
+SELECT setval('auth_core__user_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth_core__user) + 1, false);
+SELECT setval('auth_core__role_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth_core__role) + 1, false);
+SELECT setval('auth_core__scope_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth_core__scope) + 1, false);
 
 COMMIT;

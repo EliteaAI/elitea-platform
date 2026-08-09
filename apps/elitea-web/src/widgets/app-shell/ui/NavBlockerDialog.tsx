@@ -51,8 +51,35 @@ export function NavBlockerDialog(): ReactNode {
   const setBlockNav = useNavBlockerStore((state) => state.setBlockNav);
   const setStreamingBlockNav = useNavBlockerStore((state) => state.setStreamingBlockNav);
 
+  /*
+   * `getState()` — the LIVE store snapshot — not the `isBlockNav`/
+   * `isStreaming` values selected above (#133).
+   *
+   * `shouldBlockFn` is invoked by the router at navigation time, but a
+   * closure over the selected values can only ever see the values from the
+   * last COMMITTED render. That is stale exactly when it matters: an editor
+   * that lowers the flag and navigates in the same event handler (a
+   * successful save — `pages/pipelines/CreatePipeline.tsx`, `pages/agents/
+   * CreateApplication.tsx`) sets the store and calls `navigate()` before
+   * React has re-rendered this component, so the closure still said "block"
+   * and the page's own post-save navigation was blocked by a prompt about
+   * changes it had just persisted. Measured: J16 (`pipelines.lifecycle.spec.ts`)
+   * timed out on `waitForURL(/\/app\/pipelines\/latest\/\d+/)` the moment
+   * the create page started arming the guard.
+   *
+   * Reading the store here is strictly more correct for every caller —
+   * including the chat-embedded editors, which had the same latent
+   * staleness — because the question "is there unsaved work RIGHT NOW" can
+   * only be answered at the instant the navigation is attempted. The
+   * selected values above are still what drive the dialog's own render
+   * (`warningMessage`) and the `beforeunload` listener below, which do need
+   * to re-render on change.
+   */
   const { status, proceed, reset } = useBlocker({
-    shouldBlockFn: ({ current, next }) => (isBlockNav || isStreaming) && current.pathname !== next.pathname,
+    shouldBlockFn: ({ current, next }) => {
+      const live = useNavBlockerStore.getState();
+      return (live.isBlockNav || live.isStreaming) && current.pathname !== next.pathname;
+    },
     withResolver: true,
   });
 

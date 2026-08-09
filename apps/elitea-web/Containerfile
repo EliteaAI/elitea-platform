@@ -15,6 +15,11 @@ RUN npm ci
 
 COPY apps/elitea-web/index.html apps/elitea-web/tsconfig.json apps/elitea-web/vite.config.ts ./
 COPY apps/elitea-web/src/ ./src/
+# Vite's default publicDir — copied verbatim into dist/app. Holds the brand
+# assets the brand pack's `assets.*` paths point at (`/app/brand/*.svg`).
+# Without this the SPA's history fallback answered those URLs with index.html
+# under a 200, so a "does the pack's logo resolve?" check passed on HTML.
+COPY apps/elitea-web/public/ ./public/
 
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN npm run build

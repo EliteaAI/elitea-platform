@@ -193,16 +193,6 @@ export function Artifacts(): ReactNode {
         onCreate={() => requestNavigation(() => {
           void navigate({ to: '/artifacts/create-bucket' });
         })}
-        onRename={async (bucket, nextName) => {
-          setActionError(undefined);
-          try {
-            await mutations.renameBucket.mutateAsync({ currentName: bucket.name, nextName });
-            if (selectedBucket?.name === bucket.name) setSearch({ bucket: nextName });
-          } catch (cause) {
-            setActionError('Failed to rename the bucket.');
-            throw cause;
-          }
-        }}
         onPin={async (bucket) => {
           try {
             await mutations.pinBucket.mutateAsync({ name: bucket.name, isPinned: !bucket.isPinned });

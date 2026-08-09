@@ -119,13 +119,28 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
   });
 });
 
+/**
+ * The two counts below are deliberately hardcoded rather than derived: a test
+ * that recomputes them from the same source it is checking asserts nothing.
+ * They are a tripwire — regenerating the client or appending to the manifest is
+ * expected to bump them, and doing so consciously is the point.
+ *
+ * 92 -> 102 when the artifacts/objects + transfer-grant operations landed with
+ * this branch's v2.yaml expansion.
+ * 102 -> 109 when #151 added the seven `secrets` paths, a domain v2.yaml had
+ * never described — which is why nothing generated or contract-tested caught
+ * the URL divergence #137 codified.
+ */
+const GENERATED_OPERATION_COUNT = 109;
+const MANIFEST_ENTRY_COUNT = 180;
+
 describe('GREEN — the real, checked-in manifest', () => {
   it('exits 0 against src/shared/api/endpoints.manifest.json, unmodified', () => {
     const result = spawnSync(process.execPath, [SCRIPT, '--verbose'], { cwd: APP_ROOT, encoding: 'utf8' });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('check-endpoint-manifest: OK');
-    expect(result.stdout).toContain('generated operations on disk: 92');
-    expect(result.stdout).toContain('manifest entries: 180');
+    expect(result.stdout).toContain(`generated operations on disk: ${GENERATED_OPERATION_COUNT}`);
+    expect(result.stdout).toContain(`manifest entries: ${MANIFEST_ENTRY_COUNT}`);
   });
 
   it('the same real manifest also passes as --json with ok:true', () => {
@@ -135,8 +150,8 @@ describe('GREEN — the real, checked-in manifest', () => {
     expect(parsed.ok).toBe(true);
     expect(parsed.violations).toEqual([]);
     expect(parsed.duplicateIds).toEqual([]);
-    expect(parsed.generatedOperationCount).toBe(92);
-    expect(parsed.totalEntries).toBe(180);
+    expect(parsed.generatedOperationCount).toBe(GENERATED_OPERATION_COUNT);
+    expect(parsed.totalEntries).toBe(MANIFEST_ENTRY_COUNT);
   });
 });
 

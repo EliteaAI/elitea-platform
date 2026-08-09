@@ -1,7 +1,7 @@
 import { act, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { putArtifactToS3 } from '@/shared/api/artifacts';
+import { uploadArtifactObject } from '@/shared/api/artifacts';
 import * as sharedArtifacts from '@/shared/api/artifacts';
 import * as chatApi from '@/shared/api/generated/chat/chat';
 import * as runtimeConfig from '@/shared/config';
@@ -16,7 +16,7 @@ const contents: Artifact[] = [
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  vi.spyOn(sharedArtifacts, 'putArtifactToS3');
+  vi.spyOn(sharedArtifacts, 'uploadArtifactObject');
   vi.spyOn(chatApi, 'useGetChatConfig').mockReturnValue({
     data: { data: { limits: { DEFAULT_MAX_FILE_SIZE: 100 } } },
   } as never);
@@ -29,7 +29,7 @@ beforeEach(() => {
       allow_project_own_llms: false,
     },
   });
-  vi.mocked(putArtifactToS3).mockResolvedValue({
+  vi.mocked(uploadArtifactObject).mockResolvedValue({
     ok: true,
     data: undefined,
     status: 200,
@@ -56,7 +56,7 @@ describe('useArtifactUpload', () => {
     act(() => hook.result.current.stageFiles([file]));
     expect(hook.result.current.pathDialogOpen).toBe(true);
     act(() => hook.result.current.confirmPath('folder'));
-    await waitFor(() => expect(putArtifactToS3).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(uploadArtifactObject).toHaveBeenCalledWith(expect.objectContaining({
       fileKey: 'folder/new.txt',
       projectId: 'p1',
     })));
@@ -70,7 +70,7 @@ describe('useArtifactUpload', () => {
     act(() => hook.result.current.confirmPath(''));
     await waitFor(() => expect(hook.result.current.duplicateDialogOpen).toBe(true));
     act(() => hook.result.current.keepBoth());
-    await waitFor(() => expect(putArtifactToS3).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(uploadArtifactObject).toHaveBeenCalledWith(expect.objectContaining({
       fileKey: 'existing - Copy.txt',
     })));
 
@@ -78,7 +78,7 @@ describe('useArtifactUpload', () => {
     act(() => hook.result.current.confirmPath(''));
     await waitFor(() => expect(hook.result.current.duplicateDialogOpen).toBe(true));
     act(() => hook.result.current.replaceDuplicates());
-    await waitFor(() => expect(putArtifactToS3).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(uploadArtifactObject).toHaveBeenCalledWith(expect.objectContaining({
       fileKey: 'existing.txt',
     })));
 
@@ -94,7 +94,7 @@ describe('useArtifactUpload', () => {
     act(() => hook.result.current.stageFiles([new File(['bad'], 'bad#.txt')]));
     act(() => hook.result.current.confirmPath(''));
     await waitFor(() => expect(hook.result.current.error).toContain('bad#.txt'));
-    vi.mocked(putArtifactToS3).mockResolvedValue({
+    vi.mocked(uploadArtifactObject).mockResolvedValue({
       ok: false,
       error: { kind: 'http', status: 500, url: '/upload', body: null },
     });
@@ -105,7 +105,7 @@ describe('useArtifactUpload', () => {
 
   it('uploads a batch best-effort — one failing file does not stop the others from completing', async () => {
     const hook = renderUpload([]);
-    vi.mocked(putArtifactToS3).mockImplementation(({ fileKey }) =>
+    vi.mocked(uploadArtifactObject).mockImplementation(({ fileKey }) =>
       Promise.resolve(
         fileKey.endsWith('bad.txt')
           ? { ok: false, error: { kind: 'http', status: 500, url: '/upload', body: null } }
@@ -117,7 +117,7 @@ describe('useArtifactUpload', () => {
     await waitFor(() => expect(hook.onUploaded).toHaveBeenCalledTimes(1));
     expect(hook.result.current.error).toContain('bad.txt');
     expect(hook.result.current.error).not.toContain('good.txt');
-    expect(putArtifactToS3).toHaveBeenCalledWith(expect.objectContaining({ fileKey: 'good.txt' }));
-    expect(putArtifactToS3).toHaveBeenCalledWith(expect.objectContaining({ fileKey: 'bad.txt' }));
+    expect(uploadArtifactObject).toHaveBeenCalledWith(expect.objectContaining({ fileKey: 'good.txt' }));
+    expect(uploadArtifactObject).toHaveBeenCalledWith(expect.objectContaining({ fileKey: 'bad.txt' }));
   });
 });

@@ -1,0 +1,228 @@
+/**
+ * Journey 17: Create toolkit → configure → test connection (JRNY-017)
+ *
+ * Spec §8.5 acceptance (from parity/manifest/toolkits.json JRNY-017).
+ * Acceptance: the test result is displayed; the saved toolkit appears in the list.
+ *
+ * ── NOT COVERED (product gaps — deliberately NOT asserted around) ───────────
+ *
+ * 1. "Test connection" — NO UI EXISTS. `onTestConnection` is only a prop TYPE
+ *    (features/toolkits/ui/form/ToolkitForm/ToolkitsOperationButtons.types.ts:69);
+ *    ToolkitsOperationButtons never destructures or renders it. The toolkit
+ *    test endpoints (/test_tool, /test_toolkit_tool) exist in
+ *    services/elitea-main/internal/api/router.go but are absent from
+ *    api/openapi/v2.yaml, so no generated client method reaches them.
+ *    The live test PANE is a declared composition gap: EditToolkit.tsx:299-310
+ *    renders an EMPTY <Box data-testid="edit-toolkit-test-pane-slot" />.
+ *    => The "the test result is displayed" half of JRNY-017 cannot be written
+ *       as a real assertion today. It is NOT stubbed here and NOT skipped —
+ *       it is simply absent, and this note is the coverage record.
+ *
+ * 2. Edit-and-save on the detail page — no save affordance is mounted.
+ *    ToolkitsOperationButtons draws no persistent button; its update path
+ *    fires only on eventEmitter ToolEvents.ToolkitsUpdateToolkit, and the only
+ *    emitter (ToolkitsTabBar) has no caller. Needs its own journey once wired.
+ *
+ * ── FORMERLY KNOWN-FAILING — BOTH DEFECTS ARE FIXED (#129), re-measured on the
+ *    real E2E stack on 2026-08-09. Kept as history because the assertions below
+ *    are shaped by them:
+ *
+ * A. GET /elitea_core/toolkits/prompt_lib/{projectID} used to be routed to
+ *    toolkitHandler.List (the toolkit-INSTANCE list, {rows,total}) instead of
+ *    ListTypeSchemas, so ToolkitTypeSelector iterated the pagination envelope
+ *    and rendered label-less "rows"/"total" tiles. It now serves the real
+ *    type→schema map — measured keys: application, artifact, custom, database,
+ *    datasource, github, jira, openapi. That is what J17.2 asserts through the
+ *    "GitHub" tile, and what makes J17.3 render ToolBase rather than
+ *    ToolCustom (see J17.3's own header).
+ *
+ * B. POST /elitea_core/tools/prompt_lib/{projectID} used to 500 on an
+ *    `owner_id NOT NULL` violation in pgRepo.CreateToolkit. It now answers 201.
+ */
+import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+import { checkA11y } from '../../fixtures/axe';
+import { BASE_URL } from '../../../playwright.config';
+import { AUTOTEST_PREFIX, API_BASE, DEFAULT_PROJECT_ID, clickCreateButton } from '../../fixtures/api';
+
+/** Unique to THIS file so concurrent journeys never collide on a name. */
+const toolkitName = (): string => `${AUTOTEST_PREFIX}tk${Date.now()}`;
+
+/** Ids created by this file, deleted in afterAll. Never a blanket `autotest_` sweep — other specs run concurrently. */
+const createdIds: string[] = [];
+
+test.afterAll(async ({ browser }) => {
+  if (createdIds.length === 0) return;
+  const ctx = await browser.newContext();
+  for (const id of createdIds) {
+    await ctx.request.delete(`${API_BASE}/elitea_core/tool/prompt_lib/${DEFAULT_PROJECT_ID}/${id}`);
+  }
+  await ctx.close();
+});
+
+/**
+ * The create page's own discriminating landmark: ToolkitTypeSelector's
+ * CategoryFilter search box. A stub route with a bare heading has no form
+ * control; the placeholder text comes from
+ * toolkits.toolkitTypeSelector.searchToolkit.
+ */
+function typeSearchBox(page: Page) {
+  return page.getByPlaceholder('Search toolkits');
+}
+
+test('J17.1: an empty toolkit list redirects to the create page', async ({ page }) => {
+  // Behaviour under test: Toolkits.tsx's shouldRedirectToCreatePage gate
+  // (pages/toolkits/Toolkits.tsx:57-67) driven by the REAL list response
+  // (GET /elitea_core/tools/prompt_lib/{id} -> total 0). A stub page cannot
+  // redirect, because the redirect is a function of server data.
+  const listResponse = page.waitForResponse(
+    (r) => r.request().method() === 'GET' && /\/elitea_core\/tools\/prompt_lib\//.test(r.url()),
+    { timeout: 20_000 },
+  );
+  await page.goto(BASE_URL + '/app/toolkits/all');
+
+  const resp = await listResponse;
+  expect(resp.status()).toBe(200);
+  const body = (await resp.json()) as { rows: unknown[]; total: number };
+  expect(body.total).toBe(0);
+
+  await page.waitForURL(/\/app\/toolkits\/create/, { timeout: 20_000 });
+  // The create screen really mounted — a form control, not a heading.
+  await expect(typeSearchBox(page)).toBeVisible({ timeout: 15_000 });
+
+  // This used to fail on defect A's fallout — two nameless ghost tiles tripping
+  // axe's `button-name` rule. Both causes are fixed (see the file header and
+  // J17.2's note), so checkA11y is now a clean, unconditional assertion.
+  await checkA11y(page);
+});
+
+test('J17.2: the create page offers real, server-supplied toolkit types', async ({ page }) => {
+  // PASSES as of the #129 route fix. The tile label "GitHub" is derivable ONLY
+  // from a schema map that actually contains the key `github`
+  // (entities/toolkit/model/toolMenu.ts labels each map key through ToolTypes),
+  // so this cannot be satisfied by a stub or by the pagination envelope the
+  // endpoint used to return.
+  await page.goto(BASE_URL + '/app/toolkits/create');
+  await expect(typeSearchBox(page)).toBeVisible({ timeout: 15_000 });
+
+  await expect(page.getByRole('button', { name: 'GitHub', exact: true })).toBeVisible({ timeout: 15_000 });
+
+  // checkA11y earns its place here and has now caught TWO different causes of the
+  // same critical `button-name` violation, which is why it stays unconditional:
+  //   1. before #129, the page iterated the {rows,total} pagination envelope and
+  //      rendered a nameless tile per envelope KEY;
+  //   2. after #129 served real types, `database` and `datasource` had no entry
+  //      in the frontend ToolTypes map and the label fell back to '' — still two
+  //      nameless tiles, entirely different cause.
+  // Fixed by making the label fall back to a humanised key, so a backend type the
+  // frontend has never heard of degrades to a readable name instead of nothing.
+  //
+  // (A dedicated nameless-button count was tried and REMOVED as vacuous:
+  // Playwright's getByRole(..., {name: ''}) does not match empty accessible
+  // names, so it asserted nothing.)
+  await checkA11y(page);
+});
+
+/**
+ * WHY THIS TEST NO LONGER EXPECTS TO FAIL, AND WHY IT NO LONGER TOUCHES
+ * CODEMIRROR (measured, not inferred — all three on the real E2E stack):
+ *
+ *  1. `.cm-content` count on the create page after picking Custom is **0**.
+ *     There is no CodeMirror element at all, so the old failure was neither a
+ *     serialisation/spacing change nor CodeMirror virtualising text out of the
+ *     DOM — both of those require the editor to exist.
+ *  2. The type DOES reach the draft. Saving issues
+ *     `POST /api/v2/elitea_core/tools/prompt_lib/1` with body
+ *     `{"type":"custom","name":...,"settings":{"selected_tools":[]}}` and the
+ *     server answers **201** (#129's owner_id 500 is fixed).
+ *  3. The real cause is component selection, and it is CORRECT behaviour:
+ *     `GET /elitea_core/toolkits/prompt_lib/{id}` now serves the real
+ *     type→schema map, and its `custom` entry is
+ *     `{"properties":{"selected_tools":{...}},"type":"object"}`. Because that
+ *     schema has a truthy `.type`, `getToolComponent`
+ *     (features/toolkits/lib/helpers/toolComponent.helpers.ts:81) resolves
+ *     `ToolBase` — the structured form — and never mounts `ToolCustom`'s JSON
+ *     editor. `ToolCustom` is the no-typed-schema fallback; back when the
+ *     endpoint returned the `{rows,total}` pagination envelope the map had no
+ *     `custom` key, the schema degraded to `{properties:{}}`, and the JSON
+ *     editor is what the original test saw.
+ *
+ * So the CodeMirror assertions encoded a UI shape that only appears when the
+ * backend is broken. They are replaced below by assertions against the form
+ * the app actually renders — which is itself backend-derived: the Tools
+ * section's "Make tools available by MCP" field is drawn by
+ * `ToolBase.render.tsx:296-306`, reachable ONLY via the ToolBase branch, i.e.
+ * only when the server supplied a typed `custom` schema.
+ */
+test('J17.3: create a toolkit, persist it, and reopen it from the list', async ({ page }) => {
+  const name = toolkitName();
+
+  await page.goto(BASE_URL + '/app/toolkits/all');
+  await page.waitForURL(/\/app\/toolkits\/(all|create)/, { timeout: 20_000 });
+  if (!/\/create/.test(page.url())) await clickCreateButton(page);
+  await page.waitForURL(/\/app\/toolkits\/create/, { timeout: 20_000 });
+  await expect(typeSearchBox(page)).toBeVisible({ timeout: 15_000 });
+
+  // Pick the `custom` type — a genuine key in the server's own type→schema map
+  // (GET /elitea_core/toolkits/prompt_lib/{id}).
+  await page.getByRole('button', { name: 'Custom', exact: true }).click();
+
+  // The selector was REPLACED by the real form: ToolBase's fields plus
+  // CreateToolkitToolTabBar's Save. Neither exists on the selector screen.
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled({ timeout: 15_000 });
+
+  // Backend-derived, per the header: this field is rendered only down the
+  // ToolBase branch, which `getToolComponent` picks only because the server's
+  // `custom` schema carries `"type": "object"`. Against the old {rows,total}
+  // envelope the app fell back to ToolCustom's JSON editor and this checkbox
+  // did not exist.
+  await expect(page.getByRole('checkbox', { name: 'Make tools available by MCP' })).toBeVisible({ timeout: 15_000 });
+
+  // The form is seeded from the picked type's initial values, then renamed.
+  const nameField = page.getByRole('textbox', { name: 'Toolkit Name' });
+  await expect(nameField).toHaveValue('Custom tool', { timeout: 15_000 });
+  await nameField.fill(name);
+
+  const [createResp] = await Promise.all([
+    page.waitForResponse(
+      (r) => r.request().method() === 'POST' && /\/elitea_core\/tools\/prompt_lib\//.test(r.url()),
+      { timeout: 20_000 },
+    ),
+    page.getByRole('button', { name: 'Save', exact: true }).click(),
+  ]);
+  // #129's owner_id NOT NULL 500 is fixed. Do not weaken this to `toBeLessThan(500)`.
+  expect(createResp.status(), await createResp.text()).toBe(201);
+  const created = (await createResp.json()) as { id: string };
+  expect(created.id).toBeTruthy();
+  createdIds.push(created.id);
+
+  // CreateToolkit's only role=alert is "Failed to create the toolkit."
+  await expect(page.getByRole('alert')).toHaveCount(0);
+
+  await checkA11y(page);
+
+  // ── Persistence: a FULL reload, so the 30 s-stale list cache cannot answer.
+  await page.goto(BASE_URL + '/app/toolkits/all');
+  const card = page
+    .getByTestId('toolkits-list-panel')
+    .getByTestId('toolkit-card')
+    .filter({ hasText: name });
+  await expect(card).toBeVisible({ timeout: 20_000 });
+
+  await checkA11y(page);
+
+  // ── Detail: opening the card must reach the id-bearing route and render
+  // content fetched from GET /elitea_core/tool/prompt_lib/{id}/{toolkitId}.
+  await card.click();
+  // `(\?|$)` because the shell appends its own persisted query string.
+  await expect(page).toHaveURL(new RegExp(`/app/toolkits/all/${created.id}(\\?|$)`), { timeout: 20_000 });
+  // Route landmark unique to EditToolkit. toBeAttached, not toBeVisible — the
+  // slot is an intentionally empty Box (composition gap 1 above).
+  await expect(page.getByTestId('edit-toolkit-test-pane-slot')).toBeAttached({ timeout: 20_000 });
+  // Backend-derived: the detail fetch populated the form with the persisted
+  // name. A stub route cannot produce this.
+  await expect(page.getByRole('textbox', { name: 'Toolkit Name' })).toHaveValue(name, { timeout: 20_000 });
+
+  await checkA11y(page);
+});
