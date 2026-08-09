@@ -46,9 +46,15 @@ func TestCircularRoutingGuard_LoopContained(t *testing.T) {
 	// property of CI load, so a slow runner could spread the burst past the
 	// window and flake. The breaker logic under test is unchanged — only its
 	// time source is.
+	//
+	// The numbers became operator-settable in issue #12 (the production default
+	// is no longer 5/1s/30s). This gate still asserts the breaker's BEHAVIOUR
+	// end to end through the mounted handler, so it pins them explicitly here
+	// rather than tracking whatever the default happens to be.
 	frozen := time.Unix(1_700_000_000, 0)
+	breakerParams := llmproxy.LoopBreakerParams{Threshold: 5, Window: time.Second, OpenFor: 30 * time.Second}
 	handler := preflight.MountedHandler(t, router, gov, secret,
-		llmproxy.WithLoopBreakerClock(func() time.Time { return frozen }),
+		llmproxy.WithLoopBreakerClock(breakerParams, func() time.Time { return frozen }),
 	)
 
 	send := func() *httptest.ResponseRecorder {

@@ -122,6 +122,36 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   tenant in real time which of their streams the gateway failed to bill is an
   oracle for the conditions that produce it.
 
+- **[human decision] 2026-08-09 — "Circular-routing guard #2" is an
+  amplification backstop, not a loop detector; its numbers are operator
+  settings (issue #12, INTERIM).** The implementation does no hop detection at
+  all — it counts requests per (project_id, model). At the spec'd 5/1s/30s it
+  was a hardcoded 5 req/s rate limiter armed in production; a 50-VU k6 run
+  against one tuple measured 99.96% HTTP 429, so the breaker, not the gateway,
+  was what the overhead gate measured.
+  The load-bearing finding: **no rate threshold can separate a routing loop
+  from legitimate traffic here**, because both are bounded by the same
+  per-replica provider worker pool. Low enough to catch the canonical loop is
+  low enough to trip ordinary bursts; high enough not to trip bursts can never
+  fire on the loop. So the layer is now named and tuned for what it measurably
+  is.
+  Numbers: threshold 1000 (`LLM_LOOP_BREAKER_THRESHOLD`), window 1 s, open 5 s
+  (was 30 s). 1000 = provider worker pool (50) ÷ fastest realistic call latency
+  (~50 ms embeddings) — the ceiling of what one replica could ever serve for one
+  tuple. Worst case permitted: 1000 req/s per tuple per replica × replicas,
+  sustained, versus the old 5 — accepted deliberately, because the old number's
+  containment was illusory while its false positives were measured. A negative
+  threshold disarms it; either way `logLoopBreakerMode` states the mode at
+  startup, so it can never quietly pretend to be armed.
+  Guarded by `TestLoopBreaker_DefaultDoesNotTripOrdinaryBurst`,
+  `TestLoopBreaker_DefaultStillContainsRunawayAmplification`,
+  `TestLoopBreaker_OperatorParamsApply` and the `logLoopBreakerMode(` wiring-gate
+  entry; all mutation-verified 2026-08-09.
+  **NOT done here, tracked as follow-up:** hop-marker detection (the actual
+  mechanism), and amending spec §2.6 + `runbook-bifrost-cutover.mdx`, which
+  still document 5/1s/30s and now disagree with the code — those live in
+  `elitea-docs`, a different repository.
+
 ## Trust boundary
 - **[human decision] Deny-by-default trusted-proxy model.** `X-Auth-*` identity
   headers are honored only from `TRUSTED_PROXY_CIDRS` (matched on RemoteAddr, not
@@ -129,6 +159,73 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   all client-supplied auth material before proxying. Rationale: without the CIDR
   gate, any pod with network reach could assert an arbitrary project identity.
   Operators MUST set TRUSTED_PROXY_CIDRS to their ingress range.
+- **[human decision] 2026-08-09 — `GATEWAY_IDENTITY_SECRET` is REQUIRED, and a
+  default install without it does NOT boot (issue #11).** The old startup guard
+  fired only when `GATEWAY_NATS_URL` was set, but the vault-backed Account is
+  wired on `pool != nil`. `verifySignature` treats an empty secret as
+  "verification disabled" and returns true, so a NATS-less deployment with a
+  database took `X-Elitea-Project-Id` at face value and used *that* project's
+  decrypted Fernet-vault provider credentials — unauthenticated cross-tenant
+  credential use. The guard now also covers the Account path
+  (`startupIdentityCheck`, `cmd/elitea-llm-gateway/main.go`), FATAL + exit(1)
+  before `server.New` creates a listener.
+  **Consequence, chosen deliberately over the alternatives:** `DATABASE_URL` has
+  a non-empty default and `pgxpool.New` only parses the DSN (it never dials), so
+  `credentialAccount` is true in effectively every deployment — the secret is now
+  unconditionally required in practice. The chart therefore flips
+  `secrets.GATEWAY_IDENTITY_SECRET.optional` to `false` in BOTH
+  `deploy/helm/elitea-llm-gateway` and `deploy/helm/elitea-main` (the two sides
+  must carry the same value; the edge signs what the gateway verifies). A
+  `helm install` with no `identity-secret` key now fails at container creation
+  with a message naming the Secret, instead of silently starting a gateway that
+  hands any caller any tenant's credentials. Dev/compose/CI runs must set
+  `GATEWAY_IDENTITY_SECRET` to any non-empty value.
+  Rejected alternatives: (a) keep booting and merely drop the credential-backed
+  Account — a silent, hard-to-diagnose loss of all provider calls that still
+  leaves budget identity unverified; (b) keep `optional: true` and let the
+  binary crash-loop — same outcome, worse diagnostics.
+  Guarded by `TestStartupIdentityCheck` + the `startupIdentityCheck(` entry in
+  `TestMainWiring`; both mutation-verified 2026-08-09.
+
+- **[human decision] 2026-08-09 — Tenant-authored `api_base` may reach a private
+  network ONLY through an operator egress allowlist (issue #13).** The previous
+  `AllowPrivateNetwork = true` carve-out for the vLLM/Ollama classes was
+  unconditional, and the URL those classes dial comes from the tenant's own
+  `p_{id}.configuration` row — so any user who could author a credential could
+  make the gateway open a connection to any address the pod can reach. Two
+  modes now, and deliberately no third:
+  - `GATEWAY_EGRESS_ALLOWLIST` empty (default): hosts unrestricted, but
+    bifrost's SSRF-safe dialer stays armed for EVERY provider class. No tenant
+    can reach RFC-1918. **Self-hosted vLLM/Ollama on a private network stops
+    working until an operator opts in** — that is the accepted cost.
+  - non-empty: every `api_base` must match an entry, and private destinations
+    become reachable for the self-hosted classes only.
+  It is a HOST-NAME allowlist, not an IP-range check, on purpose: an IP check
+  here would be a check-then-dial race (DNS rebinding), whereas a name the
+  operator sanctioned is sanctioned whatever it resolves to, and the dialer's
+  own check happens at connect time with no race. The check runs BEFORE
+  `vault.Resolve`, so a non-allowlisted destination never causes a decrypt of
+  the tenant's `{{secret.NAME}}` key material.
+- **[human decision] 2026-08-09 — Upstream response bodies are NEVER echoed to
+  callers (issue #13).** bifrost/core puts an unparsable non-2xx body verbatim
+  into `Error.Message` (`core@v1.7.3 providers/utils/utils.go`, prefix
+  `"provider API error: "`), and the gateway copied it into the client-visible
+  envelope — turning a blind SSRF into a full read of anything the pod can
+  reach. `sanitiseUpstreamMessage` (internal/llmproxy/httpio.go) replaces that
+  form with a status-only message and caps every other upstream message at 256
+  bytes as a second line of defence. Messages bifrost PARSED out of a structured
+  provider error (quota text, rate-limit detail) are preserved — those are the
+  tenant's own useful diagnostics.
+  Guarded by `TestOpenAIErrorBody_DoesNotEchoUpstreamBody`,
+  `TestGetConfigForProvider_PrivateNetworkGatedOnAllowlist` and
+  `TestGetKeysForProvider_EgressGuardBeforeVault`; all mutation-verified
+  2026-08-09.
+  **Residual, NOT fixed here:** with no allowlist configured, a tenant can still
+  ship its own vault-resolved secret to an arbitrary PUBLIC host as a Bearer
+  token (`api_base: https://attacker.example/v1`). Setting the allowlist closes
+  it; making that mandatory would break every cloud-provider install and is a
+  separate human call. The chart's opt-in `networkPolicy` is defence in depth,
+  not the primary control — see values.yaml for why it cannot default to on.
 
 ## Topology / build
 - Gateway is a standalone Go 1.26.4 module, deliberately OUT of the root go.work
@@ -176,9 +273,11 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   elitea-main-only or chart-only change — see the next line).
 
 ## Known follow-ups (not blocking, need a human)
-- Set `secrets.*.optional: false` in a production values overlay so a missing
-  Secret fails the pod instead of running degraded (identity HMAC bypassable /
-  vault single-level). Left `true` in the base chart for local/dev.
+- ~~Set `secrets.*.optional: false` ... for `GATEWAY_IDENTITY_SECRET`~~ — DONE
+  2026-08-09 (issue #11, see the Trust-boundary entry above): it is `false` in
+  the base chart for both the gateway and elitea-main. `SECRETS_MASTER_KEY`
+  remains `optional: true` (unset ⇒ Fernet vault degraded single-level mode);
+  making that one mandatory is still open and needs a human.
 - elitea-main env-drift is still WARN-heavy for vars read via a default
   (`ELITEA_RUNTIME_ENABLED`, `REDIS_URL`, and ~19 others) with no chart
   override knob at all — real, now-visible (the two bugs above previously

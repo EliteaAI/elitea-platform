@@ -16,6 +16,8 @@
 // failmode.Params.DegradedCapNano before the GovernanceStore is constructed.
 // FIX #9: startup guard — GATEWAY_IDENTITY_SECRET must be non-empty when
 // GATEWAY_NATS_URL is set (enforcement on), otherwise the HMAC is bypassable.
+// Issue #11 widened that guard: the credential-backed Account is a second,
+// independent reason the secret is mandatory (see startupIdentityCheck).
 package main
 
 import (
@@ -50,13 +52,6 @@ func main() {
 	level.Set(parseLevel(cfg.LogLevel))
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
-
-	// FIX #9: if NATS enforcement is on, a missing identity secret lets any caller
-	// forge the X-Elitea-Project-Id header and bypass per-project budget caps.
-	if cfg.NATSURL != "" && cfg.IdentitySecret == "" {
-		slog.Error("FATAL: GATEWAY_IDENTITY_SECRET required when budget enforcement is enabled (GATEWAY_NATS_URL is set); refusing to start")
-		os.Exit(1)
-	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -96,6 +91,15 @@ func main() {
 		})
 	}
 
+	// Issue #11: the identity-secret guard MUST run once the two conditions that
+	// make the secret mandatory are both known — budget enforcement (NATSURL)
+	// and the credential-backed Account (pool). It runs here, before
+	// server.New and therefore before the listener accepts a single request.
+	if err := startupIdentityCheck(cfg.IdentitySecret, cfg.NATSURL != "", pool != nil); err != nil {
+		slog.Error("FATAL: refusing to start", "err", err)
+		os.Exit(1)
+	}
+
 	// BFF.6: assemble the vault-backed Account (BF0.2-account) so bifrost can
 	// resolve real per-project provider credentials. Without a pool the
 	// gateway keeps the zero-provider bootstrap account — it will start, but
@@ -115,6 +119,7 @@ func main() {
 			Vault:               vault,
 			ProviderConcurrency: cfg.ProviderConcurrency,
 			SelfOrigins:         cfg.SelfLLMOrigins,
+			EgressAllowlist:     cfg.EgressAllowlist,
 			Logger:              logger,
 		})
 		if aerr != nil {
@@ -124,6 +129,18 @@ func main() {
 		acct = eliteaAcct
 		if len(cfg.SelfLLMOrigins) == 0 {
 			logger.Warn("GATEWAY_SELF_LLM_ORIGINS is empty — the request-time SELF_REFERENTIAL_CREDENTIAL guard (spec §2.6 guard #1) is inert")
+		}
+		// Issue #13: the two egress policy modes differ in whether a tenant can
+		// steer the gateway at a private address at all. Say which one is armed
+		// at startup — an operator must not have to read the code to find out.
+		if eliteaAcct.EgressAllowlistConfigured() {
+			logger.Info("EGRESS ALLOWLIST ARMED: tenant-authored api_base hosts are restricted to GATEWAY_EGRESS_ALLOWLIST; "+
+				"private-network destinations are permitted for the self-hosted provider classes (vLLM, Ollama)",
+				"entries", len(cfg.EgressAllowlist))
+		} else {
+			logger.Warn("GATEWAY_EGRESS_ALLOWLIST is empty — tenant-authored api_base hosts are UNRESTRICTED (public only). " +
+				"bifrost's SSRF-safe dialer stays on for every provider, so self-hosted vLLM/Ollama on a private " +
+				"network will NOT work until the allowlist names those hosts (issue #13)")
 		}
 		logger.Info("vault-backed Account ENABLED", "self_origins", len(cfg.SelfLLMOrigins))
 	} else {
@@ -192,9 +209,24 @@ func main() {
 		budgetOpts = append(budgetOpts, llmproxy.WithOpsEventPublisher(nc))
 	}
 
+	// Issue #12: the per-(project_id, model) backstop's numbers are operator
+	// settings, and the resulting mode is logged ONCE here. It was a hardcoded
+	// 5 req/s + 30 s lockout armed in production under the name
+	// "circular-routing guard #2" — it does no hop detection at all, and a
+	// 50-VU run against a single tuple measured 99.96% HTTP 429. An operator
+	// must be able to see, from the startup log alone, whether it is armed and
+	// at what numbers.
+	breakerParams := llmproxy.LoopBreakerParams{
+		Threshold: cfg.LoopBreakerThreshold,
+		Window:    cfg.LoopBreakerWindow,
+		OpenFor:   cfg.LoopBreakerOpenFor,
+	}
+	logLoopBreakerMode(logger, breakerParams)
+
 	// Mount the /llm dialect surface over the embedded bifrost/core client.
-	// WithLoopBreaker arms circular-routing guard #2 (spec §2.6) — it MUST be
-	// present in production wiring; TestMainWiring asserts it.
+	// WithLoopBreakerParams arms the amplification backstop (spec §2.6 guard
+	// #2's implementation) — it MUST be present in production wiring;
+	// TestMainWiring asserts it.
 	// WithStreamGrace / WithStreamDrainLimit arm the disconnect-billing path
 	// (issue #9): a streamed response whose client vanishes keeps its provider
 	// stream alive for a bounded grace period so the authoritative usage
@@ -204,7 +236,7 @@ func main() {
 	handlerOpts := append(
 		[]llmproxy.HandlerOption{
 			llmproxy.WithModelResolver(modelResolver),
-			llmproxy.WithLoopBreaker(),
+			llmproxy.WithLoopBreakerParams(breakerParams),
 			llmproxy.WithStreamGrace(cfg.StreamGrace),
 			llmproxy.WithStreamDrainLimit(cfg.StreamDrainLimit),
 		},
@@ -306,6 +338,82 @@ func shutdownSequence(
 		srv.Close()
 	}
 	return err
+}
+
+// startupIdentityCheck returns a non-nil error when the gateway would serve
+// traffic with identity verification switched off while something downstream
+// depends on that identity being authentic. main() turns the error into a FATAL
+// log + exit(1) BEFORE the listener is created.
+//
+// verifySignature (internal/llmproxy/identity.go) treats an EMPTY secret as
+// "verification disabled" and returns true unconditionally. Whatever the caller
+// puts in X-Elitea-Project-Id is then taken as the project identity verbatim.
+// Two independent consumers make that fatal rather than merely degraded:
+//
+//   - budgetEnforcement (GATEWAY_NATS_URL set) — an unverified project id lets
+//     any caller spend against any project's budget (the original FIX #9).
+//   - credentialAccount (a Postgres pool, so the vault-backed Account is wired)
+//     — GetKeysForProvider resolves and DECRYPTS that project's provider keys
+//     from the Fernet vault. An unverified project id therefore hands any
+//     caller any tenant's decrypted provider credentials (issue #11). This is
+//     the case the NATS-only condition missed: a NATS-less deployment with a
+//     database still wires the Account.
+//
+// Note the operational consequence, recorded in DECISIONS.md: DATABASE_URL has
+// a non-empty default and pgxpool.New only PARSES the DSN (it does not dial),
+// so credentialAccount is true in effectively every deployment. The guard is
+// therefore unconditional in practice — GATEWAY_IDENTITY_SECRET is a required
+// setting, and the Helm chart marks its Secret non-optional to match.
+func startupIdentityCheck(identitySecret string, budgetEnforcement, credentialAccount bool) error {
+	if identitySecret != "" {
+		return nil
+	}
+	switch {
+	case credentialAccount && budgetEnforcement:
+		return fmt.Errorf("GATEWAY_IDENTITY_SECRET is empty: identity verification is disabled while the " +
+			"vault-backed Account resolves per-project provider credentials AND budget enforcement is on — " +
+			"an unauthenticated X-Elitea-Project-Id would select any tenant's decrypted credentials and budget")
+	case credentialAccount:
+		return fmt.Errorf("GATEWAY_IDENTITY_SECRET is empty: identity verification is disabled while the " +
+			"vault-backed Account resolves per-project provider credentials from the Fernet vault — " +
+			"an unauthenticated X-Elitea-Project-Id would select any tenant's decrypted credentials (issue #11)")
+	case budgetEnforcement:
+		return fmt.Errorf("GATEWAY_IDENTITY_SECRET is empty: identity verification is disabled while budget " +
+			"enforcement is enabled (GATEWAY_NATS_URL is set) — the per-project HMAC would be bypassable")
+	}
+	return nil
+}
+
+// logLoopBreakerMode states, once at startup, whether the per-(project, model)
+// amplification backstop is armed and with what numbers (issue #12).
+//
+// Two failure modes this exists to prevent, both of which have happened here:
+// a guard that is silently DISARMED while operators believe it is on, and a
+// guard that is silently armed at numbers ordinary traffic trips. It resolves
+// the same "unset ⇒ default" rules newLoopBreaker applies, so what is logged is
+// what is enforced rather than the raw env values.
+func logLoopBreakerMode(logger *slog.Logger, p llmproxy.LoopBreakerParams) {
+	if p.Threshold < 0 {
+		logger.Warn("LOOP BREAKER DISARMED: LLM_LOOP_BREAKER_THRESHOLD is negative — no per-(project, model) " +
+			"amplification backstop is active on this replica (issue #12)")
+		return
+	}
+	threshold := p.Threshold
+	if threshold == 0 {
+		threshold = llmproxy.DefaultLoopBreakerThreshold
+	}
+	window := p.Window
+	if window <= 0 {
+		window = llmproxy.DefaultLoopBreakerWindow
+	}
+	openFor := p.OpenFor
+	if openFor <= 0 {
+		openFor = llmproxy.DefaultLoopBreakerOpenFor
+	}
+	logger.Info("LOOP BREAKER ARMED: per-(project_id, model) amplification backstop — NOT a loop detector "+
+		"(it does no hop detection; see issue #12). Requests for one tuple above the threshold within the "+
+		"window are rejected with 429 for the open duration.",
+		"threshold", threshold, "window", window, "open_for", openFor)
 }
 
 // buildGovernance assembles the full governance engine (failmode primitives +

@@ -31,10 +31,12 @@ func TestMainWiring(t *testing.T) {
 		{"llmproxy.WithBudgetGate(", "the budget gate is never attached to the handler — every /llm request would be admitted unconditionally (enforcement silently off)"},
 		{"account.New(", "the vault-backed Account is never constructed — the gateway runs the zero-provider bootstrap account and cannot resolve ANY provider credential (BFF.6)"},
 		{"account.NewFernetVault(", "the Fernet vault is never constructed — {{secret.NAME}} credential references cannot be resolved (BFF.6)"},
-		{"llmproxy.WithLoopBreaker(", "circular-routing guard #2 (spec §2.6) is never armed — a routing loop would run unchecked in production"},
+		{"llmproxy.WithLoopBreakerParams(", "the per-(project_id, model) amplification backstop (spec §2.6 guard #2's implementation) is never armed — unbounded request amplification for one tuple would run unchecked in production"},
+		{"logLoopBreakerMode(", "the backstop's mode is never logged at startup — a disarmed or badly-tuned guard would be invisible to operators, which is how it shipped as a de-facto 5 req/s rate limiter (issue #12)"},
 		{"llmproxy.WithAlertEventPublisher(", "budget.soft_alert is never published to gateway.events.* — the 80% alert would be invisible to subscribers (spec §8.3)"},
 		{"llmproxy.WithStreamGrace(", "the stream-disconnect grace period is never configured — a client that disconnects mid-stream is billed nothing and the hard budget is bypassable (issue #9)"},
 		{"llmproxy.WithStreamDrainLimit(", "abandoned-stream drains are unbounded — a disconnect storm holds unbounded goroutines and provider sockets (issue #9)"},
+		{"startupIdentityCheck(", "the identity-secret startup guard is never invoked — the gateway would boot with identity verification disabled while the vault-backed Account resolves per-project credentials from an unauthenticated X-Elitea-Project-Id (issue #11)"},
 		{"shutdownSequence(", "the shutdown sequence is never invoked — stream grace, HTTP drain, billing drain and NATS close would not run in the one order that loses no spend (issue #9)"},
 		{"llmproxy.WithOpsEventPublisher(", "budget.unbilled_stream is never published — a stream the gateway could not bill would be invisible to operators (issue #9)"},
 		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
@@ -134,5 +136,81 @@ func TestDrainForShutdown_NilGovStore(t *testing.T) {
 
 	if len(order) != 1 || order[0] != "billing" {
 		t.Fatalf("with a nil gov store, only billing should drain; got %v", order)
+	}
+}
+
+// TestStartupIdentityCheck is the issue #11 regression guard. The pre-#11 guard
+// was `cfg.NATSURL != "" && cfg.IdentitySecret == ""` — it covered ONLY the
+// budget-enforcement reason the secret is mandatory, and was blind to the
+// credential-backed Account wired on `pool != nil`. The
+// credentialAccount-without-NATS row below is that exact hole: it is the
+// NATS-less deployment (compose/dev/CI, GATEWAY_NATS_URL unset, DATABASE_URL
+// set) in which an unauthenticated caller setting X-Elitea-Project-Id selects
+// any tenant's decrypted provider credentials.
+//
+// Mutation-proof this test by narrowing startupIdentityCheck's `credentialAccount`
+// arm back to nothing (i.e. deleting the `case credentialAccount:` branch): the
+// "credential Account, no NATS" row MUST fail.
+func TestStartupIdentityCheck(t *testing.T) {
+	cases := []struct {
+		name              string
+		secret            string
+		budgetEnforcement bool
+		credentialAccount bool
+		wantErr           bool
+	}{
+		{
+			name:              "credential Account, no NATS, no secret — issue #11 credential disclosure",
+			secret:            "",
+			budgetEnforcement: false,
+			credentialAccount: true,
+			wantErr:           true,
+		},
+		{
+			name:              "budget enforcement, no Account, no secret — original FIX #9",
+			secret:            "",
+			budgetEnforcement: true,
+			credentialAccount: false,
+			wantErr:           true,
+		},
+		{
+			name:              "both consumers, no secret",
+			secret:            "",
+			budgetEnforcement: true,
+			credentialAccount: true,
+			wantErr:           true,
+		},
+		{
+			name:              "no consumer wired, no secret — nothing depends on identity",
+			secret:            "",
+			budgetEnforcement: false,
+			credentialAccount: false,
+			wantErr:           false,
+		},
+		{
+			name:              "secret configured with both consumers — verification is on",
+			secret:            "not-a-real-secret",
+			budgetEnforcement: true,
+			credentialAccount: true,
+			wantErr:           false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := startupIdentityCheck(tc.secret, tc.budgetEnforcement, tc.credentialAccount)
+			if tc.wantErr && err == nil {
+				t.Fatalf("startupIdentityCheck(secret=%q, budget=%v, account=%v) = nil, want a FATAL error: "+
+					"the gateway would accept traffic with identity verification disabled while a consumer "+
+					"of that identity is wired", tc.secret, tc.budgetEnforcement, tc.credentialAccount)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("startupIdentityCheck(secret=%q, budget=%v, account=%v) = %v, want nil",
+					tc.secret, tc.budgetEnforcement, tc.credentialAccount, err)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "GATEWAY_IDENTITY_SECRET") {
+				t.Fatalf("error must name the env var an operator has to set; got %q", err)
+			}
+		})
 	}
 }

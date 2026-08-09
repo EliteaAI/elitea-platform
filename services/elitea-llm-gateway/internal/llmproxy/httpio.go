@@ -2,6 +2,7 @@ package llmproxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -122,14 +123,68 @@ func (h *Handler) writeOpenAIError(w http.ResponseWriter, bErr *schemas.BifrostE
 }
 
 // openAIErrorBody builds the OpenAI-shaped error envelope from a bifrost error
-// (used both for unary responses and mid-stream error frames).
+// (used both for unary responses and mid-stream error frames). It is the SINGLE
+// point at which an upstream-originated message reaches a client, so the
+// sanitiser below lives here.
 func openAIErrorBody(bErr *schemas.BifrostError) openAIError {
-	_, errType, code := statusAndType(bErr)
+	status, errType, code := statusAndType(bErr)
 	message := ""
 	if bErr.Error != nil {
-		message = bErr.Error.Message
+		message = sanitiseUpstreamMessage(bErr.Error.Message, status)
 	}
 	return openAIError{Error: openAIErrorFields{Message: message, Type: errType, Code: code}}
+}
+
+// rawUpstreamBodyPrefix is the marker bifrost/core puts in front of an upstream
+// response body it could not parse. From
+// core@v1.7.3 providers/utils/utils.go (HandleProviderAPIError):
+//
+//	message := fmt.Sprintf("provider API error: %s", string(decodedBody))
+//
+// i.e. when a non-2xx body is neither valid JSON nor HTML, the ENTIRE body is
+// placed verbatim in Error.Message. Its structured siblings ("provider API
+// error" / "provider API error (status N)", set by the per-provider parsers when
+// no message could be extracted) carry no body and are deliberately NOT matched
+// by this prefix — the colon-space is what distinguishes them.
+const rawUpstreamBodyPrefix = "provider API error: "
+
+// maxUpstreamMessage caps every upstream-originated message that is not caught
+// by the prefix rule. It is the second line of defence: if a future bifrost
+// version introduces another verbatim-body path with a different prefix, a
+// caller reads at most this many bytes of it instead of the whole response.
+const maxUpstreamMessage = 256
+
+// sanitiseUpstreamMessage strips the SSRF read primitive out of client-visible
+// error messages (issue #13).
+//
+// The destination the gateway dials for the self-hosted provider classes is a
+// TENANT-AUTHORED api_base. Echoing the upstream's response body back to the
+// caller therefore turns "the gateway will connect where I say" into "the
+// gateway will connect where I say AND read the answer back to me" — a full
+// SSRF read primitive against anything the gateway pod can reach, not a blind
+// one. Provider messages that bifrost actually PARSED out of a structured error
+// body (OpenAI's quota text, a provider's rate-limit detail) are still useful to
+// tenants and are preserved; only the verbatim-body echo is removed.
+//
+// Nothing here depends on which provider or address was dialled: the gateway
+// cannot tell an internal host's plaintext 404 from a public one's, so the rule
+// is applied to every upstream message.
+func sanitiseUpstreamMessage(message string, status int) string {
+	if strings.HasPrefix(message, rawUpstreamBodyPrefix) {
+		// The remainder IS the upstream response body. Report the fact of the
+		// error and its status; never the content.
+		return fmt.Sprintf("upstream provider returned an unparsable error response (status %d)", status)
+	}
+	if schemas.ErrProviderResponseHTML != "" && message == schemas.ErrProviderResponseHTML {
+		// bifrost's HTML branch keeps the body out of Message (it goes in
+		// Error.Error, which this envelope never reads), but the constant
+		// itself says nothing useful to a tenant either.
+		return fmt.Sprintf("upstream provider returned an HTML error page (status %d)", status)
+	}
+	if len(message) > maxUpstreamMessage {
+		return message[:maxUpstreamMessage] + "… (truncated)"
+	}
+	return message
 }
 
 // orDefault returns s if non-empty, else def.
