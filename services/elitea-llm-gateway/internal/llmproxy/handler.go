@@ -146,13 +146,28 @@ func WithBudgetGate(gate BudgetChecker, calc CostEstimator) HandlerOption {
 	}
 }
 
-// WithLoopBreaker arms the per-(project_id, model) circular-routing circuit
-// breaker (spec §2.6 guard #2): >= 5 requests for the same tuple within 1 s
-// open the circuit and the handler returns 429 rate_limit_exceeded for 30 s.
-// The composition root (cmd/elitea-llm-gateway/main.go) MUST arm this in
-// production wiring — guarded by TestMainWiring.
+// WithLoopBreaker arms the per-(project_id, model) amplification backstop with
+// the default numbers. The composition root
+// (cmd/elitea-llm-gateway/main.go) MUST arm this in production wiring —
+// guarded by TestMainWiring — and does so via WithLoopBreakerParams so the
+// operator's settings apply.
 func WithLoopBreaker() HandlerOption {
-	return func(h *Handler) { h.loopGuard = newLoopBreaker() }
+	return WithLoopBreakerParams(LoopBreakerParams{})
+}
+
+// WithLoopBreakerParams arms the backstop with operator-supplied numbers
+// (issue #12). A NEGATIVE Threshold disarms it entirely: the handler then has
+// no loopGuard and admits every request. That is a legitimate operator choice —
+// the layer cannot detect a loop (see loopbreaker.go) — but it must never be
+// silent, so main() logs the resulting mode at startup.
+func WithLoopBreakerParams(p LoopBreakerParams) HandlerOption {
+	return func(h *Handler) {
+		if p.Threshold < 0 {
+			h.loopGuard = nil
+			return
+		}
+		h.loopGuard = newLoopBreaker(p)
+	}
 }
 
 // WithLoopBreakerClock arms the breaker exactly like WithLoopBreaker but reads
@@ -161,9 +176,9 @@ func WithLoopBreaker() HandlerOption {
 // instead of racing the wall clock — a burst that must land inside one second
 // is otherwise flaky on a loaded CI box. Production wiring uses WithLoopBreaker;
 // a nil now falls back to time.Now.
-func WithLoopBreakerClock(now func() time.Time) HandlerOption {
+func WithLoopBreakerClock(p LoopBreakerParams, now func() time.Time) HandlerOption {
 	return func(h *Handler) {
-		h.loopGuard = newLoopBreaker()
+		h.loopGuard = newLoopBreaker(p)
 		if now != nil {
 			h.loopGuard.now = now
 		}

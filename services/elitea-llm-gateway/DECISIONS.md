@@ -122,6 +122,36 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   tenant in real time which of their streams the gateway failed to bill is an
   oracle for the conditions that produce it.
 
+- **[human decision] 2026-08-09 — "Circular-routing guard #2" is an
+  amplification backstop, not a loop detector; its numbers are operator
+  settings (issue #12, INTERIM).** The implementation does no hop detection at
+  all — it counts requests per (project_id, model). At the spec'd 5/1s/30s it
+  was a hardcoded 5 req/s rate limiter armed in production; a 50-VU k6 run
+  against one tuple measured 99.96% HTTP 429, so the breaker, not the gateway,
+  was what the overhead gate measured.
+  The load-bearing finding: **no rate threshold can separate a routing loop
+  from legitimate traffic here**, because both are bounded by the same
+  per-replica provider worker pool. Low enough to catch the canonical loop is
+  low enough to trip ordinary bursts; high enough not to trip bursts can never
+  fire on the loop. So the layer is now named and tuned for what it measurably
+  is.
+  Numbers: threshold 1000 (`LLM_LOOP_BREAKER_THRESHOLD`), window 1 s, open 5 s
+  (was 30 s). 1000 = provider worker pool (50) ÷ fastest realistic call latency
+  (~50 ms embeddings) — the ceiling of what one replica could ever serve for one
+  tuple. Worst case permitted: 1000 req/s per tuple per replica × replicas,
+  sustained, versus the old 5 — accepted deliberately, because the old number's
+  containment was illusory while its false positives were measured. A negative
+  threshold disarms it; either way `logLoopBreakerMode` states the mode at
+  startup, so it can never quietly pretend to be armed.
+  Guarded by `TestLoopBreaker_DefaultDoesNotTripOrdinaryBurst`,
+  `TestLoopBreaker_DefaultStillContainsRunawayAmplification`,
+  `TestLoopBreaker_OperatorParamsApply` and the `logLoopBreakerMode(` wiring-gate
+  entry; all mutation-verified 2026-08-09.
+  **NOT done here, tracked as follow-up:** hop-marker detection (the actual
+  mechanism), and amending spec §2.6 + `runbook-bifrost-cutover.mdx`, which
+  still document 5/1s/30s and now disagree with the code — those live in
+  `elitea-docs`, a different repository.
+
 ## Trust boundary
 - **[human decision] Deny-by-default trusted-proxy model.** `X-Auth-*` identity
   headers are honored only from `TRUSTED_PROXY_CIDRS` (matched on RemoteAddr, not

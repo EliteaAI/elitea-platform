@@ -209,9 +209,24 @@ func main() {
 		budgetOpts = append(budgetOpts, llmproxy.WithOpsEventPublisher(nc))
 	}
 
+	// Issue #12: the per-(project_id, model) backstop's numbers are operator
+	// settings, and the resulting mode is logged ONCE here. It was a hardcoded
+	// 5 req/s + 30 s lockout armed in production under the name
+	// "circular-routing guard #2" — it does no hop detection at all, and a
+	// 50-VU run against a single tuple measured 99.96% HTTP 429. An operator
+	// must be able to see, from the startup log alone, whether it is armed and
+	// at what numbers.
+	breakerParams := llmproxy.LoopBreakerParams{
+		Threshold: cfg.LoopBreakerThreshold,
+		Window:    cfg.LoopBreakerWindow,
+		OpenFor:   cfg.LoopBreakerOpenFor,
+	}
+	logLoopBreakerMode(logger, breakerParams)
+
 	// Mount the /llm dialect surface over the embedded bifrost/core client.
-	// WithLoopBreaker arms circular-routing guard #2 (spec §2.6) — it MUST be
-	// present in production wiring; TestMainWiring asserts it.
+	// WithLoopBreakerParams arms the amplification backstop (spec §2.6 guard
+	// #2's implementation) — it MUST be present in production wiring;
+	// TestMainWiring asserts it.
 	// WithStreamGrace / WithStreamDrainLimit arm the disconnect-billing path
 	// (issue #9): a streamed response whose client vanishes keeps its provider
 	// stream alive for a bounded grace period so the authoritative usage
@@ -221,7 +236,7 @@ func main() {
 	handlerOpts := append(
 		[]llmproxy.HandlerOption{
 			llmproxy.WithModelResolver(modelResolver),
-			llmproxy.WithLoopBreaker(),
+			llmproxy.WithLoopBreakerParams(breakerParams),
 			llmproxy.WithStreamGrace(cfg.StreamGrace),
 			llmproxy.WithStreamDrainLimit(cfg.StreamDrainLimit),
 		},
@@ -367,6 +382,38 @@ func startupIdentityCheck(identitySecret string, budgetEnforcement, credentialAc
 			"enforcement is enabled (GATEWAY_NATS_URL is set) — the per-project HMAC would be bypassable")
 	}
 	return nil
+}
+
+// logLoopBreakerMode states, once at startup, whether the per-(project, model)
+// amplification backstop is armed and with what numbers (issue #12).
+//
+// Two failure modes this exists to prevent, both of which have happened here:
+// a guard that is silently DISARMED while operators believe it is on, and a
+// guard that is silently armed at numbers ordinary traffic trips. It resolves
+// the same "unset ⇒ default" rules newLoopBreaker applies, so what is logged is
+// what is enforced rather than the raw env values.
+func logLoopBreakerMode(logger *slog.Logger, p llmproxy.LoopBreakerParams) {
+	if p.Threshold < 0 {
+		logger.Warn("LOOP BREAKER DISARMED: LLM_LOOP_BREAKER_THRESHOLD is negative — no per-(project, model) " +
+			"amplification backstop is active on this replica (issue #12)")
+		return
+	}
+	threshold := p.Threshold
+	if threshold == 0 {
+		threshold = llmproxy.DefaultLoopBreakerThreshold
+	}
+	window := p.Window
+	if window <= 0 {
+		window = llmproxy.DefaultLoopBreakerWindow
+	}
+	openFor := p.OpenFor
+	if openFor <= 0 {
+		openFor = llmproxy.DefaultLoopBreakerOpenFor
+	}
+	logger.Info("LOOP BREAKER ARMED: per-(project_id, model) amplification backstop — NOT a loop detector "+
+		"(it does no hop detection; see issue #12). Requests for one tuple above the threshold within the "+
+		"window are rejected with 429 for the open duration.",
+		"threshold", threshold, "window", window, "open_for", openFor)
 }
 
 // buildGovernance assembles the full governance engine (failmode primitives +

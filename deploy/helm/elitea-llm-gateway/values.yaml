@@ -132,6 +132,29 @@ env:
   # e.g. "vllm.ml.svc.cluster.local:8000,ollama.ml.svc.cluster.local:11434"
   GATEWAY_EGRESS_ALLOWLIST: ""
 
+  # Issue #12 — per-(project_id, model) AMPLIFICATION BACKSTOP. Shipped as
+  # "circular-routing guard #2" (spec §2.6) at a hardcoded 5 requests / 1 s /
+  # 30 s lockout, but it performs NO hop detection: it counts requests. At those
+  # numbers it was a 5 req/s rate limiter armed in production — a 50-VU run
+  # against one tuple measured 99.96% HTTP 429.
+  #
+  # No rate threshold can separate a routing loop from real traffic here: both
+  # are bounded by the same provider worker pool. The real anti-circular-routing
+  # mechanism is hop-marker detection, tracked separately. These numbers make
+  # the layer an honest backstop in the meantime.
+  #
+  # Threshold derivation: one replica's ceiling for a tuple is the provider
+  # worker pool (GATEWAY_PROVIDER_CONCURRENCY=50) over the fastest realistic
+  # call latency (~50 ms embeddings) = 1000 req/s. Above that, arrivals can
+  # never be served; below it, rejecting them is pure availability loss.
+  # A NEGATIVE threshold disarms the backstop entirely. Whichever mode results,
+  # the gateway logs it once at startup ("LOOP BREAKER ARMED"/"DISARMED").
+  LLM_LOOP_BREAKER_THRESHOLD: "1000"
+  LLM_LOOP_BREAKER_WINDOW_MS: "1000"
+  # Lockout after a trip. Reduced from the shipped 30 s: a 30 s lockout on a
+  # false positive is a small outage for that tuple.
+  LLM_LOOP_BREAKER_OPEN_SEC: "5"
+
 # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
 # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map above.
 # Each entry maps the ENV VAR NAME the binary reads → the Secret name + key.

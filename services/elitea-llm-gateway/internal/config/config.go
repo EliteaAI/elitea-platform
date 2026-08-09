@@ -191,6 +191,20 @@ type Config struct {
 	//     is enabled for the self-hosted classes, whose destinations are now
 	//     operator-enumerated.
 	EgressAllowlist []string
+
+	// LoopBreakerThreshold / LoopBreakerWindow / LoopBreakerOpenFor are the
+	// per-(project_id, model) amplification backstop's numbers (issue #12,
+	// LLM_LOOP_BREAKER_THRESHOLD / _WINDOW_MS / _OPEN_SEC). They were hardcoded
+	// at 5 / 1s / 30s, which made the layer a de-facto 5 req/s rate limiter
+	// armed in production — a 50-VU run against one tuple measured 99.96% 429.
+	//
+	// LoopBreakerThreshold < 0 DISARMS the backstop entirely; 0 means "unset,
+	// use the default". Either way main() logs the resulting mode at startup —
+	// the guard must never quietly pretend to be armed.
+	// See llmproxy.DefaultLoopBreakerThreshold for the derivation of 1000.
+	LoopBreakerThreshold int
+	LoopBreakerWindow    time.Duration
+	LoopBreakerOpenFor   time.Duration
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -224,6 +238,9 @@ func FromEnv() Config {
 		StreamDrainLimit:        intOr("LLM_STREAM_DRAIN_MAX_INFLIGHT", DefaultStreamDrainLimit),
 		SelfLLMOrigins:          csvOr("GATEWAY_SELF_LLM_ORIGINS"),
 		EgressAllowlist:         csvOr("GATEWAY_EGRESS_ALLOWLIST"),
+		LoopBreakerThreshold:    signedIntOr("LLM_LOOP_BREAKER_THRESHOLD", 0),
+		LoopBreakerWindow:       plainMillisOr("LLM_LOOP_BREAKER_WINDOW_MS", 0),
+		LoopBreakerOpenFor:      secondsOr("LLM_LOOP_BREAKER_OPEN_SEC", 0),
 	}
 }
 
@@ -248,6 +265,29 @@ func millisOr(key string, def, max time.Duration) time.Duration {
 		return max
 	}
 	return time.Duration(n) * time.Millisecond
+}
+
+// signedIntOr reads an integer that may legitimately be NEGATIVE. The other
+// int helpers treat "not > 0" as unset, which would silently swallow the
+// loop-breaker's "-1 = disarm" sentinel (issue #12).
+func signedIntOr(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// plainMillisOr reads an integer number of milliseconds with no upper clamp
+// (unlike millisOr, which exists for the bounded stream grace).
+func plainMillisOr(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return def
 }
 
 // csvOr splits a comma-separated env var into trimmed, non-empty entries.

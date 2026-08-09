@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"sync/atomic"
 )
 
 // fakeRow is a canned pgxRow: it copies srcInput/srcOutput into the *int64
@@ -34,13 +35,17 @@ func (r fakeRow) Scan(dest ...any) error {
 // fakeDB is a canned rowQuerier keyed by "provider:model"; it counts calls so a
 // cache-hit test can prove the DB is not re-queried.
 type fakeDB struct {
-	rows  map[string]fakeRow
-	def   fakeRow // returned when key not present (defaults to pgx.ErrNoRows)
-	calls int
+	rows map[string]fakeRow
+	def  fakeRow // returned when key not present (defaults to pgx.ErrNoRows)
+	// calls is atomic: TestPrice_ConcurrentCacheDoesNotOverwriteFresher drives
+	// QueryRow from several goroutines at once, and a plain int++ here is a data
+	// race that `go test -race` reports intermittently (roughly 1 run in 6).
+	// The race was in the FAKE, not in cost.Calculator.
+	calls atomic.Int64
 }
 
 func (d *fakeDB) QueryRow(_ context.Context, _ string, args ...any) pgxRow {
-	d.calls++
+	d.calls.Add(1)
 	provider, _ := args[0].(string)
 	model, _ := args[1].(string)
 	if r, ok := d.rows[provider+":"+model]; ok {
@@ -62,7 +67,7 @@ func TestCostNano_PylonParityVectors(t *testing.T) {
 	// cost_usd = (tokens / 1e6) * price_per_1M; we compute the nano-USD
 	// equivalent and assert both the nano value AND the USD round-trip.
 	cases := []struct {
-		name         string
+		name          string
 		inTok, outTok int64
 		inUSD, outUSD float64 // price per 1M USD
 		wantInNano    int64
@@ -285,8 +290,8 @@ func TestPrice_CacheHitDoesNotRequeryDB(t *testing.T) {
 	_ = c.Price(context.Background(), "openai", "gpt-4o")
 	_ = c.Price(context.Background(), "openai", "gpt-4o")
 	_ = c.Price(context.Background(), "openai", "gpt-4o")
-	if db.calls != 1 {
-		t.Fatalf("db.calls = %d, want 1 (subsequent reads served from cache)", db.calls)
+	if db.calls.Load() != 1 {
+		t.Fatalf("db.calls = %d, want 1 (subsequent reads served from cache)", db.calls.Load())
 	}
 }
 
@@ -300,8 +305,8 @@ func TestPrice_CacheExpiryRequeriesDB(t *testing.T) {
 	_ = c.Price(context.Background(), "openai", "gpt-4o")
 	clock = base.Add(2 * time.Minute) // past TTL
 	_ = c.Price(context.Background(), "openai", "gpt-4o")
-	if db.calls != 2 {
-		t.Fatalf("db.calls = %d, want 2 (cache expired → re-query)", db.calls)
+	if db.calls.Load() != 2 {
+		t.Fatalf("db.calls = %d, want 2 (cache expired → re-query)", db.calls.Load())
 	}
 }
 
