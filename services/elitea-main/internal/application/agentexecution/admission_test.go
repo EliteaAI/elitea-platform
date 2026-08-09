@@ -2,6 +2,7 @@ package agentexecution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -188,6 +189,7 @@ func TestAdmissionServiceAcceptsOnlyOneBoundCurrentContinuation(t *testing.T) {
 		ApplicationID: 31, ApplicationVersionID: 41, QuestionID: questionID,
 		ResponseMessageID: responseID, ExecutionGeneration: questionID,
 		ThreadID: "thread-hitl-1", InterruptID: "interrupt-root-1", Action: "approve",
+		HITLDecisions: json.RawMessage(`[{"interrupt_id":"interrupt-root-1","action":"approve"}]`),
 	}
 
 	if _, err := service.Submit(context.Background(), request); err != nil {

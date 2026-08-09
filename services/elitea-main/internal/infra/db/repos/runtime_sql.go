@@ -108,11 +108,25 @@ func (e pgxExecutor) FinalizeCurrentAgentHITLPause(
 	return sqlcgen.New(e.queryer).FinalizeCurrentAgentHITLPause(ctx, arg)
 }
 
+func (e pgxExecutor) FinalizeCurrentAgentAuthorizationPause(
+	ctx context.Context,
+	arg sqlcgen.FinalizeCurrentAgentAuthorizationPauseParams,
+) (int64, error) {
+	return sqlcgen.New(e.queryer).FinalizeCurrentAgentAuthorizationPause(ctx, arg)
+}
+
 func (e pgxExecutor) ResolveCurrentApplicationTurn(
 	ctx context.Context,
 	arg sqlcgen.ResolveCurrentApplicationTurnParams,
 ) (sqlcgen.ResolveCurrentApplicationTurnRow, error) {
 	return sqlcgen.New(e.queryer).ResolveCurrentApplicationTurn(ctx, arg)
+}
+
+func (e pgxExecutor) ResolveCurrentApplicationNestingNode(
+	ctx context.Context,
+	applicationVersionID int32,
+) (sqlcgen.ResolveCurrentApplicationNestingNodeRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentApplicationNestingNode(ctx, applicationVersionID)
 }
 
 func (e pgxExecutor) ResolveCurrentAdhocTurn(
@@ -134,6 +148,34 @@ func (e pgxExecutor) ResolveCurrentContinuation(
 	arg sqlcgen.ResolveCurrentContinuationParams,
 ) (sqlcgen.ResolveCurrentContinuationRow, error) {
 	return sqlcgen.New(e.queryer).ResolveCurrentContinuation(ctx, arg)
+}
+
+func (e pgxExecutor) ResolveCurrentAuthorizationContinuation(
+	ctx context.Context,
+	arg sqlcgen.ResolveCurrentAuthorizationContinuationParams,
+) (sqlcgen.ResolveCurrentAuthorizationContinuationRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentAuthorizationContinuation(ctx, arg)
+}
+
+func (e pgxExecutor) CancelCurrentAgentExecution(
+	ctx context.Context,
+	arg sqlcgen.CancelCurrentAgentExecutionParams,
+) (sqlcgen.CancelCurrentAgentExecutionRow, error) {
+	return sqlcgen.New(e.queryer).CancelCurrentAgentExecution(ctx, arg)
+}
+
+func (e pgxExecutor) ProjectCurrentAgentStop(
+	ctx context.Context,
+	arg sqlcgen.ProjectCurrentAgentStopParams,
+) (sqlcgen.ProjectCurrentAgentStopRow, error) {
+	return sqlcgen.New(e.queryer).ProjectCurrentAgentStop(ctx, arg)
+}
+
+func (e pgxExecutor) IsCurrentAgentCancellationReplay(
+	ctx context.Context,
+	arg sqlcgen.IsCurrentAgentCancellationReplayParams,
+) (bool, error) {
+	return sqlcgen.New(e.queryer).IsCurrentAgentCancellationReplay(ctx, arg)
 }
 
 type sharedStore interface {

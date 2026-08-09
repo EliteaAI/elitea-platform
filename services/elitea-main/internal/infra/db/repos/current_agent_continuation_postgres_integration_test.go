@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -159,7 +160,7 @@ LEFT JOIN chat_messages_text AS text
 	}
 }
 
-func TestPostgresCurrentApplicationTurnRejectsFeaturesMissingFromTheDirectContract(t *testing.T) {
+func TestPostgresCurrentApplicationTurnAdmitsDefaultInternalMCPAndRejectsUnsupportedFeatures(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -190,19 +191,32 @@ func TestPostgresCurrentApplicationTurnRejectsFeaturesMissingFromTheDirectContra
 		ExecutionGeneration: "50000000-0000-4000-8000-000000000039",
 		ExecutionID:         "execution-agent-unsupported",
 	}
+	if _, err := tx.Exec(t.Context(), "SAVEPOINT default_internal_mcp"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `UPDATE chat_conversations
+SET meta = jsonb_set(meta, '{internal_tools}', '["internal_mcp"]'::jsonb)
+WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queries.ResolveCurrentApplicationTurn(t.Context(), resolve); err != nil {
+		t.Fatalf("resolve selected application with default internal_mcp: %v", err)
+	}
+	if _, err := queries.InsertCurrentApplicationTurn(t.Context(), insert); err != nil {
+		t.Fatalf("insert selected application turn with default internal_mcp: %v", err)
+	}
+	if _, err := tx.Exec(t.Context(), "ROLLBACK TO SAVEPOINT default_internal_mcp"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), "RELEASE SAVEPOINT default_internal_mcp"); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name    string
 		apply   string
 		restore string
 	}{
-		{
-			name: "conversation internal MCP",
-			apply: `UPDATE chat_conversations
-SET meta = jsonb_set(meta, '{internal_tools}', '["internal_mcp"]'::jsonb)
-WHERE id = 1`,
-			restore: `UPDATE chat_conversations SET meta = meta - 'internal_tools' WHERE id = 1`,
-		},
 		{
 			name: "application internal tools",
 			apply: `UPDATE application_versions
@@ -403,6 +417,127 @@ WHERE id = 30`); err != nil {
 	}
 }
 
+func TestPostgresCurrentNestedApplicationTurnPreservesThreeTierContract(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+INSERT INTO application_versions (
+    id, application_id, name, status, author_id, uuid, llm_settings, instructions,
+    conversation_starters, welcome_message, agent_type, meta, pipeline_settings
+) VALUES
+    (42, 32, 'nested-orchestrator', 'draft', 11, '80000000-0000-4000-8000-000000000032',
+     '{"model_name":"test"}'::jsonb, 'Delegate once', '[]'::json, '', 'agent', '{}'::jsonb, '{}'::jsonb),
+    (43, 33, 'nested-leaf', 'draft', 11, '80000000-0000-4000-8000-000000000033',
+     '{"model_name":"test"}'::jsonb, 'Return the result', '[]'::json, '', 'agent', '{}'::jsonb, '{}'::jsonb),
+    (44, 34, 'attached-orchestrator', 'draft', 11, '80000000-0000-4000-8000-000000000034',
+     '{"model_name":"test"}'::jsonb, 'Delegate once', '[]'::json, '', 'agent', '{}'::jsonb, '{}'::jsonb),
+    (45, 35, 'attached-leaf', 'draft', 11, '80000000-0000-4000-8000-000000000035',
+     '{"model_name":"test"}'::jsonb, 'Return the result', '[]'::json, '', 'agent', '{}'::jsonb, '{}'::jsonb);
+INSERT INTO elitea_tools (id, type, name, description, settings, author_id, meta) VALUES
+    (52, 'application', 'nested-orchestrator', NULL,
+     '{"application_id":32,"application_version_id":42}'::jsonb, 11, '{}'::jsonb),
+    (53, 'application', 'nested-leaf', NULL,
+     '{"application_id":33,"application_version_id":43}'::jsonb, 11, '{}'::jsonb),
+    (54, 'application', 'attached-leaf', NULL,
+     '{"application_id":35,"application_version_id":45}'::jsonb, 11, '{}'::jsonb);
+INSERT INTO entity_tool_mapping (
+    tool_id, entity_id, entity_version_id, entity_type, selected_tools
+) VALUES
+    (52, 31, 41, 'agent', NULL),
+    (53, 32, 42, 'agent', NULL),
+    (54, 34, 44, 'agent', NULL);
+UPDATE chat_participants
+SET entity_meta = '{"id":34,"project_id":1}'::jsonb,
+    meta = '{"name":"attached-orchestrator","description":"Nested child","agent_type":"agent"}'::json
+WHERE id = 30;
+UPDATE chat_participant_mapping
+SET entity_settings = '{"version_id":44,"variables":[],"agent_type":"agent"}'::jsonb
+WHERE conversation_id = 2 AND participant_id = 30;`); err != nil {
+		t.Fatal(err)
+	}
+
+	queries := sqlcgen.New(tx)
+	if err := validateCurrentApplicationNesting(t.Context(), queries, 41, 1); err != nil {
+		t.Fatalf("validate selected three-tier agent: %v", err)
+	}
+	direct, err := queries.ResolveCurrentApplicationTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentApplicationTurnParams{
+			ActorUserID: 11, TargetParticipantID: 21,
+			QuestionID:       mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000038"),
+			ConversationUuid: mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031"),
+			ProjectID:        1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versionDetails struct {
+		Tools []struct {
+			Type      string         `json:"type"`
+			AgentType string         `json:"agent_type"`
+			Settings  map[string]any `json:"settings"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(direct.ApplicationVersionDetailsJson), &versionDetails); err != nil ||
+		len(versionDetails.Tools) != 1 || versionDetails.Tools[0].Type != "application" ||
+		versionDetails.Tools[0].AgentType != "agent" ||
+		versionDetails.Tools[0].Settings["application_version_id"] != float64(42) {
+		t.Fatalf("direct nested version=%s error=%v", direct.ApplicationVersionDetailsJson, err)
+	}
+
+	adhocConversation := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000032")
+	adhocQuestion := mustCurrentPGUUID(t, "50000000-0000-4000-8000-000000000038")
+	adhoc, err := queries.ResolveCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+			QuestionID: adhocQuestion, ConversationUuid: adhocConversation,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve attached nested agent: %v", err)
+	}
+	filtered, err := filterCurrentAdhocApplicationNesting(
+		t.Context(),
+		queries,
+		json.RawMessage(adhoc.ToolsJson),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal(filtered, &tools); err != nil || len(tools) != 2 ||
+		tools[1]["type"] != "application" || tools[1]["agent_type"] != "agent" {
+		t.Fatalf("ad-hoc nested tools=%s error=%v", filtered, err)
+	}
+	if _, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: adhocConversation, ProjectID: 1,
+			QuestionID: adhocQuestion, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "60000000-0000-4000-8000-000000000038"),
+			UserInput:           "run attached nested agent",
+			ResponseMessageID:   mustCurrentPGUUID(t, "70000000-0000-4000-8000-000000000038"),
+			ExecutionGeneration: "50000000-0000-4000-8000-000000000038",
+			ExecutionID:         "execution-nested-adhoc",
+		},
+	); err != nil {
+		t.Fatalf("insert attached nested turn: %v", err)
+	}
+}
+
 func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
@@ -497,7 +632,7 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	}
 }
 
-func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipants(t *testing.T) {
+func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipantBoundaries(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -536,27 +671,6 @@ WHERE id = 30`,
 SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
 WHERE id = 41`,
 			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
-		},
-		{
-			name: "nested child agent",
-			apply: `WITH child_tool AS (
-    INSERT INTO elitea_tools (
-        id, type, name, description, settings, author_id, meta
-    ) VALUES (
-        52, 'application', 'grandchild', 'Nested child',
-        '{"application_id":31,"application_version_id":41}'::jsonb,
-        11, '{}'::jsonb
-    )
-    RETURNING id
-)
-INSERT INTO entity_tool_mapping (
-    tool_id, entity_id, entity_version_id, entity_type, selected_tools
-)
-SELECT child_tool.id, 31, 41, 'agent', '[]'::jsonb FROM child_tool`,
-			restore: `WITH removed_mapping AS (
-    DELETE FROM entity_tool_mapping WHERE tool_id = 52
-)
-DELETE FROM elitea_tools WHERE id = 52`,
 		},
 	}
 
@@ -818,18 +932,19 @@ FROM paused`, responseID, questionID); err != nil {
 		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
 		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
 		ResponseMessageID: responseID, ExecutionGeneration: questionID,
-		ThreadID: "thread-hitl-1", InterruptID: "interrupt-root-1",
-		HitlAction: "approve", ExecutionID: "execution-resumed",
+		ThreadID:      "thread-hitl-1",
+		HitlDecisions: []byte(`[{"interrupt_id":"interrupt-root-1","action":"approve"}]`),
+		ExecutionID:   "execution-resumed",
 	}
 	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("wrong actor resume error=%v", err)
 	}
 	resume.ActorUserID = 11
-	resume.HitlAction = "answer"
+	resume.HitlDecisions = []byte(`[{"interrupt_id":"interrupt-root-1","action":"answer"}]`)
 	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("unavailable action resume error=%v", err)
 	}
-	resume.HitlAction = "approve"
+	resume.HitlDecisions = []byte(`[{"interrupt_id":"interrupt-root-1","action":"approve"}]`)
 	row, err := queries.ResumeCurrentAgentHITL(t.Context(), resume)
 	if err != nil {
 		t.Fatal(err)
@@ -876,6 +991,286 @@ WHERE response.uuid = $1`, responseID).Scan(
 			"streaming=%v task=%q pending=%v resolved=%v traces=%d",
 			isStreaming, taskID, hasPending, resolvedIDs, traceCount,
 		)
+	}
+}
+
+func TestPostgresCurrentParallelHITLContinuationConsumesExactDecisionSetAtomically(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	questionID := "20000000-0000-4000-8000-000000000071"
+	responseID := insertPostgresCurrentApplicationTurn(
+		t, queries, conversationID, questionID,
+		"30000000-0000-4000-8000-000000000071",
+		"40000000-0000-4000-8000-000000000071",
+		"approve one change and block the other", "execution-parallel-hitl-paused",
+	)
+	const pending = `[
+		{
+			"interrupt_id":"interrupt-parallel-1",
+			"available_actions":["approve","reject","edit","block_with_comment"],
+			"tool_name":"configurations:update_file"
+		},
+		{
+			"interrupt_id":"interrupt-parallel-2",
+			"available_actions":["approve","reject","edit","block_with_comment"],
+			"tool_name":"configurations:delete_file"
+		}
+	]`
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = meta || jsonb_build_object(
+        'thread_id', 'thread-parallel-hitl-1',
+        'execution_generation', $2::text,
+        'hitl_interrupt', ($3::jsonb -> 0),
+        'hitl_interrupts', $3::jsonb
+    )
+WHERE uuid = $1`, responseID, questionID, pending); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := queries.ResolveCurrentContinuation(
+		t.Context(),
+		sqlcgen.ResolveCurrentContinuationParams{
+			ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
+			ResponseMessageID: responseID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pendingInterrupts []map[string]any
+	if err := json.Unmarshal([]byte(resolved.HitlInterruptsJson), &pendingInterrupts); err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingInterrupts) != 2 {
+		t.Fatalf("pending interrupts=%v", pendingInterrupts)
+	}
+
+	resume := sqlcgen.ResumeCurrentAgentHITLParams{
+		ActorUserID: 11, ProjectID: 1, TargetParticipantID: 21,
+		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
+		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
+		ResponseMessageID: responseID, ExecutionGeneration: questionID,
+		ThreadID: "thread-parallel-hitl-1", ExecutionID: "execution-parallel-hitl-resumed",
+	}
+	invalidDecisionSets := [][]byte{
+		[]byte(`[{"interrupt_id":"interrupt-parallel-1","action":"approve"}]`),
+		[]byte(`[
+			{"interrupt_id":"interrupt-parallel-1","action":"approve"},
+			{"interrupt_id":"interrupt-parallel-1","action":"reject"}
+		]`),
+		[]byte(`[
+			{"interrupt_id":"interrupt-parallel-1","action":"approve"},
+			{"interrupt_id":"interrupt-unknown","action":"reject"}
+		]`),
+		[]byte(`[
+			{"interrupt_id":"interrupt-parallel-1","action":"approve"},
+			{"interrupt_id":"interrupt-parallel-2","action":"answer"}
+		]`),
+	}
+	for _, decisions := range invalidDecisionSets {
+		resume.HitlDecisions = decisions
+		if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("invalid decisions %s error=%v", decisions, err)
+		}
+	}
+
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET meta = jsonb_set(meta, '{hitl_interrupts}', jsonb_build_array($2::jsonb, $2::jsonb))
+WHERE uuid = $1`, responseID, `{
+		"interrupt_id":"interrupt-parallel-1",
+		"available_actions":["approve","reject","edit","block_with_comment"]
+	}`); err != nil {
+		t.Fatal(err)
+	}
+	resume.HitlDecisions = []byte(`[
+		{"interrupt_id":"interrupt-parallel-1","action":"approve"},
+		{"interrupt_id":"interrupt-parallel-2","action":"block_with_comment","value":"retain for audit"}
+	]`)
+	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("duplicate pending interrupts error=%v", err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET meta = jsonb_set(meta, '{hitl_interrupts}', $2::jsonb)
+WHERE uuid = $1`, responseID, pending); err != nil {
+		t.Fatal(err)
+	}
+
+	row, err := queries.ResumeCurrentAgentHITL(t.Context(), resume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ResponseMessageID != responseID || row.ResponseMessageGroupID <= 0 {
+		t.Fatalf("resume row=%+v", row)
+	}
+	if _, err := queries.ResumeCurrentAgentHITL(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("replayed resume error=%v", err)
+	}
+
+	var isStreaming, hasSingularPending, hasPluralPending bool
+	var taskID string
+	var resolvedIDs []string
+	if err := tx.QueryRow(t.Context(), `
+SELECT response.is_streaming,
+       response.task_id,
+       response.meta ? 'hitl_interrupt',
+       response.meta ? 'hitl_interrupts',
+       ARRAY(
+           SELECT jsonb_array_elements_text(
+               COALESCE(response.meta -> 'resolved_hitl_interrupt_ids', '[]'::jsonb)
+           )
+       )
+FROM chat_message_group AS response
+WHERE response.uuid = $1`, responseID).Scan(
+		&isStreaming, &taskID, &hasSingularPending, &hasPluralPending, &resolvedIDs,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !isStreaming || taskID != "execution-parallel-hitl-resumed" ||
+		hasSingularPending || hasPluralPending ||
+		!slices.Equal(resolvedIDs, []string{"interrupt-parallel-1", "interrupt-parallel-2"}) {
+		t.Fatalf(
+			"streaming=%v task=%q singular_pending=%v plural_pending=%v resolved=%v",
+			isStreaming, taskID, hasSingularPending, hasPluralPending, resolvedIDs,
+		)
+	}
+}
+
+func TestPostgresCurrentAuthorizationContinuationConsumesExactRequestAtomically(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	questionID := "20000000-0000-4000-8000-000000000061"
+	responseID := insertPostgresCurrentApplicationTurn(
+		t, queries, conversationID, questionID,
+		"30000000-0000-4000-8000-000000000061",
+		"40000000-0000-4000-8000-000000000061",
+		"list SharePoint sites", "execution-authorization-paused",
+	)
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET is_streaming = FALSE,
+    meta = meta || jsonb_build_object(
+        'thread_id', 'thread-authorization-1',
+        'execution_generation', $2::text,
+        'authorization_requests', jsonb_build_array(
+            jsonb_build_object(
+                'tool_run_id', 'tool-run-sharepoint-1',
+                'server_url', 'https://sharepoint.example.test',
+                'toolkit_name', 'SharePoint'
+            ),
+            jsonb_build_object(
+                'tool_run_id', 'tool-run-openapi-2',
+                'server_url', 'https://openapi.example.test',
+                'toolkit_name', 'OpenAPI'
+            )
+        )
+    )
+WHERE uuid = $1`, responseID, questionID); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := sqlcgen.ResolveCurrentAuthorizationContinuationParams{
+		ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
+		ResponseMessageID: responseID, AuthorizationRequestID: "tool-run-sharepoint-1",
+	}
+	resolved, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ContinuationKind != "application" ||
+		resolved.ThreadID != "thread-authorization-1" ||
+		resolved.ExecutionGeneration != questionID ||
+		resolved.UserInput != "list SharePoint sites" ||
+		!json.Valid([]byte(resolved.AuthorizationRequestsJson)) {
+		t.Fatalf("resolved=%+v", resolved)
+	}
+	resolve.ActorUserID = 12
+	if _, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong actor resolve error=%v", err)
+	}
+	resolve.ActorUserID = 11
+	resolve.AuthorizationRequestID = "tool-run-missing"
+	if _, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong request resolve error=%v", err)
+	}
+
+	resume := sqlcgen.ResumeCurrentAgentAuthorizationParams{
+		ActorUserID: 12, ProjectID: 1, TargetParticipantID: 21,
+		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
+		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
+		ResponseMessageID: responseID, ExecutionGeneration: questionID,
+		ThreadID: "thread-authorization-1", AuthorizationRequestID: "tool-run-sharepoint-1",
+		AuthorizationAction: "authorize", ExecutionID: "execution-authorization-resumed",
+	}
+	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong actor resume error=%v", err)
+	}
+	resume.ActorUserID = 11
+	resume.AuthorizationAction = "approve"
+	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("unsupported action resume error=%v", err)
+	}
+	resume.AuthorizationAction = "authorize"
+	row, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ResponseMessageID != responseID || row.ResponseMessageGroupID <= 0 {
+		t.Fatalf("resume row=%+v", row)
+	}
+	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("replayed resume error=%v", err)
+	}
+
+	var isStreaming, hasPending bool
+	var taskID string
+	var resolvedIDs []string
+	if err := tx.QueryRow(t.Context(), `
+SELECT response.is_streaming,
+       response.task_id,
+       response.meta ? 'authorization_requests',
+       ARRAY(
+           SELECT jsonb_array_elements_text(
+               COALESCE(response.meta -> 'resolved_authorization_request_ids', '[]'::jsonb)
+           )
+       )
+FROM chat_message_group AS response
+WHERE response.uuid = $1`, responseID).Scan(
+		&isStreaming, &taskID, &hasPending, &resolvedIDs,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !isStreaming || taskID != "execution-authorization-resumed" || hasPending ||
+		len(resolvedIDs) != 1 || resolvedIDs[0] != "tool-run-sharepoint-1" {
+		t.Fatalf("streaming=%v task=%q pending=%v resolved=%v",
+			isStreaming, taskID, hasPending, resolvedIDs)
 	}
 }
 

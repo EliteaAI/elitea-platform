@@ -28,6 +28,81 @@ func TestRuntimeFailureReplayEventMatchesCurrentUIContract(t *testing.T) {
 	}
 }
 
+func TestCurrentAgentCancellationSettlesWithoutFailureMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		failureCode    string
+		isCancellation bool
+	}{
+		{name: "failure", failureCode: "INTERNAL"},
+		{name: "cancellation", failureCode: "CANCELLED", isCancellation: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &scriptedExecutor{
+				execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+			}
+			err := persistCurrentAgentRuntimeTerminal(
+				t.Context(),
+				executor,
+				7,
+				executiondomain.AgentAdhocCapability,
+				outputRecord{ExecutionID: "execution-1", Generation: 3},
+				test.failureCode,
+				"Execution stopped.",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(executor.execCalls) != 1 {
+				t.Fatalf("terminal projection calls=%d", len(executor.execCalls))
+			}
+			call := executor.execCalls[0]
+			if !strings.Contains(call.sql, "WHEN $4::boolean THEN message_group.meta - 'is_error' - 'error'") {
+				t.Fatal("terminal projection does not preserve partial content without failure metadata")
+			}
+			if got, ok := call.args[3].(bool); !ok || got != test.isCancellation {
+				t.Fatalf("cancellation discriminator=%#v", call.args[3])
+			}
+		})
+	}
+}
+
+func TestCurrentAgentCancellationSettlesAfterEmptyResponseWasRemoved(t *testing.T) {
+	executor := &scriptedExecutor{
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 0")},
+	}
+	err := persistCurrentAgentRuntimeTerminal(
+		t.Context(),
+		executor,
+		7,
+		executiondomain.AgentAdhocCapability,
+		outputRecord{ExecutionID: "execution-1", Generation: 3},
+		"CANCELLED",
+		"Execution was cancelled.",
+	)
+	if err != nil {
+		t.Fatalf("canonical cancellation did not settle after Stop removed an empty response: %v", err)
+	}
+}
+
+func TestCurrentAgentFailureRequiresExistingResponse(t *testing.T) {
+	executor := &scriptedExecutor{
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 0")},
+	}
+	err := persistCurrentAgentRuntimeTerminal(
+		t.Context(),
+		executor,
+		7,
+		executiondomain.AgentApplicationCapability,
+		outputRecord{ExecutionID: "execution-1", Generation: 3},
+		"INTERNAL",
+		"Execution failed.",
+	)
+	if err == nil || err.Error() != "current agent terminal response message group is unavailable" {
+		t.Fatalf("missing failure response was not rejected: %v", err)
+	}
+}
+
 func TestConfigurationValidationProjectionUsesOneTenantTransaction(t *testing.T) {
 	frame := testValidationFrame(t)
 	executor := &scriptedExecutor{

@@ -284,9 +284,9 @@ class EliteaSdkIndexingAdapter:
 class EliteaSdkAgentAdapter:
     """Initial synchronous SDK seam for the two current agent constructors.
 
-    The admitted kernel accepts ordinary turns and explicit response
-    regeneration. Resume/HITL, MCP pause, image resolution and durable children
-    remain separate admission gates.
+    The admitted kernel accepts ordinary turns, explicit response regeneration,
+    root HITL, and delegated-toolkit authorization continuation. Image
+    resolution and unbounded durable children remain deferred.
     """
 
     def __init__(
@@ -431,9 +431,9 @@ def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
     """Keep partial behavior unreachable instead of silently drifting."""
 
     hitl_resume = payload.hitl_resume or bool(payload.hitl_decisions)
+    authorization_resume = _is_authorization_resume(payload)
     if (
         payload.checkpoint_id
-        or (payload.should_continue and not hitl_resume)
         or payload.invoked_skills
         or payload.applied_skills
         or payload.attached_skills
@@ -445,55 +445,111 @@ def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
             "This agent execution requires a parity path that is not admitted yet."
         )
     if hitl_resume:
-        _require_root_hitl_resume(payload)
+        _require_in_process_hitl_resume(payload)
+    elif authorization_resume:
+        _require_authorization_resume(payload)
+    elif payload.should_continue:
+        raise UnsupportedCapability(
+            "This agent execution requires a parity path that is not admitted yet."
+        )
     if not payload.thread_id and not payload.conversation_id:
         raise UnsupportedCapability(
             "A durable agent thread identity is required for this parity path."
         )
 
 
-def _require_root_hitl_resume(payload: AgentExecutionPayload) -> None:
-    """Admit one checkpoint-bound sensitive-tool decision, not routed fan-out."""
+def _is_authorization_resume(payload: AgentExecutionPayload) -> bool:
+    """Identify an explicit authorization decision on an agent capability."""
+
+    return bool(
+        payload.should_continue
+        and not payload.hitl_resume
+        and not payload.hitl_decisions
+        and (payload.mcp_tokens or payload.user_declined_mcp_servers)
+    )
+
+
+def _require_authorization_resume(payload: AgentExecutionPayload) -> None:
+    """Admit only an explicit delegated-toolkit authorize or skip resume."""
+
+    if (
+        payload.hitl_resume
+        or payload.hitl_decisions
+        or payload.hitl_action is not None
+        or payload.hitl_value is not None
+    ):
+        raise UnsupportedCapability(
+            "Toolkit authorization continuation cannot contain a HITL decision."
+        )
+    if not payload.mcp_tokens and not payload.user_declined_mcp_servers:
+        raise UnsupportedCapability(
+            "Toolkit authorization continuation requires an authorization or skip decision."
+        )
+    for declined in payload.user_declined_mcp_servers:
+        if not isinstance(declined, dict):
+            raise UnsupportedCapability(
+                "The declined toolkit authorization decision is malformed."
+            )
+        server_url = declined.get("server_url")
+        if not isinstance(server_url, str) or not server_url.strip():
+            raise UnsupportedCapability(
+                "The declined toolkit authorization server identity is required."
+            )
+
+
+def _require_in_process_hitl_resume(payload: AgentExecutionPayload) -> None:
+    """Admit one atomic set of public, checkpoint-bound HITL decisions."""
 
     if not payload.hitl_resume:
         raise UnsupportedCapability("The HITL resume marker is required.")
     if not payload.should_continue:
         raise UnsupportedCapability("The HITL continuation marker is required.")
-    if len(payload.hitl_decisions) != 1:
+    if not 1 <= len(payload.hitl_decisions) <= 16:
         raise UnsupportedCapability(
-            "Exactly one root HITL decision is supported in this execution slice."
+            "Between one and sixteen HITL decisions are supported in one continuation."
         )
-    decision = payload.hitl_decisions[0]
-    if not isinstance(decision, dict):
-        raise UnsupportedCapability("The root HITL decision is malformed.")
-    interrupt_id = decision.get("interrupt_id")
-    if not isinstance(interrupt_id, str) or not interrupt_id.strip():
-        raise UnsupportedCapability("The root HITL interrupt identity is required.")
-    action = payload.hitl_action or decision.get("action")
-    if action not in {
-        "approve",
-        "reject",
-        "edit",
-        "block_with_comment",
-        "reject_with_comment",
-    }:
-        raise UnsupportedCapability("The root HITL action is not supported.")
-    decision_action = decision.get("action")
-    if decision_action is not None and decision_action != action:
-        raise UnsupportedCapability("The root HITL decision action is inconsistent.")
-    if any(
-        decision.get(key)
-        for key in (
-            "child_thread_id",
-            "parent_agent_call_id",
-            "parent_agent_path",
-            "via_call_id",
-            "_via_call_id",
-        )
-    ):
+    if len(payload.hitl_decisions) == 1:
+        decision = payload.hitl_decisions[0]
+        if not isinstance(decision, dict):
+            raise UnsupportedCapability("The HITL decision is malformed.")
+        if payload.hitl_action != decision.get("action"):
+            raise UnsupportedCapability("The HITL decision action is inconsistent.")
+        decision_value = decision.get("value", "")
+        if payload.hitl_value not in (None, decision_value):
+            raise UnsupportedCapability("The HITL decision value is inconsistent.")
+    elif payload.hitl_action is not None or payload.hitl_value is not None:
         raise UnsupportedCapability(
-            "Nested or parallel HITL resume is not admitted in this execution slice."
+            "Parallel HITL decisions cannot contain a scalar HITL decision."
         )
+
+    seen_interrupts: set[str] = set()
+    allowed_keys = {"interrupt_id", "tool_call_id", "action", "value"}
+    for decision in payload.hitl_decisions:
+        if not isinstance(decision, dict) or set(decision) - allowed_keys:
+            raise UnsupportedCapability("The HITL decision is malformed.")
+        interrupt_id = decision.get("interrupt_id")
+        if (
+            not isinstance(interrupt_id, str)
+            or not interrupt_id.strip()
+            or interrupt_id in seen_interrupts
+        ):
+            raise UnsupportedCapability(
+                "Each HITL decision requires one unique interrupt identity."
+            )
+        seen_interrupts.add(interrupt_id)
+        tool_call_id = decision.get("tool_call_id")
+        if tool_call_id is not None and not isinstance(tool_call_id, str):
+            raise UnsupportedCapability("The HITL tool-call identity is malformed.")
+        action = decision.get("action")
+        if action not in {"approve", "reject", "edit", "block_with_comment"}:
+            raise UnsupportedCapability("The HITL action is not supported.")
+        value = decision.get("value", "")
+        if not isinstance(value, str):
+            raise UnsupportedCapability("The HITL decision value is malformed.")
+        if action in {"edit", "block_with_comment"} and not value:
+            raise UnsupportedCapability("The HITL decision value is required.")
+        if action not in {"edit", "block_with_comment"} and value:
+            raise UnsupportedCapability("The HITL decision value is not allowed.")
 
 
 def _llm_kwargs(value: dict[str, Any]) -> dict[str, Any]:
@@ -536,6 +592,7 @@ def _invoke_initial_agent(
         step_limit = application_meta.get("step_limit")
         if isinstance(step_limit, int) and not isinstance(step_limit, bool) and step_limit > 0:
             invoke_config["recursion_limit"] = step_limit
+    authorization_resume = _is_authorization_resume(payload)
     if payload.hitl_resume:
         invoke_input: dict[str, Any] = {
             "messages": messages,
@@ -546,9 +603,16 @@ def _invoke_initial_agent(
         }
     else:
         invoke_input = {"messages": messages}
+    if authorization_resume:
+        invoke_input, invoke_config = _configure_authorization_checkpoint_resume(
+            executor,
+            payload,
+            invoke_input,
+            invoke_config,
+        )
     if payload.is_regenerate:
         _discard_regenerated_thread(memory, invoke_config)
-    elif not payload.hitl_resume:
+    elif not payload.hitl_resume and not authorization_resume:
         _discard_failed_checkpoint(memory, invoke_config)
         _discard_failed_direct_application_checkpoints(
             memory,
@@ -558,7 +622,93 @@ def _invoke_initial_agent(
     result = executor.invoke(invoke_input, invoke_config)
     if not isinstance(result, dict):
         raise TypeError("the SDK agent invocation returned a non-object result")
+    for callback in callbacks:
+        pause_result = getattr(callback, "authorization_pause_result", None)
+        if not callable(pause_result):
+            continue
+        paused = pause_result()
+        if paused is not None:
+            return paused
     return result
+
+
+def _configure_authorization_checkpoint_resume(
+    executor: Any,
+    payload: AgentExecutionPayload,
+    invoke_input: dict[str, Any],
+    invoke_config: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Replan the root graph after delegated authorization stopped execution.
+
+    This is the current ``configure_checkpoint_resume`` behavior owned by the
+    worker boundary. The SDK reports delegated authorization by bubbling an
+    exception; it does not create a LangGraph ``interrupt()`` payload. Find
+    only the latest pending root checkpoint, bind it to the invocation, and
+    tell the root LLM whether authorization completed or was declined. This
+    may create a new nested child invocation and therefore must not be
+    described as exact-child resume. No transport or credential value is
+    persisted here.
+    """
+
+    get_state_history = getattr(executor, "get_state_history", None)
+    if not callable(get_state_history):
+        raise DependencyUnavailable(
+            "The delegated toolkit authorization checkpoint is unavailable."
+        )
+    states = list(
+        get_state_history(
+            {"configurable": {"thread_id": payload.thread_id or payload.conversation_id}}
+        )
+    )
+    # Match the current worker: only the latest pending root state may be used
+    # for reconstruction. Never time-travel behind a newer completed or failed
+    # checkpoint.
+    paused = states[0] if states and getattr(states[0], "next", ()) else None
+    if paused is None:
+        return invoke_input, invoke_config
+    state_config = getattr(paused, "config", None)
+    configurable = (
+        state_config.get("configurable") if isinstance(state_config, dict) else None
+    )
+    checkpoint_id = (
+        configurable.get("checkpoint_id") if isinstance(configurable, dict) else None
+    )
+    if not isinstance(checkpoint_id, str) or not checkpoint_id:
+        raise DependencyUnavailable(
+            "The delegated toolkit authorization checkpoint identity is unavailable."
+        )
+
+    declined = payload.user_declined_mcp_servers
+    if declined and not payload.mcp_tokens:
+        details: list[str] = []
+        for item in declined:
+            reason = item.get("skip_reason") or item.get("denial_reason") or ""
+            server_url = item.get("server_url") or ""
+            if isinstance(reason, str) and reason.strip():
+                details.append(
+                    f"{server_url.strip()}: {reason.strip()}"
+                    if isinstance(server_url, str) and server_url.strip()
+                    else reason.strip()
+                )
+        reason_text = "; ".join(details)
+        continuation = "The user declined toolkit authorization for this session."
+        if reason_text:
+            continuation += f" Reason: {reason_text}."
+        continuation += (
+            " Please proceed with the original request without using the unavailable "
+            "tools, or explain that you cannot complete it without them."
+        )
+    else:
+        continuation = (
+            "The required toolkit authorization has been completed. Please proceed "
+            "with the original request using the newly available tools."
+        )
+    if isinstance(payload.user_input, str) and payload.user_input:
+        continuation += f" Original request: {payload.user_input}"
+
+    invoke_config["configurable"]["checkpoint_id"] = checkpoint_id
+    invoke_config["should_continue"] = True
+    return {"input": continuation}, invoke_config
 
 
 def _discard_failed_checkpoint(memory: Any, config: dict[str, Any]) -> None:

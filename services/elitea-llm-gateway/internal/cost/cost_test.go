@@ -37,10 +37,11 @@ func (r fakeRow) Scan(dest ...any) error {
 type fakeDB struct {
 	rows map[string]fakeRow
 	def  fakeRow // returned when key not present (defaults to pgx.ErrNoRows)
-	// Atomic because TestPrice_ConcurrentCacheDoesNotOverwriteFresher drives 50
+	// calls is atomic: TestPrice_ConcurrentCacheDoesNotOverwriteFresher drives 50
 	// goroutines through Price, and every cache miss reaches QueryRow. A plain
-	// int here is a read-modify-write race that `go test -race` fails on — in
-	// the fake, not in Calculator, whose own locking was never implicated.
+	// int++ here is a read-modify-write race that `go test -race` reports
+	// intermittently — roughly 1 run in 6. The race was in the FAKE, not in
+	// cost.Calculator, whose own locking was never implicated.
 	calls atomic.Int64
 }
 
@@ -67,7 +68,7 @@ func TestCostNano_PylonParityVectors(t *testing.T) {
 	// cost_usd = (tokens / 1e6) * price_per_1M; we compute the nano-USD
 	// equivalent and assert both the nano value AND the USD round-trip.
 	cases := []struct {
-		name         string
+		name          string
 		inTok, outTok int64
 		inUSD, outUSD float64 // price per 1M USD
 		wantInNano    int64

@@ -28,10 +28,10 @@ func TestLoopGuard_Handler_429OnBurst(t *testing.T) {
 	// run. With the wall clock a loaded runner could spread the 5 requests past
 	// the window and flake.
 	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
-	h := NewHandler(router, nil, nil, WithLoopBreakerClock(clk.now))
+	h := NewHandler(router, nil, nil, WithLoopBreakerClock(testLoopParams(), clk.now))
 
 	// First threshold-1 requests pass.
-	for i := 0; i < loopBreakerThreshold-1; i++ {
+	for i := 0; i < testLoopThreshold-1; i++ {
 		rec := httptest.NewRecorder()
 		h.Chat(rec, chatReqWithProject(t, "42", false))
 		if rec.Code != http.StatusOK {
@@ -79,7 +79,7 @@ func TestLoopGuard_Handler_DisarmedByDefault(t *testing.T) {
 	router.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
 	h := NewHandler(router, nil, nil)
 
-	for i := 0; i < loopBreakerThreshold*2; i++ {
+	for i := 0; i < testLoopThreshold*2; i++ {
 		rec := httptest.NewRecorder()
 		h.Chat(rec, chatReqWithProject(t, "42", false))
 		if rec.Code != http.StatusOK {
@@ -96,9 +96,9 @@ func TestLoopGuard_Handler_AnonymousNotTracked(t *testing.T) {
 	// Frozen clock so the burst genuinely sits inside one window: a wall-clock
 	// run could pass merely because the requests spread out (see 429OnBurst).
 	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
-	h := NewHandler(router, nil, nil, WithLoopBreakerClock(clk.now))
+	h := NewHandler(router, nil, nil, WithLoopBreakerClock(testLoopParams(), clk.now))
 
-	for i := 0; i < loopBreakerThreshold*2; i++ {
+	for i := 0; i < testLoopThreshold*2; i++ {
 		rec := httptest.NewRecorder()
 		h.Chat(rec, chatReqWithProject(t, "", false))
 		if rec.Code != http.StatusOK {

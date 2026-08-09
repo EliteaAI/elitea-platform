@@ -145,6 +145,7 @@ type RouterConfig struct {
 	CurrentConfigurationMutation  http.Handler
 	CurrentIndexStart             http.Handler
 	CurrentAgentStart             http.Handler
+	CurrentAgentCancel            http.Handler
 	CurrentIndexCancel            http.Handler
 	CurrentIndexMeta              http.Handler
 	CurrentIndexMetaDelete        http.Handler

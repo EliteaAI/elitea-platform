@@ -219,6 +219,72 @@ def test_agent_input_rejects_wrong_semantic_shapes() -> None:
         )
 
 
+def test_agent_input_accepts_plural_hitl_resume_without_scalar_action() -> None:
+    message = _input()
+    message.hitl_resume = True
+    message.should_continue = True
+    message.hitl_decisions = _json(
+        [
+            {
+                "interrupt_id": "hitl-name",
+                "tool_call_id": "tool-name",
+                "action": "approve",
+                "value": "",
+            },
+            {
+                "interrupt_id": "hitl-surname",
+                "tool_call_id": "tool-surname",
+                "action": "block_with_comment",
+                "value": "Keep the surname artifact for review.",
+            },
+        ]
+    )
+
+    request = request_from(
+        message,
+        kind=AgentExecutionKind.APPLICATION,
+        input_bundle_id="bundle-1",
+        input_bundle_digest=b"b" * 32,
+        request_entry_id="agent-request",
+        request_immutable_version="v1",
+        request_content_digest=b"r" * 32,
+    )
+
+    assert request.payload.hitl_action is None
+    assert request.payload.hitl_value is None
+    assert request.payload.hitl_decisions == [
+        {
+            "interrupt_id": "hitl-name",
+            "tool_call_id": "tool-name",
+            "action": "approve",
+            "value": "",
+        },
+        {
+            "interrupt_id": "hitl-surname",
+            "tool_call_id": "tool-surname",
+            "action": "block_with_comment",
+            "value": "Keep the surname artifact for review.",
+        },
+    ]
+
+
+def test_agent_input_rejects_hitl_resume_without_any_decision() -> None:
+    message = _input()
+    message.hitl_resume = True
+    message.should_continue = True
+
+    with pytest.raises(InvalidInput, match="HITL resume decision"):
+        request_from(
+            message,
+            kind=AgentExecutionKind.APPLICATION,
+            input_bundle_id="bundle-1",
+            input_bundle_digest=b"b" * 32,
+            request_entry_id="agent-request",
+            request_immutable_version="v1",
+            request_content_digest=b"r" * 32,
+        )
+
+
 @pytest.mark.parametrize("application", [True, False])
 def test_signed_agent_command_accepts_exact_current_entrypoint(application: bool) -> None:
     _, command = parse_and_verify_signed_command(
@@ -294,13 +360,32 @@ def test_handler_delegates_once_to_each_current_entrypoint() -> None:
 
 
 class _Executor:
-    def __init__(self, result: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        result: dict[str, Any],
+        state_history: list[Any] | None = None,
+    ) -> None:
         self.result = result
         self.calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        self.state_history = list(state_history or [])
 
     def invoke(self, value, config):
         self.calls.append((value, config))
         return self.result
+
+    def get_state_history(self, config):
+        self.state_history_config = config
+        return iter(self.state_history)
+
+
+class _AuthorizationPauseCallback:
+    def authorization_pause_result(self):
+        return {
+            "thread_id": "thread-1",
+            "error": "Toolkit authorization is required.",
+            "paused": True,
+            "pause_type": "mcp_auth",
+        }
 
 
 class _Client:
@@ -361,6 +446,20 @@ def test_sdk_adapter_preserves_constructor_split_without_forwarding_authority() 
         {"role": "user", "content": "earlier"}
     ]
     assert len(client.application_executor.calls[0][0]["messages"]) == 2
+
+
+def test_sdk_adapter_prefers_callback_authorization_pause_over_graph_result() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    adapter._callbacks = [_AuthorizationPauseCallback()]  # type: ignore[attr-defined]
+
+    assert adapter.execute_adhoc(_request(application=False).payload) == {
+        "thread_id": "thread-1",
+        "error": "Toolkit authorization is required.",
+        "paused": True,
+        "pause_type": "mcp_auth",
+    }
+    assert len(client.adhoc_executor.calls) == 1
 
 
 def test_sdk_adapter_delegates_pipeline_yaml_through_the_existing_application_api() -> None:
@@ -573,10 +672,102 @@ def test_sdk_adapter_rejects_unimplemented_generic_continue_instead_of_drifting(
 
 
 @pytest.mark.parametrize("application", [True, False])
+def test_sdk_adapter_resumes_declined_toolkit_authorization_from_paused_checkpoint(
+    application: bool,
+) -> None:
+    client = _Client()
+    executor = client.application_executor if application else client.adhoc_executor
+    executor.state_history = [
+        SimpleNamespace(
+            next=("agent",),
+            config={"configurable": {"checkpoint_id": "checkpoint-auth-1"}},
+        )
+    ]
+    payload = _request(application=application).payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "ignored_mcp_servers", ["https://sharepoint.example"])
+    object.__setattr__(
+        payload,
+        "user_declined_mcp_servers",
+        [
+            {
+                "server_url": "https://sharepoint.example",
+                "tool_name": "list_items",
+                "toolkit_type": "sharepoint",
+                "skip_reason": "User skipped toolkit login for this run.",
+            }
+        ],
+    )
+
+    adapter = _adapter(client)
+    if application:
+        adapter.execute_application(payload)
+    else:
+        adapter.execute_adhoc(payload)
+
+    invoke_input, invoke_config = executor.calls[0]
+    assert "declined toolkit authorization" in invoke_input["input"]
+    assert "current" in invoke_input["input"]
+    assert invoke_config["configurable"] == {
+        "thread_id": "thread-1",
+        "checkpoint_id": "checkpoint-auth-1",
+    }
+    assert invoke_config["should_continue"] is True
+
+
+def test_sdk_adapter_resumes_completed_toolkit_authorization_from_paused_checkpoint() -> None:
+    client = _Client()
+    client.adhoc_executor.state_history = [
+        SimpleNamespace(
+            next=("agent",),
+            config={"configurable": {"checkpoint_id": "checkpoint-auth-2"}},
+        )
+    ]
+    payload = _request(application=False).payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(
+        payload,
+        "mcp_tokens",
+        {"sharepoint": {"access_token": "claim-scoped-test-token"}},
+    )
+
+    _adapter(client).execute_adhoc(payload)
+
+    invoke_input, invoke_config = client.adhoc_executor.calls[0]
+    assert "authorization has been completed" in invoke_input["input"]
+    assert invoke_config["configurable"]["checkpoint_id"] == "checkpoint-auth-2"
+
+
+def test_sdk_adapter_does_not_resume_an_older_authorization_pause() -> None:
+    client = _Client()
+    client.adhoc_executor.state_history = [
+        SimpleNamespace(next=(), config={"configurable": {"checkpoint_id": "latest"}}),
+        SimpleNamespace(
+            next=("agent",),
+            config={"configurable": {"checkpoint_id": "stale-auth-pause"}},
+        ),
+    ]
+    payload = _request(application=False).payload
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(
+        payload,
+        "user_declined_mcp_servers",
+        [{"server_url": "https://sharepoint.example"}],
+    )
+
+    _adapter(client).execute_adhoc(payload)
+
+    invoke_input, invoke_config = client.adhoc_executor.calls[0]
+    assert "messages" in invoke_input
+    assert "checkpoint_id" not in invoke_config["configurable"]
+    assert "should_continue" not in invoke_config
+
+
+@pytest.mark.parametrize("application", [True, False])
 @pytest.mark.parametrize(
     ("action", "value"),
     [
-        ("reject", "not now"),
+        ("reject", ""),
         (
             "block_with_comment",
             "append the requested data before retrying the sensitive action",
@@ -639,11 +830,11 @@ def test_sdk_adapter_rejects_hitl_without_exact_interrupt_identity() -> None:
     object.__setattr__(payload, "hitl_action", "approve")
     object.__setattr__(payload, "hitl_decisions", [])
 
-    with pytest.raises(UnsupportedCapability, match="Exactly one root HITL decision"):
+    with pytest.raises(UnsupportedCapability, match="Between one and sixteen"):
         _adapter(_Client()).execute_application(payload)
 
 
-def test_sdk_adapter_rejects_nested_hitl_route_in_root_slice() -> None:
+def test_sdk_adapter_rejects_private_hitl_route_from_transport() -> None:
     payload = _request().payload
     object.__setattr__(payload, "should_continue", True)
     object.__setattr__(payload, "hitl_resume", True)
@@ -660,8 +851,51 @@ def test_sdk_adapter_rejects_nested_hitl_route_in_root_slice() -> None:
         ],
     )
 
-    with pytest.raises(UnsupportedCapability, match="Nested or parallel HITL"):
+    with pytest.raises(UnsupportedCapability, match="decision is malformed"):
         _adapter(_Client()).execute_application(payload)
+
+
+@pytest.mark.parametrize("application", [True, False])
+def test_sdk_adapter_resumes_one_atomic_parallel_hitl_decision_set(
+    application: bool,
+) -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(
+        [("paused-task", "__interrupt__", {"type": "hitl"})]
+    )
+    adapter._memory = memory  # type: ignore[attr-defined]
+    payload = _request(application=application).payload
+    decisions = [
+        {"interrupt_id": "interrupt-1", "action": "approve"},
+        {
+            "interrupt_id": "interrupt-2",
+            "tool_call_id": "tool-call-2",
+            "action": "block_with_comment",
+            "value": "archive first",
+        },
+    ]
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", None)
+    object.__setattr__(payload, "hitl_value", None)
+    object.__setattr__(payload, "hitl_decisions", decisions)
+
+    if application:
+        adapter.execute_application(payload)
+        invoke_input, invoke_config = client.application_executor.calls[0]
+    else:
+        adapter.execute_adhoc(payload)
+        invoke_input, invoke_config = client.adhoc_executor.calls[0]
+
+    assert memory.deleted_threads == []
+    assert invoke_config["configurable"]["thread_id"] == "thread-1"
+    assert invoke_input["hitl_resume"] is True
+    assert invoke_input["hitl_action"] is None
+    # The current SDK's scalar compatibility field remains a string even when
+    # the authoritative resume is the plural decision set.
+    assert invoke_input["hitl_value"] == ""
+    assert invoke_input["hitl_decisions"] == decisions
 
 
 def test_sdk_adapter_rejects_hitl_without_continuation_marker() -> None:

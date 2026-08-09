@@ -244,6 +244,81 @@ func TestCurrentApplicationToolSnapshotPreservesSameProjectPipelineReference(t *
 	}
 }
 
+func TestCurrentApplicationToolSnapshotPreservesStoredApplicationReference(t *testing.T) {
+	settings := &currentAgentSettingsResolverStub{}
+	names := &currentAgentNameResolverStub{}
+	service, err := NewCurrentApplicationToolSnapshotService(
+		settings,
+		names,
+		currentAgentModelCatalogForTest(false),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.FreezeCurrentApplicationVersion(
+		context.Background(),
+		CurrentApplicationVersionFreezeRequest{
+			ProjectID: 7, ActorUserID: 11,
+			VersionDetails: json.RawMessage(`{
+  "llm_settings":{"model_name":"model"},
+  "tools":[{
+    "id":44,
+    "type":"application",
+    "name":"nested-agent",
+    "description":null,
+    "author_id":11,
+    "settings":{"application_id":3,"application_version_id":4},
+    "meta":{},
+    "created_at":"2026-08-07T10:00:00Z",
+    "toolkit_name":"nested-agent",
+    "author":null,
+    "agent_type":"agent",
+    "online":null,
+    "icon_meta":null,
+    "variables":[],
+    "is_pinned":false,
+    "indexes_count":null
+  }]
+}`),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := decodeCurrentApplicationVersion(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := version["tools"].([]any)[0].(map[string]any)
+	toolSettings := tool["settings"].(map[string]any)
+	toolID, validToolID := positiveCurrentAgentJSONInteger(tool["id"])
+	applicationID, validApplicationID := positiveCurrentAgentJSONInteger(toolSettings["application_id"])
+	versionID, validVersionID := positiveCurrentAgentJSONInteger(toolSettings["application_version_id"])
+	if !validToolID || toolID != 44 || !validApplicationID || applicationID != 3 ||
+		!validVersionID || versionID != 4 || tool["agent_type"] != "agent" ||
+		len(settings.requests) != 0 || len(names.requests) != 0 {
+		t.Fatalf("tool=%#v settings=%+v names=%+v", tool, settings.requests, names.requests)
+	}
+}
+
+func TestFreezeCurrentStoredApplicationReferenceRejectsCredentialBearingSettings(t *testing.T) {
+	tool := map[string]any{
+		"id": json.Number("44"), "name": "nested-agent", "description": nil,
+		"author_id": json.Number("11"), "toolkit_name": "nested-agent",
+		"agent_type": "agent", "created_at": "2026-08-07T10:00:00Z",
+		"settings": map[string]any{
+			"application_id": json.Number("3"), "application_version_id": json.Number("4"),
+			"credential": "plaintext-must-not-cross-the-worker-boundary",
+		},
+		"meta": map[string]any{}, "variables": []any{}, "is_pinned": false,
+		"author": nil, "online": nil, "icon_meta": nil, "indexes_count": nil,
+	}
+	if frozen, ok := freezeCurrentStoredApplicationReference(tool); ok || frozen != nil {
+		t.Fatalf("frozen=%#v ok=%v", frozen, ok)
+	}
+}
+
 func TestCurrentApplicationToolSnapshotRejectsUnsupportedApplicationReferences(t *testing.T) {
 	base := map[string]any{
 		"type": "application", "name": "child", "description": "",
@@ -261,7 +336,6 @@ func TestCurrentApplicationToolSnapshotRejectsUnsupportedApplicationReferences(t
 	}{
 		{name: "cross project", mutate: func(tool map[string]any) { tool["project_id"] = json.Number("8") }},
 		{name: "wrong actor", mutate: func(tool map[string]any) { tool["author_id"] = json.Number("12") }},
-		{name: "persisted tool id", mutate: func(tool map[string]any) { tool["id"] = json.Number("44") }},
 		{name: "selected child tools", mutate: func(tool map[string]any) {
 			tool["settings"].(map[string]any)["selected_tools"] = []any{"tool"}
 		}},

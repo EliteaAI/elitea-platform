@@ -2265,7 +2265,11 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
             artifact_kind = (
                 "hitl-interrupt"
                 if terminal_event.type == "agent_hitl_interrupt"
-                else "full-message"
+                else (
+                    "mcp-authorization-required"
+                    if terminal_event.type == "mcp_authorization_required"
+                    else "full-message"
+                )
             )
             return bind_agent_result_artifact(
                 result,

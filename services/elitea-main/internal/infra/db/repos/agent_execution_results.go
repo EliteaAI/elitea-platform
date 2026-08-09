@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
@@ -44,14 +45,21 @@ type currentAgentFullMessage struct {
 }
 
 type currentAgentHITLPause struct {
-	ThreadID  string
-	Interrupt json.RawMessage
+	ThreadID   string
+	Interrupt  json.RawMessage
+	Interrupts json.RawMessage
+}
+
+type currentAgentAuthorizationPause struct {
+	ThreadID string
+	Requests json.RawMessage
 }
 
 type currentAgentTerminal struct {
-	Cursor      int64
-	FullMessage *currentAgentFullMessage
-	HITLPause   *currentAgentHITLPause
+	Cursor             int64
+	FullMessage        *currentAgentFullMessage
+	HITLPause          *currentAgentHITLPause
+	AuthorizationPause *currentAgentAuthorizationPause
 }
 
 type agentExecutionTerminalNodeEventQuerier interface {
@@ -78,6 +86,10 @@ type currentAgentTerminalWriter interface {
 	FinalizeCurrentAgentHITLPause(
 		context.Context,
 		sqlcgen.FinalizeCurrentAgentHITLPauseParams,
+	) (int64, error)
+	FinalizeCurrentAgentAuthorizationPause(
+		context.Context,
+		sqlcgen.FinalizeCurrentAgentAuthorizationPauseParams,
 	) (int64, error)
 }
 
@@ -245,6 +257,16 @@ func loadCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, projectID int
 			return currentAgentTerminal{}, err
 		}
 		terminal.HITLPause = &pause
+	case outputapp.AgentExecutionTerminalPausedAuthorization:
+		if artifact.ArtifactID != "node-event:"+frame.Fence.ExecutionID+":mcp-authorization-required" ||
+			event.Type != "mcp_authorization_required" {
+			return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		pause, err := decodeCurrentAgentAuthorizationPause(event.Content, event.ResponseMetadata)
+		if err != nil {
+			return currentAgentTerminal{}, err
+		}
+		terminal.AuthorizationPause = &pause
 	default:
 		return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
 	}
@@ -287,25 +309,117 @@ func decodeCurrentAgentHITLPause(contentJSON, responseMetadata json.RawMessage) 
 	var interrupt map[string]any
 	var interrupts []map[string]any
 	if json.Unmarshal(metadata.HITLInterrupt, &interrupt) != nil ||
-		json.Unmarshal(metadata.HITLInterrupts, &interrupts) != nil || len(interrupts) != 1 {
+		json.Unmarshal(metadata.HITLInterrupts, &interrupts) != nil ||
+		len(interrupts) == 0 || len(interrupts) > 16 || !reflect.DeepEqual(interrupt, interrupts[0]) {
 		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
 	}
 	interruptID, _ := interrupt["interrupt_id"].(string)
-	pluralID, _ := interrupts[0]["interrupt_id"].(string)
-	if interruptID == "" || interruptID != pluralID || !validSequentialHITLInterrupt(interrupt) {
+	if interruptID == "" {
 		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
 	}
+	seen := make(map[string]struct{}, len(interrupts))
+	for _, pending := range interrupts {
+		pendingID, _ := pending["interrupt_id"].(string)
+		if pendingID == "" || !validInProcessHITLInterrupt(pending) {
+			return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		if _, duplicate := seen[pendingID]; duplicate {
+			return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		seen[pendingID] = struct{}{}
+	}
 	return currentAgentHITLPause{
-		ThreadID:  metadata.ThreadID,
-		Interrupt: append(json.RawMessage(nil), metadata.HITLInterrupt...),
+		ThreadID:   metadata.ThreadID,
+		Interrupt:  append(json.RawMessage(nil), metadata.HITLInterrupt...),
+		Interrupts: append(json.RawMessage(nil), metadata.HITLInterrupts...),
 	}, nil
 }
 
-// validSequentialHITLInterrupt admits both a root pause and one pause raised by
-// a synchronously nested application or pipeline. A child-thread identity or
-// explicit routing marker belongs to the parallel child-dispatch protocol and
-// remains outside this focused continuation slice.
-func validSequentialHITLInterrupt(interrupt map[string]any) bool {
+func decodeCurrentAgentAuthorizationPause(contentJSON, responseMetadata json.RawMessage) (currentAgentAuthorizationPause, error) {
+	var content string
+	var metadata struct {
+		ThreadID              string          `json:"thread_id"`
+		ToolRunID             string          `json:"tool_run_id"`
+		AuthorizationRequests json.RawMessage `json:"authorization_requests"`
+	}
+	if json.Unmarshal(contentJSON, &content) != nil || content == "" || len(content) > 64*1024 ||
+		strings.ContainsRune(content, '\x00') || json.Unmarshal(responseMetadata, &metadata) != nil ||
+		metadata.ThreadID == "" || len(metadata.ThreadID) > 256 || strings.ContainsRune(metadata.ThreadID, '\x00') {
+		return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
+	}
+	var requests []map[string]any
+	if json.Unmarshal(metadata.AuthorizationRequests, &requests) != nil || len(requests) == 0 || len(requests) > 16 {
+		return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
+	}
+	seen := make(map[string]struct{}, len(requests))
+	for _, request := range requests {
+		requestID, _ := request["tool_run_id"].(string)
+		serverURL, _ := request["server_url"].(string)
+		if !validCurrentAgentAuthorizationText(requestID, 512) ||
+			!validCurrentAgentAuthorizationText(serverURL, 4096) {
+			return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		if _, duplicate := seen[requestID]; duplicate {
+			return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
+		}
+		seen[requestID] = struct{}{}
+		if rawHierarchy, exists := request["metadata"]; exists && rawHierarchy != nil {
+			hierarchy, ok := rawHierarchy.(map[string]any)
+			if !ok || !validCurrentAgentAuthorizationHierarchy(hierarchy) {
+				return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
+			}
+		}
+	}
+	lastID, _ := requests[len(requests)-1]["tool_run_id"].(string)
+	if metadata.ToolRunID != lastID {
+		return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
+	}
+	return currentAgentAuthorizationPause{
+		ThreadID: metadata.ThreadID,
+		Requests: append(json.RawMessage(nil), metadata.AuthorizationRequests...),
+	}, nil
+}
+
+func validCurrentAgentAuthorizationText(value string, limit int) bool {
+	return value != "" && len(value) <= limit && !strings.ContainsRune(value, '\x00')
+}
+
+func validCurrentAgentAuthorizationHierarchy(hierarchy map[string]any) bool {
+	for _, key := range []string{"parent_agent_name", "parent_agent_call_id", "child_thread_id", "thread_id", "checkpoint_ns", "langgraph_node"} {
+		if value, exists := hierarchy[key]; exists && value != nil {
+			text, ok := value.(string)
+			if !ok || len(text) > 512 || strings.ContainsRune(text, '\x00') {
+				return false
+			}
+		}
+	}
+	if rawPath, exists := hierarchy["parent_agent_path"]; exists && rawPath != nil {
+		path, ok := rawPath.([]any)
+		if !ok || len(path) > 3 {
+			return false
+		}
+		for _, rawEntry := range path {
+			entry, ok := rawEntry.(map[string]any)
+			if !ok {
+				return false
+			}
+			for _, key := range []string{"name", "call_id"} {
+				if value, exists := entry[key]; exists && value != nil {
+					text, ok := value.(string)
+					if !ok || len(text) > 512 || strings.ContainsRune(text, '\x00') {
+						return false
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
+// validInProcessHITLInterrupt admits root and synchronously nested pauses. A
+// child-thread identity or explicit routing marker belongs to the parallel
+// child-dispatch protocol and remains outside this continuation slice.
+func validInProcessHITLInterrupt(interrupt map[string]any) bool {
 	for _, key := range []string{"child_thread_id", "via_call_id", "_via_call_id"} {
 		if value, exists := interrupt[key]; exists && value != nil && value != "" {
 			return false
@@ -361,7 +475,7 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 	if err != nil {
 		return fmt.Errorf("lock current agent response message group: %w", err)
 	}
-	if terminal.FullMessage != nil && terminal.HITLPause == nil {
+	if terminal.FullMessage != nil && terminal.HITLPause == nil && terminal.AuthorizationPause == nil {
 		message := terminal.FullMessage
 		itemID, err := writer.InsertCurrentAgentTextItem(ctx, int64(messageGroupID))
 		if err != nil {
@@ -387,18 +501,34 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 		}
 		return nil
 	}
-	if terminal.HITLPause != nil && terminal.FullMessage == nil {
+	if terminal.HITLPause != nil && terminal.FullMessage == nil && terminal.AuthorizationPause == nil {
 		pause := terminal.HITLPause
 		rows, err := writer.FinalizeCurrentAgentHITLPause(
 			ctx,
 			sqlcgen.FinalizeCurrentAgentHITLPauseParams{
 				ThreadID:       pause.ThreadID,
 				HitlInterrupt:  []byte(pause.Interrupt),
+				HitlInterrupts: []byte(pause.Interrupts),
 				MessageGroupID: int64(messageGroupID),
 			},
 		)
 		if err != nil || rows != 1 {
 			return fmt.Errorf("persist current agent HITL pause: %w", terminalWriteError(err))
+		}
+		return nil
+	}
+	if terminal.AuthorizationPause != nil && terminal.FullMessage == nil && terminal.HITLPause == nil {
+		pause := terminal.AuthorizationPause
+		rows, err := writer.FinalizeCurrentAgentAuthorizationPause(
+			ctx,
+			sqlcgen.FinalizeCurrentAgentAuthorizationPauseParams{
+				ThreadID:              pause.ThreadID,
+				AuthorizationRequests: []byte(pause.Requests),
+				MessageGroupID:        int64(messageGroupID),
+			},
+		)
+		if err != nil || rows != 1 {
+			return fmt.Errorf("persist current agent authorization pause: %w", terminalWriteError(err))
 		}
 		return nil
 	}

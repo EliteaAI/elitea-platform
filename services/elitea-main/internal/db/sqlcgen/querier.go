@@ -20,6 +20,7 @@ type Querier interface {
 	AuthorizeRuntimeValidationProject(ctx context.Context, arg AuthorizeRuntimeValidationProjectParams) (bool, error)
 	BulkDeleteCurrentNotifications(ctx context.Context, arg BulkDeleteCurrentNotificationsParams) (int64, error)
 	BulkSetCurrentNotificationsSeen(ctx context.Context, arg BulkSetCurrentNotificationsSeenParams) (int64, error)
+	CancelCurrentAgentExecution(ctx context.Context, arg CancelCurrentAgentExecutionParams) (CancelCurrentAgentExecutionRow, error)
 	// Claim only the oldest unfinished revision for each configuration. A lower
 	// pending, retrying, processing, or dead revision remains an explicit ordering
 	// barrier. Expired processing rows are reclaimed with a new caller-owned lease
@@ -65,6 +66,7 @@ type Querier interface {
 	// 12-hour local-disk TTL swept by the elitea_core_cleanup_stale_chunks RPC.
 	DeleteStaleAttachmentChunks(ctx context.Context, receivedAt pgtype.Timestamptz) (int64, error)
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
+	FinalizeCurrentAgentAuthorizationPause(ctx context.Context, arg FinalizeCurrentAgentAuthorizationPauseParams) (int64, error)
 	FinalizeCurrentAgentFullMessage(ctx context.Context, arg FinalizeCurrentAgentFullMessageParams) (int64, error)
 	FinalizeCurrentAgentHITLPause(ctx context.Context, arg FinalizeCurrentAgentHITLPauseParams) (int64, error)
 	// These unqualified names are intentional. Every query is executed inside a
@@ -185,6 +187,7 @@ type Querier interface {
 	InsertScheduledJobCursor(ctx context.Context, arg InsertScheduledJobCursorParams) error
 	InsertScheduledOccurrence(ctx context.Context, arg InsertScheduledOccurrenceParams) error
 	InstallCurrentTenantSearchPath(ctx context.Context, searchPath string) (string, error)
+	IsCurrentAgentCancellationReplay(ctx context.Context, arg IsCurrentAgentCancellationReplayParams) (bool, error)
 	IsCurrentUserProjectMember(ctx context.Context, arg IsCurrentUserProjectMemberParams) (bool, error)
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListActiveCurrentProjectIDs(ctx context.Context, limitRows int32) ([]int32, error)
@@ -267,6 +270,7 @@ type Querier interface {
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
 	MarkCurrentNotificationSeen(ctx context.Context, arg MarkCurrentNotificationSeenParams) (MarkCurrentNotificationSeenRow, error)
 	MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMetaInitializedParams) (pgtype.Timestamptz, error)
+	ProjectCurrentAgentStop(ctx context.Context, arg ProjectCurrentAgentStopParams) (ProjectCurrentAgentStopRow, error)
 	QuarantineExpiredTerminalIndexMetaInitializations(ctx context.Context, quarantineLimit int32) (int64, error)
 	QuarantineIndexMetaInitialization(ctx context.Context, arg QuarantineIndexMetaInitializationParams) (string, error)
 	RefreshAgentExecutionPublication(ctx context.Context, arg RefreshAgentExecutionPublicationParams) (int64, error)
@@ -277,7 +281,9 @@ type Querier interface {
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
 	ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error)
 	ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error)
+	ResolveCurrentApplicationNestingNode(ctx context.Context, applicationVersionID int32) (ResolveCurrentApplicationNestingNodeRow, error)
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
+	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
 	// This is the exact current projects_get_personal_project_id decision tree:
 	// a named personal project wins only when the user has any project-role
@@ -288,6 +294,7 @@ type Querier interface {
 	ResolveCurrentTenantContext(ctx context.Context, arg ResolveCurrentTenantContextParams) (ResolveCurrentTenantContextRow, error)
 	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
 	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)
+	ResumeCurrentAgentAuthorization(ctx context.Context, arg ResumeCurrentAgentAuthorizationParams) (ResumeCurrentAgentAuthorizationRow, error)
 	ResumeCurrentAgentHITL(ctx context.Context, arg ResumeCurrentAgentHITLParams) (ResumeCurrentAgentHITLRow, error)
 	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
 	SetArtifactBucketPinned(ctx context.Context, arg SetArtifactBucketPinnedParams) (EliteaStorageBucket, error)

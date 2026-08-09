@@ -545,6 +545,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var productionRuntime *api.ProductionRuntimeRoutes
 	var currentIndexStart http.Handler
 	var currentAgentStart http.Handler
+	var currentAgentCancel http.Handler
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
 	var currentIndexMetaDelete http.Handler
@@ -649,6 +650,20 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			)
 			if err != nil {
 				return fmt.Errorf("compose current agent-start route: %w", err)
+			}
+		}
+		if publicRoutes.AgentCancel != nil {
+			currentAgentCancel, err = agentexecutionapi.NewCurrentAgentCancelRoute(
+				publicRoutes.AgentCancel,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if err != nil {
+				return fmt.Errorf("compose current agent-cancel route: %w", err)
 			}
 		}
 		if publicRoutes.IndexCancel != nil {
@@ -836,6 +851,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentConfigurationMutation:  currentConfigurationMutation,
 		CurrentIndexStart:             currentIndexStart,
 		CurrentAgentStart:             currentAgentStart,
+		CurrentAgentCancel:            currentAgentCancel,
 		CurrentIndexCancel:            currentIndexCancel,
 		CurrentIndexMeta:              currentIndexMeta,
 		CurrentIndexMetaDelete:        currentIndexMetaDelete,

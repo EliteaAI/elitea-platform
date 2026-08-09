@@ -33,6 +33,16 @@ def test_capability_document_is_deterministic_and_pinned() -> None:
     assert "current-sdk-delegate" in index["featureFlags"]
     assert "claim-bound-runtime-context" in index["featureFlags"]
     assert "bounded-sync-sdk-execution" in index["featureFlags"]
+    application = document["capabilities"][3]
+    assert application["capabilityId"] == "agent.execute.application.v1"
+    assert application["capabilityVersion"] == "1"
+    assert application["interactionModel"] == "durable_job"
+    assert "durable-checkpoint-resume" in application["featureFlags"]
+    assert "toolkit-authorization-continuation" in application["featureFlags"]
+    adhoc = document["capabilities"][4]
+    assert adhoc["capabilityId"] == "agent.execute.adhoc.v1"
+    assert adhoc["capabilityVersion"] == "1"
+    assert "toolkit-authorization-continuation" in adhoc["featureFlags"]
     assert document["runtimeConstraints"]["artifactSupport"] is True
     assert "shared-claim-scoped-authority" in document["runtimeConstraints"][
         "isolationClasses"
@@ -50,11 +60,11 @@ def test_serve_manifest_cannot_advertise_public_conformance_signature() -> None:
         capability_message(startup_mode="serve")
 
 
-def test_partial_agent_kernel_is_not_advertised_as_a_runtime_capability() -> None:
+def test_runnable_agent_kernels_are_advertised_as_runtime_capabilities() -> None:
     capability_ids = {
         capability.capability_id
         for capability in capability_message().capabilities
     }
 
-    assert "agent.execute.application.v1" not in capability_ids
-    assert "agent.execute.adhoc.v1" not in capability_ids
+    assert "agent.execute.application.v1" in capability_ids
+    assert "agent.execute.adhoc.v1" in capability_ids

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -157,6 +158,18 @@ func (s *Server) Publish(stream grpc.BidiStreamingServer[runtimev1.ExecutionOutp
 		outcome, err := s.ingestMessage(stream.Context(), message, workloadIdentity)
 		if err != nil {
 			code, safeMessage, retryable := safeOutputError(err)
+			slog.WarnContext(
+				stream.Context(),
+				"runtime output frame rejected",
+				"execution_id", identity.GetExecutionId(),
+				"generation", identity.GetGeneration(),
+				"event_type", message.GetEventType().String(),
+				"sequence", message.GetSequence(),
+				"handoff_watermark", message.GetClaimHandoffWatermark(),
+				"terminal", message.GetTerminal(),
+				"error_code", code.String(),
+				"cause", err,
+			)
 			ack := rejectionAck(message, code, safeMessage, retryable)
 			if errors.Is(err, outputapp.ErrOutputCancelled) {
 				// This exact, fully bound response is the output linearization
@@ -659,6 +672,8 @@ func agentExecutionResultDomain(result *runtimev1.AgentExecutionResultV1) (outpu
 		terminalState = outputapp.AgentExecutionTerminalCompleted
 	case runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_PAUSED_HITL:
 		terminalState = outputapp.AgentExecutionTerminalPausedHITL
+	case runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_PAUSED_MCP_AUTH:
+		terminalState = outputapp.AgentExecutionTerminalPausedAuthorization
 	default:
 		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
 	}

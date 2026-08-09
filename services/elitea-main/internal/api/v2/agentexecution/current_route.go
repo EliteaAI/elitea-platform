@@ -19,17 +19,18 @@ import (
 )
 
 const (
-	CurrentApplicationStartPath       = "/api/v2/elitea_core/messages/prompt_lib/{projectID}/{conversationID}"
-	CurrentApplicationStartContract   = "agent.execute.application.v1"
-	CurrentAdhocStartContract         = "agent.execute.adhoc.v1"
-	CurrentRegenerationPath           = "/api/v2/elitea_core/regenerate/prompt_lib/{projectID}/{responseMessageID}"
-	CurrentRegenerationContract       = "agent.regenerate.v1"
-	CurrentContinuationPath           = "/api/v2/elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}"
-	CurrentContinuationContract       = "agent.continue.hitl.v1"
-	CurrentApplicationStartMode       = auth.PermissionModeDefault
-	CurrentApplicationStartPermission = "models.chat.messages.create"
-	CurrentRegenerationPermission     = "models.chat.conversations.regenerate"
-	maxCurrentApplicationStartBody    = int64(512 * 1024)
+	CurrentApplicationStartPath              = "/api/v2/elitea_core/messages/prompt_lib/{projectID}/{conversationID}"
+	CurrentApplicationStartContract          = "agent.execute.application.v1"
+	CurrentAdhocStartContract                = "agent.execute.adhoc.v1"
+	CurrentRegenerationPath                  = "/api/v2/elitea_core/regenerate/prompt_lib/{projectID}/{responseMessageID}"
+	CurrentRegenerationContract              = "agent.regenerate.v1"
+	CurrentContinuationPath                  = "/api/v2/elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}"
+	CurrentContinuationContract              = "agent.continue.hitl.v1"
+	CurrentAuthorizationContinuationContract = "agent.continue.authorization.v1"
+	CurrentApplicationStartMode              = auth.PermissionModeDefault
+	CurrentApplicationStartPermission        = "models.chat.messages.create"
+	CurrentRegenerationPermission            = "models.chat.conversations.regenerate"
+	maxCurrentApplicationStartBody           = int64(512 * 1024)
 )
 
 var ErrInvalidCurrentApplicationStartRoute = errors.New("invalid current application-start route dependencies")
@@ -168,6 +169,8 @@ type currentContinuationBody struct {
 	IgnoredMCPServers      json.RawMessage `json:"ignored_mcp_servers"`
 	UserDeclinedMCPServers json.RawMessage `json:"user_declined_mcp_servers"`
 	UserInput              string          `json:"user_input"`
+	AuthorizationRequestID string          `json:"authorization_request_id"`
+	AuthorizationAction    string          `json:"authorization_action"`
 }
 
 func (handler *currentApplicationStartHandler) Start(writer http.ResponseWriter, request *http.Request) {
@@ -348,7 +351,8 @@ func (handler *currentApplicationStartHandler) Regenerate(writer http.ResponseWr
 func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWriter, request *http.Request) {
 	projectID, ok := positiveCanonicalID(chi.URLParam(request, "projectID"))
 	conversationID := chi.URLParam(request, "conversationID")
-	if !ok || request.URL.Query().Get("execution_contract") != CurrentContinuationContract {
+	contract := request.URL.Query().Get("execution_contract")
+	if !ok || (contract != CurrentContinuationContract && contract != CurrentAuthorizationContinuationContract) {
 		writeError(writer, http.StatusBadRequest, "Invalid agent continuation request")
 		return
 	}
@@ -385,25 +389,59 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 		writeError(writer, http.StatusBadRequest, "Invalid agent continuation request")
 		return
 	}
-	if body.ProjectID != projectID || body.ConversationUUID != conversationID ||
-		!body.HITLResume || body.MessageID == "" || !currentRootHITLAction(body.HITLAction) ||
-		!emptyJSONArray(body.HITLDecisions) || !emptyJSONObject(body.MCPTokens) ||
-		!emptyJSONArray(body.IgnoredMCPServers) || !emptyJSONArray(body.UserDeclinedMCPServers) {
+	if body.ProjectID != projectID || body.ConversationUUID != conversationID || body.MessageID == "" {
 		writeUnsupported(writer)
 		return
 	}
-	value, valid := currentHITLStringValue(body.HITLValue)
-	if !valid {
-		writeUnsupported(writer)
-		return
+	continuation := agentexecutionapp.CurrentContinuationRequest{
+		ProjectID: projectID, ActorUserID: actorUserID,
+		ConversationUUID: conversationID, ResponseMessageID: body.MessageID,
+		ThreadID: body.ThreadID,
+	}
+	switch contract {
+	case CurrentContinuationContract:
+		decisions, decisionsValid := currentHITLDecisions(body.HITLDecisions)
+		if !body.HITLResume || !decisionsValid || !emptyJSONObject(body.MCPTokens) ||
+			!emptyJSONArray(body.IgnoredMCPServers) || !emptyJSONArray(body.UserDeclinedMCPServers) ||
+			body.AuthorizationRequestID != "" || body.AuthorizationAction != "" {
+			writeUnsupported(writer)
+			return
+		}
+		if len(decisions) == 0 {
+			value, valid := currentHITLStringValue(body.HITLValue)
+			if !currentRootHITLAction(body.HITLAction) || !valid {
+				writeUnsupported(writer)
+				return
+			}
+			continuation.Action = body.HITLAction
+			continuation.Value = value
+		} else {
+			if body.HITLAction != "" || !absentJSON(body.HITLValue) {
+				writeUnsupported(writer)
+				return
+			}
+			continuation.HITLDecisions = decisions
+		}
+		continuation.Kind = agentexecutionapp.CurrentContinuationHITL
+	case CurrentAuthorizationContinuationContract:
+		if body.HITLResume || body.HITLAction != "" || !absentJSON(body.HITLValue) ||
+			!emptyJSONArray(body.HITLDecisions) || !currentJSONObject(body.MCPTokens) ||
+			!currentJSONArray(body.IgnoredMCPServers) || !currentJSONArray(body.UserDeclinedMCPServers) ||
+			body.AuthorizationRequestID == "" ||
+			(body.AuthorizationAction != "authorize" && body.AuthorizationAction != "skip") {
+			writeUnsupported(writer)
+			return
+		}
+		continuation.Kind = agentexecutionapp.CurrentContinuationAuthorization
+		continuation.AuthorizationID = body.AuthorizationRequestID
+		continuation.Action = body.AuthorizationAction
+		continuation.MCPTokens = bytes.Clone(body.MCPTokens)
+		continuation.IgnoredMCPServers = bytes.Clone(body.IgnoredMCPServers)
+		continuation.DeclinedMCPServers = bytes.Clone(body.UserDeclinedMCPServers)
 	}
 	outcome, err := handler.useCase.ContinueCurrentAgent(
 		request.Context(),
-		agentexecutionapp.CurrentContinuationRequest{
-			ProjectID: projectID, ActorUserID: actorUserID,
-			ConversationUUID: conversationID, ResponseMessageID: body.MessageID,
-			ThreadID: body.ThreadID, Action: body.HITLAction, Value: value,
-		},
+		continuation,
 	)
 	if err != nil {
 		slog.Error("current agent continuation failed", "response_message_id", body.MessageID, "err", err)
@@ -437,6 +475,12 @@ func writeStartError(writer http.ResponseWriter, err error) {
 		writeJSON(writer, http.StatusConflict, map[string]any{
 			"error":     "agent_hitl_already_resolved",
 			"message":   "This agent approval was already resolved. Refresh the conversation before retrying.",
+			"retryable": false,
+		})
+	case errors.Is(err, agentexecutionapp.ErrCurrentAgentAuthorizationAlreadyResolved):
+		writeJSON(writer, http.StatusConflict, map[string]any{
+			"error":     "agent_authorization_already_resolved",
+			"message":   "This toolkit authorization request was already resolved. Refresh the conversation before retrying.",
 			"retryable": false,
 		})
 	case errors.Is(err, executionapp.ErrIdempotencyConflict):
@@ -474,6 +518,11 @@ func currentJSONObject(raw json.RawMessage) bool {
 	return json.Valid(trimmed) && len(trimmed) >= 2 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}'
 }
 
+func currentJSONArray(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return json.Valid(trimmed) && len(trimmed) >= 2 && trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']'
+}
+
 func currentRootHITLAction(action string) bool {
 	switch action {
 	case "approve", "reject", "edit", "block_with_comment":
@@ -492,6 +541,39 @@ func currentHITLStringValue(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func currentHITLDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLDecision, bool) {
+	if emptyJSONArray(raw) {
+		return nil, true
+	}
+	var objects []map[string]json.RawMessage
+	if json.Unmarshal(raw, &objects) != nil || len(objects) == 0 || len(objects) > 16 {
+		return nil, false
+	}
+	decisions := make([]agentexecutionapp.CurrentHITLDecision, 0, len(objects))
+	for _, object := range objects {
+		for key := range object {
+			switch key {
+			case "interrupt_id", "tool_call_id", "action", "value":
+			default:
+				return nil, false
+			}
+		}
+		var decision agentexecutionapp.CurrentHITLDecision
+		if json.Unmarshal(object["interrupt_id"], &decision.InterruptID) != nil ||
+			json.Unmarshal(object["action"], &decision.Action) != nil {
+			return nil, false
+		}
+		if value, exists := object["tool_call_id"]; exists && json.Unmarshal(value, &decision.ToolCallID) != nil {
+			return nil, false
+		}
+		if value, exists := object["value"]; exists && json.Unmarshal(value, &decision.Value) != nil {
+			return nil, false
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, true
 }
 
 func positiveCanonicalID(raw string) (int64, bool) {

@@ -176,10 +176,15 @@ func validateAuthoritativeInput(input *runtimev1.AgentExecutionInputV1) error {
 		!validOptionalJSONObject(input.GetParallelReconcile()) ||
 		input.ExecutionGeneration == nil || input.GetExecutionGeneration() == "" ||
 		(input.StepsLimit != nil && input.GetStepsLimit() <= 0) ||
-		(input.GetHitlResume() && input.HitlAction == nil) {
+		(input.GetHitlResume() && input.HitlAction == nil && !nonEmptyJSONArray(input.GetHitlDecisions())) {
 		return ErrInvalidAuthoritativeAgentInput
 	}
 	return nil
+}
+
+func nonEmptyJSONArray(value []byte) bool {
+	var decoded []json.RawMessage
+	return json.Unmarshal(value, &decoded) == nil && len(decoded) > 0
 }
 
 func validJSONKind(value []byte, prefix byte) bool {

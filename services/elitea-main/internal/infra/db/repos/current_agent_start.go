@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 
 	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -60,6 +61,10 @@ type currentContinuationQuerier interface {
 		context.Context,
 		sqlcgen.ResolveCurrentContinuationParams,
 	) (sqlcgen.ResolveCurrentContinuationRow, error)
+	ResolveCurrentAuthorizationContinuation(
+		context.Context,
+		sqlcgen.ResolveCurrentAuthorizationContinuationParams,
+	) (sqlcgen.ResolveCurrentAuthorizationContinuationRow, error)
 }
 
 func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
@@ -92,6 +97,10 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 			if !ok {
 				return errors.New("current agent start query is unavailable")
 			}
+			nesting, ok := tx.(currentApplicationNestingQuerier)
+			if !ok {
+				return errors.New("current application nesting query is unavailable")
+			}
 			row, queryErr := queries.ResolveCurrentApplicationTurn(
 				ctx,
 				sqlcgen.ResolveCurrentApplicationTurnParams{
@@ -116,6 +125,20 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 				!json.Valid(variables) || !json.Valid(versionDetails) ||
 				!json.Valid(chatHistory) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			if validationErr := validateCurrentApplicationNesting(
+				ctx,
+				nesting,
+				row.ApplicationVersionID,
+				1,
+			); validationErr != nil {
+				if contextErr := ctx.Err(); contextErr != nil {
+					return contextErr
+				}
+				if errors.Is(validationErr, errInvalidCurrentApplicationNesting) {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				return fmt.Errorf("validate current application nesting: %w", validationErr)
 			}
 			target = agentexecutionapp.CurrentApplicationTarget{
 				ApplicationID:        int64(row.ApplicationID),
@@ -162,6 +185,10 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentAdhoc(
 			if !ok {
 				return errors.New("current agent start query is unavailable")
 			}
+			nesting, ok := tx.(currentApplicationNestingQuerier)
+			if !ok {
+				return errors.New("current application nesting query is unavailable")
+			}
 			row, queryErr := queries.ResolveCurrentAdhocTurn(
 				ctx,
 				sqlcgen.ResolveCurrentAdhocTurnParams{
@@ -184,6 +211,16 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentAdhoc(
 				!json.Valid(llmSettings) || !json.Valid(tools) || !json.Valid(chatHistory) ||
 				!json.Valid(conversationMeta) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			tools, queryErr = filterCurrentAdhocApplicationNesting(ctx, nesting, tools)
+			if queryErr != nil {
+				if contextErr := ctx.Err(); contextErr != nil {
+					return contextErr
+				}
+				if errors.Is(queryErr, errInvalidCurrentApplicationNesting) {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				return fmt.Errorf("validate current ad-hoc application nesting: %w", queryErr)
 			}
 			target = agentexecutionapp.CurrentAdhocTarget{
 				TargetParticipantID: int64(row.TargetParticipantID),
@@ -287,6 +324,54 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 			if !ok {
 				return errors.New("current agent continuation query is unavailable")
 			}
+			if request.Kind == agentexecutionapp.CurrentContinuationAuthorization {
+				row, queryErr := queries.ResolveCurrentAuthorizationContinuation(
+					ctx,
+					sqlcgen.ResolveCurrentAuthorizationContinuationParams{
+						ActorUserID: request.ActorUserID, ProjectID: projectID,
+						ConversationUuid: conversationUUID, ResponseMessageID: responseMessageID,
+						AuthorizationRequestID: request.AuthorizationID,
+					},
+				)
+				if errors.Is(queryErr, pgx.ErrNoRows) {
+					return agentexecutionapp.ErrCurrentAgentAuthorizationAlreadyResolved
+				}
+				if queryErr != nil {
+					return fmt.Errorf("resolve current agent authorization continuation: %w", queryErr)
+				}
+				var authorizationRequests []struct {
+					ToolRunID string `json:"tool_run_id"`
+				}
+				if json.Unmarshal([]byte(row.AuthorizationRequestsJson), &authorizationRequests) != nil ||
+					len(authorizationRequests) == 0 || len(authorizationRequests) > 16 {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				matched := 0
+				for _, authorizationRequest := range authorizationRequests {
+					if authorizationRequest.ToolRunID == request.AuthorizationID {
+						matched++
+					}
+				}
+				if matched != 1 {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				target = agentexecutionapp.CurrentContinuationTarget{
+					ContinuationKind:    agentexecutionapp.CurrentContinuationAuthorization,
+					Kind:                agentexecutionapp.CurrentRegenerationKind(row.ContinuationKind),
+					TargetParticipantID: int64(row.TargetParticipantID),
+					QuestionID:          uuid.UUID(row.QuestionID.Bytes).String(),
+					UserInput:           row.UserInput,
+					ThreadID:            row.ThreadID,
+					ExecutionGeneration: row.ExecutionGeneration,
+					InterruptID:         request.AuthorizationID,
+					AvailableActions:    []string{"authorize", "skip"},
+				}
+				if uuid.UUID(row.ConversationUuid.Bytes).String() != request.ConversationUUID ||
+					target.Validate() != nil {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				return nil
+			}
 			row, queryErr := queries.ResolveCurrentContinuation(
 				ctx,
 				sqlcgen.ResolveCurrentContinuationParams{
@@ -300,23 +385,46 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 			if queryErr != nil {
 				return fmt.Errorf("resolve current agent continuation: %w", queryErr)
 			}
-			var interrupt struct {
+			type persistedHITLInterrupt struct {
 				InterruptID      string   `json:"interrupt_id"`
 				AvailableActions []string `json:"available_actions"`
 			}
+			var interrupt persistedHITLInterrupt
+			var interrupts []persistedHITLInterrupt
 			var rawInterrupt map[string]any
+			var rawInterrupts []map[string]any
 			if json.Unmarshal([]byte(row.HitlInterruptJson), &interrupt) != nil ||
+				json.Unmarshal([]byte(row.HitlInterruptsJson), &interrupts) != nil ||
 				json.Unmarshal([]byte(row.HitlInterruptJson), &rawInterrupt) != nil ||
-				!validSequentialHITLInterrupt(rawInterrupt) {
+				json.Unmarshal([]byte(row.HitlInterruptsJson), &rawInterrupts) != nil ||
+				len(interrupts) == 0 || len(interrupts) > 16 || len(rawInterrupts) != len(interrupts) ||
+				!reflect.DeepEqual(rawInterrupt, rawInterrupts[0]) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
 			}
+			targetInterrupts := make([]agentexecutionapp.CurrentHITLInterrupt, 0, len(interrupts))
+			seen := make(map[string]struct{}, len(interrupts))
+			for index, pending := range interrupts {
+				if pending.InterruptID == "" || !validInProcessHITLInterrupt(rawInterrupts[index]) {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				if _, duplicate := seen[pending.InterruptID]; duplicate {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				seen[pending.InterruptID] = struct{}{}
+				targetInterrupts = append(targetInterrupts, agentexecutionapp.CurrentHITLInterrupt{
+					InterruptID:      pending.InterruptID,
+					AvailableActions: append([]string(nil), pending.AvailableActions...),
+				})
+			}
 			target = agentexecutionapp.CurrentContinuationTarget{
+				ContinuationKind:    agentexecutionapp.CurrentContinuationHITL,
 				Kind:                agentexecutionapp.CurrentRegenerationKind(row.ContinuationKind),
 				TargetParticipantID: int64(row.TargetParticipantID),
 				QuestionID:          uuid.UUID(row.QuestionID.Bytes).String(), UserInput: row.UserInput,
 				ThreadID: row.ThreadID, ExecutionGeneration: row.ExecutionGeneration,
 				InterruptID:      interrupt.InterruptID,
 				AvailableActions: append([]string(nil), interrupt.AvailableActions...),
+				HITLInterrupts:   targetInterrupts,
 			}
 			if uuid.UUID(row.ConversationUuid.Bytes).String() != request.ConversationUUID ||
 				target.Validate() != nil {

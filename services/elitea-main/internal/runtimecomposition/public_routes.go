@@ -24,6 +24,9 @@ type PublicRoutes struct {
 	// AgentStart owns only the initial, same-project configured-application
 	// turn. Unsupported advanced turns stay on the current Socket.IO path.
 	AgentStart agentexecutionapi.StartUseCase
+	// AgentCancel preserves the current DELETE contract while atomically
+	// cancelling the exact durable execution and its current chat projection.
+	AgentCancel agentexecutionapi.CurrentAgentCanceller
 	// IndexCancel preserves the current UI DELETE contract while selecting only
 	// Go-owned execution IDs at the compatibility edge.
 	IndexCancel indexingapi.CurrentIndexCanceller

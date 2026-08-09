@@ -259,12 +259,105 @@ func TestCurrentContinuationRouteCarriesBlockWithComment(t *testing.T) {
 	}
 }
 
-func TestCurrentContinuationRouteRejectsParallelAndMCPResumeShapes(t *testing.T) {
+func TestCurrentAuthorizationContinuationRouteCarriesExactInvocationAndCredentials(t *testing.T) {
+	if CurrentAuthorizationContinuationContract != "agent.continue.authorization.v1" {
+		t.Fatalf("authorization continuation contract drifted: %q", CurrentAuthorizationContinuationContract)
+	}
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-authorization", CommandID: "command-authorization",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentAuthorizationContinuationRequest(validCurrentAuthorizationContinuationBody()))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Kind != agentexecutionapp.CurrentContinuationAuthorization ||
+		request.AuthorizationID != "tool-run-sharepoint-1" || request.Action != "authorize" ||
+		request.ProjectID != 7 || request.ActorUserID != 11 ||
+		request.ConversationUUID != "8bc66e50-46c4-4e2c-94ec-daec6c596ac0" ||
+		request.ResponseMessageID != "30e0913e-10d4-43db-b8d0-c7b79480935a" ||
+		!bytes.Equal(request.MCPTokens, []byte(`{"https://sharepoint.example.test":{"access_token":"runtime-secret"}}`)) ||
+		!bytes.Equal(request.IgnoredMCPServers, []byte(`[]`)) ||
+		!bytes.Equal(request.DeclinedMCPServers, []byte(`[]`)) {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
+func TestCurrentAuthorizationContinuationRouteRejectsAmbiguousAndMissingIdentity(t *testing.T) {
 	useCase := &currentStartUseCaseStub{}
 	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
 	for name, body := range map[string]string{
-		"parallel": strings.Replace(validCurrentContinuationBody(), `"hitl_decisions":[]`, `"hitl_decisions":[{"interrupt_id":"child","action":"approve"}]`, 1),
-		"mcp":      strings.Replace(validCurrentContinuationBody(), `"mcp_tokens":{}`, `"mcp_tokens":{"server":{"access_token":"not-forwarded"}}`, 1),
+		"missing exact identity": strings.Replace(
+			validCurrentAuthorizationContinuationBody(),
+			`"authorization_request_id":"tool-run-sharepoint-1"`,
+			`"authorization_request_id":""`,
+			1,
+		),
+		"mixed HITL resume": strings.Replace(
+			validCurrentAuthorizationContinuationBody(),
+			`"hitl_resume":false`,
+			`"hitl_resume":true`,
+			1,
+		),
+		"unsupported action": strings.Replace(
+			validCurrentAuthorizationContinuationBody(),
+			`"authorization_action":"authorize"`,
+			`"authorization_action":"approve"`,
+			1,
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, currentAuthorizationContinuationRequest(body))
+			if response.Code != http.StatusUnprocessableEntity || useCase.continuationCalls != 0 {
+				t.Fatalf("status=%d calls=%d body=%s",
+					response.Code, useCase.continuationCalls, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestCurrentContinuationRouteAcceptsBoundedParallelDecisions(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-parallel", CommandID: "command-parallel",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	body := strings.Replace(validCurrentContinuationBody(), `"hitl_action":"edit",`, `"hitl_action":"",`, 1)
+	body = strings.Replace(body, `"hitl_value":"delete only merged branches",`, ``, 1)
+	body = strings.Replace(
+		body,
+		`"hitl_decisions":[]`,
+		`"hitl_decisions":[{"interrupt_id":"interrupt-1","action":"approve"},{"interrupt_id":"interrupt-2","tool_call_id":"tool-2","action":"block_with_comment","value":"archive first"}]`,
+		1,
+	)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentContinuationRequest(body))
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		len(useCase.continuationRequest.HITLDecisions) != 2 ||
+		useCase.continuationRequest.HITLDecisions[1].InterruptID != "interrupt-2" ||
+		useCase.continuationRequest.HITLDecisions[1].ToolCallID != "tool-2" ||
+		useCase.continuationRequest.HITLDecisions[1].Value != "archive first" {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, useCase.continuationRequest, response.Body.String())
+	}
+}
+
+func TestCurrentContinuationRouteRejectsAmbiguousParallelAndMCPResumeShapes(t *testing.T) {
+	useCase := &currentStartUseCaseStub{}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	for name, body := range map[string]string{
+		"plural with scalar": strings.Replace(validCurrentContinuationBody(), `"hitl_decisions":[]`, `"hitl_decisions":[{"interrupt_id":"child","action":"approve"}]`, 1),
+		"private child route": strings.Replace(
+			strings.Replace(strings.Replace(validCurrentContinuationBody(), `"hitl_action":"edit",`, `"hitl_action":"",`, 1), `"hitl_value":"delete only merged branches",`, ``, 1),
+			`"hitl_decisions":[]`,
+			`"hitl_decisions":[{"interrupt_id":"child","action":"approve","child_thread_id":"private"}]`,
+			1,
+		),
+		"mcp": strings.Replace(validCurrentContinuationBody(), `"mcp_tokens":{}`, `"mcp_tokens":{"server":{"access_token":"not-forwarded"}}`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -461,6 +554,19 @@ func currentContinuationRequest(body string) *http.Request {
 	return request
 }
 
+func currentAuthorizationContinuationRequest(body string) *http.Request {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/continue_predict/prompt_lib/7/8bc66e50-46c4-4e2c-94ec-daec6c596ac0?execution_contract="+CurrentAuthorizationContinuationContract,
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = "10.0.0.8:43120"
+	return request
+}
+
 func validCurrentContinuationBody() string {
 	return `{
   "project_id":7,
@@ -475,6 +581,22 @@ func validCurrentContinuationBody() string {
   "ignored_mcp_servers":[],
   "user_declined_mcp_servers":[],
   "user_input":"edit"
+}`
+}
+
+func validCurrentAuthorizationContinuationBody() string {
+	return `{
+  "project_id":7,
+  "conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+  "message_id":"30e0913e-10d4-43db-b8d0-c7b79480935a",
+  "thread_id":"thread-current-1",
+  "hitl_resume":false,
+  "hitl_decisions":[],
+  "mcp_tokens":{"https://sharepoint.example.test":{"access_token":"runtime-secret"}},
+  "ignored_mcp_servers":[],
+  "user_declined_mcp_servers":[],
+  "authorization_request_id":"tool-run-sharepoint-1",
+  "authorization_action":"authorize"
 }`
 }
 

@@ -127,11 +127,17 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 			return nil, ErrUnsupportedCurrentAgentStart
 		}
 		if toolType == "application" {
-			frozen, ok := freezeCurrentAdhocApplicationReference(
-				tool,
-				request.ProjectID,
-				request.ActorUserID,
-			)
+			var frozen map[string]any
+			var ok bool
+			if tool["id"] == nil {
+				frozen, ok = freezeCurrentAdhocApplicationReference(
+					tool,
+					request.ProjectID,
+					request.ActorUserID,
+				)
+			} else {
+				frozen, ok = freezeCurrentStoredApplicationReference(tool)
+			}
 			if !ok {
 				return nil, ErrUnsupportedCurrentAgentStart
 			}
@@ -198,6 +204,48 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 	return encoded, nil
 }
 
+// freezeCurrentStoredApplicationReference preserves the current EliteATool
+// application shape used by saved agents and pipelines. Application references
+// contain identity only; they must never pass through the generic configuration
+// resolver or carry provider credentials in their settings.
+func freezeCurrentStoredApplicationReference(tool map[string]any) (map[string]any, bool) {
+	toolID, validToolID := positiveCurrentAgentJSONInteger(tool["id"])
+	name, validName := boundedCurrentAgentReferenceString(tool["name"], false)
+	_, validDescription := optionalBoundedCurrentAgentReferenceString(tool["description"])
+	authorID, validAuthorID := positiveCurrentAgentJSONInteger(tool["author_id"])
+	toolkitName, validToolkitName := boundedCurrentAgentReferenceString(tool["toolkit_name"], false)
+	agentType, validAgentType := boundedCurrentAgentReferenceString(tool["agent_type"], false)
+	createdAt, validCreatedAt := boundedCurrentAgentReferenceString(tool["created_at"], false)
+	settings, validSettings := tool["settings"].(map[string]any)
+	meta, validMeta := tool["meta"].(map[string]any)
+	variables, validVariables := tool["variables"].([]any)
+	isPinned, validPinned := tool["is_pinned"].(bool)
+	if !validToolID || !validName || !validDescription || !validAuthorID ||
+		!validToolkitName || toolkitName != name || !validAgentType || !validCreatedAt ||
+		!validSettings || len(settings) != 2 || !validMeta || !validVariables || len(variables) != 0 ||
+		!validPinned || isPinned || tool["author"] != nil || tool["online"] != nil ||
+		tool["icon_meta"] != nil || tool["indexes_count"] != nil {
+		return nil, false
+	}
+	applicationID, validApplicationID := positiveCurrentAgentJSONInteger(settings["application_id"])
+	versionID, validVersionID := positiveCurrentAgentJSONInteger(settings["application_version_id"])
+	if !validApplicationID || !validVersionID {
+		return nil, false
+	}
+
+	tool["id"] = toolID
+	tool["author_id"] = authorID
+	tool["settings"] = map[string]any{
+		"application_id":         applicationID,
+		"application_version_id": versionID,
+	}
+	tool["meta"] = meta
+	tool["variables"] = variables
+	tool["agent_type"] = agentType
+	tool["created_at"] = createdAt
+	return tool, true
+}
+
 // freezeCurrentAdhocApplicationReference admits only the current same-project
 // application reference emitted by ResolveCurrentAdhocTurn. The child application
 // remains SDK-owned and is fetched by its application/version identity;
@@ -258,6 +306,15 @@ func boundedCurrentAgentReferenceString(value any, allowEmpty bool) (string, boo
 	text, ok := value.(string)
 	return text, ok && (allowEmpty || text != "") &&
 		len(text) <= configurationapp.MaxCurrentToolkitSettingsIdentifier &&
+		!strings.ContainsAny(text, "\x00\r\n")
+}
+
+func optionalBoundedCurrentAgentReferenceString(value any) (*string, bool) {
+	if value == nil {
+		return nil, true
+	}
+	text, ok := value.(string)
+	return &text, ok && len(text) <= configurationapp.MaxCurrentToolkitSettingsIdentifier &&
 		!strings.ContainsAny(text, "\x00\r\n")
 }
 

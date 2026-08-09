@@ -10,9 +10,24 @@ type testClock struct{ t time.Time }
 
 func (c *testClock) now() time.Time          { return c.t }
 func (c *testClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+// The breaker's numbers became operator-settable in issue #12. These tests pin
+// its SEMANTICS — trip at the threshold, sliding window, cooldown, tuple-map
+// bounding — not the production defaults, so they construct the breaker with
+// fixed test values and assert exactly what they asserted before.
+const (
+	testLoopThreshold = 5
+	testLoopWindow    = time.Second
+	testLoopOpenFor   = 30 * time.Second
+)
+
+// testLoopParams are the fixed numbers the behavioural tests below run against.
+func testLoopParams() LoopBreakerParams {
+	return LoopBreakerParams{Threshold: testLoopThreshold, Window: testLoopWindow, OpenFor: testLoopOpenFor}
+}
+
 func newTestBreaker() (*loopBreaker, *testClock) {
 	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
-	b := newLoopBreaker()
+	b := newLoopBreaker(testLoopParams())
 	b.now = clk.now
 	return b, clk
 }
@@ -22,7 +37,7 @@ func newTestBreaker() (*loopBreaker, *testClock) {
 func TestLoopBreaker_TripsAtThreshold(t *testing.T) {
 	b, clk := newTestBreaker()
 
-	for i := 0; i < loopBreakerThreshold-1; i++ {
+	for i := 0; i < testLoopThreshold-1; i++ {
 		ok, _ := b.allow("42", "openai/gpt-4o")
 		if !ok {
 			t.Fatalf("request %d: allow = false, want true (below threshold)", i+1)
@@ -34,8 +49,8 @@ func TestLoopBreaker_TripsAtThreshold(t *testing.T) {
 	if ok {
 		t.Fatal("5th request within 1 s: allow = true, want false (circuit must open)")
 	}
-	if retryAfter != loopBreakerOpenFor {
-		t.Errorf("retryAfter = %v, want %v", retryAfter, loopBreakerOpenFor)
+	if retryAfter != testLoopOpenFor {
+		t.Errorf("retryAfter = %v, want %v", retryAfter, testLoopOpenFor)
 	}
 }
 
@@ -58,7 +73,7 @@ func TestLoopBreaker_SlidingWindow(t *testing.T) {
 func TestLoopBreaker_OpenCircuitRejectsUntilCooldown(t *testing.T) {
 	b, clk := newTestBreaker()
 
-	for i := 0; i < loopBreakerThreshold; i++ {
+	for i := 0; i < testLoopThreshold; i++ {
 		b.allow("42", "openai/gpt-4o")
 	}
 
@@ -78,7 +93,7 @@ func TestLoopBreaker_OpenCircuitRejectsUntilCooldown(t *testing.T) {
 func TestLoopBreaker_TuplesAreIndependent(t *testing.T) {
 	b, _ := newTestBreaker()
 
-	for i := 0; i < loopBreakerThreshold; i++ {
+	for i := 0; i < testLoopThreshold; i++ {
 		b.allow("42", "openai/gpt-4o")
 	}
 	if ok, _ := b.allow("42", "openai/gpt-4o"); ok {
@@ -141,7 +156,7 @@ func TestLoopBreaker_OpenUntilBounded(t *testing.T) {
 	// what the tripping request itself returned.
 	trip := func(model string) bool {
 		var ok bool
-		for i := 0; i < loopBreakerThreshold; i++ {
+		for i := 0; i < testLoopThreshold; i++ {
 			ok, _ = b.allow("p", model)
 		}
 		return ok
@@ -167,7 +182,7 @@ func TestLoopBreaker_OpenUntilBounded(t *testing.T) {
 
 	// Once the cooldowns elapse, the next trip prunes them all: the expired
 	// entries are reclaimed rather than pinned forever.
-	clk.advance(loopBreakerOpenFor + time.Second)
+	clk.advance(testLoopOpenFor + time.Second)
 	if trip("post-cooldown-model") {
 		t.Error("threshold burst after the table was reclaimed: allow = true, want false")
 	}
@@ -185,11 +200,11 @@ func TestLoopBreaker_OpenUntilBounded(t *testing.T) {
 func TestLoopBreaker_PruneReclaimsExpiredOpenCircuits(t *testing.T) {
 	b, clk := newTestBreaker()
 
-	for i := 0; i < loopBreakerThreshold; i++ {
+	for i := 0; i < testLoopThreshold; i++ {
 		b.allow("42", "openai/gpt-4o")
 	}
-	clk.advance(loopBreakerOpenFor + time.Second)
-	for i := 0; i < loopBreakerThreshold; i++ {
+	clk.advance(testLoopOpenFor + time.Second)
+	for i := 0; i < testLoopThreshold; i++ {
 		b.allow("42", "anthropic/claude-sonnet-5") // still live after the prune
 	}
 
@@ -218,4 +233,92 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[pos:])
+}
+
+// ─── issue #12: the backstop's numbers are operator settings ────────────────
+
+// TestLoopBreaker_DefaultDoesNotTripOrdinaryBurst is the issue #12 regression
+// guard. The shipped numbers (5 requests / 1 s / 30 s lockout) made this a
+// hardcoded 5 req/s per-(project, model) rate limiter armed in production: a
+// 50-VU k6 run against one tuple measured 99.96% HTTP 429. Ordinary bursty
+// traffic must pass at the default.
+//
+// 50 is not arbitrary: it is GATEWAY_PROVIDER_CONCURRENCY, the per-replica
+// provider worker pool, i.e. the most concurrent work one replica can actually
+// have in flight for a tuple. If the backstop rejects THAT, it is rejecting
+// traffic the gateway was built to serve.
+//
+// Mutation: set DefaultLoopBreakerThreshold back to 5 — this test MUST fail.
+func TestLoopBreaker_DefaultDoesNotTripOrdinaryBurst(t *testing.T) {
+	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
+	b := newLoopBreaker(LoopBreakerParams{}) // production defaults
+	b.now = clk.now
+
+	const ordinaryBurst = 50
+	for i := 0; i < ordinaryBurst; i++ {
+		if ok, _ := b.allow("42", "openai/gpt-4o"); !ok {
+			t.Fatalf("request %d of an ordinary %d-request burst was rejected at the DEFAULT threshold — "+
+				"the backstop is a de-facto rate limiter on production traffic (issue #12)", i+1, ordinaryBurst)
+		}
+		clk.advance(time.Millisecond)
+	}
+}
+
+// TestLoopBreaker_DefaultStillContainsRunawayAmplification is the other side of
+// the same trade-off: raising the threshold must not make the layer decorative.
+// Volume beyond what any replica could serve is still contained.
+func TestLoopBreaker_DefaultStillContainsRunawayAmplification(t *testing.T) {
+	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
+	b := newLoopBreaker(LoopBreakerParams{})
+	b.now = clk.now
+
+	tripped := false
+	for i := 0; i < DefaultLoopBreakerThreshold*2; i++ {
+		if ok, retryAfter := b.allow("42", "openai/gpt-4o"); !ok {
+			tripped = true
+			if retryAfter != DefaultLoopBreakerOpenFor {
+				t.Errorf("retryAfter = %v, want the default open duration %v", retryAfter, DefaultLoopBreakerOpenFor)
+			}
+			break
+		}
+		// All inside one window: no clock advance.
+	}
+	if !tripped {
+		t.Fatalf("%d requests in a single window did not trip the backstop — the layer is decorative",
+			DefaultLoopBreakerThreshold*2)
+	}
+}
+
+// TestLoopBreaker_OperatorParamsApply proves the numbers are genuinely settings
+// and not a knob that is parsed and then ignored — the failure mode that left a
+// previous guard disarmed in every install.
+func TestLoopBreaker_OperatorParamsApply(t *testing.T) {
+	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
+	b := newLoopBreaker(LoopBreakerParams{Threshold: 3, Window: 2 * time.Second, OpenFor: 7 * time.Second})
+	b.now = clk.now
+
+	for i := 0; i < 2; i++ {
+		if ok, _ := b.allow("1", "m"); !ok {
+			t.Fatalf("request %d below the operator threshold of 3 was rejected", i+1)
+		}
+		clk.advance(500 * time.Millisecond) // still inside the 2 s window
+	}
+	ok, retryAfter := b.allow("1", "m")
+	if ok {
+		t.Fatal("the 3rd request did not trip the operator-set threshold of 3")
+	}
+	if retryAfter != 7*time.Second {
+		t.Fatalf("retryAfter = %v, want the operator-set 7s", retryAfter)
+	}
+}
+
+// TestWithLoopBreakerParams_NegativeThresholdDisarms pins the explicit
+// disarm sentinel. main() logs this mode loudly (logLoopBreakerMode); what
+// matters here is that it really does admit everything rather than falling
+// back to a default the operator did not ask for.
+func TestWithLoopBreakerParams_NegativeThresholdDisarms(t *testing.T) {
+	h := NewHandler(&trackingRouter{}, nil, nil, WithLoopBreakerParams(LoopBreakerParams{Threshold: -1}))
+	if h.loopGuard != nil {
+		t.Fatal("a negative threshold must disarm the backstop entirely, not fall back to the default")
+	}
 }
