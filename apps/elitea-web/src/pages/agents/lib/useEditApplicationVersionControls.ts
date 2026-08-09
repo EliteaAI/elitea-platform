@@ -1,0 +1,142 @@
+import { useCallback, useMemo } from 'react';
+
+import { useNavigate } from '@tanstack/react-router';
+import { useQueryClient } from '@tanstack/react-query';
+import { useWatch, type Control } from 'react-hook-form';
+
+import type { ApplicationCreationInput } from '@/entities/application-form';
+import { getGetApplicationQueryKey } from '@/shared/api/generated/applications/applications';
+import type {
+  ApplicationVersionDetail,
+  ApplicationVersionSummary,
+  VersionWriteRequest,
+} from '@/shared/api/generated/model';
+
+import {
+  toVersionOptions,
+  toVersionWriteBody,
+  type EditApplicationVersionOption,
+} from './editApplicationMappers';
+
+export interface EditApplicationVersionControlsArgs {
+  readonly projectId: string | undefined;
+  readonly applicationId: number | undefined;
+  readonly tab: string | undefined;
+  readonly versions: readonly ApplicationVersionSummary[];
+  readonly activeVersion: ApplicationVersionDetail | undefined;
+  /**
+   * The page's RHF control. Conversation starters are read LIVE off it
+   * (`useWatch`), not off `activeVersion`, because the baseline clones the
+   * CURRENTLY EDITED `version_details` onto a new version
+   * (`SaveNewVersionButton.jsx`) — starters typed but not yet saved must
+   * travel with it.
+   */
+  readonly control: Control<ApplicationCreationInput>;
+  /** Public-project viewer: the selector stays, the write affordance goes (`ApplicationTabBar.jsx:65`). */
+  readonly isReadOnly: boolean;
+  /** While the detail is in flight there is neither a version list nor an active version to show. */
+  readonly isFetching: boolean;
+}
+
+export interface EditApplicationVersionControlsState {
+  /** `false` until there is a real agent id and the detail has settled — the page's single render gate, kept here so that page's own cyclomatic budget (§3.5, 12) is not spent on it. */
+  readonly showVersionControls: boolean;
+  /** The agent id in the string form `SaveNewVersionButton` takes. `''` only while `showVersionControls` is `false`, i.e. never rendered. */
+  readonly applicationIdText: string;
+  readonly versionOptions: readonly EditApplicationVersionOption[];
+  readonly activeVersionId: number | undefined;
+  readonly versionBody: Omit<VersionWriteRequest, 'name'>;
+  readonly canSaveNewVersion: boolean;
+  readonly handleSelectVersion: (version: EditApplicationVersionOption) => void;
+  readonly handleNewVersionSaved: (created: ApplicationVersionDetail) => void;
+}
+
+/** `conversation_starters` is typed as a loose array on the form input; the write body takes `string[]`. */
+function isString(entry: unknown): entry is string {
+  return typeof entry === 'string';
+}
+
+/** Stable empty body for the (transient) window before the active version has resolved — a fresh object literal each render would make `versionBody` a new prop reference on every render of the page. */
+const EMPTY_VERSION_BODY: Omit<VersionWriteRequest, 'name'> = {};
+
+/**
+ * The page-side half of #134's version bar: everything
+ * `features/agents`' deliberately-dumb `AgentVersionControls` refuses to own
+ * — which route a version switch navigates to, what body a "Save As Version"
+ * clones, and what happens to the cache once one is created.
+ *
+ * Split out of `EditApplication.tsx` for the same §3.5 file-length and
+ * oxlint-complexity reasons as its `useEditApplicationData`/
+ * `useEditApplicationForm` siblings in this directory.
+ *
+ * **Version switching is a NAVIGATION, not a local state change.** The
+ * baseline's `ApplicationVersionSelect` mutates an RTK-Query cache entry in
+ * place (`eliteaApi.util.updateQueryData`) and separately keeps the URL's
+ * `:version` segment in sync; this app already routes `:version`
+ * (ROUTE-067, `routes/_shell/agents/$tab.$agentId.$version.tsx`) and
+ * `useEditApplicationData` already re-fetches the explicit version whenever
+ * that param differs from the detail's default version — so navigating IS
+ * the switch, with no cache surgery and no second source of truth for
+ * "which version am I on".
+ *
+ * **After a new version is created** the application-detail response (which
+ * carries `versions[]`, the dropdown's source) is stale by exactly one
+ * entry, and `useSaveNewVersion` deliberately invalidates nothing (see its
+ * own doc comment). Invalidate it here, then navigate onto the new version —
+ * the same order the baseline's `onSuccess` handler uses (refetch details,
+ * then move the URL onto the created version).
+ */
+export function useEditApplicationVersionControls(
+  args: EditApplicationVersionControlsArgs,
+): EditApplicationVersionControlsState {
+  const { projectId, applicationId, tab, versions, activeVersion, control, isReadOnly, isFetching } = args;
+
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const versionOptions = useMemo(() => toVersionOptions(versions), [versions]);
+
+  const watchedStarters = useWatch({ control, name: 'version_details.conversation_starters' });
+
+  const versionBody = useMemo(() => {
+    if (activeVersion === undefined) return EMPTY_VERSION_BODY;
+    return toVersionWriteBody(activeVersion, (watchedStarters ?? []).filter(isString));
+  }, [activeVersion, watchedStarters]);
+
+  const goToVersion = useCallback(
+    (versionId: number) => {
+      if (applicationId === undefined) return;
+      void navigate({
+        to: '/agents/$tab/$agentId/$version',
+        params: { tab: tab ?? 'latest', agentId: String(applicationId), version: String(versionId) },
+      });
+    },
+    [navigate, applicationId, tab],
+  );
+
+  const handleSelectVersion = useCallback(
+    (version: EditApplicationVersionOption) => goToVersion(version.id),
+    [goToVersion],
+  );
+
+  const handleNewVersionSaved = useCallback(
+    (created: ApplicationVersionDetail) => {
+      if (projectId !== undefined && applicationId !== undefined) {
+        void queryClient.invalidateQueries({ queryKey: getGetApplicationQueryKey(projectId, applicationId) });
+      }
+      goToVersion(Number(created.id));
+    },
+    [queryClient, projectId, applicationId, goToVersion],
+  );
+
+  return {
+    showVersionControls: !isFetching && applicationId !== undefined,
+    applicationIdText: applicationId === undefined ? '' : String(applicationId),
+    versionOptions,
+    activeVersionId: activeVersion === undefined ? undefined : Number(activeVersion.id),
+    versionBody,
+    canSaveNewVersion: !isReadOnly && activeVersion !== undefined,
+    handleSelectVersion,
+    handleNewVersionSaved,
+  };
+}
