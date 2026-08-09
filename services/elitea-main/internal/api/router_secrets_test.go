@@ -12,21 +12,47 @@ import (
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 )
 
-// secretsRoutes is the URL surface the secrets domain must expose, taken from
-// the only client of it — apps/elitea-web/src/entities/secret/api/secretApi.ts
-// (`secretsBasePath` / `secretPath` / `hidePath`, resolved against the
-// `/api/v2` base in shared/api/http.ts). Three sibling prefixes, only one of
-// which is "secrets".
+// secretsRoutes is the URL surface the secrets domain must expose: pylon's
+// /api/v2/<plugin>/<resource-module>/<mode>/<params>, where the plugin is
+// `secrets` and the resource modules are legacy/plugins/secrets/api/v2/
+// {secrets,secret,hide}.py.
+//
+// This list previously held the UNPREFIXED shape, which #137 moved the server
+// to after reading the doubled segment as a Go double-mount bug. It is not a
+// bug — the pinned baseline client (apps/elitea-ui/src/api/secrets.js:3,
+// apiSlicePath = '/secrets'), elitea-sdk, admin_ui and qa/elitea-api-testing
+// all call the prefixed form, and moving the server broke all four (#151).
 var secretsRoutes = []struct {
 	method string
 	route  string
 }{
-	{http.MethodGet, "/api/v2/secrets/{mode}/{projectID}"},
-	{http.MethodPost, "/api/v2/secrets/{mode}/{projectID}"},
-	{http.MethodGet, "/api/v2/secret/{mode}/{projectID}/{name}"},
-	{http.MethodPut, "/api/v2/secret/{mode}/{projectID}/{name}"},
-	{http.MethodDelete, "/api/v2/secret/{mode}/{projectID}/{name}"},
-	{http.MethodPost, "/api/v2/hide/{mode}/{projectID}/{name}"},
+	{http.MethodGet, "/api/v2/secrets/secrets/{mode}/{projectID}"},
+	{http.MethodPost, "/api/v2/secrets/secrets/{mode}/{projectID}"},
+	{http.MethodGet, "/api/v2/secrets/secret/{mode}/{projectID}/{name}"},
+	{http.MethodPut, "/api/v2/secrets/secret/{mode}/{projectID}/{name}"},
+	{http.MethodDelete, "/api/v2/secrets/secret/{mode}/{projectID}/{name}"},
+	{http.MethodPost, "/api/v2/secrets/hide/{mode}/{projectID}/{name}"},
+	// The mode-less show route pylon also serves and elitea-sdk is the sole
+	// caller of (elitea_sdk/runtime/clients/client.py:108 builds
+	// {api_v2}/secrets/secret/{project_id} and appends /{name}).
+	{http.MethodGet, "/api/v2/secrets/secret/{projectID}/{name}"},
+}
+
+// v2RootSecretsRequests is the shape #137 introduced. It must be GONE: while
+// it was served, every consumer outside apps/elitea-web 404'd. Asserted by
+// REQUEST rather than by walking the route table, because chi.Walk reports a
+// Mount("/", …) as a wildcard rather than as the concrete patterns behind it,
+// so a table assertion would pass against a handler mounted at the v2 root.
+var v2RootSecretsRequests = []struct {
+	method string
+	path   string
+}{
+	{http.MethodGet, "/api/v2/secrets/default/1"},
+	{http.MethodPost, "/api/v2/secrets/default/1"},
+	{http.MethodGet, "/api/v2/secret/default/1/token"},
+	{http.MethodPut, "/api/v2/secret/default/1/token"},
+	{http.MethodDelete, "/api/v2/secret/default/1/token"},
+	{http.MethodPost, "/api/v2/hide/default/1/token"},
 }
 
 func walkRoutes(t *testing.T, router chi.Router) map[string]struct{} {
@@ -41,35 +67,39 @@ func walkRoutes(t *testing.T, router chi.Router) map[string]struct{} {
 	return got
 }
 
-// serveStatus runs one request through the router and reports its status. A
-// panic from a handler entered with a nil pool is reported as 500, the same
-// answer apimw.Recover produces, so callers can treat it as "the route
-// matched" without depending on which middleware stack is in front.
-func serveStatus(t *testing.T, router chi.Router, method, path string) int {
+// serveResponse runs one request through the router and returns the recorder.
+// A panic from a handler entered with a nil pool is left as the recorder's
+// zero-value 200→500 default, the same answer apimw.Recover produces, so
+// callers can treat a 500 as "the route matched and the handler ran".
+func serveResponse(t *testing.T, router chi.Router, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	code := http.StatusInternalServerError
 	func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				return
+				recorder.Code = http.StatusInternalServerError
 			}
-			code = recorder.Code
 		}()
 		router.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
 	}()
-	return code
+	return recorder
 }
 
-// TestRouterRegistersSecretsRoutesAtTheV2Root pins the fix for #137. The
-// handler's patterns are absolute and span /secrets, /secret and /hide, so it
-// is Register(r)ed onto the /api/v2 router; mounting it under "/secrets"
-// prefixed all three and made every secrets call in the product 404
-// (measured: GET /api/v2/secrets/prompt_lib/1 -> 404, while
-// /api/v2/secrets/secrets/prompt_lib/1 -> 200).
-func TestRouterRegistersSecretsRoutesAtTheV2Root(t *testing.T) {
+func serveStatus(t *testing.T, router chi.Router, method, path string) int {
+	t.Helper()
+	return serveResponse(t, router, method, path).Code
+}
+
+func newSecretsTestRouter(t *testing.T) chi.Router {
+	t.Helper()
 	t.Setenv("AUTH_DEV_MODE", "true")
-	router := NewRouter(RouterConfig{SkillsRepo: struct{ v2skills.Repository }{}})
+	return NewRouter(RouterConfig{SkillsRepo: struct{ v2skills.Repository }{}})
+}
+
+// TestRouterServesSecretsUnderThePluginPrefix pins #151: the six routes sit
+// under the `secrets` plugin mount, reproducing the pylon URL shape.
+func TestRouterServesSecretsUnderThePluginPrefix(t *testing.T) {
+	router := newSecretsTestRouter(t)
 
 	got := walkRoutes(t, router)
 
@@ -94,46 +124,49 @@ func TestRouterRegistersSecretsRoutesAtTheV2Root(t *testing.T) {
 	}
 }
 
-// TestRouterDoesNotDoubleMountSecrets is the other half: the defect shape
-// itself must be absent. Re-mounting the handler under "/secrets" reintroduces
-// the doubled segment, which this catches even if the correct routes were
-// additionally registered alongside it.
-func TestRouterDoesNotDoubleMountSecrets(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
-	router := NewRouter(RouterConfig{SkillsRepo: struct{ v2skills.Repository }{}})
+// TestRouterDoesNotServeSecretsAtTheV2Root is the other half: #137's shape
+// must be absent, even if the correct routes were registered alongside it —
+// serving both would leave two conventions live, which is what #151 set out
+// to end.
+func TestRouterDoesNotServeSecretsAtTheV2Root(t *testing.T) {
+	router := newSecretsTestRouter(t)
 
-	for route := range walkRoutes(t, router) {
-		for _, doubled := range []string{"/secrets/secrets/", "/secrets/secret/", "/secrets/hide/"} {
-			if strings.Contains(route, doubled) {
-				t.Errorf("route %q carries the doubled prefix %q (#137)", route, doubled)
-			}
+	// Control: the prefixed shape IS served, so a 404 below means "this path
+	// is not routed" rather than "the router serves no secrets at all".
+	if code := serveStatus(t, router, http.MethodGet, "/api/v2/secrets/secrets/default/1"); code == http.StatusNotFound {
+		t.Fatalf("the prefixed list route 404s, so the assertions below prove nothing")
+	}
+
+	for _, unwanted := range v2RootSecretsRequests {
+		if code := serveStatus(t, router, unwanted.method, unwanted.path); code != http.StatusNotFound {
+			t.Errorf("%s %s answers %d, not 404; #137's v2-root shape is back", unwanted.method, unwanted.path, code)
 		}
 	}
 }
 
 // TestSecretsRoutesAnswerRequests proves the registration is reachable through
-// the real router, not merely present in the route table: an unregistered
-// sibling path 404s while every secrets path resolves to its handler. A nil
-// pool makes the handlers panic once entered, which apimw.Recover turns into a
-// 500 — a 500 is proof the route matched, and is what this asserts.
+// the real router, not merely present in the route table. A nil pool makes the
+// handlers panic once entered, which apimw.Recover turns into a 500 — a 500 is
+// proof the route matched and the mode gate let the request through.
 func TestSecretsRoutesAnswerRequests(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
-	router := NewRouter(RouterConfig{SkillsRepo: struct{ v2skills.Repository }{}})
+	router := newSecretsTestRouter(t)
 
 	requests := []struct {
 		method string
 		path   string
 	}{
-		{http.MethodGet, "/api/v2/secrets/prompt_lib/1"},
-		{http.MethodPost, "/api/v2/secrets/prompt_lib/1"},
-		{http.MethodGet, "/api/v2/secret/prompt_lib/1/token"},
-		{http.MethodPut, "/api/v2/secret/prompt_lib/1/token"},
-		{http.MethodDelete, "/api/v2/secret/prompt_lib/1/token"},
-		{http.MethodPost, "/api/v2/hide/prompt_lib/1/token"},
+		{http.MethodGet, "/api/v2/secrets/secrets/default/1"},
+		{http.MethodPost, "/api/v2/secrets/secrets/default/1"},
+		{http.MethodGet, "/api/v2/secrets/secret/default/1/token"},
+		{http.MethodPut, "/api/v2/secrets/secret/default/1/token"},
+		{http.MethodDelete, "/api/v2/secrets/secret/default/1/token"},
+		{http.MethodPost, "/api/v2/secrets/hide/default/1/token"},
+		// elitea-sdk's mode-less show route.
+		{http.MethodGet, "/api/v2/secrets/secret/1/token"},
 	}
 
 	// Control: an unregistered path in the same namespace still 404s.
-	if code := serveStatus(t, router, http.MethodGet, "/api/v2/secrets_not_a_route/prompt_lib/1"); code != http.StatusNotFound {
+	if code := serveStatus(t, router, http.MethodGet, "/api/v2/secrets/not_a_route/default/1"); code != http.StatusNotFound {
 		t.Fatalf("an unregistered path answers %d, so the assertions below cannot detect a missing route", code)
 	}
 
@@ -142,6 +175,43 @@ func TestSecretsRoutesAnswerRequests(t *testing.T) {
 			code := serveStatus(t, router, request.method, request.path)
 			if code == http.StatusNotFound || code == http.StatusMethodNotAllowed {
 				t.Errorf("status = %d: the path the client calls is not routed", code)
+			}
+		})
+	}
+}
+
+// TestSecretsModeDispatch pins the mode half of #151. pylon's
+// APIBase.proxy_method looks `mode` up in mode_handlers and abort(404)s on a
+// miss, so an invented mode must not be silently accepted — `prompt_lib`, the
+// third convention the new client had introduced, is exactly such a miss.
+//
+// `administration` selects pylon's AdminAPI over the GLOBAL vault
+// (VaultClient() with no project); this Handler implements only the project
+// handler, so it answers 501 rather than quietly serving — and, on write,
+// MUTATING — project 0's vault in its place.
+func TestSecretsModeDispatch(t *testing.T) {
+	router := newSecretsTestRouter(t)
+
+	cases := []struct {
+		name string
+		path string
+		want int
+		body string
+	}{
+		{"invented mode is rejected", "/api/v2/secrets/secrets/prompt_lib/1", http.StatusNotFound, "unknown mode"},
+		{"administration is not implemented", "/api/v2/secrets/secrets/administration/0", http.StatusNotImplemented, "administration mode is not implemented"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := serveResponse(t, router, http.MethodGet, tc.path)
+			if recorder.Code != tc.want {
+				t.Errorf("status = %d, want %d", recorder.Code, tc.want)
+			}
+			// The status alone does not discriminate a mode rejection from
+			// chi's own "no such route" 404, so the body is asserted too.
+			if !strings.Contains(recorder.Body.String(), tc.body) {
+				t.Errorf("body = %q, want it to contain %q", recorder.Body.String(), tc.body)
 			}
 		})
 	}

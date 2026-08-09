@@ -584,13 +584,15 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			).Routes())
 
 			// === Secrets ===
-			// Registered onto this router, NOT mounted under "/secrets": the
-			// domain serves three sibling prefixes at the v2 root —
-			// /secrets/{mode}/{projectID}, /secret/{mode}/{projectID}/{name}
-			// and /hide/{mode}/{projectID}/{name} — which is what
-			// entities/secret/api/secretApi.ts calls. A Mount prefixed all
-			// three (#137: the list answered at /secrets/secrets/...).
-			v2secrets.NewHandler(cfg.Pool).Register(r)
+			// Mounted under "/secrets" — the pylon PLUGIN name — while the
+			// subrouter's own three prefixes are the plugin's RESOURCE
+			// MODULES (secrets.py / secret.py / hide.py). The doubled
+			// "secrets" in /api/v2/secrets/secrets/{mode}/{projectID} is the
+			// real legacy shape, shared by apps/elitea-ui, elitea-sdk,
+			// admin_ui and qa/elitea-api-testing. #137 read it as a
+			// double-mount bug and moved the routes to the v2 root, which
+			// broke every consumer outside apps/elitea-web; #151 restores it.
+			r.Mount("/secrets", v2secrets.NewHandler(cfg.Pool).Routes())
 
 			// === Notifications ===
 			r.Route("/notifications", func(r chi.Router) {

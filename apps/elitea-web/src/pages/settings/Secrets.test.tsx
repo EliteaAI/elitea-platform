@@ -52,7 +52,7 @@ import { SecretsContent } from './Secrets';
 
 const BASE = '/api/v2';
 const PERMISSIONS_PATH = `${BASE}/auth/permissions/prompt_lib/:projectId`;
-const SECRETS_PATH = `${BASE}/secrets/prompt_lib/:projectId`;
+const SECRETS_PATH = `${BASE}/secrets/secrets/default/:projectId`;
 
 /** A generous ceiling no legitimately-settling mount should ever approach. */
 const RENDER_LIMIT = 100;
@@ -147,9 +147,13 @@ describe('SecretsContent — happy path', () => {
  * ever issued and the row vanished from state.
  *
  * The POST URL asserted here is also the client-side half of defect 1: it is
- * `/api/v2/secrets/prompt_lib/{projectId}`, the path the Go router now
- * registers (services/elitea-main/internal/api/router.go, pinned by
- * TestRouterRegistersSecretsRoutesAtTheV2Root).
+ * `/api/v2/secrets/secrets/default/{projectId}` — the pylon shape
+ * (plugin `secrets` + resource module `secrets.py` + mode `default`) that
+ * elitea-main serves again since #151, pinned on the Go side by
+ * TestRouterServesSecretsUnderThePluginPrefix. It was briefly
+ * `/api/v2/secrets/prompt_lib/...` — a path and a mode this domain never
+ * had — which #137 moved the server onto, breaking elitea-sdk, admin_ui and
+ * qa/elitea-api-testing.
  */
 describe('SecretsContent — empty list and secret creation (issue 137)', () => {
   function permissionsHandler(): ReturnType<typeof http.get> {
@@ -233,7 +237,7 @@ describe('SecretsContent — empty list and secret creation (issue 137)', () => 
     await waitFor(() => {
       expect(created).toHaveLength(1);
     });
-    expect(created[0]!.url).toContain('/api/v2/secrets/prompt_lib/proj-1');
+    expect(created[0]!.url).toContain('/api/v2/secrets/secrets/default/proj-1');
     expect(created[0]!.body).toEqual({ name: 'API_KEY', value: 's3cret' });
   }, 20_000);
 });

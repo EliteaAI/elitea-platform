@@ -15,11 +15,19 @@
  * secret was impossible end to end.
  *
  * It was impossible for three independent reasons, each pinned by its own
- * `test.fail()` here (issue #137): the secrets routes were double-mounted so
- * every call 404'd, an empty list rendered a permanent skeleton, and a new
- * row's value cell was read-only so `createSecret` was never called. All
- * three are fixed and the markers are gone — these are ordinary passing
- * tests now. Nothing here is skipped: every assertion runs on every run.
+ * `test.fail()` here (issue #137): every secrets call 404'd because client
+ * and server disagreed about the URL, an empty list rendered a permanent
+ * skeleton, and a new row's value cell was read-only so `createSecret` was
+ * never called. All three are fixed and the markers are gone — these are
+ * ordinary passing tests now. Nothing here is skipped: every assertion runs
+ * on every run.
+ *
+ * The URL disagreement was resolved the OTHER way round by #151. #137 had
+ * moved the server onto the client's invented shape; the client's shape was
+ * the wrong one (the doubled `/secrets/secrets/` prefix is genuine pylon —
+ * plugin + resource module — and elitea-sdk, admin_ui and the API test
+ * suite had always used it), so #151 restored the server and corrected the
+ * client, mode included (`default`, not `prompt_lib`).
  *
  * SECRET HYGIENE: the only secret value this file ever handles is a literal
  * created by the test itself. It is never printed, never asserted on by
@@ -36,23 +44,28 @@ import { API_BASE, AUTOTEST_PREFIX, DEFAULT_PROJECT_ID } from '../../fixtures/ap
 const SECRETS_PAGE = `${BASE_URL}/app/settings/secrets`;
 
 /**
- * The list URL `entities/secret/api/secretApi.ts:54-56` actually builds
- * (`secretsBasePath()` → `/secrets/{mode}/{projectID}`, resolved against
- * `shared/api/http.ts`'s `/api/v2` base).
+ * The list URL `entities/secret/api/secretApi.ts` actually builds
+ * (`secretsBasePath()` → `/secrets/secrets/default/{projectID}`, resolved
+ * against `shared/api/http.ts`'s `/api/v2` base).
+ *
+ * pylon serves `/api/v2/<plugin>/<resource-module>/<mode>/<params>`: the
+ * plugin is `secrets` and the resource modules are
+ * `legacy/plugins/secrets/api/v2/{secrets,secret,hide}.py`, so the doubled
+ * segment is the real legacy shape — not the double-mount bug #137 took it
+ * for. #151 restored it on the server and corrected this client, along with
+ * the mode (`default`, pylon's `c.DEFAULT_MODE`, not `prompt_lib`).
  */
-const CLIENT_LIST_URL = `${API_BASE}/secrets/prompt_lib/${DEFAULT_PROJECT_ID}`;
-const CLIENT_LIST_GLOB = '**/api/v2/secrets/prompt_lib/*';
+const CLIENT_LIST_URL = `${API_BASE}/secrets/secrets/default/${DEFAULT_PROJECT_ID}`;
+const CLIENT_LIST_GLOB = '**/api/v2/secrets/secrets/default/*';
 
 /**
- * The served paths, used by the cleanup sweep. The secrets handler is now
- * Register()ed onto the /api/v2 router rather than Mount()ed under
- * `/secrets` (services/elitea-main/internal/api/router.go), so its three
- * prefixes — `/secrets`, `/secret`, `/hide` — sit at the v2 root and the
- * served list path is the same one the client calls.
+ * The served paths, used by the cleanup sweep. These MUST track the URLs
+ * above: a sweep aimed at a path the server does not serve 404s silently
+ * and leaves every `autotest_*-sec` secret behind.
  */
 const SERVED_BASE = CLIENT_LIST_URL;
 const SERVED_ITEM = (name: string): string =>
-  `${API_BASE}/secret/prompt_lib/${DEFAULT_PROJECT_ID}/${encodeURIComponent(name)}`;
+  `${API_BASE}/secrets/secret/default/${DEFAULT_PROJECT_ID}/${encodeURIComponent(name)}`;
 
 /** Unique per run AND per file (`-sec`) so concurrent agents never collide. */
 const secretName = (): string => `${AUTOTEST_PREFIX}j21_${Date.now()}-sec`;
@@ -108,20 +121,29 @@ test('J21b: a failing secrets list surfaces an error toast', async ({ page }) =>
 });
 
 /* ────────────────────────────────────────────────────────────────────────
- * J21c — regression guard for DEFECT 1 (routing, fixed). The client calls
- * `/api/v2/secrets/prompt_lib/1` (`entities/secret/api/secretApi.ts:54-56`).
- * The handler used to be Mount()ed under `/secrets` while registering
- * absolute `/secrets/{mode}/{projectID}` patterns inside the mount, so it
- * answered at `/api/v2/secrets/secrets/prompt_lib/1` and every secrets read
- * and write in the product 404'd. It is now Register()ed onto the /api/v2
- * router (router.go), keeping all three prefixes — /secrets, /secret, /hide
- * — at the root.
+ * J21c — regression guard for DEFECT 1 (routing, fixed). The client and the
+ * server have to agree on ONE URL, and it has to be the legacy one, because
+ * elitea-sdk, admin_ui and qa/elitea-api-testing all call it too (#151).
+ *
+ * Both halves are asserted: the path the client builds answers 200, and the
+ * two shapes that are NOT served answer 404 — the v2-root shape #137
+ * introduced, and the invented `prompt_lib` mode. Without the negative half
+ * this test would pass again the moment the server started serving both,
+ * which is the state #151 set out to end.
  * ──────────────────────────────────────────────────────────────────────── */
-test('J21c: the secrets list endpoint the client calls is registered', async ({ page }) => {
+test('J21c: the secrets list endpoint the client calls is the legacy one, and it is the only one', async ({ page }) => {
   await page.goto(SECRETS_PAGE);
   const resp = await page.request.get(CLIENT_LIST_URL);
   expect(resp.status()).toBe(200);
   expect(Array.isArray(await resp.json())).toBe(true);
+
+  // #137's shape: /api/v2/secrets/{mode}/{projectID}, no plugin prefix.
+  const v2Root = await page.request.get(`${API_BASE}/secrets/default/${DEFAULT_PROJECT_ID}`);
+  expect(v2Root.status()).toBe(404);
+
+  // The invented mode, on the correct path.
+  const inventedMode = await page.request.get(`${API_BASE}/secrets/secrets/prompt_lib/${DEFAULT_PROJECT_ID}`);
+  expect(inventedMode.status()).toBe(404);
 });
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -229,14 +251,22 @@ test.afterAll(async ({ browser }) => {
   // Authenticated context: `browser.newContext()` with no storageState is
   // anonymous, so the sweep would silently 401 and delete nothing.
   const context = await browser.newContext({ storageState: STORAGE_STATE.member });
-  const resp = await context.request.get(SERVED_BASE);
-  if (resp.ok()) {
+  try {
+    const resp = await context.request.get(SERVED_BASE);
+    // Asserted, not `if (resp.ok())`-guarded. A URL change that misses this
+    // file leaves the sweep pointing at a path the server does not serve;
+    // the old guard turned that into a no-op that reported success while
+    // every created secret stayed in the vault. #151 changed these URLs,
+    // which is exactly when that would have happened unnoticed.
+    expect(resp.status(), `cleanup sweep cannot list secrets at ${SERVED_BASE}`).toBe(200);
     const items = (await resp.json()) as { name: string }[];
     for (const item of items) {
       if (item.name.startsWith(AUTOTEST_PREFIX) && item.name.endsWith('-sec')) {
-        await context.request.delete(SERVED_ITEM(item.name));
+        const deleted = await context.request.delete(SERVED_ITEM(item.name));
+        expect(deleted.status(), `cleanup sweep failed to delete ${item.name}`).toBe(204);
       }
     }
+  } finally {
+    await context.close();
   }
-  await context.close();
 });
