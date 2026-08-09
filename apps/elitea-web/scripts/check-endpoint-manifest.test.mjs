@@ -127,8 +127,11 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  *
  * 92 -> 102 when the artifacts/objects + transfer-grant operations landed with
  * this branch's v2.yaml expansion.
+ * 102 -> 109 when #151 added the seven `secrets` paths, a domain v2.yaml had
+ * never described — which is why nothing generated or contract-tested caught
+ * the URL divergence #137 codified.
  */
-const GENERATED_OPERATION_COUNT = 102;
+const GENERATED_OPERATION_COUNT = 109;
 const MANIFEST_ENTRY_COUNT = 180;
 
 describe('GREEN — the real, checked-in manifest', () => {

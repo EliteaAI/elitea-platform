@@ -1963,7 +1963,7 @@
         {
             "id": "secrets.list",
             "method": "GET",
-            "path": "/secrets/{mode}/{projectID}",
+            "path": "/secrets/secrets/{mode}/{projectID}",
             "operationId": null,
             "source": "handwritten",
             "responseSchema": "Secret[]",
@@ -1975,7 +1975,7 @@
         {
             "id": "secrets.create",
             "method": "POST",
-            "path": "/secrets/{mode}/{projectID}",
+            "path": "/secrets/secrets/{mode}/{projectID}",
             "operationId": null,
             "source": "handwritten",
             "responseSchema": "void",
@@ -1987,7 +1987,7 @@
         {
             "id": "secrets.show",
             "method": "GET",
-            "path": "/secret/{mode}/{projectID}/{name}",
+            "path": "/secrets/secret/{mode}/{projectID}/{name}",
             "operationId": null,
             "source": "handwritten",
             "responseSchema": "RevealedSecret",
@@ -1999,7 +1999,7 @@
         {
             "id": "secrets.update",
             "method": "PUT",
-            "path": "/secret/{mode}/{projectID}/{name}",
+            "path": "/secrets/secret/{mode}/{projectID}/{name}",
             "operationId": null,
             "source": "handwritten",
             "responseSchema": "void",
@@ -2011,7 +2011,7 @@
         {
             "id": "secrets.delete",
             "method": "DELETE",
-            "path": "/secret/{mode}/{projectID}/{name}",
+            "path": "/secrets/secret/{mode}/{projectID}/{name}",
             "operationId": null,
             "source": "handwritten",
             "responseSchema": "void",
@@ -2023,7 +2023,7 @@
         {
             "id": "secrets.hide",
             "method": "POST",
-            "path": "/hide/{mode}/{projectID}/{name}",
+            "path": "/secrets/hide/{mode}/{projectID}/{name}",
             "operationId": null,
             "source": "handwritten",
             "responseSchema": "void",

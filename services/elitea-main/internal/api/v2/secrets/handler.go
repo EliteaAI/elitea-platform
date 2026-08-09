@@ -51,28 +51,95 @@ func NewHandler(pool *pgxpool.Pool) *Handler {
 	return h
 }
 
-// Register attaches the secrets routes to r, which must be the /api/v2
-// router itself — the patterns below are absolute, and the domain spans
-// THREE sibling prefixes (/secrets, /secret, /hide), only one of which is
-// "secrets".  Registering onto the caller's router (the convention
-// gateway.GovernanceHandler.Register already uses in internal/api/router.go)
-// is what keeps all three at the v2 root; a Mount("/secrets", …) would have
-// prefixed every one of them, which is exactly the defect in #137 —
-// GET /api/v2/secrets/{mode}/{projectID} 404'd while the client called it
-// and the handler answered at /api/v2/secrets/secrets/{mode}/{projectID}.
-func (h *Handler) Register(r chi.Router) {
+// Legacy pylon API modes (legacy/plugins/shared/tools/config.py:40-41).
+// `mode` is a real path segment that SELECTS THE HANDLER in pylon
+// (api_tools.APIBase.proxy_method looks it up in mode_handlers and
+// abort(404)s on a miss), not decoration.
+const (
+	// modeDefault is pylon's c.DEFAULT_MODE: the project-scoped vault
+	// (VaultClient.from_project(project_id)).  It is also what pylon uses
+	// when the segment is omitted entirely — proxy_method's `mode` kwarg
+	// defaults to "default", and api_tools.with_modes registers both the
+	// mode-ful and the mode-less URL for every resource.
+	modeDefault = "default"
+	// modeAdministration is pylon's c.ADMINISTRATION_MODE: a DIFFERENT
+	// handler over the GLOBAL vault (a bare VaultClient(), project_id nil
+	// → row id "project-None"), with different request/response shapes.
+	// This Go handler implements the project handler only; see requireMode.
+	modeAdministration = "administration"
+)
+
+// Routes returns the secrets subrouter.  It is Mount()ed at "/secrets" by
+// internal/api/router.go, which reproduces the pylon URL shape exactly:
+//
+//	/api/v2/<plugin>/<resource-module>/<mode>/<params>
+//
+// The plugin is `secrets` (the mount prefix) and the resource modules are
+// legacy/plugins/secrets/api/v2/{secrets,secret,hide}.py, so the served
+// paths are /api/v2/secrets/{secrets,secret,hide}/…  The doubled "secrets"
+// is the REAL legacy shape, not the double-mount bug #137 took it for: the
+// pinned baseline client agrees (apps/elitea-ui/src/api/secrets.js:3 sets
+// apiSlicePath = '/secrets' and appends '/secrets/default/<id>'), and so do
+// elitea-sdk (runtime/clients/{client,sandbox_client}.py), admin_ui
+// (frontend/src/api/secretsApi.js) and qa/elitea-api-testing
+// (utils/utils.py:322).  #137 moved these routes to the v2 root and broke
+// all four; #151 restores them and moves the new client onto this shape.
+func (h *Handler) Routes() chi.Router {
+	r := chi.NewRouter()
 	// GET  /secrets/{mode}/{projectID}            – list secret names
-	r.Get("/secrets/{mode}/{projectID}", h.List)
+	r.Get("/secrets/{mode}/{projectID}", requireMode(h.List))
 	// POST /secrets/{mode}/{projectID}            – create a new secret
-	r.Post("/secrets/{mode}/{projectID}", h.Create)
+	r.Post("/secrets/{mode}/{projectID}", requireMode(h.Create))
 	// GET  /secret/{mode}/{projectID}/{name}      – get a single secret (with value)
-	r.Get("/secret/{mode}/{projectID}/{name}", h.Get)
+	r.Get("/secret/{mode}/{projectID}/{name}", requireMode(h.Get))
 	// PUT  /secret/{mode}/{projectID}/{name}      – rename / update a secret
-	r.Put("/secret/{mode}/{projectID}/{name}", h.Update)
+	r.Put("/secret/{mode}/{projectID}/{name}", requireMode(h.Update))
 	// DELETE /secret/{mode}/{projectID}/{name}    – delete a secret
-	r.Delete("/secret/{mode}/{projectID}/{name}", h.Delete)
+	r.Delete("/secret/{mode}/{projectID}/{name}", requireMode(h.Delete))
 	// POST /hide/{mode}/{projectID}/{name}        – move secret to hidden_secrets
-	r.Post("/hide/{mode}/{projectID}/{name}", h.Hide)
+	r.Post("/hide/{mode}/{projectID}/{name}", requireMode(h.Hide))
+
+	// The mode-LESS form of the show route, which pylon also serves
+	// (with_modes registers `<project_id>/<secret>` alongside
+	// `<mode>/<project_id>/<secret>`) and which elitea-sdk is the sole
+	// caller of: elitea_sdk/runtime/clients/client.py:108 and
+	// sandbox_client.py:237 build
+	// {api_v2}/secrets/secret/{project_id} and append /{name}.
+	// Only this one variant is registered: pylon serves the mode-less form
+	// of every route, but no consumer in the workspace calls any of the
+	// others, and a route with no caller is a route no test can discriminate.
+	r.Get("/secret/{projectID}/{name}", h.Get)
+	return r
+}
+
+// requireMode reproduces pylon's mode dispatch for the routes that carry a
+// {mode} segment.  Anything other than the two modes pylon defines is a 404,
+// exactly as APIBase.proxy_method's `abort(404)` on an unknown mode — which
+// is what makes the third convention the new client had invented
+// (`prompt_lib`, #151) a hard error rather than a silently-accepted alias.
+//
+// `administration` is deliberately 501, NOT served: pylon's AdminAPI reads
+// and writes the GLOBAL vault (VaultClient() with no project → row id
+// "project-None") with its own request/response shapes, while every method
+// on this Handler is the project handler keyed by dbKey(projectID).  Serving
+// admin_ui's /secrets/secret/administration/0/{name} from this handler would
+// answer with project 0's vault — the wrong store — and its PUT/DELETE would
+// WRITE it.  A 501 says "not implemented here" instead of quietly returning
+// and mutating the wrong secrets.
+func requireMode(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch chi.URLParam(r, "mode") {
+		case modeDefault:
+			next(w, r)
+		case modeAdministration:
+			writeJSON(w, http.StatusNotImplemented, map[string]string{
+				"error": "administration mode is not implemented by elitea-main; " +
+					"it addresses the global vault, not a project vault",
+			})
+		default:
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown mode"})
+		}
+	}
 }
 
 // ─── response models ─────────────────────────────────────────────────────────
