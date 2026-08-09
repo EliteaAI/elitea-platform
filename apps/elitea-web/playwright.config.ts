@@ -27,6 +27,25 @@ export const STORAGE_STATE = {
 // Default 8082 locally: centry legacy stack occupies 8080; CI sets E2E_PORT=8080.
 export const BASE_URL = process.env['PLAYWRIGHT_BASE_URL'] ?? 'http://localhost:8082';
 
+/*
+ * Chromium-only launch flags — applied per project, never in the shared `use:`.
+ *
+ * They used to sit in the shared block, which handed them to WebKit as well.
+ * Linux WebKit refuses to start on an unknown argument:
+ *
+ *   <launching> …/webkit-2336/pw_run.sh --disable-web-security …
+ *   [err] Cannot parse arguments: Unknown option --disable-web-security
+ *   Error: browserType.launch: Target page, context or browser has been closed
+ *
+ * — every webkit test failed at launch, on all three attempts, the first time
+ * the suite ran in CI (issue #154). macOS WebKit tolerates the same flags, so
+ * the whole webkit project passed locally while being unrunnable on Linux.
+ * They are Chromium flags and have never meant anything to WebKit.
+ */
+const CHROMIUM_LAUNCH_OPTIONS = {
+  args: ['--disable-web-security', '--allow-insecure-localhost', '--no-sandbox'],
+};
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -43,9 +62,6 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
-    launchOptions: {
-      args: ['--disable-web-security', '--allow-insecure-localhost', '--no-sandbox'],
-    },
   },
 
   projects: [
@@ -53,7 +69,7 @@ export default defineConfig({
     {
       name: 'setup',
       testMatch: /auth\.setup\.ts/,
-      use: { ...devices['Desktop Chrome'] },
+      use: { ...devices['Desktop Chrome'], launchOptions: CHROMIUM_LAUNCH_OPTIONS },
     },
 
     // ── chromium ──────────────────────────────────────────────────────────
@@ -62,6 +78,7 @@ export default defineConfig({
       use: {
         ...devices['Desktop Chrome'],
         storageState: STORAGE_STATE.member,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
       },
       dependencies: ['setup'],
       testMatch: /journeys\/.+\.spec\.ts/,
@@ -96,6 +113,7 @@ export default defineConfig({
       use: {
         ...devices['Desktop Chrome'],
         storageState: STORAGE_STATE.member,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
         // Pinned so a snapshot's geometry never depends on the runner's
         // defaults. Matches the 1602x848 CSS geometry of the production
         // reference set in parity/screenshot-index.json.

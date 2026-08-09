@@ -498,8 +498,26 @@ ON CONFLICT (id) DO NOTHING;
 SELECT create_tenant_schema('p_1');
 
 -- Reset sequences
+--
+-- Every INSERT above supplies an explicit id, which does NOT advance the
+-- table's SERIAL sequence — so the next id-less INSERT collides on the primary
+-- key. The three centry sequences were reset here from the start; the three
+-- auth_core ones were not, and auth_core__user is the one that bit.
+--
+-- Symptom (issue #154, first CI run of the E2E job on a fresh database): the
+-- E2E seed's member-persona `INSERT INTO auth_core__user (email, name)` drew
+-- nextval = 1, collided with the dev user seeded at id 1 here, and failed. The
+-- admin persona then drew 2 and succeeded, so the stack came up with exactly
+-- one of the two personas — `project_user_role rows for the two personas: 1
+-- (want 2)`. Running the seed a SECOND time appeared to fix it, because by then
+-- the sequence had been dragged past the collision; that is why the failure
+-- stayed invisible on a long-lived developer database and only ever showed up
+-- on a database created from scratch.
 SELECT setval('centry.project_id_seq', (SELECT COALESCE(MAX(id), 0) FROM centry.project) + 1, false);
 SELECT setval('centry.project_group_id_seq', (SELECT COALESCE(MAX(id), 0) FROM centry.project_group) + 1, false);
 SELECT setval('centry.social_users_id_seq', (SELECT COALESCE(MAX(id), 0) FROM centry.social_users) + 1, false);
+SELECT setval('auth_core__user_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth_core__user) + 1, false);
+SELECT setval('auth_core__role_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth_core__role) + 1, false);
+SELECT setval('auth_core__scope_id_seq', (SELECT COALESCE(MAX(id), 0) FROM auth_core__scope) + 1, false);
 
 COMMIT;

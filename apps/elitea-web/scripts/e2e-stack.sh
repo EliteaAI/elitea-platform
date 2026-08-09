@@ -117,7 +117,13 @@ case "$CMD" in
     # DB: elitea (local compose default), user: elitea, host: postgres.
     # Write SQL to a temp file — avoids bash 3.x heredoc-in-subshell limits.
     SEED_TMP="$(mktemp /tmp/e2e-seed-XXXXXX.sql)"
-    cat > "$SEED_TMP" <<ENDSQL
+    # Quoted delimiter: the SQL below contains backticks inside its comments
+    # (`configuration.artifacts.artifacts.*` and friends). With an UNQUOTED
+    # heredoc the shell ran those as command substitutions — every seed printed
+    # `configuration.artifacts.artifacts.*: command not found` three times and
+    # silently rewrote the comments in the SQL it then executed. Nothing in this
+    # body is meant to expand: there is not a single `$` in it.
+    cat > "$SEED_TMP" <<'ENDSQL'
 -- E2E seed (issue #60): member + admin personas.
 -- Idempotent via ON CONFLICT DO NOTHING.
 
@@ -265,7 +271,14 @@ ENDSQL
 
     # Use the correct binary for exec: podman exec or docker exec.
     EXEC_BIN="${COMPOSE_BIN%% *}"  # first word of COMPOSE_BIN (podman or docker)
-    $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea < "$SEED_TMP"
+    # ON_ERROR_STOP=1: without it psql reports a failed statement on stderr and
+    # then carries on to the next one, exiting 0 — so the script printed
+    #   ERROR:  duplicate key value violates unique constraint "auth_core__user_pkey"
+    #   ✓ DB rows seeded.
+    # back to back, and the only thing that noticed was the postcondition below,
+    # several statements later and with none of the context. A statement that
+    # fails here must stop the seed at the statement that failed.
+    $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -U elitea -d elitea < "$SEED_TMP"
     rm -f "$SEED_TMP"
     echo "  ✓ DB rows seeded."
 
@@ -276,8 +289,17 @@ ENDSQL
     # exactly what happened on a fresh volume: `auth_core__project_user_role`
     # came out empty, `/auth/permissions/prompt_lib/1` returned `[]`, and the
     # entire UI came up with every create affordance disabled — with `seed`
-    # having printed "Seed complete." A second `seed` run fixed it, which is the
-    # signature of an ordering dependency, not of a legitimately-empty result.
+    # having printed "Seed complete."
+    #
+    # A second `seed` run fixed it, and this comment used to read that as "the
+    # signature of an ordering dependency". It was not. The cause was
+    # 001_initial.sql seeding `auth_core__user` at an explicit id 1 without
+    # advancing `auth_core__user_id_seq`: the first persona INSERT drew nextval
+    # = 1, collided on the primary key, and was swallowed by psql; the second
+    # drew 2 and landed. Re-running dragged the sequence past the collision,
+    # which is why the bug could only ever be seen on a database created from
+    # scratch — i.e. on CI, the first time the job actually ran (issue #154).
+    # Fixed at the source in 001_initial.sql; this assertion is what caught it.
     #
     # Assert the end state rather than trusting the exit codes. A stack that
     # cannot authorise anything must fail here, loudly, instead of handing every

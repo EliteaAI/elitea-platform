@@ -95,6 +95,23 @@ async function readDownload(download: { createReadStream: () => Promise<NodeJS.R
 }
 
 test.describe('J20 artifacts lifecycle', () => {
+  /*
+   * Serial, because these five tests share two FIXED bucket names and a fixed
+   * set of object keys (see the header note). That design is deliberate, but it
+   * only works in a defined order: J20d DELETES `j20-art.txt`, and the header's
+   * own reasoning — "seedBucketWithFiles is idempotent and re-uploads the
+   * objects J20d deletes, so J20e still finds them" — is a statement about
+   * sequence. The root config sets `fullyParallel: true`, which parallelises
+   * tests WITHIN a file too, so on CI's 4 workers J20d and J20e raced over the
+   * same object: J20d's download and its :batchDelete both timed out, at a
+   * different point on each of the three attempts.
+   *
+   * Invisible locally because the documented local command is `--workers=1`,
+   * which serialises the file by accident. This makes the ordering the spec
+   * already depends on explicit instead of accidental. No assertion changes.
+   */
+  test.describe.configure({ mode: 'serial' });
+
   /**
    * The create-bucket screen is a real form, not scaffolding.
    *
@@ -226,13 +243,40 @@ test.describe('J20 artifacts lifecycle', () => {
     await checkA11y(page);
 
     // Download must deliver the exact bytes that were uploaded.
-    await page.goBack();
+    //
+    // Re-enter the bucket by URL rather than `page.goBack()`: the step needs
+    // the file table, not the previous history entry, and waiting for the row
+    // states that precondition instead of assuming the view has settled.
+    await page.goto(`${BASE_URL}/app/artifacts?bucket=${READ_BUCKET}`);
+    await expect(row).toBeVisible({ timeout: 15_000 });
     const [download] = await Promise.all([
       page.waitForEvent('download', { timeout: 15_000 }),
       page.getByRole('button', { name: `Download ${FILE_NAME}`, exact: true }).click(),
     ]);
     expect(download.suggestedFilename()).toBe(FILE_NAME);
     expect((await readDownload(download)).toString()).toBe(FILE_BODY);
+
+    // Dismiss the MUI tooltip the Download button just opened, before touching
+    // the Delete button sitting immediately to its right.
+    //
+    // This is what made J20d fail on BOTH engines in CI, deterministically, on
+    // all three attempts (issue #154, runs 31329658116 and 31330333209). The
+    // failure snapshot ends with:
+    //
+    //     - tooltip "Download" [ref=f2e274]
+    //
+    // — a portal-rendered popper still mounted over its neighbour, with
+    // `Download j20-art.txt` still `[active]` and no confirm dialog open. The
+    // Delete click never passed Playwright's hit-target check, so it retried
+    // silently until the :batchDelete wait timed out, and the timeout error
+    // pointed at the response wait rather than at the click that was stuck.
+    //
+    // Invisible locally: the pointer ends up elsewhere and the tooltip has
+    // closed by the time the next click is issued. Moving the pointer off the
+    // control and waiting for the popper to unmount is what the app's own user
+    // does implicitly.
+    await page.mouse.move(0, 0);
+    await expect(page.getByRole('tooltip')).toBeHidden({ timeout: 15_000 });
 
     // ── JRNY-020's final "delete" step, now that the E2E seed grants
     // `configuration.artifacts.artifacts.delete` (e2e-stack.sh) and the route
