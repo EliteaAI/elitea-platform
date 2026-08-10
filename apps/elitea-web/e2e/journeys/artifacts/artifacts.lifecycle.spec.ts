@@ -178,12 +178,23 @@ test.describe('J20 artifacts lifecycle', () => {
     await name.fill(FORM_BUCKET);
 
     // Exactly one click — the whole point of the test. No blur() first.
-    const submitted = page.waitForRequest(
-      (req) => req.method() === 'POST' && req.url().endsWith(`/api/v2/artifacts/buckets/${projectId}`),
+    //
+    // waitForRESPONSE, not waitForRequest: the next step lists the buckets from
+    // the API, and "the request was issued" says nothing about the row having
+    // been written. Observed twice locally — the POST fired, the listing came
+    // back `[]`, and the failure read as if the click had not landed, which is
+    // the exact symptom this test exists to detect (#138). CI's two retries
+    // were absorbing it. Waiting for the server's own answer removes the race
+    // without weakening anything: the click assertion is unchanged and the
+    // status is now checked too.
+    const submitted = page.waitForResponse(
+      (res) => res.request().method() === 'POST'
+        && res.url().endsWith(`/api/v2/artifacts/buckets/${projectId}`),
       { timeout: 10_000 },
     );
     await page.getByRole('button', { name: /^create bucket$/i }).click();
-    await submitted;
+    const created = await submitted;
+    expect([200, 201, 409], await created.text()).toContain(created.status());
 
     // Backend-derived confirmation: the bucket is in the API's own list.
     const listed = await request.get(`/api/v2/artifacts/buckets/${projectId}`);
@@ -360,12 +371,12 @@ test.describe('J20 artifacts lifecycle', () => {
    * `DEFAULT_MAX_FILE_SIZE` (#194).
    *
    * No journey covered the path, which is why the 404 went unnoticed. This one
-   * is deliberately NOT "a request was made": `e2e-stack.sh` seeds the project
-   * vault with `chat_max_file_upload_size_mb = 1`, a value chosen because it is
-   * different from the reader's own default, so a client that receives the
-   * config rejects a 2 MiB file and a client that does not accepts it. The
-   * rejection sentence is `buildArtifactUploadPlan`'s
-   * (`useArtifactUpload.ts:45`).
+   * is deliberately NOT "a request was made": `e2e-stack.sh` seeds
+   * `chat_max_file_upload_size_mb = 1` into the ADMIN vault (see the seed for
+   * why not project 1's), a value chosen because it differs from the reader's
+   * own default, so a client that receives the config rejects a 2 MiB file and
+   * a client that does not accepts it. The rejection sentence is
+   * `buildArtifactUploadPlan`'s (`useArtifactUpload.ts:45`).
    *
    * Mutation-checked: adding `page.route('**\/chat_config/**', abort)` — the
    * browser-side equivalent of the 404 this endpoint used to return — makes
@@ -380,7 +391,9 @@ test.describe('J20 artifacts lifecycle', () => {
     const projectId = await selectedProjectId(page);
     await seedBucketWithFiles(request, projectId);
 
-    // 1. The route is served at all, with the project's seeded limits. Every
+    // 1. The route is served at all, with the seeded limits — which also
+    //    exercises `lookupCurrentChatInteger`'s admin-regular fallback, since
+    //    project 1's own vault is seeded empty. Every
     //    key is asserted: the response shape is the contract `readUploadLimit`
     //    reads, and all five values differ from the reader's own defaults
     //    (10/150/150/10/3), so a defaults-only body cannot satisfy this.

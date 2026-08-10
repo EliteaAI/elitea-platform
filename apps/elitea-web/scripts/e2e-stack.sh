@@ -300,6 +300,18 @@ ON CONFLICT (elitea_title) DO UPDATE SET section = EXCLUDED.section, updated_at 
 -- (AES-128-CBC + HMAC-SHA256) cannot be produced from psql, and they are
 -- stable because Fernet carries no TTL that this reader enforces.
 --
+-- The five values live in the ADMIN vault, not project 1's, and project 1's is
+-- seeded EMPTY. Two reasons, both measured:
+--   * `lookupCurrentChatInteger` resolves project-regular → project-hidden →
+--     admin-regular, so the admin vault is the documented shared fallback and
+--     putting them there exercises that precedence path rather than the
+--     trivial one.
+--   * these are ordinary project secrets. Seeding them into project 1's vault
+--     made all five appear as rows on Settings > Secrets — verified against the
+--     running stack, GET /secrets/secrets/default/1 returned them — which
+--     changed the `settings-secrets` visual baseline and gave J21 a non-empty
+--     list to start from. The admin vault is not listed by that page.
+--
 -- The five values are all DIFFERENT from
 -- promptcontextreads' built-in defaults (10/150/150/10/3), which is what makes
 -- J20f discriminating: a client that never receives this config renders the
@@ -311,18 +323,20 @@ ON CONFLICT (elitea_title) DO UPDATE SET section = EXCLUDED.section, updated_at 
 --   chat_max_image_upload_size_mb 6   (default 3)
 --
 -- Stored as JSON STRINGS, not numbers, on purpose: the secrets API handler
--- (internal/api/v2/secrets/handler.go) round-trips this same blob through
--- `map[string]string` whenever J21 creates or deletes a secret on project 1,
--- and a JSON number would fail that unmarshal and make it REPLACE the vault
--- with an empty one. centrysecrets' Python-int contract accepts either.
+-- (internal/api/v2/secrets/handler.go) round-trips a vault blob through
+-- `map[string]string`, and a JSON number would fail that unmarshal and make it
+-- REPLACE the vault with an empty one. centrysecrets' Python-int contract
+-- accepts either. (That handler only ever touches `project-<id>`, never
+-- `admin`, so the limits are safe from J21 either way — but the two blobs are
+-- written in one format on purpose.)
 INSERT INTO centry.secrets_key (id, data) VALUES
     ('admin', '\x6f4b47696f36536c7071656f71617172724b32757237437873724f3074626133754c6d36753779397672383d'::bytea),
     ('project-1', '\x45424553457851564668635947526f62484230654879416849694d6b4a53596e4b436b714b7977744c69383d'::bytea)
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
 
 INSERT INTO centry.secrets_data (id, data) VALUES
-    ('admin', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f4435683447586f50634f59333475747733484e52343942495a72645f59316f444c4f3679352d727450646d67616d732d2d71745232417548504254664371422d636d497a546f4c705435347a4d736541527043586e3778357a327773676c38474249694d736d72744c397750'::bytea),
-    ('project-1', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f44337062783235587355577351396b7859782d3463646e5178774a674e5656627243766b3263714e5165497277516c48417a37714c517663354e61783047772d4e43623178762d626c6f743478364b33434e70455576682d653570655257594344724f545669313141576a6645716852534c55506436494c56434a5f58775954664941423143635f6a71692d716e4e3047337a4b4c6b5f577a50535066684c6d32357842696146555f467165423755724e766f32387079536d536e644a526e4a68356b79424a37336942496d413637314b474965315f394a685a7031556a724449343064774f48494b41634d304239627a52725341553638684361365336465465696135375a475f74734a637473723071524b51556d556d643445496b2d49524b7a636f2d3067703946425058627a7430306569676745704c72446b7471776a38773d3d'::bytea)
+    ('admin', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f44795765516b54395f515053716d754d506d585f5855576e6d566257494b58314e4d596146712d62386d6f67337145556e76336642595252484135475a666278576974436943364e764b37616c4d4f365346505558364277714c4672714546357146314b424a384d35723667426843363361625648764c32344a6d75705a434e49546c4c53674635725357726e4f333169386b4d506f4e686a4839704444333146784374726c645f4779635f6132713356735446756562786a614b313831664152715065535f5a553034776578617a74426b7a4458427977456f306e4b367a7449625f527851654c655353327a4971594c6e435a6a494b794743786e645267694968436c776874493132424f73487059774942653755527444515a772d307671617a4538706e4c4e7a45464f4c37384d527459717454392d352d37596b6a6b4864673d3d'::bytea),
+    ('project-1', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f447738384e6179597230503157334c364279534e5257346647764e5f6778596831726f472d386d646b77547a5155666a42735a785366694a62304f35726a4b2d455a707971362d5436704c7252674a4c6851395935376753595546446955383237486a36634473756a4b2d78'::bytea)
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
 ENDSQL
 
