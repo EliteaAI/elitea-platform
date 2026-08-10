@@ -77,8 +77,8 @@ function readScopes(source: Readonly<Record<string, unknown>>): string | readonl
   return undefined;
 }
 
-/** Point 1+2 of the module doc comment's shape differences. */
-export function toMcpAuthMetadata(metadata: SharepointAuthMetadataLike | null): McpAuthMetadataProp {
+/** Point 1+2 of the module doc comment's shape differences. Module-private: `renderAuthModal` below is its only caller, and the knip dead-code gate counts an unused export as dead code — correctly, since exporting it would advertise a seam nothing uses. */
+function toMcpAuthMetadata(metadata: SharepointAuthMetadataLike | null): McpAuthMetadataProp {
   if (metadata === null) return null;
   const provided = metadata.providedSettings ?? {};
   return {

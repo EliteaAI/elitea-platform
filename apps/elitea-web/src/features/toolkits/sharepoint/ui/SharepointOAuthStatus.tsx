@@ -65,8 +65,16 @@ export interface SharepointOAuthStatusValues {
   };
 }
 
-/** Exported since the wiring pass: `ToolBaseSlots.sharepointAuthModals` (`../../ui/form/ToolBase/ToolBase.types.ts`) names this type, so the renderer pair can be threaded from the `pages/`-layer composition root down to this component. */
-export interface SharepointLogoutModalSlotProps {
+/**
+ * Module-private, and it stays that way: `SharepointAuthModalRenderers` below
+ * (which IS exported, and is what `ToolBaseSlots.sharepointAuthModals` names)
+ * references it, so every consumer reaches this shape structurally through
+ * that type without importing it by name — the same reasoning
+ * `ui/list/ToolkitsList.tsx`'s own `ToolkitsListState`/`ToolkitsListTypeFilter`
+ * doc comment gives. Exporting it as well trips the knip dead-code gate, which
+ * is right: an export nothing imports is an advertised seam with no consumer.
+ */
+interface SharepointLogoutModalSlotProps {
   readonly serverUrl: string;
   readonly open: boolean;
   readonly onClose: () => void;
