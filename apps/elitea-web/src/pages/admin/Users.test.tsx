@@ -244,7 +244,9 @@ describe('Admin › Users', () => {
       expect.stringContaining('Export is unavailable'),
     );
 
-    // Activity: elitea-main serves no audit-trail API.
+    // Activity: the per-user activity view has no server. (The audit-trail API
+    // its original reason cited now exists — see pages/admin/AuditTrail.tsx —
+    // so that reason was corrected rather than left to go quietly stale.)
     const activityButtons = screen.getAllByRole('button', { name: 'User activity' });
     expect(activityButtons).toHaveLength(2);
     activityButtons.forEach((button) => expect(button).toBeDisabled());

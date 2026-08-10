@@ -952,8 +952,27 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Admin panel audit & service descriptors
 				r.Get("/admin/{mode}", coreHandler.ServiceDescriptors)
-				r.Get("/audit_traces/{mode}", coreHandler.AuditTraces)
-				r.Get("/audit_trace_heatmap/{mode}", coreHandler.AuditTraceHeatmap)
+
+				// The admin audit trail (unit A14). All four are READS; the
+				// surface has no writes. Two of them (`audit`, `audit_heatmap`)
+				// had no route at all before this unit, and the other two were
+				// stubs returning empty arrays.
+				//
+				// Gated on the permission the pylon originals declare
+				// (`models.admin.audit_trail.view`,
+				// legacy/plugins/elitea_core/api/v2/audit*.py), resolved from
+				// auth_core__user_role per request. Unlike the admin USER
+				// listing, these reads are gated rather than open: an audit row
+				// names the user, the project and the action taken, so the
+				// listing itself is the sensitive part.
+				requireAuditTrail := apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"models.admin.audit_trail.view",
+				)
+				r.With(requireAuditTrail).Get("/audit/{mode}", coreHandler.AuditTrail)
+				r.With(requireAuditTrail).Get("/audit_heatmap/{mode}", coreHandler.AuditHeatmap)
+				r.With(requireAuditTrail).Get("/audit_traces/{mode}", coreHandler.AuditTraces)
+				r.With(requireAuditTrail).Get("/audit_trace_heatmap/{mode}", coreHandler.AuditTraceHeatmap)
 			})
 
 			// === Social plugin ===

@@ -141,8 +141,10 @@ adminTest('J28: suspending a user is written to the database and survives a relo
  *    `TestAuthUsersDeleteRemovesTheUser` covers it, re-reading through the
  *    product's own GET handler.
  *  - user activity and Excel export — both are rendered DISABLED with a stated
- *    reason (no audit-trail API; no spreadsheet dependency). See
- *    `src/pages/admin/Users.test.tsx`, which asserts the disabled state.
- *  - the ten other admin sections (Projects, Secrets, LiteLLM, Audit Trail, …).
- *    Not ported yet — issue #200 lists them.
+ *    reason (the per-user activity view is unported; no spreadsheet
+ *    dependency). See `src/pages/admin/Users.test.tsx`, which asserts the
+ *    disabled state.
+ *  - the nine other admin sections (Projects, Secrets, Roles, …). Not ported
+ *    yet — issue #200 lists them. Audit Trail HAS since landed; journey 29
+ *    (`admin.audit-trail.spec.ts`) covers it.
  */

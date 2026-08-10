@@ -1,0 +1,13 @@
+{
+  "eventTypeColors": {
+    "api": "#58A6FF",
+    "socketio": "#39D2C0",
+    "rpc": "#D29922",
+    "agent": "#3FB950",
+    "tool": "#F0883E",
+    "llm": "#BC8CFF",
+    "schedule": "#79C0FF",
+    "admin_task": "#D4A574"
+  },
+  "unknownEventTypeColor": "#8B949E"
+}
