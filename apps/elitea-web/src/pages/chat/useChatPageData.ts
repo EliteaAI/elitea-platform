@@ -29,6 +29,7 @@ import { conversationApi } from '@/entities/conversation';
 import type { MessageGroupWire } from '@/entities/message';
 import type { SocialAuthorProfile } from '@/shared/api/generated/model';
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
+import { unwrapList } from '@/shared/api/unwrap';
 import { useSelectedProject } from '@/widgets/app-shell';
 import type { ChatBoxProps } from '@/widgets/chat-box';
 
@@ -70,10 +71,9 @@ function useActiveConversation(projectId: string | undefined, conversationId: st
   const activeConversation = useMemo<ChatBoxProps['activeConversation']>(() => {
     if (!conversationId) return { isNew: true };
     if (!detailsQuery.data) return undefined;
-    const response = messageListQuery.data;
     /*
      * The message list is paginated as {items,total,page,page_size,total_pages}
-     * — measured, not assumed. The previous unwrap tried `rows` and otherwise
+     * — measured, not assumed. The original unwrap tried `rows` and otherwise
      * fell through to the response itself, so neither branch matched and the
      * ENVELOPE OBJECT was handed to ChatBox as `message_groups`.
      * convertMessagesToChatHistory then did `[...(messageGroups ?? [])]` on a
@@ -81,19 +81,11 @@ function useActiveConversation(projectId: string | undefined, conversationId: st
      * hit the route error boundary — while both API calls returned 200, which
      * is why it read as a frontend mystery rather than a shape mismatch.
      *
-     * All three shapes are handled rather than just swapping `rows` for
-     * `items`: `rows` is the envelope other list endpoints in this API use, and
-     * a bare array is what the generated client returns for some. Falling back
-     * to [] instead of to `response` is the important part — an unrecognised
-     * shape must not become the data.
+     * The three-shape unwrap that replaced it now lives in ONE place
+     * (`shared/api/unwrap.ts`, R-A6) instead of being re-derived here — see
+     * issue #132 for why per-call-site unwrapping kept producing this bug.
      */
-    const rows = Array.isArray(response)
-      ? response
-      : response && typeof response === 'object'
-        ? ((response as { items?: unknown; rows?: unknown }).items ??
-           (response as { rows?: unknown }).rows ??
-           [])
-        : [];
+    const rows = unwrapList<unknown>(messageListQuery.data, 'conversation.messageList');
     return {
       id: detailsQuery.data.id,
       ...(detailsQuery.data.uuid !== undefined ? { uuid: detailsQuery.data.uuid } : {}),

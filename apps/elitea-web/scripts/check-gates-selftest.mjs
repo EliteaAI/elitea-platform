@@ -109,6 +109,7 @@ const OXLINT_CASES = [
   ['R-A2', 'oxlint eslint/no-restricted-imports (axios)', 'eslint(no-restricted-imports)'],
   ['R-A3', 'oxlint eslint/no-restricted-imports (socket.io-client)', 'eslint(no-restricted-imports)'],
   ['R-A4', 'oxlint eslint/no-restricted-globals (XMLHttpRequest)', 'eslint(no-restricted-globals)'],
+  ['R-A6', 'elitea/no-adhoc-envelope-unwrap (jsPlugins; shared/api/unwrap.ts override)', 'elitea(no-adhoc-envelope-unwrap)'],
   ['STOR-1', 'oxlint eslint/no-restricted-globals (localStorage, §5.4)', 'eslint(no-restricted-globals)'],
   ['R-T4', 'oxlint eslint/no-restricted-imports (useTheme importNames)', 'eslint(no-restricted-imports)'],
   ['R-I1', 'oxlint eslint/no-restricted-imports (@mui/icons-material barrel)', 'eslint(no-restricted-imports)'],

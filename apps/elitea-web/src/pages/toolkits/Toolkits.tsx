@@ -12,6 +12,7 @@ import { isPublicProject } from '@/entities/project';
 import { ToolkitsList, type ToolkitListItem } from '@/features/toolkits';
 import { useListToolkitInstances } from '@/shared/api/generated/toolkits/toolkits';
 import type { ToolkitInstance } from '@/shared/api/generated/model';
+import { unwrapListPage } from '@/shared/api/unwrap';
 import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
 import { BaseTab } from '@/shared/ui/BaseTab';
@@ -159,10 +160,14 @@ function usePagedToolkitRows(projectId: string | undefined, isMCP: boolean): Use
     { limit: PAGE_SIZE, offset: resolvedPage * PAGE_SIZE },
     { query: { enabled: projectId !== undefined } },
   );
-  // `.data.data`'s declared type includes the error-envelope variant — never
-  // actually reachable here, since `eliteaFetch` throws instead of resolving
-  // with it (mutator.ts's §3.6 unwrap contract).
-  const wire = query.data?.data as { readonly rows: readonly ToolkitInstance[]; readonly total: number } | undefined;
+  // R-A6 (#132) via the one helper. `undefined` is preserved deliberately:
+  // the `wire !== prevWire` sentinel below distinguishes "no response yet"
+  // from "a page arrived", and memoising keeps that identity stable per fetch
+  // (an unmemoised fresh object would re-trigger it every render).
+  const wire = useMemo(
+    () => (query.data === undefined ? undefined : unwrapListPage<ToolkitInstance>(query.data, 'listToolkitInstances')),
+    [query.data],
+  );
 
   const [prevWire, setPrevWire] = useState(wire);
   if (wire !== prevWire) {

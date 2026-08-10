@@ -53,6 +53,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { conversationApi } from '@/entities/conversation';
+import { unwrapList } from '@/shared/api/unwrap';
 
 /** Loose, matching this cluster's established "no wire schema for raw chat state" convention (see `useChatCopyToClipboard.ts`'s `CopyableChatMessage`). */
 export interface LoadMoreMessagesConversation {
@@ -74,10 +75,6 @@ export interface UseLoadMoreMessagesParams<TMessage> {
 export interface UseLoadMoreMessagesResult {
   readonly onLoadMoreMessages: (callback?: () => void) => Promise<void>;
   readonly isLoadingMore: boolean;
-}
-
-function extractRows(response: Awaited<ReturnType<typeof conversationApi.messageList>>): readonly unknown[] {
-  return 'rows' in response ? response.rows : response;
 }
 
 export function useLoadMoreMessages<TMessage>(params: UseLoadMoreMessagesParams<TMessage>): UseLoadMoreMessagesResult {
@@ -102,7 +99,12 @@ export function useLoadMoreMessages<TMessage>(params: UseLoadMoreMessagesParams<
           page,
           pageSize: 10,
         });
-        const rows = extractRows(response).slice().reverse();
+        // The fifth instance of #132: the removed `extractRows` did
+        // `'rows' in response ? response.rows : response` while this endpoint
+        // answers `{items,total,page,…}` — so neither arm matched, the
+        // ENVELOPE was reversed and fed to convertMessagesToChatHistory, and
+        // "load older messages" could never work. R-A6.
+        const rows = unwrapList<unknown>(response, 'conversation.messageList').reverse();
         const olderMessages = convertMessagesToChatHistory(rows, activeConversation.participants);
         setChatHistory((prev) => {
           callback?.();

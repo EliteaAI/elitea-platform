@@ -11,6 +11,7 @@ import type { Toolkit } from '@/entities/toolkit';
 import { getGetApplicationQueryKey, useGetApplication, useListApplications } from '@/shared/api/generated/applications/applications';
 import type { Application, ApplicationDetail } from '@/shared/api/generated/model';
 import { eliteaFetch } from '@/shared/api/generated/mutator';
+import { unwrapList } from '@/shared/api/unwrap';
 import { t } from '@/shared/i18n';
 import { SearchParams } from '@/shared/lib/params';
 
@@ -136,7 +137,6 @@ export interface ToolMenuProps {
 }
 
 const containerSx: SxProps<Theme> = { display: 'flex', gap: 1, alignItems: 'center', maxWidth: '100%', flexWrap: 'wrap' };
-const EMPTY_APPLICATIONS: readonly Application[] = [];
 /** Not in `SearchParams` (`@/shared/lib/params`) — the baseline never put it in `constants.js` either (`ToolMenu.jsx:217`'s `searchParams.get('newToolkitId')` is a raw literal), only `src/routes/-search/params.ts`'s `paramSchemas.newToolkitId` registers it. */
 const NEW_TOOLKIT_ID_PARAM = 'newToolkitId';
 
@@ -316,8 +316,11 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
 
   const agentsQuery = useListApplications(projectId ?? '', { agents_type: 'classic', query: agentSearch }, { query: { enabled: projectId !== undefined } });
   const pipelinesQuery = useListApplications(projectId ?? '', { agents_type: 'pipeline', query: pipelineSearch }, { query: { enabled: projectId !== undefined } });
-  const agentRows = (agentsQuery.data as { data?: { rows?: Application[] } } | undefined)?.data?.rows ?? EMPTY_APPLICATIONS;
-  const pipelineRows = (pipelinesQuery.data as { data?: { rows?: Application[] } } | undefined)?.data?.rows ?? EMPTY_APPLICATIONS;
+  // Memoised because `unwrapList` returns a FRESH array and both feed
+  // `useEntityAssociationItems`'s dep list — the old `?? EMPTY_APPLICATIONS`
+  // constant only stabilised the empty case, not the populated one.
+  const agentRows = useMemo(() => unwrapList<Application>(agentsQuery.data, 'listApplications(agents)'), [agentsQuery.data]);
+  const pipelineRows = useMemo(() => unwrapList<Application>(pipelinesQuery.data, 'listApplications(pipelines)'), [pipelinesQuery.data]);
 
   const agentItems = useEntityAssociationItems(agentRows, numericApplicationId, filterAgents, 'agent', associateAsAgent);
   const pipelineItems = useEntityAssociationItems(pipelineRows, numericApplicationId, filterPipelines, 'pipeline', associateAsPipeline);

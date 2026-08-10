@@ -10,6 +10,7 @@
  */
 import { adHocFontSize } from './rules/ad-hoc-font-size.mjs';
 import { adHocRadius } from './rules/ad-hoc-radius.mjs';
+import { noAdHocEnvelopeUnwrap } from './rules/no-adhoc-envelope-unwrap.mjs';
 import { noExportAll } from './rules/no-export-all.mjs';
 import { noImportantSx } from './rules/no-important-sx.mjs';
 import { noModeBranch } from './rules/no-mode-branch.mjs';
@@ -37,5 +38,6 @@ export default {
     'no-export-all': noExportAll, //           R-L4
     'no-module-scope-store': noModuleScopeStore, // R-S2
     'no-vi-mock': noViMock, //                 R-M1
+    'no-adhoc-envelope-unwrap': noAdHocEnvelopeUnwrap, // R-A6 (issue #132)
   },
 };

@@ -57,6 +57,7 @@ import { useCallback, useMemo } from 'react';
 import { providerDisplayName } from '@/entities/credential';
 import type { ToolkitTypeSchemaMap } from '@/entities/toolkit';
 import { useListToolkitInstances } from '@/shared/api/generated/toolkits/toolkits';
+import { unwrapListPage } from '@/shared/api/unwrap';
 
 import { McpCategory } from '../constants/mcp.constants';
 import { enhanceToolkitData, type EnhanceableToolkit, type EnhancedToolkit } from '../helpers/toolkits.helpers';
@@ -171,16 +172,20 @@ export function useLoadToolkits(params: UseLoadToolkitsParams): UseLoadToolkitsR
     { limit: pageSize, offset: page * pageSize },
     { query: { enabled: !skip && projectId !== undefined } },
   );
-  // `.data.data`'s declared type includes the error-envelope variant — never
-  // actually reachable here, since `eliteaFetch` throws instead of resolving
-  // with it (mutator.ts's §3.6 unwrap contract).
-  const toolkitData = query.data?.data as { readonly rows: readonly LoadedToolkit[]; readonly total: number } | undefined;
+  // R-A6 (#132): the shape is decided in one place, not asserted by a cast
+  // here. `undefined` is preserved deliberately — this hook's `data` reports
+  // "nothing fetched yet" as `undefined` and "fetched, empty page" as `[]`,
+  // and callers render different things for the two.
+  const toolkitData = useMemo(
+    () => (query.data === undefined ? undefined : unwrapListPage<LoadedToolkit>(query.data, 'listToolkitInstances')),
+    [query.data],
+  );
 
-  const data = useMemo(() => enhanceToolkitData(toolkitData?.rows, toolkitSchemas ?? {}, isMCP), [toolkitData?.rows, toolkitSchemas, isMCP]);
+  const data = useMemo(() => enhanceToolkitData(toolkitData?.rows, toolkitSchemas ?? {}, isMCP), [toolkitData, toolkitSchemas, isMCP]);
 
   const tagList = useMemo(
     () => resolveTagList(authorId, isMCP, toolkitData?.rows, toolkitSchemas),
-    [authorId, isMCP, toolkitData?.rows, toolkitSchemas],
+    [authorId, isMCP, toolkitData, toolkitSchemas],
   );
 
   const totalCount = toolkitData?.total ?? 0;

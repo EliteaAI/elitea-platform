@@ -6,6 +6,7 @@ import { useMemo } from 'react';
 
 import { useListToolkitInstances } from '@/shared/api/generated/toolkits/toolkits';
 import type { ToolkitInstance } from '@/shared/api/generated/model';
+import { unwrapList } from '@/shared/api/unwrap';
 
 /**
  * A no-op `SlashSuggestionList.useValidateToolkitQuery` injection — there is
@@ -47,10 +48,7 @@ export function useSlashToolkitDetailsQuery(args: {
     { limit: SLASH_TOOLKIT_LOOKUP_PAGE_SIZE, offset: 0 },
     { query: { enabled: !args.skip && args.projectId !== undefined } },
   );
-  const rows = useMemo(
-    () => (query.data?.data as { rows?: readonly ToolkitInstance[] } | undefined)?.rows ?? [],
-    [query.data?.data],
-  );
+  const rows = useMemo(() => unwrapList<ToolkitInstance>(query.data, 'listToolkitInstances'), [query.data]);
   const detail = useMemo(() => rows.find((row) => row.id === args.toolkitId), [rows, args.toolkitId]);
   const tools = useMemo(() => {
     if (!detail) return [];

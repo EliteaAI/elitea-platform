@@ -4,6 +4,7 @@ import { useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { eliteaFetch } from '@/shared/api/generated/mutator';
+import { unwrapList } from '@/shared/api/unwrap';
 import {
   getGetApplicationQueryOptions,
   getGetPublicApplicationQueryOptions,
@@ -109,8 +110,12 @@ async function fetchToolkitPage(id: string, projectId: string, offset: number): 
   search.set('limit', String(TOOLKIT_LOOKUP_PAGE_SIZE));
   search.set('offset', String(offset));
   const url = `/elitea_core/tools/prompt_lib/${projectId}?${search.toString()}`;
-  const envelope = await eliteaFetch<{ data: { rows: Record<string, unknown>[]; total: number } }>(url);
-  const rows = envelope?.data?.rows || [];
+  const envelope = await eliteaFetch<unknown>(url);
+  // The declared `{data:{rows,total}}` generic was an assertion, not a check:
+  // it made a wrong shape read as an empty page with a 200 in the network tab
+  // (#132). unwrapList takes the envelope or the body and is loud on anything
+  // it does not recognise (R-A6).
+  const rows = unwrapList<Record<string, unknown>>(envelope, 'toolkitInstances(scan)');
   return { toolkit: rows.find((row) => String(row.id) === id), rowCount: rows.length };
 }
 
