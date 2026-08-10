@@ -14,10 +14,14 @@ name: CI — Web E2E
 #   • either half can be re-run on its own;
 #   • a red square in the checks list says which half broke.
 #
-# WHEN THEY FIRE — unchanged by the split:
+# WHEN THEY FIRE:
 #   e2e     — every PR matching the paths below, pushes to main, `v*` tags,
 #             and workflow_dispatch. No job-level `if:` (issue #158).
-#   visual  — release tags only, via its own `if:`; skipped everywhere else.
+#   visual  — the same set, and for the same reason (issue #159). It used to
+#             carry `if: startsWith(github.ref, 'refs/tags/v')`, which — with
+#             no `v*` tag ever cut — meant it had never run at all. Its very
+#             first execution failed on a real defect, so "dormant but
+#             presumed correct" was never true.
 #
 # The mutation spot-check is NOT here. It lives in its own
 # .github/workflows/ci-web-mutation.yml, which is the canonical copy (see the
@@ -32,6 +36,18 @@ on:
   # unreachable — the exact mistake that made the E2E job unrunnable before
   # (PR #82 validation, blocker 4).
   workflow_dispatch:
+    inputs:
+      update_visual_baselines:
+        description: >-
+          Regenerate the @visual baselines inside the pinned Playwright
+          container and upload them as the `visual-baselines` artifact, instead
+          of comparing against the committed ones. A run in this mode PASSES BY
+          CONSTRUCTION and is never evidence that the UI is unchanged — it is a
+          way to produce a reviewable baseline that was rasterised by the
+          pinned container rather than by somebody's laptop. Download the
+          artifact, look at the PNGs, commit the ones you meant to change.
+        type: boolean
+        default: false
   pull_request:
     paths:
       - "apps/elitea-web/**"
@@ -215,10 +231,21 @@ jobs:
 
   visual:
     name: Visual regression
-    # Release-tag only, per the file header at :5-6 and §6.6/§7.6. The guard was
-    # lost at some point, so this job ran on every PR and hard-failed at the
-    # `test -d e2e/visual` line below (PR #82 validation, blocker 3).
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Release tags, pull requests, and manual dispatch.
+    #
+    # It used to be `startsWith(github.ref, 'refs/tags/v')` alone, and the `on:`
+    # block admits no `v*` tag that has ever been cut — so from the day it was
+    # written until run 31345403013 this job had never executed a single test
+    # (issue #159). It was not dormant-but-correct: the first run found a
+    # committed baseline that was a photograph of a loading spinner, and a
+    # second, independent unmasked-wall-clock defect on the same screen. A job
+    # nobody has watched run is a job whose correctness is unknown, and the
+    # tag build is the worst place to find out.
+    #
+    # So the job-level guard is gone, exactly as #158 removed the identical one
+    # from `e2e`: this job now runs wherever the `on:` block fires — every
+    # matching PR, pushes to main, `v*` tags, and manual dispatch. ~4 min, one
+    # engine, no matrix; cheaper than either E2E leg.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -254,14 +281,34 @@ jobs:
       # E2E_REUSE_STACK=1 stops Playwright trying to start the stack a second
       # time from inside a container that has no container runtime — see
       # playwright.config.ts's webServer.reuseExistingServer comment.
+      #
+      # No explicit `docker build` here, unlike the `e2e` job above. Measured,
+      # not assumed (run 31345403013): compose tries the registry first, logs
+      #   elitea-web  Warning Head "https://ghcr.io/v2/…/elitea-web/manifests/e2e": denied
+      #   elitea-main Warning Head "https://ghcr.io/v2/…/elitea-main/manifests/e2e": unauthorized
+      # and then BUILDS both from the `build:` stanzas that #154 added to
+      # deploy/docker-compose.e2e-standalone.yml, which is why the whole stack
+      # came up healthy and seven tests ran. `e2e`'s two explicit builds are
+      # belt-and-braces for a job with a matrix; this one does not need them.
       - name: Snapshot suite (pinned container, host network)
+        env:
+          # Baseline-regeneration mode. Manual dispatch only — `inputs` is null
+          # on every other event, so a tag build or a PR can never take this
+          # branch. See the `on:` input's description for why that matters.
+          UPDATE_BASELINES: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
         run: |
           test -d e2e/visual || { echo "release tag without a visual suite (unit V2) — refusing"; exit 1; }
+          if [ "$UPDATE_BASELINES" = "true" ]; then
+            echo "::warning::Baseline-regeneration mode — this run CANNOT fail on a snapshot diff."
+            update_arg="--update-snapshots=changed"
+          else
+            update_arg=""
+          fi
           docker run --rm --network host \
             -v "$PWD":/work -w /work \
             -e CI=1 -e E2E_REUSE_STACK=1 \
             mcr.microsoft.com/playwright:v1.62.0-noble \
-            npx playwright test --grep @visual
+            npx playwright test --grep @visual $update_arg
 
       - name: Upload snapshot diffs
         if: failure()
@@ -270,6 +317,20 @@ jobs:
           name: visual-diffs
           path: apps/elitea-web/playwright-results/
           if-no-files-found: ignore
+          retention-days: 14
+
+      # The ONLY sanctioned way to produce a baseline. A PNG rendered by a
+      # laptop's font stack and committed here makes every future comparison
+      # meaningless, so the regenerated files come back out of the pinned
+      # container as an artifact for a human to download, eyeball and commit —
+      # they are never written to the repo by CI.
+      - name: Upload regenerated baselines
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-baselines
+          path: apps/elitea-web/e2e/snapshots/
+          if-no-files-found: error
           retention-days: 14
 
       - name: Tear down E2E stack
