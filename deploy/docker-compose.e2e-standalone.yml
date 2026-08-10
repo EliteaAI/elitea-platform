@@ -96,16 +96,28 @@ services:
   # hostname (`e2e/auth.setup.ts`), but a redirect the browser follows on its
   # own — J3's re-auth popup, J4's post-logout hand-off — cannot be rewritten
   # from the test side.
+  #
+  # The port is PARAMETERISED but the host and container sides must stay EQUAL
+  # (`${E2E_OIDC_PORT}:${E2E_OIDC_PORT}`), for the same reason the hostname must:
+  # the issuer string below is resolved by both elitea-main inside the network
+  # and the browser on the host, and they can only agree if the port is the same
+  # number on both sides. It is a variable at all so two E2E stacks can run at
+  # once — every other published port here was already parameterised, and 9400
+  # being the one hardcoded value is what made two concurrent agents collide on
+  # this stack. The default is unchanged, so CI sees exactly what it saw before.
   oidc-mock:
     image: ghcr.io/geigerzaehler/oidc-provider-mock:latest
+    # The image entrypoint is `oidc-provider-mock --host 0.0.0.0`; this appends
+    # the port, which it defaults to 9400 on its own.
+    command: ["--port", "${E2E_OIDC_PORT:-9400}"]
     networks:
       default:
         aliases:
           - oidc.localhost
     ports:
-      - "9400:9400"
+      - "${E2E_OIDC_PORT:-9400}:${E2E_OIDC_PORT:-9400}"
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9400/.well-known/openid-configuration')\""]
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:${E2E_OIDC_PORT:-9400}/.well-known/openid-configuration')\""]
       interval: 2s
       timeout: 5s
       retries: 20
@@ -143,7 +155,7 @@ services:
       # Reachable under this exact name from the container AND from the host
       # browser — see the oidc-mock service's comment for why that symmetry is
       # a hard requirement and not a convenience.
-      OIDC_ISSUER_URL: "http://oidc.localhost:9400"
+      OIDC_ISSUER_URL: "http://oidc.localhost:${E2E_OIDC_PORT:-9400}"
       OIDC_CLIENT_ID: "elitea-e2e-client"
       OIDC_CLIENT_SECRET: "elitea-e2e-secret"
       OIDC_REDIRECT_URI: "http://localhost:${E2E_PORT:-8082}/forward-auth/auth_oidc/callback"

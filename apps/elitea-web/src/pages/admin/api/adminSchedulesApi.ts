@@ -100,6 +100,13 @@ const adminSchedulesKeys = {
  * path and reports `kind: 'auth'`, which carries no body. Those render the
  * generic notice. Only `kind: 'http'` — 4xx and 5xx that are not an auth
  * challenge — can explain itself.
+ *
+ * The `kind !== 'http'` line below is TYPE narrowing and documentation, not a
+ * behavioural guard: no other failure variant has a `body` field, so deleting it
+ * changes nothing observable. Mutation testing confirms that (mutant M15
+ * survives, and is equivalent). It stays because removing it would make the
+ * `failure.body` access a type error, and because the next reader needs to know
+ * that an auth refusal is deliberately unexplained here.
  */
 export function scheduleFailureReason(error: unknown): string | undefined {
   if (!(error instanceof EliteaApiError)) return undefined;

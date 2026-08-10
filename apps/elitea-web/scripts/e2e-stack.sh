@@ -15,7 +15,16 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # Standalone file: self-contained, no port conflicts with the centry dev stack.
 # In CI set E2E_PORT=8080 (free on ubuntu-latest); locally defaults to 8082.
 # -p elitea-e2e: explicit project name avoids clashing with the deploy- project.
-COMPOSE_F="-p elitea-e2e -f ${REPO_ROOT}/deploy/docker-compose.e2e-standalone.yml"
+#
+# E2E_PROJECT overrides it so a second stack can run beside the first — set it
+# together with E2E_PORT, E2E_PG_PORT, E2E_REDIS_PORT and E2E_OIDC_PORT, all of
+# which must differ. It is a variable rather than a constant because the
+# container lookups below GREP for it: with a hardcoded name and a differently
+# named stack running, those greps fell through to their "any container called
+# postgres" fallback and the seed would have been applied to the other stack's
+# database.
+E2E_PROJECT="${E2E_PROJECT:-elitea-e2e}"
+COMPOSE_F="-p ${E2E_PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.e2e-standalone.yml"
 
 # ── compose binary detection ─────────────────────────────────────────────────
 if [ -z "${COMPOSE_BIN:-}" ]; then
@@ -58,7 +67,7 @@ case "$CMD" in
       EXEC_BIN_EARLY="${COMPOSE_BIN%% *}"
       # Detect the postgres container early (needed here before the full lookup below).
       PG_EARLY=$(
-        $EXEC_BIN_EARLY ps --format '{{.Names}}' 2>/dev/null | grep -m1 'elitea-e2e.*postgres' || \
+        $EXEC_BIN_EARLY ps --format '{{.Names}}' 2>/dev/null | grep -m1 "${E2E_PROJECT}.*postgres" || \
         $EXEC_BIN_EARLY ps --format '{{.Names}}' 2>/dev/null | grep -m1 'postgres' || true
       )
       if [ -n "$PG_EARLY" ]; then
@@ -68,7 +77,7 @@ case "$CMD" in
     fi
     # Run elitea-migrate (idempotent) to apply any pending shared history.
     MAIN_CONTAINER=$(
-      "${COMPOSE_BIN%% *}" ps --format '{{.Names}}' 2>/dev/null | grep -m1 'elitea-e2e.*elitea-main' || true
+      "${COMPOSE_BIN%% *}" ps --format '{{.Names}}' 2>/dev/null | grep -m1 "${E2E_PROJECT}.*elitea-main" || true
     )
     if [ -n "$MAIN_CONTAINER" ]; then
       echo "  → Running elitea-migrate…"
@@ -76,10 +85,10 @@ case "$CMD" in
     fi
 
     # Resolve postgres container name.
-    # Project name is `elitea-e2e` so the container is elitea-e2e-postgres-1.
+    # Project name is `${E2E_PROJECT}` so the container is <project>-postgres-1.
     # Fallback: probe by name pattern in case the compose tool normalises differently.
     POSTGRES_CONTAINER=$(
-      ${COMPOSE_BIN%% *} ps --format '{{.Names}}' 2>/dev/null | grep -m1 'elitea-e2e.*postgres' || \
+      ${COMPOSE_BIN%% *} ps --format '{{.Names}}' 2>/dev/null | grep -m1 "${E2E_PROJECT}.*postgres" || \
       ${COMPOSE_BIN%% *} ps --format '{{.Names}}' 2>/dev/null | grep -m1 'postgres' || true
     )
     if [ -z "$POSTGRES_CONTAINER" ]; then
@@ -88,7 +97,10 @@ case "$CMD" in
     fi
 
     # ── 1. Provision oidc-mock users via REST API ─────────────────────────
-    OIDC_PORT=9400
+    # Must match the compose file's ${E2E_OIDC_PORT:-9400} — the seed talks to
+    # the mock over the PUBLISHED port, so a stack brought up on a different one
+    # would be seeded through a hole in the wall that is not there.
+    OIDC_PORT="${E2E_OIDC_PORT:-9400}"
     OIDC_BASE="http://localhost:${OIDC_PORT}"
 
     # Wait for the mock to be reachable (up already handles healthcheck,
@@ -221,10 +233,43 @@ CROSS JOIN (VALUES
     ('configuration.secrets.secret.list'),
     ('configuration.secrets.secret.create'),
     ('configuration.secrets.secret.edit'),
-    ('configuration.secrets.secret.delete')
+    ('configuration.secrets.secret.delete'),
+    -- Unit A14, Schedules & Tasks. The READ is gated because the listing names
+    -- every internal RPC the platform invokes on a timer, which is
+    -- reconnaissance on its own; `.edit` gates the switch that enables and
+    -- disables those platform jobs.
+    ('configuration.scheduling.schedules.view'),
+    ('configuration.scheduling.schedules.edit')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Unit A14, Schedules & Tasks: a row of the platform cron table for the journey
+-- to read and toggle.
+--
+-- `centry.schedule` is the table `services/elitea-scheduler` polls every minute,
+-- so this row is deliberately INACTIVE and points at an `e2e.` function name
+-- that no RPC handler answers: a stack that happens to run a scheduler must not
+-- start dispatching anything because the E2E seed ran. The journey enables it,
+-- re-reads, and disables it again so the run is repeatable.
+-- ONE ROW PER BROWSER PROJECT. `fullyParallel` is on and chromium and webkit
+-- run the same spec at the same time; `describe.configure({ mode: 'serial' })`
+-- orders the tests WITHIN a project but not ACROSS them, so a single shared row
+-- would have chromium's "enable, reload, assert enabled" racing webkit's
+-- "assert disabled". There is no per-worker fixture that can partition a
+-- platform-wide table, so the partition is seeded here instead.
+INSERT INTO centry.schedule (name, project_id, cron, active, rpc_func, rpc_kwargs, last_run)
+VALUES
+    ('e2e_schedule_probe_chromium', NULL, '0 4 * * *', false, 'e2e_schedule_probe_noop', '{}'::jsonb, NULL),
+    ('e2e_schedule_probe_webkit',   NULL, '0 4 * * *', false, 'e2e_schedule_probe_noop', '{}'::jsonb, NULL)
+ON CONFLICT DO NOTHING;
+
+-- Idempotent re-seed: each journey leaves its row disabled with the original
+-- cron, but a run interrupted mid-way would not, and the first assertion is
+-- that it starts disabled.
+UPDATE centry.schedule
+SET active = false, cron = '0 4 * * *'
+WHERE name LIKE 'e2e_schedule_probe_%';
 
 -- A permission that exists ONLY in the database, granted to the administration
 -- `viewer` role. The Roles matrix derives its rows from the recorded grants

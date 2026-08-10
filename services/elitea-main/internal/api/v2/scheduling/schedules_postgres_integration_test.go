@@ -301,13 +301,27 @@ INSERT INTO centry.schedule (name, cron, active, rpc_func) VALUES
 	router := schedulesRouter(scheduling.NewHandler(pool))
 
 	first := readAdminSchedules(t, router)
-	for attempt := 0; attempt < 4; attempt++ {
-		again := readAdminSchedules(t, router)
-		for index := range first.Rows {
-			if first.Rows[index].ID != again.Rows[index].ID {
-				t.Fatalf("row %d changed identity between reads: %d then %d",
-					index, first.Rows[index].ID, again.Rows[index].ID)
-			}
+	if len(first.Rows) != 3 {
+		t.Fatalf("fixture produced %d rows, want 3", len(first.Rows))
+	}
+
+	// The discriminating step. Repeating an unchanged read proves nothing: on a
+	// three-row table PostgreSQL happily returns the same sequential-scan order
+	// every time, with or without the tiebreaker. UPDATING a tied row moves it
+	// in the heap, so a query ordered by `name` ALONE returns it in a different
+	// position — which is what a client paging through this listing would see as
+	// a row repeating on one page and vanishing from another.
+	middle := first.Rows[1].ID
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE centry.schedule SET cron = '0 9 * * *' WHERE id = $1`, middle); err != nil {
+		t.Fatalf("update the tied row: %v", err)
+	}
+
+	again := readAdminSchedules(t, router)
+	for index := range first.Rows {
+		if first.Rows[index].ID != again.Rows[index].ID {
+			t.Fatalf("row %d changed identity after an unrelated update: %d then %d",
+				index, first.Rows[index].ID, again.Rows[index].ID)
 		}
 	}
 }

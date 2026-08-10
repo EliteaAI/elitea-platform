@@ -221,6 +221,27 @@ describe('AdminSchedulesTasks — the listing', () => {
     expect(recorded.filter((entry) => entry.method === 'GET')).toHaveLength(readsBefore);
   });
 
+  it('sorts never-run schedules LAST in both directions, not as the epoch', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminSchedulesTasks />);
+    await waitForSchedules();
+
+    // "Never" is not "a very long time ago". Sorting it as the epoch buries the
+    // rows an operator most wants to notice at whichever end they are looking
+    // away from, so it is pinned to the bottom of BOTH orders — which is also
+    // why one direction alone cannot prove the comparator right.
+    await user.click(screen.getByRole('button', { name: 'Last run' }));
+    await waitFor(() => expect(renderedScheduleNames()[0]).toBe('index_scheduling'));
+
+    await user.click(screen.getByRole('button', { name: 'Last run' }));
+    await waitFor(() => expect(renderedScheduleNames().at(-1)).toBe('index_scheduling'));
+    // The two never-run rows hold the other two places in both orders.
+    expect(renderedScheduleNames().slice(0, 2).sort()).toEqual([
+      'storage_used_space_check',
+      'usage_monitor',
+    ]);
+  });
+
   it("surfaces the server's own explanation instead of a generic failure", async () => {
     listBody = () => HttpResponse.json({ error: 'failed to read schedules' }, { status: 500 });
     renderAdminRoute(<AdminSchedulesTasks />);

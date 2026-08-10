@@ -56,7 +56,7 @@ async function performOidcLogin(
   // compose-internal `http://oidc-mock:9400`, so the authorize URL
   // elitea-main handed out was unreachable from the host browser and this
   // setup had to read the `Location` header itself and rewrite the host. It is
-  // `http://oidc.localhost:9400` now — a network alias on the oidc-mock
+  // `http://oidc.localhost:${E2E_OIDC_PORT}` now — a network alias on the oidc-mock
   // service that resolves to the container inside the compose network and to
   // loopback from the host (see `deploy/docker-compose.e2e-standalone.yml`) —
   // so a plain navigation follows the whole chain. That change is what made
@@ -67,7 +67,13 @@ async function performOidcLogin(
   });
 
   // Wait for the OIDC mock's authorize page.
-  await page.waitForURL(/oidc\.localhost:9400/, { timeout: 15_000 });
+  //
+  // The port is read from the environment rather than hardcoded so a second
+  // stack (E2E_OIDC_PORT) can be driven by the same suite; the default is the
+  // 9400 every existing invocation already uses.
+  await page.waitForURL(new RegExp(`oidc\\.localhost:${process.env['E2E_OIDC_PORT'] ?? '9400'}`), {
+    timeout: 15_000,
+  });
 
   // oidc-provider-mock authorize form: fill Subject (the user's email) and submit.
   // The field label is "Subject" per the mock's default template.
