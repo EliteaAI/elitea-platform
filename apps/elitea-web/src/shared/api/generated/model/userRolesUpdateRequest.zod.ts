@@ -40,16 +40,26 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { UserRecord } from "./userRecord.zod";
 
-export const UserListResponse = zod
+export const UserRolesUpdateRequest = zod
   .object({
-    rows: zod.array(UserRecord),
-    total: zod.int(),
+    userId: zod
+      .string()
+      .optional()
+      .describe(
+        "Target user id. A batch edit sends the selected ids COMMA-JOINED in this one string (entities\/user\/model\/useEditUser.ts's useBatchEditUsers). `id` and `ids` are pylon's own spellings and are accepted too.\n",
+      ),
+    id: zod.string().optional(),
+    ids: zod.array(zod.int()).optional(),
+    roles: zod
+      .array(zod.string())
+      .describe(
+        "The role names the users must hold after the call. This REPLACES the existing project role set rather than adding to it; an empty array is rejected (use DELETE to remove a member).\n",
+      ),
   })
-  .describe(
-    "Users response map, internal\/api\/v2\/eliteacore\/handler.go's Users. NOTE (issue 130): this used to be the response of POST\/PUT\/DELETE too — the router mounted all four verbs on the same listing handler, so every write echoed the member list and changed nothing. The write verbs now have their own handlers and their own response shapes below.\n",
-  );
+  .describe("Wire truth from legacy\/plugins\/admin\/api\/v2\/users.py's put.");
 
-export type UserListResponse = zod.input<typeof UserListResponse>;
-export type UserListResponseOutput = zod.output<typeof UserListResponse>;
+export type UserRolesUpdateRequest = zod.input<typeof UserRolesUpdateRequest>;
+export type UserRolesUpdateRequestOutput = zod.output<
+  typeof UserRolesUpdateRequest
+>;

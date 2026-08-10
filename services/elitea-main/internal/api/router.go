@@ -569,10 +569,27 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.Get("/active_tasks/{mode}", adminHandler.ActiveTasks)
 
 				// Regular app admin endpoints (with projectID)
+				//
+				// #130: POST/PUT/DELETE used to be mounted onto coreHandler.Users
+				// as well. That handler does no method branching — every verb ran
+				// the listing SELECT and answered 200 with the member list — so
+				// Invite / Edit role / Remove all reported success and wrote
+				// nothing. They now reach real handlers, each gated on the same
+				// pylon permission its Python counterpart declares
+				// (legacy/plugins/admin/api/v2/users.py).
 				r.Get("/users/{mode}/{projectID}", coreHandler.Users)
-				r.Post("/users/{mode}/{projectID}", coreHandler.Users)
-				r.Put("/users/{mode}/{projectID}", coreHandler.Users)
-				r.Delete("/users/{mode}/{projectID}", coreHandler.Users)
+				r.With(apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					"configuration.users.users.create",
+				)).Post("/users/{mode}/{projectID}", coreHandler.UsersCreate)
+				r.With(apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					"configuration.users.users.edit",
+				)).Put("/users/{mode}/{projectID}", coreHandler.UsersUpdate)
+				r.With(apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					"configuration.users.users.delete",
+				)).Delete("/users/{mode}/{projectID}", coreHandler.UsersDelete)
 				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
 				r.Get("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
 				r.Post("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)

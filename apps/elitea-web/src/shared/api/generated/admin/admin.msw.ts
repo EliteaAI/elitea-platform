@@ -45,10 +45,12 @@ import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
 import type {
+  MessageResponse,
   ModerationStatusResponse,
   PlatformSettings,
   Role,
   SupportAssistantConfig,
+  UserInviteResult,
   UserListResponse,
 } from "../model";
 
@@ -71,60 +73,31 @@ export const getUserListResponseMock = (
   ...overrideResponse,
 });
 
-export const getUserCreateResponseMock = (
-  overrideResponse: Partial<Extract<UserListResponse, object>> = {},
-): UserListResponse => ({
-  rows: Array.from(
+export const getUserCreateResponseMock = (): UserInviteResult[] =>
+  Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
-    id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement(["ok", "error"] as const),
     email: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    roles: Array.from(
-      { length: faker.number.int({ min: 1, max: 10 }) },
-      (_, i) => i + 1,
-    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
-  })),
-  total: faker.number.int(),
-  ...overrideResponse,
-});
+    id: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  }));
 
 export const getUserUpdateResponseMock = (
-  overrideResponse: Partial<Extract<UserListResponse, object>> = {},
-): UserListResponse => ({
-  rows: Array.from(
-    { length: faker.number.int({ min: 1, max: 10 }) },
-    (_, i) => i + 1,
-  ).map(() => ({
-    id: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    email: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    roles: Array.from(
-      { length: faker.number.int({ min: 1, max: 10 }) },
-      (_, i) => i + 1,
-    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
-  })),
-  total: faker.number.int(),
+  overrideResponse: Partial<Extract<MessageResponse, object>> = {},
+): MessageResponse => ({
+  msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
   ...overrideResponse,
 });
 
 export const getUserDeleteResponseMock = (
-  overrideResponse: Partial<Extract<UserListResponse, object>> = {},
-): UserListResponse => ({
-  rows: Array.from(
-    { length: faker.number.int({ min: 1, max: 10 }) },
-    (_, i) => i + 1,
-  ).map(() => ({
-    id: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    email: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    roles: Array.from(
-      { length: faker.number.int({ min: 1, max: 10 }) },
-      (_, i) => i + 1,
-    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
-  })),
-  total: faker.number.int(),
+  overrideResponse: Partial<Extract<MessageResponse, object>> = {},
+): MessageResponse => ({
+  msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
   ...overrideResponse,
 });
 
@@ -202,10 +175,10 @@ export const getUserListMockHandler = (
 
 export const getUserCreateMockHandler = (
   overrideResponse?:
-    | UserListResponse
+    | UserInviteResult[]
     | ((
         info: Parameters<Parameters<typeof http.post>[1]>[0],
-      ) => Promise<UserListResponse> | UserListResponse),
+      ) => Promise<UserInviteResult[]> | UserInviteResult[]),
   options?: RequestHandlerOptions,
 ) => {
   return http.post(
@@ -228,10 +201,10 @@ export const getUserCreateMockHandler = (
 
 export const getUserUpdateMockHandler = (
   overrideResponse?:
-    | UserListResponse
+    | MessageResponse
     | ((
         info: Parameters<Parameters<typeof http.put>[1]>[0],
-      ) => Promise<UserListResponse> | UserListResponse),
+      ) => Promise<MessageResponse> | MessageResponse),
   options?: RequestHandlerOptions,
 ) => {
   return http.put(
@@ -254,10 +227,10 @@ export const getUserUpdateMockHandler = (
 
 export const getUserDeleteMockHandler = (
   overrideResponse?:
-    | UserListResponse
+    | MessageResponse
     | ((
         info: Parameters<Parameters<typeof http.delete>[1]>[0],
-      ) => Promise<UserListResponse> | UserListResponse),
+      ) => Promise<MessageResponse> | MessageResponse),
   options?: RequestHandlerOptions,
 ) => {
   return http.delete(

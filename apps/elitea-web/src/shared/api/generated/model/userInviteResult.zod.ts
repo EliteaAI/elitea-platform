@@ -40,16 +40,22 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { UserRecord } from "./userRecord.zod";
 
-export const UserListResponse = zod
+export const UserInviteResult = zod
   .object({
-    rows: zod.array(UserRecord),
-    total: zod.int(),
+    msg: zod.string(),
+    status: zod.enum(["ok", "error"]),
+    email: zod.string(),
+    id: zod
+      .string()
+      .optional()
+      .describe(
+        "Numeric id of the invited user, present only when status is ok.",
+      ),
   })
   .describe(
-    "Users response map, internal\/api\/v2\/eliteacore\/handler.go's Users. NOTE (issue 130): this used to be the response of POST\/PUT\/DELETE too — the router mounted all four verbs on the same listing handler, so every write echoed the member list and changed nothing. The write verbs now have their own handlers and their own response shapes below.\n",
+    "One element of the per-address array pylon's invite returns. The response carries one of these per requested address, and the whole response is 400 when any of them failed.\n",
   );
 
-export type UserListResponse = zod.input<typeof UserListResponse>;
-export type UserListResponseOutput = zod.output<typeof UserListResponse>;
+export type UserInviteResult = zod.input<typeof UserInviteResult>;
+export type UserInviteResultOutput = zod.output<typeof UserInviteResult>;

@@ -16,7 +16,6 @@ import Typography from '@mui/material/Typography';
 
 import type { UserRecord } from '@/shared/api/generated/model';
 import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
-import { EditUserRolesDialog } from '@/shared/ui/settings/EditUserRolesDialog';
 import { InviteUserDialog } from '@/shared/ui/settings/InviteUserDialog';
 import { ArrowLeftIcon } from '@/shared/ui/icons/arrow-left-icon';
 import { ArrowRightIcon } from '@/shared/ui/icons/arrow-right-icon';
@@ -185,16 +184,7 @@ function UsersPageBody({
         </>
       )}
       <UsersPageDialogs
-        singleAction={dialogs.singleAction}
-        batchAction={dialogs.batchAction}
         rolesOptions={dialogs.rolesOptions}
-        onConfirm={(roles) => {
-          if (dialogs.singleAction?.edit) {
-            dialogs.singleAction.edit.onConfirm(roles);
-          } else if (dialogs.batchAction?.edit) {
-            dialogs.batchAction.edit.onConfirm(roles);
-          }
-        }}
         onSetInviteOpen={dialogs.onSetInviteOpen}
         onInviteConfirm={dialogs.onInviteConfirm}
         inviteOpen={dialogs.inviteOpen}
@@ -321,32 +311,31 @@ function UsersPagePagination({
 }
 
 function UsersPageDialogs({
-  singleAction, batchAction, rolesOptions,
-  onConfirm, onSetInviteOpen, onInviteConfirm, inviteOpen,
+  rolesOptions, onSetInviteOpen, onInviteConfirm, inviteOpen,
 }: {
-  singleAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
-  batchAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
   rolesOptions: Array<{ label: string; value: string }>;
-  onConfirm: (roles: Set<string>) => void;
   onSetInviteOpen: (open: boolean) => void;
   onInviteConfirm: (roles: Set<string>) => void;
   inviteOpen: boolean;
 }) {
-  // Batch edit always starts from an empty role selection (old-app parity:
-  // `EditUsersButton.jsx`'s `originalRoles={isBatchEdit ? [] : user?.roles || []}`)
-  // — never seeded from the first selected user's current roles.
-  const originalRoles = singleAction?.edit?.userRoles
-    ? Array.from(singleAction.edit.userRoles)
-    : [];
+  // NOTE(#130): a third `EditUserRolesDialog` used to live here, mounted with
+  // `open={Boolean(singleAction?.edit || batchAction?.edit)}` and
+  // `onClose={() => {}}`. Both halves were wrong: `singleAction` is non-null
+  // for ANY single selected row, so ticking a member's checkbox threw an
+  // "Edit roles" modal over the whole page unasked — and the no-op `onClose`
+  // meant neither Cancel, Escape nor the backdrop could dismiss it. Because the
+  // modal marks the rest of the app `aria-hidden`, the page's own Edit and
+  // Delete controls also stopped existing as far as assistive tech (and
+  // Playwright's role queries) were concerned, which is how it was found.
+  //
+  // It was also redundant: `EditUsersButton` — rendered per row AND in the
+  // header for the batch case — already owns a properly-gated dialog of its
+  // own, with the same `onConfirm` wiring. Deleting the stray one loses no
+  // reachable behaviour, and `singleAction`/`batchAction`/`onConfirm` are no
+  // longer taken as props here at all — the only dialog left is the invite one,
+  // driven by `inviteOpen`.
   return (
     <>
-      <EditUserRolesDialog
-        open={Boolean(singleAction?.edit || batchAction?.edit)}
-        onClose={() => {}}
-        rolesOptions={rolesOptions}
-        originalRoles={originalRoles}
-        onConfirm={onConfirm}
-      />
       <InviteUserDialog
         open={inviteOpen}
         onClose={() => onSetInviteOpen(false)}

@@ -238,7 +238,19 @@ export const UsersTable = memo(function UsersTable({
           }
 
           return (
-            <Box sx={{ display: 'flex', gap: 0.25, justifyContent: 'flex-end' }}>
+            // NOTE(#130): the click MUST NOT reach the DataGrid row. With
+            // `checkboxSelection` on and `disableRowSelectionOnClick` left at
+            // its default, MUI X treats a click anywhere in the row as a
+            // selection TOGGLE — so clicking this pencil deselected the very
+            // row it belongs to, `useUsersActions` dropped `singleAction` to
+            // null on the same tick, and this cell (which only renders for a
+            // selected row) unmounted before its dialog could open. The button
+            // looked wired and was unusable; only the header copy of the same
+            // control worked.
+            <Box
+              sx={{ display: 'flex', gap: 0.25, justifyContent: 'flex-end' }}
+              onClick={(event) => event.stopPropagation()}
+            >
               <EditUsersButton {...editRowProps} />
             </Box>
           );

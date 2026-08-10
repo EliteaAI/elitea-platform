@@ -40,16 +40,12 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { UserRecord } from "./userRecord.zod";
 
-export const UserListResponse = zod
+export const MessageResponse = zod
   .object({
-    rows: zod.array(UserRecord),
-    total: zod.int(),
+    msg: zod.string(),
   })
-  .describe(
-    "Users response map, internal\/api\/v2\/eliteacore\/handler.go's Users. NOTE (issue 130): this used to be the response of POST\/PUT\/DELETE too — the router mounted all four verbs on the same listing handler, so every write echoed the member list and changed nothing. The write verbs now have their own handlers and their own response shapes below.\n",
-  );
+  .describe("pylon's acknowledgement shape — a single `msg` string.\n");
 
-export type UserListResponse = zod.input<typeof UserListResponse>;
-export type UserListResponseOutput = zod.output<typeof UserListResponse>;
+export type MessageResponse = zod.input<typeof MessageResponse>;
+export type MessageResponseOutput = zod.output<typeof MessageResponse>;

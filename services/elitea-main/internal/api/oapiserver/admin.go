@@ -91,6 +91,14 @@ func (s *Server) UserList(w http.ResponseWriter, r *http.Request, projectId gene
 	writeJSON(w, http.StatusOK, map[string]any{"rows": users, "total": len(users)})
 }
 
+// NOTE(#130): this file is NOT what serves /api/v2/admin/users — the generated
+// server in this package is never mounted (see conformance_test.go), and the
+// chi router sends every users verb to internal/api/v2/eliteacore. The original
+// #130 report blamed the `{user_id, role_id}` decoding below for the dead
+// invite path; that diagnosis was wrong and is corrected in the issue's
+// comments. The live contract is `{emails, roles}` / `{userId, roles}` and is
+// implemented in eliteacore/users_write.go. Anything changed here changes
+// nothing a client can observe.
 func (s *Server) UserCreate(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId) {
 	if s.pool == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
