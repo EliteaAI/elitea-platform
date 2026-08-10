@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 
 import { useListToolkitInstances } from '@/shared/api/generated/toolkits/toolkits';
 import type { ToolkitInstance } from '@/shared/api/generated/model';
+import { unwrapList } from '@/shared/api/unwrap';
 
 /**
  * Page-local duplicate of `features/toolkits/api/toolkits.ts`'s
@@ -35,11 +36,10 @@ export function useToolkitDetail(projectId: string | undefined, toolkitId: strin
     { limit: MAX_DETAIL_LOOKUP_PAGE_SIZE, offset: 0 },
     { query: { enabled: projectId !== undefined && toolkitId !== undefined } },
   );
-  // `.data.data`'s declared type includes the error-envelope variant — never
-  // actually reachable here since `eliteaFetch` throws instead of resolving
-  // with it (mutator.ts's §3.6 unwrap contract).
-  const data = query.data?.data as { readonly rows: readonly ToolkitInstance[]; readonly total: number } | undefined;
-  const detail = useMemo(() => data?.rows.find((row) => row.id === toolkitId), [data, toolkitId]);
+  // R-A6 (#132): one helper unwraps the envelope + body shape, instead of a
+  // cast that asserts `{rows,total}` and renders an empty list when it is wrong.
+  const rows = useMemo(() => unwrapList<ToolkitInstance>(query.data, 'listToolkitInstances'), [query.data]);
+  const detail = useMemo(() => rows.find((row) => row.id === toolkitId), [rows, toolkitId]);
 
   return { detail, isFetching: query.isFetching, isError: query.isError };
 }

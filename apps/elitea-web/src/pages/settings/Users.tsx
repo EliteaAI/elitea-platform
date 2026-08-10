@@ -10,6 +10,7 @@ import { useNavigate, useSearch } from '@tanstack/react-router';
 
 import { useUserList, useRoleList } from '@/shared/api/generated/admin/admin';
 import type { UserRecord } from '@/shared/api/generated/model';
+import { unwrapList, unwrapListPage } from '@/shared/api/unwrap';
 import { t } from '@/shared/i18n';
 import { PERMISSIONS } from '@/shared/lib/permissions';
 import { usePermissionSet } from '@/widgets/sidebar';
@@ -104,14 +105,13 @@ function useUsersPageData(projectId: string, canView: boolean): UseUsersPageData
   useEffect(() => {
     const resp = userListQuery.data;
     if (!resp) return;
-    // `eliteaFetch` already unwraps the transport into { data, status, headers },
-    // so `resp.data` IS the response body. The previous `resp.data.data` went one
-    // level too deep, resolved to undefined, and made `rows` permanently [] —
-    // every user saw an empty members table with no error anywhere. Measured
-    // body: {"rows":[…],"total":2}.
-    const inner = (resp as { data?: { rows?: UserRecord[]; total?: number } }).data;
-    const rows = inner?.rows ?? [];
-    const total = inner?.total ?? 0;
+    // The original `resp.data.data.rows` went one level too deep (`eliteaFetch`
+    // already unwraps the transport into {data,status,headers}), resolved to
+    // undefined, and made `rows` permanently [] — every user saw an empty
+    // members table with no error anywhere. Measured body: {"rows":[…],"total":2}.
+    // unwrapListPage takes the envelope OR the body, so "one level too deep" and
+    // "one level too shallow" both stop being expressible here (R-A6, #132).
+    const { rows, total } = unwrapListPage<UserRecord>(resp, 'userList');
     setServerTotal(total);
     setAccumulatedUsers((prev) => {
       if (loadedPage === 0) return rows;
@@ -133,8 +133,11 @@ function useUsersPageData(projectId: string, canView: boolean): UseUsersPageData
     // the role SingleSelect showed only its disabled "No options" entry, and
     // because Invite is gated on a selected role the invite flow could never be
     // completed by anyone. This is the more serious half of the bug.
-    const body = (resp as { data?: unknown }).data;
-    return Array.isArray(body) ? (body as { id: string; name: string }[]) : [];
+    //
+    // Note the call is IDENTICAL to the users one above even though the two
+    // bodies differ; that is the point of the helper — the per-endpoint shape
+    // stops being something a call site has to know or copy correctly.
+    return unwrapList<{ id: string; name: string }>(resp, 'roleList');
   }, [roleListQuery.data]);
 
   const rolesOptions = useMemo(
