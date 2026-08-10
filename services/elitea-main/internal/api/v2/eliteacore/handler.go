@@ -34,13 +34,8 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-type MCPToolSyncer interface {
-	MCPSyncTools(ctx context.Context, payload map[string]any) (json.RawMessage, error)
-}
-
 type Handler struct {
 	pool               *pgxpool.Pool
-	mcpSyncer          MCPToolSyncer
 	permissionResolver auth.PermissionResolver
 	httpClient         *http.Client
 	store              storage.ObjectStore
@@ -84,10 +79,6 @@ func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 		opt(handler)
 	}
 	return handler
-}
-
-func (h *Handler) SetMCPSyncer(s MCPToolSyncer) {
-	h.mcpSyncer = s
 }
 
 func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
@@ -3180,30 +3171,24 @@ func (h *Handler) MCPDCRProxy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp.StatusCode, dcrResp)
 }
 
+// MCPSyncTools reports that MCP tool discovery has no backend in this stack.
+//
+// NOTE(#126): it used to forward to an injected MCPToolSyncer, whose only
+// implementation was the prototype indexersvc Redis RPC client. That client was
+// never assigned in any composition root, so this endpoint has always answered
+// 503 — the injection seam was decoration on an unconditional failure. The
+// transport it spoke was retired (see the IndexerDeps note in
+// internal/api/router.go), so the seam went with it and the 503 is now stated
+// directly. This route stays registered and its response is byte-identical to
+// what every deployment already returned. #194 records the missing capability.
 func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request"})
 		return
 	}
-	body["project_id"] = projectID
 
-	if h.mcpSyncer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "indexer service not available"})
-		return
-	}
-
-	data, err := h.mcpSyncer.MCPSyncTools(r.Context(), body)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data) // response writer; connection already committed
+	writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "indexer service not available"})
 }
 
 func (h *Handler) SupportConfig(w http.ResponseWriter, _ *http.Request) {

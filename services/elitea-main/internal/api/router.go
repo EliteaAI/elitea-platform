@@ -20,7 +20,6 @@ import (
 	v2artifacts "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
-	v2chat "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/chat"
 	v2configs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2contextmgr "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/contextmgr"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
@@ -29,8 +28,6 @@ import (
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
-	v2pipelines "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/pipelines"
-	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -65,19 +62,27 @@ type AuthDeps struct {
 	TrustedProxyCIDRs         []string
 }
 
-// IndexerDeps preserves the current-main grouped runtime dependency contract.
-type IndexerDeps struct {
-	Predictor      v2predict.Predictor
-	LLMService     v2predict.LLMService
-	ChatService    v2chat.ChatService
-	PipelineRunner v2pipelines.Runner
-	ToolTester     v2toolkits.ToolTester
-	MCPSyncer      v2core.MCPToolSyncer
-}
+// NOTE(#126): IndexerDeps and its six fields — Predictor, LLMService,
+// ChatService, PipelineRunner, ToolTester, MCPSyncer — used to live here. They
+// were projections onto internal/infra/indexersvc, a prototype Redis RPC client
+// that published raw JSON to the `elitea_rpc` channel that pylon-indexer serves
+// through arbiter's gzip+pickle codec, so every call was silently dropped.
+// Nothing ever assigned them outside tests, so the twelve routes they gated
+// 404'd in every deployment.
+//
+// They are gone rather than fixed because the replacement transport already
+// ships: runtimecomposition + the Redis command stream + services/
+// elitea-worker-python, deployed in deploy/centry-hybrid/pov-compose.yml, and
+// elitea-docs' spec-transport-implementation.mdx lists indexersvc/rpc.go under
+// "Delete after bounded dispatch/control/output adapters land". They landed.
+//
+// The capabilities those routes were the last visible trace of are recorded so
+// they are not lost with the code: #192 (inbound webhook pipeline trigger),
+// #193 (scheduled pipeline execution), #93 (chat dispatch/streaming migration),
+// #194 (AI draft generation, tool testing and MCP tool sync have no backend).
 
 type RouterConfig struct {
 	Auth               AuthDeps
-	Indexer            IndexerDeps
 	AuthClient         *authsvc.Client
 	AuthValidator      apimw.TokenValidator
 	PrincipalValidator apimw.PrincipalValidator
@@ -107,12 +112,6 @@ type RouterConfig struct {
 	WebhookRepo     webhook.Repository
 	RedisClient     *goredis.Client
 	EventSource     v2events.EventSource
-	Predictor       v2predict.Predictor
-	LLMService      v2predict.LLMService
-	ChatService     v2chat.ChatService
-	PipelineRunner  v2pipelines.Runner
-	ToolTester      v2toolkits.ToolTester
-	MCPSyncer       v2core.MCPToolSyncer
 	Shadow          *shadow.Comparator
 	ShadowMetrics   *shadow.Metrics
 	CutoverTracker  *cutover.Tracker
@@ -333,24 +332,6 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	if cfg.SessionSecret == "" {
 		cfg.SessionSecret = cfg.Auth.SessionSecret
 	}
-	if cfg.Predictor == nil {
-		cfg.Predictor = cfg.Indexer.Predictor
-	}
-	if cfg.LLMService == nil {
-		cfg.LLMService = cfg.Indexer.LLMService
-	}
-	if cfg.ChatService == nil {
-		cfg.ChatService = cfg.Indexer.ChatService
-	}
-	if cfg.PipelineRunner == nil {
-		cfg.PipelineRunner = cfg.Indexer.PipelineRunner
-	}
-	if cfg.ToolTester == nil {
-		cfg.ToolTester = cfg.Indexer.ToolTester
-	}
-	if cfg.MCPSyncer == nil {
-		cfg.MCPSyncer = cfg.Indexer.MCPSyncer
-	}
 
 	r := chi.NewRouter()
 	permissionResolver := legacyrbac.NewPostgresResolver(cfg.Pool)
@@ -526,9 +507,6 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				v2core.WithPermissionResolver(permissionResolver),
 				v2core.WithObjectStore(cfg.ObjectStore),
 			)
-			if cfg.MCPSyncer != nil {
-				coreHandler.SetMCPSyncer(cfg.MCPSyncer)
-			}
 
 			// === Auth endpoints ===
 			r.Mount("/auth", v2auth.NewHandler(
@@ -681,7 +659,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				}
 
 				// Toolkits
-				toolkitHandler := v2toolkits.NewHandler(cfg.Pool, cfg.ToolTester)
+				toolkitHandler := v2toolkits.NewHandler(cfg.Pool)
 				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills).
 				//
 				// NOTE the split, which was wrong until #129: /tools/ is the
@@ -813,28 +791,20 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 					r.Put("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateContextStrategy)
 				}
 
-				// Predict/LLM
-				if cfg.Predictor != nil {
-					predictHandler := v2predict.NewHandler(cfg.Predictor, cfg.LLMService)
-					r.Post("/predict_llm/prompt_lib/{projectID}", predictHandler.Predict)
-					r.Delete("/task/prompt_lib/{projectID}/{taskID}", predictHandler.CancelTask)
-					r.Get("/application_task/prompt_lib/{projectID}/{taskID}", predictHandler.GetTask)
-				}
-
-				// Chat
-				if cfg.ChatService != nil {
-					chatHandler := v2chat.NewHandler(cfg.ChatService)
-					r.Mount("/chat/prompt_lib/{projectID}", chatHandler.Routes())
-					r.Get("/chat_config/prompt_lib/{projectID}", coreHandler.ChatConfig)
-				}
-
-				// Pipelines
-				if cfg.PipelineRunner != nil {
-					pipelineHandler := v2pipelines.NewHandler(cfg.PipelineRunner).WithPool(cfg.Pool)
-					r.Get("/pipeline_trigger/prompt_lib/{projectID}/pipeline/{versionID}/trigger", pipelineHandler.GetTrigger)
-					r.Post("/pipeline_trigger/prompt_lib/{projectID}/pipeline/{versionID}/trigger", pipelineHandler.Trigger)
-					r.Put("/pipeline_trigger/prompt_lib/{projectID}/pipeline/{versionID}/trigger", pipelineHandler.UpdateTrigger)
-				}
+				// NOTE(#126): the Predict/LLM, Chat and Pipeline-trigger route
+				// groups stood here, each behind a nil gate on RouterConfig's
+				// Predictor, ChatService or PipelineRunner field. Nothing ever
+				// assigned those fields, so the groups were never registered
+				// and the paths 404'd in every deployment:
+				//   POST   /predict_llm/prompt_lib/{projectID}
+				//   DELETE /task/prompt_lib/{projectID}/{taskID}
+				//   GET    /application_task/prompt_lib/{projectID}/{taskID}
+				//   POST   /chat/prompt_lib/{projectID}/{conversationID}/messages
+				//   GET    /chat_config/prompt_lib/{projectID}
+				//   GET|POST|PUT /pipeline_trigger/prompt_lib/{projectID}/pipeline/{versionID}/trigger
+				// See the IndexerDeps note at the top of this file for why the
+				// transport behind them was retired rather than repaired, and
+				// #192/#193/#93/#194 for the capability records.
 
 				// Batch version replacement
 				if cfg.AppsRepo != nil {
@@ -845,24 +815,16 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				// Application attachment storage
 				r.Put("/application_attachment_storage/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.UpdateAttachmentStorage)
 
-				// Webchat (predict via version ID)
-				if cfg.Predictor != nil {
-					predictHandler := v2predict.NewHandler(cfg.Predictor, cfg.LLMService)
-					r.Post("/webchat/prompt_lib/{projectID}/{versionID}", predictHandler.Predict)
-				}
-
-				// Generate drafts (forward to predict/indexer)
-				if cfg.Predictor != nil {
-					predictHandler := v2predict.NewHandler(cfg.Predictor, cfg.LLMService)
-					r.Post("/generate_application_draft/prompt_lib/{projectID}", predictHandler.Predict)
-					r.Post("/generate_project_context_draft/prompt_lib/{projectID}", predictHandler.Predict)
-
-					// Skill draft generation needs its own response shape
-					// ({name, description, instructions, tags}), not the
-					// generic predict envelope — see v2skills.DraftHandler.
-					skillDraftHandler := v2skills.NewDraftHandler(cfg.Predictor)
-					r.Post("/generate_skill_draft/prompt_lib/{projectID}", skillDraftHandler.GenerateDraft)
-				}
+				// NOTE(#126): webchat and the three AI-draft-generation routes
+				// stood here behind the same nil gate on RouterConfig.Predictor,
+				// and were never registered either:
+				//   POST /webchat/prompt_lib/{projectID}/{versionID}
+				//   POST /generate_application_draft/prompt_lib/{projectID}
+				//   POST /generate_project_context_draft/prompt_lib/{projectID}
+				//   POST /generate_skill_draft/prompt_lib/{projectID}
+				// v2skills.DraftHandler survives the deletion — it depends only
+				// on a narrow Predictor interface the current runtime could
+				// supply — but it now has no caller. #194 records that.
 
 				// Fork
 				r.Post("/fork/prompt_lib/{projectID}", coreHandler.ExportImportPost)

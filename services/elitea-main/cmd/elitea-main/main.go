@@ -892,10 +892,16 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		RedisClient: eventStreamRedis,
 	})
 
-	// Socket.IO remains unmounted until its legacy connection authentication,
-	// project-membership checks, room authorization, and per-event
-	// permission contract are implemented. Mounting the current prototype
-	// would expose cross-tenant rooms and execution events.
+	// NOTE(#126): the Socket.IO prototype server (internal/api/socketio) is
+	// gone. It was never mounted — the comment that stood here said it stayed
+	// unmounted until connection authentication, project-membership checks,
+	// room authorization and a per-event permission contract existed, since
+	// mounting it would have exposed cross-tenant rooms and execution events.
+	// Every one of its handlers proxied to indexersvc.Client, the prototype
+	// Redis RPC transport this change retires, so it could not have been
+	// mounted after the deletion either. The chat-dispatch migration it was a
+	// placeholder for is #93; the web client's own socket.io still points at
+	// pylon and is unaffected.
 	srv := newHTTPServer(publicAddress, r)
 
 	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)

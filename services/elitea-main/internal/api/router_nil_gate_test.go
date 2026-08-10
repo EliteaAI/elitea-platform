@@ -48,58 +48,30 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	// field are knowingly absent". Adding one to silence the test, without
 	// meaning it, reintroduces exactly the invisibility this guards against.
 	declaredAbsent := map[string]string{
-		// Predictor / ChatService / PipelineRunner / MCPSyncer are the flat
-		// projections of RouterConfig.Indexer (router.go defaults them from it).
-		// The earlier reason here — "not implemented in the Go stack" — was
-		// wrong in the same way #123 was wrong: an implementation DOES exist.
-		// *indexersvc.Client structurally satisfies all six IndexerDeps fields
-		// (verified with compile-time assertions, not a grep for the interface
-		// name).
+		// #126 step 1 removed Predictor, LLMService, ChatService,
+		// PipelineRunner, ToolTester and MCPSyncer from RouterConfig entirely,
+		// together with internal/infra/indexersvc — the prototype Redis RPC
+		// client that was their only implementation. It published raw JSON to
+		// the "elitea_rpc" channel that pylon-indexer serves through arbiter's
+		// gzip(pickle(...)) codec, so every call was dropped on decode; wiring
+		// it would have traded an immediate 404 for a 30s timeout and a 500.
 		//
-		// It is still deliberately not wired, for a reason that is about the
-		// WIRE PROTOCOL rather than about missing code:
+		// They were deleted rather than repaired because the replacement
+		// transport already ships (runtimecomposition + the Redis command
+		// stream + services/elitea-worker-python, deployed in
+		// deploy/centry-hybrid/pov-compose.yml), and elitea-docs'
+		// spec-transport-implementation.mdx lists indexersvc/rpc.go under
+		// "Delete after bounded dispatch/control/output adapters land".
 		//
-		//   indexersvc.Client publishes raw JSON to the Redis channel
-		//   "elitea_rpc" and waits for a JSON reply on
-		//   "elitea_main:rpc:reply:<id>".
+		// Twelve permanently-404 routes went with them. The capabilities behind
+		// those routes are recorded in #192 (inbound webhook pipeline trigger),
+		// #193 (scheduled pipeline execution), #93 (chat dispatch/streaming)
+		// and #194 (AI draft generation, tool testing, MCP tool sync) so the
+		// deletion does not erase them — which is the failure this codebase has
+		// produced four times (#123, #134, #136, #149).
 		//
-		//   The service actually listening on that channel is pylon-indexer,
-		//   whose pylon.yml sets rpc.redis.queue = ${NAME_PREFIX}_rpc =
-		//   "elitea_rpc". Pylon serves it through arbiter's RedisEventNode,
-		//   whose codec is gzip(pickle(...)) [+ HMAC-SHA512]
-		//   (legacy/plugins/arbiter/arbiter/eventnode/base.py decodes with
-		//   pickle.loads(gzip.decompress(data))). JSON bytes fail
-		//   gzip.decompress and are dropped, and arbiter replies through its own
-		//   id_prefix correlation, never to a caller-supplied reply_channel.
-		//   Nothing anywhere publishes to "elitea_main:rpc:reply:*".
-		//
-		// So wiring these would replace an immediate 404 with a 30s RPC timeout
-		// (120s on the streaming routes) followed by a 500 — strictly worse for
-		// the caller and for the server's connection budget. sibling proof:
-		// elitea-scheduler's internal/rpc/client.go talks to the same channel
-		// and DOES implement gzip+pickle+HMAC.
-		//
-		// The target architecture removes the question rather than fixing the
-		// codec: elitea-docs spec-transport-implementation.mdx lists
-		// internal/infra/indexersvc/rpc.go under "Modify or retire" — "Delete
-		// after bounded dispatch/control/output adapters land". Wiring these
-		// fields is blocked on that transport, not on writing a predictor.
-		"ChatService":    "#126 — indexersvc.Client exists and satisfies it, but speaks JSON to an arbiter pickle channel; see note above",
-		"Predictor":      "#126 — indexersvc.Client exists and satisfies it, but speaks JSON to an arbiter pickle channel; see note above",
-		"PipelineRunner": "#126 — indexersvc.Client exists and satisfies it, but speaks JSON to an arbiter pickle channel; see note above",
-		// Same correction as above: an implementation does exist
-		// (indexersvc.Client.MCPSyncTools); it is unreachable for the protocol
-		// reason described above, not unwritten.
-		//
-		// It also gates ZERO routes, contrary to the "30 routes absent" figure
-		// that circulated in #126 and was repeated here. Its whole gated block
-		// is one setter — `coreHandler.SetMCPSyncer(cfg.MCPSyncer)` at
-		// router.go:508-510. The 30 came from an awk sweep that walked forward
-		// from the `if` without tracking brace depth and kept counting routes
-		// belonging to later blocks. Nothing 404s because of this field; the
-		// failure mode is a handler running without a syncer, which is a
-		// different bug and should not be counted as missing endpoints.
-		"MCPSyncer": "#126 — indexersvc.Client satisfies it, but speaks JSON to an arbiter pickle channel; gates 0 routes (one setter), used by coreHandler",
+		// Their entries are gone from this map. The unknown-field check below
+		// fails if anyone re-adds one.
 		// Wired in main.go as of #126 follow-up: ConvsRepo, SkillsRepo, FoldersRepo,
 		// TagsRepo, AnalyticsRepo and WebhookRepo were all pre-existing
 		// repositories with zero callers. Their entries are gone from this map,
@@ -233,6 +205,28 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	for _, f := range staleAllowlist {
 		t.Errorf("RouterConfig.%s is now wired in main.go but is still listed in declaredAbsent.\n"+
 			"  Remove the entry: a stale allowlist hides the next real regression for this field.", f)
+	}
+
+	// --- Allowlist entries for fields that no longer exist ---------------
+	//
+	// The stale check above only fires for a field that is STILL gated in
+	// router.go. Delete the gate — as #126 did for Predictor, LLMService,
+	// ChatService, PipelineRunner, ToolTester and MCPSyncer — and the entry
+	// simply stops being consulted: it rots silently, and the next reader
+	// takes it as a live statement about the router. That is the same
+	// "documentation drifts away from the code with nothing checking" failure
+	// the allowlist exists to prevent, so it is checked too.
+	var orphaned []string
+	for field := range declaredAbsent {
+		if !seen[field] {
+			orphaned = append(orphaned, field)
+		}
+	}
+	sort.Strings(orphaned)
+	for _, f := range orphaned {
+		t.Errorf("declaredAbsent lists RouterConfig.%s, but router.go has no `cfg.%s != nil` gate.\n"+
+			"  The field or its gate was removed and the entry was left behind, where it reads as a\n"+
+			"  live claim about routes that no longer exist. Delete the entry.", f, f)
 	}
 }
 

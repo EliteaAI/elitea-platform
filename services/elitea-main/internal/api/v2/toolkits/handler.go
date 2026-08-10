@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/indexersvc"
 )
 
 type Tool struct {
@@ -40,21 +39,20 @@ type Repository interface {
 	DeleteToolkit(ctx context.Context, projectID, toolkitID string) error
 }
 
-type ToolTester interface {
-	TestTool(ctx context.Context, req TestToolRequest) (TestToolResponse, error)
-}
-
-type TestToolRequest = indexersvc.TestToolRequest
-type TestToolResponse = indexersvc.TestToolResponse
+// NOTE(#126): a ToolTester interface and a `tester` field stood here, plus
+// TestToolRequest/TestToolResponse aliases onto internal/infra/indexersvc. The
+// only implementation was that prototype Redis RPC client, which no composition
+// root ever assigned, so both tool-testing endpoints have always answered 503.
+// The transport was retired (see the IndexerDeps note in
+// internal/api/router.go) and the seam went with it. #194 records the gap.
 
 type Handler struct {
-	repo   Repository
-	pool   *pgxpool.Pool
-	tester ToolTester
+	repo Repository
+	pool *pgxpool.Pool
 }
 
-func NewHandler(pool *pgxpool.Pool, tester ToolTester) *Handler {
-	return &Handler{repo: &pgRepo{pool: pool}, pool: pool, tester: tester}
+func NewHandler(pool *pgxpool.Pool) *Handler {
+	return &Handler{repo: &pgRepo{pool: pool}, pool: pool}
 }
 
 func NewHandlerWithRepo(repo Repository) *Handler {
@@ -289,80 +287,30 @@ func (h *Handler) ForkToolkit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tool)
 }
 
+// TestTool reports that running a single tool has no backend in this stack.
+// See the NOTE(#126) above the Handler declaration; the 503 body is unchanged
+// from what every deployment already returned.
 func (h *Handler) TestTool(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	toolID := chi.URLParam(r, "toolID")
-
-	user, ok := auth.UserFromContext(r.Context())
-	userID := ""
-	if ok {
-		userID = user.ID
-	}
-
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
 		return
 	}
 
-	toolParams, _ := body["tool_params"].(map[string]any)
-	toolName, _ := body["tool_name"].(string)
-
-	if h.tester == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "indexer service not available"})
-		return
-	}
-
-	resp, err := h.tester.TestTool(r.Context(), indexersvc.TestToolRequest{
-		ProjectID:  projectID,
-		ToolID:     toolID,
-		ToolName:   toolName,
-		ToolParams: toolParams,
-		UserID:     userID,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "indexer service not available"})
 }
 
+// TestToolkitTool reports that running a toolkit's tool has no backend in this
+// stack. See the NOTE(#126) above the Handler declaration; the 503 body is
+// unchanged from what every deployment already returned.
 func (h *Handler) TestToolkitTool(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-
-	user, ok := auth.UserFromContext(r.Context())
-	userID := ""
-	if ok {
-		userID = user.ID
-	}
-
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
 		return
 	}
 
-	toolkitID, _ := body["toolkit_id"].(string)
-	toolName, _ := body["tool_name"].(string)
-	toolParams, _ := body["tool_params"].(map[string]any)
-
-	if h.tester == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "indexer service not available"})
-		return
-	}
-
-	resp, err := h.tester.TestTool(r.Context(), indexersvc.TestToolRequest{
-		ProjectID:  projectID,
-		ToolkitID:  toolkitID,
-		ToolName:   toolName,
-		ToolParams: toolParams,
-		UserID:     userID,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "indexer service not available"})
 }
 
 func (h *Handler) ExportToolkit(w http.ResponseWriter, r *http.Request) {
