@@ -111,6 +111,7 @@ const OXLINT_CASES = [
   ['R-A4', 'oxlint eslint/no-restricted-globals (XMLHttpRequest)', 'eslint(no-restricted-globals)'],
   ['R-A6', 'elitea/no-adhoc-envelope-unwrap (jsPlugins; shared/api/unwrap.ts override)', 'elitea(no-adhoc-envelope-unwrap)'],
   ['STOR-1', 'oxlint eslint/no-restricted-globals (localStorage, §5.4)', 'eslint(no-restricted-globals)'],
+  ['STOR-2', 'elitea/no-raw-webstorage (jsPlugins; member-expression half of §5.4, issue #22)', 'elitea(no-raw-webstorage)'],
   ['R-T4', 'oxlint eslint/no-restricted-imports (useTheme importNames)', 'eslint(no-restricted-imports)'],
   ['R-I1', 'oxlint eslint/no-restricted-imports (@mui/icons-material barrel)', 'eslint(no-restricted-imports)'],
   ['R-T1', 'elitea/no-raw-color (jsPlugins)', 'elitea(no-raw-color)'],

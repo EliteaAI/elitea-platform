@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { STORAGE_NAMESPACE, clearNamespace } from '@/shared/lib/storage';
+
 import {
   MCP_TOKEN_CHANGE_EVENT,
   canonicalizeServerUrl,
@@ -86,6 +88,34 @@ describe('getAccessToken / logout / setConnectionVerified (sessionStorage round-
     expect(getAccessToken(serverUrl)).toBeNull();
   });
 
+  /**
+   * Issue #22. These tokens used to be written to a RAW, un-namespaced
+   * `sessionStorage` key (`mcp_oauth_tokens`), bypassing
+   * `shared/lib/storage.ts`. `performLogout()` sweeps only the `el.*`
+   * namespace, so a SharePoint OAuth access token survived logout intact and
+   * was inherited by whoever used the tab next.
+   *
+   * §5.4's own completeness test (`shared/api/auth/logout.test.ts`) could not
+   * catch this: it proves "write-set minus cleared-set is empty" from the
+   * storage wrapper's write TRACKER, which by construction never sees a write
+   * that bypassed the wrapper.
+   */
+  it('stores under the el.* namespace so clearNamespace() (logout) actually removes the token', () => {
+    setConnectionVerified(serverUrl);
+    expect(getAccessToken(serverUrl)).not.toBeNull();
+
+    const keys = Object.keys(window.sessionStorage);
+    expect(keys.every((key) => key.startsWith(STORAGE_NAMESPACE))).toBe(true);
+
+    clearNamespace();
+    expect(getAccessToken(serverUrl)).toBeNull();
+  });
+
+  it('leaves no un-namespaced sessionStorage key behind after a write', () => {
+    setConnectionVerified(serverUrl);
+    expect(window.sessionStorage.getItem('mcp_oauth_tokens')).toBeNull();
+  });
+
   it('setConnectionVerified stores a verified marker getAccessToken then reads back', () => {
     setConnectionVerified(serverUrl);
     expect(getAccessToken(serverUrl)).toBe('__connection_verified__');
@@ -93,7 +123,7 @@ describe('getAccessToken / logout / setConnectionVerified (sessionStorage round-
 
   it('setConnectionVerified does not overwrite an existing real token', () => {
     window.sessionStorage.setItem(
-      'mcp_oauth_tokens',
+      `${STORAGE_NAMESPACE}mcp.tokens`,
       JSON.stringify({ [serverUrl]: { access_token: 'real-token', issued_at: Date.now(), expires_at: Date.now() + 60_000 } }),
     );
     setConnectionVerified(serverUrl);
@@ -109,7 +139,7 @@ describe('getAccessToken / logout / setConnectionVerified (sessionStorage round-
 
   it('getAccessToken returns null for an expired token', () => {
     window.sessionStorage.setItem(
-      'mcp_oauth_tokens',
+      `${STORAGE_NAMESPACE}mcp.tokens`,
       JSON.stringify({ [serverUrl]: { access_token: 'stale', issued_at: 0, expires_at: 1 } }),
     );
     expect(getAccessToken(serverUrl)).toBeNull();
