@@ -218,7 +218,7 @@ jobs:
     # Release-tag only, per the file header at :5-6 and §6.6/§7.6. The guard was
     # lost at some point, so this job ran on every PR and hard-failed at the
     # `test -d e2e/visual` line below (PR #82 validation, blocker 3).
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
