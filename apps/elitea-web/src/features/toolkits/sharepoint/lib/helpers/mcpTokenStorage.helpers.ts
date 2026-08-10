@@ -34,16 +34,38 @@
  * (`setConnectionVerified`, used for the non-delegated/header-auth case in
  * `SharepointOAuthStatus.tsx`).
  *
- * Ported byte-for-byte from `mcpAuth.helpers.js` for the functions kept
- * (same `sessionStorage` key names, same composite-key detection, same
- * `MCP_CONNECTION_VERIFIED` sentinel and 24h expiry) — this is a narrower
- * SLICE of that file, not a redesign of the logic it does contain.
+ * Ported from `mcpAuth.helpers.js` for the functions kept (same
+ * composite-key detection, same `MCP_CONNECTION_VERIFIED` sentinel and 24h
+ * expiry) — this is a narrower SLICE of that file, not a redesign of the
+ * logic it does contain.
+ *
+ * **THE STORAGE LOCATION IS NOT THIS FILE'S TO CHOOSE.** The OAuth token a
+ * SharePoint delegated login actually obtains is written by `features/mcps`'
+ * `McpAuthModal` through `features/mcps/lib/storage.ts` — so the three
+ * constants below are not "the baseline's names", they are `features/mcps/
+ * lib/constants.ts`'s names (`mcp.tokens`, `elitea_mcp_token_change`,
+ * `__connection_verified__`), kept in sync BY INSPECTION because
+ * `no-sideways-features` forbids importing them. They were the baseline's
+ * raw `sessionStorage` names (`mcp_oauth_tokens`/`mcp-token-change`) until
+ * this change, which meant this reader and that writer addressed two
+ * different records: a real OAuth login left `useSharepointTokenStatus`
+ * reporting "not connected" forever. Storage access itself goes through
+ * `shared/lib/storage.ts`'s `createStorage('session')` — the only sanctioned
+ * `sessionStorage` entry point (spec §5.4), which is also what applies the
+ * `el.` namespace prefix that `clearNamespace()` sweeps on logout.
+ *
+ * If either name changes in `features/mcps/lib/constants.ts`, the
+ * cross-slice interop test (`mcpTokenStorage.interop.test.ts`) fails — it
+ * asserts a token written by the real `features/mcps` writer is read back by
+ * `getAccessToken` here, so the two are pinned together by a test, not by a
+ * comment.
  */
+import { createStorage } from '@/shared/lib/storage';
 
-/** `mcAuth.constants.js`'s `MC_TOKENS_STORAGE_KEY`. */
-const MC_TOKENS_STORAGE_KEY = 'mcp_oauth_tokens';
-/** `mcAuth.constants.js`'s `MCP_TOKEN_CHANGE_EVENT`. */
-export const MCP_TOKEN_CHANGE_EVENT = 'mcp-token-change';
+/** `features/mcps/lib/constants.ts`'s `MC_TOKENS_STORAGE_KEY` — see the module doc comment. */
+const MC_TOKENS_STORAGE_KEY = 'mcp.tokens';
+/** `features/mcps/lib/constants.ts`'s `MCP_TOKEN_CHANGE_EVENT` — see the module doc comment. */
+export const MCP_TOKEN_CHANGE_EVENT = 'elitea_mcp_token_change';
 /** `mcAuth.constants.js`'s `MCP_CONNECTION_VERIFIED` sentinel access-token value. */
 const MCP_CONNECTION_VERIFIED = '__connection_verified__';
 /** `mcAuth.constants.js`'s `MCP_PREBUILD_PREFIX` — checked so `getStorageKey` matches the baseline's precedence order, even though SharePoint's own `type` ('sharepoint') is never prebuild-prefixed. */
@@ -64,25 +86,20 @@ function isStorageAvailable(): boolean {
   return typeof window !== 'undefined' && window.sessionStorage !== undefined;
 }
 
-function safeParse(value: string | null): TokenStore {
-  try {
-    return value === null ? {} : (JSON.parse(value) as TokenStore);
-  } catch {
-    return {};
-  }
-}
-
 function loadTokens(): TokenStore {
   if (!isStorageAvailable()) return {};
-  return safeParse(window.sessionStorage.getItem(MC_TOKENS_STORAGE_KEY));
+  // `getJSON` already treats malformed JSON as absent (returns `null`), the
+  // same swallow-and-continue posture the baseline's own `try/catch` had.
+  return createStorage('session').getJSON<TokenStore>(MC_TOKENS_STORAGE_KEY) ?? {};
 }
 
 function saveTokens(tokens: TokenStore): void {
   if (!isStorageAvailable()) return;
   try {
-    window.sessionStorage.setItem(MC_TOKENS_STORAGE_KEY, JSON.stringify(tokens));
+    createStorage('session').setJSON(MC_TOKENS_STORAGE_KEY, tokens);
   } catch {
     // Ignore storage errors (quota exceeded, etc) — same as the baseline.
+    // `setJSON` does not swallow them itself (`shared/lib/storage.ts`).
   }
 }
 

@@ -5,6 +5,8 @@ import Box from '@mui/material/Box';
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 
 import { NameDescriptionInput } from '../NameDescriptionInput';
+import type { SharepointConfigRef } from '../../../sharepoint/lib/hooks/useResolvedSharepointConfig.hooks';
+import { SharepointOAuthStatus } from '../../../sharepoint/ui/SharepointOAuthStatus';
 
 import { isMainPassField, isSectionOrToolsField, pickSchemaFields, resolveRequired, schemaEntries } from './ToolBase.fields';
 import { ToolActionsSelector } from './ToolActionsSelector';
@@ -279,15 +281,51 @@ function isPreconfiguredMcpType(editToolDetail: EditToolDetail): boolean {
   return Boolean(editToolDetail.type?.startsWith('mcp_')) && editToolDetail.type !== 'mcp';
 }
 
+/**
+ * The SharePoint connection-status widget. UNLIKE its `mcpAuthStatus`/
+ * `openApiOAuthStatus` neighbours, this one is NOT slot-only: SharePoint
+ * lives under `features/toolkits/sharepoint/**`, i.e. inside this very
+ * slice, so importing it is an ordinary intra-slice import with no
+ * `no-sideways-features` problem. It was slot-only anyway until this change,
+ * and — exactly like `renderNameDescriptionInput`/`renderOpenApiSpecField`
+ * before the R2 fix — no caller ever supplied the slot, so a SharePoint
+ * toolkit's settings form rendered no login UI at all in production.
+ *
+ * Only the two MODALS (`features/mcps`' `McpAuthModal`/`McpLogoutModal`)
+ * genuinely have to come from above; they arrive as
+ * `slots.sharepointAuthModals`.
+ */
+function SharepointStatus({ editToolDetail, projectId, slots }: { editToolDetail: EditToolDetail; projectId: string | undefined; slots: ToolBaseSlots | undefined }): ReactNode {
+  if (slots?.sharepointOAuthStatus !== undefined) return slots.sharepointOAuthStatus;
+  const modals = slots?.sharepointAuthModals;
+  // `exactOptionalPropertyTypes`: both keys are OMITTED when absent, never
+  // set to an explicit `undefined` — this codebase's standing convention.
+  const configRef = editToolDetail.settings['sharepoint_configuration'] as SharepointConfigRef | undefined;
+  return (
+    <SharepointOAuthStatus
+      values={{ ...(editToolDetail.id !== undefined && { id: editToolDetail.id }), settings: { ...(configRef !== undefined && { sharepoint_configuration: configRef }) } }}
+      projectId={projectId}
+      {...(modals?.renderAuthModal !== undefined && { renderAuthModal: modals.renderAuthModal })}
+      {...(modals?.renderLogoutModal !== undefined && { renderLogoutModal: modals.renderLogoutModal })}
+    />
+  );
+}
+
 /** The 3 caller-injected connection-status slots (`ToolBase.jsx:573-577`), gated on the schema/toolkit-type booleans — split into its own function so `ToolBase` itself stays under the §3.5 complexity budget. */
-export function ToolBaseStatusSlots({ schema, editToolDetail, slots, showTools }: { schema: ToolSchema; editToolDetail: EditToolDetail; slots: ToolBaseSlots | undefined; showTools: boolean }): ReactNode {
+export function ToolBaseStatusSlots({ schema, editToolDetail, projectId, slots, showTools }: { schema: ToolSchema; editToolDetail: EditToolDetail; projectId: string | undefined; slots: ToolBaseSlots | undefined; showTools: boolean }): ReactNode {
   const isAnyMcpType = schema.title === 'mcp' || isPreconfiguredMcpType(editToolDetail);
   const isSharepointToolkit = schema.title === 'sharepoint';
   const isOpenApiToolkit = editToolDetail.type === 'openapi';
   return (
     <>
       {isAnyMcpType && slots?.mcpAuthStatus}
-      {isSharepointToolkit && slots?.sharepointOAuthStatus}
+      {isSharepointToolkit && (
+        <SharepointStatus
+          editToolDetail={editToolDetail}
+          projectId={projectId}
+          slots={slots}
+        />
+      )}
       {isOpenApiToolkit && showTools && slots?.openApiOAuthStatus}
     </>
   );

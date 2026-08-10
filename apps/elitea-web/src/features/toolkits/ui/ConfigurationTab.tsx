@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useState } from 'react';
+import { type ReactNode, useCallback, useMemo, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -8,6 +8,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { ViewRunHistoryButton } from '@/shared/ui/ViewRunHistoryButton';
 
 import type { UseToolkitEditMutation } from '../api/toolkits';
+import type { SharepointAuthModalRenderers } from '../sharepoint/ui/SharepointOAuthStatus';
 import { ToolkitForm, type ToolkitFormEditDetail } from './form/ToolkitForm/ToolkitForm';
 import type { SaveToolkitPayload } from './form/ToolkitForm/ToolkitsOperationButtons';
 
@@ -59,6 +60,29 @@ export interface ToolkitSaveHandlers {
   readonly onSaveError?: (message: string) => void;
 }
 
+/**
+ * The three caller-supplied pieces this component cannot import itself,
+ * grouped for the same §3.5 12-prop-budget reason as {@link ToolkitDetailState}
+ * (adding `sharepointAuth` as a 13th top-level prop is what forced the
+ * grouping).
+ */
+export interface ConfigurationTabSlots {
+  /** The RIGHT panel's live test-chat content — see the module doc comment for why this is a slot, not a direct import. */
+  readonly renderTestPane: (props: ToolkitTestPaneRenderProps) => ReactNode;
+  readonly renderRunHistory?: (props: ToolkitRunHistoryRenderProps) => ReactNode;
+  /**
+   * The `features/mcps` login/logout modals a SharePoint toolkit's delegated
+   * (OAuth) login needs. `features/toolkits` cannot import `features/mcps`
+   * (`no-sideways-features`), so the real `<McpAuthModal>`/`<McpLogoutModal>`
+   * come from this component's `pages/`-layer caller — see
+   * `pages/toolkits/lib/sharepointAuthModals.tsx`. Omitted, a SharePoint
+   * toolkit's Login button runs its connection check and can open nothing,
+   * which is exactly the dead state the whole path was in before it was
+   * wired.
+   */
+  readonly sharepointAuth?: SharepointAuthModalRenderers;
+}
+
 /** @public */
 export interface ConfigurationTabProps {
   readonly isFetching: boolean;
@@ -71,9 +95,7 @@ export interface ConfigurationTabProps {
   readonly projectId: string | undefined;
   readonly onValidationStateChange?: (state: { readonly hasErrors: boolean; readonly triggerValidation: () => void }) => void;
   readonly saveHandlers: ToolkitSaveHandlers;
-  /** The RIGHT panel's live test-chat content — see the module doc comment for why this is a slot, not a direct import. */
-  readonly renderTestPane: (props: ToolkitTestPaneRenderProps) => ReactNode;
-  readonly renderRunHistory?: (props: ToolkitRunHistoryRenderProps) => ReactNode;
+  readonly slots: ConfigurationTabSlots;
 }
 
 /**
@@ -119,13 +141,19 @@ export function ConfigurationTab({
   projectId,
   onValidationStateChange,
   saveHandlers,
-  renderTestPane,
-  renderRunHistory,
+  slots,
 }: ConfigurationTabProps): ReactNode {
+  const { renderTestPane, renderRunHistory, sharepointAuth } = slots;
   const { editToolDetail, onChangeToolDetail, isToolDirty } = toolDetailState;
   const { saveToolkit, onSaveSuccess, onSaveError } = saveHandlers;
   const [showHistory, setShowHistory] = useState(false);
   const [isFullScreenChat, setIsFullScreenChat] = useState(false);
+
+  // Memoized so `ToolBase`'s `slots` identity is stable across renders (the
+  // prop bag it lives in is rebuilt every render by design — see
+  // `ToolkitForm.hooks.ts`'s own note — but a fresh object here would also
+  // remount nothing, it would just churn; keep it cheap and stable).
+  const formSlots = useMemo(() => (sharepointAuth === undefined ? undefined : { sharepointAuthModals: sharepointAuth }), [sharepointAuth]);
 
   const handleShowHistory = useCallback(() => setShowHistory(true), []);
   const handleCloseHistory = useCallback(() => setShowHistory(false), []);
@@ -188,6 +216,7 @@ export function ConfigurationTab({
             onSave={handleSave}
             onSaveSuccess={onSaveSuccess}
             onSaveError={onSaveError}
+            slots={formSlots}
           />
         </Grid>
       )}

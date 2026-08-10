@@ -10,6 +10,22 @@ import {
   setConnectionVerified,
 } from './mcpTokenStorage.helpers';
 
+/**
+ * Seeds the token record through the SAME namespaced wrapper production uses
+ * (`el.` prefix + the `mcp.tokens` logical key `features/mcps` writes to).
+ *
+ * These two seeds used to write the raw `mcp_oauth_tokens` key. That was not
+ * just a cosmetic mismatch: it is the key this module itself used to read,
+ * while the real token WRITER (`features/mcps/lib/storage.ts`, driven by
+ * `McpAuthModal`) has always written `el.mcp.tokens` — so a genuine SharePoint
+ * OAuth login was invisible here. Worse, the "expired token" case below still
+ * PASSED with the wrong key, because a seed that lands nowhere also reads back
+ * as `null`; seeding through the wrapper is what makes it discriminate.
+ */
+function seedTokens(tokens: Readonly<Record<string, unknown>>): void {
+  window.sessionStorage.setItem('el.mcp.tokens', JSON.stringify(tokens));
+}
+
 describe('isPrebuildMcpType', () => {
   it('returns true for an mcp_-prefixed type other than the bare "mcp"', () => {
     expect(isPrebuildMcpType('mcp_github')).toBe(true);
@@ -92,10 +108,7 @@ describe('getAccessToken / logout / setConnectionVerified (sessionStorage round-
   });
 
   it('setConnectionVerified does not overwrite an existing real token', () => {
-    window.sessionStorage.setItem(
-      'mcp_oauth_tokens',
-      JSON.stringify({ [serverUrl]: { access_token: 'real-token', issued_at: Date.now(), expires_at: Date.now() + 60_000 } }),
-    );
+    seedTokens({ [serverUrl]: { access_token: 'real-token', issued_at: Date.now(), expires_at: Date.now() + 60_000 } });
     setConnectionVerified(serverUrl);
     expect(getAccessToken(serverUrl)).toBe('real-token');
   });
@@ -108,10 +121,7 @@ describe('getAccessToken / logout / setConnectionVerified (sessionStorage round-
   });
 
   it('getAccessToken returns null for an expired token', () => {
-    window.sessionStorage.setItem(
-      'mcp_oauth_tokens',
-      JSON.stringify({ [serverUrl]: { access_token: 'stale', issued_at: 0, expires_at: 1 } }),
-    );
+    seedTokens({ [serverUrl]: { access_token: 'stale', issued_at: 0, expires_at: 1 } });
     expect(getAccessToken(serverUrl)).toBeNull();
   });
 

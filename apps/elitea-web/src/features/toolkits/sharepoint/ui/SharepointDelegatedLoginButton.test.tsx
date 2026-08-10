@@ -50,33 +50,32 @@ describe('SharepointDelegatedLoginButton', () => {
     expect(screen.queryByText('Log in')).not.toBeInTheDocument();
   });
 
-  it(
-    'clicking "Log in" runs the connection check; onConfigAuthRequired is NOT called for a real 401 today ' +
-      '(REAL, CURRENT GAP — see useSharepointCheckConnection.hooks.ts\'s module doc comment: http.ts\'s reauth ' +
-      'interceptor strips the response body from every 401 before this callback chain ever sees it)',
-    async () => {
-      server.use(
-        http.post('*/api/v2/configurations/check_connection/proj-1/sharepoint', () =>
-          HttpResponse.json({ requires_authorization: true, auth_metadata: { server_url: 'https://x', resource_metadata: {} } }, { status: 401 }),
-        ),
-      );
-      const onConfigAuthRequired = vi.fn();
+  it('clicking "Log in" runs the connection check and forwards a requires_authorization 401 to onConfigAuthRequired', async () => {
+    server.use(
+      http.post('*/api/v2/configurations/check_connection/proj-1/sharepoint', () =>
+        HttpResponse.json({ requires_authorization: true, auth_metadata: { server_url: 'https://x', resource_metadata: {} } }, { status: 401 }),
+      ),
+    );
+    const onConfigAuthRequired = vi.fn();
 
-      renderWithProviders(
-        <SharepointDelegatedLoginButton
-          projectId="proj-1"
-          spConfig={spConfig}
-          oauthTokenKey={oauthTokenKey}
-          onConfigAuthRequired={onConfigAuthRequired}
-        />,
-      );
+    renderWithProviders(
+      <SharepointDelegatedLoginButton
+        projectId="proj-1"
+        spConfig={spConfig}
+        oauthTokenKey={oauthTokenKey}
+        onConfigAuthRequired={onConfigAuthRequired}
+      />,
+    );
 
-      fireEvent.click(screen.getByText('Log in'));
+    fireEvent.click(screen.getByText('Log in'));
 
-      await waitFor(() => expect(screen.getByText('Log in')).not.toBeDisabled());
-      expect(onConfigAuthRequired).not.toHaveBeenCalled();
-    },
-  );
+    await waitFor(() => expect(screen.getByText('Log in')).not.toBeDisabled());
+    // INVERTED (was `not.toHaveBeenCalled()`, citing http.ts's reauth
+    // interceptor stripping every 401 body): that interceptor now lets a
+    // `requires_authorization` 401 through with its body intact, so the
+    // caller's own auth-modal hook finally receives the metadata.
+    await waitFor(() => expect(onConfigAuthRequired).toHaveBeenCalledTimes(1));
+  });
 
   it(
     'falls back to "SharePoint" in the tooltip when toolName is an empty string ' +
@@ -97,17 +96,28 @@ describe('SharepointDelegatedLoginButton', () => {
     },
   );
 
-  it('renders the injected auth-modal slot only when both renderAuthModal and authModalSlotProps are supplied', () => {
-    const renderAuthModal = vi.fn(() => <div data-testid="injected-modal" />);
-    renderWithProviders(
+  /**
+   * REPLACES the old "renders the injected auth-modal slot only when both
+   * renderAuthModal and authModalSlotProps are supplied" case. That pair was
+   * removed: nothing in `src/` ever supplied it (dead wiring that read as an
+   * available extension point), and it was redundant — the caller that
+   * supplies `onConfigAuthRequired` owns the `useSharepointAuthModal`
+   * instance behind it, so it holds `modalProps` and renders the modal
+   * itself. This asserts the contract that remains: the button reports
+   * status and delegates the 401 outward, and renders no modal of its own.
+   */
+  it('renders no modal of its own — the 401 handler is delegated to the caller', () => {
+    const onConfigAuthRequired = vi.fn();
+    const { container } = renderWithProviders(
       <SharepointDelegatedLoginButton
         projectId="proj-1"
         spConfig={spConfig}
         oauthTokenKey={oauthTokenKey}
-        renderAuthModal={renderAuthModal}
+        onConfigAuthRequired={onConfigAuthRequired}
       />,
     );
-    expect(screen.queryByTestId('injected-modal')).not.toBeInTheDocument();
-    expect(renderAuthModal).not.toHaveBeenCalled();
+
+    expect(screen.getByText('Log in')).toBeInTheDocument();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 });
