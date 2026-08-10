@@ -98,7 +98,12 @@ function DateRangeFieldImpl({
   onClear,
 }: DateRangeFieldProps): ReactNode {
   return (
-    <Box sx={(theme: Theme) => fieldSx(theme, open)}>
+    // The testid is what the @visual suite masks. The value is a wall-clock
+    // range derived from `Date.now()` (`Last 24h` → now-24h .. now), so the
+    // rendered text changes on every single run; it is volatile in exactly the
+    // sense `volatileRegions()` exists for, and masking it is what lets the
+    // rest of this screen be asserted at all (issue #159).
+    <Box sx={(theme: Theme) => fieldSx(theme, open)} data-testid="analytics-date-range">
       <Typography sx={labelSx}>{label}</Typography>
       <DateTimePicker
         value={value}

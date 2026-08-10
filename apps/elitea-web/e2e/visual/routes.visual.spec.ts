@@ -26,6 +26,13 @@ function volatileRegions(page: Page) {
   return [
     page.locator('[data-testid$="-timestamp"]'),
     page.locator('time'),
+    // The analytics date-range filter renders `now-24h … now` as formatted
+    // wall-clock text (`DateRangeField`, format `dd/MM/yyyy HH:mm`). It is
+    // different on every run by construction: the first observed run of this
+    // job diffed a baseline reading 06/08/2026 23:21 against a page reading
+    // 09/08/2026 00:51 (run 31345403013, issue #159). A locator that matches
+    // nothing on the other four routes is a no-op there.
+    page.locator('[data-testid="analytics-date-range"]'),
   ];
 }
 
@@ -88,7 +95,15 @@ const ROUTES: readonly VisualRoute[] = [
     // @covers /settings/analytics
     name: 'settings-analytics',
     path: '/app/settings/analytics',
-    landmark: (page) => page.getByRole('main').or(page.locator('#root > *')).first(),
+    // The KPI row, NOT `getByRole('main')`. This screen fetches its data after
+    // mount and shows a spinner meanwhile; `main` (and `#root > *`) is present
+    // during the spinner, so the landmark was satisfied instantly, `settle()`'s
+    // 300ms elapsed, and the committed baseline was a photograph of the
+    // spinner — the precise failure this file's header warns about, sitting in
+    // the suite from the day it was written and only visible once the job was
+    // allowed to run (issue #159). `analytics-kpi-row` renders only from
+    // resolved data.
+    landmark: (page) => page.getByTestId('analytics-kpi-row'),
   },
   {
     // @covers /settings/project-params
