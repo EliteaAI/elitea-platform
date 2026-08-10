@@ -18,7 +18,7 @@ import Stack from '@mui/material/Stack';
 import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import type { CronFieldBounds, CronFieldId, CronFieldKind, CronFieldRange, CronFieldState } from './model';
 import { rangeArray } from './model';
 

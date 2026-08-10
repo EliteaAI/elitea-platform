@@ -14,7 +14,7 @@ import { useTheme } from '@mui/material/styles';
 import InfoIcon from '@mui/icons-material/Info';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import { ChatParticipantType } from '../../model/constants';
 import { canParticipantBeActiveInChat } from '../../lib/helpers';

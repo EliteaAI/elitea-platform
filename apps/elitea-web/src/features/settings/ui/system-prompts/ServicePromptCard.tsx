@@ -9,7 +9,7 @@ import Typography from '@mui/material/Typography';
 import RestoreOutlinedIcon from '@mui/icons-material/RestoreOutlined';
 import EditIcon from '@mui/icons-material/Edit';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import { promptsStyles } from './ServicePrompts.styles';
 
 interface PromptConfig {
@@ -59,7 +59,7 @@ export function ServicePromptCard({
                 color="tertiary"
                 onClick={() => onEdit(item)}
                 disabled={!canEdit || isBusy}
-                aria-label={t('shared.ui.settings.prompts.editAria', `Edit service prompt ${item.key}`)}
+                aria-label={t('shared.ui.settings.prompts.editAria', 'Edit service prompt {{key}}', { key: item.key })}
                 sx={promptsStyles.editButton}
               >
                 <EditIcon fontSize="small" />
@@ -78,7 +78,7 @@ export function ServicePromptCard({
                 color="tertiary"
                 onClick={() => onRestore(item)}
                 disabled={!canEdit || !hasDefault || isBusy}
-                aria-label={t('shared.ui.settings.prompts.restoreAria', `Restore prompt ${item.key} to default`)}
+                aria-label={t('shared.ui.settings.prompts.restoreAria', 'Restore prompt {{key}} to default', { key: item.key })}
                 sx={promptsStyles.restoreButton}
               >
                 <RestoreOutlinedIcon fontSize="small" />

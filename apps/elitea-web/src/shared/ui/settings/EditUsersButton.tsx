@@ -13,7 +13,7 @@ import Tooltip from '@mui/material/Tooltip';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { EditIcon } from '../icons/edit-icon';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { EditUserRolesDialog } from './EditUserRolesDialog';
 
 export interface EditUsersButtonProps {

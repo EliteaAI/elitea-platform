@@ -13,7 +13,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { RemoveIcon } from '../icons/remove-icon';
 import { combineSx } from '../lib/combineSx';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { DeleteEntityModal } from '../DeleteEntityModal';
 
 export interface DeleteUserButtonProps {

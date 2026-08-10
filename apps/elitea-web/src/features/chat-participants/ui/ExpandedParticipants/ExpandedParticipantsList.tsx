@@ -8,7 +8,7 @@ import { memo } from 'react';
 
 import { Box } from '@mui/material';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import { useParticipantEntityIcon } from '../../lib/hooks/useParticipantEntityIcon';
 

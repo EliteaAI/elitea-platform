@@ -9,7 +9,7 @@ import Tooltip from '@mui/material/Tooltip';
 import type { Extension } from '@codemirror/state';
 
 import { BaseModal } from '../BaseModal';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { CodeMirrorEditor } from '../CodeMirrorEditor';
 
 const DEFAULT_MIN_HEIGHT_PX = 120;

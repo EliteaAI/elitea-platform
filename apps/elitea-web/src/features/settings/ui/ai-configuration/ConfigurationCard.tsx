@@ -9,7 +9,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
 import { GradientIconWrapper } from '@/shared/ui/GradientIconWrapper';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import {
   getConfigurationDisplayName,
   getConfigurationStatus,

@@ -98,16 +98,29 @@ before the bundle entry exists.
 
 ## Current bundle state
 
-`en.json` is `{}`. `grep -rnE "\bt\(['\"]" src` (repo root
-`apps/elitea-web`, run at the time this unit landed) finds **zero** call
-sites: unit S1 has only landed the interim stub
-(`src/shared/ui/lib/t.ts`, `t: TFunction = (_key, fallback) => fallback`)
-and no `shared/ui` component has called it yet, and no Wave-2 feature unit
-has started. There is nothing to seed. The next unit that adds a `t()` call
-site is also responsible for adding the matching entry to `en.json` — do
-not let the bundle drift out of sync with the call sites; that drift is
-exactly what `missingKeyHandler` above is there to catch if it happens
-anyway.
+`en.json` holds 1,634 flat, dotted keys and is kept in sync mechanically.
+
+- **One `t` source.** Every call site imports `t` from `@/shared/i18n`. The
+  pre-S8 interim stub `src/shared/ui/lib/t.ts` (`t = (_key, fallback) =>
+  fallback`) was deleted by issue #45, which migrated its last 79 importers.
+  There is no longer a second, always-fallback `t()` in the app.
+- **The gate.** `node scripts/i18n-backfill.mjs --check` (ci-web.yml's
+  `gate-i18n-sync` job) fails if any call site's key is absent from
+  `en.json`, if call sites disagree on a key's fallback, or if a shipped
+  value has drifted from its call site. Run `node scripts/i18n-backfill.mjs`
+  (no flag) to add the safe entries; conflicts are reported, never
+  auto-resolved.
+- **Interpolation.** A key whose `en.json` value contains `{{placeholder}}`
+  MUST be called with a matching options object — `t('k', 'Every {{n}}
+  minutes', { n: step })`. Writing the fallback as a JS template literal
+  (`` `Every ${step} minutes` ``) instead is a trap: it reads correctly, but
+  the bundle value wins at runtime and the placeholder renders literally.
+  The gate flags any non-static fallback as `interpolated-fallback` for
+  exactly this reason.
+
+The next unit that adds a `t()` call site is also responsible for adding the
+matching entry to `en.json`; `missingKeyHandler` above catches it at runtime
+if the gate is somehow bypassed.
 
 ## Design notes for the next reader
 

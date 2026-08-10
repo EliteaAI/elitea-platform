@@ -18,7 +18,7 @@ import Tabs from '@mui/material/Tabs';
 
 import { isPublicProject } from '@/entities/project';
 import { getConfig } from '@/shared/config';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import { aiConfigurationFeature } from '@/features/settings';
 

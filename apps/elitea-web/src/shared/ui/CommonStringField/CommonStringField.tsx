@@ -14,7 +14,7 @@ import { CopyLinkIcon } from '../icons/copy-link-icon';
 import { FieldHeader } from '../lib/field/FieldHeader';
 import type { FieldMeta, JsonSchemaProperty } from '../lib/field/jsonSchemaField.types';
 import { handleCopy } from '../../lib/clipboard';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** UI-facing config specific to `CommonStringField` — baseline's `fieldProperties` for this one field type, beyond the common `label`/`description`/`isRequired`/`disabled` (`FieldMeta`). */
 export interface CommonStringFieldMeta extends FieldMeta {

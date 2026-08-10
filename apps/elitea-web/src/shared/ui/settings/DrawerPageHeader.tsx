@@ -10,7 +10,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { ArrowLeftIcon } from '../icons/arrow-left-icon';
 import { AddButton } from '../AddButton/AddButton';
 import { combineSx } from '../lib/combineSx';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 export interface DrawerPageHeaderSlotProps {
   searchInput?: {

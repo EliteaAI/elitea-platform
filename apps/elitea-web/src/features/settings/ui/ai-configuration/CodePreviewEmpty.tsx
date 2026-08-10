@@ -7,7 +7,7 @@ import { memo } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 export default memo(function CodePreviewEmpty() {
   const styles = getStyles();

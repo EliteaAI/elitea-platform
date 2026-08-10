@@ -11,7 +11,7 @@ import CloseIcon from '@mui/icons-material/Close';
 
 import { SingleSelect } from '@/shared/ui/SingleSelect';
 import { CODE_EXAMPLE_LABELS } from '@/features/settings/lib/ai-configuration/codeExamples';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import type { SingleSelectOption } from '@/shared/ui/SingleSelectMenuItem';
 
 interface CodePreviewHeaderProps {

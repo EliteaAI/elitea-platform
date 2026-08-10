@@ -7,7 +7,7 @@ import Typography from '@mui/material/Typography';
 import type { Theme } from '@mui/material/styles';
 
 import { BaseModal } from '../BaseModal';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public Text overrides for {@link DeleteEntityModal}. */
 export interface DeleteEntityModalCopyOptions {

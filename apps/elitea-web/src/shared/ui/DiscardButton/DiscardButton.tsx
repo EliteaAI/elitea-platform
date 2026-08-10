@@ -6,7 +6,7 @@ import SvgIcon from '@mui/material/SvgIcon';
 import { BaseBtn } from '../BaseBtn';
 import { AttentionIcon } from '../icons/attention-icon';
 import { BaseModal } from '../BaseModal';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface DiscardButtonProps {

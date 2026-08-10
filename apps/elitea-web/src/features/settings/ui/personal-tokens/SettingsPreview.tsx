@@ -7,7 +7,7 @@
  *
  * Deviations:
  *  - No CodeMirror (not ported to new-app) — renders raw `<pre>` content
- *  - Uses `@/shared/ui/lib/t` for i18n
+ *  - Uses `@/shared/i18n` for i18n
  *  - Simpler copy/download UX — direct clipboard/file ops (no toast in shared/ui)
  *  - Uses `openEyeIcon` and `RemoveIcon` (existing in shared/ui/icons)
  *  - Close button uses "✕" text (close-icon doesn't exist)
@@ -33,7 +33,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { RemoveIcon } from '@/shared/ui/icons/remove-icon';
 import { OpenEyeIcon } from '@/shared/ui/icons/open-eye-icon';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import { getConfig } from '@/shared/config';
 import { SETTINGS_PREVIEW_LABELS, SETTINGS_PREVIEW_TYPES } from '@/entities/token';
 

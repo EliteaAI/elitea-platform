@@ -7,7 +7,7 @@ import type { JSX } from 'react';
 
 import Box from '@mui/material/Box';
 
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { CronFieldEditor } from './CronFieldEditor';
 import { monthShortLabel, weekdayShortLabel } from './labels';
 import { CRON_FIELD_BOUNDS, CRON_FIELD_ORDER, type CronExpressionState, type CronFieldId, type CronFieldState } from './model';
