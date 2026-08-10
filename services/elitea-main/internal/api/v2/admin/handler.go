@@ -146,17 +146,34 @@ func (h *Handler) RuntimeRemote(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// arbiterTaskNodeUnavailable is what `/admin/tasks` and `/admin/active_tasks`
+// answer, and why. Both surfaces are pure Pylon runtime introspection: pylon's
+// handlers reach into `self.module.context.module_manager.modules[…].task_node`
+// and read its in-process `global_task_state` / `global_pool_state`, then start
+// and stop tasks through the Arbiter (legacy/plugins/admin/api/v2/tasks.py and
+// active_tasks.py). There is no such registry in this service and there is not
+// meant to be one: AGENTS.md's architecture boundaries name "Pylon plugin
+// loading" and "Arbiter pickle payloads" as things the target architecture does
+// NOT preserve.
+//
+// Until unit A14 both answered 200 with an empty collection. That is the worse
+// failure: "no maintenance tasks are running" and "this deployment cannot see
+// whether any are running" render identically, and an operator reading the
+// former during an incident concludes the system is idle. `ActiveTasks` did not
+// even return the shape its client reads (`{"lines": []}` against a client
+// expecting `{"nodes": […]}`), so the emptiness was structural.
+//
+// 501 with a reason is the honest answer, and it is what the ported admin page
+// renders as an unavailable tab rather than as an empty list.
+const arbiterTaskNodeUnavailable = "admin task nodes are a Pylon/Arbiter runtime surface with no equivalent in " +
+	"this service; see AGENTS.md architecture boundaries"
+
 func (h *Handler) Tasks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  []any{},
-		"total": 0,
-	})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": arbiterTaskNodeUnavailable})
 }
 
 func (h *Handler) ActiveTasks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"lines": []any{},
-	})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": arbiterTaskNodeUnavailable})
 }
 
 func (h *Handler) ModerationStatusSingle(w http.ResponseWriter, _ *http.Request) {
