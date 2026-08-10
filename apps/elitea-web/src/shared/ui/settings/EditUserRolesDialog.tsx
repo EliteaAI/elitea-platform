@@ -34,13 +34,6 @@ export interface EditUserRolesDialogProps {
   onConfirm: (roles: string[]) => void;
 }
 
-/**
- * Separator for the value-derived role key below. NUL cannot occur in a role id
- * or name, so `join`/`split` round-trip exactly — a printable separator could
- * be swallowed by a role that contains it.
- */
-const ROLE_KEY_SEPARATOR = '\u0000';
-
 export const EditUserRolesDialog = ({
   open,
   onClose,
@@ -63,17 +56,21 @@ export const EditUserRolesDialog = ({
    * is not.
    */
   const originalRolesKey = useMemo(
-    () => [...originalRoles].sort().join(ROLE_KEY_SEPARATOR),
+    () => JSON.stringify([...originalRoles].sort()),
     [originalRoles],
   );
 
+  // Parsing back what we just serialised round-trips any string array exactly,
+  // including edge values a delimiter-joined key would mangle. This is also the
+  // same comparison `hasChanged` used before the fix, so the enabled/disabled
+  // semantics of Save are unchanged — only what re-triggers the reset is.
   const normalizedOriginalRoles = useMemo(
-    () => (originalRolesKey === '' ? [] : originalRolesKey.split(ROLE_KEY_SEPARATOR)),
+    () => JSON.parse(originalRolesKey) as string[],
     [originalRolesKey],
   );
 
   const hasChanged = useMemo(
-    () => [...selectedRoleIds].sort().join(ROLE_KEY_SEPARATOR) !== originalRolesKey,
+    () => JSON.stringify([...selectedRoleIds].sort()) !== originalRolesKey,
     [selectedRoleIds, originalRolesKey],
   );
 

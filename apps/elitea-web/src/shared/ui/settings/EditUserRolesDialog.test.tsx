@@ -65,6 +65,14 @@ function findOption(label: string): HTMLElement {
   return match as HTMLElement;
 }
 
+/**
+ * What the closed multi-select displays — the dialog's `renderValue` joins the
+ * labels of the currently selected roles, so this is the selection as the user
+ * sees it.
+ */
+const renderedSelection = () =>
+  document.querySelector('[role="combobox"]')?.textContent?.trim();
+
 const saveButton = () =>
   Array.from(document.querySelectorAll('button')).find(
     (b) => b.textContent?.trim() === 'Save',
@@ -134,6 +142,12 @@ describe('EditUserRolesDialog', () => {
       )!,
     );
 
+    // Assert the SELECTION, not just that Save went disabled: Save is
+    // `disabled={!selectedRoleIds.length || !hasChanged}`, so the disabled
+    // state alone cannot tell a correct re-seed to ['admin'] apart from a
+    // regression that clears the selection entirely (verified — mutating the
+    // effect to `setSelectedRoleIds([])` leaves the disabled assertion green).
+    expect(renderedSelection()).toBe('admin');
     expect(saveButton()).toBeDisabled();
   });
 });
