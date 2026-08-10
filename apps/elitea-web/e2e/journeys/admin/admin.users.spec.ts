@@ -6,7 +6,7 @@
  *
  * `src/entries/admin/main.tsx` is a 160-line PLACEHOLDER with **zero network
  * calls**: `DEFAULT_ROLE_PERMISSIONS` is hardcoded in the frontend, toggles are
- * written to `sessionStorage` under `admin_role_permissions`, and `user_email`
+ * written to `sessionStorage` under `el.admin.rolePermissions`, and `user_email`
  * falls back to `'admin@example.com'`. The real admin UI (verified against the
  * legacy stack on 2026-08-07) has ELEVEN sections — Users, Roles, Projects,
  * Secrets, LiteLLM, LLM Gateway, App Requests, Configuration, Features, Audit

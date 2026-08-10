@@ -1,6 +1,8 @@
 import { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { createStorage } from '@/shared/lib/storage';
+
 /**
  * Admin build entry (spec §7.4, contract C15). Served by the Go adminui handler
  * (services/elitea-main/internal/api/adminui/handler.go), which replaces the
@@ -27,22 +29,29 @@ const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
 
 const ALL_PERMISSIONS = Array.from(new Set(Object.values(DEFAULT_ROLE_PERMISSIONS).flat()));
 
-const STORAGE_KEY = 'admin_role_permissions';
-const store = window.sessionStorage;
+/**
+ * Routed through `shared/lib/storage.ts` (issue #22) rather than the raw
+ * `window.sessionStorage` this used to capture. The raw key sat OUTSIDE the
+ * `el.*` namespace, so `performLogout()`'s `clearNamespace()` sweep never
+ * cleared this role/permission map and it was inherited by the next user of
+ * the tab. Same defect class as the SharePoint OAuth token store fixed in the
+ * same change; now caught by `elitea/no-raw-webstorage`.
+ */
+const STORAGE_KEY = 'admin.rolePermissions';
+const store = createStorage('session');
 
 function loadPermissions(): Record<string, string[]> {
   try {
-    const raw = store.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as Record<string, string[]>;
+    // `getJSON` already treats absent and malformed values as absent.
+    return store.getJSON<Record<string, string[]>>(STORAGE_KEY) ?? { ...DEFAULT_ROLE_PERMISSIONS };
   } catch {
-    // ignore
+    return { ...DEFAULT_ROLE_PERMISSIONS };
   }
-  return { ...DEFAULT_ROLE_PERMISSIONS };
 }
 
 function savePermissions(p: Record<string, string[]>) {
   try {
-    store.setItem(STORAGE_KEY, JSON.stringify(p));
+    store.setJSON(STORAGE_KEY, p);
   } catch {
     // ignore
   }

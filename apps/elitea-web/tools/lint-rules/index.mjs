@@ -17,6 +17,7 @@ import { noModeBranch } from './rules/no-mode-branch.mjs';
 import { noModuleScopeStore } from './rules/no-module-scope-store.mjs';
 import { noMuiInternalSelector } from './rules/no-mui-internal-selector.mjs';
 import { noRawColor } from './rules/no-raw-color.mjs';
+import { noRawWebstorage } from './rules/no-raw-webstorage.mjs';
 import { noThemePalette } from './rules/no-theme-palette.mjs';
 import { noViMock } from './rules/no-vi-mock.mjs';
 import { rawPxSpacing } from './rules/raw-px-spacing.mjs';
@@ -38,6 +39,7 @@ export default {
     'no-export-all': noExportAll, //           R-L4
     'no-module-scope-store': noModuleScopeStore, // R-S2
     'no-vi-mock': noViMock, //                 R-M1
+    'no-raw-webstorage': noRawWebstorage, //   STOR-1 (member-expression half, issue #22)
     'no-adhoc-envelope-unwrap': noAdHocEnvelopeUnwrap, // R-A6 (issue #132)
   },
 };
