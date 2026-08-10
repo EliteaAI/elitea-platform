@@ -71,11 +71,12 @@ function useInviteUsers(projectId: string, onSuccess: () => void, onError: (erro
     },
   });
 
+  const { mutate } = mutation;
   const inviteUsers = useCallback(
     (emails: string[], roles: string[]) => {
-      mutation.mutate({ emails, roles });
+      mutate({ emails, roles });
     },
-    [mutation],
+    [mutate],
   );
 
   return { inviteUsers, isLoading: mutation.isPending };
@@ -115,23 +116,33 @@ export function useUsersActions({
   const inviteHook = useInviteUsers(projectId, onInviteSuccess, onInviteError);
 
   /* ── callbacks ─────────────────────────────────────────────────────── */
+  // Destructure the stable callbacks out of each hook result. The hook results
+  // themselves are fresh object literals every render, so closing over them
+  // rebuilt `singleAction`/`batchAction` — and therefore the `userRoles` array
+  // handed to `EditUserRolesDialog` — on every render of the Users page,
+  // including background refetches while the Edit-roles dialog is open.
+  const { saveUser } = editHook;
+  const { saveUsers } = batchEditHook;
+  const { deleteUserIds } = deleteUserMutation;
+  const { inviteUsers } = inviteHook;
+
   const handleDelete = useCallback(() => {
     const ids = selectedUsers.map((u) => parseInt(u.id, 10));
-    deleteUserMutation.deleteUserIds(ids);
-  }, [selectedUsers, deleteUserMutation]);
+    deleteUserIds(ids);
+  }, [selectedUsers, deleteUserIds]);
 
   const handleBatchRoleSave = useCallback(
     (roles: string[]) => {
-      batchEditHook.saveUsers(roles);
+      saveUsers(roles);
     },
-    [batchEditHook],
+    [saveUsers],
   );
 
   const handleInviteConfirm = useCallback(
     (data: { emails: string[]; roles: string[] }) => {
-      inviteHook.inviteUsers(data.emails, data.roles);
+      inviteUsers(data.emails, data.roles);
     },
-    [inviteHook],
+    [inviteUsers],
   );
 
   /* ── action configs ────────────────────────────────────────────────── */
@@ -143,7 +154,7 @@ export function useUsersActions({
       userRoles: Array.from(user.roles),
       rolesOptions,
       onConfirm: (roles: string[]) => {
-        editHook.saveUser(user.id, roles);
+        saveUser(user.id, roles);
       },
     };
     if (editHook.isLoading !== undefined) editProps.isLoading = editHook.isLoading;
@@ -151,7 +162,7 @@ export function useUsersActions({
       userIds: [user.id],
       onConfirm: () => {
         const ids = [parseInt(user.id, 10)];
-        deleteUserMutation.deleteUserIds(ids);
+        deleteUserIds(ids);
       },
     };
 
@@ -159,7 +170,7 @@ export function useUsersActions({
       edit: editProps as unknown as EditUsersButtonProps,
       delete: deleteProps as unknown as DeleteUserButtonProps,
     };
-  }, [selectedUsers, rolesOptions, editHook, deleteUserMutation]);
+  }, [selectedUsers, rolesOptions, saveUser, editHook.isLoading, deleteUserIds]);
 
   const batchAction = useMemo(() => {
     if (selectedUsers.length < 2) return null;
@@ -178,7 +189,7 @@ export function useUsersActions({
       edit: editProps as unknown as EditUsersButtonProps,
       delete: deleteProps as unknown as DeleteUserButtonProps,
     };
-  }, [selectedUsers, rolesOptions, batchEditHook, handleBatchRoleSave, handleDelete]);
+  }, [selectedUsers, rolesOptions, batchEditHook.isLoading, handleBatchRoleSave, handleDelete]);
 
   const actions = batchAction ?? singleAction;
 
