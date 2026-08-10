@@ -16,11 +16,11 @@
     "cssWidth": 1602,
     "cssHeight": 848
   },
-  "baseline": "N4 (decisions-ui-reimplementation-2026-07-26.md) \u2014 the SHIPPED-BEHAVIOUR baseline. CORRECTED 2026-08-07: this field previously read 'supersedes Figma; file 5vWxC85QBhqbzPU30RP7LH re-verified 2026-08-06 and holds no product screens'. That is FALSE. The operator showed the file's Pages list: an ELITEA-UI section (Sidebar Menu, Onboarding, Maintenance Page, Import Modal, Announcement Banner, Support ChatBot, Responsive Behavior, Empty State Pages, Modals, Errors, Login, Feedback Popover (NPS), Light Theme screens), plus '*** Colors', '*** Cards redesign guide', '*** Improvements', and AGENT HUB / CHAT / AGENTS sections covering the surfaces being reimplemented. The 'one Cover frame' finding came from a quota-exhausted View-seat inspection that the ADR itself marked 'needs operator confirmation'; that confirmation never happened and the hedge was dropped in transit. These screenshots record what the OLD APP DOES (quirks included); Figma records DESIGN INTENT. They answer different questions and neither supersedes the other.",
+  "baseline": "N4 (decisions-ui-reimplementation-2026-07-26.md) — the SHIPPED-BEHAVIOUR baseline. CORRECTED 2026-08-07: this field previously read 'supersedes Figma; file 5vWxC85QBhqbzPU30RP7LH re-verified 2026-08-06 and holds no product screens'. That is FALSE. The operator showed the file's Pages list: an ELITEA-UI section (Sidebar Menu, Onboarding, Maintenance Page, Import Modal, Announcement Banner, Support ChatBot, Responsive Behavior, Empty State Pages, Modals, Errors, Login, Feedback Popover (NPS), Light Theme screens), plus '*** Colors', '*** Cards redesign guide', '*** Improvements', and AGENT HUB / CHAT / AGENTS sections covering the surfaces being reimplemented. The 'one Cover frame' finding came from a quota-exhausted View-seat inspection that the ADR itself marked 'needs operator confirmation'; that confirmation never happened and the hedge was dropped in transit. These screenshots record what the OLD APP DOES (quirks included); Figma records DESIGN INTENT. They answer different questions and neither supersedes the other.",
   "accentHue": {
     "dark": "cyan/teal",
     "light": "magenta/lavender",
-    "note": "Closes the \u00a74.1 Blocker-1 open question: two hues ship, switched by colour scheme. Single-hue hypothesis is refuted. Corroborated by the new pairs: agent-editor-existing and pipeline-flow-editor, each captured in both schemes.",
+    "note": "Closes the §4.1 Blocker-1 open question: two hues ship, switched by colour scheme. Single-hue hypothesis is refuted. Corroborated by the new pairs: agent-editor-existing and pipeline-flow-editor, each captured in both schemes.",
     "evidence": [
       "skills-list-empty.light.jpeg",
       "agents-list-empty.dark.jpeg"
@@ -48,48 +48,54 @@
       "route": "/agents/:tab",
       "targetComponent": "src/pages/agents/Applications.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "Empty state + TAGS rail + author card; list/grid toggle + export in header."
+      "wiringStatus": "wired",
+      "notes": "Empty state + TAGS rail + author card; list/grid toggle + export in header.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agent-create-form.dark.jpeg",
       "route": "/agents/create",
       "targetComponent": "src/pages/agents/CreateApplication.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "Centred column: GENERAL/INSTRUCTIONS/WELCOME MESSAGE/CONVERSATION STARTERS/ADVANCED; 'Build with AI' pill; Step limit 25."
+      "wiringStatus": "wired",
+      "notes": "Centred column: GENERAL/INSTRUCTIONS/WELCOME MESSAGE/CONVERSATION STARTERS/ADVANCED; 'Build with AI' pill; Step limit 25.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agent-create-build-with-ai-modal.dark.jpeg",
       "route": "/agents/create",
       "targetComponent": "src/pages/agents/CreateApplication.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "Build with AI dialog: textarea + Cancel/Generate, scrim over the form."
+      "wiringStatus": "wired",
+      "notes": "Build with AI dialog: textarea + Cancel/Generate, scrim over the form.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "pipelines-list-empty.dark.jpeg",
       "route": "/pipelines/:tab",
       "targetComponent": "src/pages/pipelines/Pipelines.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "Same list chrome as agents, pipeline illustration and copy."
+      "wiringStatus": "wired",
+      "notes": "Same list chrome as agents, pipeline illustration and copy.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "pipeline-create-form.dark.jpeg",
       "route": "/pipelines/create",
       "targetComponent": "src/pages/pipelines/CreatePipeline.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "As agent create minus INSTRUCTIONS section."
+      "wiringStatus": "wired",
+      "notes": "As agent create minus INSTRUCTIONS section.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "toolkit-create-type-picker.dark.jpeg",
       "route": "/toolkits/create",
       "targetComponent": "src/pages/toolkits/CreateToolkit.tsx",
       "theme": "dark",
-      "wiringStatus": "blocked-codegen",
-      "notes": "'Choose the toolkit type': search + 11 category chips + grouped cards (Code Repositories/Communication/Development/Documentation/Integrations)."
+      "wiringStatus": "wired",
+      "notes": "'Choose the toolkit type': search + 11 category chips + grouped cards (Code Repositories/Communication/Development/Documentation/Integrations).",
+      "wiringStatusWas": "blocked-codegen"
     },
     {
       "file": "toolkit-create-gitlab-org-form.dark.jpeg",
@@ -112,32 +118,36 @@
       "route": "/mcps/create",
       "targetComponent": "src/pages/toolkits/CreateToolkit.tsx",
       "theme": "light",
-      "wiringStatus": "blocked-codegen",
-      "notes": "isMCP variant: Local/Remote chips, empty-Local message linking Documentation, single 'Remote MCP' card."
+      "wiringStatus": "wired",
+      "notes": "isMCP variant: Local/Remote chips, empty-Local message linking Documentation, single 'Remote MCP' card.",
+      "wiringStatusWas": "blocked-codegen"
     },
     {
       "file": "skills-list-empty.light.jpeg",
       "route": "/skills/:tab",
       "targetComponent": "src/pages/skills/Skills.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "LIGHT scheme reference: magenta primary button and magenta-tinted illustration."
+      "wiringStatus": "wired",
+      "notes": "LIGHT scheme reference: magenta primary button and magenta-tinted illustration.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "artifacts-bucket-browser.light.jpeg",
       "route": "/artifacts",
       "targetComponent": "src/pages/artifacts/Artifacts.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "Two-pane: BUCKETS tree (Elitea S3 storage > attachments) + DataGrid (Name/Type/Size/Last update/Actions), toolbar upload/download/delete, footer 'Buckets: 1  Size: 26.3 KB', rows-per-page. NOTE: PR #82's stub renders a heading + one button instead."
+      "wiringStatus": "wired",
+      "notes": "Two-pane: BUCKETS tree (Elitea S3 storage > attachments) + DataGrid (Name/Type/Size/Last update/Actions), toolbar upload/download/delete, footer 'Buckets: 1  Size: 26.3 KB', rows-per-page. NOTE: PR #82's stub renders a heading + one button instead.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "settings-ai-configuration.dark.jpeg",
       "route": "/settings/model-configuration",
       "targetComponent": "src/pages/settings/AIConfiguration.tsx",
       "theme": "dark",
-      "wiringStatus": "hybrid-defect",
-      "notes": "AI Configuration / OpenAI Template tabs; BaseURL+Project header; LLM Models tier selects; provider-grouped model cards with OK/Shared/tier badges; Embedding Models; Vector Storage. Relevant to issue #80."
+      "wiringStatus": "wired",
+      "notes": "AI Configuration / OpenAI Template tabs; BaseURL+Project header; LLM Models tier selects; provider-grouped model cards with OK/Shared/tier badges; Embedding Models; Vector Storage. Relevant to issue #80.",
+      "wiringStatusWas": "hybrid-defect"
     },
     {
       "file": "settings-project-context.dark.jpeg",
@@ -200,8 +210,9 @@
       "route": "/credentials/:tab",
       "targetComponent": "src/pages/credentials/Credentials.tsx",
       "theme": "dark",
-      "wiringStatus": "needs-route-state",
-      "notes": "POPULATED grid mode: one credential card (icon + title + author avatar + type caption). Right rail is TYPES (not TAGS) listing 'S3 api credentials'. Rail button reads '+ Credential'."
+      "wiringStatus": "wired",
+      "notes": "POPULATED grid mode: one credential card (icon + title + author avatar + type caption). Right rail is TYPES (not TAGS) listing 'S3 api credentials'. Rail button reads '+ Credential'.",
+      "wiringStatusWas": "needs-route-state"
     },
     {
       "file": "credential-edit-form.dark.jpeg",
@@ -216,32 +227,36 @@
       "route": "/settings/users",
       "targetComponent": "src/pages/settings/Users.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "DataGrid: checkbox column + sortable Name/Email/Last login + Role + Actions; header Search; rows-per-page 20 with '1 - 1 of 1'. Rail primary button becomes 'Invite User'."
+      "wiringStatus": "wired",
+      "notes": "DataGrid: checkbox column + sortable Name/Email/Last login + Role + Actions; header Search; rows-per-page 20 with '1 - 1 of 1'. Rail primary button becomes 'Invite User'.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "settings-secrets.dark.jpeg",
       "route": "/settings/secrets",
       "targetComponent": "src/pages/settings/Secrets.tsx",
       "theme": "dark",
-      "wiringStatus": "hybrid-defect",
-      "notes": "Name/Value table; values render as {{secret.<name>}} references, never plaintext. Per-row reveal (eye) + kebab; header Search; round + FAB top-right; rows-per-page 10, '1 - 4 of 4'. The header Search is REAL here \u2014 the route currently stubs it to onSearchChange={() => {}}."
+      "wiringStatus": "wired",
+      "notes": "Name/Value table; values render as {{secret.<name>}} references, never plaintext. Per-row reveal (eye) + kebab; header Search; round + FAB top-right; rows-per-page 10, '1 - 4 of 4'. The header Search is REAL here — the route currently stubs it to onSearchChange={() => {}}.",
+      "wiringStatusWas": "hybrid-defect"
     },
     {
       "file": "agents-hub.dark.jpeg",
       "route": "/agents-hub",
       "targetComponent": "src/pages/agents-hub/AgentHub.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "'Welcome to Agent HUB': centred 'Search for agents' + 11 category chips (Trending, My Liked, Business Analyst, DevOps, Development, Elitea, Epam, Knowledge & Documentation, Project Management, Quality Assurance, Other). Below: per-category sections, each a 3-col card grid with a refresh icon by the heading and a 'Show more' link. Cards: avatar/icon + title, stacked AUTHOR AVATARS bottom-left, like count bottom-right."
+      "wiringStatus": "wired",
+      "notes": "'Welcome to Agent HUB': centred 'Search for agents' + 11 category chips (Trending, My Liked, Business Analyst, DevOps, Development, Elitea, Epam, Knowledge & Documentation, Project Management, Quality Assurance, Other). Below: per-category sections, each a 3-col card grid with a refresh icon by the heading and a 'Show more' link. Cards: avatar/icon + title, stacked AUTHOR AVATARS bottom-left, like count bottom-right.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agents-hub.light.jpeg",
       "route": "/agents-hub",
       "targetComponent": "src/pages/agents-hub/AgentHub.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "Light counterpart. NOTE: this is the entry point to /user-public/:tab \u2014 the author avatars bottom-left of each card are the clickable target."
+      "wiringStatus": "wired",
+      "notes": "Light counterpart. NOTE: this is the entry point to /user-public/:tab — the author avatars bottom-left of each card are the clickable target.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "onboarding.dark.jpeg",
@@ -264,16 +279,18 @@
       "route": "/help-center",
       "targetComponent": "src/pages/help-center/HelpCenterPage.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "'Explore Help Center' + subtitle; 2-col grid of five tinted category cards (Documentation blue, Release Notes amber, Video Library purple, Tutorials green, Interactive Tours pink), each a coloured icon + title + caption header over a link list, most ending in 'More...'. Header right: 'Version: 2.0.4 (02-July-2026)' with an info icon."
+      "wiringStatus": "wired",
+      "notes": "'Explore Help Center' + subtitle; 2-col grid of five tinted category cards (Documentation blue, Release Notes amber, Video Library purple, Tutorials green, Interactive Tours pink), each a coloured icon + title + caption header over a link list, most ending in 'More...'. Header right: 'Version: 2.0.4 (02-July-2026)' with an info icon.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "help-center.light.jpeg",
       "route": "/help-center",
       "targetComponent": "src/pages/help-center/HelpCenterPage.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "Light counterpart \u2014 the five card tints are the load-bearing detail; they are per-category, not theme accent."
+      "wiringStatus": "wired",
+      "notes": "Light counterpart — the five card tints are the load-bearing detail; they are per-category, not theme accent.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "settings-create-personal-token.dark.jpeg",
@@ -281,7 +298,7 @@
       "targetComponent": "src/routes/_shell/settings/create-personal-token.tsx",
       "theme": "dark",
       "wiringStatus": "wired",
-      "notes": "'New Token': just Name + 'Expiration period' (unit select, default Days) + amount (30). Header actions are Generate / Discard \u2014 NOT Save/Cancel. Rail button becomes '+ Token'."
+      "notes": "'New Token': just Name + 'Expiration period' (unit select, default Days) + amount (30). Header actions are Generate / Discard — NOT Save/Cancel. Rail button becomes '+ Token'."
     },
     {
       "file": "settings-create-personal-token.light.jpeg",
@@ -312,32 +329,36 @@
       "route": "/agents-hub",
       "targetComponent": "src/pages/agents-hub/ui/AgentModal.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "Agent detail modal over a scrim. Header: author avatar+name left, like count, copy-link, close. Body: icon, title, description, 'Show context' link, CONVERSATION STARTERS (accent-tinted chips), WELCOME MESSAGE. Footer: full-width-ish 'Start conversation' on a gradient bar."
+      "wiringStatus": "wired",
+      "notes": "Agent detail modal over a scrim. Header: author avatar+name left, like count, copy-link, close. Body: icon, title, description, 'Show context' link, CONVERSATION STARTERS (accent-tinted chips), WELCOME MESSAGE. Footer: full-width-ish 'Start conversation' on a gradient bar.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agents-hub-modal-powershell.dark.jpeg",
       "route": "/agents-hub",
       "targetComponent": "src/pages/agents-hub/ui/AgentModal.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "Same modal with 4 starters in a 2-col grid and two stacked author avatars."
+      "wiringStatus": "wired",
+      "notes": "Same modal with 4 starters in a 2-col grid and two stacked author avatars.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agents-hub-modal-powershell.light.jpeg",
       "route": "/agents-hub",
       "targetComponent": "src/pages/agents-hub/ui/AgentModal.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "Light counterpart; starters and 'Start conversation' go magenta."
+      "wiringStatus": "wired",
+      "notes": "Light counterpart; starters and 'Start conversation' go magenta.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agents-hub-scrolled-categories.light.jpeg",
       "route": "/agents-hub",
       "targetComponent": "src/pages/agents-hub/AgentHub.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "Scrolled past Trending: 'Elitea' and 'Epam' category sections. Category chip bar stays pinned at top."
+      "wiringStatus": "wired",
+      "notes": "Scrolled past Trending: 'Elitea' and 'Epam' category sections. Category chip bar stays pinned at top.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "chat-active-conversation.light.jpeg",
@@ -353,7 +374,7 @@
       "targetComponent": "src/features/chat-messages",
       "theme": "dark",
       "wiringStatus": "wired",
-      "notes": "Second dark capture, 'about 2 hours ago' timestamps \u2014 use for relative-time formatting."
+      "notes": "Second dark capture, 'about 2 hours ago' timestamps — use for relative-time formatting."
     },
     {
       "file": "chat-active-rail-collapsed.dark.jpeg",
@@ -385,39 +406,43 @@
       "targetComponent": "src/widgets/app-shell/ui/AppShell.tsx",
       "theme": "light",
       "wiringStatus": "wired",
-      "notes": "Both rail and conversations pane collapsed \u2014 widest content case."
+      "notes": "Both rail and conversations pane collapsed — widest content case."
     },
     {
       "file": "agents-list-populated-grid.dark.jpeg",
       "route": "/agents/:tab",
       "targetComponent": "src/pages/agents/Applications.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "POPULATED grid: 4 cards, author avatar bottom-left, no like/tag chrome for own private agents. Author card bottom-right now reads 'Agents: 4  Published: 0'."
+      "wiringStatus": "wired",
+      "notes": "POPULATED grid: 4 cards, author avatar bottom-left, no like/tag chrome for own private agents. Author card bottom-right now reads 'Agents: 4  Published: 0'.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agents-list-populated-grid.light.jpeg",
       "route": "/agents/:tab",
       "targetComponent": "src/pages/agents/Applications.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "Light counterpart."
+      "wiringStatus": "wired",
+      "notes": "Light counterpart.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agents-list-populated-list.dark.jpeg",
       "route": "/agents/:tab",
       "targetComponent": "src/pages/agents/Applications.tsx",
       "theme": "dark",
-      "wiringStatus": "ready",
-      "notes": "POPULATED LIST mode \u2014 closes the list-mode gap. Columns: Name & Description (two-line, sortable), Authors, Created (sortable, calendar icon), Actions (kebab). Rows-per-page 20, '1 - 4 of 4'."
+      "wiringStatus": "wired",
+      "notes": "POPULATED LIST mode — closes the list-mode gap. Columns: Name & Description (two-line, sortable), Authors, Created (sortable, calendar icon), Actions (kebab). Rows-per-page 20, '1 - 4 of 4'.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "agents-list-populated-list.light.jpeg",
       "route": "/agents/:tab",
       "targetComponent": "src/pages/agents/Applications.tsx",
       "theme": "light",
-      "wiringStatus": "ready",
-      "notes": "Light counterpart of list mode."
+      "wiringStatus": "wired",
+      "notes": "Light counterpart of list mode.",
+      "wiringStatusWas": "ready"
     },
     {
       "file": "user-public-all-grid.public.dark.jpeg",
@@ -489,7 +514,7 @@
       "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
       "theme": "dark",
       "wiringStatus": "needs-route-state",
-      "notes": "EMPTY tab state: rocket glyph + '<Author> has not created pipeline yet.' \u2014 author-scoped copy, distinct from the main list screens' 'No pipelines yet' + Create/Guided-Tour empty state. No CTA."
+      "notes": "EMPTY tab state: rocket glyph + '<Author> has not created pipeline yet.' — author-scoped copy, distinct from the main list screens' 'No pipelines yet' + Create/Guided-Tour empty state. No CTA."
     },
     {
       "file": "user-public-pipelines-empty.public.light.jpeg",
@@ -521,7 +546,7 @@
       "targetComponent": "src/pages/user-public/ui/UserPublicPage.tsx",
       "theme": "dark",
       "wiringStatus": "needs-route-state",
-      "notes": "viewMode=OWNER. Counts drop to 'all 5 | agents 4 | pipelines 1'. An 'All statuses' SELECT appears next to the list/grid toggle \u2014 this is PARAM-108 `statuses`, and it renders ONLY in owner mode."
+      "notes": "viewMode=OWNER. Counts drop to 'all 5 | agents 4 | pipelines 1'. An 'All statuses' SELECT appears next to the list/grid toggle — this is PARAM-108 `statuses`, and it renders ONLY in owner mode."
     },
     {
       "file": "user-public-all-grid.owner.light.jpeg",
@@ -546,8 +571,8 @@
     "evidence": "apps/elitea-ui/src/hooks/useCardNavigate.js:395-401 (navigateToAuthorPublicPage); routes.js:50 UserPublic='/user-public'; common/constants.js:280,285,286 + ViewMode at :330.",
     "howToReach": "Open Agent HUB and click the small round AUTHOR AVATAR at the bottom-left of any agent card (see agents-hub.*.jpeg). Cards with 2 avatars have multiple authors. This is the only in-app entry point.",
     "orDirectUrl": "https://next.elitea.ai/user-public/all?viewMode=public&author_id=<ID>&author_name=<NAME>",
-    "note": "Use an author who has published something \u2014 e.g. the author of 'AI Presentation Creator' (85 likes) in Agent HUB. Your own id is 33731, but that library is empty, so it would only show the empty state.",
-    "resolved": "Captured 2026-08-06. Bare /user-public/ 404s (no :tab). Note the deployed app is version 2.0.4 while the parity baseline apps/elitea-ui is pinned at a55f36cf / 0.4.1863 (2026-07-08) \u2014 treat old-SPA route contracts as advisory, not authoritative.",
+    "note": "Use an author who has published something — e.g. the author of 'AI Presentation Creator' (85 likes) in Agent HUB. Your own id is 33731, but that library is empty, so it would only show the empty state.",
+    "resolved": "Captured 2026-08-06. Bare /user-public/ 404s (no :tab). Note the deployed app is version 2.0.4 while the parity baseline apps/elitea-ui is pinned at a55f36cf / 0.4.1863 (2026-07-08) — treat old-SPA route contracts as advisory, not authoritative.",
     "viewModes": {
       "public": "all tabs, no status filter",
       "owner": "own library, adds the 'All statuses' select (PARAM-108)"
@@ -559,5 +584,21 @@
     "bothSchemes": true,
     "listAndGridModes": true,
     "emptyAndPopulated": true
+  },
+  "wiringStatusReview": {
+    "reviewed": "2026-08-10",
+    "issue": "https://github.com/EliteaAI/elitea-platform/issues/61",
+    "what": "wiringStatus was authored in 46a90914 using route-wiring-map.json’s PHASE-0 vocabulary. At that moment 38 route files under src/routes/** rendered RouteShell scaffolding instead of the page components already built for them, and “ready” meant exactly that: the page exists, the ROUTE does not render it. It never meant the UI was a stub.",
+    "why": "The wiring plan has since run. route-wiring-map.json now reports 50 routes wired and its generator’s own --check passes against the tree, so the map is current and the screenshot index was simply never updated alongside it. Wave 2 then mounted more UI still (#128 chat conversation sidebar, #149 toolkit/MCP Indexes tab, #134/#148 agent version bar).",
+    "evidence": "Every route flipped below was ALSO opened against the running e2e stack and confirmed to render its real page rather than a heading-only shell, and — except /help-center — put through the stall experiment recorded per-entry in e2e/visual/routes.visual.spec.ts before being given a baseline. No route was flipped merely to make it snapshottable.",
+    "notFlipped": {
+      "/onboarding": "Renders a real page, but not the screen this index describes (a 48-slide tour). That is a parity question, not a wiring one. Not measured, not flipped.",
+      "/agents/:tab/:agentId + /pipelines/:tab/:agentId + /toolkits/create/:toolkitType + /credentials/:tab/:credential_uid": "Detail/editor routes needing a seeded entity to reach with real data. Not measured, not flipped.",
+      "/user-public/*": "Needs an author with published content; the seeded tenant has none. needs-route-state is accurate.",
+      "/chat/:conversationId": "Already wired; remains EXEMPT for determinism (a per-run conversation grows the sidebar list)."
+    },
+    "exemptAfterFlip": {
+      "/help-center": "Flipped to wired (the route renders its real page) but EXEMPT from snapshots: useResourcesConfig has no backend (issue #26), so all five cards render “No links configured” and the version bar is blank. A baseline would make a screen with no content the official reference."
+    }
   }
 }

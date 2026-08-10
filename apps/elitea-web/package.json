@@ -22,7 +22,9 @@
     "check-handlers": "node scripts/check-handlers.mjs",
     "check-fixture-freshness": "node scripts/check-fixture-freshness.mjs",
     "record-fixtures": "node scripts/record-fixtures.mjs",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:visual": "node scripts/run-visual-container.mjs",
+    "e2e:visual:update": "node scripts/run-visual-container.mjs --update-snapshots"
   },
   "dependencies": {
     "@codemirror/commands": "6.10.4",

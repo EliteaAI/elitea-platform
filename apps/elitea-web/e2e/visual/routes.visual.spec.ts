@@ -5,11 +5,64 @@
  * particular the rule that baselines are only ever generated inside
  * `mcr.microsoft.com/playwright:v1.62.0-noble`.
  *
- * Each spec navigates, waits for a landmark that a heading-only stub cannot
- * satisfy, masks the regions that legitimately vary run to run, and snapshots.
- * The landmark wait matters: `toHaveScreenshot` on a page that has not finished
- * rendering produces a baseline of a spinner, and then every future run matches
- * it.
+ * Each spec navigates, waits for the SHELL to resolve, waits for a landmark
+ * that only this route's resolved data can produce, masks the regions that
+ * legitimately vary run to run, and snapshots.
+ *
+ * ── The landmark rule, and how every landmark here was proven ───────────────
+ *
+ * `toHaveScreenshot` on a page that has not finished rendering produces a
+ * baseline of a spinner, and then every future run matches it. #159 found the
+ * `settings-analytics` baseline was exactly that; #174 found the same latent
+ * defect on two more routes.
+ *
+ * So no landmark is admitted here on inspection. Each one below was MEASURED
+ * with a stall experiment: load the route with its own API responses stalled
+ * for five minutes and check whether the landmark still becomes visible. A
+ * landmark that resolves under the stall cannot tell loading from loaded and is
+ * rejected. Each entry records its own result.
+ *
+ * TWO METHOD NOTES, because both produced false passes before they were caught,
+ * and anyone re-running these experiments will hit them again:
+ *
+ *  1. STALL THE ROUTE'S OWN API, NOT THE SHELL'S. Stalling every `**\/api\/**`
+ *     call also stalls `/projects/project/default/`, so no project is ever
+ *     selected — and every page query is `enabled: projectId !== undefined`.
+ *     The queries then never START, so the page renders its no-data branch
+ *     immediately and the landmark looks like it resolved under load. Measured
+ *     on `/settings/secrets`: a blanket stall showed the resolved-looking
+ *     "No secrets" empty state, while a shell-allowed stall shows a row
+ *     SKELETON and no "No secrets" at all. The shell's four endpoints
+ *     (`/branding/`, `/projects/project/default/`, `/auth/permissions/`,
+ *     `/social/author`) must be let through.
+ *  2. THE STALL MUST OUTLAST THE WHOLE EXPERIMENT. A stall that resolves or
+ *     aborts part-way lets the query fail, and a failed query renders the same
+ *     error/empty branch as a loaded one. Checking four candidate landmarks at
+ *     20s each against a 60s stall put every later check past the abort, and
+ *     `/chat` reported all four resolving under load when in fact none do.
+ *
+ * ── The shell is part of every shot ────────────────────────────────────────
+ *
+ * `shellSettled()` runs before every snapshot in this file. #174 flagged the
+ * app shell as the residual exposure common to every route, and it is worse
+ * than "the project name arrives late": the sidebar's nav list is
+ * PERMISSION-FILTERED (`widgets/sidebar/lib/navSections.ts`'s
+ * `visibleNavSections`), and `usePermissionSet` returns an EMPTY SET until
+ * `GET /auth/permissions/prompt_lib/{id}` resolves. Every permission-gated nav
+ * item is therefore absent during load — the sidebar renders SHORTER, with no
+ * spinner and no skeleton to give it away. `ProjectSwitcher` has the same
+ * shape: until the project list resolves it renders the literal "No projects"
+ * and a placeholder avatar, which looks like a legitimately-rendered screen.
+ *
+ * Measured (shell-allowed stall vs. full stall, on
+ * `/settings/create-personal-token`, which has no data of its own):
+ *   Credentials nav link       loaded YES  stalled no   ← permission-gated
+ *   resolved project name      loaded YES  stalled no
+ *   "No projects" fallback     loaded no   stalled YES
+ *   Applications nav link      loaded YES  stalled YES  ← ungated, no good
+ *   sidebar-create-button      loaded YES  stalled YES  ← always present
+ * The first two are the landmark; the last two are why the obvious choices are
+ * not.
  */
 import { test, expect, type Page } from '@playwright/test';
 
@@ -31,9 +84,32 @@ function volatileRegions(page: Page) {
     // different on every run by construction: the first observed run of this
     // job diffed a baseline reading 06/08/2026 23:21 against a page reading
     // 09/08/2026 00:51 (run 31345403013, issue #159). A locator that matches
-    // nothing on the other four routes is a no-op there.
+    // nothing on the other routes is a no-op there.
     page.locator('[data-testid="analytics-date-range"]'),
   ];
+}
+
+/**
+ * The shell landmark — see this file's header for the measurement. Both halves
+ * are required: the nav link proves the permission query resolved (and so the
+ * nav is at full length), the project name proves the project list resolved
+ * (and so the switcher is not showing its "No projects" fallback).
+ *
+ * `Credentials` is chosen over the other gated items only because it is gated
+ * and unambiguous; any of `PERMISSION_GROUPS`' entries would do. `Applications`
+ * and `Skills` would NOT — `requiredPermissionsFor` returns undefined for them,
+ * so they render during load too.
+ */
+async function shellSettled(page: Page): Promise<void> {
+  await expect(page.getByRole('link', { name: 'Credentials', exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  // The seeded tenant's only project (`scripts/e2e-stack.sh seed`). Asserting
+  // the NAME, not merely that the switcher exists: the switcher renders either
+  // way, and its loading text is the literal "No projects".
+  await expect(page.locator('button').filter({ hasText: 'Default Project' }).first()).toBeVisible({
+    timeout: 20_000,
+  });
 }
 
 async function settle(page: Page): Promise<void> {
@@ -56,8 +132,10 @@ async function settle(page: Page): Promise<void> {
 interface VisualRoute {
   readonly name: string;
   readonly path: string;
-  /** A landmark a stub cannot render. Waited for before snapshotting. */
+  /** A landmark a loading state cannot render. Waited for before snapshotting. */
   readonly landmark: (page: Page) => ReturnType<Page['locator']>;
+  /** Also capture a light-scheme variant. */
+  readonly light?: boolean;
 }
 
 /*
@@ -77,16 +155,24 @@ const ROUTES: readonly VisualRoute[] = [
     // @covers /chat
     name: 'chat-empty-state',
     path: '/app/chat',
-    // Audited under #174 and KEPT — measured, not assumed. With every `**/api/**`
-    // response stalled for 30s this locator does NOT become visible inside 20s:
-    // the composer is not rendered until the chat page's data arrives, so it
-    // cannot photograph a loading state. The `.or(getByRole('textbox'))` arm is
-    // a no-op rather than a hole: probing the loaded page for visible
-    // input/textarea/contenteditable/[role=textbox] elements returns only the
-    // composer's own `chat-message-input` textarea (plus one sibling textarea
-    // inside the same composer) — there is no earlier textbox anywhere in the
-    // shell for `.first()` to reach.
-    landmark: (page) => page.getByTestId('chat-input').or(page.getByRole('textbox')).first(),
+    // CHANGED, and this is a real defect fix rather than a tidy-up. The
+    // previous landmark was `getByTestId('chat-input').or(getByRole(
+    // 'textbox')).first()`, audited under #174 and KEPT on the strength of a
+    // blanket-stall measurement. Re-measured with the shell allowed through
+    // and the stall held for five minutes, `chat-input` resolves in BOTH
+    // states — the composer is chrome, not data — so it could not have
+    // distinguished a loaded chat page from a loading one.
+    //
+    // And there is something to distinguish, measured: with this route's API
+    // stalled the conversation sidebar (mounted by #128) renders a row
+    // SKELETON and the model chip reads "NONE"; loaded, the sidebar reads
+    // "Still no conversations created." and the chip reads the seeded model
+    // name. Sampled at 3/8/15/22/30/40s under a sustained stall, neither ever
+    // converged — chip stayed "NONE", the empty-state text never appeared.
+    //
+    // The conversation empty state is the landmark: loaded YES, stalled no.
+    landmark: (page) => page.getByText('Still no conversations created.'),
+    light: true,
   },
   {
     // @covers /settings/personalization
@@ -97,30 +183,33 @@ const ROUTES: readonly VisualRoute[] = [
     // Found by the audit #174 asked for. This page's Formik form renders every
     // one of its textboxes while `useGetCurrentAuthor` is still in flight
     // (initialised from `undefined` author data); only `ProfileUserInfo`
-    // switches between a Skeleton and the real name/avatar/email. So the old
-    // landmark resolved during the skeleton state — the same latent weakness
-    // as settings-project-params, on a page whose every visible value comes
-    // from the query being waited for.
+    // switches between a Skeleton and the real name/avatar/email.
+    //
+    // Re-verified here under the corrected method. This page's own data IS
+    // `/social/author`, which the shell allowlist normally lets through, so a
+    // shell-allowed stall leaves the landmark resolving — that is the harness,
+    // not the landmark. Stalling `/social/author` too: loaded YES, stalled no.
     landmark: (page) => page.getByTestId('profile-user-info'),
+    light: true,
   },
   {
     // @covers /settings/create-personal-token
     name: 'settings-create-personal-token',
     path: '/app/settings/create-personal-token',
-    // Audited under #174 and KEPT, for a different reason than chat's. This
-    // locator DOES resolve with every `**/api/**` call stalled (measured) — but
-    // that is not a defect here, because the screen has no server data to wait
-    // for. It is a static react-hook-form: its only query,
+    // Audited under #174 and KEPT. This locator DOES resolve with the API
+    // stalled — but that is not a defect here, because the screen has no
+    // server data to wait for. It is a static react-hook-form: its only query,
     // `useListTokensQuery`, is passed `{ enabled: false }`, and every pixel of
-    // its content area (New Token, Name, Days, 30, Generate/Discard) is
-    // client-rendered. There is no loading branch it could photograph.
+    // its content area is client-rendered.
     //
-    // The residual exposure is the app SHELL — the rail's project name comes
-    // from a query — and that is shared by all five routes here, not specific
-    // to this landmark. It fails LOUD rather than silent: a shell captured
-    // mid-load diffs against a baseline whose shell is resolved. Recorded
-    // rather than papered over; a shell-level landmark belongs with #61's
-    // growth work, not here.
+    // Confirmed independently of any landmark, by the stronger test: screenshot
+    // the route with its own API stalled and screenshot it loaded, and compare.
+    // The two PNGs are BYTE-IDENTICAL, so there is no loading state for a
+    // snapshot to photograph. (Two consecutive loaded runs are byte-identical
+    // too, which is the determinism half.)
+    //
+    // The shell exposure that used to be recorded here as residual is no longer
+    // residual — `shellSettled()` covers it for every route in this file.
     landmark: (page) => page.getByRole('textbox').first(),
   },
   {
@@ -133,37 +222,189 @@ const ROUTES: readonly VisualRoute[] = [
     // 300ms elapsed, and the committed baseline was a photograph of the
     // spinner — the precise failure this file's header warns about, sitting in
     // the suite from the day it was written and only visible once the job was
-    // allowed to run (issue #159). `analytics-kpi-row` renders only from
-    // resolved data.
+    // allowed to run (issue #159).
+    //
+    // Re-measured under the corrected method: loaded YES, stalled no.
     landmark: (page) => page.getByTestId('analytics-kpi-row'),
   },
   {
     // @covers /settings/project-params
     name: 'settings-project-params',
     path: '/app/settings/project-params',
-    // The resolved body, NOT `getByRole('main').or('#root > *')`.
-    //
-    // That was the same landmark that turned the settings-analytics baseline
-    // into a photograph of a spinner (#159): `ProjectContext` renders a bare
+    // The resolved body, NOT `getByRole('main').or('#root > *')` — that was the
+    // same landmark that turned the settings-analytics baseline into a
+    // photograph of a spinner (#159). `ProjectContext` renders a bare
     // <CircularProgress> while `useGetProjectContext` is in flight, and both
-    // `main` and `#root > *` are already in the tree at that moment — so the
-    // wait resolved instantly, `settle()`'s 300ms elapsed, and a slow query
-    // would have pinned the loading state as the reference. This baseline
-    // happened to be fully rendered, so the defect was latent, not visible
-    // (#174).
+    // `main` and `#root > *` are already in the tree at that moment.
     //
     // `project-context-body` is rendered only from a RESOLVED query: the
     // loading branch returns the spinner, the error branch returns a banner,
-    // and the no-view-permission branch returns a different banner still. None
-    // of the three carries this testid, so the landmark discriminates.
+    // and the no-view-permission branch returns a different banner still.
+    // Re-measured under the corrected method: loaded YES, stalled no.
     landmark: (page) => page.getByTestId('project-context-body'),
+  },
+
+  // ── Routes re-classified to `wired` in this change ────────────────────────
+  // Each was `ready`/`blocked-codegen`/`hybrid-defect`/`needs-route-state` in
+  // screenshot-index.json. That vocabulary is `route-wiring-map.json`'s Phase-0
+  // status, recorded when 38 route files rendered `RouteShell` scaffolding
+  // instead of the page components built for them; `ready` meant "the page
+  // exists, the ROUTE does not render it". The wiring plan has since run, the
+  // map now reports 50 routes wired and its own `--check` passes, and the
+  // screenshot index was never updated to match. Every route below was
+  // additionally opened against the running stack and confirmed to render its
+  // real page, not scaffolding.
+
+  {
+    // @covers /agents/:tab
+    name: 'agents-list-empty',
+    path: '/app/agents/latest',
+    // The empty state, NOT `getByTestId('agents-tab-all')`. Measured: the tab
+    // strip renders during load (loaded YES, stalled YES) — it is chrome. The
+    // empty-state copy renders only from a resolved, empty list: loaded YES,
+    // stalled no.
+    landmark: (page) => page.getByText('You have no agents.'),
+    light: true,
+  },
+  {
+    // @covers /agents/create
+    name: 'agent-create-form',
+    path: '/app/agents/create',
+    // No landmark can discriminate here, and measurement says none needs to.
+    // The form is client-rendered; its one server input is `useListTags`, whose
+    // result is empty in this tenant. Proven by the same byte-comparison used
+    // for settings-create-personal-token: stalled and loaded screenshots are
+    // BYTE-IDENTICAL, and two loaded runs are byte-identical to each other, so
+    // there is no loading state to photograph and no run-to-run drift.
+    // `agent-name-input` is asserted as a "the form mounted" guard, not as a
+    // data landmark, and is labelled as such deliberately.
+    landmark: (page) => page.getByTestId('agent-name-input'),
+    light: true,
+  },
+  {
+    // @covers /pipelines/:tab
+    name: 'pipelines-list-empty',
+    path: '/app/pipelines/latest',
+    // Loaded YES, stalled no.
+    landmark: (page) => page.getByText('You have no pipelines.'),
+  },
+  {
+    // @covers /pipelines/create
+    name: 'pipeline-create-form',
+    path: '/app/pipelines/create',
+    // Same class as agent-create-form: stalled and loaded screenshots are
+    // byte-identical, so there is no loading state. Guard locator only.
+    landmark: (page) => page.getByTestId('create-pipeline-form-panel'),
+  },
+  {
+    // @covers /skills/:tab
+    name: 'skills-list-empty',
+    path: '/app/skills/latest',
+    // Loaded YES, stalled no.
+    landmark: (page) => page.getByText('No skills yet'),
+  },
+  {
+    // @covers /artifacts
+    name: 'artifacts-empty',
+    path: '/app/artifacts',
+    // "No buckets found" (the resolved bucket LIST is empty), NOT "No buckets
+    // created yet" — the two strings sit on the same screen and only the first
+    // discriminates. Measured: "No buckets found" loaded YES / stalled no;
+    // "No buckets created yet" loaded YES / stalled YES.
+    //
+    // The index note on this shot — "PR #82's stub renders a heading + one
+    // button instead" — is stale: 46a90914 wired the route to
+    // `pages/artifacts/Artifacts`, and the screen now renders the bucket
+    // sidebar and the file pane.
+    landmark: (page) => page.getByText('No buckets found'),
+    light: true,
+  },
+  {
+    // @covers /settings/users
+    name: 'settings-users',
+    path: '/app/settings/users',
+    // A seeded row's email — DataGrid content, so it exists only once the user
+    // list resolves. Loaded YES, stalled no (the pager text "Showing 1…"
+    // behaves identically, either would do).
+    landmark: (page) => page.getByText('e2e-member@autotest.local'),
+    light: true,
+  },
+  {
+    // @covers /credentials/:tab
+    name: 'credentials-list-empty',
+    path: '/app/credentials/latest',
+    // Loaded YES, stalled no.
+    landmark: (page) => page.getByText('You have no credentials.'),
+  },
+  {
+    // @covers /settings/secrets
+    name: 'settings-secrets',
+    path: '/app/settings/secrets',
+    // The table's column header. Under a sustained stall this screen renders a
+    // row SKELETON with no header, no "No secrets" and no pager; loaded, all
+    // three appear. Measured: header/`No secrets`/`Rows per page`/`Page 1 of 1`
+    // are all loaded YES, stalled no.
+    //
+    // This route is where the blanket-stall flaw in the first harness was
+    // caught — see method note 1 in this file's header.
+    //
+    // The index marks this shot `hybrid-defect` for a reason unrelated to
+    // rendering: the header Search is stubbed to `onSearchChange={() => {}}`.
+    // That is a behaviour gap, not scaffolding, and it does not change what the
+    // screen draws.
+    landmark: (page) => page.getByRole('columnheader', { name: 'Name' }),
+  },
+  {
+    // @covers /settings/model-configuration
+    name: 'settings-model-configuration',
+    path: '/app/settings/model-configuration',
+    // The `Configurations` HEADING, not the tab of the same name and not the
+    // `OpenAI-BaseURL`/`Server URL`/`Project ID` header block — that block is
+    // static and renders during load (loaded YES, stalled YES). Under a stall
+    // the content area renders a literal "Loading…"; measured, the heading is
+    // loaded YES / stalled no and "Loading…" is loaded no / stalled YES, which
+    // is the same fact from both directions.
+    landmark: (page) => page.getByRole('heading', { name: 'Configurations' }),
+  },
+  {
+    // @covers /toolkits/create
+    name: 'toolkit-create-type-chooser',
+    path: '/app/toolkits/create',
+    // A toolkit type name from the fetched type list. "Choose the toolkit type"
+    // is the static heading and renders during load (loaded YES, stalled YES);
+    // `GitHub` and `Jira` are loaded YES / stalled no.
+    landmark: (page) => page.getByText('GitHub'),
+  },
+  {
+    // @covers /mcps/create
+    name: 'mcp-create-type-chooser',
+    path: '/app/mcps/create',
+    // The resolved-and-empty local MCP list. "Choose the MCP type" is static
+    // (loaded YES, stalled YES); this copy is loaded YES / stalled no.
+    landmark: (page) => page.getByText('Still no local MCP available'),
+  },
+  {
+    // @covers /agents-hub
+    name: 'agents-hub',
+    path: '/app/agents-hub',
+    // A category chip that comes from the API. The page's obvious landmarks all
+    // fail the experiment: "Welcome to Agent HUB", the search box, "No agents
+    // found", and the chips `Trending`/`My Liked` are all present during load
+    // (loaded YES, stalled YES) — `Trending` and `My Liked` are hardcoded, the
+    // other seven chips are fetched. So the stalled screen is a plausible-
+    // looking hub with two chips instead of nine, which is exactly the kind of
+    // screenshot this suite must not accept. `Business Analyst` is one of the
+    // fetched chips: loaded YES, stalled no.
+    landmark: (page) => page.getByText('Business Analyst'),
+    light: true,
   },
 ];
 
 for (const route of ROUTES) {
   test(`@visual ${route.name}`, async ({ page }) => {
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
-    await expect(route.landmark(page)).toBeVisible({ timeout: 20_000 });
+    await shellSettled(page);
+    await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
     await settle(page);
 
     await expect(page).toHaveScreenshot(`${route.name}.png`, {
@@ -176,34 +417,160 @@ for (const route of ROUTES) {
   });
 }
 
+/**
+ * Switches the app to the light colour scheme through the REAL control, then
+ * proves the switch took effect before the caller navigates anywhere.
+ *
+ * Not by writing `localStorage['el-mode']` and not by forcing CSS: issue #61 is
+ * explicit that the light-scheme shots must exercise the app's own theme
+ * mechanism, and journey 29 already establishes where that control lives
+ * (`settings/personalization` renders `shared/ui/ThemeModeToggle`, a
+ * ToggleButtonGroup with `Dark`/`Light` buttons). Faking the attribute would
+ * make these six shots test the stylesheet while claiming to test the toggle.
+ *
+ * `data-el-scheme` (`shared/brand/constants.ts`'s `COLOR_SCHEME_ATTRIBUTE`,
+ * whose own doc comment names this suite as an intended consumer) is what MUI's
+ * `colorSchemeSelector` resolves to, so polling it is polling the thing the
+ * stylesheet actually keys off — not a proxy for it.
+ */
+async function useLightScheme(page: Page): Promise<void> {
+  await page.goto(BASE_URL + '/app/settings/personalization', { waitUntil: 'domcontentloaded' });
+  const light = page.getByRole('button', { name: 'Light', exact: true });
+  await expect(light).toBeVisible({ timeout: 20_000 });
+  await light.click();
+  await expect(light).toHaveAttribute('aria-pressed', 'true');
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.getAttribute('data-el-scheme')), {
+      timeout: 10_000,
+    })
+    .toBe('light');
+}
+
+/*
+ * Light-scheme variants.
+ *
+ * The index carries a light counterpart for most screens and every spec in this
+ * suite captured the compiled default (`DEFAULT_COLOR_SCHEME = 'dark'`) only,
+ * so the entire light half of the design — which is not a recolour but a
+ * different accent hue, magenta against dark's cyan/teal per the index's
+ * `accentHue` finding — had no reference at all.
+ *
+ * The landmark discipline is unchanged: the scheme is switched first, then the
+ * route is loaded and waited for exactly as in the dark pass. The `@covers`
+ * annotations are deliberately NOT repeated here — the coverage gate counts a
+ * route once, and claiming it twice would inflate nothing but would misrepresent
+ * these as additional route coverage rather than additional scheme coverage.
+ */
+for (const route of ROUTES.filter((r) => r.light)) {
+  test(`@visual ${route.name}-light`, async ({ page }) => {
+    await useLightScheme(page);
+
+    await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
+    await shellSettled(page);
+    await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
+    // The scheme must still be light on the route under test — a navigation
+    // that reset it would otherwise produce a second dark baseline under a
+    // light name, and it would look correct.
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-el-scheme'))).toBe('light');
+    await settle(page);
+
+    await expect(page).toHaveScreenshot(`${route.name}-light.png`, {
+      fullPage: false,
+      mask: volatileRegions(page),
+      maxDiffPixelRatio: 0.002,
+    });
+  });
+}
+
+/*
+ * Rail-collapsed variants.
+ *
+ * `sidebarCollapsed.store` is backed by `localStorage['sidebar.collapsed']`
+ * (`widgets/sidebar/lib/collapsedPersistence.ts`), so a spec that assumed the
+ * rail was expanded would depend on whatever the previously-run spec left
+ * behind. Each variant here sets the state explicitly through the real toggle
+ * and asserts the resulting width before snapshotting, so it neither inherits
+ * nor leaks state.
+ */
+test('@visual chat-empty-rail-collapsed', async ({ page }) => {
+  await page.goto(BASE_URL + '/app/chat', { waitUntil: 'domcontentloaded' });
+  await shellSettled(page);
+  await expect(page.getByText('Still no conversations created.')).toBeVisible({ timeout: 20_000 });
+
+  // The real control (`SidebarHeader`'s `sidebar-toggle`), not a store poke.
+  await page.getByTestId('sidebar-toggle').click();
+  // Collapsed is proven by the project-name block disappearing —
+  // `ProjectSwitcher` renders its `Project:` / name column behind
+  // `{!collapsed && …}`, so this is the inverse of the assertion
+  // `shellSettled()` just made, on the same element.
+  //
+  // NOT the nav label: `SidebarNavItem` does render icon-only when collapsed
+  // (`showLabel={!collapsed}`), but the `<a>` keeps `aria-label="Credentials"`,
+  // so `getByRole('link', { name: 'Credentials' })` stays matched and visible.
+  // Measured, not assumed — that was this spec's first draft and it failed all
+  // three attempts with the locator resolving 24 times to the collapsed link.
+  await expect(page.locator('button').filter({ hasText: 'Default Project' }).first()).toBeHidden({
+    timeout: 10_000,
+  });
+  await settle(page);
+
+  await expect(page).toHaveScreenshot('chat-empty-rail-collapsed.png', {
+    fullPage: false,
+    mask: volatileRegions(page),
+    maxDiffPixelRatio: 0.002,
+  });
+});
+
 /*
  * NOT COVERED, and why — keep this current, it is the honest half of the suite:
  *
- *  - `/chat/:conversationId` (4 shots). Not covered, and the reason recorded
- *    here for a long time was simply false. It said the route 404s because
- *    `ConvsRepo` "is never wired and has no implementation at all" (#123).
- *    Measured against the running stack: POST
- *    /api/v2/elitea_core/conversations/prompt_lib/1 returns 201 and persists a
- *    row. The no-implementation half came from grepping the interface NAME,
- *    which a Go implementation never mentions; the never-wired half stopped
- *    being true in 3b73273.
+ *  - `/chat/:conversationId` (4 shots). The obstacle is determinism, not a
+ *    missing backend: POST /api/v2/elitea_core/conversations/prompt_lib/1
+ *    returns 201 and persists a row. Seeding a conversation on each run adds a
+ *    row to the sidebar list, so consecutive runs render different lists and the
+ *    snapshot diffs for reasons that have nothing to do with the UI. Fixing it
+ *    means seeding to a known list state. Recorded as an EXEMPT entry in
+ *    scripts/check-visual-coverage.mjs, which prints it on every run.
  *
- *    The actual obstacle is determinism. Seeding a conversation on each run adds
- *    a row to the sidebar list, so consecutive runs render different lists and
- *    the snapshot diffs for reasons that have nothing to do with the UI. Fixing
- *    it means seeding to a known list state, which is the same work the
- *    rail-collapsed variants below need. Recorded as an EXEMPT entry in
- *    scripts/check-visual-coverage.mjs, which prints it on every run — a
- *    permanently-failing spec would just be noise, and a silent skip is what
- *    this whole effort exists to remove.
- *  - The rail-collapsed variants (4 shots: chat-empty-rail-collapsed,
- *    chat-empty-conversations-collapsed, chat-empty-both-collapsed,
- *    chat-active-rail-collapsed). Each needs a deterministic collapsed-sidebar
- *    state; `sidebarCollapsed.store` persists, so these need explicit setup
- *    rather than whatever the previous spec left behind.
- *  - Light theme (6 of the 15 wired shots). Every spec here captures the
- *    default theme only. A light-mode pass needs the theme toggled
- *    deterministically before the snapshot.
- *  - The 48 shots whose routes are not `wiringStatus: wired`. Snapshotting them
- *    would make stub UI the official reference.
+ *    Now more tractable than when it was written, and worth saying why: the
+ *    conversation sidebar is actually mounted (#128), and the `/chat` landmark
+ *    above is proof it renders from resolved data ("Still no conversations
+ *    created." is the empty branch of that very list). A seed that creates a
+ *    FIXED set of conversations before the visual project runs would make the
+ *    list deterministic and unblock all four shots.
+ *
+ *  - `/help-center` (2 shots). Its route IS wired and it renders the real page,
+ *    so this change flips its `wiringStatus` — but it is EXEMPT from snapshots
+ *    rather than covered. Every one of its five cards renders "No links
+ *    configured" and the version bar is blank, because `useResourcesConfig`
+ *    has no backend at all (issue #26 Key Decision #2, disclosed in the page's
+ *    own module doc). A baseline would make a screen whose entire content is
+ *    missing the official reference, which is the trap the `wired`-only rule
+ *    exists to prevent. Note that this is a different situation from an EMPTY
+ *    screen: `/artifacts`, `/skills/:tab` and the two list pages above render
+ *    resolved, legitimately-empty data from working endpoints, and their empty
+ *    states are real UI. Help Center's content cannot be configured at all yet.
+ *    (Measured anyway, for when #26 lands: stalled and loaded screenshots are
+ *    byte-identical, so it will not need a data landmark, only a guard.)
+ *
+ *  - `/onboarding` (2 shots). Left at `ready`, not re-classified. The route
+ *    renders a real page, but what it renders ("Welcome to Elitea!" + a single
+ *    "SURE, LET'S GO!" CTA) is not the screen the index describes (a 48-slide
+ *    tour with a "1 / 48" counter and a gradient CTA pill). That is a parity
+ *    question, not a wiring one, and answering it is not this change's job — so
+ *    it keeps its status and gets no baseline. It was NOT put through the stall
+ *    experiment; nothing here claims it is or is not snapshottable.
+ *
+ *  - `/agents/:tab/:agentId`, `/pipelines/:tab/:agentId`,
+ *    `/toolkits/create/:toolkitType`, `/credentials/:tab/:credential_uid`
+ *    (7 shots). Detail/editor routes that need a seeded entity to reach with
+ *    real data. Same class as `/chat/:conversationId`: they need a fixed seed,
+ *    not a landmark. Left at their current status — none was measured.
+ *
+ *  - `/user-public/*` (14 shots). Needs an author with published content; the
+ *    seeded tenant has none. Left at `needs-route-state`, which is accurate.
+ *
+ *  - Light-scheme variants for the routes not marked `light` above. The six the
+ *    index carries are covered; the rest would be more baselines without more
+ *    theme surface, and PNGs do not delta-compress.
  */
