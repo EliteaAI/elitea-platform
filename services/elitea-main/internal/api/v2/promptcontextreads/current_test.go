@@ -460,11 +460,9 @@ func TestCurrentPromptContextCompositionFailsClosed(t *testing.T) {
 		authConfig  apimw.AuthConfig
 		permissions auth.PermissionResolver
 	}{
-		"missing chat reader":        {project: project, authConfig: authConfig, permissions: permissions},
-		"missing context reader":     {chat: chat, authConfig: authConfig, permissions: permissions},
-		"missing principal check":    {chat: chat, project: project, authConfig: apimw.AuthConfig{ForwardedIdentityVerifier: peer}, permissions: permissions},
-		"missing trusted edge proof": {chat: chat, project: project, authConfig: apimw.AuthConfig{PrincipalValidator: principal}, permissions: permissions},
-		"missing RBAC resolver":      {chat: chat, project: project, authConfig: authConfig},
+		"missing chat reader":    {project: project, authConfig: authConfig, permissions: permissions},
+		"missing context reader": {chat: chat, authConfig: authConfig, permissions: permissions},
+		"missing RBAC resolver":  {chat: chat, project: project, authConfig: authConfig},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewCurrentRoutes(
@@ -483,6 +481,58 @@ func TestCurrentPromptContextCompositionFailsClosed(t *testing.T) {
 	routes.ServeHTTP(response, httptest.NewRequest(http.MethodGet, CurrentChatConfigPath, nil))
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("nil route status=%d", response.Code)
+	}
+}
+
+// An OIDC-only deployment has no FormGraph, so PrincipalValidator and
+// ForwardedIdentityVerifier are both nil and its only credential is the
+// session cookie. NewCurrentRoutes must COMPOSE there — requiring the two
+// validators is what kept the chat-config route unservable in the E2E stack
+// and every other SSO-only install (#194) — and it must still refuse to read
+// anything for a request that carries no session.
+//
+// The second case is the security half of that relaxation: a caller who
+// forges X-Auth-Type/X-Auth-ID must NOT be authenticated when there is no
+// ForwardedIdentityVerifier to prove the edge, and no reader may be touched.
+func TestCurrentRoutesComposeWithSessionOnlyAuthAndStillRejectUnauthenticated(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		authenticated bool
+	}{
+		{name: "no credential at all"},
+		{name: "forged forwarded identity headers", authenticated: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			chat := &currentChatReaderStub{}
+			project := &currentProjectContextReaderStub{}
+			permissions := currentPermissionResolverFunc(func(
+				context.Context,
+				auth.User,
+				string,
+				string,
+			) (auth.PermissionResolution, error) {
+				return auth.PermissionResolution{UserID: 11, Permissions: []string{CurrentChatConfigPermission}}, nil
+			})
+			routes, err := NewCurrentRoutes(
+				chat,
+				project,
+				apimw.AuthConfig{SessionSecret: "e2e-session-secret"},
+				permissions,
+			)
+			if err != nil {
+				t.Fatalf("session-only composition rejected: %v", err)
+			}
+			response := httptest.NewRecorder()
+			routes.ServeHTTP(response, currentRequest(
+				http.MethodGet,
+				"/api/v2/elitea_core/chat_config/prompt_lib/7",
+				test.authenticated,
+				"10.0.0.8:43120",
+			))
+			if response.Code != http.StatusUnauthorized || chat.calls != 0 || project.calls != 0 {
+				t.Fatalf("status=%d chat=%d context=%d body=%q", response.Code, chat.calls, project.calls, response.Body.String())
+			}
+		})
 	}
 }
 

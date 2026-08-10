@@ -230,6 +230,12 @@ CROSS JOIN (VALUES
     ('configuration.artifacts.buckets.delete'),
     ('configurations.configuration.update'),
     ('configurations.configuration.delete'),
+    -- `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` resolves
+    -- this exact string in promptcontextreads' RequireResolvedPermissionsForProject
+    -- (CurrentChatConfigPermission). It is the endpoint
+    -- features/artifacts' chatConfigApi calls on every artifacts page load to
+    -- learn the project's upload limits (#194).
+    ('models.chat.conversation.details'),
     -- The notification SSE stream
     -- (GET /api/v2/notifications/events/prompt_lib/{projectID}) resolves this
     -- exact string in `currentNotificationEventsHandler.authorize`. Absent, the
@@ -275,6 +281,49 @@ VALUES
      '{"api_key":"e2e-mock-key","api_base":"http://localhost/mock","api_version":"2024-02-01","model":"gpt-4o"}',
      '{}', false, true, 'user', NOW(), NOW())
 ON CONFLICT (elitea_title) DO UPDATE SET section = EXCLUDED.section, updated_at = NOW();
+
+-- centry secret vaults for the admin scope and project 1.
+--
+-- `GET /elitea_core/chat_config/prompt_lib/{projectID}` reads the project's
+-- upload limits out of the Fernet-encrypted centry vault
+-- (promptcontextreads' CurrentChatConfigVaultReader loads BOTH the admin and
+-- the project snapshot, and errors if either row is absent). Nothing in this
+-- stack creates those rows — centry's `create_project_space` does it in the
+-- legacy world, and the Go project-create path has no equivalent — so without
+-- this the route answers 500 and the artifacts page silently falls back to the
+-- client's own 150 MB default (#194).
+--
+-- The blobs are deliberate, deterministic, NON-SECRET test material: a
+-- fixed 32-byte Fernet key stored in centry's own 44-byte URL-safe base64
+-- form, over a vault whose entire contents are five upload-limit integers in a
+-- throwaway E2E database. They are written as literals because Fernet
+-- (AES-128-CBC + HMAC-SHA256) cannot be produced from psql, and they are
+-- stable because Fernet carries no TTL that this reader enforces.
+--
+-- The five values are all DIFFERENT from
+-- promptcontextreads' built-in defaults (10/150/150/10/3), which is what makes
+-- J20f discriminating: a client that never receives this config renders the
+-- default limit instead, and the assertion fails.
+--   chat_max_upload_count         4   (default 10)
+--   chat_max_upload_size_mb       5   (default 150)
+--   chat_max_file_upload_size_mb  1   (default 150)
+--   chat_max_image_upload_count   2   (default 10)
+--   chat_max_image_upload_size_mb 6   (default 3)
+--
+-- Stored as JSON STRINGS, not numbers, on purpose: the secrets API handler
+-- (internal/api/v2/secrets/handler.go) round-trips this same blob through
+-- `map[string]string` whenever J21 creates or deletes a secret on project 1,
+-- and a JSON number would fail that unmarshal and make it REPLACE the vault
+-- with an empty one. centrysecrets' Python-int contract accepts either.
+INSERT INTO centry.secrets_key (id, data) VALUES
+    ('admin', '\x6f4b47696f36536c7071656f71617172724b32757237437873724f3074626133754c6d36753779397672383d'::bytea),
+    ('project-1', '\x45424553457851564668635947526f62484230654879416849694d6b4a53596e4b436b714b7977744c69383d'::bytea)
+ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
+
+INSERT INTO centry.secrets_data (id, data) VALUES
+    ('admin', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f4435683447586f50634f59333475747733484e52343942495a72645f59316f444c4f3679352d727450646d67616d732d2d71745232417548504254664371422d636d497a546f4c705435347a4d736541527043586e3778357a327773676c38474249694d736d72744c397750'::bytea),
+    ('project-1', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f44337062783235587355577351396b7859782d3463646e5178774a674e5656627243766b3263714e5165497277516c48417a37714c517663354e61783047772d4e43623178762d626c6f743478364b33434e70455576682d653570655257594344724f545669313141576a6645716852534c55506436494c56434a5f58775954664941423143635f6a71692d716e4e3047337a4b4c6b5f577a50535066684c6d32357842696146555f467165423755724e766f32387079536d536e644a526e4a68356b79424a37336942496d413637314b474965315f394a685a7031556a724449343064774f48494b41634d304239627a52725341553638684361365336465465696135375a475f74734a637473723071524b51556d556d643445496b2d49524b7a636f2d3067703946425058627a7430306569676745704c72446b7471776a38773d3d'::bytea)
+ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
 ENDSQL
 
     # Use the correct binary for exec: podman exec or docker exec.

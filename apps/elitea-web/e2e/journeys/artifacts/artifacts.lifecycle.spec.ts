@@ -8,7 +8,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * STATE OF THIS JOURNEY (verified against the running E2E stack, 2026-08-08)
  *
- * All five tests pass on chromium and webkit. J20b-J20e carried
+ * All six tests pass on chromium and webkit. J20b-J20e carried
  * `test.fail()` until issue #138 was fixed: the client addressed the LEGACY
  * Pylon artifact URLs (`/artifacts/s3/...`, `/artifacts/artifact/default/...`,
  * `/artifacts/buckets/default/{projectId}`) while elitea-main serves only
@@ -35,6 +35,11 @@
  * The two buckets this spec touches still use FIXED names and are reused
  * across runs (rather than one per run): `seedBucketWithFiles` is idempotent
  * and re-uploads the objects J20d deletes, so J20e still finds them.
+ *
+ * J20f was added with #194: `GET /elitea_core/chat_config/prompt_lib/
+ * {projectID}` — the only server input this feature has — answered 404 in
+ * every deployment, and no journey covered it, so every upload silently used
+ * the client's 150 MB fallback instead of the project's configured limit.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
@@ -337,5 +342,105 @@ test.describe('J20 artifacts lifecycle', () => {
     expect(Object.keys(archive.files).sort()).toEqual([FILE_NAME, SECOND_FILE_NAME].sort());
     expect(await archive.file(FILE_NAME)!.async('string')).toBe(FILE_BODY);
     expect(await archive.file(SECOND_FILE_NAME)!.async('string')).toBe(SECOND_FILE_BODY);
+  });
+
+  /**
+   * The artifacts upload limit must come from the SERVER's chat config, not
+   * from the client's fallback constant.
+   *
+   * `GET /elitea_core/chat_config/prompt_lib/{projectID}` answered 404 in every
+   * deployment: its only registration sat inside the never-assigned
+   * `ChatService` gate on the prototype eliteacore handler, and the current
+   * implementation (`promptcontextreads`) was composable only under
+   * ELITEA_PROMPT_CONTEXT_READS_ENABLED → ELITEA_CONFIGURATIONS_ENABLED, which
+   * no deployment sets, AND was mounted only by the production router, which
+   * NewRouter never reaches. `features/artifacts`' `chatConfigApi` has been
+   * querying it on every artifacts page load for the whole life of the gate,
+   * silently degrading `useArtifactUpload`'s `maxFileSize` to its own 150 MB
+   * `DEFAULT_MAX_FILE_SIZE` (#194).
+   *
+   * No journey covered the path, which is why the 404 went unnoticed. This one
+   * is deliberately NOT "a request was made": `e2e-stack.sh` seeds the project
+   * vault with `chat_max_file_upload_size_mb = 1`, a value chosen because it is
+   * different from the reader's own default, so a client that receives the
+   * config rejects a 2 MiB file and a client that does not accepts it. The
+   * rejection sentence is `buildArtifactUploadPlan`'s
+   * (`useArtifactUpload.ts:45`).
+   *
+   * Mutation-checked: adding `page.route('**\/chat_config/**', abort)` — the
+   * browser-side equivalent of the 404 this endpoint used to return — makes
+   * `useChatConfig` fall back to 150 MB, the 2 MiB file is accepted, and the
+   * rejection assertion in step 2 fails. (Step 1 goes through the `request`
+   * fixture and is unaffected by a page route, by design: the two steps fail
+   * for different causes.)
+   */
+  test('J20f: the upload limit comes from the server chat config, not the client default', async ({ page, request }) => {
+    await page.goto(BASE_URL + '/app/artifacts');
+    await page.waitForURL('**/artifacts**', { timeout: 15_000 });
+    const projectId = await selectedProjectId(page);
+    await seedBucketWithFiles(request, projectId);
+
+    // 1. The route is served at all, with the project's seeded limits. Every
+    //    key is asserted: the response shape is the contract `readUploadLimit`
+    //    reads, and all five values differ from the reader's own defaults
+    //    (10/150/150/10/3), so a defaults-only body cannot satisfy this.
+    const config = await request.get(`/api/v2/elitea_core/chat_config/prompt_lib/${projectId}`);
+    expect(config.status(), await config.text()).toBe(200);
+    expect(await config.json()).toEqual({
+      chat_max_upload_count: 4,
+      chat_max_upload_size_mb: 5,
+      chat_max_file_upload_size_mb: 1,
+      chat_max_image_upload_count: 2,
+      chat_max_image_upload_size_mb: 6,
+    });
+
+    // 2. The artifacts feature ACTS on it. 2 MiB is over the seeded 1 MB limit
+    //    and far under the client's 150 MB fallback, so only a client that
+    //    received the config rejects this file.
+    await page.goto(`${BASE_URL}/app/artifacts?bucket=${READ_BUCKET}`);
+    await page.waitForURL('**/artifacts**', { timeout: 15_000 });
+    await expect(page.getByRole('row').filter({ hasText: SECOND_FILE_NAME })).toBeVisible({ timeout: 15_000 });
+
+    const oversizedName = 'j20f-oversized-art.bin';
+    await page.locator('input[type="file"]').setInputFiles({
+      name: oversizedName,
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.alloc(2 * 1024 * 1024, 7),
+    });
+    // The upload-path dialog is the real flow: nothing is planned until it is
+    // confirmed (Artifacts.tsx:278-284).
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+
+    await expect(page.getByRole('alert').filter({ hasText: oversizedName })).toHaveText(
+      `${oversizedName}: File exceeds the upload size limit.`,
+      { timeout: 15_000 },
+    );
+    // …and it never reached the backend.
+    const afterReject = await request.get(`/api/v2/artifacts/objects/${projectId}/${READ_BUCKET}`);
+    expect(afterReject.status()).toBe(200);
+    expect(await afterReject.text()).not.toContain(oversizedName);
+
+    // 3. The complement: a file UNDER the same limit is accepted and uploaded,
+    //    so step 2 is a limit being enforced rather than uploading being broken.
+    const acceptedName = 'j20f-small-art.bin';
+    await page.locator('input[type="file"]').setInputFiles({
+      name: acceptedName,
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.alloc(512 * 1024, 3),
+    });
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(page.getByRole('row').filter({ hasText: acceptedName })).toBeVisible({ timeout: 30_000 });
+
+    const afterAccept = await request.get(`/api/v2/artifacts/objects/${projectId}/${READ_BUCKET}`);
+    expect(afterAccept.status()).toBe(200);
+    expect(await afterAccept.text()).toContain(acceptedName);
+
+    // Housekeeping: this bucket is reused across runs, and J20e asserts the
+    // ZIP contains EXACTLY the two seeded objects.
+    const removed = await request.post(
+      `/api/v2/artifacts/objects/${projectId}/${READ_BUCKET}:batchDelete`,
+      { data: { keys: [acceptedName] } },
+    );
+    expect(removed.status(), await removed.text()).toBe(200);
   });
 });

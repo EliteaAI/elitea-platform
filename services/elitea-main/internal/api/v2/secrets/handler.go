@@ -458,23 +458,44 @@ func (h *Handler) writeVault(r *http.Request, projectID string, v vaultData) err
 	return err
 }
 
-// encryptKey wraps a raw 32-byte Fernet key with the master key (if set).
+// encryptKey renders a raw 32-byte Fernet key in the ON-DISK representation
+// centry writes, then wraps it with the master key (if set).
+//
+// centry's database secret engine stores `cryptography.fernet.Fernet.
+// generate_key()` output — the 44-byte URL-safe base64 ENCODING of the 32 key
+// bytes — not the raw bytes (legacy/…/secret_engines/database.py `_write_key`).
+// This handler used to persist the raw 32 bytes, which no other reader in this
+// repository can open: `centrysecrets.decodeFernetKey` (the reader behind the
+// current chat-config and Configurations vault paths) requires exactly 44
+// base64 bytes and rejects a 32-byte row outright. A project whose vault this
+// handler created was therefore unreadable by the current generation, and a
+// project whose vault centry created was unwritable by this handler
+// (`fernetEncrypt` would slice a 28-byte AES key out of the 44 and fail).
+// Found while making the chat-config route reachable (#194).
 func (h *Handler) encryptKey(raw []byte) ([]byte, error) {
+	encoded := []byte(base64.URLEncoding.EncodeToString(raw))
 	if h.masterKey == nil {
-		return raw, nil
+		return encoded, nil
 	}
-	return fernetEncrypt(h.masterKey, raw)
+	return fernetEncrypt(h.masterKey, encoded)
 }
 
-// decryptKey unwraps the stored key bytes back to a 32-byte Fernet key.
+// decryptKey unwraps the stored key bytes back to a 32-byte Fernet key. It
+// accepts BOTH representations: centry's 44-byte base64 encoding (what
+// encryptKey now writes) and the raw 32 bytes earlier builds of this handler
+// wrote, so an existing database keeps opening.
 func (h *Handler) decryptKey(stored []byte) ([]byte, error) {
-	if h.masterKey == nil {
-		if len(stored) != 32 {
-			return nil, fmt.Errorf("unexpected key length %d", len(stored))
+	if h.masterKey != nil {
+		unwrapped, err := fernetDecrypt(h.masterKey, stored)
+		if err != nil {
+			return nil, err
 		}
+		stored = unwrapped
+	}
+	if len(stored) == 32 {
 		return stored, nil
 	}
-	return fernetDecrypt(h.masterKey, stored)
+	return fernetDecodeKey(string(stored))
 }
 
 // ─── Fernet implementation ────────────────────────────────────────────────────
