@@ -4,6 +4,7 @@ import type { ToolBasePropertyCredentialContext, ToolBasePropertySlots } from '.
 import type { ToolSectionSubsection } from './ToolSection';
 import type { EditToolDetail, EditToolField, OnCredentialReload, SetEditToolDetail, SetToolErrors, ToolErrors, ToolSchema, ToolSlotRenderer, ValidationErrorMessages } from './types';
 import type { NameDescriptionInputSlotProps } from './ToolBase.slots';
+import type { SharepointAuthModalRenderers } from '../../../sharepoint/ui/SharepointOAuthStatus';
 
 /**
  * `ToolBase.tsx`'s prop-group interfaces, split out to stay under the §3.5
@@ -60,7 +61,23 @@ export interface ToolBaseSections {
 export interface ToolBaseSlots extends ToolBasePropertySlots {
   readonly renderNameDescriptionInput?: ToolSlotRenderer<NameDescriptionInputSlotProps> | undefined;
   readonly mcpAuthStatus?: ReactNode;
+  /**
+   * OVERRIDE, not the only source (R2's `renderNameDescriptionInput`
+   * precedent): omitted, `ToolBaseStatusSlots` now renders the real,
+   * intra-slice `<SharepointOAuthStatus>` (`../../../sharepoint/ui`) for a
+   * sharepoint-titled schema instead of nothing. Supply this only to replace
+   * that widget wholesale.
+   */
   readonly sharepointOAuthStatus?: ReactNode;
+  /**
+   * The `features/mcps`-owned login/logout modals `SharepointOAuthStatus`
+   * cannot import itself (`no-sideways-features`). Supplied by
+   * `pages/toolkits` through `ConfigurationTab`/`ToolkitForm`; omitted, the
+   * status pill still renders and still runs its connection check, but the
+   * "open the OAuth modal on 401" step is a no-op — which is what the whole
+   * SharePoint delegated path silently was before this was wired.
+   */
+  readonly sharepointAuthModals?: SharepointAuthModalRenderers | undefined;
   readonly openApiOAuthStatus?: ReactNode;
   readonly toolActionsExtra?:
     | {
@@ -84,6 +101,8 @@ export interface ToolBaseSlots extends ToolBasePropertySlots {
 interface ToolBaseCoreProps {
   readonly editToolDetail?: EditToolDetail | undefined;
   readonly setEditToolDetail?: SetEditToolDetail | undefined;
+  /** The project whose credentials the form is editing — forwarded by `ToolkitForm.hooks.ts`'s `toolComponentProps`; `SharepointOAuthStatus` needs it to resolve the referenced SharePoint credential. */
+  readonly projectId?: string | undefined;
   readonly editField?: EditToolField | undefined;
   readonly toolErrors?: ToolErrors | undefined;
   readonly setToolErrors?: SetToolErrors | undefined;

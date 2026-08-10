@@ -12,7 +12,7 @@ import Typography from '@mui/material/Typography';
 
 import { isPublicProject } from '@/entities/project';
 import { getConfig } from '@/shared/config';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import {
   EMPTY_MODELS_RESPONSE,

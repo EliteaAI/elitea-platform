@@ -2,10 +2,17 @@
  * Edit user roles and delete mutations.
  *
  * The generated admin hooks (`useUserUpdate`, `useUserDelete`, etc.) are all
- * `useQuery`-based because the Go handlers are "live no-ops" — they always
- * return the user list regardless of HTTP method. To perform mutations we
- * wrap the raw fetcher functions (`userUpdate`, `userDelete`) with
- * `useMutation` from `@tanstack/react-query`.
+ * `useQuery`-based, because orval emits a query hook per operation. To perform
+ * mutations we wrap the raw fetcher functions (`userUpdate`, `userDelete`)
+ * with `useMutation` from `@tanstack/react-query`.
+ *
+ * These used to carry a "the Go handlers are live no-ops — they always return
+ * the user list regardless of HTTP method" note. That was true and is no
+ * longer (#130): PUT and DELETE now reach real handlers
+ * (services/elitea-main/internal/api/v2/eliteacore/users_write.go). The bodies
+ * below are unchanged — the server was aligned to what this file already sent,
+ * `{userId, roles}` with role NAMES and a comma-joined id list for a batch —
+ * so if you change either shape, change both.
  *
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/lib/hooks/useEditUser.hooks.js`.
  */

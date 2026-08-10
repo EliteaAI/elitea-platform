@@ -1,3 +1,5 @@
+import { createStorage } from '@/shared/lib/storage';
+
 /**
  * `mcpTokenStorage.helpers.ts` — a DISCLOSED, INTENTIONALLY PARTIAL local
  * duplicate of `apps/elitea-ui/src/[fsd]/features/mcp/lib/helpers/
@@ -34,16 +36,64 @@
  * (`setConnectionVerified`, used for the non-delegated/header-auth case in
  * `SharepointOAuthStatus.tsx`).
  *
- * Ported byte-for-byte from `mcpAuth.helpers.js` for the functions kept
- * (same `sessionStorage` key names, same composite-key detection, same
- * `MCP_CONNECTION_VERIFIED` sentinel and 24h expiry) — this is a narrower
- * SLICE of that file, not a redesign of the logic it does contain.
+ * Ported from `mcpAuth.helpers.js` for the functions kept (same
+ * composite-key detection, same `MCP_CONNECTION_VERIFIED` sentinel and 24h
+ * expiry) — this is a narrower SLICE of that file, not a redesign of the
+ * logic it does contain. The one deliberate deviation from the baseline is
+ * the storage BACKEND, for the security reasons set out immediately below.
  */
 
-/** `mcAuth.constants.js`'s `MC_TOKENS_STORAGE_KEY`. */
-const MC_TOKENS_STORAGE_KEY = 'mcp_oauth_tokens';
-/** `mcAuth.constants.js`'s `MCP_TOKEN_CHANGE_EVENT`. */
-export const MCP_TOKEN_CHANGE_EVENT = 'mcp-token-change';
+/**
+ * STORAGE BACKEND (issue #22). This module used to write `sessionStorage`
+ * directly under the baseline's raw key `'mcp_oauth_tokens'`. Two problems,
+ * both fixed here by routing through `shared/lib/storage.ts`'s
+ * `createStorage('session')` — the ONLY sanctioned `sessionStorage` accessor
+ * (spec §5.4) — exactly as `features/mcps/lib/storage.ts` already does:
+ *
+ *  1. **Tokens survived logout.** `performLogout()` sweeps the `el.*`
+ *     namespace via `clearNamespace()`; a raw, un-namespaced key is not in
+ *     that namespace, so a SharePoint OAuth access token outlived sign-out
+ *     and was inherited by the next user of the tab. §5.4's completeness
+ *     test could not see it either: that test enumerates writes made THROUGH
+ *     the wrapper, so a write that bypasses the wrapper is invisible to it.
+ *  2. **It bypassed the R-A1/§5.4 lint fence.** `no-restricted-globals`
+ *     bans the bare `sessionStorage` global, but this file reached it as
+ *     `window.sessionStorage`, a member expression the rule does not match.
+ *
+ * The LOGICAL key is deliberately the same one `features/mcps/lib/constants.ts`
+ * uses (`'mcp.tokens'`, i.e. `el.mcp.tokens` on the wire), not a SharePoint-
+ * private one. SharePoint's delegated-login flow obtains its token from
+ * `features/mcps`' real `<McpAuthModal>` (see `useSharepointAuthModal.hooks.ts`),
+ * which writes through that feature's own storage layer — divergent keys
+ * would mean this module could never read the token that flow produces. The
+ * literal is duplicated rather than imported because `no-sideways-features`
+ * forbids `features/toolkits` importing `features/mcps`; that is the same
+ * disclosed-duplication trade-off the rest of this file documents.
+ *
+ * This is NOT encryption, and nothing here claims to be: see issue #22's PR
+ * for why browser-local encryption of a browser-readable token buys nothing
+ * against an attacker who already has script execution on this origin.
+ */
+const MC_TOKENS_STORAGE_KEY = 'mcp.tokens';
+/**
+ * `features/mcps/lib/constants.ts`'s `MCP_TOKEN_CHANGE_EVENT`, NOT the
+ * baseline's `'mcp-token-change'` — for exactly the reason the storage-key
+ * note above gives, one level further on. Issue #22 aligned WHERE the two
+ * slices store the token; this aligns HOW they announce a change to it.
+ *
+ * `useSharepointTokenStatus` re-reads the token only when it hears this
+ * event, and the real writer (`features/mcps/lib/storage.ts`, driven by
+ * `<McpAuthModal>`) dispatches `elitea_mcp_token_change`. Listening for the
+ * baseline's name meant a completed OAuth login wrote a token this module
+ * could now read — and the UI still sat on its stale "not connected" render
+ * until something else forced it to re-check.
+ *
+ * Duplicated by literal rather than imported, same `no-sideways-features`
+ * trade-off as `MC_TOKENS_STORAGE_KEY`. `mcpTokenStorage.interop.test.ts`
+ * pins both names against the real `features/mcps` writer, so drift in
+ * either fails a test instead of silently disconnecting the feature.
+ */
+export const MCP_TOKEN_CHANGE_EVENT = 'elitea_mcp_token_change';
 /** `mcAuth.constants.js`'s `MCP_CONNECTION_VERIFIED` sentinel access-token value. */
 const MCP_CONNECTION_VERIFIED = '__connection_verified__';
 /** `mcAuth.constants.js`'s `MCP_PREBUILD_PREFIX` — checked so `getStorageKey` matches the baseline's precedence order, even though SharePoint's own `type` ('sharepoint') is never prebuild-prefixed. */
@@ -60,29 +110,30 @@ interface StoredToken {
 
 type TokenStore = Record<string, StoredToken>;
 
-function isStorageAvailable(): boolean {
-  return typeof window !== 'undefined' && window.sessionStorage !== undefined;
-}
-
-function safeParse(value: string | null): TokenStore {
+/**
+ * Resolved lazily per call (not captured at module scope) so importing this
+ * module never touches `window` — matching `features/mcps/lib/storage.ts`.
+ *
+ * The try/catch replaces the old `window.sessionStorage !== undefined` probe:
+ * it covers the same "no web storage here" case (SSR, and the vitest `node`
+ * project where `window` exists but its storage areas do not) without reaching
+ * for the raw global the §5.4 fence bans.
+ */
+function loadTokens(): TokenStore {
   try {
-    return value === null ? {} : (JSON.parse(value) as TokenStore);
+    // `getJSON` already treats absent AND malformed JSON as absent, which is
+    // what the baseline's own try/catch did.
+    return createStorage('session').getJSON<TokenStore>(MC_TOKENS_STORAGE_KEY) ?? {};
   } catch {
     return {};
   }
 }
 
-function loadTokens(): TokenStore {
-  if (!isStorageAvailable()) return {};
-  return safeParse(window.sessionStorage.getItem(MC_TOKENS_STORAGE_KEY));
-}
-
 function saveTokens(tokens: TokenStore): void {
-  if (!isStorageAvailable()) return;
   try {
-    window.sessionStorage.setItem(MC_TOKENS_STORAGE_KEY, JSON.stringify(tokens));
+    createStorage('session').setJSON(MC_TOKENS_STORAGE_KEY, tokens);
   } catch {
-    // Ignore storage errors (quota exceeded, etc) — same as the baseline.
+    // Ignore storage errors (no web storage, quota exceeded, etc) — same as the baseline.
   }
 }
 

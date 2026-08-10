@@ -332,7 +332,11 @@ export async function uploadFileWithProgress(params: UploadFileWithProgressParam
     });
     if (!outcome.ok) return outcome;
     uploadedBytes += chunk.size;
-    if (outcome.data.status === 'complete') finalData = outcome.data.data;
+    // Destructured rather than read as `outcome.data.data`: this is a
+    // `ChunkAckResult`'s own payload field, not a doubled response envelope,
+    // and the chain reads identically to the #132 bug shape R-A6 fences.
+    const ack = outcome.data;
+    if (ack.status === 'complete') finalData = ack.data;
   }
 
   return { ok: true, data: finalData };

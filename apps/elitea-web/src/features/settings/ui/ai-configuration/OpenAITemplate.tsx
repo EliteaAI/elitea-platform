@@ -14,7 +14,7 @@ import Tooltip from '@mui/material/Tooltip';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import { isPublicProject } from '@/entities/project';
 import { getConfig } from '@/shared/config';
 

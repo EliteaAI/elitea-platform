@@ -8,7 +8,7 @@ import Typography from '@mui/material/Typography';
 
 import { BaseCheckbox } from '../BaseCheckbox';
 import { InfoLabelWithTooltip } from '../InfoLabelWithTooltip';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API. */
 export interface RadioButtonGroupItem {

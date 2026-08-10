@@ -2,8 +2,8 @@
 // i18n-backfill.mjs — the en.json sync backfill + CI gate (issue #44).
 //
 // Walks src/**/*.{ts,tsx} (excluding test/story files), extracts every
-// `t(key, fallback)` call site bound to `t` imported from `@/shared/i18n` or
-// the deprecated `@/shared/ui/lib/t` stub (see issue #45), and either:
+// `t(key, fallback)` call site bound to `t` imported from `@/shared/i18n`
+// (the pre-S8 `@/shared/ui/lib/t` stub was removed by issue #45), and either:
 //
 //   - default mode: merges every safely-addable key into en.json (2-space
 //     indent, existing key order preserved, new keys appended sorted).

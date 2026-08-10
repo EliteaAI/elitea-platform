@@ -38,8 +38,9 @@ type Handler struct {
 	// nil means the gate is disabled — skip all budget enforcement. This keeps
 	// existing tests that build a Handler without governance wired up passing.
 	budgetGate BudgetChecker
-	// costCalc estimates request cost in nano-USD. Required when budgetGate is
-	// non-nil; ignored (and may be nil) when budgetGate is nil.
+	// costCalc converts the response's token counts into a billed amount in
+	// nano-USD. Post-completion only — admission passes no estimate (issue #10).
+	// Required when budgetGate is non-nil; ignored (and may be nil) otherwise.
 	costCalc CostEstimator
 
 	// billingWg tracks in-flight async billing goroutines (Fix round-3 #2).
@@ -64,14 +65,6 @@ type Handler struct {
 	// project in real time which of its streams went unbilled (gateway-review).
 	// nil = publishing disabled (the WARN log remains).
 	opsEvents OpsEventPublisher
-
-	// inflightNano is a per-project in-process reservation counter (Fix round-3
-	// #7). When N concurrent requests pass admission before any async increment
-	// lands, each one adds its estimated cost here so checkBudget can bound the
-	// concurrent-admission window overshoot. The map value is *atomic.Int64
-	// keyed by the scope+scopeID admission key. Values are decremented by the
-	// billing goroutine after UpdateUsage completes.
-	inflightNano sync.Map // key: string → *atomic.Int64
 
 	// streamGrace is how long a stream whose SSE loop exited early may keep its
 	// provider stream alive waiting for the authoritative usage trailer
@@ -134,8 +127,8 @@ func WithModelResolver(r *ModelResolver) HandlerOption {
 
 // WithBudgetGate wires the pre-LLM budget enforcement gate. When gate is nil
 // the option is a no-op (enforcement is skipped). calc must be non-nil when
-// gate is non-nil — the cost Calculator is used for pre-flight estimation and
-// for post-completion billing.
+// gate is non-nil — the cost Calculator turns the response's token counts into
+// the billed amount. It is NOT used pre-flight: admission passes no estimate.
 func WithBudgetGate(gate BudgetChecker, calc CostEstimator) HandlerOption {
 	return func(h *Handler) {
 		if gate == nil {
@@ -446,10 +439,8 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	bifReq := req.ToBifrostChatRequest(ctx)
 
 	provider, model := providerModelFromChatReq(bifReq)
-	// Pre-flight budget check. promptTokenEst=0 is safe here — the Chat wire
-	// format does not expose a pre-counted prompt token count. The FSM uses
-	// reqCostNano only for the FRESH_NEAR per-replica cap; 0 never over-gates.
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	// Pre-flight budget check (admission only; the cost is billed post-response).
+	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context
 		return
 	}
@@ -493,7 +484,7 @@ func (h *Handler) TextCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// FIX #4: enforce the budget gate before calling the provider.
 	provider, model := providerModelFromTextReq(bifReq)
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	if !h.checkBudget(w, ctx, model) {
 		return
 	}
 
@@ -519,7 +510,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 
 	// FIX #4: enforce the budget gate before calling the provider.
 	provider, model := providerModelFromEmbeddingReq(bifReq)
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	if !h.checkBudget(w, ctx, model) {
 		return
 	}
 
@@ -547,7 +538,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 
 	// FIX #3: enforce the budget gate before calling the provider (mirrors Messages).
 	provider, model := providerModelFromResponsesReq(bifReq)
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context
 		return
 	}
@@ -584,11 +575,8 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 	// FIX #26: enforce the budget gate before calling the image provider.
 	// Image generation can be expensive; an over-budget project must be
 	// blocked before any provider call incurs real cost.
-	// promptTokenEst=0 is correct here — image requests have no prompt
-	// token pre-count available. The FSM uses reqCostNano only for the
-	// FRESH_NEAR per-replica cap; passing 0 is conservative (never over-gates).
 	provider, model := providerModelFromImageGenReq(bifReq)
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	if !h.checkBudget(w, ctx, model) {
 		return
 	}
 
@@ -630,8 +618,8 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	bifReq := req.ToBifrostResponsesRequest(ctx)
 
 	provider, model := providerModelFromResponsesReq(bifReq)
-	// Pre-flight budget check. promptTokenEst=0 (see Chat handler comment).
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	// Pre-flight budget check (see Chat handler comment).
+	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context
 		return
 	}
@@ -674,8 +662,8 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 	// be admission-gated like every other /llm endpoint (uniform gating,
 	// DECISIONS.md). No updateUsage after: CountTokensResponse carries no billable
 	// usage, so there is nothing to meter post-response.
-	provider, model := providerModelFromResponsesReq(bifReq)
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	_, model := providerModelFromResponsesReq(bifReq)
+	if !h.checkBudget(w, ctx, model) {
 		return
 	}
 	resp, bErr := h.router.CountTokensRequest(ctx, bifReq)

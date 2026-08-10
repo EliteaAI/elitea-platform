@@ -43,6 +43,10 @@ import types
 module = types.ModuleType("elitea_worker.indexing_runtime_capabilities")
 module.require_indexing_runtime_capabilities = lambda: "test-profile"
 sys.modules[module.__name__] = module
+
+agent_module = types.ModuleType("elitea_worker.agent_current_runtime_capabilities")
+agent_module.require_agent_current_runtime_capabilities = lambda: "test-profile"
+sys.modules[agent_module.__name__] = agent_module
 """.lstrip(),
         encoding="utf-8",
     )

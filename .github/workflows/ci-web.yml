@@ -1,20 +1,27 @@
 name: CI — Web
 
-# apps/elitea-web quality gates (spec §7.6, unit F2). Replaces ci-ui.yml at
-# cutover step 8 — until then both run side by side. Jobs quality/gates/
-# build/image/parity block PRs; e2e also runs on PRs (issue #158). visual/
-# mutation-spotcheck still run only on release tags (§6.6).
+# apps/elitea-web's FAST quality gates (spec §7.6, unit F2). Replaces ci-ui.yml
+# at cutover step 8 — until then both run side by side. Every job here is
+# node-only (plus go for `parity`), runs in a couple of minutes, and blocks
+# PRs: typecheck, lint, storybook, the sharded unit-test + coverage jobs, the
+# gate-* family, build, image, parity.
+#
+# The heavy containerised suites are NOT here (issue #157):
+#   • e2e + visual        → .github/workflows/ci-web-e2e.yml
+#   • mutation spot-check → .github/workflows/ci-web-mutation.yml
+# The split is mechanical — when each of those fires is unchanged, and is
+# documented in the file that now owns it.
 #
 # npm ci works here because the lockfile is committed (fixes the old D4);
 # the npm cache is keyed on that lockfile.
 
 on:
-  # The `paths` filters below are what actually decide whether the E2E job gets
-  # a chance to run, now that the job itself is unguarded (issue #158). The E2E
-  # stack builds and runs elitea-main alongside elitea-web, so a change to the
-  # BACKEND or to the compose/build definitions can break a journey while
-  # touching nothing under apps/elitea-web — those paths are listed here for
-  # that reason, not because the web unit tests read them.
+  # The backend / compose / bake paths below were added when the E2E job still
+  # lived in this file, and are kept unchanged by the #157 split: narrowing them
+  # would change when these gates fire, which is out of that issue's scope.
+  # ci-web-e2e.yml carries the same list for the reason it was written — the
+  # E2E stack runs elitea-main alongside elitea-web, so a backend change can
+  # break a journey while touching nothing under apps/elitea-web.
   workflow_dispatch:
   pull_request:
     paths:
@@ -248,45 +255,65 @@ jobs:
         run: npm ci
       - name: Check gate-script coverage thresholds
         working-directory: apps/elitea-web
-        # Run a focused scripts coverage run then read back the JSON to check
-        # thresholds. The scripts project's test files don't import scripts/lib/
-        # modules, so vitest can't instrument them — coverage data is always 0.
-        # Thresholds are set to 0 (not 100) to verify the coverage pipeline
-        # runs successfully; real decision-logic coverage is tested by the
-        # gate-script-coverage's own unit tests (258 passing tests).
+        # Run a focused scripts coverage run, then read the JSON back and
+        # re-check the numbers independently.
+        #
+        # The scripts project's *-core.test.mjs files DO import their
+        # scripts/lib/*-core.mjs modules, and v8 instruments them: measured
+        # coverage is 712/712 statements, 431/431 branches, 155/155 functions,
+        # 607/607 lines — 100% on all four (#73). The pre-#73 version of this
+        # step claimed the opposite ("coverage data is always 0") and set every
+        # threshold to 0. It also filtered the report with
+        # `file.startsWith("scripts/lib/")` while v8 writes ABSOLUTE path keys,
+        # so the filter matched nothing, `statements` stayed 0, and the
+        # short-circuit below it exited 0. The step could never fail — the
+        # coverage numbers were fine all along, the gate reading them was not.
+        #
+        # coverage.all=true (was false): a new scripts/lib module that NO test
+        # imports must count as 0%, not vanish from the report.
         run: |
           npx vitest run --config vitest.config.ts --project scripts \
-            --coverage.enabled=true --coverage.all=false \
-            --coverage.include='scripts/lib/**' \
-            --coverage.reporter=json --coverage.reportsDirectory=coverage-scripts \
-            --coverage.thresholds.lines=0 \
-            --coverage.thresholds.functions=0 \
-            --coverage.thresholds.branches=0 \
-            --coverage.thresholds.statements=0
+            --coverage.enabled=true --coverage.all=true \
+            --coverage.include='scripts/lib/**/*.mjs' \
+            --coverage.exclude='scripts/lib/**/*.test.mjs' \
+            --coverage.reporter=json --coverage.reporter=text \
+            --coverage.reportsDirectory=coverage-scripts \
+            --coverage.thresholds.lines=100 \
+            --coverage.thresholds.functions=100 \
+            --coverage.thresholds.branches=100 \
+            --coverage.thresholds.statements=100
           node -e '
-            const fs = require("fs");
+            const path = require("path");
             let data;
             try { data = require("./coverage-scripts/coverage-final.json"); } catch {
-              console.error("No scripts coverage report found — pipeline OK (scripts/lib files not imported by tests)");
-              process.exit(0);
+              console.error("FAIL: no coverage-scripts/coverage-final.json — the coverage run produced nothing to gate on");
+              process.exit(1);
             }
-            let lines = 0, functions = 0, branches = 0, statements = 0;
-            for (const [file, f] of Object.entries(data)) {
-              if (!file.startsWith("scripts/lib/")) continue;
-              const s = f.s || [];
-              const b = f.b || [];
-              const fn = f.f || [];
-              lines += s.reduce((a, v) => a + (v > 0 ? 1 : 0), 0);
-              branches += b.reduce((a, row) => a + row.reduce((a2, v) => a2 + (v > 0 ? 1 : 0), 0), 0);
-              functions += fn.reduce((a, v) => a + (v > 0 ? 1 : 0), 0);
+            let lines = 0, functions = 0, branches = 0, statements = 0, files = 0;
+            for (const [abs, f] of Object.entries(data)) {
+              // Keys are absolute; relativise against cwd (apps/elitea-web).
+              const rel = path.relative(process.cwd(), abs).split(path.sep).join("/");
+              if (!rel.startsWith("scripts/lib/")) continue;
+              files += 1;
+              const s = Object.values(f.s || {});
+              const b = Object.values(f.b || {});
+              const fn = Object.values(f.f || {});
+              lines += s.filter((v) => v > 0).length;
               statements += s.length;
+              for (const row of b) { branches += row.filter((v) => v > 0).length; }
+              functions += fn.filter((v) => v > 0).length;
             }
-            if (statements === 0) { console.log("No scripts/lib coverage data (tests do not import scripts/lib modules)"); process.exit(0); }
-            function pct(covered, total) { return total ? Math.round(covered / total * 100) : 100; }
-            const lp = pct(lines, statements);
-            console.log("Gate-script coverage — lines: " + lp + "%");
-            if (lp < 100) { console.error("Lines below 100% threshold (" + lp + "%)"); process.exit(1); }
-            console.log("OK — 100% lines threshold met");
+            if (files === 0 || statements === 0) {
+              console.error("FAIL: coverage report contains no scripts/lib files (" + files + " files, " + statements + " statements) — the gate would be vacuous");
+              process.exit(1);
+            }
+            // Only statements is re-derivable from coverage-final.json alone
+            // (b/f hold hit counts, not totals-vs-covered); the other three
+            // metrics are enforced by the --coverage.thresholds.* flags above.
+            const sp = (lines / statements) * 100;
+            console.log("Gate-script coverage over " + files + " scripts/lib files — statements: " + sp.toFixed(2) + "% (" + lines + "/" + statements + "), functions covered: " + functions + ", branches covered: " + branches);
+            if (sp < 100) { console.error("FAIL: statements below the 100% threshold (" + sp.toFixed(2) + "%)"); process.exit(1); }
+            console.log("OK — 100% statement threshold met");
           '
 
   gate-complexity-budgets:
@@ -548,6 +575,38 @@ jobs:
       - name: Check the container tag matches package.json
         run: node scripts/check-playwright-image-tag.mjs
 
+  gate-visual-coverage:
+    name: Visual coverage
+    # The `visual` job passing means "no snapshot changed". It says nothing
+    # about how many screens have a snapshot at all — 5 covered routes and 29
+    # covered routes produce the identical green tick. This job is what makes
+    # that number blocking: it fails when a route the screenshot index marks
+    # `wiringStatus: wired` has no `@covers` spec in e2e/visual/, and it fails
+    # when the committed baselines exceed their size budget.
+    #
+    # It lives HERE, not in ci-web-e2e.yml, on purpose: the script reads
+    # parity/screenshot-index.json, the spec sources and the baseline file
+    # sizes off disk. It needs no stack, no browser and no container, so it
+    # belongs with the fast node-only gates and gives its verdict in seconds
+    # rather than behind a seven-service compose stand-up.
+    #
+    # Until this job existed the script ran in NO workflow (issue #174) —
+    # `check-visual-coverage.mjs` appeared in none of .github/workflows/. It
+    # reported `11/63 indexed shots … 11/15 wired` to nobody, which is the same
+    # defect class as the `visual` job that had never executed (#159) and the
+    # mutation spot-check whose every exit was `exit(0)` (#160): a check that
+    # cannot influence anything.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      # No `npm ci`: the script imports node: builtins only. Installing would
+      # add a minute to a gate that reads three files.
+      - name: Check visual coverage of the wired routes
+        run: node scripts/check-visual-coverage.mjs
+
   gate-theme:
     name: Theme gate
     runs-on: ubuntu-latest
@@ -662,234 +721,3 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/cutover/')
         working-directory: .
         run: go run ./tools/uictl parity-manifest --require-must
-
-  # ── non-blocking on PR, blocking on the release tag (§6.6/§7.6) ──────────
-
-  e2e:
-    name: E2E (${{ matrix.engine }})
-    # Runs on pull requests (issue #158). It previously carried
-    #   if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    # which skipped it on every PR — confirmed on runs 31335173296 and
-    # 31331494389. A 30-journey suite that only executes on a release tag
-    # cannot block the regression it exists to catch, and the tag build is
-    # the worst possible place to first learn a journey broke. ~6-7 min per
-    # engine leg is affordable on every PR; both legs stay in the matrix
-    # below so chromium and webkit are each still validated (§6.6/§7.6).
-    runs-on: ubuntu-latest
-    strategy:
-      # Both engines are validated independently. Issue #60 requires chromium AND
-      # webkit; the job used to run whatever `npm run e2e` defaulted to, so half
-      # the acceptance was never checked. `fail-fast: false` keeps a webkit-only
-      # regression from hiding chromium's result (and vice versa).
-      fail-fast: false
-      matrix:
-        engine: [chromium, webkit]
-    # E2E needs Docker + docker-compose for the stack.
-    # GitHub-hosted ubuntu-latest has Docker and docker compose (v2 plugin) pre-installed.
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          # elitea-web's Containerfile copies from apps/elitea-web/ using repo-root context,
-          # so a full checkout (not shallow) is needed to build the image.
-          fetch-depth: 0
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: apps/elitea-web/package-lock.json
-      - name: Install (locked)
-        run: npm ci
-      - name: Build elitea-main:e2e and elitea-web:e2e from source
-        # docker-compose.e2e-standalone.yml references elitea-main:e2e and
-        # elitea-web:e2e. Build both here so the stack never needs a published
-        # `:e2e` tag — a tag that has never existed outside a developer laptop,
-        # and whose absence is what killed every dispatch of this job (#154).
-        #
-        # Two plain `docker build`s, deliberately: they are the same two commands
-        # a developer runs locally (with podman), and `docker build` loads its
-        # result into the image store that compose then reads. The previous
-        # revision built elitea-web with `docker buildx bake` and no `--load`,
-        # which leaves the result in the BUILDER's cache only — `docker images`
-        # never saw the tag, compose fell through to a registry PULL, and run
-        # 31324533092 got `denied`. elitea-main, built with `docker build` on the
-        # same runner, was found; that asymmetry is the whole bug, and it is why
-        # only elitea-web appeared in the pull list.
-        #
-        # No buildx/gha layer cache here on purpose: correctness of this job must
-        # not depend on a cache, and a byte-identical cached rebuild that is
-        # believed to carry a fix it does not carry has already misled this
-        # effort once.
-        #
-        # elitea-main uses the `e2e` target, which builds the admin SPA from
-        # apps/elitea-web/src/entries/admin (no admin-ui submodule required).
-        working-directory: ${{ github.workspace }}
-        run: |
-          docker build \
-            --file services/elitea-main/Containerfile \
-            --target e2e \
-            --tag ghcr.io/eliteaai/elitea-main:e2e \
-            --platform linux/amd64 \
-            .
-          docker build \
-            --file apps/elitea-web/Containerfile \
-            --tag ghcr.io/eliteaai/elitea-web:e2e \
-            --platform linux/amd64 \
-            .
-      - name: Both images are present in the local image store
-        # Without this, a build that silently fails to load looks like a working
-        # job right up until compose quietly tries the registry. Assert the end
-        # state instead of trusting the build step's exit code, and print the
-        # digests so a run's provenance is legible from its log.
-        run: |
-          for img in ghcr.io/eliteaai/elitea-main:e2e ghcr.io/eliteaai/elitea-web:e2e; do
-            id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null || true)
-            if [ -z "$id" ]; then
-              echo "::error::$img was not loaded into the local image store."
-              echo "compose would now try to PULL it from ghcr and fail with 'denied' (issue #154)."
-              exit 1
-            fi
-            echo "  ✓ $img $id"
-          done
-      - name: Bring up E2E stack
-        # e2e-stack.sh uses deploy/docker-compose.e2e-standalone.yml which references
-        # elitea-main:e2e and elitea-web:e2e (both built and asserted above).
-        # The script auto-detects `docker compose` (CI) vs `podman compose` (local).
-        # E2E_PORT=8080 is free on ubuntu-latest (no centry stack); 8082 is the local default.
-        env:
-          COMPOSE_BIN: docker compose
-          E2E_PORT: "8080"
-        run: |
-          test -d e2e || { echo "release tag without an e2e suite (unit V1) — refusing"; exit 1; }
-          bash scripts/e2e-stack.sh up
-      - name: Seed E2E users
-        env:
-          COMPOSE_BIN: docker compose
-          E2E_PORT: "8080"
-        run: bash scripts/e2e-stack.sh seed
-      - name: Install Playwright browsers
-        # Both engines every time: the `setup` project (OIDC login → storageState)
-        # runs under Desktop Chrome regardless of which engine the journeys use,
-        # so the webkit leg needs chromium too.
-        run: npx playwright install --with-deps chromium webkit
-      - name: Playwright against the real stack
-        # E2E_REUSE_STACK=1, not the `!CI` default: the stack is already up from
-        # the steps above, and with CI set `reuseExistingServer` would be false —
-        # Playwright would try to start it a second time and abort on the port
-        # being in use.
-        #
-        # `--project` is explicit rather than `npm run e2e` so that (a) each
-        # matrix leg reports one engine's result, and (b) the `visual` project
-        # stays out of this job — its snapshots are only valid inside the pinned
-        # Playwright container, which is the `visual` job's business.
-        env:
-          CI: "true"
-          E2E_REUSE_STACK: "1"
-          E2E_PORT: "8080"
-          PLAYWRIGHT_BASE_URL: "http://localhost:8080"
-        run: npx playwright test --project=${{ matrix.engine }}
-      - name: Upload Playwright report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          # Per-engine name: upload-artifact v7 rejects a duplicate name, so a
-          # shared one would fail the second matrix leg to finish.
-          name: playwright-report-${{ matrix.engine }}
-          path: apps/elitea-web/playwright-results/
-          retention-days: 14
-      - name: Upload failed test video recordings
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-failed-videos-${{ matrix.engine }}
-          path: apps/elitea-web/playwright-results/**/*.webm
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Tear down E2E stack
-        if: always()
-        env:
-          COMPOSE_BIN: docker compose
-        run: bash scripts/e2e-stack.sh down
-
-  visual:
-    name: Visual regression
-    # Release-tag only, per the file header at :5-6 and §6.6/§7.6. The guard was
-    # lost at some point, so this job ran on every PR and hard-failed at the
-    # `test -d e2e/visual` line below (PR #82 validation, blocker 3).
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: apps/elitea-web/package-lock.json
-      - name: Install (locked)
-        run: npm ci
-
-      # The tag below is asserted against package.json's pinned
-      # @playwright/test, so a version bump cannot silently leave baselines
-      # being compared against a different browser build (issue #61, item 4).
-      - name: Playwright container tag matches the pinned library
-        run: node scripts/check-playwright-image-tag.mjs
-
-      # The stack comes up on the HOST: scripts/e2e-stack.sh needs a container
-      # runtime, and a job `container:` would be docker-in-docker AND would not
-      # share the runner's network namespace, so BASE_URL=localhost:8082 could
-      # not reach it (issue #61, item 2).
-      - name: Bring up the E2E stack (host)
-        env:
-          COMPOSE_BIN: docker compose
-        run: ./scripts/e2e-stack.sh up && ./scripts/e2e-stack.sh seed
-
-      # Only the TEST RUN is containerised, in the image pinned to the same
-      # Playwright version, because baselines are only comparable when one fixed
-      # font stack rasterises them. A bare `npx playwright test` on the runner's
-      # own OS is what this issue calls "the main thing that will make this suite
-      # useless if skipped" (issue #61, item 1).
-      #
-      # E2E_REUSE_STACK=1 stops Playwright trying to start the stack a second
-      # time from inside a container that has no container runtime — see
-      # playwright.config.ts's webServer.reuseExistingServer comment.
-      - name: Snapshot suite (pinned container, host network)
-        run: |
-          test -d e2e/visual || { echo "release tag without a visual suite (unit V2) — refusing"; exit 1; }
-          docker run --rm --network host \
-            -v "$PWD":/work -w /work \
-            -e CI=1 -e E2E_REUSE_STACK=1 \
-            mcr.microsoft.com/playwright:v1.62.0-noble \
-            npx playwright test --grep @visual
-
-      - name: Upload snapshot diffs
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: visual-diffs
-          path: apps/elitea-web/playwright-results/
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Tear down E2E stack
-        if: always()
-        env:
-          COMPOSE_BIN: docker compose
-        run: ./scripts/e2e-stack.sh down
-
-  mutation-spotcheck:
-    name: Mutation spot-check
-    # Release-tag only — same lost guard as `visual` above.
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: apps/elitea-web/package-lock.json
-      - name: Install (locked)
-        run: npm ci
-      - name: Rotating 5% sample over shared/ + entities/
-        run: |
-          test -f scripts/mutate-spotcheck.mjs || { echo "release tag without mutate-spotcheck (unit V3) — refusing"; exit 1; }
-          node scripts/mutate-spotcheck.mjs

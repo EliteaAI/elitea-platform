@@ -19,6 +19,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from elitea.runtime.v1 import command_pb2, control_pb2_grpc, output_pb2_grpc
 
+from elitea_worker.agent_current_runtime_capabilities import (
+    require_agent_current_runtime_capabilities,
+)
 from elitea_worker.agents.checkpoint import CurrentAgentCheckpointFactory
 from elitea_worker.agents.client_context import ClaimBoundEliteaClientContextFactory
 from elitea_worker.agents.sdk_adapter import EliteaSdkAdapter
@@ -620,6 +623,7 @@ async def serve_from_config(path: Path) -> None:
         # indexing profile. Signal ownership is established first because SDK
         # imports can be slow on a cold container.
         require_indexing_runtime_capabilities()
+        require_agent_current_runtime_capabilities()
         # Let a signal queued while synchronous capability imports were running
         # set ``stop`` before deployment composition reads credentials.
         await asyncio.sleep(0)

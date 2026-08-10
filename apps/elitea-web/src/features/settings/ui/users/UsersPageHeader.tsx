@@ -16,7 +16,7 @@ import type { UserRecord } from '@/shared/api/generated/model';
 import { DeleteUserButton } from '@/shared/ui/settings/DeleteUserButton';
 import { EditUsersButton } from '@/shared/ui/settings/EditUsersButton';
 import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 export function UsersPageHeader({
   usersPageStyles, searchText, onSearchChange,

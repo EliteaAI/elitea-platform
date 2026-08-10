@@ -5,11 +5,13 @@
  * :283-295 (roles, with global admin/editor/viewer defaults when a project
  * has none).
  *
- * NOTE(W2): the router registers GET/POST/PUT/DELETE
+ * NOTE(#130): the router USED TO register GET/POST/PUT/DELETE
  * `/admin/users/{mode}/{projectID}` all onto the same handler, which ignores
- * the method and body — create/update/delete are list-echo no-ops on the Go
- * router today (bug-for-bug parity, spec §7.1). `User` is therefore
- * effectively read-only from this app's perspective.
+ * the method and body — so create/update/delete were list-echo no-ops and
+ * `User` was effectively read-only from this app's perspective. That is fixed:
+ * the three write verbs have real handlers
+ * (services/elitea-main/internal/api/v2/eliteacore/users_write.go) and their
+ * effects are visible on the very next read.
  */
 export interface User {
   /** Numeric id serialized as string (`fmt.Sprintf("%d")`). */

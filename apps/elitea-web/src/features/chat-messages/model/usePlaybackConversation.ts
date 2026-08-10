@@ -25,6 +25,7 @@
 import { useMemo } from 'react';
 
 import { conversationApi } from '@/entities/conversation';
+import { unwrapListPage } from '@/shared/api/unwrap';
 
 import type { ConversationWire } from '@/entities/conversation/api/conversationApi';
 import type { MessageGroupWire, MessageParticipantWire } from '@/entities/message/lib/wire';
@@ -73,9 +74,12 @@ export function usePlaybackConversation({
   const conversation = useMemo<ConversationWire | undefined>(() => {
     if (!detailsQuery.data) return undefined;
 
-    const response = messageListQuery.data;
-    const rows = response ? ('rows' in response ? response.rows : response) : [];
-    const total = response && 'rows' in response && typeof response.total === 'number' ? response.total : rows.length;
+    // The message list is `{items,total,page,…}` (measured), so the old
+    // `'rows' in response ? response.rows : response` matched NEITHER arm and
+    // handed the envelope object itself to convertMessagesToChatHistory — the
+    // #132 shape, with the worst possible fallback (the input). unwrapListPage
+    // handles items/rows/bare-array and falls back to [] (R-A6).
+    const { rows, total } = unwrapListPage<unknown>(messageListQuery.data, 'conversation.messageList');
 
     const chatHistory = convertMessagesToChatHistory(
       rows as unknown as readonly MessageGroupWire[],

@@ -37,8 +37,21 @@ export interface MessageListParams {
   readonly params?: Readonly<Record<string, string | number>>;
 }
 
-/** Loosely typed — the persisted message-group shape is `entities/message`'s concern (`no-sideways-entities` forbids importing its wire types here); either a bare array or `{rows,total}`, matching `chat.api.js:34-44`'s own `transformResponse` branch. */
-export type MessageListResponse = readonly unknown[] | { readonly rows: readonly unknown[]; readonly total?: number; readonly [key: string]: unknown };
+/**
+ * Loosely typed — the persisted message-group shape is `entities/message`'s
+ * concern (`no-sideways-entities` forbids importing its wire types here).
+ *
+ * The declared union used to be `readonly unknown[] | {rows, total?}`, copied
+ * from `chat.api.js:34-44`'s `transformResponse` branch. It was WRONG: this
+ * endpoint answers `{items, total, page, page_size, total_pages}` — measured
+ * against the running stack (#132) — and the type being wrong is what made
+ * every hand-rolled `'rows' in response ? … : response` at the call sites look
+ * exhaustive to the compiler while matching neither arm at runtime. `unknown`
+ * is the honest type: callers unwrap it through `unwrapList`/`unwrapListPage`
+ * (`@/shared/api/unwrap`, R-A6), which handles items/rows/bare-array and never
+ * falls back to the response itself.
+ */
+export type MessageListResponse = unknown;
 
 function messageListQueryString(params: MessageListParams): string {
   const pageSize = params.pageSize ?? 10;

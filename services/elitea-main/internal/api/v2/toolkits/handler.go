@@ -412,7 +412,25 @@ func (h *Handler) IndexMeta(w http.ResponseWriter, r *http.Request) {
 	q := fmt.Sprintf(`SELECT id, name, status, progress, created_at FROM %q.index_meta WHERE toolkit_id = $1 ORDER BY created_at DESC`, s)
 	rows, err := h.pool.Query(ctx, q, toolkitID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		// Was: `writeJSON(w, http.StatusOK, map[string]any{"items": []any{},
+		// "total": 0})`. Two defects in one line, both found while mounting the
+		// web client's Indexes tab (#149):
+		//
+		//  1. It answers a DIFFERENT SHAPE than the success path below, which
+		//     writes a bare JSON array. A caller that (correctly) reads this
+		//     endpoint as an array got an object instead and crashed —
+		//     measured as an `e.map is not a function` error boundary on
+		//     /app/toolkits/all/{id}.
+		//  2. It reports 200 for a failed query, so a genuinely broken or
+		//     missing `index_meta` table looks exactly like "this toolkit has
+		//     no indexes yet". That is precisely how the missing table went
+		//     unnoticed: `p_1.index_meta` was absent from
+		//     `internal/infra/db/migrations/001_initial.sql` (added in the
+		//     same change as this one) and every request quietly took this
+		//     branch.
+		//
+		// A read that could not run is an error, not an empty list.
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -451,17 +469,9 @@ func (h *Handler) IndexMetaGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "name": name, "status": status, "progress": progress, "created_at": createdAt})
 }
 
-func (h *Handler) IndexMetaUpdate(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (h *Handler) IndexMetaDelete(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *Handler) IndexCancel(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
+// IndexMetaUpdate, IndexMetaDelete and IndexCancel live in index_write.go.
+// They used to be three one-line stubs here that answered `{"ok":true}`/204
+// without touching the database (#180).
 
 func (h *Handler) IndexTypes(w http.ResponseWriter, _ *http.Request) {
 	items := []map[string]any{

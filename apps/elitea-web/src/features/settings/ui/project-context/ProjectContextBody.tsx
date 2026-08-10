@@ -85,7 +85,18 @@ export function ProjectContextBody({
   const theme = useTheme();
   const s = projectContextStyles;
   return (
-    <Box sx={s.root}>
+    /*
+     * `data-testid` is load-bearing for the @visual suite, not decoration.
+     *
+     * `e2e/visual/routes.visual.spec.ts` used to wait on
+     * `getByRole('main').or('#root > *')` for this screen. Both of those are
+     * present while ProjectContext is still rendering its <CircularProgress>,
+     * so the wait resolved instantly and the snapshot could capture a spinner —
+     * exactly how the settings-analytics baseline became a photograph of a
+     * loading state (#159/#174). This element is rendered only from a RESOLVED
+     * project-context query, so it can tell loading from loaded.
+     */
+    <Box sx={s.root} data-testid="project-context-body">
       <DrawerPage>
         <Box
           sx={{

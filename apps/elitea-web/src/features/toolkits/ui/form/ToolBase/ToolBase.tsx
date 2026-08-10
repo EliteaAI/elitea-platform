@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useMemo } from 'react';
 
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 
@@ -140,7 +141,19 @@ export function ToolBase(props: ToolBaseProps): ReactNode {
   const presentation = resolveFieldPresentation(props);
   const behavior = resolveFieldBehavior(props);
   const resolvedFieldOrder = resolveFieldOrder(props);
-  const sectionsResolved = resolveSections(props.sections);
+  // MEMOIZED, and it has to be: `resolveSections` returns a FRESH
+  // `{sections: {}, sectionProps: []}` for the (overwhelmingly common)
+  // `props.sections === undefined` case, and `sectionProps` is a dependency
+  // of `useRequiredFieldsValidation`'s effect. Unmemoized, that effect re-ran
+  // on EVERY render and called `setToolErrors` with a new object each time —
+  // i.e. a render→setState→render cycle driven purely by object identity.
+  // It happened to settle in a bare `ToolBase` harness, but in the live
+  // composition (`ToolkitForm` owns `toolErrors`) any state change from a
+  // child — e.g. the SharePoint login button flipping `isRunning` — kicked it
+  // into an unbounded loop ("Maximum update depth exceeded"). Found while
+  // wiring `SharepointOAuthStatus` up; the defect itself is older and is not
+  // SharePoint-specific.
+  const sectionsResolved = useMemo(() => resolveSections(props.sections), [props.sections]);
   const credentialContext = resolveCredentialContext(props);
   const isMcpExposureEnabled = useIsMcpVisible();
 
@@ -188,6 +201,7 @@ export function ToolBase(props: ToolBaseProps): ReactNode {
       <ToolBaseStatusSlots
         schema={schema}
         editToolDetail={editToolDetail}
+        projectId={props.projectId}
         slots={props.slots}
         showTools={behavior.showTools}
       />

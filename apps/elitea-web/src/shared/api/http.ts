@@ -141,6 +141,45 @@ function needsReauth(response: Response): boolean {
   return response.redirected && isAuthRedirect(response.url);
 }
 
+/* ── behaviour 2b: resource-authorization 401s are NOT session failures ──── */
+
+/**
+ * A 401 whose JSON body carries `requires_authorization: true` is a protocol
+ * response about the RESOURCE, not about the caller's session: the backend is
+ * saying "this toolkit/MCP server needs its own OAuth authorization", and the
+ * body's `auth_metadata` is the authorization-server metadata the client needs
+ * to start that flow (`POST /configurations/check_connection/...` is the live
+ * example). Re-authenticating the user changes nothing about it, and — the
+ * reason this exists — funnelling it into the `kind: 'auth'` branch DISCARDS
+ * the body, which is the only place `auth_metadata` ever appears.
+ *
+ * That discard is what made SharePoint's delegated login unreachable even
+ * once its UI was wired: `useSharepointCheckConnection`'s
+ * `authRequiredErrorData` looks for exactly this body and could never see
+ * one, so the OAuth modal was never asked to open. `features/agents/model/
+ * useCreateConfiguration.ts`'s `isAuthRequiredError` disclosed the same gap
+ * from the other side.
+ *
+ * Deliberately narrow: 401 only (not 403), JSON only, and only when the flag
+ * is literally `true` — every other 401/403 keeps the existing re-auth
+ * behaviour untouched. Reads a CLONE, so the original response is still
+ * consumable by `toResult`.
+ */
+async function resourceAuthorizationBody(response: Response): Promise<unknown> {
+  if (response.status !== 401) return undefined;
+  if (!(response.headers.get('content-type') ?? '').includes('application/json')) return undefined;
+  try {
+    const body: unknown = await response.clone().json();
+    if (typeof body === 'object' && body !== null && (body as { readonly requires_authorization?: unknown }).requires_authorization === true) {
+      return body;
+    }
+  } catch {
+    // Handled (§3.6): a 401 that lies about its content-type is just a 401 —
+    // fall through to the normal re-auth path.
+  }
+  return undefined;
+}
+
 /* ── request assembly ────────────────────────────────────────────────────── */
 
 function buildUrl(base: string, path: string, query?: HttpRequestOptions['query']): string {
@@ -286,6 +325,12 @@ export function createHttpClient(cfg: HttpConfig): HttpClient {
     }
 
     if (needsReauth(response)) {
+      // Behaviour 2b first: a resource-authorization 401 is not a session
+      // failure — surface its body instead of burning it on a re-auth.
+      const resourceAuth = await resourceAuthorizationBody(response);
+      if (resourceAuth !== undefined) {
+        return failure({ kind: 'http', status: response.status, url: response.url, body: resourceAuth });
+      }
       // Behaviour 2: real 401/403 is the PRIMARY signal, redirect-sniff the
       // secondary one; both funnel into the same single-flight re-auth.
       const restored = await runReauth();
@@ -298,6 +343,10 @@ export function createHttpClient(cfg: HttpConfig): HttpClient {
         return fromException<T>(cause, url);
       }
       if (needsReauth(response)) {
+        const replayResourceAuth = await resourceAuthorizationBody(response);
+        if (replayResourceAuth !== undefined) {
+          return failure({ kind: 'http', status: response.status, url: response.url, body: replayResourceAuth });
+        }
         return failure({ kind: 'auth', status: response.status, url: response.url });
       }
     }

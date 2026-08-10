@@ -28,7 +28,7 @@ import { useParticipants } from '@/entities/participant';
 import type { SocialAuthorProfile } from '@/shared/api/generated/model';
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 /**
  * "Currently selected project id" — local duplicate of `features/chat-input/

@@ -27,6 +27,15 @@ import { useCallback, useState } from 'react';
  * concrete implementation" shape `entities/application-form`'s
  * `ApplicationConfigurationLayout` already established for its own six
  * cross-feature panel slots.
+ *
+ * THAT CALLER NOW EXISTS: `pages/toolkits/lib/sharepointAuthModals.tsx`
+ * (reached through `EditToolkit`/`CreateToolkit` ->`ConfigurationTab`/
+ * `ToolkitForm` -> `ToolBase`). Until it did, this paragraph described an
+ * arrangement nothing in `src/` implemented — the slot was never filled, so
+ * no SharePoint OAuth token was ever obtained. If you are about to change
+ * the slot-props shape, note it is kept `McpAuthModalProps`-compatible BY
+ * INSPECTION; the page-layer adapter translates the three fields where the
+ * two shapes genuinely differ, and lists them in its own doc comment.
  */
 export interface SharepointConfigAuthMetadata {
   readonly authServers?: readonly string[];

@@ -4,6 +4,8 @@ import type { ValidationErrorEntry } from '../../../lib/helpers/toolkitForm.help
 import type { RawToolkitTypeSchema } from '../../../lib/helpers/toolkitSchema.helpers';
 import type { UseCreateConfigurationInput } from '../../../model/useCreateConfiguration';
 
+import type { ToolBaseSlots } from '../ToolBase/ToolBase.types';
+
 import type { SaveToolkitPayload } from './ToolkitsOperationButtons';
 
 /**
@@ -94,6 +96,17 @@ export interface ToolkitFormProps {
   readonly onMcpScopesChanged?: ((url: string | undefined) => void) | undefined;
   readonly getAccessToken?: UseCreateConfigurationInput['getAccessToken'] | undefined;
   readonly onConfigAuthRequired?: UseCreateConfigurationInput['onConfigAuthRequired'] | undefined;
+  /**
+   * Forwarded verbatim into the resolved tool component's prop bag
+   * (`ToolkitForm.hooks.ts`'s `toolComponentProps`), i.e. `ToolBase`'s own
+   * `slots`. This composition root previously had NO slots concept at all,
+   * which is what left `ToolBase`'s cross-slice slots permanently unfilled —
+   * see `ToolBase.tsx`'s own R2 note for the same failure mode on
+   * `renderNameDescriptionInput`. Today's real supplier is
+   * `ConfigurationTab`, forwarding `pages/toolkits`' `McpAuthModal`/
+   * `McpLogoutModal` renderers as `slots.sharepointAuthModals`.
+   */
+  readonly slots?: ToolBaseSlots | undefined;
 }
 
 /**

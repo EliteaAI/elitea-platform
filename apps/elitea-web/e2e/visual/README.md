@@ -1,6 +1,7 @@
 # `e2e/visual/` — Playwright snapshot suite (`@visual`)
 
-Run only on release tags (`ci-web.yml`'s `visual` job) and only inside
+Runs in `ci-web-e2e.yml`'s `visual` job — every matching PR, pushes to `main`,
+`v*` tags and manual dispatch — and only inside
 `mcr.microsoft.com/playwright:v1.62.0-noble`.
 
 ## The rule that makes this suite worth having
@@ -13,17 +14,82 @@ main thing that will make this suite useless if skipped".
 
 ```bash
 # from apps/elitea-web, with the stack already up (up && seed)
-podman run --rm --network host -v "$PWD":/work -w /work \
-  -e CI=1 -e E2E_REUSE_STACK=1 \
-  mcr.microsoft.com/playwright:v1.62.0-noble \
-  npx playwright test --grep @visual --update-snapshots
+npm run e2e:visual            # compare against the committed baselines
+npm run e2e:visual:update     # regenerate them
+npm run e2e:visual -- --grep chat   # extra args pass through
 ```
 
-`E2E_REUSE_STACK=1` stops Playwright trying to start the stack from inside a
-container that has no container runtime — see `playwright.config.ts`.
+`scripts/run-visual-container.mjs` is the whole of it: it derives the image tag
+from `package.json`'s pinned `@playwright/test` — never writes it down — and
+passes `E2E_REUSE_STACK=1`, which stops Playwright trying to start the stack
+from inside a container that has no container runtime (see
+`playwright.config.ts`). Because the tag is derived, bumping the library cannot
+leave this command pointing at the old browser build;
+`scripts/check-playwright-image-tag.mjs` asserts the same agreement for the
+workflow files.
 
-The image tag is asserted against `package.json`'s pinned `@playwright/test` by
-`scripts/check-playwright-image-tag.mjs`, so the two cannot drift.
+## Start from a CLEAN stack
+
+```bash
+./scripts/e2e-stack.sh down -v && ./scripts/e2e-stack.sh up && ./scripts/e2e-stack.sh seed
+```
+
+Every baseline here encodes a freshly-seeded tenant: one project, no agents, no
+pipelines, no buckets, no conversations. Running the journey suite first creates
+`autotest_*` fixtures, and a baseline regenerated on top of them silently makes
+those fixtures the reference. CI is safe by construction — `visual` and `e2e`
+are separate jobs, each standing up its own stack — but a local `--update` after
+a journey run is not.
+
+**And rebuild the images.** `e2e-stack.sh up` runs `compose up -d --wait`, and
+compose builds `ghcr.io/eliteaai/elitea-web:e2e` only when that tag is ABSENT
+locally — so `down -v && up` after pulling or rebasing re-creates the containers
+from the STALE image and the suite verifies code that is not in your tree. CI
+does not have this problem (it runs two explicit `docker build`s before bringing
+the stack up); a laptop does. From the repo root, not from `apps/elitea-web` —
+the Containerfile paths are relative to the root and a wrong cwd fails the build
+while leaving the previous image in place:
+
+```bash
+podman build --file services/elitea-main/Containerfile --target e2e \
+  --tag ghcr.io/eliteaai/elitea-main:e2e --platform linux/amd64 .
+podman build --file apps/elitea-web/Containerfile \
+  --tag ghcr.io/eliteaai/elitea-web:e2e --platform linux/amd64 .
+```
+
+Check the image IDs actually changed afterwards. A cached rebuild can return a
+byte-identical image, which is fine — a rebuild that silently did not happen is
+not, and the two look the same from the exit code.
+
+The failure is at least loud rather than silent, and that is deliberate: most
+landmarks in `routes.visual.spec.ts` are resolved-empty-state copy ("You have no
+agents.", "Still no conversations created."), so a polluted tenant fails the
+landmark wait BEFORE any screenshot is taken. Measured, not hoped for: running
+the suite against a tenant the journeys had just written to produced seven
+`toBeVisible() failed … element(s) not found` errors and zero snapshot writes.
+
+## Every landmark is proven, not chosen
+
+A snapshot taken before a screen has finished rendering pins the loading state
+as the reference, and then every future run matches it. That is not
+hypothetical: it is what #159 found on `settings-analytics` (the committed
+baseline was a photograph of a spinner) and what #174 found latent on two more
+routes.
+
+So no landmark is admitted on inspection. Each is measured with a stall
+experiment — load the route with its own API stalled and check whether the
+landmark still resolves — and the result is recorded next to it in
+`routes.visual.spec.ts`. **Read that file's header before adding a spec**: it
+documents the two ways the experiment gives a false pass (stalling the shell's
+own endpoints disables page queries instead of pending them; a stall shorter
+than the experiment lets the query fail into the same branch as success), both
+of which produced wrong answers before they were caught.
+
+`shellSettled()` guards the part of every shot that is not the route: the
+sidebar's nav list is permission-filtered and renders SHORTER while
+`GET /auth/permissions/...` is in flight, with no spinner to give it away, and
+the project switcher renders the literal "No projects" until the project list
+arrives.
 
 ## What these specs are, and are NOT
 
@@ -47,7 +113,23 @@ spec, and fails only if a shot marked `wiringStatus: wired` has none.
 
 Only `wired` routes are covered. Writing specs for routes still marked `ready`,
 `needs-route-state`, `blocked-codegen` or `hybrid-defect` would bake stub UI into
-a baseline and make it the official reference — the exact trap #61 warns about
-with the stale `elitea-web:e2e` image.
+a baseline and make it the official reference.
 
-When a route becomes `wired`, add its spec in the same change.
+**`wiringStatus` is a claim about the ROUTE, not about the design.** It was
+authored in 46a90914 with `route-wiring-map.json`'s Phase-0 vocabulary, when 38
+route files rendered `RouteShell` scaffolding instead of the page components
+already built for them — `ready` meant "the page exists, the route does not
+render it". The wiring plan has since run, and the #61 review flipped fourteen
+routes to `wired` on that basis plus a per-route check against the running
+stack. See `screenshot-index.json`'s `wiringStatusReview` for what was flipped,
+what was deliberately not, and why.
+
+A route being `wired` is necessary but not sufficient: `/help-center`'s route
+renders its real page and is marked `wired`, yet it is EXEMPT from snapshots
+because `useResourcesConfig` has no backend (issue #26) and every card renders
+"No links configured". A screen with no content is not the same as a screen with
+empty content — `/artifacts` and the list pages render resolved, legitimately
+empty data from endpoints that work, and their empty states are real UI.
+
+When a route becomes `wired`, add its spec in the same change — with its stall
+experiment.

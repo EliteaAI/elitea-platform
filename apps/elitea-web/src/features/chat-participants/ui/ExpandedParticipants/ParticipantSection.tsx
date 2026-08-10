@@ -19,7 +19,7 @@ import { Box, Collapse, IconButton, Typography } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import ExpandedParticipantsList from './ExpandedParticipantsList';
 import type { ExpandedParticipantsListProps } from './ExpandedParticipantsList';

@@ -10,6 +10,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { Tag } from '@/entities/tag';
 import { dedupeTagsByName, sortTagsByName, tagLabel } from '@/entities/tag';
 import { useListTags } from '@/shared/api/generated/tags/tags';
+import { unwrapList } from '@/shared/api/unwrap';
 import { t } from '@/shared/i18n';
 import { MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, TAG_NAME_MAX_LENGTH } from '@/shared/lib/limits';
 import { PROMPT_PAYLOAD_KEY } from '@/shared/lib/prompt-payload';
@@ -52,12 +53,10 @@ interface AgentTagEditorProps {
 function AgentTagEditor({ projectId, value, onChange }: AgentTagEditorProps): ReactNode {
   const tagsQuery = useListTags(projectId ?? '', { query: { enabled: projectId !== undefined } });
   const availableTags = useMemo<Tag[]>(() => {
-    // `.data.data`'s declared type includes the error-envelope variant — never
-    // actually reachable here since `eliteaFetch` throws instead of resolving
-    // with it (mutator.ts's §3.6 unwrap contract, same cast convention as
-    // `features/apps/api/useAppDetail.ts`).
-    const rows = (tagsQuery.data?.data as { rows?: Tag[] } | undefined)?.rows ?? [];
-    return sortTagsByName(rows);
+    // Unwrapped through the one helper (R-A6, #132) rather than a per-call-site
+    // cast: this endpoint answers `{rows,total}` today, but the cast made that
+    // assumption invisible and an unrecognised shape silently empty.
+    return sortTagsByName(unwrapList<Tag>(tagsQuery.data, 'listTags'));
   }, [tagsQuery.data]);
 
   const handleChange = useCallback(

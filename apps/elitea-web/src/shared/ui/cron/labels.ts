@@ -1,12 +1,10 @@
 /**
- * User-visible name tables for weekday/month values, routed through the
- * interim `t()` shim (`shared/ui/lib/t.ts`) per N3/R-T3: unit S8 has not
- * landed the real `i18next` wiring, so — same convention `shared/brand`
- * used for its own copy — every label already flows through `t(key,
- * fallback)` today, so swapping the shim body for `useTranslation()` later
- * touches one file, not every call site.
+ * User-visible name tables for weekday/month values, routed through the real
+ * `t()` shim (`@/shared/i18n`) per N3/R-T3 — every label resolves against
+ * `src/shared/i18n/en.json`, falling back to the English text at the call
+ * site when a key is absent.
  */
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 const WEEKDAY_SHORT_FALLBACKS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;

@@ -19,8 +19,13 @@ const SUPPORT_ASSISTANT_CONFIG_KEY = ['supportAssistant', 'config'];
 /* ── fetcher ────────────────────────────────────────────────────────── */
 
 async function getSupportAssistantConfig(): Promise<SupportAssistantConfig> {
-  const result = await eliteaFetch<SupportAssistantConfig>('/support_assistant/config/');
-  return result;
+  // `eliteaFetch<T>` resolves the `{data, status, headers}` envelope, so the
+  // body is `.data`. Typing the call as `SupportAssistantConfig` and returning
+  // it verbatim made `enabled` permanently `undefined` — the assistant read as
+  // off for everyone, with a 200 and nothing in the console (the #132 defect
+  // shape; found while migrating that issue's call sites).
+  const envelope = await eliteaFetch<{ data: SupportAssistantConfig }>('/support_assistant/config/');
+  return envelope.data;
 }
 
 /* ── hook ───────────────────────────────────────────────────────────── */

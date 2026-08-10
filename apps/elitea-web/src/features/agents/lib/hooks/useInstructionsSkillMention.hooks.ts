@@ -4,6 +4,7 @@ import type { RefObject } from 'react';
 import { MentionPhase, SKILL_TRIGGER } from '../constants/mention.constants';
 import { useListApplicationSkills } from '@/shared/api/generated/skills/skills';
 import type { Skill } from '@/shared/api/generated/model';
+import { unwrapList } from '@/shared/api/unwrap';
 import {
   createMentionCmExtension,
   parseMentionRanges,
@@ -92,15 +93,13 @@ export function useInstructionsSkillMention({
   const query = useListApplicationSkills(projectId ?? '', appVersionId ?? Number.NaN, {
     query: { enabled: projectId !== undefined && appVersionId !== undefined && !Number.isNaN(appVersionId) },
   });
-  // `query.data.data`'s declared type includes the error-envelope variant — never actually
-  // reachable here, since `eliteaFetch` throws instead of resolving with it (mutator.ts's §3.6
-  // unwrap contract; same cast convention `entities/application-form/model/mutations.ts` uses).
-  const skills = (query.data as { readonly data?: { readonly items?: readonly Skill[] } } | undefined)?.data
-    ?.items;
+  // R-A6 (#132): the envelope + body shape is decided in one place, not
+  // asserted by a cast here that renders as "no skills" when it is wrong.
+  const skills = useMemo(() => unwrapList<Skill>(query.data, 'listApplicationSkills'), [query.data]);
 
   const mentionableItems: readonly FilteredSkillMentionItem[] = useMemo(
     () =>
-      (skills ?? [])
+      skills
         .map((skill) => ({
           name: skill.name,
           description: skill.description,

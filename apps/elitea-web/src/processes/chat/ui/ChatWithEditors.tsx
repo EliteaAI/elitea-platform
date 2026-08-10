@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 
+import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
 import { AgentEditor } from '@/features/agents';
@@ -9,6 +10,7 @@ import ChatPage from '@/pages/chat';
 import { t } from '@/shared/i18n';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 
+import { ChatConversationSidebar } from './ChatConversationSidebar';
 import { rejectToolkitWrite, toCreatedResult } from './ChatWithEditors.helpers';
 import { useChatWithEditors } from './ChatWithEditors.hooks';
 import { renderAgentEditorShell, renderPipelineEditorShell, renderToolkitEditorShell } from './EditorShell';
@@ -77,14 +79,27 @@ export function ChatWithEditors(): ReactNode {
 
   return (
     <>
-      <ChatPage
-        editorCallbacks={{
-          onShowAgentEditor: handleShowAgentEditor,
-          onShowPipelineEditor: handleShowPipelineEditor,
-          onCloseAgentEditor: editAgent.onCloseAgentEditor,
-          onClosePipelineEditor: editPipeline.onClosePipelineEditor,
-        }}
-      />
+      {/*
+        * Two columns: the conversation/folder rail and the chat itself.
+        * `ChatConversationSidebar` is the mount `features/chat-conversation-
+        * list` never had (issue #128 residual) — see that file's own module
+        * doc for why the mount belongs at this layer. Baseline shape:
+        * `NewChat.jsx:1360-1412` renders `<Conversations>` in the left Grid
+        * column of the same row as the conversation pane.
+        */}
+      <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%' }}>
+        <ChatConversationSidebar />
+        <Box sx={{ flexGrow: 1, minWidth: 0, height: '100%' }}>
+          <ChatPage
+            editorCallbacks={{
+              onShowAgentEditor: handleShowAgentEditor,
+              onShowPipelineEditor: handleShowPipelineEditor,
+              onCloseAgentEditor: editAgent.onCloseAgentEditor,
+              onClosePipelineEditor: editPipeline.onClosePipelineEditor,
+            }}
+          />
+        </Box>
+      </Box>
 
       {isEditingAgent && (
         <AgentEditor

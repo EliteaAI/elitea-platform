@@ -417,25 +417,26 @@ test('J26.1: the notification SSE stream is mounted, and a dropped connection is
 });
 
 /**
- * J26.2 — the app's OWN subscription. Currently red, and red for a reason that
- * has nothing to do with SSE wiring.
+ * J26.2 — the app's OWN subscription. Was red, for a reason that had nothing
+ * to do with SSE wiring; fixed in #166/#167.
  *
- * `NotificationButton` passes `personal_project_id` (NotificationButton.tsx:171
- * → useNotificationsSSE), and `app/session-store.ts:67` fills that field with
- * the USER ID, with a comment saying so: `/forward-auth/info` (internal/api/v2/
- * auth/session.go:77-81) returns only `authenticated`/`user_id`/`email`, so
- * there is no personal project id to send. The stream's authorize() resolves
+ * `NotificationButton` passes `personal_project_id` (→ useNotificationsSSE),
+ * and `app/session-store.ts` used to fill that field with the USER ID, with a
+ * comment saying so: `/forward-auth/info` (internal/api/v2/auth/session.go)
+ * returns only `authenticated`/`user_id`/`email`, so there was no project id
+ * to send. The stream's authorize() resolves
  * `models.notifications.notifications.list` against whatever project id is in
- * the URL, so the sidebar asks about a project the user is not a member of and
- * gets 403 — terminal for EventSource, no retry, one console warning.
+ * the URL, so the sidebar asked about a project the user is not a member of
+ * and got 403 — terminal for EventSource, no retry, one console warning.
  *
- * Marked failing rather than asserted around: the route is mounted and correct
- * (J26.1 proves it end-to-end), and giving `/forward-auth/info` a real personal
- * project id is a separate product decision about what a personal project IS in
- * the Go stack. When that lands, this reports "Expected to fail, but passed".
+ * The field now comes from `GET /social/author` — the same endpoint the old
+ * SPA reads it from (`slices/settings.js`'s `authorDetails` matcher) — and
+ * that handler resolves it from the database instead of returning a hardcoded
+ * "1" in every fallback branch (#167). Every branch of that resolver is
+ * membership-checked, which is what makes this assertion hold rather than
+ * happening to hold on a single-project deployment.
  */
 test('J26.2: the sidebar live-push subscription connects', async ({ page }) => {
-  test.fail();
   test.setTimeout(60_000);
 
   const requests: string[] = [];

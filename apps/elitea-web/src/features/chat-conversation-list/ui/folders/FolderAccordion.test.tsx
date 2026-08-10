@@ -177,7 +177,11 @@ describe('FolderAccordion', () => {
         menuItems={MENU_ITEMS}
       />,
     );
-    const menuContainer = container.querySelector('#folder-accordion-menu-container');
+    // `data-testid`, not a DOM `id`: every mounted FolderAccordion used to
+    // carry the SAME literal id, which is invalid HTML with >1 folder on
+    // screen (and the same class of defect as the summary's dangling
+    // `aria-controls`). The hover rule is an attribute selector now.
+    const menuContainer = container.querySelector('[data-testid="folder-accordion-menu-container"]');
     const trigger = container.querySelector('[aria-label="Folder actions"]');
     expect(menuContainer).not.toBeNull();
     expect(trigger).not.toBeNull();
@@ -213,5 +217,46 @@ describe('FolderAccordion', () => {
     expect(onMouseEnter).toHaveBeenCalledTimes(1);
     fireEvent.mouseLeave(summaryRow as HTMLElement);
     expect(onMouseLeave).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+   * The summary's `aria-controls` used to name `folder-accordion-panel-0` —
+   * an id no element carried, on EVERY mounted folder (`index` is always 0,
+   * one item per folder). axe reports the dangling reference as
+   * `aria-valid-attr-value`, impact "critical": following the control from
+   * the summary landed nowhere. It only became visible once the slice was
+   * first mounted on a route (issue #128).
+   */
+  it('points aria-controls at a panel that actually exists', () => {
+    const { container, getByRole } = renderWithProviders(
+      <FolderAccordion
+        items={[{ title: 'My folder', content: 'Folder body' }]}
+        menuItems={MENU_ITEMS}
+        defaultExpanded
+      />,
+    );
+    const controls = getByRole('button', { name: /My folder/ }).getAttribute('aria-controls');
+    expect(controls).toBeTruthy();
+    const panel = container.querySelector(`#${CSS.escape(controls as string)}`);
+    expect(panel, 'aria-controls must resolve to a real element').not.toBeNull();
+    expect(panel).toHaveTextContent('Folder body');
+  });
+
+  it('gives two mounted accordions distinct panel ids', () => {
+    const { container } = renderWithProviders(
+      <>
+        <FolderAccordion
+          items={[{ title: 'Folder A', content: 'A body' }]}
+          menuItems={MENU_ITEMS}
+        />
+        <FolderAccordion
+          items={[{ title: 'Folder B', content: 'B body' }]}
+          menuItems={MENU_ITEMS}
+        />
+      </>,
+    );
+    const ids = [...container.querySelectorAll('[aria-controls]')].map((el) => el.getAttribute('aria-controls'));
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size, 'each accordion must own its panel id — a shared literal id is invalid HTML').toBe(2);
   });
 });

@@ -10,7 +10,7 @@ import Tooltip from '@mui/material/Tooltip';
 
 import { useNavigate } from '@tanstack/react-router';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 export default function AddModelButton() {
   const navigate = useNavigate();

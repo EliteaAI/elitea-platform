@@ -44,6 +44,19 @@ import { useSharepointAuthModal } from '../lib/hooks/useSharepointAuthModal.hook
  *     confirmation itself (`showLogoutModal` state, `onConfirmLogout`
  *     calling the local `logout()` storage helper) is real, working logic —
  *     only the MODAL CHROME is a slot.
+ *
+ * **WIRED (was dead).** Until this change no caller anywhere in `src/`
+ * mounted this component at all, let alone filled `renderAuthModal` — the
+ * settings-form path stopped three levels up (`ToolkitForm.hooks.ts` had no
+ * `slots` concept, so `ToolBase`'s `slots.sharepointOAuthStatus` was never
+ * supplied either), so a SharePoint delegated login could never obtain a
+ * token and the only thing that ever reported "connected" was
+ * `setConnectionVerified`'s own non-delegated header-auth sentinel. The live
+ * chain is now `pages/toolkits/EditToolkit.tsx` ->
+ * `ConfigurationTab(sharepointAuth=...)` -> `ToolkitForm(slots=...)` ->
+ * `ToolBase` -> this component -> a real `<McpAuthModal>`, and
+ * `pages/toolkits/__tests__/sharepointOAuthWiring.test.tsx` asserts it from
+ * the page down, supplying no slot of its own.
  */
 export interface SharepointOAuthStatusValues {
   readonly id?: string;
@@ -52,12 +65,39 @@ export interface SharepointOAuthStatusValues {
   };
 }
 
-/** NOT exported (module-private): `renderLogoutModal`'s caller gets this shape inferred structurally from `SharepointOAuthStatusProps['renderLogoutModal']`, no import by name needed — same reasoning `ui/list/ToolkitsList.tsx`'s own `ToolkitsListState`/`ToolkitsListTypeFilter` doc comment gives. */
+/**
+ * Module-private, and it stays that way: `SharepointAuthModalRenderers` below
+ * (which IS exported, and is what `ToolBaseSlots.sharepointAuthModals` names)
+ * references it, so every consumer reaches this shape structurally through
+ * that type without importing it by name — the same reasoning
+ * `ui/list/ToolkitsList.tsx`'s own `ToolkitsListState`/`ToolkitsListTypeFilter`
+ * doc comment gives. Exporting it as well trips the knip dead-code gate, which
+ * is right: an export nothing imports is an advertised seam with no consumer.
+ */
 interface SharepointLogoutModalSlotProps {
   readonly serverUrl: string;
   readonly open: boolean;
   readonly onClose: () => void;
   readonly onConfirm: () => void;
+}
+
+/**
+ * The two `features/mcps`-owned modals this component cannot import
+ * (`no-sideways-features`), as one injectable pair. The real supplier is
+ * `pages/toolkits/lib/sharepointAuthModals.tsx`, which renders the actual
+ * `<McpAuthModal>`/`<McpLogoutModal>`; it reaches this component through
+ * `ConfigurationTab` -> `ToolkitForm` -> `ToolBase` (see
+ * `ToolBase.render.tsx`'s `ToolBaseStatusSlots`).
+ *
+ * Omitting the pair is still legal and still degrades gracefully — but it is
+ * no longer the ONLY thing that happens in production, which is what made
+ * these slots dead wiring before: nothing anywhere in `src/` supplied them,
+ * so "Login" could open nothing and no SharePoint OAuth token was ever
+ * obtained.
+ */
+export interface SharepointAuthModalRenderers {
+  readonly renderAuthModal?: (slotProps: SharepointAuthModalSlotProps) => ReactNode;
+  readonly renderLogoutModal?: (slotProps: SharepointLogoutModalSlotProps) => ReactNode;
 }
 
 export interface SharepointOAuthStatusProps {

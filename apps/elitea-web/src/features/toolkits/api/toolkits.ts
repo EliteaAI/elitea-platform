@@ -92,7 +92,7 @@
  * solution", it has no caller in this unit's owned files, and it has no
  * generated endpoint either.
  */
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -105,6 +105,7 @@ import {
   useListToolkits,
 } from '@/shared/api/generated/toolkits/toolkits';
 import type { ToolkitInstance } from '@/shared/api/generated/model';
+import { unwrapListPage } from '@/shared/api/unwrap';
 
 /* ── real: toolkit-type settings-schema catalogue ─────────────────────────── */
 
@@ -160,14 +161,18 @@ export function useToolkitsList({ projectId, page, pageSize }: UseToolkitsListPa
     { limit: pageSize, offset: page * pageSize },
     { query: { enabled: projectId !== undefined } },
   );
-  const data = query.data?.data as { readonly rows: readonly ToolkitInstance[]; readonly total: number } | undefined;
+  // Unwrapped by the one helper (R-A6, #132) instead of a per-call-site cast:
+  // the cast asserted `{rows,total}` rather than checking it, so any other
+  // shape read as an empty page with a 200 in the network tab. Memoised on
+  // `query.data` because `unwrapListPage` returns fresh arrays.
+  const data = useMemo(() => unwrapListPage<ToolkitInstance>(query.data, 'listToolkitInstances'), [query.data]);
 
   const refetch = useCallback(() => {
     void query.refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `query.refetch` is a stable TanStack Query identity per query key
   }, [query.refetch]);
 
-  return { rows: data?.rows ?? [], total: data?.total ?? 0, isFetching: query.isFetching, isError: query.isError, refetch };
+  return { rows: data.rows, total: data.total, isFetching: query.isFetching, isError: query.isError, refetch };
 }
 
 /* ── real: single-toolkit detail (GET /elitea_core/tool/prompt_lib/{projectId}/{toolkitId}) ── */

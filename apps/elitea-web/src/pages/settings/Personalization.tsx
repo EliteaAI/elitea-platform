@@ -17,7 +17,7 @@ import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
 import Typography from '@mui/material/Typography';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import { getGetCurrentAuthorQueryKey, useGetCurrentAuthor } from '@/shared/api/generated/social/social';
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 

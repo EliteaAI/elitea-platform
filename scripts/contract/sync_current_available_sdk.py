@@ -26,8 +26,8 @@ DEFAULT_SNAPSHOT = (
     / "configurations"
     / "current_available_snapshot.json"
 )
-EXPECTED_SDK_REVISION = "6155d20acb4a3b00a6085212a75258cc1b3c695a"
-# SDK 0.9.6 preserves the SDK-owned configuration projection byte-for-byte, so
+EXPECTED_SDK_REVISION = "b5113a129329b85d23c2d5c2bf55f18e307414ec"
+# SDK 0.9.8 preserves the SDK-owned configuration projection byte-for-byte, so
 # its independently versioned source identity remains at the producing commit.
 SDK_CONFIGURATION_CATALOG_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
 EXPECTED_SDK_ENTRY_COUNT = 32

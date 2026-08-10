@@ -22,7 +22,7 @@ import { useCallback, useMemo, type JSX } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { CronFieldGrid } from './CronFieldGrid';
 import { CronPresetSelect } from './CronPresetSelect';
 import { describeCronState } from './describe';

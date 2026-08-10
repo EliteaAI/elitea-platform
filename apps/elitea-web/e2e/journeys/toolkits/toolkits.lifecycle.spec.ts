@@ -226,3 +226,98 @@ test('J17.3: create a toolkit, persist it, and reopen it from the list', async (
 
   await checkA11y(page);
 });
+
+/**
+ * J17.5 — the Indexes tab (#149).
+ *
+ * The positive half of the pair whose negative half lives in
+ * `../mcps/mcps.oauth.spec.ts` (an MCP screen must NOT offer this tab). Here
+ * the tab MUST be offered, and must render the real
+ * `features/toolkits/indexes` container rather than the empty
+ * `<Box data-testid="edit-toolkit-indexes-tab-panel"/>` that stood in for it
+ * until 2026-08-09.
+ *
+ * Why `artifact`. The tab is gated on the toolkit TYPE's schema offering at
+ * least one `IndexesToolsEnum` tool (baseline `EditToolkit.jsx:210-216`).
+ * Measured against this stack's own
+ * `GET /elitea_core/toolkits/prompt_lib/{projectId}`, exactly two types
+ * qualify — `artifact` and `datasource`, both via
+ * `properties.selected_tools.args_schemas.index_data`. `github`, `jira`,
+ * `database`, `application`, `custom` and `openapi` offer none, so on any of
+ * those the tab is correctly absent and this journey would be asserting the
+ * wrong thing. The type is therefore backend-DERIVED at runtime below, not
+ * hardcoded on faith: if the schema ever stops offering `index_data` the
+ * assertion fails loudly instead of silently testing nothing.
+ */
+test('J17.5: a toolkit whose type supports indexing renders the real Indexes panel', async ({ page }) => {
+  // ── Derive the type from the live catalogue rather than trusting a literal.
+  const schemasResp = await page.request.get(
+    `${API_BASE}/elitea_core/toolkits/prompt_lib/${DEFAULT_PROJECT_ID}`,
+  );
+  expect(schemasResp.status(), await schemasResp.text()).toBe(200);
+  const schemas = (await schemasResp.json()) as Record<
+    string,
+    { properties?: { selected_tools?: { args_schemas?: Record<string, unknown> } } }
+  >;
+  const indexingType = Object.entries(schemas).find(
+    ([, schema]) => schema.properties?.selected_tools?.args_schemas?.['index_data'] !== undefined,
+  )?.[0];
+  expect(
+    indexingType,
+    `no toolkit type in GET /elitea_core/toolkits/prompt_lib offers index_data; measured types: ${Object.keys(schemas).join(', ')}`,
+  ).toBeTruthy();
+
+  const name = toolkitName();
+  const createResp = await page.request.post(
+    `${API_BASE}/elitea_core/tools/prompt_lib/${DEFAULT_PROJECT_ID}`,
+    {
+      data: {
+        name,
+        type: indexingType,
+        description: 'JRNY-017 indexes-tab fixture',
+        settings: { selected_tools: ['index_data'] },
+      },
+    },
+  );
+  expect(createResp.status(), await createResp.text()).toBe(201);
+  const created = (await createResp.json()) as { id: string };
+  createdIds.push(created.id);
+
+  // The index list request the mounted container issues. Registered BEFORE
+  // navigation so the tab click cannot race it.
+  const indexListRequest = page.waitForResponse(
+    (r) => /\/elitea_core\/index_meta\/prompt_lib\//.test(r.url()),
+    { timeout: 20_000 },
+  );
+
+  await page.goto(`${BASE_URL}/app/toolkits/all/${created.id}`, { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('edit-toolkit-test-pane-slot')).toBeAttached({ timeout: 20_000 });
+
+  // The tab is OFFERED here — the exact thing the MCP journey forbids.
+  const indexesTab = page.getByRole('tab', { name: 'Indexes' });
+  await expect(indexesTab).toBeVisible({ timeout: 20_000 });
+  await indexesTab.click();
+
+  const panel = page.getByTestId('edit-toolkit-indexes-tab-panel');
+  await expect(panel).toBeVisible();
+
+  /*
+   * The assertions that discriminate a REAL container from the placeholder.
+   * `toBeVisible()` on the panel alone did not — an empty Box satisfied it
+   * for months. These three cannot be satisfied without
+   * `IndexesContainer` -> `IndexesList` actually rendering:
+   *   - the "Add index" control (`IndexesList.tsx:46`, its aria-label),
+   *   - the empty-state copy for a toolkit with no indexes yet
+   *     (`IndexesList.tsx:57`),
+   *   - and a real network round trip to the index-meta endpoint, which only
+   *     `useIndexesListQuery` issues.
+   */
+  await expect(panel.getByRole('button', { name: 'Add index' })).toBeVisible({ timeout: 20_000 });
+  await expect(panel.getByText('Still no indexes created')).toBeVisible();
+
+  const indexListResponse = await indexListRequest;
+  expect(indexListResponse.status(), await indexListResponse.text()).toBe(200);
+  expect(indexListResponse.url()).toContain(`/${created.id}`);
+
+  await checkA11y(page);
+});

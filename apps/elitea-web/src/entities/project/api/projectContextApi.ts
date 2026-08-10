@@ -26,8 +26,29 @@
 import { useMutation, useQuery, useQueryClient, type UseMutationResult, type UseQueryResult } from '@tanstack/react-query';
 
 import { eliteaFetch } from '@/shared/api/generated/mutator';
+import { unwrapListPage } from '@/shared/api/unwrap';
 
 /* ── transport helpers ─────────────────────────────────────────────────── */
+
+/**
+ * `eliteaFetch<T>` ALWAYS resolves the mutator's `{data, status, headers}`
+ * envelope, so the body is `envelope.data` — the same one-line helper every
+ * sibling hand-written REST module here already uses (`conversationApi.ts`,
+ * `secretApi.ts`, `foldersApi.ts`, …).
+ *
+ * Every fetcher below used to type the call as `eliteaFetch<XResponse>` and
+ * return the result verbatim, i.e. it returned the ENVELOPE typed as the body.
+ * `projectInfo?.icon_meta` and `?.teammates_count` were therefore permanently
+ * `undefined` (no uploaded project icon ever rendered, the teammates count was
+ * always 0), the uploaded-icons grid was permanently empty, and the generated
+ * context draft came back blank — all with 200s and nothing in the console.
+ * Same defect as the PAT that rendered blank in #132; found while migrating
+ * the call sites for that issue.
+ */
+async function fetchData<T>(url: string, options?: RequestInit): Promise<T> {
+  const envelope = await eliteaFetch<{ data: T }>(url, options);
+  return envelope.data;
+}
 
 interface ProjectInfoResponse {
   name?: string;
@@ -63,11 +84,7 @@ function projectContextQueryKey(projectId: string): string[] {
 /* manifest: projectInfo.get */
 
 export async function fetchProjectInfo(projectId: string): Promise<ProjectInfoResponse> {
-  const resp = await eliteaFetch<ProjectInfoResponse>(
-    `/elitea_core/project_info/prompt_lib/${projectId}/project-info`,
-    { method: 'GET' },
-  );
-  return resp;
+  return fetchData<ProjectInfoResponse>(`/elitea_core/project_info/prompt_lib/${projectId}/project-info`, { method: 'GET' });
 }
 
 export function useProjectInfoQuery(
@@ -90,7 +107,7 @@ export async function updateProjectInfo(
   projectId: string,
   icon_meta: IconMetaRequest | null,
 ): Promise<ProjectInfoResponse> {
-  const resp = await eliteaFetch<ProjectInfoResponse>(
+  const resp = await fetchData<ProjectInfoResponse>(
     `/elitea_core/project_info/prompt_lib/${projectId}/project-info`,
     {
       method: 'PUT',
@@ -129,10 +146,10 @@ export async function fetchProjectIcons(
   pageSize = 200,
 ): Promise<ProjectIconsResponse> {
   const url = `/elitea_core/project_icon/prompt_lib/${projectId}?limit=${pageSize}&skip=${_page * pageSize}`;
-  const resp = await eliteaFetch<ProjectIconsResponse>(url, {
-    method: 'GET',
-  });
-  return resp;
+  // The list body is unwrapped by the one helper (R-A6, #132) — this endpoint
+  // answers `{rows,total}`, but that is no longer something this call site has
+  // to know, assert, or copy correctly.
+  return unwrapListPage<UploadedIcon>(await eliteaFetch<unknown>(url, { method: 'GET' }), 'projectIcons.list');
 }
 
 export function useProjectIconsQuery(
@@ -166,14 +183,10 @@ export async function uploadProjectIcon(
   if (params.width) form.append('width', String(params.width));
   if (params.height) form.append('height', String(params.height));
 
-  const resp = await eliteaFetch<IconUploadResponse>(
-    `/elitea_core/project_icon/prompt_lib/${projectId}`,
-    {
-      method: 'POST',
-      body: form,
-    },
-  );
-  return resp;
+  return fetchData<IconUploadResponse>(`/elitea_core/project_icon/prompt_lib/${projectId}`, {
+    method: 'POST',
+    body: form,
+  });
 }
 
 export function useUploadProjectIconMutation(
@@ -229,7 +242,7 @@ export async function generateProjectContextDraft(
   projectId: string,
   params: GenerateDraftParams,
 ): Promise<DraftResponse> {
-  const resp = await eliteaFetch<DraftResponse>(
+  const resp = await fetchData<DraftResponse>(
     `/elitea_core/generate_project_context_draft/prompt_lib/${projectId}`,
     {
       method: 'POST',

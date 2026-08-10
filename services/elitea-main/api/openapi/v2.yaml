@@ -862,12 +862,80 @@ components:
           items: { $ref: '#/components/schemas/UserRecord' }
         total: { type: integer }
       description: >
-        NOTE(W2): Users response map,
-        internal/api/v2/eliteacore/handler.go:263. The router registers
-        GET/POST/PUT/DELETE on /admin/users/{mode}/{projectID} all onto this
-        same handler (internal/api/router.go:282-285), which ignores the
-        method and any request body — create/update/delete are therefore
-        list-echo no-ops on the Go router today (bug-for-bug parity, §7.1).
+        Users response map, internal/api/v2/eliteacore/handler.go's Users.
+        NOTE (issue 130): this used to be the response of POST/PUT/DELETE too —
+        the router mounted all four verbs on the same listing handler, so every
+        write echoed the member list and changed nothing. The write verbs now
+        have their own handlers and their own response shapes below.
+
+    UserInviteRequest:
+      type: object
+      required: [emails, roles]
+      properties:
+        emails:
+          type: array
+          items: { type: string }
+          description: Addresses to invite. An address with no account is created.
+        roles:
+          type: array
+          items: { type: string }
+          description: >
+            Project role NAMES (not ids) — they must exist in
+            auth_core__project_role for this project or the whole request is
+            rejected with 400.
+      description: >
+        Wire truth from legacy/plugins/admin/api/v2/users.py's post and the
+        client that was ported from it
+        (features/settings/lib/users/useUsersActions.ts's useInviteUsers).
+
+    UserInviteResult:
+      type: object
+      required: [msg, status, email]
+      properties:
+        msg: { type: string }
+        status:
+          type: string
+          enum: [ok, error]
+        email: { type: string }
+        id:
+          type: string
+          description: Numeric id of the invited user, present only when status is ok.
+      description: >
+        One element of the per-address array pylon's invite returns. The
+        response carries one of these per requested address, and the whole
+        response is 400 when any of them failed.
+
+    UserRolesUpdateRequest:
+      type: object
+      required: [roles]
+      properties:
+        userId:
+          type: string
+          description: >
+            Target user id. A batch edit sends the selected ids COMMA-JOINED in
+            this one string (entities/user/model/useEditUser.ts's
+            useBatchEditUsers). `id` and `ids` are pylon's own spellings and are
+            accepted too.
+        id: { type: string }
+        ids:
+          type: array
+          items: { type: integer }
+        roles:
+          type: array
+          items: { type: string }
+          description: >
+            The role names the users must hold after the call. This REPLACES the
+            existing project role set rather than adding to it; an empty array
+            is rejected (use DELETE to remove a member).
+      description: Wire truth from legacy/plugins/admin/api/v2/users.py's put.
+
+    MessageResponse:
+      type: object
+      required: [msg]
+      properties:
+        msg: { type: string }
+      description: >
+        pylon's acknowledgement shape — a single `msg` string.
 
     Role:
       type: object
@@ -3067,10 +3135,16 @@ paths:
 
   # ==========================================================================
   # ADMIN — users
-  # NOTE(W2): the router wires GET/POST/PUT/DELETE all onto eliteacore
-  # Users (internal/api/router.go:282-285), which ignores the HTTP method and
-  # any request body — every method returns the same {rows,total} listing.
-  # Wire truth documented bug-for-bug (§7.1); the mutations are live no-ops.
+  # NOTE(#130): the router used to wire GET/POST/PUT/DELETE all onto eliteacore
+  # Users, which does no method branching — every verb returned the same
+  # {rows,total} listing, so Invite / Edit role / Remove reported success and
+  # wrote nothing. The three write verbs now reach real handlers
+  # (internal/api/v2/eliteacore/users_write.go) that speak pylon's contract
+  # (legacy/plugins/admin/api/v2/users.py) and are each gated on the matching
+  # `configuration.users.users.*` permission.
+  #
+  # This path template pins mode=default. `administration` mode addresses the
+  # global scope, not a project membership, and answers 501.
   # ==========================================================================
   /admin/users/default/{project_id}:
     parameters:
@@ -3099,49 +3173,65 @@ paths:
 
     post:
       operationId: userCreate
-      summary: Create a user inside a project (live no-op)
+      summary: Invite users into a project by email
       description: |
-        NOTE(W2): the Go handler ignores the method and body and returns the
-        user listing (eliteacore/handler.go:190-263) — user creation is not
-        implemented on the Go router.
+        Adds each address to the project with the given role names, creating an
+        auth_core__user row for an address that has no account yet (that is what
+        makes an invite an invite; the OIDC provisioning path links the provider
+        on first login). An address that is already a member is reported as an
+        error element and makes the whole response 400.
       tags: [admin]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/IgnoredRequestBody'
+              $ref: '#/components/schemas/UserInviteRequest'
       responses:
         '200':
-          description: User listing (echo — creation not performed)
+          description: Every address was added.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserListResponse'
-        '400': { $ref: '#/components/responses/400' }
+                type: array
+                items: { $ref: '#/components/schemas/UserInviteResult' }
+        '400':
+          description: >
+            Malformed request, an unknown role name, or at least one address
+            that could not be added (already a member / invalid). Carries the
+            per-address results when the failure was per-address.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: { $ref: '#/components/schemas/UserInviteResult' }
+                  - $ref: '#/components/schemas/ErrorResponse'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
 
     put:
       operationId: userUpdate
-      summary: Replace an existing user record (live no-op)
+      summary: Replace the project roles of one or more users
       description: |
-        NOTE(W2): same handler as userList; body ignored
-        (eliteacore/handler.go:190-263).
+        REPLACES the users' project role set with `roles` — unchecked boxes in
+        the Edit-roles dialog have to mean something. An empty `roles` array is
+        rejected rather than treated as "remove from project"; DELETE is the
+        verb for that.
       tags: [admin]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/IgnoredRequestBody'
+              $ref: '#/components/schemas/UserRolesUpdateRequest'
       responses:
         '200':
-          description: User listing (echo — update not performed)
+          description: Roles updated.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserListResponse'
+                $ref: '#/components/schemas/MessageResponse'
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
@@ -3149,12 +3239,12 @@ paths:
 
     delete:
       operationId: userDelete
-      summary: Remove one or more users from a project (live no-op)
+      summary: Remove one or more users from a project
       description: |
-        NOTE(W2): the old SPA sends ?id[]=N (repeated); the Go handler ignores
-        the query entirely and returns the listing
-        (eliteacore/handler.go:190-263) — deletion is not implemented on the
-        Go router.
+        Clears the users' rows in auth_core__project_user_role for this project.
+        The auth_core__user account survives — the person may be a member of
+        other projects, and "remove from project" is not "delete the account"
+        (parity with pylon's remove_users_from_project).
       tags: [admin]
       parameters:
         - name: id[]
@@ -3169,16 +3259,16 @@ paths:
           description: >
             IDs of the users to delete. The old SPA sends ONE occurrence with
             the ids comma-joined — `?id[]=1,2,3`
-            (apps/elitea-ui/src/api/admin.js:120), hence explode:false.
-            Ignored by the Go handler either way (router.go:285 →
-            eliteacore/handler.go:190-263 never reads the query).
+            (apps/elitea-ui/src/api/admin.js:120), hence explode:false. The new
+            client does the same (getUserDeleteUrl stringifies the array), and
+            the handler splits on commas as well as accepting repeated keys.
       responses:
         '200':
-          description: User listing (echo — deletion not performed)
+          description: Users removed from the project.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserListResponse'
+                $ref: '#/components/schemas/MessageResponse'
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }

@@ -11,7 +11,7 @@ import { CollapseIcon } from '../icons/collapse-icon';
 import { ExpandIcon } from '../icons/expand-icon';
 import { FullScreenIcon } from '../icons/full-screen-icon';
 import { combineSx } from '../lib/combineSx';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /**
  * @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass).

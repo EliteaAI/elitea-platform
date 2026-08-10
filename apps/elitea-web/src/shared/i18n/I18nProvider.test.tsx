@@ -8,11 +8,9 @@ import { t } from './t';
 import type { TFunction } from './t';
 
 /**
- * Stand-in for a `shared/ui` component call site. As of this unit landing,
- * no `shared/ui` component calls `t()` with a real key yet — unit S1 has
- * only landed the interim always-fallback stub and its type
- * (`src/shared/ui/lib/t.ts`); see `./README.md`, "Current bundle state".
- * This fixture uses the exact published contract
+ * Stand-in for a `shared/ui` component call site — `shared/ui` components
+ * call `t()` with real keys today (see `./README.md`, "Current bundle
+ * state"). This fixture uses the exact published contract
  * (`TFunction = (key, fallback) => string`) so the proof below is
  * call-shape-identical to what a real Wave-2 component will do, not a
  * simplified substitute.

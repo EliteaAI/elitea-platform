@@ -14,7 +14,7 @@
  *  - Uses react-hook-form + zod (project standards; formik/yup not installed)
  *  - No `useNavBlocker` hook (Wave-2 concern)
  *  - No Redux
- *  - Uses `@/shared/ui/lib/t` for i18n
+ *  - Uses `@/shared/i18n` for i18n
  *  - Uses `DrawerPageHeader` from shared UI
  *  - Uses `GeneratedTokenDialog` from shared UI
  *  - Uses RTK Query hooks from `entities/token/api/tokenApi`

@@ -25,11 +25,30 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   unbounded. We accept returning 503 during a DB blip over granting free spend.
   Reconsider only if availability SLOs make brief 503s unacceptable AND a safer
   bound exists.
-- **[human decision] Async-billing concurrent-admission overshoot is a bounded,
-  accepted trade-off.** Billing moved off the HTTP critical path (latency); the
-  window where N concurrent requests pass admission before the counter updates is
-  bounded by an in-flight reservation. The residual overshoot is accepted for the
-  latency win. Revisit if a project can materially exceed budget under burst.
+- **[human decision] 2026-08-09 (supersedes the entry below) — the
+  concurrent-admission overshoot is UNBOUNDED and accepted; the in-flight
+  reservation is deleted.** *Finding (issue #10):* the reservation that the
+  entry below claimed as the bound never existed in practice. All nine
+  `checkBudget` call sites passed `promptTokenEst=0`, so the `+reservation`
+  increment was unreachable, while the billing path decremented
+  unconditionally — the counter only ever drifted negative and its `sync.Map`
+  entries were never reaped (unbounded growth per project+period).
+  *Decision:* delete the mechanism, its counter and its claims rather than
+  repair it. Bounding the overshoot for real needs a pre-flight token
+  estimator, and no estimate may reach a billed amount (the money-path rule
+  below); nobody has asked for concurrent admission control. `checkBudget` now
+  passes `reqCostNano=0` explicitly. *Accepted cost:* under burst, N concurrent
+  requests can each be admitted against the same not-yet-updated NATS counter;
+  the overshoot is bounded only by burst size × per-request cost. The NATS
+  counter remains ground truth and the hard 402 still fires once it updates.
+  Revisit — with a real estimator — if a project can materially exceed budget
+  under burst in practice.
+- **[human decision] (SUPERSEDED 2026-08-09 by the entry above — the bound it
+  claims was never wired) Async-billing concurrent-admission overshoot is a
+  bounded, accepted trade-off.** Billing moved off the HTTP critical path
+  (latency); the window where N concurrent requests pass admission before the
+  counter updates was said to be bounded by an in-flight reservation. The
+  residual overshoot is accepted for the latency win.
 - Every /llm endpoint is gated + billed uniformly (no per-endpoint exceptions).
 - **[human decision] 2026-08-05 — Streamed spend on client disconnect: bounded
   grace, authoritative usage only.** *Finding:* streams billed only from the
@@ -45,8 +64,8 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   valuable to a client that already received nearly all the output, which is
   exactly when the trailer is closest — so a short grace covers the exploitable
   window. An observed-output-bytes estimate was explicitly REJECTED: it would
-  put a `bytes/4` heuristic on the money path (contradicting the reservation-only
-  rule below), over-bill inline-base64 multimodal by orders of magnitude, and
+  put a `bytes/4` heuristic on the money path (no estimate may ever reach a
+  billed amount), over-bill inline-base64 multimodal by orders of magnitude, and
   fire on clean completions the loop cannot distinguish from disconnects.
   Out-of-band provider usage lookup was rejected as unavailable in practice
   (no per-request usage API on Anthropic/Bedrock/Vertex/Ollama/vLLM; OpenAI-only

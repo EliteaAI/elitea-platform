@@ -41,11 +41,14 @@ export interface UseUsersActionsResult {
  * Invite-users mutation.
  *
  * `entities/user` (spec §3.3, ≤20-export budget) does not curate a create/
- * invite hook — `userCreate` is a live no-op on the Go router today (same
- * NOTE(W2) as `userUpdate`/`userDelete`, `entities/user/model/types.ts`),
- * but the UI still needs to fire the real request and react to the real
- * result rather than fake success (old-app parity: `Users.jsx`'s
- * `useUserCreateMutation()`). Wrapping the generated `userCreate` fetcher
+ * invite hook. `userCreate` used to be a live no-op on the Go router — the
+ * router mounted POST on the listing handler, so this mutation's `onSuccess`
+ * fired and nothing was written (#130). It now POSTs to a real handler that
+ * takes exactly the `{emails, roles}` body built below, so the success toast
+ * finally means what it says. Firing the real request and reacting to the
+ * real result (old-app parity: `Users.jsx`'s
+ * `useUserCreateMutation()`) is what made that fixable at all — a faked
+ * success would have hidden it. Wrapping the generated `userCreate` fetcher
  * with `useMutation` locally — rather than adding a new curated export to
  * `entities/user` — mirrors the same "local, feature-owned hook" call this
  * cluster already makes for `useHasPermission` (`features/agents/lib/

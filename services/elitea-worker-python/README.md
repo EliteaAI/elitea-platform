@@ -10,8 +10,8 @@ credentials or opens Redis, gRPC, HTTPS or PostgreSQL connections.
 
 The current Pylon Indexer baseline installs `elitea-sdk[all]==0.8.30` from
 `centry/pylon_indexer/plugins/sdk_plugin/requirements.txt`. The standalone
-worker separately admits `elitea-sdk==0.9.6` at
-`6155d20acb4a3b00a6085212a75258cc1b3c695a` after a bounded source/dependency
+worker separately admits `elitea-sdk==0.9.8` at
+`b5113a129329b85d23c2d5c2bf55f18e307414ec` after a bounded source/dependency
 delta review. The current `0.8.30` behavior remains the comparison authority
 until each covered family passes the target parity harness. The target image
 maps the required indexing dependencies as follows:
@@ -20,7 +20,7 @@ maps the required indexing dependencies as follows:
 | --- | --- |
 | Confluence API, current hosting/auth modes and page loader | `atlassian-python-api`, `elitea_sdk.tools.confluence` and its current SDK loader |
 | Confluence image and PDF attachment analysis through the selected LLM | Pillow, `pdf2image`, Poppler, the SDK Confluence/image loaders, ReportLab/SVGLib and Cairo |
-| Current OCR fallback when attachment LLM analysis is disabled | The admitted SDK 0.9.6 profile pins `langchain-community==0.4.1`; its corresponding methods import `pytesseract`. The image pins the OCR wrapper, its wheel digest and license, Tesseract, and the deterministic DejaVu probe font. Behavioral equivalence to the current 0.8.30 Confluence attachment path remains a parity-harness gate |
+| Current OCR fallback when attachment LLM analysis is disabled | The admitted SDK 0.9.8 profile pins `langchain-community==0.4.1`; its corresponding methods import `pytesseract`. The image pins the OCR wrapper, its wheel digest and license, Tesseract, and the deterministic DejaVu probe font. Behavioral equivalence to the current 0.8.30 Confluence attachment path remains a parity-harness gate |
 | Direct PDF loading, page extraction and image extraction | PyMuPDF, PyPDF, pypdfium2, the SDK PDF loader and Poppler |
 | Project-specific PGVector writes and reads | `langchain-postgres`, `pgvector`, psycopg 3 binary/pool and the unchanged SDK vector adapter |
 | Externalized LiteLLM-compatible chat and embedding calls | the current SDK client with the pinned OpenAI/Anthropic LangChain clients; model credentials remain claim-scoped runtime data, not image content |

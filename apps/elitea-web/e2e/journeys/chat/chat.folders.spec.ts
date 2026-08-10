@@ -97,23 +97,16 @@ async function listFolders(request: APIRequestContext): Promise<readonly FolderR
 }
 
 /*
- * `test.fail()`, NOT `test.skip()`, and the difference is the whole point.
+ * WAS blocked on #128 — the folder UI was not mounted. No composition root
+ * rendered <Conversations>; `grep -rn "chat-conversation-list" src` outside
+ * the slice returned only doc comments, and no testid on /app/chat matched
+ * /folder/i. There was no 'Create folder' button to click.
  *
- * A skip runs nothing and reports green — which is the exact defect this suite
- * was rewritten to remove. `test.fail()` runs every assertion below, expects the
- * run to fail, and turns the suite RED the moment it starts passing. So the gap
- * stays visible, the assertions keep their teeth, and nobody has to remember to
- * come back and re-enable anything: fixing the app breaks the build until the
- * annotation is removed.
- *
- * Blocked on #128 — the folder UI is not mounted. No composition root renders
- * <Conversations>; `grep -rn "chat-conversation-list" src` outside the slice
- * returns only doc comments, and no testid on /app/chat matches /folder/i.
- * There is no 'Create folder' button to click, so this cannot pass until the
- * component is wired.
+ * `processes/chat/ui/ChatConversationSidebar.tsx` is now that composition
+ * root, rendered by `ChatWithEditors` as the chat surface's left column, so
+ * the `test.fail()` this carried is gone.
  */
 test('J10: the chat surface exposes the folder UI this journey needs', async ({ page }) => {
-  test.fail();
   // Real fixture: a conversation that the journey would drag into a folder.
   const conversationName = uniq('folder-src');
   await createConversation(page.request, conversationName);
@@ -137,12 +130,49 @@ test('J10: the chat surface exposes the folder UI this journey needs', async ({ 
 
   await createFolderButton.click();
 
-  // The draft folder mounts FolderItem in edit mode (FolderItem.tsx:165,175).
-  // Confirm is gated on isFolderNameValid (FolderItemEditor.tsx:103-124) — a
-  // stub page cannot reproduce a control that is disabled purely because a
-  // sibling field is empty.
-  await expect(page.getByRole('button', { name: 'Confirm' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+  // The draft folder mounts FolderItem in edit mode (FolderItem.tsx:175 seeds
+  // `isFolderEditing` from `folder.isNew`), with the name field pre-filled.
+  const nameField = page.getByTestId('folder-name-input');
+  await expect(nameField).toBeVisible();
+  // The field now HAS an accessible name — it was rendered with `label=""`,
+  // no placeholder and no testid, so nothing could announce or target it.
+  await expect(nameField).toHaveAccessibleName('Folder name');
+  // Baseline parity: NewChat.jsx:1229-1238 seeds the draft with
+  // `DefaultFolderName` ('New folder'), which ConversationNameRegExp accepts.
+  await expect(nameField).toHaveValue('New folder');
+
+  const confirm = page.getByRole('button', { name: 'Confirm' });
+  const cancel = page.getByRole('button', { name: 'Cancel' });
+  await expect(cancel).toBeEnabled();
+
+  /*
+   * This assertion replaces an earlier `expect(Confirm).toBeDisabled()`, and
+   * it is deliberately STRONGER, not weaker.
+   *
+   * That assertion was written against an unmounted feature and predicted the
+   * draft would open with an EMPTY name. Measured against the real component,
+   * it opens with 'New folder' — the baseline's own default (NewChat.jsx:1232)
+   * — so Confirm starts enabled. Asserting the initial state therefore proved
+   * nothing about the gate it named; it only recorded a guess about the seed
+   * value, which is now asserted directly above.
+   *
+   * What the gate actually claims is that Confirm tracks
+   * `isFolderNameValid` (FolderItem.tsx:177 → ConversationNameRegExp). That is
+   * a transition, so it is tested as one: a name the regex rejects must
+   * disable Confirm, and a name it accepts must re-enable it. A control that
+   * merely started disabled could not tell those two states apart.
+   */
+  await expect(confirm).toBeEnabled();
+
+  await nameField.fill('ab'); // < 3 chars — ConversationNameRegExp rejects
+  await expect(confirm).toBeDisabled();
+
+  await nameField.fill(uniq('j10-folder'));
+  await expect(confirm).toBeEnabled();
+
+  // Cancel discards the draft rather than persisting it — the row disappears.
+  await cancel.click();
+  await expect(nameField).toBeHidden();
 });
 
 test('J10: folder create/list/rename/delete round-trip through the backend', async ({ page }) => {

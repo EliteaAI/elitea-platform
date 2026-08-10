@@ -138,6 +138,8 @@
     "elitea/no-export-all": "error",
     "elitea/no-module-scope-store": "error",
     "elitea/no-vi-mock": "error",
+    "elitea/no-adhoc-envelope-unwrap": "error",
+    "elitea/no-raw-webstorage": "error",
 
     // ── R-T3 via the eslint-plugin-i18next jsPlugins bridge (D2) ──────────
     "i18next/no-literal-string": [
@@ -345,6 +347,32 @@
       // R-M1 scope: vi.mock is legal only under __mocks__/.
       "files": ["src/**/__mocks__/**"],
       "rules": { "elitea/no-vi-mock": "off" }
+    },
+    {
+      // STOR-1 sanctioned paths (issue #22): the storage wrapper itself, plus
+      // the two jsdom web-storage shims that must install the real globals
+      // before anything reads them.
+      "files": [
+        "src/shared/lib/storage.ts",
+        "src/shared/lib/webstorage.testshim.ts",
+        "src/test/webstorage.ts"
+      ],
+      "rules": { "elitea/no-raw-webstorage": "off" }
+    },
+    {
+      // R-A6 sanctioned path (issue #132): the ONE place a response envelope
+      // is unwrapped. Its own tests exercise the hand-rolled shapes it exists
+      // to replace, so the fence is off for the pair.
+      "files": ["src/shared/api/unwrap.ts", "src/shared/api/unwrap.test.ts"],
+      "rules": { "elitea/no-adhoc-envelope-unwrap": "off" }
+    },
+    {
+      // R-A6 scope: `items` here is a ControlsDropdown MENU row's children,
+      // not an API list envelope — the rule matches on the key name alone and
+      // cannot tell the two apart. Narrowed to the one component that models
+      // submenus that way.
+      "files": ["src/shared/ui/ControlsDropdown/**"],
+      "rules": { "elitea/no-adhoc-envelope-unwrap": "off" }
     },
     {
       // Test files: user-visible-copy and file-length rules do not apply

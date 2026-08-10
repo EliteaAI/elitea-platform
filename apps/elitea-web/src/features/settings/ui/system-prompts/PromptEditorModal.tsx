@@ -13,7 +13,7 @@ import RestoreOutlinedIcon from '@mui/icons-material/RestoreOutlined';
 
 import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
 import { ExpandedViewerModal } from '@/shared/ui/ExpandedViewerModal';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import type { PromptsModalConfig } from './PromptsModalConfig';
 

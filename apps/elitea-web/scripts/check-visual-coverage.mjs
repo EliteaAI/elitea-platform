@@ -85,7 +85,21 @@ const EXEMPT = new Map([
   // claimed ConvsRepo "is never wired", which stopped being true in 3b73273.
   // What remains true is only that this route has never been snapshotted, and
   // nobody has confirmed a conversation can actually be created end-to-end.
-  ['/chat/:conversationId', 'not snapshotted — needs a deterministic conversation list, NOT a missing backend. POST /api/v2/elitea_core/conversations/prompt_lib/1 was verified returning 201 against the running stack; the route renders (chat.tsx supplies ChatWithEditors + <Outlet/>, so the child\'s `component: () => null` is by design). The obstacle is that seeding a conversation per run grows the sidebar list, so the snapshot would differ every time. Same class as the rail-collapsed variants: it needs explicit state setup, not a backend.'],
+  ['/chat/:conversationId', 'not snapshotted — needs a deterministic conversation list, NOT a missing backend. POST /api/v2/elitea_core/conversations/prompt_lib/1 was verified returning 201 against the running stack; the route renders (chat.tsx supplies ChatWithEditors + <Outlet/>, so the child\'s `component: () => null` is by design). The obstacle is that seeding a conversation per run grows the sidebar list, so the snapshot would differ every time. It is now closer to tractable: the sidebar is mounted (#128) and /chat\'s own landmark ("Still no conversations created.") is the empty branch of that very list, so a seed producing a FIXED conversation set unblocks all four shots.'],
+  // Wired at the route layer as of the #61 re-classification — it renders
+  // `pages/help-center/HelpCenterPage`, not scaffolding — but deliberately not
+  // snapshotted. `useResourcesConfig` has no backend (issue #26 Key Decision
+  // #2, disclosed in the page's own module doc), so every one of its five
+  // cards renders "No links configured" and the version bar is blank.
+  //
+  // This is NOT the same as an empty screen, and the distinction is the whole
+  // reason it is exempt rather than covered: `/artifacts`, `/skills/:tab` and
+  // the list pages render resolved, legitimately-empty data from endpoints that
+  // work, so their empty states are real UI and worth a reference. Help
+  // Center's content cannot be configured at all yet, so a baseline would make
+  // a screen with no content the official reference — exactly what the
+  // `wired`-only rule exists to prevent.
+  ['/help-center', 'not snapshotted — the route is wired and renders its real page, but every card\'s link list and the version bar come from `useResourcesConfig`, which has no backend (issue #26). A baseline would pin a screen whose entire content is missing. Cover it in the same change that lands #26; measured meanwhile, its stalled and loaded renders are byte-identical, so it will need only a mount guard, not a data landmark.'],
 ]);
 
 const wired = shots.filter((s) => s.wiringStatus === 'wired');

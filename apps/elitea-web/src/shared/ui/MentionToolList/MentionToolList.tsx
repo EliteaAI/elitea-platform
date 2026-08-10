@@ -5,7 +5,7 @@ import Box from '@mui/material/Box';
 import ClickAwayListener from '@mui/material/ClickAwayListener';
 import Typography from '@mui/material/Typography';
 
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { MentionToolItem } from '../MentionToolItem';
 
 /** @public */
