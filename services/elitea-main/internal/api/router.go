@@ -547,6 +547,26 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				permissionResolver, platformauth.PermissionModeAdministration,
 				"admin.auth.users",
 			)
+			// The admin PROJECTS surface (unit A14). Gated on the permissions
+			// its pylon counterparts declare —
+			// legacy/plugins/admin/api/v2/projects.py declares
+			// `projects.projects.projects.view` and project_suspend.py declares
+			// `projects.projects.projects.edit` — resolved from the database in
+			// `administration` mode on every request.
+			//
+			// The listing is gated rather than open: a project row names the
+			// project, its owner and its admins across every tenant, so the
+			// listing itself is the sensitive part. That matches the audit
+			// reads, and differs from the admin USER listing only because that
+			// one predates this unit.
+			requireProjectsView := apimw.RequireCentralPermissions(
+				permissionResolver, platformauth.PermissionModeAdministration,
+				"projects.projects.projects.view",
+			)
+			requireProjectsEdit := apimw.RequireCentralPermissions(
+				permissionResolver, platformauth.PermissionModeAdministration,
+				"projects.projects.projects.edit",
+			)
 			r.Route("/admin", func(r chi.Router) {
 				// Admin panel endpoints (administration mode, no projectID)
 				r.Get("/system_info/prompt_lib", adminHandler.SystemInfo)
@@ -576,7 +596,16 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.With(requireRolesView).Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
 				r.With(requireRolesEdit).Put("/permissions/{scope}/{mode}", adminHandler.AdminPermissionsSave)
 				r.With(requireRolesEdit).Post("/permissions/{scope}/{mode}", adminHandler.AdminPermissionsSync)
-				r.Get("/projects/{mode}", adminHandler.Projects)
+				r.With(requireProjectsView).Get("/projects/{mode}", adminHandler.Projects)
+				// `ProjectSuspend` existed in the admin package before this unit
+				// but was mounted on NO route — dead code with no caller. It is
+				// the only project WRITE this unit implements: create and delete
+				// are multi-system provisioning pipelines (tenant schema, object
+				// storage, vault, RabbitMQ, InfluxDB, a system user and its
+				// token — legacy/plugins/projects/utils/project_steps.py) and
+				// are rendered unavailable in the UI rather than guessed at here.
+				r.With(requireProjectsEdit).
+					Put("/project_suspend/{mode}/{projectID}", adminHandler.ProjectSuspend)
 				r.Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
 				r.Get("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValues)
 				r.Put("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValuesSave)
@@ -617,6 +646,30 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 					permissionResolver, platformauth.PermissionModeDefault,
 					"configuration.users.users.delete",
 				)).Delete("/users/{mode}/{projectID}", coreHandler.UsersDelete)
+				// The same invite/edit-role writes in ADMINISTRATION mode — what
+				// the admin Projects page's "Manage project member" dialog calls
+				// (unit A14). Registered as STATIC segments so chi's trie prefers
+				// them over the `{mode}` routes above, leaving those untouched.
+				//
+				// They are separate registrations because the GATE differs, not
+				// the handler. The `{mode}` routes resolve
+				// `configuration.users.users.*` in DEFAULT mode, which
+				// `legacyrbac.PostgresResolver` answers purely from the caller's
+				// membership OF THAT PROJECT — so a global administrator who is
+				// not a member of the project scores zero permissions and is
+				// refused, and the admin panel's whole purpose is acting on
+				// projects one is not in. pylon gates the same handler on the
+				// same permission resolved in administration mode
+				// (legacy/plugins/admin/api/v2/users.py maps BOTH modes to the
+				// same body, and its `recommended_roles` names `administration`).
+				r.With(apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"configuration.users.users.create",
+				)).Post("/users/administration/{projectID}", coreHandler.UsersCreate)
+				r.With(apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"configuration.users.users.edit",
+				)).Put("/users/administration/{projectID}", coreHandler.UsersUpdate)
 				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
 				r.Get("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
 				r.Post("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
@@ -993,6 +1046,14 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.With(requireAuditTrail).Get("/audit_heatmap/{mode}", coreHandler.AuditHeatmap)
 				r.With(requireAuditTrail).Get("/audit_traces/{mode}", coreHandler.AuditTraces)
 				r.With(requireAuditTrail).Get("/audit_trace_heatmap/{mode}", coreHandler.AuditTraceHeatmap)
+
+				// Per-user event counts for ONE project — the admin Projects
+				// page's activity drawer (unit A14). Same table and therefore
+				// the same gate as the four reads above; pylon's
+				// project_user_activity.py declares that same permission. It had
+				// no route and no handler at all before this unit.
+				r.With(requireAuditTrail).
+					Get("/project_user_activity/{mode}", coreHandler.ProjectUserActivity)
 			})
 
 			// === Social plugin ===

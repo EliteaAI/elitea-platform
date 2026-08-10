@@ -196,7 +196,19 @@ CROSS JOIN (VALUES
     -- itself sensitive — so without these two rows the page renders 403 and the
     -- journey cannot tell that apart from an unwired route.
     ('configuration.roles.permissions.view'),
-    ('configuration.roles.permissions.edit')
+    ('configuration.roles.permissions.edit'),
+    -- Unit A14, Projects. The listing is gated for the same reason the audit
+    -- listing is: a project row names the project, its owner and its admins
+    -- across every tenant. `.edit` gates the suspend write.
+    ('projects.projects.projects.view'),
+    ('projects.projects.projects.edit'),
+    -- The admin Projects page's member dialog posts to
+    -- `/admin/users/administration/{projectID}`, whose administration-mode
+    -- routes resolve these two CENTRALLY — a global administrator is not a
+    -- member of the project they are acting on, so the default-mode grant
+    -- above cannot authorise them.
+    ('configuration.users.users.create'),
+    ('configuration.users.users.edit')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
@@ -413,6 +425,48 @@ INSERT INTO centry.secrets_data (id, data) VALUES
     ('project-1', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f447738384e6179597230503157334c364279534e5257346647764e5f6778596831726f472d386d646b77547a5155666a42735a785366694a62304f35726a4b2d455a707971362d5436704c7252674a4c6851395935376753595546446955383237486a36634473756a4b2d78'::bytea)
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
 
+-- ── admin projects fixture (unit A14) ────────────────────────────────────
+-- 001_initial.sql seeds ONE project ("Default Project"), which is not enough
+-- to tell a working listing from a broken one: with a single row, the tab
+-- counts, the personal/team split, the search filter and the sort are all
+-- indistinguishable from constants. These rows give journey 31 a set where
+-- each of those has a wrong answer that differs from the right one.
+--
+--   e2e-team-suspended   suspended, so the status chip has two values to
+--                        distinguish and the unsuspend path has a target
+--   e2e-team-active      two project admins besides the owner, so a listing
+--                        that JOINs rather than aggregates emits it twice
+--   project_user_90001   PERSONAL by pylon's `project_user_%` rule, so the
+--                        two tabs return different sets — a client-side tab
+--                        that filtered nothing would show it on both
+--
+-- Ids are in the 9xxxx range, above anything the stack creates, so the seed is
+-- re-runnable and never collides with a real row.
+INSERT INTO auth_core__user (id, email, name, suspended) VALUES
+    (90001, 'e2e-project-owner@autotest.local', 'E2E Project Owner', false),
+    (90002, 'e2e-project-admin@autotest.local', 'E2E Project Admin', false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO centry.project (id, name, owner_id, keycloak_groups, create_success, suspended) VALUES
+    (90001, 'e2e-team-active',    90001, '{}', true, false),
+    (90002, 'e2e-team-suspended', 90001, '{}', true, true),
+    (90003, 'project_user_90001', 90001, '{}', true, false)
+ON CONFLICT (id) DO UPDATE
+    SET name = EXCLUDED.name, owner_id = EXCLUDED.owner_id, suspended = EXCLUDED.suspended;
+
+INSERT INTO auth_core__project_role (project_id, name) VALUES
+    (90001, 'admin'), (90001, 'editor'), (90001, 'viewer')
+ON CONFLICT (project_id, name) DO NOTHING;
+
+-- Two admins on e2e-team-active. Both must appear in ONE row's Admins cell; a
+-- join-based lookup would instead emit the project twice.
+INSERT INTO auth_core__project_user_role (project_id, user_id, role_id)
+SELECT 90001, u.id, r.id
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 90001 AND r.name = 'admin'
+WHERE u.email IN ('e2e-project-admin@autotest.local', 'e2e-admin@autotest.local')
+ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
+
 -- ── audit trail fixture (unit A14) ───────────────────────────────────────
 -- `centry.audit_events` is written by the legacy tracing plugin, which the Go
 -- E2E stack does not run — so without these rows the Audit Trail page is
@@ -539,6 +593,42 @@ ENDSQL
 
     echo "  ✓ administration RBAC verified: admin persona resolves admin.auth.users"
     echo "    and the roles-matrix view/edit pair."
+
+    # The admin PROJECTS surface (unit A14). Unlike the user listing, the
+    # project listing is GATED, so a missing grant here is a 403 on the page
+    # itself rather than a write that quietly fails — but the failure mode is
+    # the same class, so it is asserted the same way: as the resolved
+    # permission, not as an inserted row.
+    PROJECT_PERMS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(DISTINCT rp.permission)
+      FROM auth_core__user u
+      JOIN auth_core__user_role ur ON ur.user_id = u.id
+      JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
+      JOIN auth_core__role_permission rp ON rp.role_id = r.id
+      WHERE u.email = 'e2e-admin@autotest.local'
+        AND rp.permission IN (
+          'projects.projects.projects.view',
+          'projects.projects.projects.edit',
+          'configuration.users.users.create',
+          'configuration.users.users.edit'
+        );")
+    if [ "${PROJECT_PERMS:-0}" -lt 4 ]; then
+      echo "ERROR: seed did not grant the admin persona the four administration-mode" >&2
+      echo "  project permissions (got ${PROJECT_PERMS:-0} of 4)." >&2
+      echo "  Without them /admin/projects/administration answers 403 and the admin" >&2
+      echo "  Projects page renders its load error instead of the table." >&2
+      exit 1
+    fi
+
+    SEEDED_PROJECTS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(*) FROM centry.project WHERE id IN (90001, 90002, 90003);")
+    if [ "${SEEDED_PROJECTS:-0}" -lt 3 ]; then
+      echo "ERROR: seed did not create the three admin-projects fixture rows (got ${SEEDED_PROJECTS:-0})." >&2
+      echo "  Journey 31 asserts the team/personal split and the suspended status against them;" >&2
+      echo "  with only 'Default Project' present it could assert neither." >&2
+      exit 1
+    fi
+    echo "  ✓ admin projects fixture verified: ${SEEDED_PROJECTS} project(s), ${PROJECT_PERMS}/4 permission(s)."
     echo "→ Seed complete."
     ;;
 

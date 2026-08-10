@@ -3298,12 +3298,9 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 // request discarded, database untouched. Unit A14 implemented them for real,
 // together with the two audit reads that had no route at all; see audit.go.
 
-func (h *Handler) ProjectUserActivity(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  []any{},
-		"total": 0,
-	})
-}
+// ProjectUserActivity was a third stub of the same shape — `{"rows":[],"total":0}`
+// with `_ *http.Request` and no route — and is now implemented for real in
+// project_activity.go.
 
 func (h *Handler) RegisterDescriptor(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {

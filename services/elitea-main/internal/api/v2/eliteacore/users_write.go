@@ -26,10 +26,22 @@ package eliteacore
 // route — the chi router never reaches it — and the original #130 diagnosis
 // blaming its field binding was corrected in the issue's comments.
 //
-// NOT covered here: `administration` mode. Like the secrets handler's
-// requireMode, it addresses the GLOBAL (project-less) scope in pylon and every
-// query below is keyed by a concrete project id, so it answers 501 instead of
-// quietly writing project 0's membership.
+// `administration` mode used to answer 501 here, on the reasoning that it
+// "addresses the GLOBAL (project-less) scope in pylon". That is true of the
+// admin panel's OTHER routes and false of this one: `/admin/users/{mode}/{projectID}`
+// carries the project id in its own path, and pylon's users.py declares BOTH
+// url_params (`<int:project_id>` and `<string:mode>/<int:project_id>`) with
+// `mode_handlers` mapping `default` and `administration` to the same body. So
+// there is no global scope to confuse it with, and the 501 was simply a hole:
+// the admin Projects page's member dialog is exactly this call, and it reached
+// a Not Implemented (unit A14, #200).
+//
+// It is accepted here; what differs between the modes is the GATE, not the
+// query. router.go registers the administration-mode verbs separately, on
+// `configuration.users.users.*` resolved CENTRALLY — default mode resolves the
+// same permission from the caller's membership of the target project, which a
+// global administrator does not have. Both still require a concrete, positive
+// project id below, so neither can write project 0's membership.
 
 import (
 	"encoding/json"
@@ -66,13 +78,10 @@ type inviteResult struct {
 // return immediately.
 func (h *Handler) userWriteContext(w http.ResponseWriter, r *http.Request) (int, bool) {
 	switch chi.URLParam(r, "mode") {
-	case userWriteModeDefault:
-	case userWriteModeAdministration:
-		writeJSON(w, http.StatusNotImplemented, map[string]any{
-			"error": "administration mode is not implemented by elitea-main; " +
-				"it addresses the global scope, not a project membership",
-		})
-		return 0, false
+	// Both modes address the SAME project membership — see this file's header.
+	// The route-level gate is what distinguishes them, and it is applied before
+	// this function runs.
+	case userWriteModeDefault, userWriteModeAdministration:
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown mode"})
 		return 0, false
