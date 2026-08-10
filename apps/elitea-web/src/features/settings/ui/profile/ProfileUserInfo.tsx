@@ -54,7 +54,19 @@ export function ProfileUserInfo({ name, avatar, email, isFetching }: ProfileUser
   }
 
   return (
-    <Box sx={styles.container}>
+    /*
+     * `data-testid` is load-bearing for the @visual suite (#174).
+     *
+     * The settings-personalization snapshot used to wait on
+     * `getByRole('textbox').first()`. Every textbox on this page — Default User
+     * Instructions, Max Context Tokens, … — is rendered by the Formik form
+     * REGARDLESS of `isFetching`, initialised from `undefined` author data, so
+     * that landmark was satisfied while this block was still the skeleton
+     * above. Same latent defect as the one that made the settings-analytics
+     * baseline a photograph of a spinner (#159). This element exists only on
+     * the resolved branch.
+     */
+    <Box sx={styles.container} data-testid="profile-user-info">
       <Box sx={styles.textContainer}>
         {avatar ? (
           <img

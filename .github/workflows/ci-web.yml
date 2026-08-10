@@ -575,6 +575,38 @@ jobs:
       - name: Check the container tag matches package.json
         run: node scripts/check-playwright-image-tag.mjs
 
+  gate-visual-coverage:
+    name: Visual coverage
+    # The `visual` job passing means "no snapshot changed". It says nothing
+    # about how many screens have a snapshot at all — 5 covered routes and 29
+    # covered routes produce the identical green tick. This job is what makes
+    # that number blocking: it fails when a route the screenshot index marks
+    # `wiringStatus: wired` has no `@covers` spec in e2e/visual/, and it fails
+    # when the committed baselines exceed their size budget.
+    #
+    # It lives HERE, not in ci-web-e2e.yml, on purpose: the script reads
+    # parity/screenshot-index.json, the spec sources and the baseline file
+    # sizes off disk. It needs no stack, no browser and no container, so it
+    # belongs with the fast node-only gates and gives its verdict in seconds
+    # rather than behind a seven-service compose stand-up.
+    #
+    # Until this job existed the script ran in NO workflow (issue #174) —
+    # `check-visual-coverage.mjs` appeared in none of .github/workflows/. It
+    # reported `11/63 indexed shots … 11/15 wired` to nobody, which is the same
+    # defect class as the `visual` job that had never executed (#159) and the
+    # mutation spot-check whose every exit was `exit(0)` (#160): a check that
+    # cannot influence anything.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      # No `npm ci`: the script imports node: builtins only. Installing would
+      # add a minute to a gate that reads three files.
+      - name: Check visual coverage of the wired routes
+        run: node scripts/check-visual-coverage.mjs
+
   gate-theme:
     name: Theme gate
     runs-on: ubuntu-latest

@@ -77,18 +77,50 @@ const ROUTES: readonly VisualRoute[] = [
     // @covers /chat
     name: 'chat-empty-state',
     path: '/app/chat',
+    // Audited under #174 and KEPT — measured, not assumed. With every `**/api/**`
+    // response stalled for 30s this locator does NOT become visible inside 20s:
+    // the composer is not rendered until the chat page's data arrives, so it
+    // cannot photograph a loading state. The `.or(getByRole('textbox'))` arm is
+    // a no-op rather than a hole: probing the loaded page for visible
+    // input/textarea/contenteditable/[role=textbox] elements returns only the
+    // composer's own `chat-message-input` textarea (plus one sibling textarea
+    // inside the same composer) — there is no earlier textbox anywhere in the
+    // shell for `.first()` to reach.
     landmark: (page) => page.getByTestId('chat-input').or(page.getByRole('textbox')).first(),
   },
   {
     // @covers /settings/personalization
     name: 'settings-personalization',
     path: '/app/settings/personalization',
-    landmark: (page) => page.getByRole('textbox').first(),
+    // The resolved profile block, NOT `getByRole('textbox').first()`.
+    //
+    // Found by the audit #174 asked for. This page's Formik form renders every
+    // one of its textboxes while `useGetCurrentAuthor` is still in flight
+    // (initialised from `undefined` author data); only `ProfileUserInfo`
+    // switches between a Skeleton and the real name/avatar/email. So the old
+    // landmark resolved during the skeleton state — the same latent weakness
+    // as settings-project-params, on a page whose every visible value comes
+    // from the query being waited for.
+    landmark: (page) => page.getByTestId('profile-user-info'),
   },
   {
     // @covers /settings/create-personal-token
     name: 'settings-create-personal-token',
     path: '/app/settings/create-personal-token',
+    // Audited under #174 and KEPT, for a different reason than chat's. This
+    // locator DOES resolve with every `**/api/**` call stalled (measured) — but
+    // that is not a defect here, because the screen has no server data to wait
+    // for. It is a static react-hook-form: its only query,
+    // `useListTokensQuery`, is passed `{ enabled: false }`, and every pixel of
+    // its content area (New Token, Name, Days, 30, Generate/Discard) is
+    // client-rendered. There is no loading branch it could photograph.
+    //
+    // The residual exposure is the app SHELL — the rail's project name comes
+    // from a query — and that is shared by all five routes here, not specific
+    // to this landmark. It fails LOUD rather than silent: a shell captured
+    // mid-load diffs against a baseline whose shell is resolved. Recorded
+    // rather than papered over; a shell-level landmark belongs with #61's
+    // growth work, not here.
     landmark: (page) => page.getByRole('textbox').first(),
   },
   {
@@ -109,7 +141,22 @@ const ROUTES: readonly VisualRoute[] = [
     // @covers /settings/project-params
     name: 'settings-project-params',
     path: '/app/settings/project-params',
-    landmark: (page) => page.getByRole('main').or(page.locator('#root > *')).first(),
+    // The resolved body, NOT `getByRole('main').or('#root > *')`.
+    //
+    // That was the same landmark that turned the settings-analytics baseline
+    // into a photograph of a spinner (#159): `ProjectContext` renders a bare
+    // <CircularProgress> while `useGetProjectContext` is in flight, and both
+    // `main` and `#root > *` are already in the tree at that moment — so the
+    // wait resolved instantly, `settle()`'s 300ms elapsed, and a slow query
+    // would have pinned the loading state as the reference. This baseline
+    // happened to be fully rendered, so the defect was latent, not visible
+    // (#174).
+    //
+    // `project-context-body` is rendered only from a RESOLVED query: the
+    // loading branch returns the spinner, the error branch returns a banner,
+    // and the no-view-permission branch returns a different banner still. None
+    // of the three carries this testid, so the landmark discriminates.
+    landmark: (page) => page.getByTestId('project-context-body'),
   },
 ];
 
