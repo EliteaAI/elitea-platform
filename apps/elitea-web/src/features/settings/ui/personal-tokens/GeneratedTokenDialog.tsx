@@ -6,7 +6,7 @@
  * GeneratedTokenDialog.jsx`.
  *
  * Deviations:
- *  - Uses `@/shared/ui/lib/t` for i18n
+ *  - Uses `@/shared/i18n` for i18n
  *  - Uses MUI Dialog components directly
  *  - Uses `AttentionIcon` (existing in shared/ui/icons) for the warning icon
  *  - Copy button auto-disables for 5 seconds after use
@@ -25,7 +25,7 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { AttentionIcon } from '@/shared/ui/icons/attention-icon';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 export interface GeneratedTokenDialogProps {
   /** Whether the dialog is open. */

@@ -4,7 +4,7 @@ import { useCallback, useId, useState } from 'react';
 import type { SxProps, Theme } from '@mui/material/styles';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import type { TabGroupButtonItem } from '../TabButtonItem';
 import { TabButtonItem } from '../TabButtonItem';
 

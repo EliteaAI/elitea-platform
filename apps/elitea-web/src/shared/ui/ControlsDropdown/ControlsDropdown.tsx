@@ -16,7 +16,7 @@ import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public Options for a row that asks for confirmation before acting, instead of firing `onClick` immediately. */
 export interface ControlsDropdownConfirmConfig {

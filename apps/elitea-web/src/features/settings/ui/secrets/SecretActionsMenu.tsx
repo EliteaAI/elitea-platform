@@ -16,7 +16,7 @@ import MenuItem from '@mui/material/MenuItem';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 export interface SecretActionsMenuProps {
   /** Currently-anchor element (`null` = menu closed). */

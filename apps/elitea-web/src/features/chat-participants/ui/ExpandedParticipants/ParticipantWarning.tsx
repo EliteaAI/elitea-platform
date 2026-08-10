@@ -15,7 +15,7 @@ import { memo, type ReactNode } from 'react';
 
 import { Typography } from '@mui/material';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 // ---------------------------------------------------------------------------
 // Props

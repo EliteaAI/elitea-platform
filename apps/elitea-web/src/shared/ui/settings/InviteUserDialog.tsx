@@ -20,7 +20,7 @@ import Typography from '@mui/material/Typography';
 import { BaseBtn } from '../BaseBtn';
 import { InputBase } from '../InputBase';
 import { SingleSelect } from '../SingleSelect';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import type { SingleSelectOption } from '../SingleSelectMenuItem';
 
 export interface InviteUserDialogProps {

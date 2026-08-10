@@ -8,7 +8,7 @@ import TextField from '@mui/material/TextField';
 
 import { FieldHeader } from '../lib/field/FieldHeader';
 import type { FieldMeta, JsonSchemaProperty } from '../lib/field/jsonSchemaField.types';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface CommonNumberFieldProps {
@@ -57,16 +57,16 @@ function validateNumber(value: number | null | undefined, constraints: NumericCo
   const { exclusiveMinimum, minimum, exclusiveMaximum, maximum } = constraints;
 
   if (exclusiveMinimum !== undefined && value <= exclusiveMinimum) {
-    return t('shared.ui.commonNumberField.mustBeGreaterThan', `Value must be greater than ${exclusiveMinimum}`);
+    return t('shared.ui.commonNumberField.mustBeGreaterThan', 'Value must be greater than {{min}}', { min: exclusiveMinimum });
   }
   if (minimum !== undefined && value < minimum) {
-    return t('shared.ui.commonNumberField.mustBeAtLeast', `Value must be at least ${minimum}`);
+    return t('shared.ui.commonNumberField.mustBeAtLeast', 'Value must be at least {{min}}', { min: minimum });
   }
   if (exclusiveMaximum !== undefined && value >= exclusiveMaximum) {
-    return t('shared.ui.commonNumberField.mustBeLessThan', `Value must be less than ${exclusiveMaximum}`);
+    return t('shared.ui.commonNumberField.mustBeLessThan', 'Value must be less than {{max}}', { max: exclusiveMaximum });
   }
   if (maximum !== undefined && value > maximum) {
-    return t('shared.ui.commonNumberField.mustBeAtMost', `Value must be at most ${maximum}`);
+    return t('shared.ui.commonNumberField.mustBeAtMost', 'Value must be at most {{max}}', { max: maximum });
   }
   return null;
 }

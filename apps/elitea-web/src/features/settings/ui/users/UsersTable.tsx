@@ -8,7 +8,7 @@
  *  - Uses MUI DataGrid instead of the FSD GridTable custom component.
  *  - Search and pagination are managed by the parent (users-page.tsx).
  *  - Tour IDs (`data-tour`) dropped.
- *  - Uses `t()` from `@/shared/ui/lib/t` for i18n.
+ *  - Uses `t()` from `@/shared/i18n` for i18n.
  *  - Uses `theme.vars.palette.*` for styling via `useTheme()`.
  */
 import { memo, useCallback, useMemo } from 'react';
@@ -21,7 +21,7 @@ import { useTheme } from '@mui/material/styles';
 
 import { EditUsersButton } from '@/shared/ui/settings/EditUsersButton';
 import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 interface UsersTablePaginationProps {
   total?: number;

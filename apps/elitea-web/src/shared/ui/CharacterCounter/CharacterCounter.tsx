@@ -4,7 +4,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { Theme } from '@mui/material/styles';
 
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface CharacterCounterProps {

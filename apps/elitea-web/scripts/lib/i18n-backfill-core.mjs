@@ -22,18 +22,18 @@ import { parse } from '@babel/parser';
 import { walk } from './budgets-core.mjs';
 
 /**
- * Both are real sources of truth for "which keys will eventually need
- * entries" until issue #45's stub migration lands — `@/shared/ui/lib/t`'s
- * `t(key, fallback)` shim has the identical two-required-argument contract
- * (see that file's own header), so its call sites extract identically.
+ * The single source of `t` in this app. `@/shared/i18n` is a directory
+ * import (resolves to its `index.ts` barrel). Targets are repo-relative and
+ * extension-less, matching `filename`'s own shape — see resolveImportSource
+ * below, which strips the extension the same way before comparing.
  *
- * `@/shared/i18n` is a directory import (resolves to its `index.ts`
- * barrel); `@/shared/ui/lib/t` is a single file. Targets are repo-relative,
- * extension-less, matching `filename`'s own shape (the I/O wrapper passes
- * paths like `src/shared/ui/lib/t.ts` — see resolveImportSource below,
- * which strips the extension the same way before comparing).
+ * The pre-S8 interim stub `src/shared/ui/lib/t.ts` used to be a second
+ * target here. Issue #45 migrated its 79 importers and deleted the file, so
+ * it is deliberately NOT listed: an import of it is now a broken import,
+ * and treating it as a `t` source would let a reintroduced stub satisfy the
+ * `--check` gate without its keys ever resolving against `en.json`.
  */
-const T_MODULE_TARGETS = new Set(['src/shared/i18n', 'src/shared/ui/lib/t']);
+const T_MODULE_TARGETS = new Set(['src/shared/i18n']);
 
 function parseSource(source) {
   return parse(source, { sourceType: 'module', plugins: ['typescript', 'jsx'] });
@@ -43,10 +43,10 @@ function parseSource(source) {
  * Resolves an import specifier to a repo-relative, extension-less module
  * path — `@/x` -> `src/x` (this repo's tsconfig `paths` alias), `./x`/`../x`
  * -> resolved against the importing file's own directory. `null` for a bare
- * package specifier (e.g. `'react'`), which can never be one of our two
- * targets. Both call sites this repo actually uses (`@/shared/i18n` and the
- * relative `../lib/t` some `shared/ui/**` components use instead of the
- * `@/shared/ui/lib/t` alias — same file, different spelling) resolve here.
+ * package specifier (e.g. `'react'`), which can never be the target. Both
+ * spellings resolve here: the `@/shared/i18n` alias every call site uses
+ * today, and a relative `../i18n`-style path, so a future relative import
+ * of the barrel is extracted rather than silently skipped.
  */
 function resolveImportSource(filename, source) {
   if (source.startsWith('@/')) return posix.join('src', source.slice(2));

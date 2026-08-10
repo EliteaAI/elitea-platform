@@ -8,7 +8,7 @@ import Box from '@mui/material/Box';
 import type { Theme } from '@mui/material/styles';
 
 import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 interface CodePreviewContentProps {
   codeExample: string;

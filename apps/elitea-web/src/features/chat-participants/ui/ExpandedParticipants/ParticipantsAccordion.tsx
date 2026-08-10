@@ -10,7 +10,7 @@ import { Box, Accordion, AccordionDetails, AccordionSummary, Typography } from '
 
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import type { ExpandedParticipantsListProps } from './ExpandedParticipantsList';
 

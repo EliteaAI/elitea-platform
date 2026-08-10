@@ -22,7 +22,7 @@ import type { Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
 import { BaseBtn } from '../BaseBtn';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public */
 export type ModalVariant = 'simple' | 'complex';

@@ -11,7 +11,7 @@ import { useTheme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 interface FieldWithCopyProps {
   label: string;

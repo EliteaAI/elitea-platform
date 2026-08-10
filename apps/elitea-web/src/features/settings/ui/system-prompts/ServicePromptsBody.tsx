@@ -11,7 +11,7 @@ import Snackbar from '@mui/material/Snackbar';
 
 import type { PromptConfig } from './ServicePrompts.types';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import { ServicePromptCard } from './ServicePromptCard';
 import { PromptEditorModal } from './PromptEditorModal';
 import { promptsStyles } from './ServicePrompts.styles';

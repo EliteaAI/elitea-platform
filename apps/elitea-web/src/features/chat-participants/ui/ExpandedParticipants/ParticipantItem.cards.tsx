@@ -11,7 +11,7 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import IconButton from '@mui/material/IconButton';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import ParticipantActions from '../ParticipantActions/ParticipantActions';
 import ParticipantWarning from './ParticipantWarning';

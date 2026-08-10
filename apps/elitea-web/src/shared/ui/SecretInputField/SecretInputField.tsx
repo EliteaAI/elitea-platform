@@ -11,7 +11,7 @@ import TextField from '@mui/material/TextField';
 import { OpenEyeIcon } from '../icons/open-eye-icon';
 import { FieldHeader } from '../lib/field/FieldHeader';
 import type { FieldMeta } from '../lib/field/jsonSchemaField.types';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface SecretInputFieldProps {

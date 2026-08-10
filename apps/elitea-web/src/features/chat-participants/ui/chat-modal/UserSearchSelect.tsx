@@ -15,7 +15,7 @@ import { Autocomplete, Box, TextField, Typography } from '@mui/material';
 
 import { useFilteredEntityItems } from '@/entities/participant';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 /**
  * "Currently selected project id" — local duplicate of `features/chat-input/

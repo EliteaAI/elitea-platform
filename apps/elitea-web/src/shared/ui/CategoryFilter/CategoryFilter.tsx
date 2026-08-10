@@ -16,7 +16,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
 import { combineSx } from '../lib/combineSx';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface CategoryFilterProps {

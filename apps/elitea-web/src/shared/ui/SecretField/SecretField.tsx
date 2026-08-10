@@ -23,7 +23,7 @@ import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Tooltip from '@mui/material/Tooltip';
 
 import { RefreshIcon } from '../icons/refresh-icon';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public Matches the baseline's `{{secret.NAME}}` reference syntax. Exported so a caller can detect the shape without duplicating the pattern. */
 export const SECRET_REFERENCE_RE = /^{{secret\.([A-Za-z0-9_]+)}}$/;

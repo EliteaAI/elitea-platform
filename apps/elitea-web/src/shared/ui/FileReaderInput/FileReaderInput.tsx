@@ -9,7 +9,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { BaseBtn } from '../BaseBtn';
 import { InputBase, type InputBaseExpandOptions } from '../InputBase';
 import { combineSx } from '../lib/combineSx';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public */
 export interface FileReaderInputFileOptions {

@@ -3,7 +3,7 @@ import { useCallback, useState } from 'react';
 
 import { BaseModal } from '../BaseModal';
 import { InputBase, type InputBaseProps } from '../InputBase';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface StyledInputEnhancerProps extends InputBaseProps {

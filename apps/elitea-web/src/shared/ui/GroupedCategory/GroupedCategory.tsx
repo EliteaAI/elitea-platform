@@ -4,7 +4,7 @@ import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import type { CategoryItem } from '../CategoryItemCard';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 const DEFAULT_LOADING_SKELETON_COUNT = 25;
 

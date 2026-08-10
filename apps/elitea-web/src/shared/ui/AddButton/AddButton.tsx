@@ -7,7 +7,7 @@ import Tooltip from '@mui/material/Tooltip';
 
 import { PlusIcon } from '../icons/plus-icon';
 import { combineSx } from '../lib/combineSx';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface AddButtonProps {

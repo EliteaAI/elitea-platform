@@ -23,7 +23,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
 import { BaseBtn } from '../BaseBtn';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import type { SingleSelectOption } from '../SingleSelectMenuItem';
 
 export interface EditUserRolesDialogProps {

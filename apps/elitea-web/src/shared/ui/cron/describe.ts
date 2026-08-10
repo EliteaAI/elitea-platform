@@ -15,7 +15,7 @@
  * is a deliberate N4 deviation, waived per spec §8.4 as parity item
  * `COPY-511` (`parity/manifest/indexes.json`), not merely noted here.
  */
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { monthFullLabel, weekdayFullLabel } from './labels';
 import type { CronExpressionState, CronFieldNonEvery, CronFieldState } from './model';
 import { parseCronExpression } from './parse';
@@ -75,7 +75,7 @@ function describeTime(minute: CronFieldState, hour: CronFieldState): TimeDescrip
   }
   if (minute.kind === 'step' && hour.kind === 'every') {
     return {
-      text: t('shared.ui.cron.time.everyNMinutes', `Every ${minute.step} minutes`),
+      text: t('shared.ui.cron.time.everyNMinutes', 'Every {{n}} minutes', { n: minute.step }),
       isPointInTime: false,
     };
   }
@@ -83,7 +83,7 @@ function describeTime(minute: CronFieldState, hour: CronFieldState): TimeDescrip
   const minuteSingle = singleValue(minute);
   if (hour.kind === 'step' && (minute.kind === 'every' || minuteSingle === 0)) {
     return {
-      text: t('shared.ui.cron.time.everyNHours', `Every ${hour.step} hours`),
+      text: t('shared.ui.cron.time.everyNHours', 'Every {{n}} hours', { n: hour.step }),
       isPointInTime: false,
     };
   }
@@ -94,7 +94,7 @@ function describeTime(minute: CronFieldState, hour: CronFieldState): TimeDescrip
   // `'0 8,18 * * *'` ("At 08:00 and 18:00, …") without duplicating logic.
   if (minute.kind === 'list' && hour.kind === 'list') {
     return {
-      text: t('shared.ui.cron.time.at', `At ${formatTimeList(hour.values, minute.values)}`),
+      text: t('shared.ui.cron.time.at', 'At {{times}}', { times: formatTimeList(hour.values, minute.values) }),
       isPointInTime: true,
     };
   }
@@ -102,7 +102,8 @@ function describeTime(minute: CronFieldState, hour: CronFieldState): TimeDescrip
   return {
     text: t(
       'shared.ui.cron.time.generic',
-      `At minute ${describeGeneric(minute)} of hour ${describeGeneric(hour)}`,
+      'At minute {{minute}} of hour {{hour}}',
+      { minute: describeGeneric(minute), hour: describeGeneric(hour) },
     ),
     isPointInTime: true,
   };
@@ -121,10 +122,11 @@ function describeWeekdays(field: CronFieldNonEvery): string {
     case 'range':
       return t(
         'shared.ui.cron.weekdayThrough',
-        `${weekdayFullLabel(field.from)} through ${weekdayFullLabel(field.to)}`,
+        '{{from}} through {{to}}',
+        { from: weekdayFullLabel(field.from), to: weekdayFullLabel(field.to) },
       );
     case 'step':
-      return t('shared.ui.cron.weekdayEveryN', `every ${field.step} days of the week`);
+      return t('shared.ui.cron.weekdayEveryN', 'every {{n}} days of the week', { n: field.step });
   }
 }
 
@@ -138,22 +140,23 @@ function describeMonthValues(field: Exclude<CronFieldNonEvery, { kind: 'step' }>
   if (field.kind === 'list') return field.values.map(monthFullLabel).join(', ');
   return t(
     'shared.ui.cron.monthThrough',
-    `${monthFullLabel(field.from)} through ${monthFullLabel(field.to)}`,
+    '{{from}} through {{to}}',
+    { from: monthFullLabel(field.from), to: monthFullLabel(field.to) },
   );
 }
 
 function dayOfMonthPhrase(field: CronFieldNonEvery): string {
   if (field.kind === 'step') {
-    return t('shared.ui.cron.dayOfMonthEveryN', `every ${field.step} days`);
+    return t('shared.ui.cron.dayOfMonthEveryN', 'every {{n}} days', { n: field.step });
   }
-  return t('shared.ui.cron.onDayOfMonth', `on day ${describeDayOfMonthValues(field)} of the month`);
+  return t('shared.ui.cron.onDayOfMonth', 'on day {{days}} of the month', { days: describeDayOfMonthValues(field) });
 }
 
 function monthPhrase(field: CronFieldNonEvery): string {
   if (field.kind === 'step') {
-    return t('shared.ui.cron.monthEveryN', `every ${field.step} months`);
+    return t('shared.ui.cron.monthEveryN', 'every {{n}} months', { n: field.step });
   }
-  return t('shared.ui.cron.onlyInMonth', `only in ${describeMonthValues(field)}`);
+  return t('shared.ui.cron.onlyInMonth', 'only in {{months}}', { months: describeMonthValues(field) });
 }
 
 function describeDays(dayOfMonth: CronFieldState, dayOfWeek: CronFieldState): string | null {
@@ -164,8 +167,8 @@ function describeDays(dayOfMonth: CronFieldState, dayOfWeek: CronFieldState): st
   }
 
   const weekdayPhrase = dayPhrase !== null
-    ? t('shared.ui.cron.orOnWeekday', `or on ${describeWeekdays(dayOfWeek)}`)
-    : t('shared.ui.cron.onlyOnWeekday', `only on ${describeWeekdays(dayOfWeek)}`);
+    ? t('shared.ui.cron.orOnWeekday', 'or on {{weekdays}}', { weekdays: describeWeekdays(dayOfWeek) })
+    : t('shared.ui.cron.onlyOnWeekday', 'only on {{weekdays}}', { weekdays: describeWeekdays(dayOfWeek) });
 
   return dayPhrase !== null ? `${dayPhrase}, ${weekdayPhrase}` : weekdayPhrase;
 }

@@ -29,7 +29,7 @@ import { usePermissionList } from '@/shared/api/generated/auth/auth';
 import type { Permission } from '@/shared/api/generated/model';
 import { PERMISSIONS } from '@/shared/lib/permissions';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import type { PromptConfig } from '@/features/settings';
 import { servicePromptsFeature } from '@/features/settings';
 

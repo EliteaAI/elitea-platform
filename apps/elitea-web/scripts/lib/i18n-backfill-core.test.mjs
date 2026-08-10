@@ -18,13 +18,17 @@ describe('extractCallSites', () => {
     expect(flagged).toEqual([]);
   });
 
-  it('captures a call site bound via the deprecated stub source (@/shared/ui/lib/t)', () => {
+  it('does NOT capture the removed pre-S8 stub source (@/shared/ui/lib/t), which no longer exists (#45)', () => {
+    // Issue #45 migrated all 79 importers to `@/shared/i18n` and deleted
+    // `src/shared/ui/lib/t.ts`. Keeping it as an extraction source would let
+    // a reintroduced stub import silently satisfy the --check gate again.
     const source = `
       import { t } from '@/shared/ui/lib/t';
       t('legacy.stub.label', 'Label');
     `;
-    const { entries } = extractCallSites('Legacy.tsx', source);
-    expect(entries).toEqual([{ key: 'legacy.stub.label', fallback: 'Label', filename: 'Legacy.tsx', line: 3 }]);
+    const { entries, flagged } = extractCallSites('Legacy.tsx', source);
+    expect(entries).toEqual([]);
+    expect(flagged).toEqual([]);
   });
 
   it('captures a template-literal fallback with no ${} expressions as a static string', () => {
@@ -36,15 +40,14 @@ describe('extractCallSites', () => {
     expect(entries).toEqual([{ key: 'widgets.title', fallback: 'Static Title', filename: 'Widget.tsx', line: 3 }]);
   });
 
-  it('resolves the stub bound via a relative import path, not just the @/ alias (real gap: 40 shared/ui/** files use `../lib/t`)', () => {
+  it('does NOT resolve the removed stub via a relative path either (`../lib/t`, the spelling 42 shared/ui/** files used pre-#45)', () => {
     const source = `
       import { t } from '../lib/t';
-      t('shared.ui.commonNumberField.mustBeGreaterThan', 'Value must be greater than 5');
+      t('shared.ui.commonNumberField.mustBeGreaterThan', 'Value must be greater than {{min}}');
     `;
-    const { entries } = extractCallSites('src/shared/ui/CommonNumberField/CommonNumberField.tsx', source);
-    expect(entries).toEqual([
-      { key: 'shared.ui.commonNumberField.mustBeGreaterThan', fallback: 'Value must be greater than 5', filename: 'src/shared/ui/CommonNumberField/CommonNumberField.tsx', line: 3 },
-    ]);
+    const { entries, flagged } = extractCallSites('src/shared/ui/CommonNumberField/CommonNumberField.tsx', source);
+    expect(entries).toEqual([]);
+    expect(flagged).toEqual([]);
   });
 
   it('resolves a relative import of the real i18n barrel from a sibling directory', () => {
