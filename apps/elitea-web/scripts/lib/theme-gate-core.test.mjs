@@ -80,6 +80,18 @@ describe('§4.6 check 3 — theme.palette outside shared/brand', () => {
       ]),
     ).toEqual([]);
   });
+
+  it('exempts the Wave 2 prefixes, and only those', () => {
+    expect(
+      checkThemePalette([
+        file('src/features/onboarding/ui/A.tsx', 'theme.palette.primary.main'),
+        file('src/entities/application/ui/B.tsx', 'theme.palette.primary.main'),
+      ]),
+    ).toEqual([]);
+    expect(
+      checkThemePalette([file('src/features/onboarding-next/ui/A.tsx', 'theme.palette.primary.main')]),
+    ).toHaveLength(1);
+  });
 });
 
 describe('§4.6 check 4 — MUI internal selectors', () => {
@@ -93,8 +105,23 @@ describe('§4.6 check 4 — MUI internal selectors', () => {
 
   it('exempts shared/brand/mui-overrides', () => {
     expect(
-      checkMuiSelectors([file('src/shared/brand/mui-overrides/button.tsx', "'& .MuiButton-root'")]),
+      checkMuiSelectors([
+        file('src/shared/brand/mui-overrides/button.tsx', "'& .MuiButton-root'"),
+        file('src/features/x/lib/a.ts', "'& .MuiButton-root'"), // tsx-only, like check 3
+      ]),
     ).toEqual([]);
+  });
+
+  it('exempts the Wave 2 prefixes, and only those', () => {
+    expect(
+      checkMuiSelectors([
+        file('src/features/chat-messages/ui/A.tsx', "'& .MuiButton-root'"),
+        file('src/pages/help-center/ui/B.tsx', "'& .MuiButton-root'"),
+      ]),
+    ).toEqual([]);
+    expect(
+      checkMuiSelectors([file('src/features/chat-messages-next/ui/A.tsx', "'& .MuiButton-root'")]),
+    ).toHaveLength(1);
   });
 
   it('does not flag a doc comment explaining why a MUI selector is avoided', () => {
