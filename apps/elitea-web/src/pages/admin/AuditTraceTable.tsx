@@ -26,13 +26,30 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
-import visuallyHidden from '@mui/utils/visuallyHidden';
 
 import { t } from '@/shared/i18n';
 
 import { useAuditSpans, type AuditTraceRow } from './api/adminAuditApi';
 import { EventTypeIcon, SortableHeaderCell, StatusCodeCell, TextCell } from './AuditTableParts';
 import { formatAction, formatDuration, formatTimestamp } from './auditFormat';
+
+/**
+ * The standard screen-reader-only style: present in the accessibility tree,
+ * absent from the layout.
+ *
+ * Declared here rather than imported from `@mui/utils/visuallyHidden` — that
+ * package is a transitive dependency this app does not declare, which the knip
+ * dead-code gate correctly rejects as an unlisted import. Five CSS properties
+ * are not worth a new direct dependency.
+ */
+const visuallyHidden = {
+  position: 'absolute',
+  width: '0.0625rem',
+  height: '0.0625rem',
+  overflow: 'hidden',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+} as const;
 
 /** Spans per trace in the expanded panel. A trace with more is truncated. */
 const SPANS_PER_TRACE = 200;

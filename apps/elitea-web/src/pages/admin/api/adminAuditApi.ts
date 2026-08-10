@@ -35,8 +35,6 @@ const ADMIN_MODE = 'administration';
 export const USER_EVENT_TYPES = ['api', 'socketio', 'rpc', 'agent', 'tool', 'llm'] as const;
 export const SYSTEM_EVENT_TYPES = ['schedule', 'admin_task'] as const;
 
-export type AuditEventType = (typeof USER_EVENT_TYPES)[number] | (typeof SYSTEM_EVENT_TYPES)[number];
-
 /** `traces` groups spans by `trace_id`; `spans` lists them individually. */
 export type AuditViewMode = 'traces' | 'spans';
 
@@ -90,19 +88,19 @@ export interface AuditTraceRow {
 }
 
 /** A heatmap cell. `y === null` means "no events", which is not the same as 0. */
-export interface AuditHeatmapPoint {
+interface AuditHeatmapPoint {
   /** Bucket start, in epoch SECONDS. Formatted into local time by the client. */
   readonly x: number;
   readonly y: number | null;
 }
 
 /** One duration band's row of cells. `id` is the band label, e.g. `"1-10s"`. */
-export interface AuditHeatmapSeries {
+interface AuditHeatmapSeries {
   readonly id: string;
   readonly data: readonly AuditHeatmapPoint[];
 }
 
-export interface AuditHeatmapMetadata {
+interface AuditHeatmapMetadata {
   readonly interval_seconds: number;
   readonly interval_label: string;
   readonly bucket_count: number;

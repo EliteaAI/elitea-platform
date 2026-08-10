@@ -29,7 +29,7 @@ export interface DurationBand {
   readonly max: number | null;
 }
 
-export const DURATION_BANDS: readonly DurationBand[] = [
+const DURATION_BANDS: readonly DurationBand[] = [
   { label: '>10s', min: 10000, max: null },
   { label: '1-10s', min: 1000, max: 10000 },
   { label: '100ms-1s', min: 100, max: 1000 },
