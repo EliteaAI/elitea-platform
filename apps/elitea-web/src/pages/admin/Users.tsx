@@ -16,8 +16,11 @@
  *  - **delete**, **set admin role**, **suspend/unsuspend** — implemented for
  *    real in `services/elitea-main/internal/api/v2/admin/users.go`, covered by
  *    write-then-re-read tests. Live controls.
- *  - **user activity** — elitea-main serves no audit-trail API. Rendered
- *    DISABLED with the reason in its tooltip (see `AdminUsersTable`).
+ *  - **user activity** — still has no server. A14's Audit Trail page since gave
+ *    elitea-main a real audit API, so the ORIGINAL reason ("no audit-trail
+ *    API") stopped being true and has been corrected; what is missing now is
+ *    the per-user activity VIEW, not the data. Still rendered DISABLED, with
+ *    the accurate reason in its tooltip (see `AdminUsersTable`).
  *  - **export to Excel** — the reference writes an .xlsx via a spreadsheet
  *    library this app does not depend on. Rendered DISABLED with the reason,
  *    rather than silently dropped or quietly changed to another format.

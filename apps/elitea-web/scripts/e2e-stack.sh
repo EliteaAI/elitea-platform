@@ -184,7 +184,13 @@ SELECT r.id, p.permission
 FROM auth_core__role r
 CROSS JOIN (VALUES
     ('admin.auth.users'),
-    ('admin.auth.users.super_admin')
+    ('admin.auth.users.super_admin'),
+    -- Unit A14, Audit Trail: all four `/elitea_core/audit*` READS are gated on
+    -- this, matching the pylon originals. Unlike the user LISTING, the audit
+    -- listing is gated rather than open — an audit row names the user, the
+    -- project and the action taken, so the listing itself is the sensitive
+    -- part. Without this row the page renders with four 403s.
+    ('models.admin.audit_trail.view')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
@@ -381,6 +387,37 @@ INSERT INTO centry.secrets_data (id, data) VALUES
     ('admin', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f44795765516b54395f515053716d754d506d585f5855576e6d566257494b58314e4d596146712d62386d6f67337145556e76336642595252484135475a666278576974436943364e764b37616c4d4f365346505558364277714c4672714546357146314b424a384d35723667426843363361625648764c32344a6d75705a434e49546c4c53674635725357726e4f333169386b4d506f4e686a4839704444333146784374726c645f4779635f6132713356735446756562786a614b313831664152715065535f5a553034776578617a74426b7a4458427977456f306e4b367a7449625f527851654c655353327a4971594c6e435a6a494b794743786e645267694968436c776874493132424f73487059774942653755527444515a772d307671617a4538706e4c4e7a45464f4c37384d527459717454392d352d37596b6a6b4864673d3d'::bytea),
     ('project-1', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f447738384e6179597230503157334c364279534e5257346647764e5f6778596831726f472d386d646b77547a5155666a42735a785366694a62304f35726a4b2d455a707971362d5436704c7252674a4c6851395935376753595546446955383237486a36634473756a4b2d78'::bytea)
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
+
+-- ── audit trail fixture (unit A14) ───────────────────────────────────────
+-- `centry.audit_events` is written by the legacy tracing plugin, which the Go
+-- E2E stack does not run — so without these rows the Audit Trail page is
+-- correctly empty and journey 29 could only ever assert an empty state, which
+-- the pre-A14 STUB (an unconditional `{"items":[],"total":0}`) would also have
+-- passed. These rows are what make "the page reads the database" a claim with
+-- a failure mode.
+--
+-- Timestamps are relative to now() so they land inside the page's default
+-- "Today" window in any timezone the runner happens to be in.
+--
+-- One trace of three spans, and one single-span trace. The counts are chosen
+-- so the two views CANNOT agree by accident: 4 spans, 2 traces.
+DELETE FROM centry.audit_events WHERE trace_id IN ('e2e-trace-alpha', 'e2e-trace-beta');
+INSERT INTO centry.audit_events
+    (timestamp, user_id, user_email, project_id, event_type, action, http_method,
+     status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
+SELECT seeded.ts, actor.user_id, actor.user_email, proj.project_id, seeded.event_type,
+       seeded.action, seeded.http_method, seeded.status_code, seeded.duration_ms,
+       seeded.is_error, seeded.tool_name, seeded.trace_id, seeded.span_id, seeded.parent_span_id
+FROM (VALUES
+    (now() - interval '20 minutes', 'api',  'POST /chat/e2e',   'POST', 200::smallint, 25.0,    false, NULL,           'e2e-trace-alpha', 'e2ealpharoot', NULL),
+    (now() - interval '19 minutes', 'llm',  'completion/e2e',   NULL,   200::smallint, 2400.0,  false, NULL,           'e2e-trace-alpha', 'e2ealphac1',   'e2ealpharoot'),
+    (now() - interval '18 minutes', 'tool', 'search/e2e',       NULL,   500::smallint, 640.0,   true,  'e2e_toolkit',  'e2e-trace-alpha', 'e2ealphac2',   'e2ealpharoot'),
+    (now() - interval '10 minutes', 'api',  'GET /agents/e2e',  'GET',  200::smallint, 15.0,    false, NULL,           'e2e-trace-beta',  'e2ebetaroot',  NULL)
+) AS seeded(ts, event_type, action, http_method, status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
+CROSS JOIN LATERAL (
+    SELECT id AS user_id, email AS user_email FROM auth_core__user WHERE email = 'e2e-admin@autotest.local'
+) AS actor
+CROSS JOIN LATERAL (SELECT 1 AS project_id) AS proj;
 ENDSQL
 
     # Use the correct binary for exec: podman exec or docker exec.

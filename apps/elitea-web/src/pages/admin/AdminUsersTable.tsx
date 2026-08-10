@@ -251,7 +251,7 @@ export const AdminUsersTable = memo(function AdminUsersTable({
               <Tooltip
                 title={t(
                   'pages.admin.users.action.activityUnavailable',
-                  'User activity is unavailable: this deployment serves no audit-trail API yet',
+                  'User activity is unavailable: the per-user activity view has not been ported yet',
                 )}
               >
                 <span>
