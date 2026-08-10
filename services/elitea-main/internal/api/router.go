@@ -555,7 +555,27 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.Get("/auth_users/{mode}", adminHandler.AuthUsers)
 				r.With(requireAdminUsers).Post("/auth_users/{mode}", adminHandler.AuthUsersAction)
 				r.With(requireAdminUsers).Put("/user_suspend/{mode}/{userID}", adminHandler.UserSuspend)
-				r.Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
+				// The admin Roles page (unit A14). Before it, only the GET
+				// existed — ungated, ignoring {scope}, and listing only
+				// already-granted permissions. See internal/api/v2/admin/roles.go.
+				//
+				// Gated on the permissions the pylon originals declare
+				// (`configuration.roles.permissions.view` / `.edit`,
+				// legacy/plugins/admin/api/v2/permissions.py), resolved from
+				// auth_core__user_role per request. The read is gated too: this
+				// matrix is the deployment's authorisation model, and knowing
+				// which role holds which privilege is itself sensitive.
+				requireRolesView := apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"configuration.roles.permissions.view",
+				)
+				requireRolesEdit := apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"configuration.roles.permissions.edit",
+				)
+				r.With(requireRolesView).Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
+				r.With(requireRolesEdit).Put("/permissions/{scope}/{mode}", adminHandler.AdminPermissionsSave)
+				r.With(requireRolesEdit).Post("/permissions/{scope}/{mode}", adminHandler.AdminPermissionsSync)
 				r.Get("/projects/{mode}", adminHandler.Projects)
 				r.Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
 				r.Get("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValues)
