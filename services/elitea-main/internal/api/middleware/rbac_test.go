@@ -262,3 +262,122 @@ func TestRequireResolvedPermissionsFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+/* ── RequireCentralPermissions (unit A14) ──────────────────────────────── */
+
+// centralRoute mounts the middleware on a route shaped like the admin panel's:
+// a `{mode}` param and NO `{projectID}`.
+func centralRoute(
+	t *testing.T,
+	resolver auth.PermissionResolver,
+	required ...string,
+) (chi.Router, *bool) {
+	t.Helper()
+	reached := false
+	router := chi.NewRouter()
+	router.With(middleware.RequireCentralPermissions(
+		resolver, auth.PermissionModeAdministration, required...,
+	)).Post("/admin/auth_users/{mode}", func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+	return router, &reached
+}
+
+func centralRequest(router chi.Router, principal *auth.User) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/admin/auth_users/administration", nil)
+	if principal != nil {
+		req = req.WithContext(auth.ContextWithUser(req.Context(), *principal))
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRequireCentralPermissions_AllowsWhenTheResolverGrantsIt(t *testing.T) {
+	var seenMode, seenProject string
+	resolver := permissionResolverFunc(func(
+		_ context.Context, _ auth.User, mode, projectID string,
+	) (auth.PermissionResolution, error) {
+		seenMode, seenProject = mode, projectID
+		return auth.PermissionResolution{UserID: 7, Permissions: []string{"admin.auth.users"}}, nil
+	})
+
+	router, reached := centralRoute(t, resolver, "admin.auth.users")
+	rec := centralRequest(router, &auth.User{ID: "7", UserID: "7"})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !*reached {
+		t.Fatal("handler was not reached")
+	}
+	if seenMode != auth.PermissionModeAdministration {
+		t.Errorf("resolver saw mode %q, want administration", seenMode)
+	}
+	// The point of this middleware: it resolves with an EMPTY project id, which
+	// is what the central modes expect and what RequireResolvedPermissions
+	// refuses to produce.
+	if seenProject != "" {
+		t.Errorf("resolver saw projectID %q, want the empty string", seenProject)
+	}
+}
+
+func TestRequireCentralPermissions_DeniesWithoutThePermission(t *testing.T) {
+	resolver := permissionResolverFunc(func(
+		_ context.Context, _ auth.User, _, _ string,
+	) (auth.PermissionResolution, error) {
+		return auth.PermissionResolution{UserID: 7, Permissions: []string{"projects.projects"}}, nil
+	})
+
+	router, reached := centralRoute(t, resolver, "admin.auth.users")
+	rec := centralRequest(router, &auth.User{ID: "7", UserID: "7"})
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if *reached {
+		t.Fatal("handler ran despite a missing permission")
+	}
+}
+
+func TestRequireCentralPermissions_DeniesWithoutAPrincipalOrResolver(t *testing.T) {
+	granting := permissionResolverFunc(func(
+		_ context.Context, _ auth.User, _, _ string,
+	) (auth.PermissionResolution, error) {
+		return auth.PermissionResolution{UserID: 7, Permissions: []string{"admin.auth.users"}}, nil
+	})
+
+	router, reached := centralRoute(t, granting, "admin.auth.users")
+	if rec := centralRequest(router, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous status = %d, want 401", rec.Code)
+	}
+	if *reached {
+		t.Fatal("handler ran for an anonymous request")
+	}
+
+	// Fail closed: a nil resolver must not read as "no checks configured".
+	nilRouter, nilReached := centralRoute(t, nil, "admin.auth.users")
+	if rec := centralRequest(nilRouter, &auth.User{ID: "7", UserID: "7"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("nil-resolver status = %d, want 403", rec.Code)
+	}
+	if *nilReached {
+		t.Fatal("handler ran with no resolver configured")
+	}
+}
+
+func TestRequireCentralPermissions_DeniesWhenTheResolverErrors(t *testing.T) {
+	resolver := permissionResolverFunc(func(
+		_ context.Context, _ auth.User, _, _ string,
+	) (auth.PermissionResolution, error) {
+		return auth.PermissionResolution{}, errors.New("database down")
+	})
+
+	router, reached := centralRoute(t, resolver, "admin.auth.users")
+	if rec := centralRequest(router, &auth.User{ID: "7", UserID: "7"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if *reached {
+		t.Fatal("handler ran after a resolver error")
+	}
+}

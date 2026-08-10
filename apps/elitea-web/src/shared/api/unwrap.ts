@@ -123,3 +123,23 @@ export function unwrapListPage<T>(response: unknown, context: string): Unwrapped
 export function unwrapList<T>(response: unknown, context: string): T[] {
   return unwrapListPage<T>(response, context).rows;
 }
+
+/**
+ * @public The transport peel on its own, for a body carrying MORE than a list.
+ *
+ * `unwrapListPage` answers "what are the rows?", which is the whole question
+ * for most endpoints. Some bodies carry a sibling the rows do not describe —
+ * `/admin/auth_users`'s `{rows, total, counts}`, whose `counts` labels the
+ * page's tabs and is deliberately NOT narrowed by the active search. Without
+ * this, such a call site has to re-derive `resp.data` by hand, which is exactly
+ * the envelope knowledge R-A6 exists to keep out of call sites (added by unit
+ * A14 for that reason).
+ *
+ * Same contract as the list helpers: peels the `{data,status,headers}` envelope
+ * exactly ONCE, accepts a bare body unchanged, and returns `undefined` for an
+ * unresolved query. It makes no claim about the body's shape — the caller still
+ * has to validate what it reads.
+ */
+export function unwrapBody(response: unknown): unknown {
+  return isRecord(response) && isTransportEnvelope(response) ? response['data'] : response;
+}

@@ -48,6 +48,30 @@ func RequireResolvedPermissions(
 	)
 }
 
+// RequireCentralPermissions gates a route on a CENTRAL (project-less)
+// permission — the `administration` and `developer` modes, where
+// `legacyrbac.PostgresResolver` reads auth_core__user_role/auth_core__role
+// directly and ignores the project id entirely.
+//
+// RequireResolvedPermissions cannot express this: its extractor demands a
+// non-empty `{projectID}` URL param, and the admin-panel routes
+// (`/admin/auth_users/{mode}`, `/admin/user_suspend/{mode}/{userID}`, …) have
+// no project in their path. Before unit A14 that meant admin-panel writes had
+// no route-level gate available at all.
+func RequireCentralPermissions(
+	resolver auth.PermissionResolver,
+	mode string,
+	required ...string,
+) func(http.Handler) http.Handler {
+	return RequireResolvedPermissionsForProject(
+		resolver,
+		mode,
+		// Always valid, always empty: central modes ignore the project id.
+		func(*http.Request) (string, bool) { return "", true },
+		required...,
+	)
+}
+
 type ProjectIDExtractor func(*http.Request) (string, bool)
 
 func ProjectIDFromQuery(parameter string) ProjectIDExtractor {

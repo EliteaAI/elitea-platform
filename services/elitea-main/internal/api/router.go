@@ -536,13 +536,25 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			r.Mount("/projects", v2projects.NewHandler(cfg.Pool).Routes())
 
 			// === Admin endpoints ===
-			adminHandler := admin.NewHandler(cfg.Pool)
+			adminHandler := admin.NewHandler(cfg.Pool, admin.WithPermissionResolver(permissionResolver))
+			// The admin panel's write surface (unit A14). Everything below is
+			// gated on the same pylon permission its Python counterpart declares
+			// (`admin.auth.users`, legacy/plugins/admin/api/v2/auth_users.py and
+			// user_suspend.py), resolved from the database in `administration`
+			// mode. The admin SPA's `window.admin_ui_config.permissions` is
+			// PRESENTATION state and is never consulted here.
+			requireAdminUsers := apimw.RequireCentralPermissions(
+				permissionResolver, platformauth.PermissionModeAdministration,
+				"admin.auth.users",
+			)
 			r.Route("/admin", func(r chi.Router) {
 				// Admin panel endpoints (administration mode, no projectID)
 				r.Get("/system_info/prompt_lib", adminHandler.SystemInfo)
 				r.Get("/system_info/{mode}", adminHandler.SystemInfo)
 				r.Get("/plugin_config_values/prompt_lib/resources", adminHandler.ResourcesConfig)
 				r.Get("/auth_users/{mode}", adminHandler.AuthUsers)
+				r.With(requireAdminUsers).Post("/auth_users/{mode}", adminHandler.AuthUsersAction)
+				r.With(requireAdminUsers).Put("/user_suspend/{mode}/{userID}", adminHandler.UserSuspend)
 				r.Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
 				r.Get("/projects/{mode}", adminHandler.Projects)
 				r.Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
