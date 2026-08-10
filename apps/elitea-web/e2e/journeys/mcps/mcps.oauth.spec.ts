@@ -43,13 +43,17 @@
  *    against the backend-DERIVED set rather than against "empty", so it kept
  *    its teeth across the fix instead of cementing the bug — which is the
  *    only reason this correction was cheap to make.
- * D3 (frontend, the one still standing — #149): `pages/toolkits/
- *    EditToolkit.tsx:313-314` renders the Indexes tab as
- *    `{tab === 1 && <Box data-testid="edit-toolkit-indexes-tab-panel" />}` —
- *    a real, clickable tab label in front of an empty Box.
- *    `features/toolkits/indexes/ui/IndexesContainer.tsx` is fully ported
- *    (list, selection, delete-confirm, notification-link alert) and has ZERO
- *    production importers. Same shape as #134/#126/#129.
+ * D3 — FIXED (#149). It used to read: `pages/toolkits/EditToolkit.tsx:
+ *    313-314` renders the Indexes tab as `{tab === 1 && <Box data-testid=
+ *    "edit-toolkit-indexes-tab-panel" />}` — a real, clickable tab label in
+ *    front of an empty Box, while `features/toolkits/indexes/ui/
+ *    IndexesContainer.tsx` sat fully ported with ZERO production importers.
+ *    Mounting it (`features/toolkits/ui/IndexesTab.tsx`) turned up a SECOND
+ *    defect underneath: the port had also dropped the baseline's
+ *    `shouldHideIndexesTab`, so the tab was being offered on screens the
+ *    baseline never offers it on — MCP detail screens first among them. Both
+ *    are fixed; the corrected assertion in the seed test below is what pins
+ *    the second one, and `toolkits.lifecycle.spec.ts` J17.5 pins the first.
  *
  * ── Genuinely untestable here ──────────────────────────────────────────
  * The end-to-end "MCP becomes usable after authorization" half of JRNY-018
@@ -239,34 +243,21 @@ test.describe('JRNY-018 — MCP OAuth callback round trip', () => {
 
   test('J18: an MCP created through the API is listed and opens on its own detail screen', async ({ page }) => {
     /*
-     * STILL EXPECTED-FAIL, but for a different defect than the one recorded
-     * here until 2026-08-09 — and this is exactly the failure mode a stale
-     * `test.fail()` produces, so the correction is written out in full.
+     * NO LONGER EXPECTED-FAIL. This carried `test.fail()` through two
+     * different causes; both are now fixed and the annotation is gone.
      *
-     * OLD reason (D1/#129): the seed 500'd because `owner_id` was never
-     * INSERTed, so no MCP could be created and every assertion after the seed
-     * was unreachable. Re-measured on the standalone stack: the POST returns
-     * 201, and the list/detail round trip works.
+     * Cause 1 (D1/#129): the seed 500'd because `owner_id` was never
+     * INSERTed, so no MCP could be created and every assertion after the
+     * seed was unreachable.
+     * Cause 2 (D3/#149): the Indexes tab panel was an empty `<Box/>` with no
+     * production importer for `IndexesContainer`. Measured then as
+     * `14 x locator resolved to <div class="MuiBox-root css-0"
+     * data-testid="edit-toolkit-indexes-tab-panel"></div>`.
      *
-     * MEASURED reason today (D3/#149): the seed, the list card, the
-     * backend-minted id in the URL, the detail name and the test-pane slot all
-     * PASS. It fails on the last assertion — the Indexes tab panel is an empty
-     * `<Box/>` (`EditToolkit.tsx:313-314`) because `IndexesContainer` has no
-     * production importer, so it resolves to a zero-box element and is never
-     * visible. Verified by removing this annotation and reading the failure:
-     *
-     *   14 × locator resolved to
-     *   <div class="MuiBox-root css-0" data-testid="edit-toolkit-indexes-tab-panel"></div>
-     *
-     * The annotation stays because the test genuinely still fails; only the
-     * cause moved. `test.fail()` rather than `test.skip()`: this runs every
-     * assertion and turns the suite RED the moment #149 lands.
-     *
-     * Coverage claim, narrowed accordingly: everything up to and including the
-     * detail screen IS now executed and proven. Only the Indexes-tab assertion
-     * and the `checkA11y` after it are unreached.
+     * #149's fix showed cause 2 was really two defects — see the corrected
+     * assertion at the end of this test. Every assertion below now runs and
+     * passes on both chromium and webkit.
      */
-    test.fail();
     const name = `${AUTOTEST_PREFIX}j18-oauth-mcp`;
     const createResp = await page.request.post(
       `${API_BASE}/elitea_core/tools/prompt_lib/${DEFAULT_PROJECT_ID}`,
@@ -296,8 +287,44 @@ test.describe('JRNY-018 — MCP OAuth callback round trip', () => {
       await expect(page.getByText('Edit MCP', { exact: true })).toHaveCount(0);
       await expect(page.getByTestId('edit-toolkit-test-pane-slot')).toBeVisible();
 
-      await page.getByRole('tab', { name: 'Indexes' }).click();
-      await expect(page.getByTestId('edit-toolkit-indexes-tab-panel')).toBeVisible();
+      /*
+       * CORRECTED ASSERTION (#149). Until 2026-08-09 this read:
+       *
+       *   await page.getByRole('tab', {name: 'Indexes'}).click();
+       *   await expect(page.getByTestId('edit-toolkit-indexes-tab-panel')).toBeVisible();
+       *
+       * It was written against unmounted code and encoded a GUESS: that an
+       * MCP detail screen offers an Indexes tab at all. The baseline says it
+       * does not. `apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:205-217`
+       * — `shouldHideIndexesTab` — opens with `if (mcpId) return true`, and
+       * the route that supplies `mcpId` is `/mcps/:tab/:mcpId`
+       * (`apps/elitea-ui/src/routes.js:48`), i.e. exactly this screen. A tab
+       * marked `display: 'none'` is not rendered at all:
+       * `components/StyledTabs.jsx:241` applies it to the tab button via
+       * `sx={[styles.tab, {display: tab.display}]}`.
+       *
+       * So the empty `<Box data-testid="edit-toolkit-indexes-tab-panel"/>`
+       * was TWO defects, not one: a slice with no importer, AND a gate the
+       * port had dropped. The fix restores the gate
+       * (`features/toolkits/lib/helpers/indexesTabVisibility.ts`) and mounts
+       * the slice (`features/toolkits/ui/IndexesTab.tsx`) — and this journey
+       * is the one that proves the gate, because an MCP is precisely where
+       * the tab must NOT appear.
+       *
+       * The replacement is STRICTLY STRONGER than what it replaces. The old
+       * pair could be satisfied by any visible element carrying that testid,
+       * including the empty Box it was written against — it never
+       * discriminated a real panel from a placeholder. These three forbid the
+       * tab, forbid the panel, and pin the tab strip to its exact contents,
+       * so neither an empty placeholder nor a spurious extra tab can pass.
+       * The positive case — a toolkit type that DOES offer indexing renders
+       * the real container — is asserted in
+       * `e2e/journeys/toolkits/toolkits.lifecycle.spec.ts` (J17.5), against
+       * an `artifact` toolkit, the type measured to carry `index_data`.
+       */
+      await expect(page.getByRole('tab', { name: 'Indexes' })).toHaveCount(0);
+      await expect(page.getByTestId('edit-toolkit-indexes-tab-panel')).toHaveCount(0);
+      await expect(page.getByRole('tab')).toHaveText(['Configuration']);
 
       await checkA11y(page);
     } finally {

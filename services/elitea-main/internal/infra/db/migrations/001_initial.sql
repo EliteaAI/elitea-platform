@@ -395,6 +395,23 @@ BEGIN
             created_at TIMESTAMP NOT NULL DEFAULT now()
         )', schema_name);
 
+    -- Toolkit index metadata (the "Indexes" tab, issue #149).
+    -- Columns match exactly what `internal/api/v2/toolkits/handler.go`'s
+    -- `IndexMeta`/`IndexMetaGet` SELECT: id, name, status, progress,
+    -- created_at, plus the `toolkit_id` those queries filter on.
+    -- Missing here until now, which is why `IndexMeta` was silently taking its
+    -- error branch on this stack — see that handler's own comment.
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.index_meta (
+            id SERIAL PRIMARY KEY,
+            toolkit_id INTEGER NOT NULL REFERENCES %I.elitea_tools(id) ON DELETE CASCADE,
+            name VARCHAR(128) NOT NULL,
+            status VARCHAR(64) NOT NULL DEFAULT ''created'',
+            progress DOUBLE PRECISION NOT NULL DEFAULT 0,
+            meta JSONB DEFAULT ''{}''::jsonb,
+            created_at TIMESTAMP NOT NULL DEFAULT now()
+        )', schema_name, schema_name);
+
 END;
 $$ LANGUAGE plpgsql;
 
