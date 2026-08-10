@@ -13,8 +13,8 @@
  * adminui handler's `BasePath` — the handler serves this SPA at that prefix and
  * rewrites its asset URLs to match.
  *
- * Users, Audit Trail and Roles exist so far; issue #200 lists the remaining
- * eight. The
+ * Users, Audit Trail, Roles and Projects exist so far; issue #200 lists the
+ * remaining seven. The
  * index route RENDERS it rather than redirecting to `/users`: a `redirect()`
  * here would be type-checked against the MAIN app's generated route ids (the
  * `Register` interface `routeTree.gen.ts` declares is global), which this
@@ -29,6 +29,7 @@ import {
 } from '@tanstack/react-router';
 
 import { AdminAuditTrail } from './AuditTrail';
+import { AdminProjects } from './Projects';
 import { AdminRoles } from './Roles';
 import { AdminUsers } from './Users';
 
@@ -60,11 +61,18 @@ const rolesRoute = createRoute({
   component: AdminRoles,
 });
 
+const projectsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects',
+  component: AdminProjects,
+});
+
 const adminRouteTree = rootRoute.addChildren([
   indexRoute,
   usersRoute,
   auditTrailRoute,
   rolesRoute,
+  projectsRoute,
 ]);
 
 export function createAdminRouter(): AnyRouter {
