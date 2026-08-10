@@ -542,19 +542,16 @@ test.describe('#130 write path', () => {
     // Multi-select: check `editor`, uncheck the `viewer` J22e granted. Save is
     // `disabled={!selectedRoleIds.length || !hasChanged}`, so both clicks matter.
     //
-    // KNOWN FLAKE, and it is the app's, not this test's: measured at ~1 run in
-    // 15 on this stack, `expect(save).toBeEnabled()` below times out with Save
-    // still disabled. `EditUserRolesDialog`'s reset effect depends on the
-    // `originalRoles` ARRAY IDENTITY (`useEffect(…, [open, originalRoles])`),
-    // and `EditUsersButton` passes `(_userRoles) ?? []` — a fresh array on
-    // every render. `useUsersActions` rebuilds `singleAction.edit` on every
-    // render of `Users` too (its memo closes over `editHook`, a fresh object
-    // literal each time), so ANY re-render that lands while the dialog is open
-    // — a react-query refetch flipping `isFetching`, the toast timer — resets
-    // the in-dialog selection back to the user's stored roles and `hasChanged`
-    // falls to false. CI's `retries: 2` hides it. Do not "fix" it here by
-    // retrying the ticks: the same window is what a user hits, and the fix
-    // belongs in the dialog's effect (compare role VALUES, not identity).
+    // This block used to carry a KNOWN FLAKE note: ~1 run in 15, the
+    // `expect(save).toBeEnabled()` below timed out with Save still disabled,
+    // because `EditUserRolesDialog`'s reset effect keyed on the `originalRoles`
+    // ARRAY IDENTITY and every parent render minted a fresh array — so any
+    // re-render landing while the dialog was open (a react-query refetch, the
+    // toast timer) discarded the ticks above. The effect now keys on the role
+    // VALUES, and `useUsersActions`/`useEditUser` no longer rebuild their
+    // callbacks each render. Unit cover: `EditUserRolesDialog.test.tsx`. If
+    // this assertion starts timing out again, that is a real regression — do
+    // not paper over it by retrying the ticks.
     await editDialog.getByRole('combobox').click();
     await page.getByRole('option', { name: 'editor' }).click();
     await page.getByRole('option', { name: 'viewer' }).click();

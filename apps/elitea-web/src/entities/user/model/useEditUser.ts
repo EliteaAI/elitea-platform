@@ -44,11 +44,16 @@ export function useEditUser({ projectId, onSuccess, onError }: UseEditUserOption
     },
   });
 
+  // `mutation.mutate` is reference-stable across renders (react-query v5); the
+  // whole `mutation` object is not. Depending on the object made `saveUser` a
+  // fresh function every render, which propagated all the way to
+  // `EditUserRolesDialog`'s `originalRoles` prop identity.
+  const { mutate } = mutation;
   const saveUser = useCallback(
     (userId: string, roles: string[]) => {
-      mutation.mutate({ userId, roles });
+      mutate({ userId, roles });
     },
-    [mutation],
+    [mutate],
   );
 
   return { saveUser, isLoading: mutation.isPending };
@@ -75,11 +80,12 @@ export function useBatchEditUsers({
     },
   });
 
+  const { mutate } = mutation;
   const saveUsers = useCallback(
     (roles: string[]) => {
-      mutation.mutate({ roles });
+      mutate({ roles });
     },
-    [mutation],
+    [mutate],
   );
 
   return { saveUsers, isLoading: mutation.isPending };
@@ -105,11 +111,12 @@ export function useDeleteUsers({
     },
   });
 
+  const { mutate } = mutation;
   const deleteUserIds = useCallback(
     (ids: number[]) => {
-      mutation.mutate({ ids });
+      mutate({ ids });
     },
-    [mutation],
+    [mutate],
   );
 
   return { deleteUserIds, isLoading: mutation.isPending };

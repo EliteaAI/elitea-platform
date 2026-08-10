@@ -34,6 +34,13 @@ export interface EditUserRolesDialogProps {
   onConfirm: (roles: string[]) => void;
 }
 
+/**
+ * Separator for the value-derived role key below. NUL cannot occur in a role id
+ * or name, so `join`/`split` round-trip exactly — a printable separator could
+ * be swallowed by a role that contains it.
+ */
+const ROLE_KEY_SEPARATOR = '\u0000';
+
 export const EditUserRolesDialog = ({
   open,
   onClose,
@@ -43,15 +50,36 @@ export const EditUserRolesDialog = ({
 }: EditUserRolesDialogProps) => {
   const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>(originalRoles);
 
-  const hasChanged = useMemo(() => {
-    const a = [...selectedRoleIds].sort();
-    const b = [...originalRoles].sort();
-    return JSON.stringify(a) !== JSON.stringify(b);
-  }, [selectedRoleIds, originalRoles]);
+  /**
+   * `originalRoles` arrives as a fresh array literal on every parent render —
+   * `EditUsersButton` passes `(_userRoles as string[] | undefined) ?? []`, and
+   * `useUsersActions` rebuilds the `userRoles` behind it. Keying the reset
+   * effect on that identity meant ANY re-render of the Users page while the
+   * dialog was open (a react-query refetch flipping `isFetching`, the
+   * toast-clear timer) threw away the user's in-dialog selection and re-disabled
+   * Save mid-edit — J22f's documented ~1-in-15 failure. So collapse the prop to
+   * a value-derived key first, and hang both the reset and the `hasChanged`
+   * comparison off that: identity churn is invisible, a genuine change of roles
+   * is not.
+   */
+  const originalRolesKey = useMemo(
+    () => [...originalRoles].sort().join(ROLE_KEY_SEPARATOR),
+    [originalRoles],
+  );
+
+  const normalizedOriginalRoles = useMemo(
+    () => (originalRolesKey === '' ? [] : originalRolesKey.split(ROLE_KEY_SEPARATOR)),
+    [originalRolesKey],
+  );
+
+  const hasChanged = useMemo(
+    () => [...selectedRoleIds].sort().join(ROLE_KEY_SEPARATOR) !== originalRolesKey,
+    [selectedRoleIds, originalRolesKey],
+  );
 
   useEffect(() => {
-    setSelectedRoleIds(originalRoles);
-  }, [open, originalRoles]);
+    setSelectedRoleIds(normalizedOriginalRoles);
+  }, [open, normalizedOriginalRoles]);
 
   const handleConfirm = useCallback(() => {
     onConfirm(selectedRoleIds);
