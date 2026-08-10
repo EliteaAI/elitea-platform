@@ -17,6 +17,7 @@ import { ServicePromptsBody } from './ui/system-prompts/ServicePromptsBody';
 export type { PromptConfig } from './ui/system-prompts/ServicePrompts.types';
 
 import { SecretsTable } from './ui/secrets/SecretsTable';
+import { SecretValueCell } from './ui/secrets/SecretValueCell';
 
 import { DrawerPage } from './ui/drawer-page/DrawerPage';
 
@@ -45,8 +46,15 @@ export const usersFeature = { useUsersActions, UsersPageContent };
 /** System-prompts tab (`pages/settings/ServicePrompts.tsx`). */
 export const servicePromptsFeature = { ServicePromptsBody };
 
-/** Secrets tab (`pages/settings/Secrets.tsx`). */
-export const secretsFeature = { SecretsTable };
+/**
+ * Secrets tab (`pages/settings/Secrets.tsx`).
+ *
+ * `SecretValueCell` is also consumed by `pages/admin/AdminSecretsTable.tsx`
+ * (unit A14): the GLOBAL vault is a different store with a different API, but
+ * the masked-value cell — reveal toggle, and a copy that re-fetches the
+ * plaintext instead of reading the rendered text — is the same component.
+ */
+export const secretsFeature = { SecretsTable, SecretValueCell };
 
 /** Shared full-height tab-content layout wrapper, ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/drawer-page/DrawerPage.jsx`. */
 export const drawerPage = { DrawerPage };

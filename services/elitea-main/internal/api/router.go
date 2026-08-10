@@ -710,7 +710,15 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// admin_ui and qa/elitea-api-testing. #137 read it as a
 			// double-mount bug and moved the routes to the v2 root, which
 			// broke every consumer outside apps/elitea-web; #151 restores it.
-			r.Mount("/secrets", v2secrets.NewHandler(cfg.Pool).Routes())
+			// The resolver gates the `administration`-mode routes only — the
+			// GLOBAL vault behind the admin Secrets page (unit A14). Those
+			// gates live inside the package because the mode is a PATH
+			// SEGMENT: one chi route serves both modes, so route-level
+			// middleware here could not gate one and not the other.
+			r.Mount("/secrets", v2secrets.NewHandler(
+				cfg.Pool,
+				v2secrets.WithPermissionResolver(permissionResolver),
+			).Routes())
 
 			// === Notifications ===
 			r.Route("/notifications", func(r chi.Router) {
