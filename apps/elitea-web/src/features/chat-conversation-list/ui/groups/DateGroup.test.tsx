@@ -170,4 +170,24 @@ describe('DateGroup', () => {
     expect(container.querySelector('[data-testid="passive-highlight-overlay"]')).toBeNull();
     expect(container.querySelector('[data-testid="invalid-target-overlay"]')).toBeNull();
   });
+
+  /*
+   * The group label is the accessible label of its toggle BUTTON, not a
+   * section heading. MUI maps `subtitle2` to `<h6>` by default, which put an
+   * h6 beside the folder accordions' `<h3>` summaries — axe `heading-order`,
+   * impact "moderate", the moment this list was first mounted on a route.
+   */
+  it('renders the group label as a button label, not a heading', () => {
+    renderWithTheme(
+      <DateGroup
+        group={{ name: 'today', displayName: 'Today', conversations: [] }}
+        renderConversationItem={renderItem}
+        isExpanded
+        onToggleExpanded={vi.fn()}
+        onLoadMore={vi.fn()}
+      />,
+    );
+    expect(screen.queryAllByRole('heading')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Today' })).toBeInTheDocument();
+  });
 });

@@ -6,6 +6,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
+import { asDragGroupAria } from '../../lib/dragAttributes';
 import type { FolderListItem } from '../../lib/hooks/conversationListState.types';
 
 export interface DraggableFolderItemProps {
@@ -44,11 +45,13 @@ export function DraggableFolderItem({ folder, children, isDragDisabled = false }
     zIndex: isDragging ? 1000 : 'auto',
   };
 
+  // `asDragGroupAria`: dnd-kit's ARIA bag describes a drag HANDLE, not a row
+  // container that wraps its own buttons — see `lib/dragAttributes.ts`.
   return (
     <Box
       ref={setNodeRef}
       style={dragStyle}
-      {...attributes}
+      {...asDragGroupAria(attributes)}
       {...listeners}
       sx={containerSx(disabled)}
     >
