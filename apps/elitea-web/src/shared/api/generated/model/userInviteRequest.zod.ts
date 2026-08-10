@@ -40,16 +40,21 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { UserRecord } from "./userRecord.zod";
 
-export const UserListResponse = zod
+export const UserInviteRequest = zod
   .object({
-    rows: zod.array(UserRecord),
-    total: zod.int(),
+    emails: zod
+      .array(zod.string())
+      .describe("Addresses to invite. An address with no account is created."),
+    roles: zod
+      .array(zod.string())
+      .describe(
+        "Project role NAMES (not ids) — they must exist in auth_core__project_role for this project or the whole request is rejected with 400.\n",
+      ),
   })
   .describe(
-    "Users response map, internal\/api\/v2\/eliteacore\/handler.go's Users. NOTE(#130): this used to be the response of POST\/PUT\/DELETE as well — the router mounted all four verbs on the same listing handler, so every write echoed the member list and changed nothing. The write verbs now have their own handlers and their own response shapes below.\n",
+    "Wire truth from legacy\/plugins\/admin\/api\/v2\/users.py's post and the client that was ported from it (features\/settings\/lib\/users\/useUsersActions.ts's useInviteUsers).\n",
   );
 
-export type UserListResponse = zod.input<typeof UserListResponse>;
-export type UserListResponseOutput = zod.output<typeof UserListResponse>;
+export type UserInviteRequest = zod.input<typeof UserInviteRequest>;
+export type UserInviteRequestOutput = zod.output<typeof UserInviteRequest>;
