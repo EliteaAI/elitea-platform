@@ -29,6 +29,10 @@ var secretsRoutes = []struct {
 	{http.MethodGet, "/api/v2/secrets/secrets/{mode}/{projectID}"},
 	{http.MethodPost, "/api/v2/secrets/secrets/{mode}/{projectID}"},
 	{http.MethodGet, "/api/v2/secrets/secret/{mode}/{projectID}/{name}"},
+	// administration-mode create (unit A14). pylon's ProjectAPI has no POST on
+	// this path; its AdminAPI does, and it is how admin_ui creates a global
+	// secret.
+	{http.MethodPost, "/api/v2/secrets/secret/{mode}/{projectID}/{name}"},
 	{http.MethodPut, "/api/v2/secrets/secret/{mode}/{projectID}/{name}"},
 	{http.MethodDelete, "/api/v2/secrets/secret/{mode}/{projectID}/{name}"},
 	{http.MethodPost, "/api/v2/secrets/hide/{mode}/{projectID}/{name}"},
@@ -186,27 +190,60 @@ func TestSecretsRoutesAnswerRequests(t *testing.T) {
 // third convention the new client had introduced, is exactly such a miss.
 //
 // `administration` selects pylon's AdminAPI over the GLOBAL vault
-// (VaultClient() with no project); this Handler implements only the project
-// handler, so it answers 501 rather than quietly serving — and, on write,
-// MUTATING — project 0's vault in its place.
+// (VaultClient() with no project). Unit A14 implements it as a genuinely
+// separate handler over the `admin` row (internal/api/v2/secrets/admin.go); it
+// used to answer 501, and the reason it did — routing it into the project
+// handler would have read and WRITTEN project 0's vault — is why the
+// implementation is separate rather than a flag.
 func TestSecretsModeDispatch(t *testing.T) {
 	router := newSecretsTestRouter(t)
 
 	cases := []struct {
-		name string
-		path string
-		want int
-		body string
+		name   string
+		method string
+		path   string
+		want   int
+		body   string
 	}{
-		{"invented mode is rejected", "/api/v2/secrets/secrets/prompt_lib/1", http.StatusNotFound, "unknown mode"},
-		{"administration is not implemented", "/api/v2/secrets/secrets/administration/0", http.StatusNotImplemented, "administration mode is not implemented"},
+		{
+			name: "invented mode is rejected", method: http.MethodGet,
+			path: "/api/v2/secrets/secrets/prompt_lib/1",
+			want: http.StatusNotFound, body: "unknown mode",
+		},
+		{
+			// This router is built with no permission resolver, and the
+			// administration routes fail CLOSED on that — 403, not 501 and not
+			// a 500 from the nil pool the handler would otherwise reach. That
+			// is the property worth pinning: the gate runs before the handler.
+			name: "administration is routed and gated", method: http.MethodGet,
+			path: "/api/v2/secrets/secrets/administration/0",
+			want: http.StatusForbidden, body: "insufficient permissions",
+		},
+		{
+			name: "administration create is routed and gated", method: http.MethodPost,
+			path: "/api/v2/secrets/secret/administration/0/probe",
+			want: http.StatusForbidden, body: "insufficient permissions",
+		},
+		{
+			// The one administration route deliberately not built: pylon's
+			// bulk vault replacement, which no client in the workspace calls.
+			name: "bulk vault replacement is not implemented", method: http.MethodPost,
+			path: "/api/v2/secrets/secrets/administration/0",
+			want: http.StatusNotImplemented, body: "bulk replacement of the global vault is not implemented",
+		},
+		{
+			// Project mode has no POST on the single-secret path.
+			name: "project mode rejects the create verb", method: http.MethodPost,
+			path: "/api/v2/secrets/secret/default/1/probe",
+			want: http.StatusMethodNotAllowed, body: "method not allowed",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			recorder := serveResponse(t, router, http.MethodGet, tc.path)
+			recorder := serveResponse(t, router, tc.method, tc.path)
 			if recorder.Code != tc.want {
-				t.Errorf("status = %d, want %d", recorder.Code, tc.want)
+				t.Errorf("status = %d, want %d (body %q)", recorder.Code, tc.want, recorder.Body.String())
 			}
 			// The status alone does not discriminate a mode rejection from
 			// chi's own "no such route" 404, so the body is asserted too.

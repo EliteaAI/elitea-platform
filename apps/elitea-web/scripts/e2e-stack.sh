@@ -208,7 +208,20 @@ CROSS JOIN (VALUES
     -- member of the project they are acting on, so the default-mode grant
     -- above cannot authorise them.
     ('configuration.users.users.create'),
-    ('configuration.users.users.edit')
+    ('configuration.users.users.edit'),
+    -- Unit A14, Secrets: the GLOBAL vault. `.view` gates BOTH reads (the
+    -- listing and the single-value reveal), matching pylon's AdminAPI, and it
+    -- is a different grant from `.list` — the admin SPA's sidebar has always
+    -- gated the page on `.list` while the server checks `.view`, and on the
+    -- reference deployment the administration-mode `editor` role holds the
+    -- first and not the second. Both are granted here so journey 32 exercises
+    -- the working path; the refusal path is covered by the Go integration
+    -- tests, which can withhold either.
+    ('configuration.secrets.secret.view'),
+    ('configuration.secrets.secret.list'),
+    ('configuration.secrets.secret.create'),
+    ('configuration.secrets.secret.edit'),
+    ('configuration.secrets.secret.delete')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
@@ -410,11 +423,19 @@ ON CONFLICT (elitea_title) DO UPDATE SET section = EXCLUDED.section, updated_at 
 --
 -- Stored as JSON STRINGS, not numbers, on purpose: the secrets API handler
 -- (internal/api/v2/secrets/handler.go) round-trips a vault blob through
--- `map[string]string`, and a JSON number would fail that unmarshal and make it
--- REPLACE the vault with an empty one. centrysecrets' Python-int contract
--- accepts either. (That handler only ever touches `project-<id>`, never
--- `admin`, so the limits are safe from J21 either way — but the two blobs are
--- written in one format on purpose.)
+-- `map[string]string`, and a JSON number would fail that unmarshal.
+-- centrysecrets' Python-int contract accepts either.
+--
+-- That format now matters MORE than when this was written. Unit A14 gave the
+-- `admin` row an HTTP surface of its own — `internal/api/v2/secrets/admin.go`,
+-- the global vault behind Admin > Secrets — so these five entries are rows on
+-- that page and journey 32 asserts they are. They are also why that handler
+-- refuses to write a vault it could not read rather than replacing it with an
+-- empty one: on THIS row, "replace with empty" would silently delete the
+-- deployment's shared secrets and, here, break J20f.
+--
+-- J21 (Settings > Secrets) is still unaffected: that page reads
+-- `project-1`, which stays empty.
 INSERT INTO centry.secrets_key (id, data) VALUES
     ('admin', '\x6f4b47696f36536c7071656f71617172724b32757237437873724f3074626133754c6d36753779397672383d'::bytea),
     ('project-1', '\x45424553457851564668635947526f62484230654879416849694d6b4a53596e4b436b714b7977744c69383d'::bytea)
