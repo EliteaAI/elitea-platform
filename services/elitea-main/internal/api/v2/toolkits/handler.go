@@ -469,17 +469,9 @@ func (h *Handler) IndexMetaGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "name": name, "status": status, "progress": progress, "created_at": createdAt})
 }
 
-func (h *Handler) IndexMetaUpdate(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (h *Handler) IndexMetaDelete(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *Handler) IndexCancel(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
+// IndexMetaUpdate, IndexMetaDelete and IndexCancel live in index_write.go.
+// They used to be three one-line stubs here that answered `{"ok":true}`/204
+// without touching the database (#180).
 
 func (h *Handler) IndexTypes(w http.ResponseWriter, _ *http.Request) {
 	items := []map[string]any{
