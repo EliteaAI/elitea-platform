@@ -52,8 +52,6 @@ import { useCallback, useMemo, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Snackbar from '@mui/material/Snackbar';
 
-import { t } from '@/shared/i18n';
-
 import { addToolkitConversationParticipant, createToolkitConversation, useToolkitLlmModels } from '../api/toolkitChatSession';
 import type { ToolkitLlmModel } from '../api/toolkitChatSession';
 import { useStopIndexingItemMutation } from '../indexes/api/indexesApi';
@@ -291,20 +289,22 @@ export function IndexesTab(props: IndexesTabProps): ReactNode {
         * errors) — same local-Snackbar pattern `processes/chat/ui/
         * ChatConversationSidebar.tsx` established for exactly this reason.
         */}
-      <Snackbar
-        open={notice !== undefined}
-        autoHideDuration={6000}
-        onClose={dismissNotice}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-      >
-        <Alert
-          severity={notice?.severity ?? 'info'}
+      {notice !== undefined && (
+        <Snackbar
+          open
+          autoHideDuration={6000}
           onClose={dismissNotice}
-          variant="filled"
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         >
-          {notice?.message ?? t('features.toolkits.indexesTab.emptyNotice', '')}
-        </Alert>
-      </Snackbar>
+          <Alert
+            severity={notice.severity}
+            onClose={dismissNotice}
+            variant="filled"
+          >
+            {notice.message}
+          </Alert>
+        </Snackbar>
+      )}
     </>
   );
 }

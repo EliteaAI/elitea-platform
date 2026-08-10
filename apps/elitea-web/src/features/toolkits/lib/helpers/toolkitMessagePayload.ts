@@ -40,8 +40,8 @@
  *     baseline itself sends `undefined` in that case.
  */
 
-/** One conversation participant, as `useToolkitChatDispatch.hooks.ts` resolves it. */
-export interface ToolkitPayloadParticipant {
+/** One conversation participant, as `useToolkitChatDispatch.hooks.ts` resolves it. Not exported: every consumer reaches it structurally through `BuildToolkitMessagePayloadInput.participant` (knip flags it as an unused export otherwise). */
+interface ToolkitPayloadParticipant {
   readonly id?: string | number;
   readonly entity_name?: string;
 }
