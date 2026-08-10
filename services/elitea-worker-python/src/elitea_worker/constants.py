@@ -16,18 +16,18 @@ CAPABILITY_ID = CONFIGURATION_VALIDATION_CAPABILITY_ID
 RUNTIME_IMPLEMENTATION = "elitea-worker-python"
 RUNTIME_VERSION = "0.1.0"
 
-# The admitted current-runtime SDK is distribution 0.9.6. The standalone
+# The admitted current-runtime SDK is distribution 0.9.8. The standalone
 # worker admits one exact reviewed source artifact rather than a floating
 # branch or an unverified same-version rebuild.
-SDK_SOURCE_REVISION = "6155d20acb4a3b00a6085212a75258cc1b3c695a"
-SDK_DISTRIBUTION_VERSION = "0.9.6"
+SDK_SOURCE_REVISION = "b5113a129329b85d23c2d5c2bf55f18e307414ec"
+SDK_DISTRIBUTION_VERSION = "0.9.8"
 SDK_SOURCE_ARCHIVE_SHA256 = (
-    "5771315bbf8f300171bf4526f1550b2e7789e59d9530479674537fc8c3b093a0"
+    "df398b4a378e7b88ea3b72511e31de13a17a02159c69fbada6f0b948a0ecf2d7"
 )
 SDK_PACKAGE_TREE_SHA256 = (
-    "1b5d675d087a1b753562274ca0d02603c6396a27e4cb5633d9948ac8613739b7"
+    "61075c4b6f130773c31e12294589969de78eb9e46eafa798e32f75908917adb8"
 )
-# The configuration catalog has its own compatibility revision. SDK 0.9.6
+# The configuration catalog has its own compatibility revision. SDK 0.9.8
 # preserves the exact admitted catalog digest, so upgrading the runtime must
 # not invalidate already-admitted configuration-validation envelopes.
 CONFIGURATION_CATALOG_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"

@@ -97,8 +97,8 @@ jobs:
 
       - name: Check out the exact worker-locked SDK source
         env:
-          SDK_REVISION: 6155d20acb4a3b00a6085212a75258cc1b3c695a
-          SDK_ARCHIVE_SHA256: 5771315bbf8f300171bf4526f1550b2e7789e59d9530479674537fc8c3b093a0
+          SDK_REVISION: b5113a129329b85d23c2d5c2bf55f18e307414ec
+          SDK_ARCHIVE_SHA256: df398b4a378e7b88ea3b72511e31de13a17a02159c69fbada6f0b948a0ecf2d7
         run: |
           git clone --filter=blob:none --no-checkout \
             https://github.com/EliteaAI/elitea-sdk.git \
@@ -121,6 +121,7 @@ jobs:
       - name: Unit and byte-conformance tests
         env:
           ELITEA_CONFORMANCE_ROOT: ${{ github.workspace }}/testdata/proto/runtime/v1
+          ELITEA_SDK_SOURCE_ROOT: /tmp/elitea-sdk-current
         run: |
           python -m pytest \
             services/elitea-worker-python/tests \
