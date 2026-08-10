@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
+
+import { asDragGroupAria } from '../../lib/dragAttributes';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
@@ -60,12 +62,14 @@ export function DraggableConversationItem({ conversation, children, isDragDisabl
     },
   };
 
+  // `asDragGroupAria`: dnd-kit's ARIA bag describes a drag HANDLE, not a row
+  // container that wraps its own buttons — see `lib/dragAttributes.ts`.
   return (
     <Box
       ref={setNodeRef}
       style={style}
       {...listeners}
-      {...attributes}
+      {...asDragGroupAria(attributes)}
       sx={sx}
       className={isActive ? 'active-conversation' : ''}
     >

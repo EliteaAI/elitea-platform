@@ -17,6 +17,15 @@ import { server } from '../test/setup';
 import { createSessionStore, sessionAuthContext, useSessionStore } from './session-store';
 
 const INFO = '/forward-auth/info';
+const API_BASE = '/api/v2';
+const AUTHOR = `${API_BASE}/social/author/`;
+
+/** The `/social/author` shape `personal_project_id` really comes from. */
+function author(personalProjectId?: string) {
+  return http.get(AUTHOR, () =>
+    HttpResponse.json({ id: 'u-42', name: 'U', email: 'u@example.test', avatar: '', description: '', ...(personalProjectId !== undefined ? { personal_project_id: personalProjectId } : {}) }),
+  );
+}
 
 describe('createSessionStore', () => {
   it('starts with no user and loaded=false before any probe', () => {
@@ -28,12 +37,77 @@ describe('createSessionStore', () => {
   it('populates the user from an authenticated /forward-auth/info response', async () => {
     server.use(
       http.get(INFO, () => HttpResponse.json({ authenticated: true, user_id: 'u-42' })),
+      author('proj-9'),
     );
-    const store = createSessionStore();
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
     await store.getState().fetchSession();
 
-    expect(store.getState().user).toEqual({ id: 'u-42', personal_project_id: 'u-42' });
+    expect(store.getState().user).toEqual({ id: 'u-42', personal_project_id: 'proj-9' });
     expect(store.getState().loaded).toBe(true);
+  });
+
+  /*
+   * The #166 regression guard. `personal_project_id` was filled with the USER
+   * ID — `/forward-auth/info` returns no project id at all, so the field was
+   * fabricated. `NotificationButton` then opened an SSE subscription scoped to
+   * a project the user is generally not a member of and was refused with a
+   * 403, which EventSource does not retry. This asserts the two values are
+   * sourced independently: the store must report the SERVER's project id, and
+   * it must never be the user id unless the server said so.
+   */
+  it('takes personal_project_id from /social/author, never from the user id', async () => {
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ authenticated: true, user_id: 'u-42' })),
+      author('7'),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user?.personal_project_id).toBe('7');
+    expect(store.getState().user?.personal_project_id).not.toBe('u-42');
+  });
+
+  it('leaves personal_project_id absent when the server names no personal project', async () => {
+    // An empty string is the server's "no personal project" answer; carrying
+    // it through as a truthy-looking value would put `''` in the SSE URL.
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ authenticated: true, user_id: 'u-42' })),
+      author(''),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user).toEqual({ id: 'u-42' });
+    expect(store.getState().user).not.toHaveProperty('personal_project_id');
+  });
+
+  it('still resolves the user when the author probe fails', async () => {
+    // A failed author probe must not log the user out — identity comes from
+    // /forward-auth/info alone.
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ authenticated: true, user_id: 'u-42' })),
+      http.get(AUTHOR, () => new HttpResponse(null, { status: 500 })),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user).toEqual({ id: 'u-42' });
+    expect(store.getState().loaded).toBe(true);
+  });
+
+  it('does not probe /social/author at all when the session is anonymous', async () => {
+    let authorCalls = 0;
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ authenticated: false })),
+      http.get(AUTHOR, () => {
+        authorCalls += 1;
+        return HttpResponse.json({});
+      }),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(authorCalls).toBe(0);
   });
 
   it('sends the session cookie — the probe is worthless without credentials', async () => {

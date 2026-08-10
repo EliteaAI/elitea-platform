@@ -1,9 +1,11 @@
 package social
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -61,10 +63,9 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 
 	if h.pool == nil {
 		writeJSON(w, http.StatusOK, AuthorResponse{
-			ID:                user.ID,
-			Name:              user.Email,
-			Email:             user.Email,
-			PersonalProjectID: "1",
+			ID:    user.ID,
+			Name:  user.Email,
+			Email: user.Email,
 		})
 		return
 	}
@@ -73,57 +74,119 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 
 	// Query centry.social_users joined with auth_core__user
 	var resp AuthorResponse
-	var personalProjectID *int
 
 	err := h.pool.QueryRow(ctx, `
 		SELECT
-			su.user_id,
 			COALESCE(au.name, ''),
 			COALESCE(au.email, ''),
 			COALESCE(su.avatar, ''),
 			COALESCE(su.description, ''),
-			p.id,
 			su.personalization
 		FROM centry.social_users su
 		LEFT JOIN auth_core__user au ON au.id = su.user_id
-		LEFT JOIN centry.project p ON p.owner_id = su.user_id
 		WHERE au.email = $1 OR su.user_id::text = $2
 		LIMIT 1
 	`, user.Email, user.ID).Scan(
-		&resp.ID,
 		&resp.Name,
 		&resp.Email,
 		&resp.Avatar,
 		&resp.Description,
-		&personalProjectID,
 		&resp.Personalization,
 	)
 
 	if err != nil {
-		// If no row found, create a default response from auth context
-		resp = AuthorResponse{
-			ID:                user.ID,
-			Name:              user.Email,
-			Email:             user.Email,
-			Avatar:            "",
-			Description:       "",
-			PersonalProjectID: "1",
-		}
-	} else {
-		if personalProjectID != nil {
-			resp.PersonalProjectID = intToStr(*personalProjectID)
-		} else {
-			resp.PersonalProjectID = "1"
-		}
-		resp.ID = intToStr(0) // will be overridden below
+		// No social_users row: fall back to what the auth context knows. The
+		// personal project is resolved below either way — it does not depend
+		// on the social profile existing.
+		resp = AuthorResponse{Name: user.Email, Email: user.Email}
 	}
 
-	// Ensure ID is a string for the UI
-	if resp.ID == "0" || resp.ID == "" {
-		resp.ID = user.ID
-	}
+	// The identity always comes from the authenticated principal, never from
+	// the joined row (which is matched on email OR id and could in principle
+	// select a different user's profile).
+	resp.ID = user.ID
+	resp.PersonalProjectID = h.resolvePersonalProjectID(ctx, user.ID)
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resolvePersonalProjectID answers "which project do this user's private
+// things live in" — the value the SPA stores as `personal_project_id` and
+// then uses as its default project scope (legacy parity: `slices/settings.js`
+// seeds `project = {id: personal_project_id, name: 'Private'}` when nothing
+// is selected, and `NotificationButton.jsx` opens its notification
+// subscription against it).
+//
+// Resolution order, first hit wins:
+//
+//  1. The canonical personal project `project_user_<uid>` that the user holds
+//     a project-role in — pylon's `projects_get_personal_project_id` decision
+//     tree, also implemented as the `ResolveCurrentPersonalProjectID` query.
+//  2. The system-user email fallback `system_user_<n>@centry.user` → <n>,
+//     the second branch of that same pylon tree.
+//  3. The lowest-id project the user actually holds a role in.
+//
+// Every branch is membership-checked, which is the point: this value is used
+// as an authorization scope by the caller, so returning a project the user is
+// not a member of produces a 403 the SPA cannot recover from (issue #166).
+// The previous implementation returned a hardcoded "1" in EVERY fallback
+// branch (issue #167) — correct only by accident on a single-project
+// deployment, and wrong the moment project 1 is not the caller's project.
+//
+// Returns "" when no project can be resolved. That is a truthful answer, and
+// the SPA treats it as "no personal project yet".
+//
+// NOT covered here: this Go stack never PROVISIONS a `project_user_<uid>`
+// project, so branch 1 only ever fires for data migrated from pylon.
+func (h *Handler) resolvePersonalProjectID(ctx context.Context, userID string) string {
+	uid, convErr := strconv.Atoi(userID)
+	if convErr != nil || uid <= 0 {
+		return ""
+	}
+
+	// One ranked candidate list rather than three sequential queries: the
+	// `priority` column makes the precedence explicit and total, so the result
+	// does not depend on UNION ALL branch ordering (which Postgres does not
+	// guarantee), and `id IS NOT NULL` keeps a non-matching branch from
+	// producing a NULL that the Scan below could not hold.
+	var projectID int
+	err := h.pool.QueryRow(ctx, `
+		SELECT candidate.id
+		FROM (
+		    SELECT 1 AS priority, project.id AS id
+		    FROM centry.project AS project
+		    WHERE project.name = 'project_user_' || $1::integer::text
+		      AND EXISTS (
+		          SELECT 1
+		          FROM public.auth_core__project_user_role AS assignment
+		          WHERE assignment.project_id = project.id
+		            AND assignment.user_id = $1::integer
+		      )
+
+		    UNION ALL
+
+		    SELECT 2, substring(
+		                  user_account.email
+		                  FROM '^system_user_([0-9]+)@centry[.]user$'
+		              )::integer
+		    FROM public.auth_core__user AS user_account
+		    WHERE user_account.id = $1::integer
+		      AND user_account.email ~ '^system_user_[0-9]+@centry[.]user$'
+
+		    UNION ALL
+
+		    SELECT 3, assignment.project_id::integer
+		    FROM public.auth_core__project_user_role AS assignment
+		    WHERE assignment.user_id = $1::integer
+		) AS candidate
+		WHERE candidate.id IS NOT NULL
+		ORDER BY candidate.priority, candidate.id
+		LIMIT 1
+	`, uid).Scan(&projectID)
+	if err != nil || projectID <= 0 {
+		return ""
+	}
+	return intToStr(projectID)
 }
 
 func (h *Handler) UpdateAuthor(w http.ResponseWriter, r *http.Request) {

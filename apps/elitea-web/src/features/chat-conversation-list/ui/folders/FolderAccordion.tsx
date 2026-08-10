@@ -1,5 +1,5 @@
 import type { ReactNode, SyntheticEvent } from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
@@ -17,7 +17,18 @@ import { TypographyWithConditionalTooltip } from '@/shared/ui/TypographyWithCond
 import { combineSx } from '@/shared/ui/lib/combineSx';
 import { t } from '@/shared/i18n';
 
-const MENU_CONTAINER_ID = 'folder-accordion-menu-container';
+/**
+ * Kept as a stable hook for styling/tests, but no longer used as a DOM `id`:
+ * every mounted folder rendered the SAME literal id, and the accordion
+ * summary's `aria-controls` pointed at a `folder-accordion-panel-<index>` id
+ * that no element ever carried — `index` is always 0 here (one item per
+ * folder), so all folders also claimed the same target. axe reports the
+ * latter as `aria-valid-attr-value` (critical): a screen reader following
+ * the summary's `aria-controls` landed nowhere. Both are now derived from
+ * React's `useId()`, so they are unique per mounted accordion and the panel
+ * really carries the id the summary names.
+ */
+const MENU_CONTAINER_TESTID = 'folder-accordion-menu-container';
 
 interface FolderAccordionItemDef {
   readonly title: string;
@@ -133,6 +144,7 @@ export function FolderAccordion({
 }: FolderAccordionProps): ReactNode {
   const { isHovering = false, isNextFolderHovered = false, showMenu = false, onMouseEnter, onMouseLeave } = interaction ?? {};
 
+  const accordionId = useId();
   const [expanded, setExpanded] = useState(defaultExpanded);
   const shouldBeSelected = !expanded && defaultExpanded;
 
@@ -160,7 +172,7 @@ export function FolderAccordion({
           >
             <StyledAccordionSummary
               expandIcon={<StyledExpandMoreIcon sx={expandIconSx} />}
-              aria-controls={`folder-accordion-panel-${index}`}
+              aria-controls={`${accordionId}-panel-${index}`}
               showMode={showMode}
               sx={combineSx(summarySx, slotProps?.summary?.sx)}
             >
@@ -183,7 +195,7 @@ export function FolderAccordion({
               </Box>
             </StyledAccordionSummary>
             <Box
-              id={MENU_CONTAINER_ID}
+              data-testid={MENU_CONTAINER_TESTID}
               sx={menuContainerSx(isHovering, showMenu)}
             >
               <ControlsDropdown
@@ -192,7 +204,12 @@ export function FolderAccordion({
               />
             </Box>
           </Box>
-          <StyledAccordionDetails sx={slotProps?.detail?.sx}>{item.content}</StyledAccordionDetails>
+          <StyledAccordionDetails
+            id={`${accordionId}-panel-${index}`}
+            sx={slotProps?.detail?.sx}
+          >
+            {item.content}
+          </StyledAccordionDetails>
         </StyledAccordion>
       ))}
     </Box>
@@ -238,15 +255,13 @@ function summaryContainerSx(
     // of snapping to square, a minor visual difference with no behavioural
     // one.
     '&:hover': { background: theme.vars.palette.background.userInputBackground },
-    // Baseline's own `'&:hover #Menu'` selector, ported with the `id`
-    // renamed to something less collision-prone. Every `FolderAccordion`
-    // instance still shares the same literal id (baseline behaviour,
-    // preserved as-is) — technically invalid HTML with >1 folder on
-    // screen, but harmless: `&:hover #id` is a DESCENDANT combinator, so
-    // it only ever matches the `#id` element nested inside THIS specific
-    // hovered instance, never a sibling instance's same-id element
-    // elsewhere in the DOM.
-    [`&:hover #${MENU_CONTAINER_ID}`]: { visibility: 'visible' },
+    // Baseline's own `'&:hover #Menu'` selector. The hook is now a
+    // `data-testid` attribute rather than a DOM `id`: every mounted
+    // `FolderAccordion` shared the same literal id, which is invalid HTML
+    // with more than one folder on screen. The selector is equivalent —
+    // still a descendant combinator scoped to THIS hovered instance — and
+    // an attribute selector cannot be invalid however many folders render.
+    [`&:hover [data-testid="${MENU_CONTAINER_TESTID}"]`]: { visibility: 'visible' },
   });
 }
 
