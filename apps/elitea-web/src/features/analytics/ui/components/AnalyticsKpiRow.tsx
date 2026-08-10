@@ -38,7 +38,7 @@ export interface AnalyticsKpiRowProps {
 const rowSx: SxProps<Theme> = {
   display: 'grid',
   gridTemplateColumns: 'repeat(auto-fit, minmax(9rem, 1fr))',
-  gap: (theme: Theme) => theme.spacing(3),
+  gap: (theme: Theme) => theme.spacing(2),
 };
 
 function AnalyticsKpiRowImpl({ kpis }: AnalyticsKpiRowProps): ReactNode {
