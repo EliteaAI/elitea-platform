@@ -190,10 +190,35 @@ CROSS JOIN (VALUES
     -- listing is gated rather than open — an audit row names the user, the
     -- project and the action taken, so the listing itself is the sensitive
     -- part. Without this row the page renders with four 403s.
-    ('models.admin.audit_trail.view')
+    ('models.admin.audit_trail.view'),
+    -- Unit A14, Roles: the permission matrix. The READ is gated too — it is the
+    -- deployment's authorisation model, and which role holds which privilege is
+    -- itself sensitive — so without these two rows the page renders 403 and the
+    -- journey cannot tell that apart from an unwired route.
+    ('configuration.roles.permissions.view'),
+    ('configuration.roles.permissions.edit')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- A permission that exists ONLY in the database, granted to the administration
+-- `viewer` role. The Roles matrix derives its rows from the recorded grants
+-- rather than from any compiled-in list, so this string appearing on the page
+-- is proof the matrix is the deployment's own — it is in no bundle, and the
+-- journey toggles it on `editor` to exercise the write end to end.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT r.id, 'e2e.roles.probe'
+FROM auth_core__role r
+WHERE r.name = 'viewer' AND r.mode = 'administration'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- …and it must NOT already be on `editor`: the journey asserts it is absent,
+-- grants it, re-reads, then revokes it again so the run is repeatable.
+DELETE FROM auth_core__role_permission grant_row
+USING auth_core__role r
+WHERE r.id = grant_row.role_id
+  AND r.name = 'editor' AND r.mode = 'administration'
+  AND grant_row.permission = 'e2e.roles.probe';
 
 -- Only the ADMIN persona gets it. The member persona deliberately does not, so
 -- the difference between the two is a real server-side authorisation
@@ -494,7 +519,26 @@ ENDSQL
       echo "  while the listing still renders — a stack that looks working and is not." >&2
       exit 1
     fi
-    echo "  ✓ administration RBAC verified: admin persona resolves admin.auth.users."
+    # Same again for the Roles matrix (unit A14). Its READ is gated, so without
+    # this grant the page is a 403 and the journey would be asserting against an
+    # authorisation failure rather than against the matrix.
+    ROLES_GRANT=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(DISTINCT rp.permission)
+      FROM auth_core__user u
+      JOIN auth_core__user_role ur ON ur.user_id = u.id
+      JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
+      JOIN auth_core__role_permission rp ON rp.role_id = r.id
+      WHERE u.email = 'e2e-admin@autotest.local'
+        AND rp.permission IN ('configuration.roles.permissions.view',
+                              'configuration.roles.permissions.edit');")
+    if [ "${ROLES_GRANT:-0}" -lt 2 ]; then
+      echo "ERROR: seed did not grant the admin persona the roles-matrix permissions." >&2
+      echo "  resolved: ${ROLES_GRANT:-0} of 2" >&2
+      exit 1
+    fi
+
+    echo "  ✓ administration RBAC verified: admin persona resolves admin.auth.users"
+    echo "    and the roles-matrix view/edit pair."
     echo "→ Seed complete."
     ;;
 
