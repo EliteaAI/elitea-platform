@@ -20,6 +20,7 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 
 import { createHttpClient } from '@/shared/api/http';
+import { getConfig } from '@/shared/config';
 import { readPersistedProject } from '@/widgets/app-shell';
 
 import type { AuthContext, AuthUser } from './router-context';
@@ -36,6 +37,57 @@ interface SessionInfoResponse {
   email?: string;
 }
 
+/**
+ * `GET /social/author` — the SAME endpoint the old SPA calls `authorDetails`
+ * and reads `personal_project_id` off (`apps/elitea-ui/src/slices/settings.js:
+ * 255-262`, which seeds the default project from it, and
+ * `widgets/sidebar-root/ui/button/NotificationButton.jsx:18`, which scopes its
+ * notification subscription to it). `shared/api/auth/verify-session.ts` already
+ * documents this as this stack's `auth/me`-class endpoint.
+ */
+interface AuthorProfileResponse {
+  personal_project_id?: string;
+}
+
+const AUTHOR_PATH = '/social/author/';
+
+/**
+ * Reads the caller's personal project id from the API.
+ *
+ * Built here rather than reusing the module-level `/`-based client because
+ * `/social/author` is served by the API base (`vite_server_url`), not by the
+ * app origin. `reauthenticate` is deliberately NOT configured: this runs
+ * inside the boot probe, where a 401 means "not logged in" — the answer we
+ * are asking for — and escalating it into the re-auth popup would loop, the
+ * same reasoning `createVerifySession` states for the callback probe.
+ *
+ * Returns `undefined` on any failure. `undefined` is meaningful: `AuthUser`
+ * declares `personal_project_id` optional and consumers gate on it (the
+ * notification subscription no-ops, the index guard sends the user to
+ * onboarding) — which is the correct behaviour when the server cannot name a
+ * personal project, and strictly better than inventing one.
+ */
+async function fetchPersonalProjectId(apiBaseUrl: string | undefined): Promise<string | undefined> {
+  if (apiBaseUrl === undefined) return undefined;
+
+  const http = createHttpClient({ baseUrl: apiBaseUrl });
+  const result = await http.get<AuthorProfileResponse>(AUTHOR_PATH);
+  if (!result.ok) return undefined;
+  const id = result.data.personal_project_id;
+  return id !== undefined && id !== '' ? id : undefined;
+}
+
+/**
+ * The API base for the author probe. Resolved at CALL time, not at store
+ * construction: `getConfig()` reads `window.elitea_ui_config`, which
+ * `/app/config.js` installs before the bundle runs, and R-S2 forbids doing
+ * that work at module scope.
+ */
+function resolveApiBaseUrl(): string | undefined {
+  const config = getConfig();
+  return config.status === 'ok' ? config.config.vite_server_url : undefined;
+}
+
 type SessionStore = UseBoundStore<StoreApi<SessionState>>;
 
 /**
@@ -46,7 +98,18 @@ type SessionStore = UseBoundStore<StoreApi<SessionState>>;
  * `baseUrl: '/'` — `/forward-auth/info` is served by the same origin as the
  * app, not by the API base.
  */
-export function createSessionStore(): SessionStore {
+export interface CreateSessionStoreOptions {
+  /**
+   * API base for the `/social/author` probe. Defaults to the runtime config's
+   * `vite_server_url`. An explicit value exists so a test can exercise the
+   * probe without installing a whole runtime config object — the same
+   * "inject the boundary, mock nothing else" shape `createVerifySession`
+   * already uses for its client.
+   */
+  readonly apiBaseUrl?: string;
+}
+
+export function createSessionStore(options: CreateSessionStoreOptions = {}): SessionStore {
   const http = createHttpClient({ baseUrl: '/' });
 
   return create<SessionState>((set) => ({
@@ -58,13 +121,18 @@ export function createSessionStore(): SessionStore {
         set({ user: undefined, loaded: true });
         return;
       }
+      // `/forward-auth/info` (services/elitea-main/internal/api/v2/auth/
+      // session.go) returns ONLY authenticated/user_id/email — there is no
+      // project id in that response at all. This field used to be filled with
+      // the USER id (issue #166), which is not a project id and generally
+      // names a project the user is not a member of: `NotificationButton`
+      // then opened its SSE subscription against it and was refused with a
+      // 403, terminal for EventSource. The real source is `/social/author`.
+      const personalProjectId = await fetchPersonalProjectId(options.apiBaseUrl ?? resolveApiBaseUrl());
       set({
         user: {
           id: result.data.user_id,
-          // personal_project_id not returned by /forward-auth/info yet;
-          // treat a non-empty user_id as "has a personal project" so the
-          // index route redirects to /chat rather than /onboarding.
-          personal_project_id: result.data.user_id,
+          ...(personalProjectId !== undefined ? { personal_project_id: personalProjectId } : {}),
         },
         loaded: true,
       });

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { useCallback, useState } from 'react';
 
 import { BaseBtn } from '../BaseBtn';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
 export interface OneClickButtonProps {

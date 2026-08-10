@@ -12,7 +12,7 @@ import { SingleSelect } from '@/shared/ui/SingleSelect';
 import ThemeModeToggle from '@/shared/ui/ThemeModeToggle';
 import { useFormikContext } from 'formik';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import type { ProfileFormValues } from '@/features/settings/lib/profile/profileUtils';
 import { ProfileBasicAccordion } from './ProfileBasicAccordion';

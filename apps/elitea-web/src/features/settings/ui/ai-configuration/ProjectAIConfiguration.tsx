@@ -7,7 +7,7 @@ import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import FieldWithCopy from './FieldWithCopy';
 

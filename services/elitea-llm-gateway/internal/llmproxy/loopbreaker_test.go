@@ -322,3 +322,83 @@ func TestWithLoopBreakerParams_NegativeThresholdDisarms(t *testing.T) {
 		t.Fatal("a negative threshold must disarm the backstop entirely, not fall back to the default")
 	}
 }
+
+// TestLoopBreaker_DefaultsMatchPublishedNumbers pins all three defaults to the
+// numbers published to operators, so a change here cannot land without also
+// updating the pages on-call reads. Issue #164: #12 raised these numbers and the
+// docs kept saying 5 / 1 s / 30 s, which is the state that misleads someone
+// diagnosing a 429 at 03:00.
+//
+// The two behavioural tests above pin only the threshold (via a 50-request burst
+// that must pass and a 2×threshold burst that must trip); window and open
+// duration were provably unpinned — mutating them to 30 s left the whole suite
+// green. This test closes that.
+//
+// If you are changing a default: change it here, in loopbreaker.go, AND in
+// elitea-docs — spec-bifrost-migration.mdx §2.6 and
+// runbook-bifrost-cutover.mdx ("Incident response: circular-routing failure
+// mode" + Prevention invariant 2).
+func TestLoopBreaker_DefaultsMatchPublishedNumbers(t *testing.T) {
+	if DefaultLoopBreakerThreshold != 1000 {
+		t.Errorf("DefaultLoopBreakerThreshold = %d, want 1000 — elitea-docs publishes 1000 (issue #164)",
+			DefaultLoopBreakerThreshold)
+	}
+	if DefaultLoopBreakerWindow != time.Second {
+		t.Errorf("DefaultLoopBreakerWindow = %v, want 1s — elitea-docs publishes a 1 s window (issue #164)",
+			DefaultLoopBreakerWindow)
+	}
+	if DefaultLoopBreakerOpenFor != 5*time.Second {
+		t.Errorf("DefaultLoopBreakerOpenFor = %v, want 5s — elitea-docs publishes a 5 s open duration "+
+			"(issue #164); 30 s is the pre-#12 value that caused the incident", DefaultLoopBreakerOpenFor)
+	}
+}
+
+// TestLoopBreaker_DefaultOpenDurationIsEnforced is the behavioural half: the
+// published 5 s is what a tripped tuple actually gets as Retry-After, not just a
+// constant nobody reads.
+func TestLoopBreaker_DefaultOpenDurationIsEnforced(t *testing.T) {
+	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
+	b := newLoopBreaker(LoopBreakerParams{}) // production defaults
+	b.now = clk.now
+
+	var retryAfter time.Duration
+	for i := 0; i < DefaultLoopBreakerThreshold; i++ {
+		var ok bool
+		ok, retryAfter = b.allow("42", "openai/gpt-4o")
+		if !ok {
+			break
+		}
+	}
+	if retryAfter != 5*time.Second {
+		t.Fatalf("Retry-After on a default-config trip = %v, want the published 5s", retryAfter)
+	}
+
+	// Still open just before the 5 s elapses, closed after.
+	clk.advance(5*time.Second - time.Millisecond)
+	if ok, _ := b.allow("42", "openai/gpt-4o"); ok {
+		t.Fatal("tuple admitted before the published 5 s open duration elapsed")
+	}
+	clk.advance(2 * time.Millisecond)
+	if ok, _ := b.allow("42", "openai/gpt-4o"); !ok {
+		t.Fatal("tuple still rejected after the published 5 s open duration elapsed")
+	}
+}
+
+// TestLoopBreaker_DefaultWindowIsEnforced pins the published 1 s sliding window:
+// threshold-many requests spread over MORE than 1 s must not trip.
+func TestLoopBreaker_DefaultWindowIsEnforced(t *testing.T) {
+	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
+	b := newLoopBreaker(LoopBreakerParams{}) // production defaults
+	b.now = clk.now
+
+	// 2× the threshold, one every 2 ms => 2 s+ of wall clock, never more than
+	// ~500 inside any 1 s window. A window longer than the published 1 s would
+	// accumulate all of them and trip.
+	for i := 0; i < DefaultLoopBreakerThreshold*2; i++ {
+		if ok, _ := b.allow("42", "openai/gpt-4o"); !ok {
+			t.Fatalf("request %d tripped the backstop although it arrived outside the published 1 s "+
+				"window — the window is wider than documented", i+1)
+		}
+		clk.advance(2 * time.Millisecond)
+	}
+}

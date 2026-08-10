@@ -45,7 +45,12 @@ function AnalyticsKpiRowImpl({ kpis }: AnalyticsKpiRowProps): ReactNode {
   const adoptionRate = kpis.adoption_rate;
 
   return (
-    <Box sx={rowSx}>
+    // The testid is the @visual suite's landmark for "the analytics query has
+    // resolved and the tab content is painted". Before it existed, the visual
+    // spec waited on `getByRole('main')` — which is satisfied by the loading
+    // spinner — and the committed baseline was a picture of that spinner
+    // (run 31345403013, issue #159).
+    <Box sx={rowSx} data-testid="analytics-kpi-row">
       <KpiCard
         label={t('analytics.kpi.team.label', 'TEAM')}
         value={fmtNum(kpis.unique_users)}

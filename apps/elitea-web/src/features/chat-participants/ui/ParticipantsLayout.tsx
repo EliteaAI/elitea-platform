@@ -33,7 +33,7 @@ import Typography from '@mui/material/Typography';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import type { TransformedParticipant } from '../model/types';
 import { getChatParticipantUniqueId } from '../lib/helpers';

@@ -11,6 +11,7 @@
 import { useCallback, useState } from 'react';
 
 import { conversationApi } from '@/entities/conversation';
+import { unwrapList } from '@/shared/api/unwrap';
 
 import type { MessageGroupWire, MessageParticipantWire } from '@/entities/message/lib/wire';
 
@@ -72,7 +73,10 @@ export function useLoadPlaybackMessages({
         pageSize: 10,
       });
 
-      const rows = 'rows' in response ? response.rows : response;
+      // `{items,total,…}` is what this endpoint actually returns, so the old
+      // `'rows' in response ? … : response` fell through to the envelope
+      // OBJECT and handed it to convertMessagesToChatHistory (#132). R-A6.
+      const rows = unwrapList<unknown>(response, 'conversation.messageList');
       const convertedMessages = convertMessagesToChatHistory(
         rows as unknown as readonly MessageGroupWire[],
         participants as unknown as readonly MessageParticipantWire[],

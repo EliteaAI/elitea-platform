@@ -32,9 +32,9 @@ package llmproxy
 // What is deliberately NOT here: any estimate. If the trailer does not arrive,
 // NOTHING is billed and a budget.unbilled_stream event is emitted instead. An
 // observed-output-bytes estimate on the money path was the second rejected
-// attempt: it contradicts the standing "estimates feed ONLY the reservation —
-// never the money path" rule, over-bills inline-base64 multimodal by orders of
-// magnitude, and cannot tell a clean close from a disconnect. observedOutBytes
+// attempt: it contradicts the standing "no estimate ever reaches a billed
+// amount" rule, over-bills inline-base64 multimodal by orders of magnitude,
+// and cannot tell a clean close from a disconnect. observedOutBytes
 // below is an OBSERVABILITY dimension on the loss event only; it must never
 // reach a cost calculation.
 

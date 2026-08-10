@@ -10,7 +10,7 @@
  * `indexDetails.constants.js:42` and `PipelineScheduleModal.jsx:14`), i.e.
  * the one schedule both modals actually default new schedules to.
  */
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { parseCronExpression } from './parse';
 import { serializeCronState } from './serialize';
 

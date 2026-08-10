@@ -19,7 +19,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
 import { combineSx } from '../lib/combineSx';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { SingleSelectDropdown } from '../SingleSelectDropdown';
 import type { SingleSelectOption } from '../SingleSelectMenuItem';
 

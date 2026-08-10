@@ -38,7 +38,7 @@ import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { useListModelsQuery, type ConfigModel } from '@/shared/api/configurationsApi';
 import { TokensSection } from '@/features/settings/ui/personal-tokens/TokensSection';
 import { SettingsPreview } from '@/features/settings/ui/personal-tokens/SettingsPreview';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import { useListTokensQuery } from '@/entities/token/api/tokenApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { getConfig } from '@/shared/config';

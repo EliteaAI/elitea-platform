@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -57,23 +57,71 @@ describe('EditToolkit', () => {
     expect(await screen.findByText('My GitHub')).toBeInTheDocument();
   });
 
-  it('renders the Configuration/Indexes tabs, and the Indexes panel is a disclosed composition-gap slot', async () => {
+  /*
+   * CORRECTED (#149). This test used to be titled "renders the
+   * Configuration/Indexes tabs, and the Indexes panel is a disclosed
+   * composition-gap slot" and asserted that a `github` toolkit offers an
+   * Indexes tab whose panel is an empty Box. Both halves were wrong, and it
+   * was the unit-level twin of the E2E assertion corrected in
+   * `e2e/journeys/mcps/mcps.oauth.spec.ts`:
+   *
+   *  - the baseline hides this tab entirely for a type whose schema offers no
+   *    indexing tool (`apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:
+   *    210-216`), and `github` is exactly such a type — measured against the
+   *    live catalogue, its `selected_tools.args_schemas` carries sixteen
+   *    tools and not one `IndexesToolsEnum` member;
+   *  - the panel is no longer a slot; `IndexesTab` mounts the real container.
+   *
+   * The replacement is strictly stronger: it pins the tab strip's exact
+   * contents in BOTH directions (a type that must not offer the tab, and one
+   * that must), where the old test could only ever confirm that some element
+   * with that testid existed.
+   */
+  it('does NOT offer an Indexes tab for a toolkit type whose schema has no indexing tool', async () => {
     server.use(
       http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => HttpResponse.json({ rows: [mockToolkitRow()], total: 1 })),
-      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: 'GitHub' } } })),
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () =>
+        HttpResponse.json({ github: { properties: { selected_tools: { args_schemas: { create_issue: { type: 'object' }, search_code: { type: 'object' } } } } } }),
+      ),
+    );
+    const saveToolkit = vi.fn();
+
+    renderToolkitsRoute(<EditToolkit deps={{ saveToolkit }} />, '/toolkits/latest/tk-1', { projectId: 'proj-1' });
+
+    await screen.findByText('My GitHub');
+    expect(screen.getByRole('tab', { name: 'Configuration' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Configuration']);
+    });
+    expect(screen.queryByTestId('edit-toolkit-indexes-tab-panel')).not.toBeInTheDocument();
+  });
+
+  it('offers the Indexes tab for a type whose schema DOES carry an index tool, and mounts a real panel', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () =>
+        HttpResponse.json({ rows: [mockToolkitRow({ type: 'artifact', name: 'My Artifacts', settings: { selected_tools: ['index_data'] } })], total: 1 }),
+      ),
+      http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () =>
+        HttpResponse.json({ artifact: { properties: { selected_tools: { args_schemas: { index_data: { type: 'object' }, read_artifact: { type: 'object' } } } } } }),
+      ),
+      http.get('/api/v2/elitea_core/index_meta/prompt_lib/:projectId/:toolkitId', () => HttpResponse.json([])),
     );
     const saveToolkit = vi.fn();
     const user = userEvent.setup();
 
     renderToolkitsRoute(<EditToolkit deps={{ saveToolkit }} />, '/toolkits/latest/tk-1', { projectId: 'proj-1' });
 
-    await screen.findByText('My GitHub');
-    expect(screen.getByRole('tab', { name: 'Configuration' })).toBeInTheDocument();
-    const indexesTab = screen.getByRole('tab', { name: 'Indexes' });
+    await screen.findByText('My Artifacts');
+    const indexesTab = await screen.findByRole('tab', { name: 'Indexes' });
 
     await user.click(indexesTab);
 
-    expect(await screen.findByTestId('edit-toolkit-indexes-tab-panel')).toBeInTheDocument();
+    const panel = await screen.findByTestId('edit-toolkit-indexes-tab-panel');
+    // Not merely "the panel element exists" — that is what the empty Box
+    // satisfied. These two come from `IndexesList`, i.e. only from a really
+    // mounted `IndexesContainer`.
+    expect(await within(panel).findByRole('button', { name: 'Add index' })).toBeInTheDocument();
+    expect(within(panel).getByText('Still no indexes created')).toBeInTheDocument();
   });
 
   it('renders the export/delete action buttons once a toolkit id is known', async () => {

@@ -112,7 +112,17 @@ export function DateGroup({ group, renderConversationItem, isExpanded, onToggleE
             sx={(theme: Theme) => ({ color: theme.vars.palette.icon.fill.secondary })}
           />
         </Box>
+        {/*
+          * `component="span"`, not MUI's default mapping for `subtitle2`
+          * (`<h6>`). This text is the accessible LABEL of the surrounding
+          * `ButtonBase`, not a section heading, and rendering it as an `<h6>`
+          * beside the folder accordions' `<h3>` summaries produced a real
+          * `heading-order` violation (axe, moderate) the moment this list was
+          * first mounted on a route. Presentation is unchanged — `variant`
+          * still drives the typography.
+          */}
         <Typography
+          component="span"
           variant="subtitle2"
           sx={(theme: Theme) => ({ color: theme.vars.palette.text.secondary, textTransform: 'none' })}
         >

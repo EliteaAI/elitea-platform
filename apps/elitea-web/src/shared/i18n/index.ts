@@ -3,11 +3,11 @@
  * See `./README.md` for the extraction convention Wave-2 units follow.
  *
  * `t(key, fallback)` is the ONLY way user-visible copy may appear in JSX
- * (R-T3, enforced live by `i18next/no-literal-string` in `.oxlintrc.json`).
- * Its two-argument shape is fixed by unit S1's interim contract
- * (`src/shared/ui/lib/t.ts`) — do not narrow it without updating that file
- * and its call sites; widening (as this module already does with the
- * optional third `options` argument) is safe.
+ * (R-T3, enforced live by `i18next/no-literal-string` in `.oxlintrc.json`),
+ * and since issue #45 this barrel is the ONLY module that exports it — the
+ * pre-S8 interim stub `src/shared/ui/lib/t.ts` was migrated away and
+ * deleted. Do not narrow the two-required-argument shape; widening (as this
+ * module already does with the optional third `options` argument) is safe.
  */
 export { t } from './t';
 /** @public Wave-1 surface — the type call sites annotate a passed-through `t` with (e.g. a component prop). */

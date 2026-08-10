@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { STORAGE_NAMESPACE, clearNamespace } from '@/shared/lib/storage';
+
 import {
   MCP_TOKEN_CHANGE_EVENT,
   canonicalizeServerUrl,
@@ -9,22 +11,6 @@ import {
   logout,
   setConnectionVerified,
 } from './mcpTokenStorage.helpers';
-
-/**
- * Seeds the token record through the SAME namespaced wrapper production uses
- * (`el.` prefix + the `mcp.tokens` logical key `features/mcps` writes to).
- *
- * These two seeds used to write the raw `mcp_oauth_tokens` key. That was not
- * just a cosmetic mismatch: it is the key this module itself used to read,
- * while the real token WRITER (`features/mcps/lib/storage.ts`, driven by
- * `McpAuthModal`) has always written `el.mcp.tokens` — so a genuine SharePoint
- * OAuth login was invisible here. Worse, the "expired token" case below still
- * PASSED with the wrong key, because a seed that lands nowhere also reads back
- * as `null`; seeding through the wrapper is what makes it discriminate.
- */
-function seedTokens(tokens: Readonly<Record<string, unknown>>): void {
-  window.sessionStorage.setItem('el.mcp.tokens', JSON.stringify(tokens));
-}
 
 describe('isPrebuildMcpType', () => {
   it('returns true for an mcp_-prefixed type other than the bare "mcp"', () => {
@@ -102,13 +88,44 @@ describe('getAccessToken / logout / setConnectionVerified (sessionStorage round-
     expect(getAccessToken(serverUrl)).toBeNull();
   });
 
+  /**
+   * Issue #22. These tokens used to be written to a RAW, un-namespaced
+   * `sessionStorage` key (`mcp_oauth_tokens`), bypassing
+   * `shared/lib/storage.ts`. `performLogout()` sweeps only the `el.*`
+   * namespace, so a SharePoint OAuth access token survived logout intact and
+   * was inherited by whoever used the tab next.
+   *
+   * §5.4's own completeness test (`shared/api/auth/logout.test.ts`) could not
+   * catch this: it proves "write-set minus cleared-set is empty" from the
+   * storage wrapper's write TRACKER, which by construction never sees a write
+   * that bypassed the wrapper.
+   */
+  it('stores under the el.* namespace so clearNamespace() (logout) actually removes the token', () => {
+    setConnectionVerified(serverUrl);
+    expect(getAccessToken(serverUrl)).not.toBeNull();
+
+    const keys = Object.keys(window.sessionStorage);
+    expect(keys.every((key) => key.startsWith(STORAGE_NAMESPACE))).toBe(true);
+
+    clearNamespace();
+    expect(getAccessToken(serverUrl)).toBeNull();
+  });
+
+  it('leaves no un-namespaced sessionStorage key behind after a write', () => {
+    setConnectionVerified(serverUrl);
+    expect(window.sessionStorage.getItem('mcp_oauth_tokens')).toBeNull();
+  });
+
   it('setConnectionVerified stores a verified marker getAccessToken then reads back', () => {
     setConnectionVerified(serverUrl);
     expect(getAccessToken(serverUrl)).toBe('__connection_verified__');
   });
 
   it('setConnectionVerified does not overwrite an existing real token', () => {
-    seedTokens({ [serverUrl]: { access_token: 'real-token', issued_at: Date.now(), expires_at: Date.now() + 60_000 } });
+    window.sessionStorage.setItem(
+      `${STORAGE_NAMESPACE}mcp.tokens`,
+      JSON.stringify({ [serverUrl]: { access_token: 'real-token', issued_at: Date.now(), expires_at: Date.now() + 60_000 } }),
+    );
     setConnectionVerified(serverUrl);
     expect(getAccessToken(serverUrl)).toBe('real-token');
   });
@@ -121,7 +138,10 @@ describe('getAccessToken / logout / setConnectionVerified (sessionStorage round-
   });
 
   it('getAccessToken returns null for an expired token', () => {
-    seedTokens({ [serverUrl]: { access_token: 'stale', issued_at: 0, expires_at: 1 } });
+    window.sessionStorage.setItem(
+      `${STORAGE_NAMESPACE}mcp.tokens`,
+      JSON.stringify({ [serverUrl]: { access_token: 'stale', issued_at: 0, expires_at: 1 } }),
+    );
     expect(getAccessToken(serverUrl)).toBeNull();
   });
 

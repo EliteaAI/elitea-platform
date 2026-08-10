@@ -57,7 +57,25 @@ export interface GetIndexesListParams {
 
 export async function getIndexesList(params: GetIndexesListParams, signal?: AbortSignal): Promise<IndexRow[]> {
   const { toolkitId, projectId } = params;
-  return fetchData<IndexRow[]>(`/elitea_core/index_meta/prompt_lib/${String(projectId)}/${String(toolkitId)}`, signal ? { signal } : {});
+  const payload = await fetchData<unknown>(`/elitea_core/index_meta/prompt_lib/${String(projectId)}/${String(toolkitId)}`, signal ? { signal } : {});
+  /*
+   * Shape guard, added 2026-08-09 when mounting this slice (#149) took down
+   * the whole toolkit page with `e.map is not a function`. This endpoint's
+   * success path writes a bare JSON array
+   * (`services/elitea-main/internal/api/v2/toolkits/handler.go`'s `IndexMeta`),
+   * but its error path used to write `{"items": [], "total": 0}` at HTTP 200 —
+   * a different shape, indistinguishable from success. That handler is fixed
+   * in the same change (it now answers 500), so this is no longer load-
+   * bearing for that specific bug.
+   *
+   * It stays because the failure mode it prevents is disproportionate: every
+   * downstream consumer (`mergeIndexesOverlay`, `IndexesList`) assumes an
+   * array, and a single non-array payload from ANY future shape drift takes
+   * out the entire page through the error boundary rather than degrading to
+   * an empty list. Narrow on purpose — it coerces only "not an array" and
+   * does not inspect or repair row contents.
+   */
+  return Array.isArray(payload) ? (payload as IndexRow[]) : [];
 }
 
 export function useIndexesListQuery(params: GetIndexesListParams): UseQueryResult<IndexRow[]> {

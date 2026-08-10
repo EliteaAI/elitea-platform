@@ -10,7 +10,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
 import { SingleSelect } from '@/shared/ui/SingleSelect';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import { usePermissionList } from '@/shared/api/generated/auth/auth';
 import type { Permission } from '@/shared/api/generated/model';
 import { PERMISSIONS } from '@/shared/lib/permissions';

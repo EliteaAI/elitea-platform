@@ -22,6 +22,28 @@ describe('FolderItemEditor', () => {
     expect(getByRole('textbox')).toHaveValue('My Folder');
   });
 
+  /*
+   * The field was rendered with `label=""`, no placeholder, no `aria-label`
+   * and no testid — so it had NO accessible name at all: nothing for a screen
+   * reader to announce, and nothing for a name-based query to target (the only
+   * way in was `querySelector('input')`). The label stays visually absent; the
+   * name now lives on the input itself.
+   */
+  it('gives the name field an accessible name and a stable testid', () => {
+    const { getByRole, getByTestId } = renderWithProviders(
+      <FolderItemEditor
+        folderName="My Folder"
+        isFolderNameValid
+        onChangeFolderName={noopChange}
+        onKeyDown={noopKeyDown}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(getByRole('textbox', { name: 'Folder name' })).toBeInTheDocument();
+    expect(getByTestId('folder-name-input')).toBe(getByRole('textbox'));
+  });
+
   it('focuses the input on mount (autoFocus replacement)', () => {
     const { getByRole } = renderWithProviders(
       <FolderItemEditor

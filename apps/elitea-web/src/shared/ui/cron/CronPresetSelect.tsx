@@ -10,7 +10,7 @@ import MenuItem from '@mui/material/MenuItem';
 import type { SelectChangeEvent } from '@mui/material/Select';
 import Select from '@mui/material/Select';
 
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { applyPresetSelection, CRON_PRESETS, CUSTOM_PRESET_VALUE, presetLabel } from './presets';
 
 export interface CronPresetSelectProps {

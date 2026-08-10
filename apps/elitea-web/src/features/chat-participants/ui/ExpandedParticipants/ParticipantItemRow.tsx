@@ -7,7 +7,7 @@ import Typography from '@mui/material/Typography';
 
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
 import type { SocialAuthorProfile } from '@/shared/api/generated/model';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 import type { TransformedParticipant } from '../../model/types';
 
@@ -119,7 +119,7 @@ const ParticipantItemRow = memo(
           },
         }}
         onClick={handleClick}
-        aria-label={isOtherUser ? t('chat-participants.row.mention', `Mention ${name}`) : name}
+        aria-label={isOtherUser ? t('chat-participants.row.mention', 'Mention {{name}}', { name }) : name}
         data-testid={`participant-item-${participantId}`}
       >
         {avatarUrl ? (

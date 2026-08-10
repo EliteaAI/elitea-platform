@@ -43,16 +43,42 @@ async function fillAgentForm(page: Page, name: string): Promise<void> {
 // Journey 14: Create agent, save, publish, unpublish
 // ─────────────────────────────────────────────────────────────────────────────
 /*
- * NOT COVERED — publish / unpublish.
- *
- * JRNY-014 names them, and this test used to "cover" them with
+ * NOT COVERED — publish / unpublish (#120). JRNY-014's §8.5 text names them;
+ * this journey is PERMANENTLY NARROWER than that text, and a green run of it
+ * must never be read as covering them. It used to "cover" them with
  * `if (await publishButton.isVisible().catch(() => false))`, which silently
- * passed because no such control exists: a whole-tree grep for a publish or
- * unpublish affordance in `features/agents`/`pages/agents` finds only
- * notification COPY about publish events (`features/notifications/**`), never a
- * button. The optional block was coverage theatre, so it is gone and the test
- * is renamed to what it actually verifies. Publishing needs its own journey
- * once the UI exists.
+ * passed because no such control exists.
+ *
+ * RE-TRIAGED 2026-08-09, and #120's original premise ("designed in Figma,
+ * no UI") is now only half true. The backend is NOT the gap — it is fully
+ * implemented and routed:
+ *
+ *   POST /api/v2/elitea_core/publish/prompt_lib/{projectID}/{versionID}
+ *        services/elitea-main/internal/api/router.go:854 -> eliteacore
+ *        handler.go:482 (real: version-name validation, pipeline rejection,
+ *        409 on already-published, category validation, then clones the
+ *        version to `status='published'` and embeds sub-agents)
+ *   POST /api/v2/elitea_core/unpublish/prompt_lib/{projectID}/{versionID}
+ *        router.go:855 -> handler.go:835 (reverts published/embedded clones
+ *        to `draft`, 409 when not published)
+ *   GET|POST /api/v2/elitea_core/publish_validate/prompt_lib/{p}/{v}
+ *        router.go:856-857 -> handler.go:1227
+ *
+ * The generated web client already wraps all three —
+ * `src/shared/api/generated/applications/applications.ts`'s
+ * `usePublishApplication` (:2144), `useUnpublishApplication` (:2428),
+ * `useValidateForPublish` (:2703) — and `src/shared/api/endpoints.manifest.json`
+ * records `"usedBy": []` for both publish entries (:451-458, :511-518). So
+ * what is missing is exactly one layer: no component, hook or menu item in
+ * elitea-web calls them. The legacy UI's equivalents
+ * (`usePublishVersionMenu.hooks.jsx` / `useUnpublishVersionMenu.hooks.jsx` /
+ * `PublishWizardModal.jsx` under EliteaUI's `[fsd]/entities/version`) were
+ * never ported.
+ *
+ * NOT built in this change, and deliberately not stubbed: publishing runs a
+ * multi-step wizard (validation step, terms, category selection) against
+ * `publish_validate`, and a half-wired "Publish" button that skipped it would
+ * look finished while being wrong. Tracked in #120 with the evidence above.
  */
 test('J14: create agent, save, and persist it', async ({ page }) => {
   await page.goto(BASE_URL + '/app/agents/my');
@@ -136,6 +162,48 @@ test('J15: a saved agent exposes a version selector listing its versions', async
   // Hard: the save must land on a real agent URL carrying an id.
   await page.waitForURL(/\/agents\/[^/]+\/[^/]+/, { timeout: 15_000 });
 
+  /*
+   * NOT COVERED — set-default-version and delete-version (#147). JRNY-015's
+   * §8.5 text is "create a new version -> set default -> delete old"; this
+   * journey covers the FIRST of those three and nothing else. Recorded here
+   * so a green run never implies otherwise.
+   *
+   * MEASURED 2026-08-09 — the backend supports BOTH, so this is a UI gap, not
+   * a capability gap:
+   *   PATCH /api/v2/elitea_core/default_version/prompt_lib/{p}/{app}/{ver}
+   *         services/elitea-main/internal/api/router.go:643 ->
+   *         applications/handler.go:878 -> repos/applications.go:650
+   *         (`UPDATE ... SET meta = jsonb_set(..., '{default_version_id}')`);
+   *         integration-tested at handler_postgres_integration_test.go:372.
+   *   DELETE /api/v2/elitea_core/version/prompt_lib/{p}/{app}/{ver}
+   *         router.go:641 -> handler.go:846 (guards published/embedded with
+   *         400 "Unpublish first", else 204) -> repos/applications.go:619.
+   *
+   * Client state differs between the two: `useDeleteApplicationVersion` IS
+   * already consumed by a real ported hook
+   * (`src/features/agents/model/useDeleteVersion.ts`) which has no UI caller,
+   * while `setApplicationDefaultVersion` has NO consumer at all outside
+   * `shared/api/generated`. The menu those two items belong in is
+   * `features/agents/ui/AgentPipelineVersionSelector.tsx`, which today renders
+   * only version rows.
+   *
+   * Two things must be settled before wiring either, and neither is a
+   * five-minute decision — which is why this is recorded rather than
+   * half-built:
+   *   1. Set-default's path shape CHANGED. The legacy UI PATCHes the 3-segment
+   *      form with `{version_id}` in the body; Go registers only the 4-segment
+   *      form, so a legacy-shaped call gets 405. (A stale comment at
+   *      `internal/api/generated/api.gen.go:1588` still claims the opposite.)
+   *   2. Delete's `?replacement_version_id=` is accepted by the spec and the
+   *      generated client but NEVER READ by the Go handler — a silent no-op.
+   *      The real "repoint references then delete" route is
+   *      `POST /batch_replace_version/.../{old}/{new}?delete_old=true`
+   *      (router.go:825), and it repoints `entity_tool_mapping` only, not
+   *      `entity_skill_mapping`. A delete menu item wired to the obvious
+   *      endpoint would orphan skill references without warning.
+   *
+   * Tracked in #147 with the evidence above.
+   */
   // The version selector is the subject of this journey. It must exist — a
   // `test.skip('Version selector not found in this build')` here turned a
   // missing feature into a green run.

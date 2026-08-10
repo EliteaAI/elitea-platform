@@ -6,6 +6,7 @@ import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { isMcpToolkit } from '@/entities/toolkit';
 import type { Toolkit } from '@/entities/toolkit';
 import { useListToolkitInstances } from '@/shared/api/generated/toolkits/toolkits';
+import { unwrapList } from '@/shared/api/unwrap';
 import type { Application } from '@/shared/api/generated/model';
 import { SearchParams } from '@/shared/lib/params';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
@@ -41,8 +42,6 @@ import type { ToolMenuDropdownItem } from './ToolMenuDropdown';
  * this file's sibling owns.
  */
 
-const EMPTY_TOOLKITS: readonly Toolkit[] = [];
-
 function toToolkitInstance(row: unknown): Toolkit {
   return row as Toolkit;
 }
@@ -56,7 +55,13 @@ function toEntityMenuItem(app: Application): { readonly data: { readonly id: str
 
 export function useToolkitInstanceRows(projectId: string | undefined, limit: number): { readonly rows: readonly Toolkit[]; readonly isFetching: boolean } {
   const query = useListToolkitInstances(projectId ?? '', { limit }, { query: { enabled: projectId !== undefined } });
-  const rows = (query.data as { data?: { rows?: unknown[] } } | undefined)?.data?.rows?.map(toToolkitInstance) ?? EMPTY_TOOLKITS;
+  // useMemo, not a bare expression: `unwrapList` returns a FRESH array, and
+  // this one is a prop/dep downstream — memoising on `query.data` keeps the
+  // identity as stable as the old `?? EMPTY_TOOLKITS` constant was.
+  const rows = useMemo(
+    () => unwrapList<unknown>(query.data, 'listToolkitInstances').map(toToolkitInstance),
+    [query.data],
+  );
   return { rows, isFetching: query.isFetching };
 }
 

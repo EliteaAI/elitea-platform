@@ -12,7 +12,7 @@ import { BaseSwitch } from '@/shared/ui/BaseSwitch';
 import { DiscreteSlider } from '@/shared/ui/DiscreteSlider';
 
 import { type UseSoundNotificationResult } from '@/shared/lib/hooks/useSoundNotification';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 const VOLUME_MARKS = [
   { value: 0, label: '0%' },

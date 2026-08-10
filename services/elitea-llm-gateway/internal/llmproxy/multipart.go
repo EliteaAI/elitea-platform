@@ -38,7 +38,7 @@ func (h *Handler) ImageEdit(w http.ResponseWriter, r *http.Request) {
 
 	// FIX #26: enforce the budget gate before calling the image provider.
 	provider, model := providerModelFromImageEditReq(bifReq)
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	if !h.checkBudget(w, ctx, model) {
 		return
 	}
 
@@ -76,7 +76,7 @@ func (h *Handler) ImageVariation(w http.ResponseWriter, r *http.Request) {
 
 	// FIX #26: enforce the budget gate before calling the image provider.
 	provider, model := providerModelFromImageVariationReq(bifReq)
-	if !h.checkBudget(w, ctx, provider, model, 0) {
+	if !h.checkBudget(w, ctx, model) {
 		return
 	}
 

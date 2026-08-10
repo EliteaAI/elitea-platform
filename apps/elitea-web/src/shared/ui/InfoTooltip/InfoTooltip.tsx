@@ -7,7 +7,7 @@ import Tooltip from '@mui/material/Tooltip';
 
 import { InfoIcon } from '../icons/info-icon';
 import { combineSx } from '../lib/combineSx';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 import { TooltipMarkdownContent } from '../TooltipMarkdownContent';
 
 /** @public */

@@ -59,6 +59,28 @@ describe('useLoadMoreMessages', () => {
     expect(result.current.isLoadingMore).toBe(false);
   });
 
+  /*
+   * The fifth instance of issue #132: this endpoint answers
+   * `{items,total,page,page_size,total_pages}`, but the hook's own
+   * `extractRows` did `'rows' in response ? response.rows : response` — so
+   * neither arm matched, the ENVELOPE OBJECT was reversed and converted, and
+   * "load older messages" silently did nothing. Every case above used a bare
+   * array, which is why the suite never saw it.
+   */
+  it.each([
+    ['the {items,total,page,…} envelope this endpoint really returns', { items: [{ id: 'older-2' }, { id: 'older-1' }], total: 25, page: 1, page_size: 10, total_pages: 3 }],
+    ['a {rows,total} envelope', { rows: [{ id: 'older-2' }, { id: 'older-1' }], total: 25 }],
+  ])('prepends the older rows from %s', async (_label, body) => {
+    server.use(http.get(`${BASE}/elitea_core/messages/prompt_lib/7/1`, () => HttpResponse.json(body)));
+    const { result } = renderHook(() => useHarness({ id: 1, messages_count: 25 }));
+
+    await act(async () => {
+      await result.current.onLoadMoreMessages();
+    });
+
+    expect(result.current.messages.map((m) => m.id)).toEqual(['older-1', 'older-2', 'existing']);
+  });
+
   it('does not fetch (or dedupe again) once messages_count is exhausted', async () => {
     const { result } = renderHook(() => useHarness({ id: 1, messages_count: 5 }));
     await act(async () => {

@@ -13,6 +13,9 @@ import { FolderNameWarningMessage } from '@/shared/lib/validation';
 import { CheckedIcon } from '@/shared/ui/icons/checked-icon';
 import { StyledInputEnhancer } from '@/shared/ui/StyledInputEnhancer';
 
+/** @public Stable hook for E2E: the folder name field this editor owns. */
+export const FOLDER_NAME_INPUT_TESTID = 'folder-name-input';
+
 export interface FolderItemEditorProps {
   readonly folderName: string;
   readonly isFolderNameValid: boolean;
@@ -81,6 +84,7 @@ export function FolderItemEditor({ folderName, isFolderNameValid, onChangeFolder
 
   const confirmLabel = t('features.chatConversationList.folderItemEditor.confirm', 'Confirm');
   const cancelLabel = t('features.chatConversationList.folderItemEditor.cancel', 'Cancel');
+  const nameLabel = t('features.chatConversationList.folderItemEditor.name', 'Folder name');
 
   return (
     <Box sx={editorContainerSx}>
@@ -88,12 +92,24 @@ export function FolderItemEditor({ folderName, isFolderNameValid, onChangeFolder
         autoComplete="off"
         inputRef={inputRef}
         fullWidth
+        /*
+         * `label=""` renders no visible label, which is the baseline's look
+         * (`FolderItem.jsx:298-309` passes no label either) — but it also left
+         * the field with NO accessible name at all: nothing for a screen
+         * reader to announce, and nothing for `getByRole('textbox', {name})`
+         * to match, so the only way to reach it was `querySelector('input')`.
+         * The visual result is unchanged; the name now lives on the input
+         * element itself via `aria-label`, which is exactly the case
+         * `aria-label` exists for (a control whose purpose is clear visually
+         * from context but has no visible text label).
+         */
         label=""
         value={folderName}
         onChange={onChangeFolderName}
         onKeyDown={onKeyDown}
         containerSx={editorInputContainerSx}
         actions={{ enabled: false }}
+        slotProps={{ htmlInput: { 'aria-label': nameLabel, 'data-testid': FOLDER_NAME_INPUT_TESTID } }}
       />
       <Tooltip
         title={isFolderNameValid ? '' : FolderNameWarningMessage}

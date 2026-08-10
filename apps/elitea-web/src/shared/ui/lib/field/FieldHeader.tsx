@@ -7,7 +7,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
 import { InfoIcon } from '../../icons/info-icon';
-import { t } from '../t';
+import { t } from '@/shared/i18n';
 
 export interface FieldHeaderProps {
   label: string;

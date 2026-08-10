@@ -20,7 +20,7 @@ import { PersonalizationIcon } from '../icons/personalization-icon';
 import { PromptIcon } from '../icons/prompt-icon';
 
 import { SETTINGS_LAYOUT } from './settings.constants';
-import { t } from '../lib/t';
+import { t } from '@/shared/i18n';
 
 /** Tab definition used by `SettingsDrawer`. */
 export interface SettingsTab {

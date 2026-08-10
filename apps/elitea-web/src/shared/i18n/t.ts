@@ -1,15 +1,16 @@
 /**
  * shared/i18n's public `t()` — spec N3 / §3.6 / R-T3 / §9.3 unit S8.
  *
- * The two required parameters match unit S1's interim shim exactly
- * (`src/shared/ui/lib/t.ts`, `TFunction = (key: string, fallback: string)
- * => string`, `t: TFunction = (_key, fallback) => fallback`), so this is a
- * behavioural superset, not a breaking change: every call written against
- * the stub keeps compiling and keeps rendering the same fallback text the
- * moment it resolves against this bundle instead — the only difference is
- * that a key present in `en.json` now wins over the fallback, and a key
- * that ISN'T yet in `en.json` is reported (see `./i18n.ts`) instead of
- * silently always winning.
+ * The two required parameters were inherited from unit S1's interim shim
+ * (`src/shared/ui/lib/t.ts`, `t: TFunction = (_key, fallback) => fallback`),
+ * which issue #45 migrated away and deleted; this is the app's only `t`.
+ *
+ * A key present in `en.json` WINS over `fallback`. That is the point, and
+ * it is also the one trap: if the bundle value carries `{{placeholder}}`
+ * interpolation, the call site must pass the matching `options` — writing
+ * the fallback as a JS template literal instead renders the placeholder
+ * literally. A key that is NOT in `en.json` is reported (see `./i18n.ts`)
+ * and degrades to `fallback`.
  *
  * `options` is additive (optional, ignored by any 2-argument call site) —
  * it exists so a future call site can pass i18next interpolation variables

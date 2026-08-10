@@ -1,4 +1,5 @@
 import { eliteaFetch } from '@/shared/api/generated/mutator';
+import { unwrapList } from '@/shared/api/unwrap';
 
 import type {
   SkillDraft,
@@ -45,8 +46,6 @@ function buildListParams(options: ListSkillsOptions): URLSearchParams {
 }
 
 interface SkillListWire {
-  readonly items?: readonly SkillRecord[];
-  readonly rows?: readonly SkillRecord[];
   readonly total?: number;
   readonly page?: number;
   readonly page_size?: number;
@@ -54,7 +53,10 @@ interface SkillListWire {
 }
 
 function normaliseSkillList(wire: SkillListWire, options: ListSkillsOptions): SkillListPage {
-  const items = wire.items ?? wire.rows ?? [];
+  // The items/rows/bare-array fan-out is the one thing every list endpoint in
+  // this API disagrees about; it belongs in the shared helper, not re-derived
+  // here (R-A6, #132). Only the pagination metadata is this module's own.
+  const items = unwrapList<SkillRecord>(wire, 'listSkills');
   const pageSize = wire.page_size ?? options.pageSize ?? 20;
   const total = wire.total ?? items.length;
   return {
