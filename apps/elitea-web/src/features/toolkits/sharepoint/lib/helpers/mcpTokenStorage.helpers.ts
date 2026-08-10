@@ -75,8 +75,25 @@ import { createStorage } from '@/shared/lib/storage';
  * against an attacker who already has script execution on this origin.
  */
 const MC_TOKENS_STORAGE_KEY = 'mcp.tokens';
-/** `mcAuth.constants.js`'s `MCP_TOKEN_CHANGE_EVENT`. */
-export const MCP_TOKEN_CHANGE_EVENT = 'mcp-token-change';
+/**
+ * `features/mcps/lib/constants.ts`'s `MCP_TOKEN_CHANGE_EVENT`, NOT the
+ * baseline's `'mcp-token-change'` — for exactly the reason the storage-key
+ * note above gives, one level further on. Issue #22 aligned WHERE the two
+ * slices store the token; this aligns HOW they announce a change to it.
+ *
+ * `useSharepointTokenStatus` re-reads the token only when it hears this
+ * event, and the real writer (`features/mcps/lib/storage.ts`, driven by
+ * `<McpAuthModal>`) dispatches `elitea_mcp_token_change`. Listening for the
+ * baseline's name meant a completed OAuth login wrote a token this module
+ * could now read — and the UI still sat on its stale "not connected" render
+ * until something else forced it to re-check.
+ *
+ * Duplicated by literal rather than imported, same `no-sideways-features`
+ * trade-off as `MC_TOKENS_STORAGE_KEY`. `mcpTokenStorage.interop.test.ts`
+ * pins both names against the real `features/mcps` writer, so drift in
+ * either fails a test instead of silently disconnecting the feature.
+ */
+export const MCP_TOKEN_CHANGE_EVENT = 'elitea_mcp_token_change';
 /** `mcAuth.constants.js`'s `MCP_CONNECTION_VERIFIED` sentinel access-token value. */
 const MCP_CONNECTION_VERIFIED = '__connection_verified__';
 /** `mcAuth.constants.js`'s `MCP_PREBUILD_PREFIX` — checked so `getStorageKey` matches the baseline's precedence order, even though SharePoint's own `type` ('sharepoint') is never prebuild-prefixed. */

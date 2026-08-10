@@ -17,6 +17,7 @@ import { BaseTab } from '@/shared/ui/BaseTab';
 import { BaseTabs } from '@/shared/ui/BaseTabs';
 import type { ControlsDropdownItem } from '@/shared/ui/ControlsDropdown';
 
+import { SHAREPOINT_AUTH_MODALS } from './lib/sharepointAuthModals';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { INDEXES_CHAT_UI } from './lib/indexesChatUI';
 import type { EditToolDetail } from './lib/toolkitFormTypes';
@@ -351,18 +352,24 @@ export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNod
             isMCP={isMCP}
             projectId={projectId}
             saveHandlers={{ saveToolkit: saveToolkitMutation }}
-            renderTestPane={() => (
-              // Composition gap: the right-pane live test-chat content
-              // (`TestTools`, a sibling A4 sub-unit's owned file — see
-              // `ConfigurationTab.tsx`'s own module doc comment for why
-              // this is a slot, not a direct import) has real dependencies
-              // (`features/chat`, a `widgets/`-layer LLM model selector)
-              // that do not exist anywhere in this worktree yet.
-              <Box
-                sx={testPaneSlotSx}
-                data-testid="edit-toolkit-test-pane-slot"
-              />
-            )}
+            slots={{
+              // The one place in the app that can legally hand SharePoint's
+              // delegated-login UI a REAL `McpAuthModal` — see
+              // `./lib/sharepointAuthModals.tsx`.
+              sharepointAuth: SHAREPOINT_AUTH_MODALS,
+              renderTestPane: () => (
+                // Composition gap: the right-pane live test-chat content
+                // (`TestTools`, a sibling A4 sub-unit's owned file — see
+                // `ConfigurationTab.tsx`'s own module doc comment for why
+                // this is a slot, not a direct import) has real dependencies
+                // (`features/chat`, a `widgets/`-layer LLM model selector)
+                // that do not exist anywhere in this worktree yet.
+                <Box
+                  sx={testPaneSlotSx}
+                  data-testid="edit-toolkit-test-pane-slot"
+                />
+              ),
+            }}
           />
         )}
         {indexesTab.activeTab === 1 && (

@@ -58,6 +58,8 @@ export function useToolkitFormState(props: ResolvedToolkitFormProps): ToolkitFor
     isMCP,
     disabled,
     onSyntaxError,
+    projectId,
+    slots,
   } = props;
   const { view, setView, onManualViewChange, isValidSchema, effectiveToolSchema, hasErrors, mergedToolErrors, editField, setToolErrors, showValidation, configurationErrors, setConfigurationErrors, configurationName, setConfigurationName, configuration, setConfiguration, toolType, ToolComponent } = core;
   const { isCreatingConfiguration, isTestingConnection, onCreateConfiguration, onTestConnection, onRevertCredentials, shouldShowDisabledConfigFields, onCredentialReload, isLoading } = config;
@@ -107,6 +109,11 @@ export function useToolkitFormState(props: ResolvedToolkitFormProps): ToolkitFor
     onCredentialReload,
     onCreateConfiguration,
     onTestConnection,
+    // `projectId`/`slots` are what let `ToolBase` render a REAL
+    // `SharepointOAuthStatus` (with a real, caller-supplied `McpAuthModal`)
+    // instead of the nothing it rendered while this bag had neither.
+    projectId,
+    slots,
   };
 
   return {

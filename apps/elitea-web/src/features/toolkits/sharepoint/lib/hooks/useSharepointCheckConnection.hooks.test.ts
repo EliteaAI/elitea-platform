@@ -44,8 +44,8 @@ describe('useSharepointCheckConnection', () => {
     expect(result.current.isRunning).toBe(false);
   });
 
-  describe('REAL, CURRENT GAP (module doc comment): a live 401 never reaches handleConfigAuthRequired', () => {
-    it('does NOT call handleConfigAuthRequired for a real 401 response, because http.ts\'s reauth interceptor strips the body before this hook\'s catch block ever sees it', async () => {
+  describe('a live 401 with requires_authorization now reaches handleConfigAuthRequired', () => {
+    it("calls handleConfigAuthRequired with the real 401 body (was: the reauth interceptor stripped it, so the OAuth modal could never open)", async () => {
       server.use(
         http.post('*/api/v2/configurations/check_connection/proj-1/sharepoint', () =>
           HttpResponse.json(
@@ -61,17 +61,35 @@ describe('useSharepointCheckConnection', () => {
         await result.current.runCheck(handleConfigAuthRequired, 'token-key-1');
       });
 
-      // `configureGeneratedClient({ baseUrl: '/api/v2' })` (this file's own
-      // `beforeEach`) supplies no `reauthenticate` callback, so `http.ts`'s
-      // `runReauth()` resolves `false` immediately and every 401 becomes
-      // `EliteaApiError({ failure: { kind: 'auth', status: 401, url } })` —
-      // no `body` field at all. `authRequiredErrorData` (tested directly,
-      // below) correctly finds nothing to report in that shape, so
-      // `handleConfigAuthRequired` is never invoked. This is the SAME gap
-      // `features/agents/model/useCreateConfiguration.ts`'s own
-      // `isAuthRequiredError` doc comment discloses for the identical
-      // `/configurations/check_connection` endpoint — not a defect
-      // introduced by this port.
+      // INVERTED ASSERTION, deliberately: this case used to assert
+      // `not.toHaveBeenCalled()` and cite the gap as "not a defect introduced
+      // by this port". True as far as it went — but it also meant the whole
+      // delegated-login path could never work, and the passing test made that
+      // look intentional. `shared/api/http.ts` now surfaces a 401 whose body
+      // carries `requires_authorization` as `kind: 'http'` WITH that body
+      // (a resource-authorization protocol response is not a session
+      // failure), so `authRequiredErrorData` finds it and the modal opens.
+      expect(handleConfigAuthRequired).toHaveBeenCalledTimes(1);
+      expect(handleConfigAuthRequired).toHaveBeenCalledWith(
+        { requires_authorization: true, auth_metadata: { server_url: 'https://x', resource_metadata: {} } },
+        spConfig.oauth_discovery_endpoint,
+        'token-key-1',
+      );
+    });
+
+    it('leaves an ordinary 401 (no requires_authorization) on the re-auth path — handleConfigAuthRequired is not called', async () => {
+      server.use(
+        http.post('*/api/v2/configurations/check_connection/proj-1/sharepoint', () =>
+          HttpResponse.json({ error: 'session expired' }, { status: 401 }),
+        ),
+      );
+      const handleConfigAuthRequired = vi.fn();
+      const { result } = renderHook(() => useSharepointCheckConnection({ projectId: 'proj-1', spConfig }));
+
+      await act(async () => {
+        await result.current.runCheck(handleConfigAuthRequired, 'token-key-1');
+      });
+
       expect(handleConfigAuthRequired).not.toHaveBeenCalled();
     });
   });
@@ -82,7 +100,7 @@ describe('useSharepointCheckConnection', () => {
       expect(authRequiredErrorData(caught)).toEqual({ requires_authorization: true, auth_metadata: { server_url: 'https://x' } });
     });
 
-    it('returns undefined for an EliteaApiError-shaped auth failure with no body (the real, current http.ts shape)', () => {
+    it('returns undefined for an EliteaApiError-shaped auth failure with no body (the shape a genuine session 401 still produces)', () => {
       const caught = { failure: { kind: 'auth', status: 401 } };
       expect(authRequiredErrorData(caught)).toBeUndefined();
     });

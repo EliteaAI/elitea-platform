@@ -36,7 +36,7 @@ afterEach(() => {
  */
 function renderTab(props: Partial<ConfigurationTabProps> = {}) {
   const saveToolkit = props.saveHandlers?.saveToolkit ?? vi.fn().mockResolvedValue({});
-  const renderTestPane = props.renderTestPane ?? (() => <div>test-pane</div>);
+  const renderTestPane = props.slots?.renderTestPane ?? (() => <div>test-pane</div>);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 
   const rootRoute = createRootRoute({
@@ -53,8 +53,8 @@ function renderTab(props: Partial<ConfigurationTabProps> = {}) {
             toolDetailState={{ editToolDetail: { id: 'tk-1', type: 'github', name: 'My GitHub', settings: {} }, onChangeToolDetail: vi.fn() }}
             projectId="proj-1"
             saveHandlers={{ saveToolkit }}
-            renderTestPane={renderTestPane}
             {...props}
+            slots={{ ...props.slots, renderTestPane }}
           />
         </ThemeProvider>
       </SocketClientContext.Provider>
@@ -92,7 +92,7 @@ describe('ConfigurationTab', () => {
   it('shows the run-history view when the history button is clicked and renderRunHistory is provided', async () => {
     const renderRunHistory = vi.fn(() => <div>run-history</div>);
     const user = userEvent.setup();
-    renderTab({ renderRunHistory });
+    renderTab({ slots: { renderTestPane: () => <div>test-pane</div>, renderRunHistory } });
 
     await user.click(await screen.findByRole('button', { name: /run history|history/i }));
 
