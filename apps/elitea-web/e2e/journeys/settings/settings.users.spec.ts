@@ -35,6 +35,16 @@
  * performs the write through the UI and then RE-READS it after a full page
  * reload — and, for the invite, straight off the API as well.
  *
+ * J22h extends the same discipline to the BATCH edit (#188). Everything above
+ * drives one row at a time, and the batch path is a different one on both
+ * sides: the client joins the selected ids into a single `userId` string
+ * (`entities/user/model/useEditUser.ts`'s `useBatchEditUsers`), the dialog is
+ * reached through the HEADER control rather than a row's, and it opens with NO
+ * role selected instead of the selected user's. Up to J22h that path was
+ * covered only at the API level, by `users_write_postgres_integration_test.go`'s
+ * "PUT accepts the comma-joined batch id form" — which says nothing about
+ * whether a browser ever produces that form.
+ *
  * NOT covered: `administration` mode. It addresses the global scope rather than
  * a project's membership and answers 501 by design; no UI reaches it.
  *
@@ -67,6 +77,27 @@
  * `aria-hidden`); before `UsersTable`'s actions cell stopped the click from
  * reaching the DataGrid row, clicking the row's pencil deselected the row and
  * the dialog never opened.
+ *
+ * J22h was measured on both sides of the batch path:
+ *   SERVER — `UsersUpdate`'s `for _, userID := range userIDs` → `userIDs[:1]`
+ *            (users_write.go), rebuilt and the container recreated (image
+ *            digest verified to change, since `e2e-stack.sh up` reuses the
+ *            `:e2e` tag). J22h fails with
+ *            `autotest_batch-b@autotest.local after the batch edit: ["viewer"]
+ *            != ["admin"]` — on the RE-READ, never on a status: the mutated
+ *            handler still answered 200 and the success toast still appeared.
+ *   CLIENT — a `page.route` rewrite of the outgoing PUT body's `userId` to its
+ *            first comma-separated element (i.e. a client that stopped joining
+ *            the selection) produces the SAME observable: member A is updated,
+ *            member B is left on `viewer`.
+ * Two more probes established that the batch-specific assertions are not
+ * satisfied by the single-row path they are meant to distinguish from:
+ *   - with ONE row selected, the same dialog opens with `viewer` TICKED, so
+ *     J22h's "no role is ticked" check really is the batch/single
+ *     discriminator and not something every dialog passes;
+ *   - with two rows selected the page carries THREE controls labelled
+ *     "Edit role" (the header's plus one per selected row), which is why J22h
+ *     locates the header's structurally instead of by `.first()`.
  * ─────────────────────────────────────────────────────────────────────────
  */
 import { test, expect } from '@playwright/test';
@@ -282,10 +313,21 @@ test('J22d: member list renders the seeded project members', async ({ page }) =>
  * `page.goto` — not a soft refetch — so nothing can be served out of the
  * client's react-query cache.
  *
- * They operate on ONE address they create themselves and remove again, never
- * on the seeded personas: e2e-admin/e2e-member's roles are load-bearing for
- * every other spec's RBAC, and the settings-users visual baseline is a
- * screenshot of exactly this grid.
+ * They operate on addresses they create themselves and remove again, never on
+ * the seeded personas: e2e-admin/e2e-member's roles are load-bearing for every
+ * other spec's RBAC, and the settings-users visual baseline is a screenshot of
+ * exactly this grid.
+ *
+ * ONE ENGINE PER STACK. Every test in this group asserts an exact membership
+ * count (`before.length ± 1`, `before.length`) against a project the whole
+ * suite shares, so it needs the stack to itself. That is what CI gives it:
+ * ci-web-e2e.yml runs `--project=${{ matrix.engine }}` in a matrix, one engine
+ * per job, each with its own stack. A local `npm run e2e` does NOT — it runs
+ * chromium and webkit against the same containers, and the two engines' copies
+ * of these tests then race over the same rows. Run them one engine at a time
+ * (`npx playwright test --project=chromium …`) when reproducing locally;
+ * a failure with a member the test just swept still present is that race, not
+ * a defect in the write path.
  */
 
 /** The address J22e invites and J22g removes. Distinct from J22b's, which is never sent. */
@@ -316,17 +358,54 @@ async function apiMembers(
   return body.rows ?? [];
 }
 
-/** Removes the test address from the project if it is a member. Idempotent. */
-async function removeWritePathMember(
+/**
+ * Removes the given test addresses from the project, skipping any that are not
+ * members. Idempotent.
+ *
+ * One DELETE per address on purpose, even though the endpoint also accepts the
+ * comma-joined `?id[]=3,4` batch form. A sweep that leaned on the batch form
+ * would share a failure mode with the thing J22h exists to test: if the server
+ * ever stopped splitting a joined id list, the sweep would remove one row of
+ * two and the leftover would land in the next run's grid (and in the
+ * `settings-users` visual baseline) as a mystery.
+ */
+async function removeMembersByEmail(
   api: import('@playwright/test').APIRequestContext,
+  emails: readonly string[],
 ): Promise<void> {
-  const member = (await apiMembers(api)).find((row) => row.email === WRITE_PATH_EMAIL);
-  if (!member) return;
-  const resp = await api.delete(
-    `${API_BASE}/admin/users/default/${DEFAULT_PROJECT_ID}?${new URLSearchParams({ 'id[]': member.id }).toString()}`,
-  );
+  const members = await apiMembers(api);
+  for (const email of emails) {
+    const member = members.find((row) => row.email === email);
+    if (!member) continue;
+    const resp = await api.delete(
+      `${API_BASE}/admin/users/default/${DEFAULT_PROJECT_ID}?${new URLSearchParams({ 'id[]': member.id }).toString()}`,
+    );
+    if (!resp.ok()) {
+      throw new Error(
+        `cleanup DELETE ${email} -> ${resp.status()}: ${(await resp.text()).slice(0, 300)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Adds addresses to the project through the product's own invite endpoint —
+ * the one `InviteUserDialog` → `useInviteUsers` POSTs to, with the same
+ * `{emails, roles}` body. Setup for a test whose subject is the EDIT path, so
+ * it does not spend a second UI pass on an invite J22e already drives through
+ * the browser; but it stays on the product's creation path rather than
+ * inserting `auth_core__project_user_role` rows behind the API's back, so a
+ * membership this helper reports is a membership the app can produce.
+ */
+async function inviteMembers(
+  api: import('@playwright/test').APIRequestContext,
+  emails: readonly string[],
+  roles: readonly string[],
+): Promise<void> {
+  const url = `${API_BASE}/admin/users/default/${DEFAULT_PROJECT_ID}`;
+  const resp = await api.post(url, { data: { emails: [...emails], roles: [...roles] } });
   if (!resp.ok()) {
-    throw new Error(`cleanup DELETE -> ${resp.status()}: ${(await resp.text()).slice(0, 300)}`);
+    throw new Error(`setup POST ${url} -> ${resp.status()}: ${(await resp.text()).slice(0, 300)}`);
   }
 }
 
@@ -347,12 +426,31 @@ async function pickInviteRole(page: import('@playwright/test').Page, role: strin
   await expect(page.locator(`[data-testid="select-option-${role}"]`)).toHaveCount(0);
 }
 
-/** Selects exactly one grid row by the email it shows. */
+/**
+ * Selects exactly one grid row by the email it shows.
+ *
+ * The tick is retried rather than clicked once. `UsersTable` drives the
+ * DataGrid's `rowSelectionModel` entirely from the parent's `selectedUsers`,
+ * so the checkbox only turns on once React has round-tripped the click through
+ * `handleSelectionModelChange` → `onSelectRow` → `setSelectedUsers`; a
+ * re-render arriving inside that window swallows the click and a bare
+ * `check()` throws "Clicking the checkbox did not change its state". Measured
+ * at roughly one run in eight on this stack, and it reads like a defect in the
+ * write path rather than in the selection wiring, which is the whole problem.
+ *
+ * `check()` is a no-op on an already-ticked box, so retrying cannot
+ * over-select, and the explicit `toBeChecked` is what makes the retry a
+ * verified end state instead of a hopeful click.
+ */
 async function selectRowByEmail(page: import('@playwright/test').Page, email: string) {
   const grid = page.getByRole('grid');
   const row = grid.getByRole('row').filter({ hasText: email });
   await expect(row).toHaveCount(1, { timeout: 15_000 });
-  await row.getByRole('checkbox').check();
+  const checkbox = row.getByRole('checkbox');
+  await expect(async () => {
+    await checkbox.check({ timeout: 5_000 });
+    await expect(checkbox).toBeChecked({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
   return row;
 }
 
@@ -366,13 +464,13 @@ test.describe('#130 write path', () => {
     // grid's row count and J22e's "was not a member before" precondition both
     // depend on starting clean.
     const context = await browser.newContext({ storageState: STORAGE_STATE.member });
-    await removeWritePathMember(context.request);
+    await removeMembersByEmail(context.request, [WRITE_PATH_EMAIL]);
     await context.close();
   });
 
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: STORAGE_STATE.member });
-    await removeWritePathMember(context.request);
+    await removeMembersByEmail(context.request, [WRITE_PATH_EMAIL]);
     // Leaving this row behind would change the `settings-users` visual
     // baseline, so the sweep is asserted, not hoped for.
     expect((await apiMembers(context.request)).map((row) => row.email)).not.toContain(
@@ -443,6 +541,20 @@ test.describe('#130 write path', () => {
 
     // Multi-select: check `editor`, uncheck the `viewer` J22e granted. Save is
     // `disabled={!selectedRoleIds.length || !hasChanged}`, so both clicks matter.
+    //
+    // KNOWN FLAKE, and it is the app's, not this test's: measured at ~1 run in
+    // 15 on this stack, `expect(save).toBeEnabled()` below times out with Save
+    // still disabled. `EditUserRolesDialog`'s reset effect depends on the
+    // `originalRoles` ARRAY IDENTITY (`useEffect(…, [open, originalRoles])`),
+    // and `EditUsersButton` passes `(_userRoles) ?? []` — a fresh array on
+    // every render. `useUsersActions` rebuilds `singleAction.edit` on every
+    // render of `Users` too (its memo closes over `editHook`, a fresh object
+    // literal each time), so ANY re-render that lands while the dialog is open
+    // — a react-query refetch flipping `isFetching`, the toast timer — resets
+    // the in-dialog selection back to the user's stored roles and `hasChanged`
+    // falls to false. CI's `retries: 2` hides it. Do not "fix" it here by
+    // retrying the ticks: the same window is what a user hits, and the fix
+    // belongs in the dialog's effect (compare role VALUES, not identity).
     await editDialog.getByRole('combobox').click();
     await page.getByRole('option', { name: 'editor' }).click();
     await page.getByRole('option', { name: 'viewer' }).click();
@@ -499,5 +611,208 @@ test.describe('#130 write path', () => {
     await expect(
       page.getByRole('grid').getByRole('row').filter({ hasText: WRITE_PATH_EMAIL }),
     ).toHaveCount(0);
+  });
+
+  /* ─── #188: the same PUT, driven as a BATCH ────────────────────────────────
+   *
+   * Nested inside `#130 write path` rather than sitting beside it, and that
+   * nesting is load-bearing, not cosmetic: `fullyParallel` splits a spec file
+   * across workers, and J22e/J22g assert `after).toHaveLength(before.length ±
+   * 1)`. A sibling describe whose `beforeAll` invites two addresses would land
+   * between those two reads often enough to make both tests flake for reasons
+   * nothing in them mentions. Serial mode is inherited from the parent, so the
+   * setup below cannot run until J22g has finished.
+   */
+  test.describe('batch edit', () => {
+    /**
+     * Two addresses of J22h's own. Reusing e2e-admin/e2e-member is not an
+     * option: their roles are what every other spec's RBAC resolves through,
+     * and the `settings-users` visual baseline is a screenshot of this grid.
+     */
+    const BATCH_EMAILS = [
+      `${AUTOTEST_PREFIX}batch-a@autotest.local`,
+      `${AUTOTEST_PREFIX}batch-b@autotest.local`,
+    ] as const;
+
+    /** What the pair is invited with, and what the batch edit must REPLACE. */
+    const BATCH_ROLE_BEFORE = 'viewer';
+    /**
+     * What the batch edit sets. Deliberately NOT `editor`: e2e-member holds
+     * `editor`, so a handler that applied the update to the whole project
+     * instead of to the ids it was given would leave that persona looking
+     * untouched. With `admin` as the target, such a bug moves e2e-member off
+     * `editor` and the assertion below sees it.
+     */
+    const BATCH_ROLE_AFTER = 'admin';
+
+    test.beforeAll(async ({ browser }) => {
+      const context = await browser.newContext({ storageState: STORAGE_STATE.member });
+      // An aborted run may have left either address behind; POST reports an
+      // address that is already a member as an error and 400s the whole call.
+      await removeMembersByEmail(context.request, BATCH_EMAILS);
+      await inviteMembers(context.request, BATCH_EMAILS, [BATCH_ROLE_BEFORE]);
+      await context.close();
+    });
+
+    test.afterAll(async ({ browser }) => {
+      const context = await browser.newContext({ storageState: STORAGE_STATE.member });
+      await removeMembersByEmail(context.request, BATCH_EMAILS);
+      // Asserted, not hoped for — two leftover rows would change the
+      // `settings-users` visual baseline and every row count in this file.
+      const remaining = (await apiMembers(context.request)).map((row) => row.email);
+      for (const email of BATCH_EMAILS) {
+        expect(remaining).not.toContain(email);
+      }
+      await context.close();
+    });
+
+    test('J22h: a batch role edit writes to EVERY selected member and survives a full reload', async ({
+      page,
+    }) => {
+      test.setTimeout(90_000);
+
+      await page.goto(BASE_URL + '/app/settings/users');
+      await expect(page.getByRole('grid')).toBeVisible({ timeout: 15_000 });
+
+      // Precondition, off the server: both addresses are members and both
+      // carry exactly the role the edit is about to replace. Without this the
+      // post-state below could be satisfied by an edit that never happened.
+      const before = await apiMembers(page.request);
+      const targets = BATCH_EMAILS.map((email) => {
+        const member = before.find((row) => row.email === email);
+        expect(member, `${email} was not invited by the setup step`).toBeTruthy();
+        expect(member?.roles).toEqual([BATCH_ROLE_BEFORE]);
+        return member!;
+      });
+
+      // ── select two rows ────────────────────────────────────────────────
+      // `useUsersActions` switches from `singleAction` to `batchAction` at
+      // `selectedUsers.length >= 2`, so the second checkbox is what puts the
+      // page into the mode this test exists for.
+      for (const email of BATCH_EMAILS) {
+        await selectRowByEmail(page, email);
+      }
+
+      /*
+       * The HEADER copy of the control, located structurally.
+       *
+       * `page.getByRole('button', {name: 'Edit role'})` matches THREE elements
+       * here, not one: `UsersTable`'s actions column renders a per-row pencil
+       * for every row in `actions.edit.userIds`, and in batch mode that array
+       * holds both selected ids. Those per-row buttons are not the batch
+       * control — each opens a dialog seeded with its own row's roles — so
+       * `.first()`/`.last()` would silently pick a different code path
+       * depending on DOM order. The toolbar is the smallest element carrying
+       * both the search box and the Invite button (`UsersPageHeader`), and the
+       * count assertion is what turns a future layout change into a failure
+       * here rather than into a test that quietly edits one user.
+       */
+      const toolbar = page
+        .locator('div')
+        .filter({ has: page.getByPlaceholder('Search users…') })
+        .filter({ has: page.locator('button[title="Invite users"]') })
+        .last();
+      const headerEdit = toolbar.getByRole('button', { name: 'Edit role' });
+      await expect(headerEdit).toHaveCount(1);
+      await headerEdit.click();
+
+      const editDialog = page.getByRole('dialog').filter({ hasText: 'Edit roles' });
+      await expect(editDialog).toBeVisible();
+
+      /*
+       * The batch dialog starts from an EMPTY selection — old-app parity with
+       * `EditUsersButton.jsx`'s `originalRoles={isBatchEdit ? [] : user?.roles
+       * || []}`, which the port keeps by giving `batchAction.edit` no
+       * `userRoles` at all (useUsersActions.ts) so `EditUsersButton` falls
+       * through to `?? []`.
+       *
+       * This is also the sharpest single discriminator between batch and
+       * single mode: both selected members hold `viewer`, so a dialog that had
+       * been seeded from the first selected user would show `viewer` ticked.
+       * Asserting the ticks rather than the collapsed input's text on purpose —
+       * MUI's `Select` renders a zero-width space when `renderValue` returns
+       * '', so `toHaveText('')` is not the check it looks like.
+       */
+      const save = editDialog.getByRole('button', { name: /^save$/i });
+      await expect(save).toBeDisabled();
+
+      await editDialog.getByRole('combobox').click();
+      for (const role of SEEDED_ROLES) {
+        await expect(
+          page.getByRole('option', { name: role, exact: true }).getByRole('checkbox'),
+        ).not.toBeChecked();
+      }
+
+      // ── make the change ────────────────────────────────────────────────
+      await page.getByRole('option', { name: BATCH_ROLE_AFTER, exact: true }).click();
+      await page.keyboard.press('Escape');
+      await expect(save).toBeEnabled();
+
+      /*
+       * The request itself. Not a status assertion — a status is exactly what
+       * the #130 no-op satisfied — but the one place where "the client still
+       * speaks the batch form" is observable. `useBatchEditUsers` joins the
+       * selected ids with ',' into a single `userId` string
+       * (entities/user/model/useEditUser.ts), which is the shape
+       * `UsersUpdate` splits server-side; a client that regressed to sending
+       * one id would still get a 200 and still show the success toast, and
+       * only the second member's roles would give it away.
+       */
+      const putRequest = page.waitForRequest(
+        (req) => req.method() === 'PUT' && req.url().includes('/admin/users/default/'),
+        { timeout: 15_000 },
+      );
+      await save.click();
+      const sent = JSON.parse((await putRequest).postData() ?? '{}') as {
+        userId?: string;
+        roles?: string[];
+      };
+      expect(sent.userId, 'the batch PUT must carry a comma-joined id list').toContain(',');
+      expect(sent.userId?.split(',').sort()).toEqual(targets.map((m) => m.id).sort());
+      expect(sent.roles).toEqual([BATCH_ROLE_AFTER]);
+
+      // Waited on only so the mutation has certainly settled; the toast is the
+      // same one the no-op handler used to produce.
+      await expect(page.getByText('The user has been edited successfully')).toBeVisible({
+        timeout: 15_000,
+      });
+
+      // ── RE-READ #1: the server, with no client code in the path ────────
+      const after = await apiMembers(page.request);
+      for (const email of BATCH_EMAILS) {
+        const member = after.find((row) => row.email === email);
+        expect(member, `PUT returned success but ${email} is no longer a member`).toBeTruthy();
+        // REPLACEMENT, and for BOTH: a handler that split the id list but
+        // merged instead of replacing reports ['admin','viewer'] here, and one
+        // that took only the first id leaves batch-b on ['viewer'].
+        expect([...(member?.roles ?? [])].sort(), `${email} after the batch edit`).toEqual([
+          BATCH_ROLE_AFTER,
+        ]);
+      }
+      // Blast radius: the write touched the two ids it was given and nothing
+      // else. e2e-member is still `editor`, which `admin` would have overwritten.
+      for (const seeded of SEEDED_MEMBERS) {
+        const member = after.find((row) => row.email === seeded.email);
+        expect(member?.roles, `seeded ${seeded.email} must be untouched`).toEqual([seeded.role]);
+      }
+      expect(after).toHaveLength(before.length);
+
+      // ── RE-READ #2: a full page load, so the rows can only come from the
+      // server — `onEditSuccess` does not refetch, and react-query's cache is
+      // gone across a `goto`. ─────────────────────────────────────────────
+      await page.goto(BASE_URL + '/app/settings/users');
+      const grid = page.getByRole('grid');
+      await expect(grid).toBeVisible({ timeout: 15_000 });
+      for (const email of BATCH_EMAILS) {
+        const row = grid.getByRole('row').filter({ hasText: email });
+        await expect(row).toHaveCount(1, { timeout: 15_000 });
+        await expect(
+          row.getByRole('gridcell', { name: BATCH_ROLE_AFTER, exact: true }),
+        ).toBeVisible();
+        await expect(
+          row.getByRole('gridcell', { name: BATCH_ROLE_BEFORE, exact: true }),
+        ).toHaveCount(0);
+      }
+    });
   });
 });
