@@ -6,7 +6,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useParams } from '@tanstack/react-router';
 
-import { ConfigurationTab, DeleteToolkitButton, ExportToolkitButton, ToolkitsControls, type ToolkitEditorDeps, useToolkitEdit } from '@/features/toolkits';
+import { ConfigurationTab, DeleteToolkitButton, ExportToolkitButton, IndexesTab, ToolkitsControls, type ToolkitEditorDeps, useToolkitEdit } from '@/features/toolkits';
 import { usePermissionList } from '@/shared/api/generated/auth/auth';
 import type { Permission, ToolkitInstance } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
@@ -18,7 +18,10 @@ import { BaseTabs } from '@/shared/ui/BaseTabs';
 import type { ControlsDropdownItem } from '@/shared/ui/ControlsDropdown';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
+import { INDEXES_CHAT_UI } from './lib/indexesChatUI';
 import type { EditToolDetail } from './lib/toolkitFormTypes';
+import { useIndexesTabState } from './lib/useIndexesTabState';
+import type { IndexesTabState } from './lib/useIndexesTabState';
 import { useToolkitDetail } from './lib/useToolkitDetail';
 
 const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
@@ -36,6 +39,7 @@ const actionsSx: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: 
 const tabBarSx: SxProps<Theme> = { flexShrink: 0, borderBottom: 1, borderColor: 'divider', padding: '0 1.5rem' };
 const contentSx: SxProps<Theme> = { flex: 1, minHeight: 0 };
 const testPaneSlotSx: SxProps<Theme> = { flex: 1, minWidth: 0 };
+const indexesPanelSx: SxProps<Theme> = { height: '100%', display: 'flex', minHeight: 0 };
 
 export interface EditToolkitDeps {
   /** No generated `PUT /elitea_core/tool/prompt_lib/{projectId}/{toolId}` endpoint exists yet — see `features/toolkits`' `api/toolkits.ts` module doc comment. */
@@ -138,6 +142,36 @@ function useCopyLinkMenuItem(): ControlsDropdownItem[] {
 }
 
 /**
+ * The Indexes tab panel. A separate component purely so `EditToolkit` stays
+ * under the §3.5 complexity budget (12) — same reason
+ * `useSaveToolkitMutation` below is not inlined. `toolkitId` is `undefined`
+ * only while the route params are still resolving, at which point there is
+ * no toolkit to list indexes for.
+ */
+function IndexesTabPanel({ toolkitId, state }: { readonly toolkitId: string | undefined; readonly state: IndexesTabState }): ReactNode {
+  if (toolkitId === undefined) return null;
+  return (
+    <Box
+      sx={indexesPanelSx}
+      data-testid="edit-toolkit-indexes-tab-panel"
+    >
+      <IndexesTab
+        toolkitId={toolkitId}
+        values={state.toolkitValues}
+        selectedIndexTools={state.selectedIndexTools}
+        chatUI={INDEXES_CHAT_UI}
+      />
+    </Box>
+  );
+}
+
+/** Split out of `EditToolkit` for the §3.5 complexity budget — see `IndexesTabPanel` above. */
+function resolveTitle(isMCP: boolean, name: string | undefined): string {
+  const fallback = isMCP ? t('pages.toolkits.editToolkit.titleMcp', 'Edit MCP') : t('pages.toolkits.editToolkit.title', 'Edit Toolkit');
+  return name ?? fallback;
+}
+
+/**
  * Ported from `apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx` (476
  * lines) — ROUTE-030 `/toolkits/:tab/:toolkitId` (+ the `/mcps/:tab/:mcpId`
  * sibling, `isMCP`; also the old app's `AppDetail.jsx` fallback for
@@ -173,14 +207,27 @@ function useCopyLinkMenuItem(): ControlsDropdownItem[] {
  *    entry for it is `{ content: <></>, display: 'none' }` (`EditToolkit.jsx`,
  *    the tabs `useMemo`) — permanently hidden dead UI in the baseline
  *    itself, not a real surface this port removes.
- *  - **The "Indexes" tab is a disclosed composition gap**, not a
- *    placeholder standing in for missing logic: `IndexesContainer`
- *    (`features/toolkits/indexes/ui`, a sibling A4 sub-unit's owned file —
- *    see this batch's own sub-partition) is not exported from `features/
- *    toolkits`' public `index.ts` either (same budget ceiling). Real
- *    caller-visible label + hidden panel below, same `data-testid`
- *    convention `pages/agents/EditApplication.tsx`'s own equivalent gap
- *    already established.
+ *  - **The "Indexes" tab is MOUNTED (issue #149), and gated.** It used to be
+ *    a real, clickable tab label in front of `<Box data-testid="edit-toolkit-
+ *    indexes-tab-panel" />` — an empty div — on the stated grounds that
+ *    `IndexesContainer` was not on `features/toolkits`' public API. It now
+ *    renders that slice through the single `IndexesTab` composition root
+ *    (see that file's own module doc for why the eight intra-slice
+ *    dependencies it binds are not spent on this slice's §3.5 budget), with
+ *    `pages/`-supplied `chatUI` for the three components no `features/` file
+ *    may legally import.
+ *
+ *    TWO defects surfaced by mounting it, both fixed here rather than
+ *    worked around:
+ *      * The baseline never offers this tab on an MCP screen
+ *        (`EditToolkit.jsx:208`, `if (mcpId) return true` →
+ *        `display: 'none'`), nor on a toolkit type whose schema carries no
+ *        indexing tool (`:210-216`). This port had dropped that gate
+ *        entirely. `useIndexesTabVisibility` restores it — which is why the
+ *        JRNY-018 MCP journey now asserts the tab's ABSENCE.
+ *      * The tab index could point at a panel that no longer exists once
+ *        the gate can flip at runtime; `activeTab` collapses to
+ *        Configuration instead of rendering an empty content area.
  *  - **`ToolkitsControls` IS now rendered** (regression fix, finding R3) —
  *    previously imported nowhere in this app, leaving it genuinely dead
  *    code. Export/Delete stay as the standalone `DeleteToolkitButton`/
@@ -247,8 +294,16 @@ export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNod
 
   const handleTabChange = useCallback((_event: unknown, value: number) => setTab(value), []);
 
-  const fallbackTitle = isMCP ? t('pages.toolkits.editToolkit.titleMcp', 'Edit MCP') : t('pages.toolkits.editToolkit.title', 'Edit Toolkit');
-  const title = detail?.name ?? fallbackTitle;
+  /**
+   * Issue #149. The baseline hides the Indexes tab outright on MCP screens
+   * and on any toolkit whose type offers no indexing tool — this port had
+   * dropped that gate and rendered a clickable tab in front of an empty Box
+   * everywhere. See `features/toolkits`' `lib/helpers/indexesTabVisibility.ts`
+   * for the baseline citation and the one disclosed schema-shape adaptation.
+   */
+  const indexesTab = useIndexesTabState({ isMCP, detail, editToolDetail, tab });
+
+  const title = resolveTitle(isMCP, detail?.name);
 
   return (
     <Box sx={pageSx}>
@@ -275,19 +330,19 @@ export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNod
       </Box>
       <Box sx={tabBarSx}>
         <BaseTabs
-          value={tab}
+          value={indexesTab.activeTab}
           onChange={handleTabChange}
           aria-label={title}
         >
           <BaseTab label={t('pages.toolkits.editToolkit.configurationTab', 'Configuration')} />
-          <BaseTab label={t('pages.toolkits.editToolkit.indexesTab', 'Indexes')} />
+          {!indexesTab.hidden && <BaseTab label={t('pages.toolkits.editToolkit.indexesTab', 'Indexes')} />}
         </BaseTabs>
       </Box>
       <Box
         sx={contentSx}
         role="tabpanel"
       >
-        {tab === 0 && (
+        {indexesTab.activeTab === 0 && (
           <ConfigurationTab
             isFetching={isFetching}
             applicationId={undefined}
@@ -310,8 +365,12 @@ export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNod
             )}
           />
         )}
-        {/* Composition gap: `IndexesContainer` is not exported from `features/toolkits` — see the module doc comment. */}
-        {tab === 1 && <Box data-testid="edit-toolkit-indexes-tab-panel" />}
+        {indexesTab.activeTab === 1 && (
+          <IndexesTabPanel
+            toolkitId={toolkitId}
+            state={indexesTab}
+          />
+        )}
       </Box>
     </Box>
   );

@@ -31,8 +31,7 @@
  * one of them standalone.
  */
 export { ToolkitsList } from './ui/list/ToolkitsList';
-export type { ToolkitsListProps, ToolkitListItem } from './ui/list/ToolkitsList';
-export type { ToolkitTypeTag } from './ui/list/ToolkitTypesPanel';
+export type { ToolkitListItem } from './ui/list/ToolkitsList';
 /**
  * `ToolkitsListState`/`ToolkitsListTypeFilter` (the two grouped-prop types
  * `ToolkitsListProps.listState`/`.typeFilter` reference — added when this
@@ -49,7 +48,6 @@ export type { ToolkitTypeTag } from './ui/list/ToolkitTypesPanel';
 export { ToolkitsTabBar } from './ui/toolkits-tab-bar/ToolkitsTabBar';
 
 export { ToolkitsControls } from './ui/toolkits-tab-bar/ToolkitsControls';
-export type { ToolkitsControlsProps } from './ui/toolkits-tab-bar/ToolkitsControls';
 
 /**
  * Unit A4g's own landing (`pages/NewChat/ToolkitEditor.jsx` port + the
@@ -72,7 +70,7 @@ export type { ToolkitsControlsProps } from './ui/toolkits-tab-bar/ToolkitsContro
  * yet.
  */
 export { ToolkitEditor } from './ui/ToolkitEditor';
-export type { ToolkitEditorDeps, ToolkitEditorParticipant, ToolkitEditorProps } from './ui/ToolkitEditor';
+export type { ToolkitEditorDeps, ToolkitEditorParticipant } from './ui/ToolkitEditor';
 export { DeleteToolkitButton } from './ui/DeleteToolkitButton';
 export { ExportToolkitButton } from './ui/ExportToolkitButton';
 
@@ -96,10 +94,27 @@ export { ConfigurationTab } from './ui/ConfigurationTab';
  */
 export { useToolkitCreate, useToolkitEdit } from './api/toolkits';
 
+/**
+ * Issue #149 — the Indexes tab's mount point. `IndexesTab` is the ONE
+ * component `pages/toolkits/EditToolkit.tsx` renders for that tab (see its
+ * own module doc for why the eight intra-slice dependencies it binds cannot
+ * be spent here individually), and `useIndexesTabVisibility` is the ONE hook
+ * that decides whether the tab is offered at all — the baseline's
+ * `shouldHideIndexesTab`, which this port had dropped. Two symbols, not ten.
+ */
+export { IndexesTab } from './ui/IndexesTab';
+export type { IndexesTabChatUI } from './ui/IndexesTab';
+export { useIndexesTabVisibility } from './lib/hooks/useIndexesTabVisibility';
+
 /*
- * Budget note (§3.5, ≤20): adding the two hooks above took this API to 22, so
- * `ToolkitsEmptyStateConfig` and `ToolkitsTabBarProps` were dropped. Both had
- * ZERO consumers anywhere in `src/` — inside or outside this slice — so this
- * is the curation the budget is meant to force, not a capability removal.
- * They remain exported from their own modules for in-slice use.
+ * Budget note (§3.5, ≤20). An earlier round dropped `ToolkitsEmptyStateConfig`
+ * and `ToolkitsTabBarProps` for the same reason this one drops four more:
+ * they had ZERO consumers anywhere in `src/`. The #149 block above adds three
+ * symbols, so `ToolkitsListProps`, `ToolkitTypeTag`, `ToolkitsControlsProps`
+ * and `ToolkitEditorProps` come off — each verified (grep across all of
+ * `src/`, excluding this slice) to have no importer outside
+ * `features/toolkits` at all; `ToolkitEditorProps`' only non-slice mention is
+ * inside this slice's own test. All four remain exported from their own
+ * modules for in-slice use, so nothing is deleted, only de-published.
+ * Back to 20/20 — re-check before adding more.
  */
