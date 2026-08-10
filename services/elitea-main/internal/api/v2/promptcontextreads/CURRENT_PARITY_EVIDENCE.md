@@ -1,10 +1,33 @@
 # Current prompt-context read parity
 
-This slice owns two current-baseline, read-only HTTP contracts. It is disabled
-unless `ELITEA_PROMPT_CONTEXT_READS_ENABLED=true`; startup additionally requires
-the reviewed production authentication graph and
-`ELITEA_CONFIGURATIONS_ENABLED=true`. The project-context `PUT` and `DELETE`
-contracts remain with the current application and are not mounted here.
+This slice owns two current-baseline, read-only HTTP contracts. The
+project-context `PUT` and `DELETE` contracts remain with the current
+application and are not mounted here.
+
+**Gating (updated by #194).** `ELITEA_PROMPT_CONTEXT_READS_ENABLED=true` —
+which additionally requires `ELITEA_CONFIGURATIONS_ENABLED=true` — is no longer
+what makes the chat-config read reachable, and never made it reachable in
+practice: that chain is set in no deployment, and it gates composition while
+the router every environment actually runs (the compatibility router) never
+mounted the route at all, so `GET /elitea_core/chat_config/prompt_lib/
+{projectID}` answered 404 everywhere. `main.go` now composes these routes
+whenever they were not composed by the flag and a credential exists (FormGraph
+or an OIDC session), reusing the Configurations runtime's vault loader when
+that chain IS enabled so a `ELITEA_VAULT_MASTER_KEY_FILE` deployment keeps
+unwrapping project keys correctly. The flag remains only as an explicit,
+still-validated way to compose the pair inside the Configurations chain.
+
+Which paths this makes reachable is decided at the router: the compatibility
+router mounts the chat-config path only (the project-context path is already
+served there by the prototype eliteacore handler); the production router mounts
+both.
+
+Authentication was relaxed to match `notificationsapi.
+NewCurrentNotificationEventsRoute` (#152): `PrincipalValidator` and
+`ForwardedIdentityVerifier` are optional, because an OIDC-only deployment has
+no FormGraph and only a session cookie. Authorization is unchanged — an
+unauthenticated request and forged `X-Auth-*` headers are both still rejected,
+and the per-project permission is still resolved before either handler runs.
 
 ## Pinned source evidence
 

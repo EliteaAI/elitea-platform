@@ -422,6 +422,23 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 		r.Method(http.MethodGet, notificationsapi.CurrentNotificationEventsPath, cfg.CurrentNotificationEvents)
 	}
 
+	// The chat-config read, for the same reason and in the same shape (#194).
+	// Its only registration used to be the prototype eliteacore handler behind
+	// the never-assigned `ChatService` gate that #126/#195 deleted, so
+	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` answered 404
+	// in every deployment while `features/artifacts`' chatConfigApi queried it
+	// on every artifacts page load — silently degrading every upload to the
+	// client's own 150 MB default instead of the project's configured limit.
+	//
+	// Deliberately ONLY the chat-config path: `CurrentPromptContextReads` also
+	// carries `/project_context/prompt_lib/{projectID}/project-context`, which
+	// keeps its existing production-router registration. Registering that one
+	// here too would turn a second dark route on, which is outside #194's
+	// chat_config half.
+	if cfg.CurrentPromptContextReads != nil {
+		r.Method(http.MethodGet, v2promptcontextreads.CurrentChatConfigPath, cfg.CurrentPromptContextReads)
+	}
+
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
 	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})

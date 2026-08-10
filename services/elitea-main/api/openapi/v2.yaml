@@ -5655,13 +5655,22 @@ paths:
   # was gated on RouterConfig.Predictor — the prototype indexer transport — and
   # 404'd in every deployment. See #93 for the chat dispatch migration.
 
-  # NOTE(#126): getChatConfig (GET
-  # /elitea_core/chat_config/prompt_lib/{project_id}) was removed. The handler
-  # itself is eliteacore's and survives, but its only registration sat inside
-  # the ChatService gate next to the chat Mount, so the route was never
-  # registered and answered 404 in every deployment. Re-registering it would be
-  # a behaviour change rather than deletion cleanup, so it is deliberately not
-  # done here — see #93.
+  # NOTE(#126/#194): getChatConfig (GET
+  # /elitea_core/chat_config/prompt_lib/{project_id}) was removed here when the
+  # prototype eliteacore registration — which sat inside the never-assigned
+  # ChatService gate and so answered 404 in every deployment — was deleted.
+  #
+  # The path IS served again as of #194, but by the CURRENT implementation
+  # (internal/api/v2/promptcontextreads, vault-backed, with its own auth and
+  # models.chat.conversation.details permission resolution), returning the
+  # five-key {chat_max_upload_count, chat_max_upload_size_mb,
+  # chat_max_file_upload_size_mb, chat_max_image_upload_count,
+  # chat_max_image_upload_size_mb} object — NOT the prototype's
+  # {models, default_model}. The operation is deliberately still absent from
+  # this document: its only client is the hand-written
+  # apps/elitea-web/src/features/artifacts/api/chatConfigApi.ts, and declaring
+  # it here would have orval generate a second, competing hook for the same
+  # path. Re-add it here only together with removing that hand-written client.
 
   # ==========================================================================
   # CONFIGURATIONS
