@@ -105,7 +105,7 @@ export function ProjectContext({
 
   /* ── project context query ──────────────────────────────────────── */
 
-  const { data: ctxResponse, isLoading } = useGetProjectContext(projectId, {
+  const { data: ctxResponse, isLoading, isError } = useGetProjectContext(projectId, {
     query: { enabled: !!projectId && canView },
   });
 
@@ -258,6 +258,32 @@ export function ProjectContext({
     return (
       <Box sx={s.loader}>
         <CircularProgress size={32} />
+      </Box>
+    );
+  }
+
+  /* ── failed-load state ──────────────────────────────────────────── */
+
+  /*
+   * Without this branch a FAILED query fell through to the editor below with
+   * `content` still at its initial `''` — an empty, editable, saveable box that
+   * looks exactly like a project whose context is genuinely empty, and whose
+   * Save would overwrite the real content with nothing.
+   *
+   * It also mattered for the @visual suite: the spec's landmark is
+   * `project-context-body`, and a landmark that a failed load can still produce
+   * cannot discriminate loaded from broken — which is the whole defect #174
+   * describes for the old `getByRole('main')` wait.
+   */
+  if (isError) {
+    return (
+      <Box sx={s.root}>
+        <DrawerPage>
+          <BannerMessage
+            message={t('entities.projectContext.content.loadFailed', 'Failed to load Project Context.')}
+            variant="error"
+          />
+        </DrawerPage>
       </Box>
     );
   }

@@ -1634,5 +1634,6 @@
   "features.pipelines.generalFormPanel.expand": "Expand the configuration panel",
   "widgets.appShell.navBlocker.unsavedChanges": "You have unsaved changes in the editor. Are you sure you want to leave?",
   "features.chatConversationList.folderItemEditor.name": "Folder name",
-  "processes.chat.conversationSidebar.ariaLabel": "Conversations"
+  "processes.chat.conversationSidebar.ariaLabel": "Conversations",
+  "entities.projectContext.content.loadFailed": "Failed to load Project Context."
 }
