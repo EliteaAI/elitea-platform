@@ -25,11 +25,13 @@ import (
 //	Token layout  = base64url( version[1] | timestamp[8] | iv[16] |
 //	                            ciphertext[N] | hmac[32] )
 //
-// The project-level Fernet key is itself stored encrypted with a master key
+// The project-level Fernet key is stored in centry.secrets_key as the 44-byte
+// URL-safe base64 encoding of its 32 bytes (`Fernet.generate_key()` output),
+// itself Fernet-encrypted with a master key when one is configured
 // (SECRETS_MASTER_KEY env var, base64url-encoded 32-byte Fernet key).
 type FernetVault struct {
 	db        rowQuerier
-	masterKey []byte // nil when SECRETS_MASTER_KEY is unset (keys stored raw)
+	masterKey []byte // nil when SECRETS_MASTER_KEY is unset (keys stored unwrapped)
 }
 
 var _ vaultDecryptor = (*FernetVault)(nil)
@@ -42,7 +44,8 @@ type vaultData struct {
 
 // NewFernetVault constructs a FernetVault. The master key is read from
 // SECRETS_MASTER_KEY (base64url 32-byte Fernet key); when unset the vault treats
-// project keys as stored unwrapped, matching the secrets handler. When the env
+// project keys as stored unwrapped, matching centry and the elitea-main secrets
+// handler. When the env
 // var is set but malformed, NewFernetVault returns an error — a decode failure is
 // a startup misconfiguration that must be surfaced loudly rather than silently
 // degrading to single-level storage (which would fail to decrypt wrapped keys at
@@ -130,14 +133,34 @@ func (v *FernetVault) readVault(ctx context.Context, projectID string) (vaultDat
 }
 
 // decryptKey unwraps the stored key bytes back to a 32-byte Fernet key.
+//
+// It accepts BOTH stored representations. The one centry actually writes is the
+// 44-byte URL-safe base64 ENCODING of the 32 key bytes — that is what
+// `cryptography.fernet.Fernet.generate_key()` returns and what the pylon secrets
+// plugin's `_write_key` persists verbatim (or master-key-wrapped). The raw 32
+// bytes are the legacy form earlier builds of elitea-main's secrets handler
+// wrote; those rows must keep opening, or an upgrade locks projects out of their
+// own secrets. This mirrors the reconciliation in
+// services/elitea-main/internal/api/v2/secrets (handler.decryptKey).
+//
+// With a master key set, the wrapping is applied over whichever representation
+// is stored, so unwrap first and then decide.
 func (v *FernetVault) decryptKey(stored []byte) ([]byte, error) {
-	if v.masterKey == nil {
-		if len(stored) != 32 {
-			return nil, fmt.Errorf("unexpected key length %d", len(stored))
+	if v.masterKey != nil {
+		unwrapped, err := fernetDecrypt(v.masterKey, stored)
+		if err != nil {
+			return nil, err
 		}
+		stored = unwrapped
+	}
+	if len(stored) == 32 {
 		return stored, nil
 	}
-	return fernetDecrypt(v.masterKey, stored)
+	key, err := fernetDecodeKey(string(stored))
+	if err != nil {
+		return nil, fmt.Errorf("stored key is neither the 44-byte base64 form nor raw 32 bytes (%d bytes): %w", len(stored), err)
+	}
+	return key, nil
 }
 
 // ─── Fernet decryption (decrypt-only; mirrors the secrets handler) ─────────────
