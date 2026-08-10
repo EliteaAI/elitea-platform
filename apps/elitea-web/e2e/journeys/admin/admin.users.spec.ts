@@ -1,34 +1,34 @@
 /**
- * Journey 27: Admin SPA is served with server-injected config (JRNY-027)
- * Journey 28: Admin SPA mounts its roles view (JRNY-028)
+ * Journey 27: Admin SPA is served with server-injected config, and lists the
+ *             real users from the database (JRNY-027)
+ * Journey 28: An admin write reaches the database and survives a reload
+ *             (JRNY-028)
  *
- * NARROWED, disclosed — read this before widening them again.
+ * ## What changed in unit A14, and why these are now stronger
  *
- * `src/entries/admin/main.tsx` is a 160-line PLACEHOLDER with **zero network
- * calls**: `DEFAULT_ROLE_PERMISSIONS` is hardcoded in the frontend, toggles are
- * written to `sessionStorage` under `el.admin.rolePermissions`, and `user_email`
- * falls back to `'admin@example.com'`. The real admin UI (verified against the
- * legacy stack on 2026-08-07) has ELEVEN sections — Users, Roles, Projects,
- * Secrets, LiteLLM, LLM Gateway, App Requests, Configuration, Features, Audit
- * Trail, System — over ~15k platform users, all database-backed.
+ * Until A14 `src/entries/admin/main.tsx` was a ~160-line PLACEHOLDER with ZERO
+ * network calls: hardcoded `DEFAULT_ROLE_PERMISSIONS`, toggles written to
+ * `sessionStorage` under `el.admin.rolePermissions`, and a `user_email`
+ * fallback of `'admin@example.com'`. The two journeys here were narrowed to
+ * match: J27 asserted the injected `window.admin_ui_config` and that the words
+ * "Elitea Admin" appeared; J28 asserted that a roles matrix rendered. Their
+ * headers said, in as many words, "do NOT add persistence or
+ * permission-semantics assertions here until a real admin backend exists —
+ * they would be asserting the placeholder."
  *
- * The previous versions of these two journeys asserted PERSISTENCE: J28 toggled
- * a permission, saved, reloaded, and asserted the new value stuck. It did stick
- * — in sessionStorage — so the test passed, and would have kept passing with no
- * admin backend in existence at all. J27 was worse: its only assertions were
- * `expect(bodyIsVisible).toBe(true)` (always true) and that the URL it had just
- * navigated to contained the path it had just navigated to.
+ * That backend now exists. `GET /admin/auth_users/administration` reads
+ * `auth_core__user`; `POST /admin/auth_users/administration` and
+ * `PUT /admin/user_suspend/administration/{id}` write it, gated server-side on
+ * the `admin.auth.users` permission resolved from `auth_core__user_role`. So
+ * the constraint the old headers described is lifted, and both journeys now
+ * assert against the database instead of against a placeholder.
  *
- * What IS real and worth guarding is the server-side integration:
- * `internal/api/adminui/handler.go` replaces an `<!-- admin_ui_config -->`
- * marker with a script defining `window.admin_ui_config`
- * (`vite_server_url`/`vite_base_uri`/`user_id`/`user_name`/`user_email`/
- * `permissions`/`roles`). That handler, the SPA build, and the route mount can
- * all break independently, and nothing else covers them.
- *
- * So these journeys now assert exactly that, and claim nothing about admin
- * behaviour. Do NOT add persistence or permission-semantics assertions here
- * until a real admin backend exists — they would be asserting the placeholder.
+ * The roles matrix J28 used to assert is GONE — it was the placeholder's
+ * sessionStorage toy, not a product surface, and A14 deleted it along with the
+ * rest of that entry. J28 is repointed at the strongest thing that now exists
+ * in its place: a write that must survive a full page reload. That is the
+ * assertion the sessionStorage version could never make honestly, since it
+ * would have passed with no admin backend in existence at all.
  */
 import { test as adminTest, expect } from '@playwright/test';
 
@@ -45,14 +45,18 @@ interface AdminUIConfig {
   readonly roles?: readonly string[];
 }
 
-adminTest('J27: the admin SPA is served with server-injected config', async ({ page }) => {
+/** Seeded by `scripts/e2e-stack.sh seed`. */
+const SEEDED_ADMIN = 'e2e-admin@autotest.local';
+const SEEDED_MEMBER = 'e2e-member@autotest.local';
+
+adminTest('J27: the admin SPA is served with injected config and lists database users', async ({ page }) => {
   const response = await page.goto(BASE_URL + '/admin/app/users', { waitUntil: 'domcontentloaded' });
 
   // The Go handler must actually serve it. A 404 here means the route mount or
-  // the static dir is broken — previously this was a `test.skip()`.
+  // the static dir is broken.
   expect(response?.status(), 'admin SPA must be served, not 404').toBeLessThan(400);
 
-  // The injected config is the real integration: handler.go replaces the
+  // The injected config remains a real integration: handler.go replaces the
   // `<!-- admin_ui_config -->` marker at request time. If the marker, the
   // handler, or the built index.html drift apart, this is the only thing that
   // notices.
@@ -62,39 +66,83 @@ adminTest('J27: the admin SPA is served with server-injected config', async ({ p
   expect(config, 'window.admin_ui_config must be injected by adminui/handler.go').toBeDefined();
   expect(config?.vite_base_uri, 'vite_base_uri must name the admin base path').toContain('/admin');
 
-  // And the bundle must actually mount — a served-but-blank page is the failure
-  // this whole effort exists to catch.
-  await expect(page.getByText('Elitea Admin').first()).toBeVisible({ timeout: 10_000 });
+  // The listing must come from the DATABASE. Both personas are seeded rows in
+  // auth_core__user, and neither string appears anywhere in the bundle — the
+  // placeholder rendered `window.admin_ui_config.user_email` and a literal
+  // "admin" role, which is precisely why it could never have passed this.
+  await expect(page.getByText(SEEDED_ADMIN)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(SEEDED_MEMBER)).toBeVisible();
+
+  // The empty state and the table are mutually exclusive branches; a listing
+  // that silently resolved to zero rows is the #130/#132 failure shape.
+  await expect(page.getByText('No users')).toHaveCount(0);
+
+  // The tab counts come from the same response's `counts`, which is computed
+  // over ALL users and is what labels the two tabs.
+  await expect(page.getByRole('tab', { name: /Platform Users \(\d+\)/ })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /System Users \(\d+\)/ })).toBeVisible();
 
   await checkA11y(page);
 });
 
-adminTest('J28: the admin SPA mounts its roles view', async ({ page }) => {
-  const response = await page.goto(BASE_URL + '/admin/app/roles', { waitUntil: 'domcontentloaded' });
-  expect(response?.status(), 'admin roles route must be served, not 404').toBeLessThan(400);
+adminTest('J28: suspending a user is written to the database and survives a reload', async ({ page }) => {
+  await page.goto(BASE_URL + '/admin/app/users', { waitUntil: 'domcontentloaded' });
 
-  // Client-side routing must resolve /roles to a rendered matrix, not a blank
-  // div. Asserting the ROLE NAMES the placeholder defines, so this fails if the
-  // bundle stops mounting — while deliberately asserting nothing about what
-  // toggling them does, because today it does nothing server-side.
-  const matrix = page.getByRole('table').first();
-  await expect(matrix).toBeVisible({ timeout: 10_000 });
-  for (const role of ['admin', 'editor', 'viewer']) {
-    await expect(matrix.getByText(role, { exact: true }).first()).toBeVisible();
-  }
+  const memberRow = page.getByRole('row').filter({ hasText: SEEDED_MEMBER });
+  await expect(memberRow).toBeVisible({ timeout: 15_000 });
 
-  await checkA11y(page);
+  // Precondition, asserted rather than assumed: the seed creates this user
+  // un-suspended, and a test that started from "already suspended" would prove
+  // nothing about the write.
+  await expect(memberRow.getByText('Active')).toBeVisible();
+
+  const suspend = memberRow.getByRole('button', { name: 'Suspend user' });
+  await expect(suspend, 'the admin persona holds admin.auth.users, so the control must be live').toBeEnabled();
+
+  // The response is what proves the request was AUTHORISED, not merely sent.
+  // Before A14's seed change no persona held an administration-mode
+  // permission, so this same click produced a 403 while the page still listed
+  // users perfectly — a stack that looks working and is not.
+  const [suspendResponse] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes('/admin/user_suspend/administration/') && r.request().method() === 'PUT'),
+    suspend.click(),
+  ]);
+  expect(suspendResponse.status(), 'the suspend write must be authorised server-side').toBe(200);
+
+  // A full reload, not a client-side refetch: this is the assertion a handler
+  // that answers 200 and writes nothing (#130, #180) cannot pass, and the one
+  // the deleted sessionStorage version of this journey only pretended to make.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  const afterReload = page.getByRole('row').filter({ hasText: SEEDED_MEMBER });
+  await expect(afterReload.getByText('Suspended')).toBeVisible({ timeout: 15_000 });
+
+  // Restore, so this journey leaves the stack as it found it and can be re-run.
+  const [unsuspendResponse] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes('/admin/user_suspend/administration/') && r.request().method() === 'PUT'),
+    afterReload.getByRole('button', { name: 'Unsuspend user' }).click(),
+  ]);
+  expect(unsuspendResponse.status()).toBe(200);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(
+    page.getByRole('row').filter({ hasText: SEEDED_MEMBER }).getByText('Active'),
+  ).toBeVisible({ timeout: 15_000 });
 });
 
 /*
- * NOT COVERED — and deliberately so:
+ * NOT COVERED here — deliberately, and each covered elsewhere or tracked:
  *
- *  - that toggling a permission persists anywhere but sessionStorage
- *  - that permissions/roles from `window.admin_ui_config` gate anything
- *  - the ten other admin sections the real product has (Users list, Projects,
- *    Secrets, LiteLLM, LLM Gateway, App Requests, Configuration, Features,
- *    Audit Trail, System)
- *
- * These need a real admin backend first. Tracked separately — see the admin
- * placeholder issue rather than widening these journeys.
+ *  - the super_admin escalation guard (grant/revoke). It needs a persona
+ *    WITHOUT `admin.auth.users.super_admin`, which the E2E stack seeds only one
+ *    of; `TestSetAdminRoleGuardsSuperAdminEscalation` in
+ *    services/elitea-main/internal/api/v2/admin covers all four of its branches
+ *    against a real database.
+ *  - delete. It is destructive and the two seeded personas are load-bearing for
+ *    every other journey in this suite;
+ *    `TestAuthUsersDeleteRemovesTheUser` covers it, re-reading through the
+ *    product's own GET handler.
+ *  - user activity and Excel export — both are rendered DISABLED with a stated
+ *    reason (no audit-trail API; no spreadsheet dependency). See
+ *    `src/pages/admin/Users.test.tsx`, which asserts the disabled state.
+ *  - the ten other admin sections (Projects, Secrets, LiteLLM, Audit Trail, …).
+ *    Not ported yet — issue #200 lists them.
  */

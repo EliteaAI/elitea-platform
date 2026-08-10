@@ -156,6 +156,49 @@ WHERE u.email = 'e2e-admin@autotest.local'
   AND r.mode = 'default'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
+-- ── administration-mode RBAC (unit A14) ──────────────────────────────────
+-- 001_initial.sql seeds `default`-mode roles only, so before this block NO
+-- persona held a single administration-mode permission and every admin-panel
+-- WRITE (`POST /admin/auth_users/administration`,
+-- `PUT /admin/user_suspend/administration/{id}`) answered 403 for everyone.
+-- The listing is ungated, so the admin Users page LOOKED fine — which is
+-- exactly the sort of half-wired stack a journey has to be able to tell apart.
+--
+-- Note what this does NOT change: `window.admin_ui_config.permissions` is
+-- hardcoded by adminui/handler.go and was always present. These rows are what
+-- the SERVER resolves per request, and they are the only thing that authorises
+-- anything.
+INSERT INTO auth_core__role (name, mode) VALUES
+    ('super_admin', 'administration'),
+    ('admin', 'administration'),
+    ('editor', 'administration'),
+    ('viewer', 'administration')
+ON CONFLICT (name, mode) DO NOTHING;
+
+-- The administration `admin` role gets the user-administration permissions.
+-- `admin.auth.users.super_admin` is deliberately INCLUDED so the journey can
+-- exercise the role-assignment path; the escalation guard it gates is covered
+-- by the Go integration tests, which can revoke it.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT r.id, p.permission
+FROM auth_core__role r
+CROSS JOIN (VALUES
+    ('admin.auth.users'),
+    ('admin.auth.users.super_admin')
+) AS p(permission)
+WHERE r.name = 'admin' AND r.mode = 'administration'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Only the ADMIN persona gets it. The member persona deliberately does not, so
+-- the difference between the two is a real server-side authorisation
+-- difference and not a UI-visibility one.
+INSERT INTO auth_core__user_role (user_id, role_id)
+SELECT u.id, r.id
+FROM auth_core__user u
+JOIN auth_core__role r ON r.name = 'admin' AND r.mode = 'administration'
+WHERE u.email = 'e2e-admin@autotest.local'
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
 -- Project-scoped roles for project 1 (Default Project).
 -- ListCurrentUserProjects JOINs on auth_core__project_user_role so users
 -- see "No projects" until they have at least one row here.
@@ -393,6 +436,28 @@ ENDSQL
       exit 1
     fi
     echo "  ✓ RBAC verified: ${GRANTS} persona grant(s), ${PERMS} project permission(s)."
+
+    # Same posture for the administration-mode grant (unit A14). Without it the
+    # admin Users page still LISTS (the GET is ungated) while every write 403s,
+    # so a journey asserting only the listing would pass over a half-wired
+    # stack. Asserted as the RESOLVED permission — the exact join
+    # legacyrbac.PostgresResolver performs — not as "the rows were inserted".
+    ADMIN_PERMS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(DISTINCT rp.permission)
+      FROM auth_core__user u
+      JOIN auth_core__user_role ur ON ur.user_id = u.id
+      JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
+      JOIN auth_core__role_permission rp ON rp.role_id = r.id
+      WHERE u.email = 'e2e-admin@autotest.local'
+        AND rp.permission = 'admin.auth.users';")
+
+    if [ "${ADMIN_PERMS:-0}" -lt 1 ]; then
+      echo "ERROR: seed did not grant the admin persona 'admin.auth.users' in administration mode." >&2
+      echo "  Without it every /admin/auth_users and /admin/user_suspend WRITE answers 403," >&2
+      echo "  while the listing still renders — a stack that looks working and is not." >&2
+      exit 1
+    fi
+    echo "  ✓ administration RBAC verified: admin persona resolves admin.auth.users."
     echo "→ Seed complete."
     ;;
 

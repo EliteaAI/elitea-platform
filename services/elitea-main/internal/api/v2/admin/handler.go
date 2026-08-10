@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"runtime"
@@ -10,16 +9,38 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 type Handler struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	resolver auth.PermissionResolver
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+// Option configures a Handler at construction time.
+type Option func(*Handler)
+
+// WithPermissionResolver supplies the resolver the WRITE handlers in users.go
+// use for their own, finer-grained checks — specifically the `super_admin`
+// escalation guard, which the route-level middleware cannot express because it
+// depends on the request body and on the TARGET user's current roles.
+//
+// Route middleware still gates every write on `admin.auth.users`; this resolver
+// is an ADDITIONAL server-side check, never a replacement for it. Fail-closed:
+// when it is nil, the escalation-sensitive branches answer 403 rather than
+// proceeding unchecked.
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(h *Handler) { h.resolver = resolver }
 }
 
+func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
+	handler := &Handler{pool: pool}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
+}
 
 func (h *Handler) SystemInfo(w http.ResponseWriter, _ *http.Request) {
 	info := map[string]any{
@@ -54,77 +75,6 @@ func (h *Handler) ResourcesConfig(w http.ResponseWriter, _ *http.Request) {
 		"max_messages_per_day": 1000,
 	}
 	writeJSON(w, http.StatusOK, config)
-}
-
-func (h *Handler) AuthUsers(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	limit, offset := paginationParams(r)
-	userType := r.URL.Query().Get("user_type")
-
-	users, total := h.queryUsers(ctx, limit, offset, userType)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":   users,
-		"total":  total,
-		"counts": map[string]int{"platform": total, "system": 0},
-	})
-}
-
-func (h *Handler) queryUsers(ctx context.Context, limit, offset int, userType string) ([]map[string]any, int) {
-	if h.pool == nil {
-		return []map[string]any{}, 0
-	}
-
-	// system users have email like '%@centry.user', platform users don't
-	whereClause := ""
-	switch userType {
-	case "system":
-		whereClause = " WHERE u.email LIKE '%@centry.user'"
-	case "platform":
-		whereClause = " WHERE u.email NOT LIKE '%@centry.user'"
-	}
-
-	var total int
-	err := h.pool.QueryRow(ctx, `SELECT COUNT(*) FROM auth_core__user u`+whereClause).Scan(&total)
-	if err != nil {
-		return []map[string]any{}, 0
-	}
-
-	rows, err := h.pool.Query(ctx,
-		`SELECT u.id, COALESCE(u.name, u.email) as name, u.email,
-		        u.last_login::text, COALESCE(u.suspended, false),
-		        r.name as role_name
-		 FROM auth_core__user u
-		 LEFT JOIN auth_core__user_role ur ON ur.user_id = u.id
-		 LEFT JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
-		`+whereClause+`
-		 ORDER BY u.id
-		 LIMIT $1 OFFSET $2`, limit, offset)
-	if err != nil {
-		return []map[string]any{}, total
-	}
-	defer rows.Close()
-
-	items := make([]map[string]any, 0)
-	for rows.Next() {
-		var id int
-		var name, email string
-		var lastLogin *string
-		var suspended bool
-		var roleName *string
-		if err := rows.Scan(&id, &name, &email, &lastLogin, &suspended, &roleName); err != nil {
-			continue
-		}
-		item := map[string]any{
-			"id":         id,
-			"name":       name,
-			"email":      email,
-			"last_login": lastLogin,
-			"is_active":  !suspended,
-			"admin_role": roleName,
-		}
-		items = append(items, item)
-	}
-	return items, total
 }
 
 func (h *Handler) AdminPermissions(w http.ResponseWriter, r *http.Request) {
@@ -324,25 +274,6 @@ func (h *Handler) ActiveTasks(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"lines": []any{},
 	})
-}
-
-func (h *Handler) UserSuspend(w http.ResponseWriter, r *http.Request) {
-	userID := chi.URLParam(r, "userID")
-	var body struct {
-		Suspended bool `json:"suspended"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
-
-	if h.pool != nil {
-		if _, err := h.pool.Exec(r.Context(), `UPDATE auth_core__user SET suspended = $1 WHERE id = $2`, body.Suspended, userID); err != nil {
-			http.Error(w, `{"error":"failed to update user"}`, http.StatusInternalServerError)
-			return
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h *Handler) ProjectSuspend(w http.ResponseWriter, r *http.Request) {
