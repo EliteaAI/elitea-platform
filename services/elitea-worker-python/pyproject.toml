@@ -9,7 +9,7 @@ description = "Standalone language-neutral ELITEA runtime reference worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "cryptography>=48.0.1,<49",
-  "elitea-sdk==0.9.6",
+  "elitea-sdk==0.9.8",
   "elitea-runtime-proto==0.1.0",
   "grpcio>=1.76,<2",
   "h2>=4.2,<5",
@@ -29,6 +29,10 @@ dependencies = [
 agent-current = [
   # Current SDK/LangGraph durable checkpoint implementation. Keep this exact
   # until the asynchronous SDK phase replaces the synchronous agent adapter.
+  # Flat-scope delegated toolkit authorization currently imports the SDK MCP
+  # bridge directly from the worker runtime. Keep this aligned with the SDK's
+  # admitted range until the worker owns the orchestration logic itself.
+  "langchain-mcp-adapters>=0.1.14,<0.2.0",
   "langgraph-checkpoint-postgres==2.0.21",
 ]
 indexing-current = [

@@ -1,8 +1,8 @@
 FROM python:3.12.10-slim AS build
 
-ARG ELITEA_SDK_REVISION=6155d20acb4a3b00a6085212a75258cc1b3c695a
-ARG ELITEA_SDK_ARCHIVE_SHA256=5771315bbf8f300171bf4526f1550b2e7789e59d9530479674537fc8c3b093a0
-ARG ELITEA_SDK_VERSION=0.9.6
+ARG ELITEA_SDK_REVISION=b5113a129329b85d23c2d5c2bf55f18e307414ec
+ARG ELITEA_SDK_ARCHIVE_SHA256=df398b4a378e7b88ea3b72511e31de13a17a02159c69fbada6f0b948a0ecf2d7
+ARG ELITEA_SDK_VERSION=0.9.8
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -85,7 +85,7 @@ RUN python -m pip install \
     "elitea-worker-python[agent-current,indexing-current]==0.1.0" \
     && python -m pip check \
     && python -c "from elitea_worker.indexing_runtime_capabilities import require_indexing_runtime_capabilities; print('indexing-runtime-profile=' + require_indexing_runtime_capabilities())" \
-    && python -c "from langgraph.checkpoint.postgres import PostgresSaver; print('agent-checkpoint=' + PostgresSaver.__name__)" \
+    && python -c "from elitea_worker.agent_current_runtime_capabilities import require_agent_current_runtime_capabilities; print('agent-current-runtime-profile=' + require_agent_current_runtime_capabilities())" \
     && rm -rf /wheels
 
 USER 10001:10001

@@ -264,6 +264,9 @@ def test_serve_verifies_profile_before_deployment(monkeypatch) -> None:
     def verify():
         calls.append("verify")
 
+    def verify_agent():
+        calls.append("verify-agent")
+
     async def serve(actual, *, stop):
         assert actual is config
         assert isinstance(stop, asyncio.Event)
@@ -275,8 +278,13 @@ def test_serve_verifies_profile_before_deployment(monkeypatch) -> None:
         "require_indexing_runtime_capabilities",
         verify,
     )
+    monkeypatch.setattr(
+        serve_module,
+        "require_agent_current_runtime_capabilities",
+        verify_agent,
+    )
     monkeypatch.setattr(serve_module, "serve_deployment", serve)
 
     asyncio.run(serve_module.serve_from_config(Path("/not-opened/runtime.json")))
 
-    assert calls == ["load", "verify", "serve"]
+    assert calls == ["load", "verify", "verify-agent", "serve"]

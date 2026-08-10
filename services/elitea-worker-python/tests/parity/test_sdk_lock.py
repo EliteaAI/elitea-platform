@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 import hashlib
 import importlib
 import importlib.metadata
 import json
+import os
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -27,7 +30,12 @@ from elitea_worker.constants import (
 
 _SERVICE_ROOT = Path(__file__).resolve().parents[2]
 _PLATFORM_ROOT = _SERVICE_ROOT.parents[1]
-_SDK_ROOT = _PLATFORM_ROOT.parent / "elitea-sdk"
+_SDK_ROOT = Path(
+    os.environ.get(
+        "ELITEA_SDK_SOURCE_ROOT",
+        _PLATFORM_ROOT.parent / "elitea-sdk",
+    )
+)
 _GO_CATALOG = (
     _PLATFORM_ROOT
     / "services"
@@ -55,6 +63,35 @@ _GO_INDEX_TYPES_UI_FIXTURE = (
     / "testdata"
     / "current_index_types_ui_response.json"
 )
+
+
+@contextmanager
+def _import_pinned_sdk_checkout():
+    """Import the admitted SDK checkout ahead of any stale editable overlays.
+
+    The shared workspace venv can retain partial ``elitea_sdk`` namespace
+    directories from older editable installs. The parity assertions in this
+    module compare the admitted checkout and generated Go snapshots, so force
+    imports to resolve from ``_SDK_ROOT`` for the duration of those reads.
+    """
+
+    original_path = list(sys.path)
+    preserved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "elitea_sdk" or name.startswith("elitea_sdk.")
+    }
+    try:
+        for name in list(preserved_modules):
+            sys.modules.pop(name, None)
+        sys.path.insert(0, str(_SDK_ROOT))
+        yield
+    finally:
+        for name in list(sys.modules):
+            if name == "elitea_sdk" or name.startswith("elitea_sdk."):
+                sys.modules.pop(name, None)
+        sys.modules.update(preserved_modules)
+        sys.path[:] = original_path
 
 
 def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
@@ -171,7 +208,8 @@ def test_local_pinned_sdk_checkout_matches_lock_when_available() -> None:
 
 
 def test_go_binding_catalog_matches_worker_registry_shadow() -> None:
-    module = importlib.import_module("elitea_sdk.configurations")
+    with _import_pinned_sdk_checkout():
+        module = importlib.import_module("elitea_sdk.configurations")
     assert module.FAILED_IMPORTS == {}
     shadow = ConfigurationRegistryShadow(module.get_class_configurations).snapshot
     document = json.loads(_GO_CATALOG.read_bytes())
@@ -197,10 +235,13 @@ def test_go_binding_catalog_matches_worker_registry_shadow() -> None:
 
 
 def test_go_index_types_snapshot_matches_current_worker_sdk_projection() -> None:
-    constants_path = Path(
-        importlib.import_module(
-            "elitea_sdk.runtime.langchain.document_loaders.constants"
-        ).__file__
+    constants_path = (
+        _SDK_ROOT
+        / "elitea_sdk"
+        / "runtime"
+        / "langchain"
+        / "document_loaders"
+        / "constants.py"
     )
     constants_source = Path(constants_path).read_bytes()
     assignments = {
