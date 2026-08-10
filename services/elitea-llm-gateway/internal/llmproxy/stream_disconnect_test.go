@@ -1200,7 +1200,7 @@ func TestCheckBudget_BoundedOnTheDetachedContext(t *testing.T) {
 	if ctxDeadline, has := ctx.Deadline(); has {
 		t.Fatalf("the stream context itself must stay deadline-free (§9.5); got %v", ctxDeadline)
 	}
-	h.checkBudget(httptest.NewRecorder(), ctx, "openai", "gpt-4o", 0)
+	h.checkBudget(httptest.NewRecorder(), ctx, "gpt-4o")
 
 	select {
 	case hasDeadline := <-gate.seen:

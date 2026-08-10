@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,23 +55,6 @@ const budgetScopeProject = "project"
 // the normal cost.Calculator path; this path only fires when Usage==nil.
 const perImageFallbackNano int64 = 40_000_000
 
-// inflightKey builds the sync.Map key for the per-project in-flight reservation
-// counter (Fix round-3 #7). The key identifies a unique (scope, scopeID,
-// billing-period) triple so concurrent requests in the same project+period
-// share one counter.
-func inflightKey(scopeID string, periodStart int64) string {
-	return budgetScopeProject + ":" + scopeID + ":" + strconv.FormatInt(periodStart, 10)
-}
-
-// addInflight atomically adds delta to the per-project in-flight reservation
-// and returns the new total. Uses a load-or-store idiom on a *atomic.Int64
-// stored in h.inflightNano so no external lock is needed.
-func (h *Handler) addInflight(scopeID string, periodStart, delta int64) int64 {
-	key := inflightKey(scopeID, periodStart)
-	v, _ := h.inflightNano.LoadOrStore(key, new(atomic.Int64))
-	return v.(*atomic.Int64).Add(delta)
-}
-
 // billingPeriodStart returns the first second of the current calendar month in
 // UTC as a Unix timestamp. Budget counters are keyed by this value (design §8,
 // NATS counter subject format). A monthly period is a safe conservative
@@ -109,22 +91,30 @@ func parseProjectID(s string) int {
 //  2. Parses the project identity from the request; skips enforcement for
 //     anonymous/unresolved projects (no ID ⇒ no budget row ⇒ treat as
 //     unlimited, consistent with GovernanceStore's ErrNoBudgetRow path).
-//  3. Estimates reqCostNano from prompt tokens via the cost Calculator.
-//     Pre-flight: output tokens are unknown so we pass 0 — the FSM uses the
-//     estimate for the FRESH_NEAR per-replica cap only, so passing 0 is
-//     conservative (never over-gates). The actual cost is billed after the
-//     response arrives.
-//  4. Calls BudgetChecker.CheckBudget; on Block402 → writes HTTP 402; on
-//     Block503 → writes HTTP 503; on Allow → returns (true, nil).
+//  3. Calls BudgetChecker.CheckBudget with reqCostNano=0; on Block402 → writes
+//     HTTP 402; on Block503 → writes HTTP 503; on Allow → returns (true, nil).
+//
+// reqCostNano is 0 because the gateway has no pre-flight token estimate: the
+// wire formats do not carry a pre-counted prompt token count, and computing one
+// from the marshalled body would over-count inline base64 image/audio payloads
+// by orders of magnitude. 0 is the conservative value — the FSM uses
+// reqCostNano only for the degraded-path FRESH_NEAR per-replica cap, so it can
+// never over-gate. The actual cost is billed after the response arrives.
+//
+// Issue #10: an in-process per-project "in-flight reservation" counter used to
+// be added here, claiming to bound the concurrent-admission overshoot. Every
+// call site passed promptTokenEst=0, so the reservation was never incremented
+// while the billing path always decremented — the counter only ever drifted
+// negative and its sync.Map entries were never reaped. The mechanism was
+// deleted rather than repaired: bounding the overshoot for real needs a token
+// estimator nobody has asked for, and the NATS counter remains ground truth.
 //
 // Returns (proceed=true) when the caller should continue; (proceed=false) means
 // the response has already been written and the caller must return immediately.
 func (h *Handler) checkBudget(
 	w http.ResponseWriter,
 	ctx context.Context,
-	provider string,
 	model string,
-	promptTokenEst int64,
 ) bool {
 	// Circular-routing guard #2 (spec §2.6) runs BEFORE the budget gate and
 	// regardless of whether budget enforcement is wired: a routing loop must
@@ -159,40 +149,6 @@ func (h *Handler) checkBudget(
 	now := time.Now()
 	periodStart := billingPeriodStart(now)
 
-	// Pre-flight cost estimate: input tokens only (output unknown before call).
-	// Passing 0 for output is intentional — see doc comment above.
-	var reqCostNano int64
-	if h.costCalc != nil && promptTokenEst > 0 {
-		reqCostNano = h.costCalc.Cost(ctx, provider, model, promptTokenEst, 0).TotalNanoUSD
-	}
-
-	// Fix round-3 #7: include the cumulative in-flight reservation in the
-	// admission check to bound the concurrent-admission window overshoot.
-	//
-	// Without this, N requests can pass admission simultaneously before any
-	// async billing increment reaches NATS (each sees the same NATS counter
-	// and is individually admitted). By adding the previous in-flight amount
-	// to reqCostNano, CheckBudget sees the effective pending spend including
-	// any concurrent admits that have not yet been billed.
-	//
-	// Concurrency protocol:
-	//   1. Read the previous inflight total (before adding this request).
-	//   2. Add this request's estimated cost to the in-flight counter.
-	//   3. Pass (reqCostNano + prevInflight) to CheckBudget so the FSM's
-	//      per-replica NEAR cap accounts for the full pending spend.
-	//   4. Decrement the counter when billing completes (or is skipped).
-	//
-	// This is a best-effort local bound, not a distributed lock. The NATS
-	// authoritative counter remains the ground truth.
-	var prevInflight int64
-	if reqCostNano > 0 {
-		// Capture the pre-reservation total: add our cost, then subtract it to
-		// get what was already in-flight before this request.
-		newTotal := h.addInflight(scopeID, periodStart, reqCostNano)
-		prevInflight = newTotal - reqCostNano
-	}
-	effectiveCostNano := reqCostNano + prevInflight
-
 	// Bound the admission read. Streaming requests now hand this function a
 	// context that is deliberately decoupled from the client (issue #9), so it
 	// has neither a deadline nor a cancellation path: without this timeout a
@@ -200,15 +156,12 @@ func (h *Handler) checkBudget(
 	// previously unwound on client hangup. Fail-closed semantics are preserved
 	// — a timeout surfaces as the existing 503 branch below.
 	gateCtx, gateCancel := context.WithTimeout(ctx, budgetGateTimeout)
-	dec, err := h.budgetGate.CheckBudget(gateCtx, pid, budgetScopeProject, scopeID, periodStart, effectiveCostNano)
+	dec, err := h.budgetGate.CheckBudget(gateCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
 	gateCancel()
 	if err != nil {
 		// A hard error from the gate is unexpected (the gate is designed to
 		// degrade gracefully); treat it as a 503 to avoid silently bypassing
-		// enforcement. Decrement the reservation since the request is blocked.
-		if reqCostNano > 0 {
-			h.addInflight(scopeID, periodStart, -reqCostNano)
-		}
+		// enforcement.
 		h.logger.Error("budget gate: CheckBudget error; blocking request",
 			"project_id", pid, "err", err)
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
@@ -226,24 +179,14 @@ func (h *Handler) checkBudget(
 			h.logger.Info("budget gate: degraded allow (NATS unavailable, fallback tier used)",
 				"project_id", pid,
 				"state", dec.State.String(),
-				"cost_nano_est", reqCostNano,
 			)
 		}
-		// Reservation stays in-flight until billing goroutine decrements it.
 		return true
 	case failmode.Block402:
-		// Decrement the reservation: this request will not be billed.
-		if reqCostNano > 0 {
-			h.addInflight(scopeID, periodStart, -reqCostNano)
-		}
 		writeError(w, http.StatusPaymentRequired, "budget_exceeded",
 			"project budget exhausted for this billing period", "insufficient_quota")
 		return false
 	case failmode.Block503:
-		// Decrement the reservation: this request will not be billed.
-		if reqCostNano > 0 {
-			h.addInflight(scopeID, periodStart, -reqCostNano)
-		}
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
 			"budget service temporarily unavailable; try again shortly", "nats_unavailable")
 		return false
@@ -392,11 +335,8 @@ func (h *Handler) spawnBillingGoroutine(
 	// Fix round-3 #2: guard against Add-after-Wait (billingClosing already set
 	// by DrainBilling) and track in-flight goroutines so DrainBilling can wait.
 	if h.billingClosing.Load() != 0 {
-		// Drain in progress — skip spawning; decrement the in-flight reservation
-		// and log so spend is not silently dropped.
-		if costNano > 0 {
-			h.addInflight(scopeID, periodStart, -costNano)
-		}
+		// Drain in progress — skip spawning and log so spend is not silently
+		// dropped.
 		h.logger.Warn("budget gate: billing goroutine skipped (drain in progress); spend may be under-counted",
 			"project_id", pid, "cost_nano", costNano, "event_id", eventID)
 		return false
@@ -404,11 +344,6 @@ func (h *Handler) spawnBillingGoroutine(
 	h.billingWg.Add(1)
 	go func() {
 		defer h.billingWg.Done()
-		// Decrement the in-flight reservation when this goroutine finishes,
-		// whether UpdateUsage succeeded or failed (Fix round-3 #7).
-		if costNano > 0 {
-			defer h.addInflight(scopeID, periodStart, -costNano)
-		}
 
 		// FIX #27: pre-increment snapshot, read here (detached goroutine) instead
 		// of on the request goroutine. Used only by the soft-alert crossing check
