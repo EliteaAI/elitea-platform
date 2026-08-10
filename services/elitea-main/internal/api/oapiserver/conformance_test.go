@@ -28,16 +28,11 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/oapiserver"
 	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
-	v2chat "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/chat"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
-	v2core "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
-	v2pipelines "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/pipelines"
-	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
-	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 )
@@ -51,13 +46,14 @@ const (
 
 	// Sanity floors: the spec has 78 operationIds (84 before the W1 drift
 	// removals and waivers W-008/W-009; +1 for W3's getBrandingBootstrap).
-	// chi.Walk over the full-surface test
-	// config yields 346 method+pattern registrations, 310 after the
-	// compat-shim exclusion in CollectRoutes (4 shim patterns x 9 methods).
+	// chi.Walk over the full-surface test config yields 313 method+pattern
+	// registrations, 277 after the compat-shim exclusion in CollectRoutes
+	// (4 shim patterns x 9 methods). It was 325/289 until #126 deleted the
+	// twelve routes gated on the retired prototype indexer transport.
 	// If either input collapses, the conformance loop would vacuously pass —
 	// so guard the inputs themselves.
 	minSpecOperations = 75
-	minRouterRoutes   = 280
+	minRouterRoutes   = 270
 )
 
 // buildFullSurfaceConfig returns a RouterConfig for the real production
@@ -75,14 +71,6 @@ func buildFullSurfaceConfig() api.RouterConfig {
 		Auth: api.AuthDeps{
 			SessionHandler: &v2auth.SessionHandler{},
 			OIDCHandler:    &v2auth.OIDCHandler{},
-		},
-		Indexer: api.IndexerDeps{
-			Predictor:      struct{ v2predict.Predictor }{},
-			LLMService:     struct{ v2predict.LLMService }{},
-			ChatService:    struct{ v2chat.ChatService }{},
-			PipelineRunner: struct{ v2pipelines.Runner }{},
-			ToolTester:     struct{ v2toolkits.ToolTester }{},
-			MCPSyncer:      struct{ v2core.MCPToolSyncer }{},
 		},
 		AppsRepo:      struct{ applications.Repository }{},
 		SkillsRepo:    struct{ v2skills.Repository }{},

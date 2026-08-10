@@ -15,7 +15,12 @@ const PUBLIC_SURFACE = [
   'hasSchedule',
   'isTriggerEnabled',
   'normalisePipelineTrigger',
+  // Added by #126: the hand-written pipeline-trigger client that replaced the
+  // deleted orval-generated hooks.
+  'pipelineTriggerQueryKey',
+  'putPipelineTrigger',
   'triggerTypeLabel',
+  'usePipelineTriggerQuery',
 ] as const;
 
 describe('entities/pipeline public surface', () => {

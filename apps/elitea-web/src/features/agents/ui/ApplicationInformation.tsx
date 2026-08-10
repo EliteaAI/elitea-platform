@@ -5,7 +5,8 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { useGetApplication, useGetPipelineTrigger } from '@/shared/api/generated/applications/applications';
+import { usePipelineTriggerQuery } from '@/entities/pipeline';
+import { useGetApplication } from '@/shared/api/generated/applications/applications';
 import type { ApplicationDetail } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
@@ -108,10 +109,10 @@ function usePipelineTriggerType({ isPipeline, projectId, versionId }: PipelineTr
   readonly type: string | null | undefined;
   readonly schedule: unknown;
 } {
-  const triggerQuery = useGetPipelineTrigger(projectId ?? '', Number(versionId ?? 0), {
-    query: { enabled: isPipeline && projectId !== undefined && versionId !== undefined },
-  });
-  const trigger = triggerQuery.data?.data as { type?: string | null; schedule?: unknown } | undefined;
+  // NOTE(#126): was orval's `useGetPipelineTrigger` — deleted with the prototype indexer transport (it 404'd everywhere); identical request, see #192/#193.
+  const version = versionId === undefined ? undefined : Number(versionId);
+  const triggerQuery = usePipelineTriggerQuery(projectId, version, { enabled: isPipeline });
+  const trigger = triggerQuery.data as { type?: string | null; schedule?: unknown } | undefined;
   return { type: trigger?.type, schedule: trigger?.schedule };
 }
 

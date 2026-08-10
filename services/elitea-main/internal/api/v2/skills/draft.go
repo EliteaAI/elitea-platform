@@ -29,6 +29,16 @@ type SkillDraft struct {
 	Tags         []string `json:"tags"`
 }
 
+// DraftHandler served POST /generate_skill_draft/prompt_lib/{projectID}.
+//
+// NOTE(#126): that route was registered behind a nil RouterConfig.Predictor
+// and answered 404 in every deployment; step 1 of #126 deleted it with the
+// rest of the prototype indexer transport. This handler is deliberately kept —
+// unlike v2predict/v2chat/v2pipelines it does not depend on that transport,
+// only on the narrow Predictor interface above, which the current runtime
+// could supply — but it now has NO CALLER. Its unit tests still pass, which is
+// exactly how dead code stays invisible here (#134, #136, #149). #194 records
+// that it needs either a supplier or a deliberate deletion.
 type DraftHandler struct {
 	predictor Predictor
 }

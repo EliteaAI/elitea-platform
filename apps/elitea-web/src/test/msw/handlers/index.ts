@@ -5,7 +5,6 @@ import { getAnalyticsMock } from '../../../shared/api/generated/analytics/analyt
 import { getApplicationsMock } from '../../../shared/api/generated/applications/applications.msw';
 import { getArtifactsMock } from '../../../shared/api/generated/artifacts/artifacts.msw';
 import { getAuthMock } from '../../../shared/api/generated/auth/auth.msw';
-import { getChatMock } from '../../../shared/api/generated/chat/chat.msw';
 import { getDefaultMock } from '../../../shared/api/generated/default/default.msw';
 import { getSecretsMock } from '../../../shared/api/generated/secrets/secrets.msw';
 import { getSettingsMock } from '../../../shared/api/generated/settings/settings.msw';
@@ -21,7 +20,9 @@ import { getToolkitsMock } from '../../../shared/api/generated/toolkits/toolkits
  * `handlers` is the DEFAULT registry `src/test/setup.ts` boots via
  * `setupServer(...handlers)`. It is populated ENTIRELY from orval's
  * generated `*.msw.ts` mock skeletons (`src/shared/api/generated/<tag>/
- * <tag>.msw.ts`, 12 tags — see orval.config.ts's
+ * <tag>.msw.ts`, 11 tags — the `chat` tag went away with #126, which deleted
+ * the two operations it held (`getChatConfig`, `webchatSync`) along with the
+ * prototype-transport routes behind them — see orval.config.ts's
  * `output.mock` and endpoints.manifest.json; the operation count is not
  * restated here because it drifts every time the spec grows, as it did
  * when #151 added the `secrets` tag). Every generated tag exports a
@@ -123,7 +124,6 @@ export const handlers: RequestHandler[] = [
   ...getApplicationsMock(),
   ...getArtifactsMock(),
   ...getAuthMock(),
-  ...getChatMock(),
   ...getDefaultMock(),
   ...getSecretsMock(),
   ...getSettingsMock(),

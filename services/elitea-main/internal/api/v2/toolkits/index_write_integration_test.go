@@ -74,7 +74,7 @@ func newIndexWriteFixture(t *testing.T) *indexWriteFixture {
 		t.Fatalf("insert fixture index_meta: %v", err)
 	}
 
-	handler := NewHandler(pool, nil)
+	handler := NewHandler(pool)
 	router := chi.NewRouter()
 	router.Patch("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", handler.IndexMetaUpdate)
 	router.Delete("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", handler.IndexMetaDelete)

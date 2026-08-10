@@ -4785,54 +4785,15 @@ paths:
         '403': { $ref: '#/components/responses/403' }
 
   # APPLICATIONS — pipeline triggers
-  /elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger:
-    parameters:
-      - $ref: '#/components/parameters/ProjectId'
-      - name: version_id
-        in: path
-        required: true
-        schema: { type: integer }
-
-    get:
-      operationId: getPipelineTrigger
-      summary: Retrieve the scheduled/event trigger for a pipeline version
-      description: |
-        NOTE(W2): internal/api/v2/pipelines/handler.go:117-159.
-      tags: [applications]
-      responses:
-        '200':
-          description: Trigger configuration (fields null when unset)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PipelineTrigger'
-        '401': { $ref: '#/components/responses/401' }
-        '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
-
-    put:
-      operationId: updatePipelineTrigger
-      summary: Set or replace the pipeline trigger configuration
-      description: |
-        NOTE(W2): internal/api/v2/pipelines/handler.go:161-193 — the body is
-        stored verbatim as settings.trigger; enabled/schedule/type echoed.
-      tags: [applications]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PipelineTriggerUpdateRequest'
-      responses:
-        '200':
-          description: Trigger stored
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PipelineTrigger'
-        '400': { $ref: '#/components/responses/400' }
-        '401': { $ref: '#/components/responses/401' }
-        '403': { $ref: '#/components/responses/403' }
+  # NOTE(#126): getPipelineTrigger (GET) and updatePipelineTrigger (PUT) on
+  # /elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger
+  # were removed. Their routes were gated on RouterConfig.PipelineRunner, whose
+  # only implementation was the prototype indexersvc Redis RPC client; nothing
+  # ever assigned it, so all three trigger methods 404'd in every deployment,
+  # and #126 retired that transport rather than repairing its codec. The
+  # capability is not lost with the routes: a pipeline "trigger" is two product
+  # features, inbound-webhook execution (#192) and scheduled execution (#193),
+  # both genuinely absent from the Go stack and tracked there.
 
   /elitea_core/author/prompt_lib/{author_id}:
     parameters:
@@ -4933,35 +4894,12 @@ paths:
                 $ref: '#/components/schemas/AgentCategoriesResponse'
         '401': { $ref: '#/components/responses/401' }
 
-  /elitea_core/generate_application_draft/prompt_lib/{project_id}:
-    parameters:
-      - $ref: '#/components/parameters/ProjectId'
-
-    post:
-      operationId: generateAgentDraft
-      summary: AI-assisted agent scaffolding — returns a pre-populated draft
-      description: |
-        NOTE(W2): routed to the generic predictor
-        (internal/api/router.go:483 → predict/handler.go:41-61); request and
-        response are the predict contract, not a bespoke draft shape. With
-        stream=true the response is text/event-stream.
-      tags: [applications]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PredictRequest'
-      responses:
-        '200':
-          description: Draft generation result (predict contract)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PredictResponse'
-        '400': { $ref: '#/components/responses/400' }
-        '401': { $ref: '#/components/responses/401' }
-        '403': { $ref: '#/components/responses/403' }
+  # NOTE(#126): generateAgentDraft (POST
+  # /elitea_core/generate_application_draft/prompt_lib/{project_id}) was
+  # removed along with the sibling generate_project_context_draft and
+  # generate_skill_draft routes, which the spec never listed. All three were
+  # gated on RouterConfig.Predictor and 404'd in every deployment. AI draft
+  # generation has no backend in the Go stack — see #194.
 
   # APPLICATIONS — projects & groups
   /projects/project/default/{public_project_id}:
@@ -5712,63 +5650,18 @@ paths:
   # ==========================================================================
   # CHAT
   # ==========================================================================
-  # NOTE(W1): path corrected from spec-only /chat/{project_id}/{version_id} —
-  # the router serves the embedded-widget endpoint at
-  # /webchat/prompt_lib/{projectID}/{versionID} (internal/api/router.go).
-  /elitea_core/webchat/prompt_lib/{project_id}/{version_id}:
-    parameters:
-      - $ref: '#/components/parameters/ProjectId'
-      - name: version_id
-        in: path
-        required: true
-        schema: { type: integer }
+  # NOTE(#126): webchatSync (POST
+  # /elitea_core/webchat/prompt_lib/{project_id}/{version_id}) was removed. It
+  # was gated on RouterConfig.Predictor — the prototype indexer transport — and
+  # 404'd in every deployment. See #93 for the chat dispatch migration.
 
-    post:
-      operationId: webchatSync
-      summary: Synchronous chat endpoint for embedded widgets
-      description: |
-        NOTE(W2): routed to the generic predictor
-        (internal/api/router.go:477 → predict/handler.go:41-61). With
-        stream=true the response is text/event-stream instead of this JSON.
-      tags: [chat]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PredictRequest'
-      responses:
-        '200':
-          description: Chat completion (predict contract)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PredictResponse'
-        '400': { $ref: '#/components/responses/400' }
-        '401': { $ref: '#/components/responses/401' }
-
-  # NOTE(W1): path corrected from spec-only /chat/{project_id} — the router
-  # serves chat config at /chat_config/prompt_lib/{projectID} and the UI calls
-  # exactly that shape (src/api/chatConfig.js).
-  /elitea_core/chat_config/prompt_lib/{project_id}:
-    parameters:
-      - $ref: '#/components/parameters/ProjectId'
-
-    get:
-      operationId: getChatConfig
-      summary: Get chat configuration (model defaults etc.)
-      description: |
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:301-338.
-      tags: [chat]
-      responses:
-        '200':
-          description: Chat configuration
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ChatConfig'
-        '401': { $ref: '#/components/responses/401' }
-        '403': { $ref: '#/components/responses/403' }
+  # NOTE(#126): getChatConfig (GET
+  # /elitea_core/chat_config/prompt_lib/{project_id}) was removed. The handler
+  # itself is eliteacore's and survives, but its only registration sat inside
+  # the ChatService gate next to the chat Mount, so the route was never
+  # registered and answered 404 in every deployment. Re-registering it would be
+  # a behaviour change rather than deletion cleanup, so it is deliberately not
+  # done here — see #93.
 
   # ==========================================================================
   # CONFIGURATIONS
