@@ -190,6 +190,10 @@ export function AdminConfiguration() {
 
       <Box sx={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <List
+          // `component="nav"`, not the default `<ul>`: `ListItemButton`
+          // renders a `<div>`, and a `<ul>` whose children are divs is an axe
+          // `list` violation (serious) — caught by journey 34's a11y check.
+          component="nav"
           dense
           aria-label={t('pages.admin.configuration.sections', 'Configuration sections')}
           sx={{ width: '14rem', flex: '0 0 auto' }}

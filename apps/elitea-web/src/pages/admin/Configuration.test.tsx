@@ -311,6 +311,10 @@ describe('link helpers', () => {
   it('accepts http and https and nothing else', () => {
     expect(linkUrlError('https://example.com')).toBeUndefined();
     expect(linkUrlError('http://wiki.internal.corp')).toBeUndefined();
+    // The scheme is compared case-INSENSITIVELY, and that cuts both ways: a
+    // pasted `HTTPS://` must not be flagged, and `JAVASCRIPT:` must still be.
+    expect(linkUrlError('HTTPS://example.com')).toBeUndefined();
+    expect(linkUrlError('  https://example.com  ')).toBeUndefined();
     expect(linkUrlError('')).toBeUndefined();
     expect(linkUrlError('javascript:alert(1)')).toBeDefined();
     expect(linkUrlError('JAVASCRIPT:alert(1)')).toBeDefined();

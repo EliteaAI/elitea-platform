@@ -400,14 +400,20 @@ func TestSaveAcceptsOrdinaryHTTPLinks(t *testing.T) {
 			map[string]any{"title": "Intranet", "url": "http://wiki.internal.corp/elitea"},
 			map[string]any{"title": "Public", "url": "https://docs.example.com"},
 			map[string]any{"title": "Placeholder", "url": ""},
+			// A pasted URL routinely arrives with surrounding whitespace. It is
+			// TRIMMED before the scheme is read, and the trim cuts both ways:
+			// without it `url.Parse` sees no scheme at all and this legitimate
+			// link would be refused, while a leading space would equally hide a
+			// `javascript:` one from the check (asserted just above).
+			map[string]any{"title": "Pasted", "url": "  https://docs.example.com/pasted \t"},
 		},
 	})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
 	}
 	links, _ := readResources(t, router).Values["resources_documentation_links"].([]any)
-	if len(links) != 3 {
-		t.Fatalf("stored links = %v, want three", links)
+	if len(links) != 4 {
+		t.Fatalf("stored links = %v, want four", links)
 	}
 }
 

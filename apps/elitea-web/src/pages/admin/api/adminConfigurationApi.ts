@@ -84,7 +84,8 @@ export interface AdminConfigSection {
   readonly unavailable_reason?: string;
 }
 
-export interface AdminConfigValues {
+/** The GET body. Not exported: no call site outside this module reads it. */
+interface AdminConfigValues {
   readonly values: Readonly<Record<string, unknown>>;
 }
 

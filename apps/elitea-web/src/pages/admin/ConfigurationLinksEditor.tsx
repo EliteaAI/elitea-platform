@@ -88,7 +88,12 @@ export function ConfigurationLinksEditor({
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+    // Scoped by field so a test — and a screen reader — can address one card's
+    // links without the page's other link editors coming with them.
+    <Box
+      data-testid={`admin-config-links-${fieldKey}`}
+      sx={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
+    >
       {links.map((link, index) => {
         const error = linkUrlError(link.url);
         return (
