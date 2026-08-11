@@ -355,10 +355,25 @@ WHERE entity_id LIKE 'e2e_app_request_probe_%';
 -- platform-wide configuration table. `describe.configure({ mode: 'serial' })`
 -- orders tests within a project and does nothing across them, so both engines
 -- editing `resources_documentation_*` would race. chromium owns the
--- Documentation card and webkit owns Tutorials (see admin.configuration.spec.ts).
+-- Documentation card and webkit owns Tutorials (see admin.features.spec.ts,
+-- journey 36g — the section moved to Admin > Features with unit A14).
 DELETE FROM centry.platform_config
 WHERE section = 'resources'
   AND (key LIKE 'resources_documentation_%' OR key LIKE 'resources_tutorials_%');
+
+-- The Features page's three LIVE flag sections start unconfigured, so the
+-- schema defaults are the baseline the journey asserts against.
+--
+-- This matters more than clearing a text field: `mcp_enabled` left `false` by an
+-- interrupted run would 403 every MCP route for the whole stack, and
+-- `is_publish_blocked` left `true` would refuse every publish, and
+-- `vite_voice_features_enabled` left `false` would hide the chat voice button
+-- for every user -- all three silently, as platform-wide behaviour changes that
+-- look like a different bug in whichever journey trips over them next. Journey 36 restores its
+-- own rows in a `finally`; this is the second line of defence for the run that
+-- was killed before the `finally` ran.
+DELETE FROM centry.platform_config
+WHERE section IN ('mcp_configuration', 'agent_publishing', 'voice_features');
 
 -- A permission that exists ONLY in the database, granted to the administration
 -- `viewer` role. The Roles matrix derives its rows from the recorded grants

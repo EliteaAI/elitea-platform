@@ -25,17 +25,12 @@
  * carries an `unavailable_reason` or none, and the value endpoints answer 501
  * with that same string. This page renders what it is told; it does not decide.
  *
- *   - **Resources** — the Help Center cards every user sees. Live, end to end:
- *     saved into `centry.platform_config` and read back by `pages/help-center`
- *     through the public route pylon exposes for exactly this section. Before
- *     this unit that read returned chat and upload limits, which is why every
- *     card rendered "No links configured" (issue #26).
  *   - **Guardrails, MCP Servers, Observability, LiteLLM, Runtime, Admin Panel,
  *     Authentication** — Pylon plugin configuration. Unavailable, with the
  *     reason.
- *   - **Banner, Support Assistant, Voice Features** — product settings the
- *     legacy UI received through `window.elitea_ui_config`. Unavailable for the
- *     narrower reason that nothing in this platform reads them YET.
+ *   - **Banner** — a product setting the legacy UI received through
+ *     `window.elitea_ui_config`. Unavailable for the narrower reason that
+ *     nothing in this platform reads it YET.
  *   - **LLM Governance** — authored through `/admin/gateway/governance`, not
  *     here, and withheld because the gateway does not read what that surface
  *     writes.
@@ -43,6 +38,27 @@
  *     introspection respectively. Both endpoints now answer 501 rather than
  *     200-with-empty.
  *   - **Service Descriptors** — a page of its own in this port, not yet done.
+ *
+ * ## Every section on this page is currently unavailable, and that is accurate
+ *
+ * #217 built this page with one live section, `resources`, and recorded that it
+ * had put it here only because that is where the server's schema had it and
+ * because leaving it out would have kept #26 open for another unit. Unit A14's
+ * **Features** page has now taken it, which is where the reference puts it
+ * (`ConfigurationPage.jsx` subtracts it via `MOVED_TO_FEATURES`;
+ * `FeaturesPage.jsx` renders it as "Help Center"), together with the
+ * `mcp_exposure.*` and `publishing_guardrail.*` fields that used to sit inside
+ * Guardrails.
+ *
+ * What is left is every section this platform cannot serve. The page therefore
+ * renders only refusals — which is a true statement about this deployment and a
+ * far more useful one than a form over values nothing reads. `pages/admin/
+ * Features.tsx` is where a setting that DOES something is authored today; when
+ * a Configuration section acquires a consumer, removing its
+ * `unavailable_reason` is all that is needed here.
+ *
+ * The behaviour is shared with Features through `useAdminConfigSectionsPage`;
+ * this file is layout and the page's identity.
  *
  * Rendering those as forms would be the worst version of this page's failure
  * mode: unlike an empty table, a configuration form that saves into a void

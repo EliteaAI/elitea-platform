@@ -13,9 +13,13 @@
  * adminui handler's `BasePath` — the handler serves this SPA at that prefix and
  * rewrites its asset URLs to match.
  *
- * Users, Audit Trail, Roles, Projects, Secrets, Schedules & Tasks, App
- * Requests and Configuration exist so far; issue #200 lists the remaining
- * two. The
+ * All ten reachable pages exist: Users, Audit Trail, Roles, Projects, Secrets,
+ * Schedules & Tasks, App Requests, Configuration, Service Descriptors and
+ * Features. Issue #200 scopes ELEVEN; the eleventh is LiteLLM, which is not
+ * ported because #201 replaces LiteLLM with Bifrost — porting an admin page for
+ * a subsystem being removed would be building a control for something on its
+ * way out. The
+ *
  * index route RENDERS it rather than redirecting to `/users`: a `redirect()`
  * here would be type-checked against the MAIN app's generated route ids (the
  * `Register` interface `routeTree.gen.ts` declares is global), which this
@@ -32,6 +36,7 @@ import {
 import { AdminAppRequests } from './AppRequests';
 import { AdminAuditTrail } from './AuditTrail';
 import { AdminConfiguration } from './Configuration';
+import { AdminFeatures } from './Features';
 import { AdminProjects } from './Projects';
 import { AdminRoles } from './Roles';
 import { AdminSchedulesTasks } from './SchedulesTasks';
@@ -85,6 +90,12 @@ const configurationRoute = createRoute({
   component: AdminConfiguration,
 });
 
+const featuresRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/features',
+  component: AdminFeatures,
+});
+
 const schedulesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/schedules',
@@ -122,6 +133,7 @@ const adminRouteTree = rootRoute.addChildren([
   appRequestsRoute,
   configurationRoute,
   serviceDescriptorsRoute,
+  featuresRoute,
 ]);
 
 export function createAdminRouter(): AnyRouter {

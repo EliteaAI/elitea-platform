@@ -23,6 +23,12 @@ import Typography from '@mui/material/Typography';
 import { t } from '@/shared/i18n';
 
 import { ConfigurationLinksEditor, toConfigLinks } from './ConfigurationLinksEditor';
+import {
+  ConfigurationListEditor,
+  fromConfigListRows,
+  toConfigListRows,
+  type ConfigListItemType,
+} from './ConfigurationListEditor';
 import type { AdminConfigField } from './api/adminConfigurationApi';
 
 /**
@@ -57,17 +63,47 @@ export function isFieldVisible(
  * schema types those fields as plain arrays — the `items` shape is what makes
  * them links, and the same suffix is what the server's validator keys on.
  */
-export type ConfigWidget = 'links' | 'boolean' | 'select' | 'multiline' | 'text' | 'number' | 'none';
+export type ConfigWidget =
+  | 'links'
+  | 'list'
+  | 'boolean'
+  | 'select'
+  | 'multiline'
+  | 'text'
+  | 'number'
+  | 'unavailable'
+  | 'none';
 
 export function widgetFor(field: AdminConfigField): ConfigWidget {
+  // Checked FIRST, before the type. A field the server says cannot be set must
+  // render as read-only whatever shape it has, and a later branch winning would
+  // give it a working-looking control — the failure this whole unit removes.
+  if (field.unavailable_reason !== undefined && field.unavailable_reason !== '') return 'unavailable';
   if (field.key.endsWith('_links')) return 'links';
   if (field.type === 'boolean') return 'boolean';
-  if (field.type === 'string') {
-    if (field.enum !== undefined && field.enum.length > 0) return 'select';
-    return field.format === 'textarea' ? 'multiline' : 'text';
-  }
+  if (field.type === 'string') return stringWidgetFor(field);
   if (field.type === 'integer' || field.type === 'number') return 'number';
+  // An array whose element type the schema declares — the Features page's
+  // `agent_categories` (strings) and `publish_whitelist_project_ids`
+  // (integers). An array that declares NO element type still falls through to
+  // `none`: the reference renders those as a free chips input, which invites an
+  // operator to type values the consumer will drop on the floor.
+  if (field.type === 'array' && listItemTypeFor(field) !== undefined) return 'list';
   return 'none';
+}
+
+/** The three shapes a `string` spec can take. Split out to keep `widgetFor` flat. */
+function stringWidgetFor(field: AdminConfigField): ConfigWidget {
+  if (field.enum !== undefined && field.enum.length > 0) return 'select';
+  return field.format === 'textarea' ? 'multiline' : 'text';
+}
+
+/** The element type of an array field, when it is one this form can edit. */
+export function listItemTypeFor(field: AdminConfigField): ConfigListItemType | undefined {
+  const declared = field.items?.type;
+  if (declared === 'string') return 'string';
+  if (declared === 'integer') return 'integer';
+  return undefined;
 }
 
 interface FieldProps {
@@ -156,6 +192,55 @@ function UnsupportedField({ field }: { readonly field: AdminConfigField }) {
   );
 }
 
+/**
+ * A field the SERVER says cannot be set here, inside a section that can.
+ *
+ * The current value is shown — read-only, so the operator can see what the
+ * platform holds — and the server's own sentence is the helper text. Hiding the
+ * field instead would make the control simply vanish relative to the reference,
+ * which reads as a page that lost a feature rather than a platform that does not
+ * have one; and rendering it as a live control would let a save be attempted
+ * that the server refuses with a 400, teaching the operator nothing.
+ */
+function UnavailableField({ field, value }: { readonly field: AdminConfigField; readonly value: unknown }) {
+  return (
+    <TextField
+      size="small"
+      label={fieldLabel(field)}
+      data-testid={`admin-config-field-unavailable-${field.key}`}
+      value={typeof value === 'string' ? value : ''}
+      disabled
+      multiline={field.format === 'textarea'}
+      minRows={field.format === 'textarea' ? 3 : undefined}
+      helperText={field.unavailable_reason}
+    />
+  );
+}
+
+function ListField({ field, value, disabled, onChange }: FieldProps) {
+  const itemType: ConfigListItemType = listItemTypeFor(field) ?? 'string';
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+      <FieldHeading field={field} />
+      <ConfigurationListEditor
+        fieldKey={field.key}
+        label={fieldLabel(field)}
+        itemType={itemType}
+        rows={toConfigListRows(value)}
+        disabled={disabled}
+        onChange={(next) => {
+          // The editor works in TEXT and the field stores typed elements, so the
+          // conversion happens on every keystroke rather than at save time. That
+          // keeps `values[key]` the single source the form reads back — the
+          // alternative, holding text in a second piece of state, is how a
+          // discard ends up restoring one half of a field.
+          onChange(field.key, fromConfigListRows(next, itemType));
+        }}
+      />
+    </Box>
+  );
+}
+
 function SelectField({ field, value, disabled, onChange }: FieldProps) {
   return (
     <TextField
@@ -222,6 +307,10 @@ function FieldRow(props: FieldProps) {
       return <LinksField {...props} />;
     case 'none':
       return <UnsupportedField field={props.field} />;
+    case 'unavailable':
+      return <UnavailableField field={props.field} value={props.value} />;
+    case 'list':
+      return <ListField {...props} />;
     case 'select':
       return <SelectField {...props} />;
     case 'number':

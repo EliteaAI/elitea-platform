@@ -1,11 +1,13 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { HttpResponse, http } from 'msw';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { installWebStorageShim } from '../../../test/webstorage';
 import { renderWithProviders } from '../__tests__/testUtils';
 import type { VoiceConfig } from '../lib/hooks/useVoiceConfig.hooks';
 
 import { VoiceControlButton } from './VoiceControlButton';
+import { server } from '@/test/setup';
 
 // `VoiceConfigDialog` (rendered directly by `VoiceControlButton` — see that
 // file's own module doc for the cross-cluster fix this test file exercises)
@@ -27,6 +29,19 @@ function baseProps() {
     hasModelTTS: false,
   };
 }
+
+// `VoiceControlButton` reads the platform's Voice Features switches
+// (`useVoiceFeatureFlags`, A14/issue 200) — it used to hardcode them as module
+// constants. That is a real network read, and `src/test/setup.ts` runs MSW with
+// `onUnhandledRequest: 'error'`, so the endpoint is stubbed here rather than
+// left to race the test's own teardown.
+beforeEach(() => {
+  server.use(
+    http.get('*/elitea_core/platform_settings/prompt_lib', () =>
+      HttpResponse.json({ voice_features_enabled: true, voice_features_temporarily_disabled: false }),
+    ),
+  );
+});
 
 describe('VoiceControlButton', () => {
   it('renders a play button (not playing) with a "Start speaking" tooltip label as its aria-label', () => {

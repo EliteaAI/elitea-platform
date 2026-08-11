@@ -93,14 +93,14 @@ const EXEMPT = new Map([
   // behind it returned chat and upload limits rather than resource links. It
   // now reads `GET /admin/plugin_config_values/prompt_lib/resources`, which
   // serves the section an administrator edits on Admin > Configuration >
-  // Resources, and journey 34b asserts that round trip end to end.
+  // Resources, and journey 36g asserts that round trip end to end.
   //
   // What is left is a SEEDING question rather than a wiring one, which is the
   // same shape as `/chat/:conversationId` above: this stack configures no
   // resource links, so the cards still render "No links configured" and a
   // baseline would still make an unconfigured screen the official reference.
   // Seed a fixed set of links and the route becomes coverable.
-  ['/help-center', 'not snapshotted — needs seeded resource links, NOT a missing backend. `useResourcesConfig` reads GET /admin/plugin_config_values/prompt_lib/resources, which the admin Configuration port (#200) made serve real values, and journey 34b asserts the round trip. This stack configures none, so a baseline would still pin an unconfigured screen; seed a fixed set of links and it is coverable. Measured meanwhile, its stalled and loaded renders are byte-identical, so it will need only a mount guard, not a data landmark.'],
+  ['/help-center', 'not snapshotted — needs seeded resource links, NOT a missing backend. `useResourcesConfig` reads GET /admin/plugin_config_values/prompt_lib/resources, which the admin port (#200) made serve real values; the section is authored on Admin › Features and journey 36g asserts the round trip. This stack configures none, so a baseline would still pin an unconfigured screen; seed a fixed set of links and it is coverable. Measured meanwhile, its stalled and loaded renders are byte-identical, so it will need only a mount guard, not a data landmark.'],
 ]);
 
 const wired = shots.filter((s) => s.wiringStatus === 'wired');

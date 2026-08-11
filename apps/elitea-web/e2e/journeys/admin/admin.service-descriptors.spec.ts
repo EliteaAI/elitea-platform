@@ -162,7 +162,17 @@ adminTest('J35e: the Configuration section says the same thing', async ({ page }
   // The navigation comes first because `page.evaluate` runs in the document's
   // own context: on `about:blank` a relative URL has no base to resolve against.
   await page.goto(BASE_URL + '/admin/app/configuration', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByRole('button', { name: /Resources/ })).toBeVisible({ timeout: 20_000 });
+  // Waits for the SECTION THIS TEST CLICKS, not for an unrelated one.
+  //
+  // This was `/Resources/` — a landmark that meant "the sidebar has
+  // rendered" and happened to be a different section entirely. Unit A14's
+  // Features page moved `resources` off Configuration (the reference puts it
+  // there, and #217 recorded that it should), and this assertion went with
+  // it. Waiting on the thing the next line clicks cannot drift that way
+  // again.
+  await expect(page.getByRole('button', { name: /Service Descriptors/ })).toBeVisible({
+    timeout: 20_000,
+  });
 
   const pageReason = await page.evaluate(async (endpoint) => {
     const response = await fetch(endpoint, { credentials: 'include' });

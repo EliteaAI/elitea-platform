@@ -476,12 +476,35 @@ func validateSectionValues(section configSection, values map[string]any) string 
 			// confirms it.
 			return fmt.Sprintf("unknown configuration key for section %q: %q", section.id, key)
 		}
+		if reason := rejectUnavailableField(key, field); reason != "" {
+			return reason
+		}
 		if reason := rejectCredentialField(key, field); reason != "" {
 			return reason
 		}
 		if reason := validateFieldValue(key, field, values[key]); reason != "" {
 			return reason
 		}
+	}
+	return ""
+}
+
+// rejectUnavailableField is the FIELD-level twin of the section-level 501.
+//
+// A section is the wrong granularity when one control in an otherwise working
+// section has nothing behind it. `agent_publishing` enforces its block switch
+// and its whitelist for real and feeds its categories to the Agents Hub; only
+// `publish_validation_rules` is inert, because publish validation here is
+// deterministic and has no evaluator for custom criteria to reach. Withholding
+// the whole section to disclose that one field would have taken away three
+// working controls; accepting the field would have stored a prompt nothing runs.
+//
+// The refusal is a 400 rather than the section's 501 deliberately: the SECTION
+// is implemented, so "not implemented" would be the wrong thing to say about the
+// request. What is wrong is the field, and the message names it.
+func rejectUnavailableField(key string, field map[string]any) string {
+	if reason, _ := field["unavailable_reason"].(string); reason != "" {
+		return fmt.Sprintf("%q cannot be set on this platform: %s", key, reason)
 	}
 	return ""
 }
@@ -537,12 +560,52 @@ func validateFieldValue(key string, field map[string]any, value any) string {
 			return fmt.Sprintf("%q must be a number", key)
 		}
 	case "array":
-		if _, ok := value.([]any); !ok {
+		entries, ok := value.([]any)
+		if !ok {
 			return fmt.Sprintf("%q must be an array", key)
 		}
+		return validateArrayItems(key, field, entries)
 	case "object":
 		if _, ok := value.(map[string]any); !ok {
 			return fmt.Sprintf("%q must be an object", key)
+		}
+	}
+	return ""
+}
+
+// validateArrayItems checks an array against the element type its field
+// declares, when it declares one.
+//
+// This matters more than a generic "must be an array" because both of the arrays
+// this page writes are read back by code that TYPE-ASSERTS the elements and
+// skips what does not match: `AgentCategories` takes `e.(string)` and
+// `publishBlockedFor` takes `float64`. Storing `{"agent_categories": [{"n":1}]}`
+// would therefore be accepted, persisted, echoed back by the GET, shown in the
+// form — and silently ignored by the only consumer. That is the "saves into a
+// void" failure at one level down, and the operator would have every reason to
+// believe the category existed.
+//
+// A field that declares no `items` type (none does today, but the Configuration
+// page's `blocked_toolkits` would if it were writable) is left unconstrained
+// rather than guessed at.
+func validateArrayItems(key string, field map[string]any, entries []any) string {
+	items, _ := field["items"].(map[string]any)
+	itemType, _ := items["type"].(string)
+
+	for index, entry := range entries {
+		switch itemType {
+		case "string":
+			if _, ok := entry.(string); !ok {
+				return fmt.Sprintf("%q[%d] must be a string", key, index)
+			}
+		case "integer":
+			// JSON numbers decode as float64. An integer field that was sent
+			// 1.5 is a different mistake from one sent "1", and both are
+			// refused, but the message is the same: this is a project id.
+			number, ok := entry.(float64)
+			if !ok || number != float64(int64(number)) {
+				return fmt.Sprintf("%q[%d] must be an integer", key, index)
+			}
 		}
 	}
 	return ""

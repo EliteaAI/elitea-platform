@@ -111,7 +111,19 @@ beforeEach(() => {
   // flaking the MCP-scoped tests below. Forced `true` (permissive) here so
   // this file's own real `isMCP` scoping (this page's OWN filter, upstream
   // of that toggle) is what every assertion is actually exercising.
-  server.use(getGetPlatformSettingsMockHandler(getGetPlatformSettingsResponseMock({ mcp_enabled: true })));
+  //
+  // `mcp_in_menu_enabled` is pinned for EXACTLY the same reason, and is the
+  // second half of the same toggle (A14, issue 200): `useIsMcpVisible` now
+  // reads both flags, as the baseline always did, and the generated mock
+  // randomises this one too — `faker.helpers.arrayElement([boolean,
+  // undefined])`, so it is a coin flip that lands on `false` about a third of
+  // the time. Pinning only `mcp_enabled` left that second coin flip live, and
+  // it flaked this file's MCP-scoped tests until it was found.
+  server.use(
+    getGetPlatformSettingsMockHandler(
+      getGetPlatformSettingsResponseMock({ mcp_enabled: true, mcp_in_menu_enabled: true }),
+    ),
+  );
 });
 
 afterEach(() => {

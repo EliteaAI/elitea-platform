@@ -23,12 +23,16 @@
 import { useCallback, useMemo, useState } from 'react';
 
 import { withoutBlankLinks, type ConfigLink } from './ConfigurationLinksEditor';
+import { withoutBlankListEntries } from './ConfigurationListEditor';
+import { listItemTypeFor } from './ConfigurationSectionForm';
 import {
+  ADMIN_CONFIG_PAGE_FEATURES,
   configFailureReason,
   configFailureStatus,
   useAdminConfigSections,
   useAdminConfigValues,
   useSaveAdminConfigValues,
+  type AdminConfigField,
   type AdminConfigSection,
 } from './api/adminConfigurationApi';
 
@@ -54,21 +58,65 @@ export interface AdminConfigurationPageState {
   readonly onDismissError: () => void;
 }
 
-/** Strips blank rows out of every links field, matching the server's tolerance. */
-function cleanForSave(draft: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Strips blank rows out of every repeating field, matching the server's
+ * tolerance.
+ *
+ * Both editors deliberately KEEP a blank row while editing — "Add entry" would
+ * otherwise create a row that vanished on the same render — so dropping them is
+ * this function's job, on the way out. It takes the field specs because a list
+ * field is only recognisable from its declared element type; keying on the name,
+ * the way `_links` is keyed, would have made the behaviour depend on what the
+ * schema happened to call the field.
+ */
+function cleanForSave(
+  draft: Record<string, unknown>,
+  fields: readonly AdminConfigField[],
+): Record<string, unknown> {
+  const byKey = new Map(fields.map((field) => [field.key, field]));
   const cleaned: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(draft)) {
-    cleaned[key] =
-      key.endsWith('_links') && Array.isArray(value)
-        ? withoutBlankLinks(value as ConfigLink[])
-        : value;
+    if (key.endsWith('_links') && Array.isArray(value)) {
+      cleaned[key] = withoutBlankLinks(value as ConfigLink[]);
+      continue;
+    }
+    const field = byKey.get(key);
+    if (field !== undefined && listItemTypeFor(field) !== undefined && Array.isArray(value)) {
+      cleaned[key] = withoutBlankListEntries(value);
+      continue;
+    }
+    cleaned[key] = value;
   }
   return cleaned;
 }
 
-export function useAdminConfigurationPage(): AdminConfigurationPageState {
+/**
+ * The shared machinery behind BOTH admin schema-driven pages.
+ *
+ * Configuration and Features differ in exactly one thing — which sections they
+ * show — and that difference is a server-declared `page` on the section. So this
+ * takes the page id and everything else is common: the same section list query,
+ * the same per-section values query, the same delta-only save, the same
+ * server-declared unavailability.
+ *
+ * This is the one place in the admin port where a whole page's behaviour was
+ * genuinely reusable, and it is reused rather than copied. The reference has two
+ * files of ~500 lines each that share their state machine by duplication, and
+ * their `MOVED_TO_FEATURES`/`FEATURES_SECTIONS` lists have to stay each other's
+ * complement by hand.
+ *
+ * NOT exported. Its only two callers are the wrappers directly below it, and an
+ * export with no importer is what the dead-code gate exists to catch — the page
+ * id is not a knob a call site should be choosing, precisely because the two
+ * pages partitioning the sections between them is the invariant this whole
+ * mechanism protects.
+ */
+function useAdminConfigSectionsPage(page: string | undefined): AdminConfigurationPageState {
   const sectionsQuery = useAdminConfigSections();
-  const sections = useMemo(() => sectionsQuery.data ?? [], [sectionsQuery.data]);
+  const sections = useMemo(
+    () => (sectionsQuery.data ?? []).filter((section) => (section.page ?? '') === (page ?? '')),
+    [sectionsQuery.data, page],
+  );
 
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [draft, setDraft] = useState<Record<string, unknown>>({});
@@ -122,7 +170,7 @@ export function useAdminConfigurationPage(): AdminConfigurationPageState {
     if (activeSection === undefined) return;
     setSaveError(undefined);
     saveMutation.mutate(
-      { sectionId: activeSection.id, values: cleanForSave(draft) },
+      { sectionId: activeSection.id, values: cleanForSave(draft, activeSection.fields ?? []) },
       {
         onSuccess: () => {
           setDraft({});
@@ -177,4 +225,21 @@ export function useAdminConfigurationPage(): AdminConfigurationPageState {
       setSaveError(undefined);
     }, []),
   };
+}
+
+/**
+ * Admin › Configuration: the sections that declare no page.
+ *
+ * The default — absence of `page` — belongs to Configuration rather than to
+ * Features so that a section added on the server without thinking about
+ * placement lands on the general page, not on the one that is about product
+ * feature switches.
+ */
+export function useAdminConfigurationPage(): AdminConfigurationPageState {
+  return useAdminConfigSectionsPage(undefined);
+}
+
+/** Admin › Features: the six sections the reference relocates there. */
+export function useAdminFeaturesPage(): AdminConfigurationPageState {
+  return useAdminConfigSectionsPage(ADMIN_CONFIG_PAGE_FEATURES);
 }

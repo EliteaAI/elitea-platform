@@ -137,6 +137,19 @@ afterEach(() => {
   restoreOffsetWidth?.();
 });
 
+// `VoiceControlButton` reads the platform's Voice Features switches
+// (`useVoiceFeatureFlags`, A14/issue 200) — it used to hardcode them as module
+// constants. That is a real network read, and `src/test/setup.ts` runs MSW with
+// `onUnhandledRequest: 'error'`, so the endpoint is stubbed here rather than
+// left to race the test's own teardown.
+beforeEach(() => {
+  server.use(
+    http.get('*/elitea_core/platform_settings/prompt_lib', () =>
+      HttpResponse.json({ voice_features_enabled: true, voice_features_temporarily_disabled: false }),
+    ),
+  );
+});
+
 describe('NewChatInput', () => {
   it('sends the typed question on Enter', async () => {
     const onSend = vi.fn();

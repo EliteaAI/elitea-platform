@@ -987,6 +987,34 @@ components:
         moderation_enabled: { type: boolean }
         mcp_enabled: { type: boolean }
         support_chat_enabled: { type: boolean }
+        mcp_in_menu_enabled:
+          type: boolean
+          description: >
+            A14 (issue 200): the second half of the MCP switch pair. The reference's
+            platform_settings returns `mcp_exposure_enabled` and
+            `mcp_in_menu_enabled` (legacy elitea_core/api/v2/platform_settings.py:45-46)
+            and every `useIsMcpVisible` hook in apps/elitea-web documents this
+            key as the one it wanted and could not find. Now written by the
+            admin Features page's MCP Configuration section and marshalled from
+            `centry.platform_config`. Optional rather than required: it is
+            always present in the response, but a client pinned to an older
+            deployment must not fail validation on its absence.
+        voice_features_enabled:
+          type: boolean
+          description: >
+            A14 (issue 200): written by the admin Features page's Voice
+            Features section and read by widgets/chat's VoiceButton, which is
+            mounted on /chat through ChatBox's slot bundle. It replaced a
+            module constant hardcoded to `true`, so the admin switch had no
+            effect on the control it names. Optional for the same reason as
+            mcp_in_menu_enabled.
+        voice_features_temporarily_disabled:
+          type: boolean
+          description: >
+            A14 (issue 200): the second voice flag. Leaves the control VISIBLE
+            but non-interactive with an admin tooltip, which the button already
+            renders (`tooltipAdminDisabled`) against a constant hardcoded to
+            `false`.
       additionalProperties: true
       x-elitea-passthrough: >-
         NOTE(W2): the ten boolean defaults (always present) are overlaid with
