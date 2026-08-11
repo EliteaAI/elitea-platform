@@ -77,6 +77,18 @@ SKIP_MIGRATIONS
 # --- test-only vars, from ever being checked before now).
 ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA
 
+# --- Removal tripwire, NOT a knob. AUTH_DEV_MODE was an unauthenticated-admin
+# --- bypass, deleted in ADR-0017 (#260). cmd/elitea-main still reads it for
+# --- one reason: to REFUSE TO START if a stale manifest still sets it to
+# --- "true", so an operator who believes authentication is disabled finds out
+# --- immediately. The chart must therefore never offer it, and the env-drift
+# --- gate's usual reading — "code reads it, so the chart must set it or the
+# --- feature is silently broken" — is inverted here. Do not wire this into
+# --- values.yaml; delete this line only when the startup guard itself goes.
+# --- It was previously allowlisted one block up, miscategorised beside
+# --- TRUSTED_PROXY_CIDRS as a per-environment platform flag.
+AUTH_DEV_MODE
+
 # --- Gradual-rollout feature flag (internal/api/router.go: "enforce project
 # --- access", checked via != "false", i.e. enabled by default). Allowlisted
 # --- rather than wired into values.yaml here: this flag's intended default
