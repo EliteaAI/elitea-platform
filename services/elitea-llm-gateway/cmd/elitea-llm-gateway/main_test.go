@@ -201,6 +201,30 @@ func TestHealthz_NilPingerReturns200(t *testing.T) {
 	}
 }
 
+// TestHealthz_TypedNilGovStoreReturns200 is the regression guard for the panic
+// that TestHealthz_NilPingerReturns200 could not see. That test passes an
+// UNTYPED nil, so the handler's `p != nil` guard short-circuits and Ping is
+// never called. The disabled-enforcement path passes a typed nil
+// *GovernanceStore instead (GATEWAY_NATS_URL unset), which lives in a NON-nil
+// interface — the guard fell through and Ping dereferenced a nil receiver, so
+// every /healthz request panicked. Measured against the standalone compose
+// stack, where /healthz returned an empty reply.
+//
+// This mirrors TestDrainForShutdown_NilGovStore, which already covers the same
+// typed-nil hazard on the drain path.
+func TestHealthz_TypedNilGovStoreReturns200(t *testing.T) {
+	var nilStore *governance.GovernanceStore // typed nil, as the disabled path passes
+	h := makeHealthzHandler(nilStore)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+
+	h.ServeHTTP(rec, req) // panicked before the fix
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
 // TestStartupIdentityCheck is the issue #11 regression guard. The pre-#11 guard
 // was `cfg.NATSURL != "" && cfg.IdentitySecret == ""` — it covered ONLY the
 // budget-enforcement reason the secret is mandatory, and was blind to the

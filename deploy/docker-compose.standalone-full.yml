@@ -1,0 +1,331 @@
+# Full standalone stack — the E2E standalone stack PLUS a real LLM path.
+#
+# Relationship to the other compose files:
+#
+#   docker-compose.e2e-standalone.yml  CRUD/RBAC/UX only. No LLM anywhere. The
+#                                      file CI runs Playwright against.
+#   THIS FILE                          the same eight services + elitea-llm-gateway
+#                                      (Bifrost), wired into elitea-main's /llm.
+#   centry-hybrid/                     legacy mixed deployment. Not needed here.
+#
+# The postgres/redis/rustfs/rustfs-bucket-init/oidc-mock blocks below are
+# hand-duplicated from docker-compose.e2e-standalone.yml rather than layered
+# with `-f base -f overlay`: this file's postgres also needs an explicit PGDATA
+# mount and elitea-main/elitea-web need the gateway's extra env/volumes, so a
+# generic overlay would still have to redeclare most of each service anyway.
+# A change to shared behaviour in one of those blocks (a healthcheck workaround,
+# a volume fix) belongs in BOTH files — check the other one before assuming a
+# fix here is complete, and vice versa.
+#
+# There is no pylon, no centry, no LiteLLM in this stack. LiteLLM is superseded
+# by the gateway: elitea-main only reads ELITEA_LITELLM_* under
+# ELITEA_CONFIGURATIONS_ENABLED=true, which nothing here sets.
+#
+# ── What works ───────────────────────────────────────────────────────────────
+#   Everything the E2E stack does, plus real chat completions through Bifrost at
+#   POST /api/v2/../llm/v1/chat/completions (OpenAI dialect) and /llm/v1/messages
+#   (Anthropic dialect), billed against a real provider key you seed.
+#
+# ── What still does NOT work, and why ────────────────────────────────────────
+#   AGENT execution (the chat box "Send" button) is a separate path from the
+#   /llm passthrough and is NOT enabled here. It needs all of:
+#     * services/elitea-worker-python running as the NodeEvent producer — Go has
+#       no native agent-token producer; it only projects and serves the events;
+#     * ELITEA_RUNTIME_ENABLED=true, which requires a full runtime PKI (TLS Redis
+#       + four gRPC server certs + a signing keyring — see centry-hybrid/
+#       prepare-runtime.sh, 215 lines) AND production auth via
+#       ELITEA_AUTH_CONFIG_FILE;
+#     * cfg.RuntimeRoutes to be assigned in cmd/elitea-main/main.go so that
+#       GET /api/v2/executions/{projectID}/{executionID}/events is actually
+#       mounted — today it is built, assigned to cfg.ProductionRuntime, and read
+#       only by the production router;
+#     * the web chat surface to subscribe to that SSE stream instead of emitting
+#       chat_predict into a noop socket.io client
+#       (apps/elitea-web/src/widgets/chat-box/ui/hooks/useChatBoxHandlers.ts:116).
+#   Do not add ELITEA_RUNTIME_* here piecemeal: runtimecomposition/config.go
+#   requires the whole set at once and refuses to start on a partial one.
+#
+# ── Ports ────────────────────────────────────────────────────────────────────
+#   8084  traefik (entry point)     STANDALONE_PORT
+#   8085  gateway, direct (debug)   STANDALONE_GATEWAY_PORT
+#   15433 postgres                  STANDALONE_PG_PORT
+#   16380 redis                     STANDALONE_REDIS_PORT
+#   9400  oidc-provider-mock        FIXED — see the oidc-mock comment
+#
+# NOTE: oidc-mock's published port must equal its container port, so it is
+# pinned at 9400 and CANNOT be remapped. This stack therefore cannot run at the
+# same time as docker-compose.e2e-standalone.yml. Bring one down first.
+#
+# ── Usage ────────────────────────────────────────────────────────────────────
+#   deploy/scripts/standalone-stack.sh certs     # once — local mTLS material
+#   deploy/scripts/standalone-stack.sh up
+#   deploy/scripts/standalone-stack.sh seed
+#   OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm
+#   open http://localhost:8084/app/
+#
+# SKIP_MIGRATIONS is deliberately absent: no Go code reads it. Schema bootstrap
+# is the seed step (001_initial.sql → elitea-migrate → rows).
+
+name: elitea-standalone
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:18
+    shm_size: '2g'
+    environment:
+      POSTGRES_USER: elitea
+      POSTGRES_PASSWORD: elitea
+      POSTGRES_DB: elitea
+      # PGDATA is pinned, and the volume is mounted AT it rather than at the
+      # parent /var/lib/postgresql. Mounting the parent leaves the image's own
+      # contents visible under it, so the entrypoint reports "Database directory
+      # appears to contain a database; Skipping initialization", never runs
+      # initdb, and POSTGRES_USER/DB are silently never created — the first psql
+      # then fails with `role "elitea" does not exist`. Measured on postgres:18,
+      # whose default PGDATA (/var/lib/postgresql/18/docker) is nested deeper
+      # than it was on older tags.
+      PGDATA: /var/lib/postgresql/data
+    ports:
+      - "${STANDALONE_PG_PORT:-15433}:5432"
+    volumes:
+      - standalone_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U elitea"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${STANDALONE_REDIS_PORT:-16380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: elitea
+      RUSTFS_SECRET_KEY: elitea-dev-secret
+    volumes:
+      - standalone_rustfs_data:/data
+    healthcheck:
+      # Neither this image nor its dependents ship curl — only wget — and wget's
+      # exit code does not distinguish "reachable but 403" from "refused". Treat
+      # a captured "server returned error" as reachable. Kept in sync with the
+      # identical block in docker-compose.e2e-standalone.yml.
+      test: ["CMD-SHELL", "out=$$(wget -q -O /dev/null http://127.0.0.1:9000/ 2>&1); [ $$? -eq 0 ] || echo \"$$out\" | grep -q 'server returned error'"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  rustfs-bucket-init:
+    image: docker.io/minio/mc:latest
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mc alias set rustfs http://rustfs:9000 elitea elitea-dev-secret &&
+        mc mb --ignore-existing rustfs/elitea-artifacts
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: "no"
+
+  # ── OIDC mock ───────────────────────────────────────────────────────────────
+  # The `oidc.localhost` alias makes the provider addressable by ONE URL from
+  # BOTH sides, which the browser-driven login flow requires:
+  #   * elitea-main resolves it through the compose network to this container;
+  #   * the host browser resolves it to 127.0.0.1 (RFC 6761 maps every
+  #     *.localhost name to loopback at the OS level), reaching the published
+  #     port below.
+  # The mock derives its issuer and every discovery endpoint from the request's
+  # Host header, so whatever host elitea-main discovers it under is the host the
+  # BROWSER is then redirected to. That is also why the published port must equal
+  # the container port: a remapped host port would put a port in the issuer that
+  # is not reachable inside the compose network.
+  oidc-mock:
+    image: ghcr.io/geigerzaehler/oidc-provider-mock:latest
+    networks:
+      default:
+        aliases:
+          - oidc.localhost
+    ports:
+      - "9400:9400"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9400/.well-known/openid-configuration')\""]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # ── Bifrost LLM gateway ─────────────────────────────────────────────────────
+  # Standalone Go module (Go 1.26.4, GOWORK=off) embedding bifrost/core. Serves
+  # both the OpenAI and Anthropic dialects under /llm.
+  #
+  # Dependencies are far lighter than the helm chart implies:
+  #   NATS   — optional. Unset GATEWAY_NATS_URL disables budget enforcement with
+  #            a startup warning. Enforcement needs a JetStream cluster; local
+  #            functional testing does not.
+  #   Redis  — not a dependency at all; the module does not import a redis client.
+  #   Vault  — SECRETS_MASTER_KEY is optional as long as seeded credentials carry
+  #            a literal api_key rather than a {{secret.NAME}} reference.
+  #   PG     — pgxpool.New only parses the DSN, never dials, so an unreachable
+  #            database degrades (empty /v1/models) rather than failing boot.
+  # GATEWAY_IDENTITY_SECRET is the one hard requirement: startupIdentityCheck
+  # exits 1 when it is empty and the credential Account is wired.
+  elitea-llm-gateway:
+    image: ghcr.io/eliteaai/elitea-llm-gateway:standalone
+    # Build context is the module directory only — it must not inherit the root
+    # go.work, which pins Go 1.25.8 for elitea-main/elitea-scheduler.
+    build:
+      context: ../services/elitea-llm-gateway
+      dockerfile: Containerfile
+    environment:
+      GATEWAY_HTTP_ADDR: ":8083"
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      # MUST match elitea-main's value below: it keys the HMAC over the
+      # X-Elitea-Project-Id / X-Elitea-User-Id / X-Elitea-Tenant-Id headers that
+      # elitea-main signs and the gateway verifies.
+      GATEWAY_IDENTITY_SECRET: "${GATEWAY_IDENTITY_SECRET:-standalone-dev-identity-secret}"
+      # Serve TLS and require client certs. Presenting all three is what turns on
+      # mutual auth; elitea-main's side is non-optional, so this is not a choice.
+      GATEWAY_TLS_CERT_FILE: /run/certs/gateway-server.crt
+      GATEWAY_TLS_KEY_FILE: /run/certs/gateway-server.key
+      GATEWAY_TLS_CA_FILE: /run/certs/ca.crt
+      # Deliberately UNSET: GATEWAY_EGRESS_ALLOWLIST.
+      # Empty means "public destinations only, any host" — bifrost's SSRF-safe
+      # dialer refuses private addresses. Setting it would ADD private-network
+      # reachability for the named hosts, which is the opposite of what a local
+      # test stack wants. Set it only to reach a provider on your LAN.
+      GATEWAY_LOG_LEVEL: "${GATEWAY_LOG_LEVEL:-info}"
+    volumes:
+      - ./certs:/run/certs:ro
+    ports:
+      # Direct access for debugging with curl --cert/--key. Traffic that must
+      # carry a project identity has to go through elitea-main, which is what
+      # signs the identity headers.
+      - "${STANDALONE_GATEWAY_PORT:-8085}:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No healthcheck: the final image is distroless (no shell, no wget/curl) and
+    # declares HEALTHCHECK NONE. Dependents use service_started — safe because
+    # elitea-main does not dial the gateway at boot; it only loads its certs.
+    restart: unless-stopped
+
+  # ── Application services ────────────────────────────────────────────────────
+
+  elitea-main:
+    image: ghcr.io/eliteaai/elitea-main:standalone
+    # `build:` present so compose builds the tag from this commit instead of
+    # reaching for a registry tag that was never published (cf. issue #154).
+    # Context is `..` because build contexts resolve relative to THIS file's
+    # directory and the Containerfile expects the repo root.
+    build:
+      context: ..
+      dockerfile: services/elitea-main/Containerfile
+      # `e2e` builds the admin SPA from apps/elitea-web/src/entries/admin, so no
+      # admin-ui submodule checkout is required.
+      target: e2e
+    environment:
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      REDIS_URL: "redis:6379"
+      SHADOW_ENABLED: "false"
+      LEGACY_URL: ""
+      ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
+      APPLICATION_SECRET_KEY: "changeme-standalone"
+      OIDC_ISSUER_URL: "http://oidc.localhost:9400"
+      OIDC_CLIENT_ID: "elitea-standalone-client"
+      OIDC_CLIENT_SECRET: "elitea-standalone-secret"
+      OIDC_REDIRECT_URI: "http://localhost:${STANDALONE_PORT:-8084}/forward-auth/auth_oidc/callback"
+      COOKIE_SECURE: "false"
+      # Object storage
+      STORAGE_BACKEND: "s3"
+      STORAGE_CONTAINER: "elitea-artifacts"
+      S3_ENDPOINT_URL: "http://rustfs:9000"
+      S3_ACCESS_KEY: "elitea"
+      S3_SECRET_KEY: "elitea-dev-secret"
+      S3_REGION: "us-east-1"
+      S3_FORCE_PATH_STYLE: "true"
+      # ── LLM gateway ────────────────────────────────────────────────────────
+      # Setting LLM_GATEWAY_URL is what composes the proxy. It is all-or-nothing:
+      # llmproxy.New always builds an mTLS transport, so the three cert vars are
+      # mandatory once the URL is set — an empty path is a fatal boot error, not
+      # a fallback to plaintext.
+      LLM_GATEWAY_URL: "https://elitea-llm-gateway:8083"
+      GATEWAY_IDENTITY_SECRET: "${GATEWAY_IDENTITY_SECRET:-standalone-dev-identity-secret}"
+      LLM_GATEWAY_CLIENT_CERT: /run/certs/client.crt
+      LLM_GATEWAY_CLIENT_KEY: /run/certs/client.key
+      LLM_GATEWAY_CA_FILE: /run/certs/ca.crt
+    volumes:
+      - ./certs:/run/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      oidc-mock:
+        condition: service_healthy
+      rustfs-bucket-init:
+        condition: service_completed_successfully
+      elitea-llm-gateway:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/elitea-main", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  elitea-web:
+    image: ghcr.io/eliteaai/elitea-web:standalone
+    build:
+      context: ..
+      dockerfile: apps/elitea-web/Containerfile
+    environment:
+      VITE_SERVER_URL: "/api/v2"
+      VITE_BASE_URI: "/app/"
+      # Empty on purpose. There is no socket.io server in this stack — the Go
+      # backend never implemented one (it was a legacy pylon passthrough), so the
+      # app installs createNoopSocketClient. Pointing this anywhere would only
+      # produce connection errors.
+      VITE_SOCKET_SERVER: ""
+      VITE_SOCKET_PATH: "/socket.io"
+      # NOT "1". isPublicAgentsProject compares the selected project against this
+      # value, and the seeded working project IS 1 — so setting both to 1 renders
+      # the PUBLIC view on every agents/pipelines/skills page and makes the
+      # private list unreachable. 99 is an id no fixture creates.
+      VITE_PUBLIC_PROJECT_ID: "99"
+    depends_on:
+      elitea-main:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/app/ || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── Traefik: routes /app → elitea-web, /api → elitea-main ──────────────────
+  traefik:
+    image: traefik:v3.4
+    ports:
+      - "${STANDALONE_PORT:-8084}:80"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.e2e.yml:/etc/traefik/dynamic.yml:ro
+    depends_on:
+      elitea-main:
+        condition: service_healthy
+      elitea-web:
+        condition: service_healthy
+
+volumes:
+  standalone_pg_data:
+  standalone_rustfs_data:

@@ -1240,7 +1240,27 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		})
 	})
 
-	if cfg.LLMProxy != nil {
+	// /llm has two possible backends. GatewayProxy is the Bifrost gateway
+	// (LLM_GATEWAY_URL); LLMProxy is the older LiteLLM facade, reachable only
+	// under ELITEA_CONFIGURATIONS_ENABLED, which no deployment sets.
+	//
+	// The gateway arm must be mounted HERE and not only in production_router.go:
+	// prototypeCompatibilityRequested is true whenever AppsRepo/auth/etc. is
+	// assigned — i.e. in every real deployment — so NewRouter always returns this
+	// router and a gateway mounted only over there is unreachable. GatewayProxy
+	// is deliberately absent from the prototype-gate field list, so wiring it
+	// does not itself force this router.
+	//
+	// Gateway wins when both are composed: it is the migration target, and
+	// serving the superseded facade in preference to it would be a silent
+	// downgrade.
+	// Each backend keeps its own literal per-field nil gate rather than being
+	// collapsed into one nil-check over a local. TestNilGatedRouterFieldsAreWiredOrDeclared
+	// reads this file as SOURCE to prove no route group is gated behind a field
+	// the composition root never assigns, so a gate hidden behind a local
+	// variable is invisible to it — which is the precise failure mode it exists
+	// to catch.
+	mountLLM := func(proxy http.Handler, resolver apimw.PersonalProjectResolver) {
 		r.Group(func(r chi.Router) {
 			r.Use(apimw.Auth(apimw.AuthConfig{
 				Client:                    cfg.AuthClient,
@@ -1250,9 +1270,14 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				SessionSecret:             cfg.SessionSecret,
 				TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 			}))
-			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: cfg.LLMProjectResolver}))
-			r.Mount("/llm", cfg.LLMProxy)
+			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: resolver}))
+			r.Mount("/llm", proxy)
 		})
+	}
+	if cfg.GatewayProxy != nil {
+		mountLLM(cfg.GatewayProxy, cfg.GatewayProjectResolver)
+	} else if cfg.LLMProxy != nil {
+		mountLLM(cfg.LLMProxy, cfg.LLMProjectResolver)
 	}
 
 	// Register reviewed current-compatible routes last. Some broad prototype

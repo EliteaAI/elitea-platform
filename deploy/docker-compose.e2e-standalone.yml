@@ -26,6 +26,11 @@
 # In CI (ubuntu-latest, no conflicting stack):
 #   E2E_PORT=8080 COMPOSE_BIN="docker compose" … up -d
 #   PLAYWRIGHT_BASE_URL=http://localhost:8080 npx playwright test
+#
+# The postgres/redis/rustfs/rustfs-bucket-init/oidc-mock blocks below are
+# hand-duplicated (not layered) in docker-compose.standalone-full.yml — see
+# that file's header for why. A shared-behaviour fix here (a healthcheck
+# workaround, a volume fix) belongs in both files.
 
 name: elitea-e2e
 
@@ -64,6 +69,10 @@ services:
       RUSTFS_ACCESS_KEY: elitea
       RUSTFS_SECRET_KEY: elitea-dev-secret
     healthcheck:
+      # Neither this image nor its dependents ship curl — only wget — and wget's
+      # exit code does not distinguish "reachable but 403" from "refused". Treat
+      # a captured "server returned error" as reachable. Kept in sync with the
+      # identical block in docker-compose.standalone-full.yml.
       test: ["CMD-SHELL", "out=$$(wget -q -O /dev/null http://127.0.0.1:9000/ 2>&1); [ $$? -eq 0 ] || echo \"$$out\" | grep -q 'server returned error'"]
       interval: 2s
       timeout: 3s
