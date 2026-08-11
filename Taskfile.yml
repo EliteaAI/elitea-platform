@@ -147,6 +147,17 @@ tasks:
     cmds:
       - podman compose -f deploy/docker-compose.yml logs -f --tail=50
 
+  standalone:up:
+    desc: Bring up the standalone full stack (Go + Bifrost gateway, no pylon) — see README's "Standalone full stack"
+    cmds:
+      - deploy/scripts/standalone-stack.sh certs
+      - deploy/scripts/standalone-stack.sh up
+
+  standalone:down:
+    desc: Tear down the standalone full stack
+    cmds:
+      - deploy/scripts/standalone-stack.sh down
+
   hybrid:config:
     desc: Validate the mixed Centry and selected Go-slice deployment
     cmds:

@@ -21,7 +21,8 @@ elitea-platform/
 ├── libs/go/                 # Shared Go libraries
 ├── deploy/
 │   ├── docker/              # Containerfiles for UI and helper images
-│   ├── docker-compose.yml   # Local dev environment
+│   ├── docker-compose.yml   # Local dev environment (pylon-indexer, legacy)
+│   ├── docker-compose.standalone-full.yml  # Target-architecture stack (Go + Bifrost, no pylon)
 │   └── helm/                # Kubernetes Helm charts
 └── .github/workflows/       # CI/CD pipelines
 ```
@@ -59,6 +60,50 @@ Services will be available at:
 | UI | http://localhost:8080/app/ | elitea-ui React SPA |
 | postgres | localhost:5432 | PostgreSQL 18 |
 | redis | localhost:6379 | Redis 7 |
+
+## Standalone full stack
+
+`deploy/docker-compose.yml` above still includes `pylon-indexer` and fronts the
+old plugin runtime. `deploy/docker-compose.standalone-full.yml` is a separate,
+self-contained recipe for the **target** architecture: Go `elitea-main` +
+`elitea-web` + the Bifrost `elitea-llm-gateway` + postgres/redis/rustfs/traefik
++ a mock OIDC provider — no pylon, no centry, no LiteLLM.
+
+```bash
+deploy/scripts/standalone-stack.sh certs   # once — local mTLS material (deploy/certs/, gitignored)
+deploy/scripts/standalone-stack.sh up
+deploy/scripts/standalone-stack.sh seed
+OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm   # optional: a real provider credential
+deploy/scripts/standalone-stack.sh check   # gateway reachable over mTLS
+
+open http://localhost:8084/app/
+```
+
+Or via Task: `task standalone:up` / `task standalone:down`.
+
+Compose project `elitea-standalone`. Ports: `8084` entry (Traefik), `8085`
+gateway (direct, debug), `15433` postgres, `16380` redis, `9400` oidc-mock
+(**fixed** — the mock's issuer is derived from its Host header, so the port
+cannot be remapped). Because of that fixed port, this stack and the E2E stack
+(`apps/elitea-web/scripts/e2e-stack.sh`, also on 9400 by default) cannot run at
+the same time; `standalone-stack.sh up` checks for the conflict and tells you
+to stop the other one first.
+
+**What works:** everything the E2E stack does, plus real chat completions
+through the gateway at `POST /api/v2/.../llm/v1/chat/completions` (OpenAI
+dialect) and `/llm/v1/messages` (Anthropic dialect), billed against the
+provider credential you seed with `seed-llm`.
+
+**What still does NOT work:** agent execution (the chat box "Send" button) is
+a separate path from the `/llm` passthrough and is not enabled here. It needs
+all of: `services/elitea-worker-python` running as the NodeEvent producer (Go
+has no native agent-token producer — it only projects and serves the events);
+`ELITEA_RUNTIME_ENABLED=true`, which requires a full runtime PKI (TLS Redis +
+four gRPC server certs + a signing keyring); `cfg.RuntimeRoutes` to be wired in
+`cmd/elitea-main/main.go` so `GET /api/v2/executions/{projectID}/{executionID}/events`
+is actually mounted; and the web chat surface to subscribe to that SSE stream
+instead of the current noop socket.io client. This is a separate, larger
+effort — do not wire it piecemeal.
 
 ## Common Tasks
 

@@ -371,7 +371,13 @@ func (g *GovernanceStore) TryAlertCooldown(ctx context.Context, scope, scopeID s
 // returns nil when the circuit breaker is closed (healthy) and ErrUnavailable
 // when the breaker is open or half-open. Callers (e.g. /healthz probes) use this
 // to include budget-enforcement health in readiness checks.
+// A nil receiver means enforcement is disabled, which is a healthy state, not a
+// fault — defence in depth for callers that convert a typed nil into an
+// interface before the guard runs.
 func (g *GovernanceStore) Ping(_ context.Context) error {
+	if g == nil || g.nc == nil {
+		return nil
+	}
 	if g.nc.BreakerState() != gobreaker.StateClosed {
 		return nats.ErrUnavailable
 	}
