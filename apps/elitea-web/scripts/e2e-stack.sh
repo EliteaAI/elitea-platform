@@ -18,6 +18,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # names under `set -o pipefail` (#228).
 # shellcheck source=lib/container-lookup.sh
 . "$(dirname "$0")/lib/container-lookup.sh"
+# shellcheck source=lib/compose-detect.sh
+. "$(dirname "$0")/lib/compose-detect.sh"
 # Standalone file: self-contained, no port conflicts with the centry dev stack.
 # In CI set E2E_PORT=8080 (free on ubuntu-latest); locally defaults to 8082.
 # -p elitea-e2e: explicit project name avoids clashing with the deploy- project.
@@ -33,16 +35,7 @@ E2E_PROJECT="${E2E_PROJECT:-elitea-e2e}"
 COMPOSE_F="-p ${E2E_PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.e2e-standalone.yml"
 
 # ── compose binary detection ─────────────────────────────────────────────────
-if [ -z "${COMPOSE_BIN:-}" ]; then
-  if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
-    COMPOSE_BIN="docker compose"
-  elif command -v podman &>/dev/null; then
-    COMPOSE_BIN="podman compose"
-  else
-    echo "ERROR: neither 'docker compose' nor 'podman' found. Set COMPOSE_BIN." >&2
-    exit 1
-  fi
-fi
+detect_compose_bin
 
 CMD="${1:-}"
 

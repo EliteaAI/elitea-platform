@@ -185,6 +185,16 @@ func main() {
 	// budget-enforcement path is dead (breaker open/half-open) stays in the
 	// load-balancer rotation. govStore is nil when enforcement is disabled, in
 	// which case the route reports healthy unconditionally.
+	//
+	// Passing govStore straight into the pinger parameter puts a typed nil
+	// *GovernanceStore into a non-nil interface, so makeHealthzHandler's
+	// `p != nil` guard stays true and this dispatches to Ping. That used to
+	// panic — every /healthz request, whenever GATEWAY_NATS_URL was unset
+	// (the standard local/dev posture AND the pre-NATS window in a cluster) —
+	// but Ping itself is now nil-receiver safe (see GovernanceStore.Ping),
+	// which is the one guard this needs: any future caller that boxes a typed
+	// nil *GovernanceStore into an interface is covered too, not just this
+	// call site. Measured against the standalone compose stack.
 	mux.HandleFunc("/healthz", makeHealthzHandler(govStore))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the

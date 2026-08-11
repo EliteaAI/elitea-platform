@@ -40,3 +40,6 @@ node_modules/
 
 # Vitest cache (can end up in node_modules/.vite/)
 node_modules/.vite/
+
+# Local standalone-stack mTLS material (deploy/scripts/gen-gateway-certs.sh)
+deploy/certs/
