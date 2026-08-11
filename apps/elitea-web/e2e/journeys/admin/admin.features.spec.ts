@@ -1,6 +1,6 @@
 /**
- * Journey 35: A feature flag set on Admin › Features is a flag the platform
- *             actually obeys (JRNY-035)
+ * Journey 36: A feature flag set on Admin › Features is a flag the platform
+ *             actually obeys (JRNY-036)
  *
  * ## Why this journey needs to exist at all
  *
@@ -186,7 +186,7 @@ async function putValues(
 /* ── the page itself ───────────────────────────────────────────────────── */
 
 adminTest(
-  'J35: the page opens on a section this deployment can actually serve',
+  'J36: the page opens on a section this deployment can actually serve',
   async ({ page }) => {
     await openFeatures(page);
 
@@ -214,7 +214,7 @@ adminTest(
 /* ── MCP: the switch, and the API it closes ────────────────────────────── */
 
 adminTest(
-  'J35b: switching MCP off is read by the platform AND closes the API',
+  'J36b: switching MCP off is read by the platform AND closes the API',
   async ({ page }) => {
     await openFeatures(page);
     await withPlatformFlagLock(async () => {
@@ -290,7 +290,7 @@ adminTest(
 
 /* ── publishing: the guardrail ─────────────────────────────────────────── */
 
-adminTest('J35c: blocking publishing is enforced by the publish endpoint', async ({ page }) => {
+adminTest('J36c: blocking publishing is enforced by the publish endpoint', async ({ page }) => {
   await openFeatures(page);
   await openSection(page, 'Agent Publishing');
   await expect(page.getByRole('switch', { name: 'Block Agent Publishing' })).toBeVisible();
@@ -329,7 +329,7 @@ adminTest('J35c: blocking publishing is enforced by the publish endpoint', async
 });
 
 adminTest(
-  'J35d: a field the server cannot honour is read-only and refuses its write',
+  'J36d: a field the server cannot honour is read-only and refuses its write',
   async ({ page }) => {
     await openFeatures(page);
     await openSection(page, 'Agent Publishing');
@@ -360,7 +360,7 @@ adminTest(
 );
 
 adminTest(
-  'J35e: an array element of the wrong type is refused, not stored and ignored',
+  'J36e: an array element of the wrong type is refused, not stored and ignored',
   async ({ page }) => {
     await openFeatures(page);
 
@@ -382,7 +382,7 @@ adminTest(
 );
 
 adminTest(
-  'J35f: the voice switches reach the platform settings the chat button reads',
+  'J36f: the voice switches reach the platform settings the chat button reads',
   async ({ page }) => {
     await openFeatures(page);
     await openSection(page, 'Voice Features');
@@ -443,7 +443,7 @@ adminTest(
 /* ── the Help Center round trip, moved here with its section ───────────── */
 
 adminTest(
-  'J35g: a Help Center link saved here survives a reload and reaches /help-center',
+  'J36g: a Help Center link saved here survives a reload and reaches /help-center',
   async ({ page }, testInfo) => {
     await openFeatures(page);
     await openSection(page, 'Help Center');
@@ -496,7 +496,7 @@ adminTest(
 );
 
 adminTest(
-  'J35h: the server refuses a link URL that would run in a reader’s browser',
+  'J36h: the server refuses a link URL that would run in a reader’s browser',
   async ({ page }, testInfo) => {
     await openFeatures(page);
     const card = ownedCard(testInfo.project.name);
@@ -531,7 +531,7 @@ adminTest(
 /* ── the sections with no consumer ─────────────────────────────────────── */
 
 adminTest(
-  'J35i: a section with no consumer states its reason and refuses its write',
+  'J36i: a section with no consumer states its reason and refuses its write',
   async ({ page }) => {
     await openFeatures(page);
 
@@ -562,7 +562,7 @@ adminTest(
 /* ── repeatability ─────────────────────────────────────────────────────── */
 
 adminTest(
-  'J35j: the probe values are restored so the run is repeatable',
+  'J36j: the probe values are restored so the run is repeatable',
   async ({ page }, testInfo) => {
     await openFeatures(page);
     await openSection(page, 'Help Center');

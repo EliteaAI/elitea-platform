@@ -544,7 +544,7 @@ test('@visual chat-empty-rail-collapsed', async ({ page }) => {
  *    admin Configuration port (#200) made
  *    `GET /admin/plugin_config_values/prompt_lib/resources` serve the section
  *    an administrator edits, and the hook reads it — which is what issue #26
- *    was waiting for, and journey 35g asserts end to end. What remains is a
+ *    was waiting for, and journey 36g asserts end to end. What remains is a
  *    SEEDING question rather than a wiring one: this stack configures no
  *    resource links, so the cards still render "No links configured" and a
  *    baseline would still photograph an unconfigured screen. Seeding a fixed
