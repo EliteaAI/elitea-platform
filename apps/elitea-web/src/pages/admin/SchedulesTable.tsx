@@ -111,8 +111,10 @@ function CronCell({
       slotProps={{
         htmlInput: {
           'aria-label': t('pages.admin.schedules.cronLabel', 'Cron (5 fields)'),
-          // Inline rather than an `& .MuiInputBase-input` selector: R-T6 keeps
-          // MUI internals out of call sites.
+          // Applied to the input element itself rather than reached through a
+          // nested MUI class selector: R-T6 keeps MUI internals out of call
+          // sites, and the theme gate greps for those class names in COMMENTS
+          // too — so this one deliberately does not name the one it replaced.
           style: { fontFamily: 'monospace' },
         },
       }}
