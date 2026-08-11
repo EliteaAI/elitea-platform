@@ -39,7 +39,7 @@
 -- configured-to-empty.
 DO $$
 DECLARE
-    super_admin_role_id INTEGER;
+    admin_role_id INTEGER;
 BEGIN
     -- elitea-migrate can run against a database whose auth_core tables have not
     -- been created yet (they come from 001_initial.sql, applied by elitea-main
@@ -91,9 +91,9 @@ BEGIN
     WHERE role.mode = 'administration'
     ON CONFLICT (role_id, permission) DO NOTHING;
 
-    SELECT id INTO super_admin_role_id
+    SELECT id INTO admin_role_id
     FROM public.auth_core__role
-    WHERE name = 'super_admin' AND mode = 'administration';
+    WHERE name = 'admin' AND mode = 'administration';
 
     -- One holder, chosen as narrowly as it can be: the dev bootstrap account
     -- 001_initial.sql seeds at id 1, and only if it still holds the
@@ -104,9 +104,15 @@ BEGIN
     -- volume it would hand it to `e2e-member@autotest.local` and destroy the
     -- authorisation difference the admin journeys assert. Any other account is
     -- promoted through the admin Users page, which unit A14 made real.
-    IF super_admin_role_id IS NOT NULL THEN
+    --
+    -- `admin` rather than `super_admin`, for the two reasons 001_initial.sql
+    -- states: least privilege, and eliteacore/handler.go's project-member
+    -- listing UNIONs in every holder of a role NAMED `super_admin` without
+    -- filtering on `mode`, so seeding one would add a phantom member to every
+    -- project's member list.
+    IF admin_role_id IS NOT NULL THEN
         INSERT INTO public.auth_core__user_role (user_id, role_id)
-        SELECT bootstrap.id, super_admin_role_id
+        SELECT bootstrap.id, admin_role_id
         FROM public.auth_core__user AS bootstrap
         WHERE bootstrap.id = 1
           AND EXISTS (

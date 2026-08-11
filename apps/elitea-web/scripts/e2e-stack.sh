@@ -617,7 +617,7 @@ ENDSQL
     # The negative half is what makes the difference a real authorisation
     # boundary. A migration that promoted "everyone who looks like an admin"
     # would hand it to the member persona and quietly delete the distinction the
-    # admin journeys rest on — and now that the user LISTING is gated too, J29
+    # admin journeys rest on — and now that the user LISTING is gated too, J33
     # asserts exactly this refusal over HTTP.
     if [ "${MEMBER_PERMS:-0}" -ne 0 ]; then
       echo "ERROR: the member persona resolves 'admin.auth.users' in administration mode." >&2

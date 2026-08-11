@@ -149,7 +149,9 @@ adminTest('J28: suspending a user is written to the database and survives a relo
 adminTest.describe('member persona', () => {
   adminTest.use({ storageState: STORAGE_STATE.member });
 
-  adminTest('J29: a member without admin.auth.users cannot read the global user list', async ({ page }) => {
+  // J33, not J29 — the audit-trail spec claimed J29/J29b/J29c while this
+  // branch was open.
+  adminTest('J33: a member without admin.auth.users cannot read the global user list', async ({ page }) => {
     const response = await page.request.get(
       `${BASE_URL}/api/v2/admin/auth_users/administration?limit=100&offset=0`,
     );

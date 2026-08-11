@@ -247,8 +247,15 @@ func TestAdminCentralRBACMigrationPromotesOnlyTheBootstrapAccount(t *testing.T) 
 	// looks like an admin" would be an escalation, and on a stale E2E volume it
 	// would hand global administration to `e2e-member@autotest.local` and erase
 	// the authorisation difference the admin journeys assert.
+	//
+	// The bootstrap account gets `admin`, not `super_admin`. Beyond least
+	// privilege, eliteacore/handler.go's project-member listing UNIONs in every
+	// holder of a role NAMED `super_admin` and never filters on `mode`, so
+	// seeding one would put a phantom member on every project's member list —
+	// which is exactly how this showed up: as a "N / 2 active" caption reading
+	// 3, and a settings/users snapshot with one row too many.
 	for id, want := range map[int][]string{
-		1: {"super_admin"},
+		1: {"admin"},
 		2: {},
 		3: {},
 	} {

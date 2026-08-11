@@ -628,14 +628,24 @@ INSERT INTO auth_core__user_role (user_id, role_id)
 VALUES (1, 1)
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
--- …and the administration-mode super_admin role, so a fresh database has one
+-- …and the administration-mode `admin` role, so a fresh database has one
 -- account that can actually reach the admin panel. Without this the roles above
 -- exist and nobody holds them, which is the same 403-for-everyone outcome by a
 -- different route.
+--
+-- `admin`, deliberately, not `super_admin`. Least privilege is the first
+-- reason: a bootstrap seed should not hand out the escalation permission
+-- unprompted, and `admin` holds every permission this file grants except
+-- `admin.auth.users.super_admin`. The second reason is concrete —
+-- eliteacore/handler.go's project-member listing UNIONs project members with
+-- every holder of a role NAMED `super_admin`, and it does not filter on
+-- `mode`, so a global super_admin appears as a member of every project on
+-- every page that reads it. Whether that union should be mode-filtered is a
+-- separate question; seeding `admin` means this file does not force the answer.
 INSERT INTO auth_core__user_role (user_id, role_id)
 SELECT 1, role.id
 FROM auth_core__role AS role
-WHERE role.name = 'super_admin' AND role.mode = 'administration'
+WHERE role.name = 'admin' AND role.mode = 'administration'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
 -- Default project
