@@ -53,77 +53,90 @@ func (h *Handler) SystemInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
-func (h *Handler) ResourcesConfig(w http.ResponseWriter, _ *http.Request) {
-	config := map[string]any{
-		"max_file_size":        52428800,
-		"max_upload_files":     10,
-		"allowed_extensions":   []string{"pdf", "txt", "md", "json", "csv", "docx", "xlsx"},
-		"max_context_length":   128000,
-		"max_output_tokens":    4096,
-		"streaming_enabled":    true,
-		"attachments_enabled":  true,
-		"artifacts_enabled":    true,
-		"mcp_enabled":          true,
-		"canvas_enabled":       true,
-		"voice_enabled":        false,
-		"image_gen_enabled":    false,
-		"realtime_enabled":     true,
-		"max_participants":     10,
-		"max_conversations":    100,
-		"max_messages_per_day": 1000,
-	}
-	writeJSON(w, http.StatusOK, config)
-}
+// ResourcesConfig, PluginConfigValues and PluginConfigValuesSave are implemented
+// in config_values.go (unit A14). All three were stubs of the three shapes this
+// unit exists to remove:
+//
+//   - `ResourcesConfig` — the route the Help Center calls — answered with chat
+//     and upload limits (`max_file_size`, `max_context_length`, …) under no
+//     `values` wrapper. It had a route, it returned 200, and it answered a
+//     different question than the page asked. Issue #26 records the symptom:
+//     every Help Center card renders "No links configured".
+//   - `PluginConfigValues` returned the schema's DEFAULTS for EVERY section at
+//     once, ignoring the `{plugin}` segment entirely.
+//   - `PluginConfigValuesSave` never read the request body.
 
 // Projects and ProjectSuspend live in projects.go (unit A14).
 
 func (h *Handler) PluginConfigSchemas(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sections":                     configSections(),
+		"sections": configSections(),
+		// Whether the caller may VIEW the descriptors page, which is a different
+		// question from whether this section can edit them (it cannot — see
+		// serviceDescriptorsSection).
 		"can_view_service_descriptors": true,
 	})
 }
 
-func (h *Handler) PluginConfigValues(w http.ResponseWriter, r *http.Request) {
-	values := make(map[string]any)
-	for _, section := range configSections() {
-		fields, _ := section["fields"].([]map[string]any)
-		for _, f := range fields {
-			key, _ := f["key"].(string)
-			if key == "" {
-				continue
-			}
-			if def, ok := f["default"]; ok {
-				values[key] = def
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"values": values})
+// pylonRuntimeUnavailable is what the five Pylon-runtime endpoints behind the
+// Configuration page's Advanced section answer, and why.
+//
+// Each of them drives a live Pylon: `plugin_config_restart` fires a reload or a
+// process restart onto the Arbiter bus; `runtime_remote` lists the plugins every
+// pylon announced in the last 60 seconds; `runtime_remote_config` reads and
+// writes a plugin's raw YAML; `runtime_plugin` resolves and installs plugin
+// versions from a repository; `runtime_pylons` tails a pylon's in-memory log
+// buffer (legacy/plugins/admin/api/v2/*.py). AGENTS.md names Pylon plugin
+// loading and Arbiter transport as things the target architecture does not
+// preserve, so there is nothing to point these at.
+//
+// Until this unit all five answered 200: `{"status":"ok"}` for the two that act,
+// `{"remotes":[]}`/`{"logs":[]}`/`{"config":{}}` for the three that read. That is
+// the failure the `Tasks` comment below already condemns, twice over — a restart
+// signal that reports success and does nothing, and an empty plugin list that
+// reads as "this pylon has no plugins" rather than "this platform cannot see
+// any". `runtime_remote` did not even return the shape its client reads
+// (`{"remotes": …}` against a client indexing `data.rows`), so the Advanced
+// table was structurally empty as well.
+const pylonRuntimeUnavailable = "pylon runtime administration (plugin reload, remote plugin config, plugin " +
+	"updates and pylon logs) has no equivalent in this service; see AGENTS.md architecture boundaries"
+
+func (h *Handler) PluginConfigRestart(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-func (h *Handler) PluginConfigValuesSave(w http.ResponseWriter, r *http.Request) {
-	// Accept PUT and return success (no-op without real runtime)
-	writeJSON(w, http.StatusOK, map[string]any{"values": map[string]any{}, "requires_restart": []any{}})
+func (h *Handler) RuntimeRemoteConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-func (h *Handler) PluginConfigRestart(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+func (h *Handler) RuntimePlugin(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-func (h *Handler) RuntimeRemoteConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"config": map[string]any{}})
+func (h *Handler) RuntimePylonLogs(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-func (h *Handler) RuntimePlugin(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+func (h *Handler) RuntimeRemote(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-func (h *Handler) RuntimePylonLogs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"logs": []any{}})
-}
-
+// PluginConfigSuggestions answered `[]` — a BARE ARRAY, where every client reads
+// `data.values` and `data.labels` (admin_ui's `SchemaField.jsx`). So the field
+// that asked for suggestions got `undefined`, not an empty list, on top of the
+// list being empty.
+//
+// The sources pylon serves are `toolkit_names` and `toolkit_tools` (read out of
+// the elitea_core plugin's in-process toolkit registry) and `projects`. The
+// first two have no source of truth in this service. Rather than answer an empty
+// list for a source this platform cannot enumerate, it says so — and the only
+// sections whose fields declare an `enum_source` are unavailable anyway, so no
+// rendered control depends on this today.
 func (h *Handler) PluginConfigSuggestions(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, []string{})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error": "configuration value suggestions are sourced from the Pylon toolkit registry, " +
+			"which has no equivalent in this service",
+	})
 }
 
 func (h *Handler) ModerationStatuses(w http.ResponseWriter, _ *http.Request) {
@@ -133,17 +146,18 @@ func (h *Handler) ModerationStatuses(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// Maintenance was registered on BOTH verbs pointing at the same handler, so the
+// PUT discarded its body and the GET reported `enabled: false` unconditionally —
+// a maintenance switch that always read "off" and never turned on.
+//
+// pylon's maintenance mode is a request hook installed on the bootstrap plugin's
+// persisted state, serving a 503 splash to every user whose administration-mode
+// roles do not include admin (legacy/plugins/bootstrap/tools/splash.py). Nothing
+// in this service installs such a hook. Reporting "maintenance is off" when the
+// deployment cannot enter maintenance at all is the same conflation `Tasks` was
+// corrected for.
 func (h *Handler) Maintenance(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": false,
-		"message": "",
-	})
-}
-
-func (h *Handler) RuntimeRemote(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"remotes": []any{},
-	})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": maintenanceSplashUnavailable})
 }
 
 // arbiterTaskNodeUnavailable is what `/admin/tasks` and `/admin/active_tasks`
