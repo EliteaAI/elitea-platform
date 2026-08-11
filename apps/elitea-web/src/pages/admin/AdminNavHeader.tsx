@@ -75,6 +75,14 @@ export function AdminNavHeader({ collapsed, onToggle }: AdminNavHeaderProps): Re
         {!collapsed && (
           <Typography
             variant="headingSmall"
+            // `component="span"`, deliberately. `MuiTypography`'s override maps
+            // `headingSmall` to a real `<h3>`, and this nav is persistent chrome
+            // on pages whose own heading is an `<h5>` — so the styled default
+            // put an h3 above every h5 and axe's `heading-order` (correctly)
+            // called the skipped level a violation on all ten pages. The product
+            // name beside the logo is branding, not a section heading; the nav's
+            // accessible name is its `aria-label`.
+            component="span"
             sx={(theme: Theme) => ({
               color: theme.vars.palette.text.secondary,
               whiteSpace: 'nowrap',

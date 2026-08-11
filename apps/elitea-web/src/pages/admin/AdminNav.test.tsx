@@ -299,6 +299,21 @@ describe('accessibility', () => {
     for (const link of links) expect(link).toHaveAttribute('href');
   });
 
+  it('contributes no heading, so it cannot break the page heading order', async () => {
+    /*
+     * Caught by axe on the running stack, on all ten pages at once.
+     * `MuiTypography`'s override maps the `headingSmall` variant to a real
+     * `<h3>`, so the "Elitea Admin" title rendered an h3 above every page's own
+     * `<h5>` — a skipped level, and a `heading-order` violation that persistent
+     * chrome inflicts on every screen behind it. Pinned here so the next person
+     * who reaches for a heading variant in this nav finds out in the unit suite.
+     */
+    await mountAdmin();
+    const nav = screen.getByRole('navigation', { name: 'Admin navigation' });
+    expect(within(nav).queryAllByRole('heading')).toEqual([]);
+    expect(within(nav).getByText('Elitea Admin')).toBeInTheDocument();
+  });
+
   it('names the collapse control by what it will do', async () => {
     await mountAdmin();
     // Exactly one control carries this name — the logo toggle is named
