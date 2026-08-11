@@ -1253,7 +1253,10 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	// POST). The reviewed handlers must remain authoritative whenever those
 	// repositories are also composed; otherwise merely adding an unrelated
 	// compatibility repository can silently remove agent execution or SSE.
-	mountReviewedProductionRoutes(r, cfg)
+	// The broad prototype compatibility handler above already owns the current
+	// project-context GET. Keep that single live registration while adding the
+	// reviewed routes it does not provide, including chat config and agent SSE.
+	mountReviewedProductionRoutes(r, cfg, false)
 
 	return r
 }

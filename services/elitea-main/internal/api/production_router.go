@@ -59,7 +59,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 
 	// Public, non-product-data routes.
 	r.Mount("/", health.RoutesWithDeps(cfg.HealthDeps))
-	mountReviewedProductionRoutes(r, cfg)
+	mountReviewedProductionRoutes(r, cfg, true)
 
 	// Artifacts (S11): mounted unconditionally, unlike the cfg.CurrentXxx
 	// routes above. Auth/RBAC gating must not depend on whether the storage
@@ -94,7 +94,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 // current-compatibility route whose production authorization contract has been
 // reviewed. Hybrid deployments add broad parity repositories, but those
 // additions must never remove or replace these admitted routes.
-func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
+func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig, includeCurrentProjectContext bool) {
 	if cfg.ProductionAuth != nil {
 		r.Mount(browserauth.BasePath, cfg.ProductionAuth.browser)
 		// This address is reached only by the gateway's ForwardAuth middleware;
@@ -119,7 +119,9 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	}
 	if cfg.CurrentPromptContextReads != nil {
 		r.Method(http.MethodGet, promptcontextreadsapi.CurrentChatConfigPath, cfg.CurrentPromptContextReads)
-		r.Method(http.MethodGet, promptcontextreadsapi.CurrentProjectContextPath, cfg.CurrentPromptContextReads)
+		if includeCurrentProjectContext {
+			r.Method(http.MethodGet, promptcontextreadsapi.CurrentProjectContextPath, cfg.CurrentPromptContextReads)
+		}
 	}
 	if cfg.CurrentConfigurationAvailable != nil {
 		r.Method(http.MethodGet, configurationapi.CurrentAvailablePath, cfg.CurrentConfigurationAvailable)
