@@ -10,6 +10,14 @@
 #   15432 → postgres                  (separate from centry's 5432)
 #   16379 → redis                     (separate from centry's 6379)
 #
+# `E2E_IMAGE_TAG` (default `e2e`) names the two application images. It exists so
+# a second stack can run beside the first without the two sharing a mutable tag:
+# `E2E_PROJECT`, `E2E_PORT`, `E2E_PG_PORT`, `E2E_REDIS_PORT` and `E2E_OIDC_PORT`
+# already isolate the containers and their ports, but with a hardcoded `:e2e`
+# both stacks' `build:` writes landed on the SAME tag, so whichever built last
+# silently owned what the other would get on its next restart. CI sets none of
+# these and keeps building `:e2e` exactly as before.
+#
 # Usage:
 #   E2E_PORT=8082 podman compose -f deploy/docker-compose.e2e-standalone.yml \
 #     -p elitea-e2e up -d
@@ -126,7 +134,7 @@ services:
   # ── Application services ────────────────────────────────────────────────────
 
   elitea-main:
-    image: ghcr.io/eliteaai/elitea-main:e2e
+    image: ghcr.io/eliteaai/elitea-main:${E2E_IMAGE_TAG:-e2e}
     # `image:` alone made compose PULL when the tag was absent locally, and the
     # tag has never been published — so CI died at bring-up with
     # `Head https://ghcr.io/v2/eliteaai/elitea-main/manifests/e2e: denied`
@@ -185,7 +193,7 @@ services:
       start_period: 15s
 
   elitea-web:
-    image: ghcr.io/eliteaai/elitea-web:e2e
+    image: ghcr.io/eliteaai/elitea-web:${E2E_IMAGE_TAG:-e2e}
     # See the elitea-main `build:` comment above (issue #154).
     build:
       context: ..

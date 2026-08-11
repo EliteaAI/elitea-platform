@@ -24,6 +24,8 @@ package admin
 // remove one once something in this platform READS the values. `resources` is
 // the section that passes that test: apps/elitea-web's Help Center reads it back
 // through `GET /admin/plugin_config_values/prompt_lib/resources`.
+import "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
+
 const (
 	// pylonPluginConfigUnavailable covers every section whose fields address a
 	// key inside a Pylon plugin's YAML config and are read by that plugin at
@@ -68,12 +70,16 @@ const (
 		"page. It is withheld here because the gateway does not yet read gateway.governance_config, so definitions " +
 		"saved through either surface are not enforced."
 
-	// serviceDescriptorsElsewhereUnavailable — a page of its own in unit A14,
-	// not yet ported. The reference embeds it here as a section AND ships it as
-	// a standalone page; duplicating an unported page inside this one would be
-	// two places to fix later.
-	serviceDescriptorsElsewhereUnavailable = "service descriptors are a page of their own in the admin port (issue " +
-		"#200) and are not editable from this section."
+	// serviceDescriptorsElsewhereUnavailable — the section is unavailable for
+	// the SAME reason its own page is, and says so in the same words.
+	//
+	// Until that page was ported this said only "service descriptors are a page
+	// of their own in the admin port (issue #200)", which deferred to a surface
+	// that did not exist yet. Deferring to one that now exists and itself says
+	// "unavailable" would be worse: an operator following the pointer would be
+	// told something different at the other end. The constant lives with the
+	// endpoints that enforce it.
+	serviceDescriptorsElsewhereUnavailable = eliteacore.ServiceDescriptorsUnavailableReason
 )
 
 func configSections() []map[string]any {
