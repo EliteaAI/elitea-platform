@@ -130,6 +130,36 @@ writing a spec, to decide whether what we render is right. The Figma export
 (`~/Documents/elitea/`, 1132 frames) is the design-intent reference. Three
 artefacts, three questions; see that export's README.
 
+## The tolerance is measured, not guessed
+
+`lib/settle.ts`'s `SNAPSHOT_TOLERANCE` is `{ maxDiffPixels: 20, threshold: 0.05 }`.
+Read the comment above it before changing either number — it records the
+measurement, and the measurement is the only thing keeping the two failure modes
+apart. Short version (issue #233):
+
+- **The noise floor is ZERO pixels.** Renders of unchanged content inside the
+  pinned container are byte-identical, on CI's ubuntu-latest amd64 runner and on
+  a macOS host running the same image under emulation, across six full-suite
+  runs including one against a stack rebuilt from an empty volume. The 0.002
+  ratio this replaces was set to survive rasterisation noise that, measured,
+  is not there.
+- **`threshold` mattered more than the ratio.** pixelmatch discards a pixel
+  whose YIQ delta is under `35215 * threshold²`, so at the default 0.2 a colour
+  change needs a luminance step of ~53/255 to count at all. Recolouring every
+  divider in the app scored exactly zero differing pixels at 0.2 — no
+  `maxDiffPixels` value could have caught it.
+- **The signal floor is 70 pixels**: the smallest deliberate change measured
+  (swapping one 16px nav icon for its filled variant). A `Projects` →
+  `Workspaces` nav rename is 384–418 px. The old budget was 2,716.
+
+That gap is why this suite uses one global constant rather than per-shot
+tolerances or component-scoped chrome shots: with 0 px of noise against a 70 px
+signal there is nothing for either to buy.
+
+**A baseline is generated ONLY in the pinned container** (above), and that rule
+is now load-bearing rather than advisory: at `threshold: 0.05` a baseline
+rasterised by anything else will not match.
+
 ## Coverage is deliberately partial
 
 `scripts/check-visual-coverage.mjs` reports how many of the index's shots have a
