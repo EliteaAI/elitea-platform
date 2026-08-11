@@ -66,6 +66,10 @@ jobs:
           - name: elitea-main
             context: .
             dockerfile: ./services/elitea-main/Containerfile
+            # The Containerfile is multi-target (hybrid / e2e / final). Name the
+            # shipping one instead of relying on "last stage wins", so adding a
+            # stage can never silently change what is released.
+            target: final
           - name: elitea-scheduler
             context: ./services/elitea-scheduler
             dockerfile: ./services/elitea-scheduler/Containerfile
@@ -110,6 +114,8 @@ jobs:
         with:
           context: ${{ matrix.image.context }}
           file: ${{ matrix.image.dockerfile }}
+          # Empty for single-target images, which build their last stage.
+          target: ${{ matrix.image.target }}
           push: true
           tags: ${{ env.REGISTRY }}/${{ matrix.image.name }}:${{ needs.release.outputs.new_release_version }}-${{ matrix.platform.suffix }}
           build-args: |

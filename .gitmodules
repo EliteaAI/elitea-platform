@@ -2,7 +2,3 @@
 	path = apps/elitea-ui
 	url = https://github.com/EliteaAI/EliteaUI.git
 	branch = main
-[submodule "apps/admin-ui"]
-	path = apps/admin-ui
-	url = https://github.com/EliteaAI/admin_ui.git
-	branch = main

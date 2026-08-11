@@ -149,8 +149,8 @@ services:
     build:
       context: ..
       dockerfile: services/elitea-main/Containerfile
-      # `e2e` builds the admin SPA from apps/elitea-web/src/entries/admin, so no
-      # admin-ui submodule checkout is required.
+      # `e2e` is byte-identical to the shipping `final` stage (`final` derives
+      # from it), so the admin journeys run against the artefact that ships.
       target: e2e
     environment:
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
