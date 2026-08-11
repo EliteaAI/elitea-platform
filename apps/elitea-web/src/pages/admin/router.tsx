@@ -36,6 +36,7 @@ import { AdminProjects } from './Projects';
 import { AdminRoles } from './Roles';
 import { AdminSchedulesTasks } from './SchedulesTasks';
 import { AdminSecrets } from './Secrets';
+import { AdminServiceDescriptors } from './ServiceDescriptors';
 import { AdminUsers } from './Users';
 
 const ADMIN_BASE_PATH = '/admin/app';
@@ -96,6 +97,20 @@ const appRequestsRoute = createRoute({
   component: AdminAppRequests,
 });
 
+/**
+ * The path is `/service-descriptors`. The reference SPA has no route for this
+ * page at all — `routes.js` never declares one and nothing imports
+ * `ServiceDescriptorsPage`, so that file is dead code there; the surface an
+ * operator reaches is the sibling section embedded in Configuration. This route
+ * gives the page a home, and the Configuration section states the same
+ * server-declared reason.
+ */
+const serviceDescriptorsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/service-descriptors',
+  component: AdminServiceDescriptors,
+});
+
 const adminRouteTree = rootRoute.addChildren([
   indexRoute,
   usersRoute,
@@ -106,6 +121,7 @@ const adminRouteTree = rootRoute.addChildren([
   schedulesRoute,
   appRequestsRoute,
   configurationRoute,
+  serviceDescriptorsRoute,
 ]);
 
 export function createAdminRouter(): AnyRouter {

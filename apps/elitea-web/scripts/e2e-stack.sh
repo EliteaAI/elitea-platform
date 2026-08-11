@@ -270,7 +270,16 @@ CROSS JOIN (VALUES
     -- registers its recommended roles as super_admin only. Without this row the
     -- page renders a 403 for the section list, which a journey must be able to
     -- tell apart from an unwired route.
-    ('runtime.plugins')
+    ('runtime.plugins'),
+    -- Unit A14, Service Descriptors. Both routes answer 501 — this platform has
+    -- no provider hub — and the gate runs BEFORE the refusal, so without these
+    -- rows the page would render a 403 and the journey could not tell "the
+    -- deployment declines to serve this, and says why" from "the admin persona
+    -- lost a permission". `runtime.airun.serviceproviders` gates the listing
+    -- (elitea_core/api/v2/admin.py) and `provider_hub.descriptor.register` the
+    -- two registration verbs (elitea_core/api/v2/register_descriptor.py).
+    ('runtime.airun.serviceproviders'),
+    ('provider_hub.descriptor.register')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
@@ -644,21 +653,36 @@ ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 -- Timestamps are relative to now() so they land inside the page's default
 -- "Today" window in any timezone the runner happens to be in.
 --
+-- …which `now() - interval '20 minutes'` does NOT achieve in the twenty minutes
+-- after local midnight: the page's default preset is `Today`
+-- (src/pages/admin/auditFormat.ts `DEFAULT_PRESET`), computed from the
+-- BROWSER's clock, so a row stamped 23:5x lands on yesterday and journey 29
+-- fails with "element not found" on a row that is plainly in the table. Seen
+-- for real at 00:15 local. The fix anchors the fixture on a BASE that is never
+-- earlier than the start of the current day and lays the four rows out forward
+-- from it, so the relative ordering the span tree needs is preserved and every
+-- row is inside the window. Away from midnight the base is `now() - 20 minutes`
+-- and the timestamps are exactly what they were. CI runs at arbitrary times, so
+-- this was luck rather than design.
+--
 -- One trace of three spans, and one single-span trace. The counts are chosen
 -- so the two views CANNOT agree by accident: 4 spans, 2 traces.
 DELETE FROM centry.audit_events WHERE trace_id IN ('e2e-trace-alpha', 'e2e-trace-beta');
 INSERT INTO centry.audit_events
     (timestamp, user_id, user_email, project_id, event_type, action, http_method,
      status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
-SELECT seeded.ts, actor.user_id, actor.user_email, proj.project_id, seeded.event_type,
+SELECT base.ts + seeded.offset_minutes, actor.user_id, actor.user_email, proj.project_id, seeded.event_type,
        seeded.action, seeded.http_method, seeded.status_code, seeded.duration_ms,
        seeded.is_error, seeded.tool_name, seeded.trace_id, seeded.span_id, seeded.parent_span_id
 FROM (VALUES
-    (now() - interval '20 minutes', 'api',  'POST /chat/e2e',   'POST', 200::smallint, 25.0,    false, NULL,           'e2e-trace-alpha', 'e2ealpharoot', NULL),
-    (now() - interval '19 minutes', 'llm',  'completion/e2e',   NULL,   200::smallint, 2400.0,  false, NULL,           'e2e-trace-alpha', 'e2ealphac1',   'e2ealpharoot'),
-    (now() - interval '18 minutes', 'tool', 'search/e2e',       NULL,   500::smallint, 640.0,   true,  'e2e_toolkit',  'e2e-trace-alpha', 'e2ealphac2',   'e2ealpharoot'),
-    (now() - interval '10 minutes', 'api',  'GET /agents/e2e',  'GET',  200::smallint, 15.0,    false, NULL,           'e2e-trace-beta',  'e2ebetaroot',  NULL)
-) AS seeded(ts, event_type, action, http_method, status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
+    (interval '0 minutes',  'api',  'POST /chat/e2e',   'POST', 200::smallint, 25.0,    false, NULL,           'e2e-trace-alpha', 'e2ealpharoot', NULL),
+    (interval '1 minutes',  'llm',  'completion/e2e',   NULL,   200::smallint, 2400.0,  false, NULL,           'e2e-trace-alpha', 'e2ealphac1',   'e2ealpharoot'),
+    (interval '2 minutes',  'tool', 'search/e2e',       NULL,   500::smallint, 640.0,   true,  'e2e_toolkit',  'e2e-trace-alpha', 'e2ealphac2',   'e2ealpharoot'),
+    (interval '10 minutes', 'api',  'GET /agents/e2e',  'GET',  200::smallint, 15.0,    false, NULL,           'e2e-trace-beta',  'e2ebetaroot',  NULL)
+) AS seeded(offset_minutes, event_type, action, http_method, status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
+CROSS JOIN LATERAL (
+    SELECT greatest(now() - interval '20 minutes', date_trunc('day', now())) AS ts
+) AS base
 CROSS JOIN LATERAL (
     SELECT id AS user_id, email AS user_email FROM auth_core__user WHERE email = 'e2e-admin@autotest.local'
 ) AS actor

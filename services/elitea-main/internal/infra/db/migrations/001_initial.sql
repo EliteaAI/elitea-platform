@@ -717,11 +717,27 @@ JOIN (VALUES
     ('super_admin', 'projects.projects.projects.view'),
     ('super_admin', 'configuration.roles.permissions.view'),
     ('super_admin', 'admin.moderation'),
+    -- Unit A14, Service Descriptors. `elitea_core/api/v2/admin.py` declares a
+    -- BARE `check_api(["runtime.airun.serviceproviders"])` — which, per the note
+    -- above, is system/super_admin/admin True — and
+    -- `elitea_core/api/v2/register_descriptor.py` declares
+    -- `provider_hub.descriptor.register` with `{"admin": True, "viewer": False,
+    -- "editor": False}` in administration mode, leaving super_admin at its
+    -- default True.
+    --
+    -- The routes they gate answer 501: this platform has no provider hub. The
+    -- grants exist anyway because the gate runs BEFORE the refusal, and without
+    -- them every administrator would get a bare 403 instead of the sentence
+    -- explaining why the page is empty — which is the whole point of the page.
+    ('super_admin', 'runtime.airun.serviceproviders'),
+    ('super_admin', 'provider_hub.descriptor.register'),
     ('admin', 'admin.auth.users'),
     ('admin', 'runtime.plugins'),
     ('admin', 'projects.projects.projects.view'),
     ('admin', 'configuration.roles.permissions.view'),
-    ('admin', 'admin.moderation')
+    ('admin', 'admin.moderation'),
+    ('admin', 'runtime.airun.serviceproviders'),
+    ('admin', 'provider_hub.descriptor.register')
 ) AS grant_row(role_name, permission) ON grant_row.role_name = role.name
 WHERE role.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;

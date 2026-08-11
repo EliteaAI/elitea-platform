@@ -55,12 +55,21 @@ test('J3: session expiry triggers re-auth popup and retries original request', a
   // 1. The re-auth popup must open, at the OIDC authorize endpoint.
   const popup = await popupPromise;
   // The provider's own authorize page, not merely "the popup went somewhere":
-  // `oidc.localhost:9400` is the alias elitea-main hands out (see
+  // `oidc.localhost:<port>` is the alias elitea-main hands out (see
   // `deploy/docker-compose.e2e-standalone.yml`). A popup that stalled on the
   // app's own `/forward-auth/auth_oidc/login` hop — or on an error page,
   // which is what happened while the issuer was an unresolvable compose
   // hostname — does not match.
-  await popup.waitForURL(/oidc\.localhost:9400/, { timeout: 15_000 });
+  //
+  // The PORT comes from `E2E_OIDC_PORT`, as `auth.setup.ts:74` already does.
+  // Hardcoding it here meant this was the one journey that could not run
+  // against a second stack: `E2E_OIDC_PORT` moves the mock so two agents can
+  // work at once, and this assertion then waited 15s for a URL that could
+  // never appear. It failed on both engines and looked like a session defect.
+  await popup.waitForURL(
+    new RegExp(`oidc\\.localhost:${process.env['E2E_OIDC_PORT'] ?? '9400'}`),
+    { timeout: 15_000 },
+  );
 
   // 2. Completing re-auth in the popup must close it...
   await popup.getByLabel('Subject').fill('e2e-member@autotest.local');

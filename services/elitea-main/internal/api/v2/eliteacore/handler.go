@@ -3304,25 +3304,11 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 // with `_ *http.Request` and no route — and is now implemented for real in
 // project_activity.go.
 
-func (h *Handler) RegisterDescriptor(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodDelete {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
-	}
-	var body map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional; ignore decode errors
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (h *Handler) ServiceDescriptors(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows": []map[string]any{
-			{"name": "elitea_core", "status": "active", "version": "2.0.0", "description": "Core platform service"},
-			{"name": "auth", "status": "active", "version": "2.0.0", "description": "Authentication service"},
-			{"name": "indexer", "status": "active", "version": "2.0.0", "description": "Agent runtime & indexing"},
-		},
-	})
-}
+// `RegisterDescriptor` and `ServiceDescriptors` — the admin Service Descriptors
+// page's three endpoints — moved to service_descriptors.go when unit A14 ported
+// that page. Both were stubs: the listing answered 200 with three hardcoded rows
+// naming Pylon plugins in a shape the client does not read, and the registration
+// answered `{"ok": true}` to a body it discarded, from no route at all.
 
 // --- Collections ---
 

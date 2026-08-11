@@ -1910,5 +1910,16 @@
   "pages.admin.configuration.saving": "Saving…",
   "pages.admin.configuration.sectionUnavailable": "Not available here",
   "pages.admin.configuration.sections": "Configuration sections",
-  "pages.admin.configuration.title": "Configuration"
+  "pages.admin.configuration.title": "Configuration",
+  "pages.admin.serviceDescriptors.column.healthy": "Healthy",
+  "pages.admin.serviceDescriptors.column.project": "Project ID",
+  "pages.admin.serviceDescriptors.column.provider": "Provider",
+  "pages.admin.serviceDescriptors.column.url": "Service URL",
+  "pages.admin.serviceDescriptors.empty": "No service descriptors are registered.",
+  "pages.admin.serviceDescriptors.error.load": "Failed to load the registered service descriptors.",
+  "pages.admin.serviceDescriptors.healthy.no": "No",
+  "pages.admin.serviceDescriptors.healthy.yes": "Yes",
+  "pages.admin.serviceDescriptors.tableLabel": "Registered service descriptors",
+  "pages.admin.serviceDescriptors.title": "Service Descriptors",
+  "pages.admin.serviceDescriptors.unavailableTitle": "Provider registrations are not available on this platform"
 }

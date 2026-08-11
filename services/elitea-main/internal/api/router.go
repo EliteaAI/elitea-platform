@@ -1169,8 +1169,43 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
 				r.Get("/permissions/prompt_lib/{projectID}", coreHandler.Permissions)
 
-				// Admin panel audit & service descriptors
-				r.Get("/admin/{mode}", coreHandler.ServiceDescriptors)
+				// The admin SERVICE DESCRIPTORS page (unit A14) — pylon's
+				// provider hub. All three routes answer 501 with one reason;
+				// see internal/api/v2/eliteacore/service_descriptors.go for
+				// why, and for what each of them used to do.
+				//
+				// The listing was `r.Get("/admin/{mode}", …)` answering 200
+				// with three hardcoded rows naming `elitea_core`, `auth` and
+				// `indexer` — Pylon plugin names, not providers — in a shape
+				// the client does not read, from a handler taking
+				// `_ *http.Request` and therefore ungated. `administration` is
+				// now a STATIC segment because that is the only mode pylon
+				// registers on this path (`mode_handlers = {'administration':
+				// AdminAPI}`); another mode 404s rather than being answered
+				// with something plausible, and the handler states its mode
+				// rather than reading a `{mode}` param a static segment does
+				// not bind.
+				//
+				// The two register_descriptor verbs had NO route at all —
+				// `coreHandler.RegisterDescriptor` was dead code answering
+				// `{"ok": true}` to a discarded body. They are registered now
+				// so the refusal is explicit and pinned by a test: a 404 leaves
+				// the next person free to wire the stub back up.
+				//
+				// Gated on the permissions the pylon originals declare,
+				// resolved in administration mode — `runtime.airun
+				// .serviceproviders` for the listing (elitea_core/api/v2/
+				// admin.py) and `provider_hub.descriptor.register` for the
+				// writes (elitea_core/api/v2/register_descriptor.py). The gate
+				// runs before the refusal: which subsystems a deployment runs
+				// is itself information about it.
+				r.With(central(v2core.ServiceDescriptorListPermission)).
+					Get("/admin/administration", coreHandler.ServiceDescriptors)
+				requireDescriptorRegister := central(v2core.ServiceDescriptorRegisterPermission)
+				r.With(requireDescriptorRegister).
+					Post("/register_descriptor/{projectID}", coreHandler.RegisterDescriptor)
+				r.With(requireDescriptorRegister).
+					Delete("/register_descriptor/{projectID}", coreHandler.RegisterDescriptor)
 
 				// The admin audit trail (unit A14). All four are READS; the
 				// surface has no writes. Two of them (`audit`, `audit_heatmap`)
