@@ -1936,4 +1936,21 @@
   "pages.admin.serviceDescriptors.healthy.yes": "Yes",
   "pages.admin.serviceDescriptors.tableLabel": "Registered service descriptors",
   "pages.admin.serviceDescriptors.title": "Service Descriptors",
-  "pages.admin.serviceDescriptors.unavailableTitle": "Provider registrations are not available on this platform"}
+  "pages.admin.serviceDescriptors.unavailableTitle": "Provider registrations are not available on this platform",
+  "pages.admin.nav.appRequests": "App Requests",
+  "pages.admin.nav.ariaLabel": "Admin navigation",
+  "pages.admin.nav.audit": "Audit Trail",
+  "pages.admin.nav.collapse": "Collapse navigation",
+  "pages.admin.nav.configuration": "Configuration",
+  "pages.admin.nav.expand": "Expand navigation",
+  "pages.admin.nav.features": "Features",
+  "pages.admin.nav.logout": "Logout",
+  "pages.admin.nav.projects": "Projects",
+  "pages.admin.nav.roles": "Roles",
+  "pages.admin.nav.schedules": "Schedules & Tasks",
+  "pages.admin.nav.secrets": "Secrets",
+  "pages.admin.nav.serviceDescriptors": "Service Descriptors",
+  "pages.admin.nav.title": "Elitea Admin",
+  "pages.admin.nav.toggle": "Toggle navigation",
+  "pages.admin.nav.users": "Users"
+}

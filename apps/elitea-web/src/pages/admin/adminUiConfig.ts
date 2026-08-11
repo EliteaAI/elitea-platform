@@ -54,6 +54,22 @@ export function adminApiBaseUrl(): string {
 }
 
 /**
+ * The signed-in operator's display name for the nav footer.
+ *
+ * `user_name` is what the Go handler injects (it fills both `user_name` and
+ * `user_email` from the session JWT's `email` claim), `user_email` is the
+ * fallback for a handler that filled only one, and `'Admin'` is the last resort
+ * for dev/tests where nothing was injected. There is no fabricated identity in
+ * that chain: the fallback is a generic ROLE word, not a made-up person, and it
+ * only ever appears when the page was not served by the handler.
+ */
+export function adminUiUserName(): string {
+  const config = readAdminUiConfig();
+  const name = config.user_name ?? config.user_email ?? '';
+  return name !== '' ? name : 'Admin';
+}
+
+/**
  * A presentation-only permission probe. Named so no call site can mistake it
  * for an authorisation check.
  */
