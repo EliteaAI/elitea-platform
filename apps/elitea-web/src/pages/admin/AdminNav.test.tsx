@@ -137,6 +137,86 @@ describe('every nav target is a real route', () => {
 
 /* ── permission filtering (presentation only) ──────────────────────────── */
 
+/**
+ * The permission strings `services/elitea-main/internal/api/adminui/handler.go`
+ * injects for a session it accepts, verbatim.
+ *
+ * Duplicated here on purpose, and it is the one hand-written list in this file
+ * — because it is not a restatement of this app's own data (the drift gate
+ * above reads the ROUTER for that), it is the SERVER's contract. A nav item
+ * asking for a permission the platform issues to nobody is hidden from every
+ * operator forever, with no error and nothing on screen to explain it: the same
+ * "hidden by an unsatisfiable gate" shape as a control wired to nothing.
+ *
+ * Found by mutation testing, not by review. Every permission string in the nav
+ * survived being corrupted, because the only tests that named one either
+ * injected their own probe or derived the expected set from the nav itself —
+ * self-consistent, and blind to a permission id that does not exist.
+ */
+const HANDLER_ISSUED_PERMISSIONS = new Set([
+  'admin.auth.users',
+  'admin.auth.users.super_admin',
+  'configuration',
+  'configuration.roles',
+  'configuration.roles.permissions.view',
+  'configuration.roles.permissions.edit',
+  'configuration.roles.roles.view',
+  'configuration.roles.roles.create',
+  'configuration.roles.roles.edit',
+  'configuration.roles.roles.delete',
+  'configuration.users',
+  'configuration.users.users.view',
+  'configuration.users.users.create',
+  'configuration.users.users.edit',
+  'configuration.users.users.delete',
+  'projects',
+  'projects.projects',
+  'projects.projects.projects.view',
+  'projects.projects.projects.edit',
+  'configuration.secrets.secret.list',
+  'configuration.secrets.secret.create',
+  'configuration.secrets.secret.edit',
+  'configuration.secrets.secret.delete',
+  'configuration.litellm',
+  'configuration.litellm.edit',
+  'configuration.advanced',
+  'configuration.service_descriptors',
+  'runtime',
+  'runtime.plugins',
+  'configuration.scheduling.schedules.view',
+  'configuration.scheduling.schedules.edit',
+  'models.admin.audit_trail.view',
+  'admin.moderation',
+  'admin.moderation.view',
+  'admin.moderation.create',
+  'admin.moderation.edit',
+]);
+
+describe('permission gates name permissions the platform issues', () => {
+  it('asks only for permissions the admin handler actually grants', () => {
+    for (const group of adminNavGroups()) {
+      for (const item of group.items) {
+        for (const permission of item.anyPermission) {
+          expect(
+            HANDLER_ISSUED_PERMISSIONS,
+            `nav item "${item.id}" gates on "${permission}", which adminui/handler.go never issues — the item would be invisible to everyone`,
+          ).toContain(permission);
+        }
+      }
+    }
+  });
+
+  it('leaves every item visible to a session the handler accepts', () => {
+    // The end-to-end consequence of the test above: the operator this platform
+    // actually produces sees all ten. An item can still be hidden by a NARROWER
+    // deployment — that is the feature — but not by a typo here.
+    const groups = visibleAdminNavGroups((permission) => HANDLER_ISSUED_PERMISSIONS.has(permission));
+    const visible = groups.flatMap((group) => group.items.map((item) => item.id));
+    const all = adminNavGroups().flatMap((group) => group.items.map((item) => item.id));
+    expect(visible).toEqual(all);
+  });
+});
+
 describe('permission filtering', () => {
   it('hides an item whose permissions the session does not carry', () => {
     const groups = visibleAdminNavGroups((permission) => permission !== 'models.admin.audit_trail.view');
