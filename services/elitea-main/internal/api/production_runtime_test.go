@@ -207,7 +207,7 @@ func TestProductionRuntimeRoutesKeepIndexStartUnmountedWithoutCompleteDataPlane(
 		"10.0.0.8:43120",
 	)
 	response := httptest.NewRecorder()
-	NewRouter(RouterConfig{ProductionRuntime: routes}).ServeHTTP(response, request)
+	reviewedRoutesRouter(RouterConfig{ProductionRuntime: routes}).ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound || handlerCalls != 0 {
 		t.Fatalf("%s unexpectedly mounted: status=%d handler_calls=%d", indexingapi.CurrentIndexStartPath, response.Code, handlerCalls)
 	}

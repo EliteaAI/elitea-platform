@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
@@ -74,15 +75,22 @@ func TestObjectDownloadRejectsRawTraversalKey(t *testing.T) {
 func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *testing.T) {
 	comparator := shadow.NewComparator(shadow.Config{Timeout: time.Second})
 	metrics := shadow.NewMetrics(10)
-	tracker := cutover.NewTracker(nil)
+	// A nil redis.UniversalClient makes Tracker.List/Get panic the instant a
+	// request reaches the handler (they call the client with no nil check).
+	// Point at an address nothing listens on instead, so an authorized
+	// request gets a real (connection-error) response rather than a
+	// panic-recovered 500.
+	tracker := cutover.NewTracker(goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1", DialTimeout: 50 * time.Millisecond}))
+	strongToken := strings.Repeat("i", middleware.MinimumInternalAdminTokenBytes)
 
-	for _, token := range []string{"", "short", strings.Repeat("i", middleware.MinimumInternalAdminTokenBytes)} {
+	for _, token := range []string{"", "short", strongToken} {
 		router := NewRouter(RouterConfig{
 			Shadow:             comparator,
 			ShadowMetrics:      metrics,
 			CutoverTracker:     tracker,
 			InternalAdminToken: token,
 		})
+		strong := token == strongToken
 		for _, target := range []string{"/internal/shadow/config", "/internal/cutover/"} {
 			for _, present := range []bool{false, true} {
 				req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -91,8 +99,29 @@ func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *te
 				}
 				rec := httptest.NewRecorder()
 				router.ServeHTTP(rec, req)
-				if rec.Code != http.StatusNotFound {
-					t.Fatalf("token length %d present=%t target %q status = %d, want %d", len(token), present, target, rec.Code, http.StatusNotFound)
+
+				switch {
+				case !strong:
+					// Below RequireInternalAdminToken's minimum length, the
+					// route group is never mounted at all (router.go), for
+					// every credential shape.
+					if rec.Code != http.StatusNotFound {
+						t.Fatalf("token length %d present=%t target %q status = %d, want %d", len(token), present, target, rec.Code, http.StatusNotFound)
+					}
+				case !present:
+					// A strong-enough token DOES mount the route (#243: this
+					// used to be masked by the dead "reviewed production
+					// router" branch, which never wired Shadow/Cutover at
+					// all) — but it still requires the exact bearer token.
+					if rec.Code != http.StatusUnauthorized {
+						t.Fatalf("token length %d present=%t target %q status = %d, want %d", len(token), present, target, rec.Code, http.StatusUnauthorized)
+					}
+				default:
+					// The correct token reaches the real handler — neither
+					// unmounted (404) nor rejected (401).
+					if rec.Code == http.StatusNotFound || rec.Code == http.StatusUnauthorized {
+						t.Fatalf("token length %d present=%t target %q status = %d, want a real handler response", len(token), present, target, rec.Code)
+					}
 				}
 			}
 		}
@@ -475,7 +504,7 @@ func TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject(t *testing.
 // auth/RBAC gating above isn't specific to the prototype-compatibility
 // router. Every other test in this file builds its RouterConfig with
 // AppsRepo set, which trips prototypeCompatibilityRequested and always
-// dispatches to newPrototypeCompatibilityRouter — none of them ever
+// dispatches to newProductionRouter — none of them ever
 // exercises production_router.go's own NewRouter branch, even though it
 // calls the identical mountArtifactRoutes with independently constructed
 // ArtifactDeps. This constructs a RouterConfig with none of

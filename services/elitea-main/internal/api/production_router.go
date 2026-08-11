@@ -7,7 +7,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/browserauth"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
@@ -19,7 +18,6 @@ import (
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 )
 
 var ErrInvalidProductionAuthRoutes = errors.New("invalid production authentication routes")
@@ -39,62 +37,36 @@ func NewProductionAuthRoutes(browser, main http.Handler) (*ProductionAuthRoutes,
 	return &ProductionAuthRoutes{browser: browser, main: main}, nil
 }
 
-// NewRouter exposes only routes whose production authorization contract is
-// explicit. Unclassified prototype handlers stay compiled in
-// newPrototypeCompatibilityRouter, but cannot be enabled by configuration.
+// NewRouter builds the single production route composition. It used to
+// branch on prototypeCompatibilityRequested(cfg) between this function's own
+// inline "reviewed production router" build (mountReviewedProductionRoutes +
+// mountArtifactRoutes, gated on cfg.Current* only) and newProductionRouter's
+// broader registration set. That predicate is true whenever any of
+// Auth.Client/Validator/SessionHandler/OIDCHandler, AppsRepo, SkillsRepo,
+// FoldersRepo, TagsRepo, AnalyticsRepo, ConvsRepo, WebhookRepo, EventSource,
+// or LLMProxy is set — and cmd/elitea-main/main.go's composition root always
+// sets AppsRepo, ConvsRepo, SkillsRepo, FoldersRepo, TagsRepo, AnalyticsRepo,
+// and WebhookRepo. Every real deployment therefore always took the
+// newProductionRouter branch; the inline build was unreachable dead code
+// (#243). It is removed here rather than made reachable: newProductionRouter
+// already calls mountReviewedProductionRoutes and mountArtifactRoutes
+// unconditionally, so the route surface for a main.go-shaped config is
+// unchanged.
 func NewRouter(cfg RouterConfig) chi.Router {
-	if prototypeCompatibilityRequested(cfg) {
-		return newPrototypeCompatibilityRouter(cfg)
-	}
-
-	r := chi.NewRouter()
-
-	r.Use(apimw.RequestID)
-	// Preserve the socket peer in Request.RemoteAddr. A generic RealIP
-	// middleware trusts caller-controlled forwarding headers before route-level
-	// proxy policy can validate the peer. TrustedProxyResolver performs the one
-	// authoritative forwarded-chain resolution for ForwardAuth and rate limits.
-	r.Use(apimw.OtelMiddleware)
-	r.Use(apimw.Recover)
-
-	// Public, non-product-data routes.
-	r.Mount("/", health.RoutesWithDeps(cfg.HealthDeps))
-	mountReviewedProductionRoutes(r, cfg, true)
-
-	// Artifacts (S11): mounted unconditionally, unlike the cfg.CurrentXxx
-	// routes above. Auth/RBAC gating must not depend on whether the storage
-	// backend happens to be wired — mountArtifactRoutes degrades every route
-	// to notImplementedArtifact when it isn't (see ArtifactDeps), but still
-	// enforces authentication and permission on all of them either way.
-	artifactResolver := cfg.ArtifactPermissionResolver
-	if artifactResolver == nil {
-		artifactResolver = legacyrbac.NewPostgresResolver(cfg.Pool)
-	}
-	artifactHandler := cfg.ArtifactHandler
-	if artifactHandler == nil {
-		artifactHandler, _ = newArtifactHandler(cfg)
-	}
-	mountArtifactRoutes(r, ArtifactDeps{
-		Handler: artifactHandler,
-		Authenticate: apimw.Auth(apimw.AuthConfig{
-			Client:                    cfg.AuthClient,
-			Validator:                 cfg.AuthValidator,
-			PrincipalValidator:        cfg.PrincipalValidator,
-			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
-			SessionSecret:             cfg.SessionSecret,
-			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
-		}),
-		Resolver: artifactResolver,
-	})
-
-	return r
+	return newProductionRouter(cfg)
 }
 
 // mountReviewedProductionRoutes is the single registration source for every
 // current-compatibility route whose production authorization contract has been
 // reviewed. Hybrid deployments add broad parity repositories, but those
 // additions must never remove or replace these admitted routes.
-func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig, includeCurrentProjectContext bool) {
+//
+// It does not register promptcontextreadsapi.CurrentProjectContextPath: that
+// literal path (/api/v2/elitea_core/project_context/prompt_lib/{projectID}/
+// project-context) is owned unconditionally by newProductionRouter's broader
+// coreHandler.ProjectContext registration, so a second registration here
+// would never be reached.
+func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	if cfg.ProductionAuth != nil {
 		r.Mount(browserauth.BasePath, cfg.ProductionAuth.browser)
 		// This address is reached only by the gateway's ForwardAuth middleware;
@@ -119,9 +91,6 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig, includeCurren
 	}
 	if cfg.CurrentPromptContextReads != nil {
 		r.Method(http.MethodGet, promptcontextreadsapi.CurrentChatConfigPath, cfg.CurrentPromptContextReads)
-		if includeCurrentProjectContext {
-			r.Method(http.MethodGet, promptcontextreadsapi.CurrentProjectContextPath, cfg.CurrentPromptContextReads)
-		}
 	}
 	if cfg.CurrentConfigurationAvailable != nil {
 		r.Method(http.MethodGet, configurationapi.CurrentAvailablePath, cfg.CurrentConfigurationAvailable)
@@ -219,20 +188,4 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig, includeCurren
 	} else if cfg.CurrentLLMFacade != nil {
 		r.Handle("/llm/*", cfg.CurrentLLMFacade)
 	}
-}
-
-func prototypeCompatibilityRequested(cfg RouterConfig) bool {
-	return cfg.Auth.Client != nil ||
-		cfg.Auth.Validator != nil ||
-		cfg.Auth.SessionHandler != nil ||
-		cfg.Auth.OIDCHandler != nil ||
-		cfg.AppsRepo != nil ||
-		cfg.SkillsRepo != nil ||
-		cfg.FoldersRepo != nil ||
-		cfg.TagsRepo != nil ||
-		cfg.AnalyticsRepo != nil ||
-		cfg.ConvsRepo != nil ||
-		cfg.WebhookRepo != nil ||
-		cfg.EventSource != nil ||
-		cfg.LLMProxy != nil
 }
