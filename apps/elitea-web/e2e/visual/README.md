@@ -28,6 +28,28 @@ leave this command pointing at the old browser build;
 `scripts/check-playwright-image-tag.mjs` asserts the same agreement for the
 workflow files.
 
+## Against a SECOND, parameterised stack
+
+`deploy/docker-compose.e2e-standalone.yml` and `scripts/e2e-stack.sh` take
+`E2E_PROJECT` / `E2E_PORT` / `E2E_PG_PORT` / `E2E_REDIS_PORT` / `E2E_OIDC_PORT`
+so a second stack can run beside the first (#228). To point this suite at it,
+set `PLAYWRIGHT_BASE_URL` and `E2E_OIDC_PORT` — the script forwards exactly
+those two into the container:
+
+```bash
+E2E_PROJECT=elitea-e2e-b E2E_PORT=8086 E2E_PG_PORT=15434 \
+  E2E_REDIS_PORT=16381 E2E_OIDC_PORT=9401 \
+  ./scripts/e2e-stack.sh up && … seed
+
+PLAYWRIGHT_BASE_URL=http://localhost:8086 E2E_OIDC_PORT=9401 npm run e2e:visual
+```
+
+Nothing inside the container can see the host's environment, so an unforwarded
+variable is not a degraded run — it is a run against a DIFFERENT stack:
+`playwright.config.ts` falls back to `http://localhost:8082` and
+`auth.setup.ts` to OIDC port 9400. Both are unset by default, so CI and the
+ordinary local path are unaffected.
+
 ## Start from a CLEAN stack
 
 ```bash
