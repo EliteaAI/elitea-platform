@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +15,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/oapiserver"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
@@ -35,6 +35,17 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 )
+
+// newUnreachableRedisClient returns a redis client pointed at a loopback
+// address nothing listens on. cutover.Tracker calls its methods with no nil
+// check, so any test that composes CutoverRouter/CutoverTracker and expects
+// requests to reach them needs a non-nil client to avoid a nil-pointer
+// panic; pointing it at an unreachable address instead of a real redis
+// instance gives a fast, deterministic connection error, which the
+// production code already treats as "fall through" (see cutover/router.go).
+func newUnreachableRedisClient() *goredis.Client {
+	return goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1", DialTimeout: 50 * time.Millisecond})
+}
 
 // reviewedRoutesRouter exercises mountReviewedProductionRoutes in isolation,
 // the same way newProductionRouter's single call site does (#243 removed the
@@ -1556,8 +1567,15 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 	// code. This test builds a RouterConfig with exactly those fields — the
 	// minimal shape main.go always produces — and asserts the route table is
 	// byte-identical to a snapshot taken from the pre-#243 code with the same
-	// config (chi.Walk output, sorted, one "METHOD path" entry per line).
-	// Any diff here means the cleanup changed what a real deployment serves.
+	// config. Any diff here means the cleanup changed what a real deployment
+	// serves.
+	//
+	// Uses oapiserver.CollectRoutes/RouteSet.Patterns() — the same
+	// chi.Walk-plus-compat-shim-exclusion machinery internal/api/oapiserver
+	// already built for spec-conformance testing — rather than a second,
+	// independent chi.Walk, so this snapshot and that suite agree on what
+	// counts as router plumbing (doubled /api/v2 prefix rewrite, the /llm
+	// reverse proxy, static icon file servers) versus real API surface.
 	pool := &pgxpool.Pool{}
 	cfg := RouterConfig{
 		Pool:          pool,
@@ -1571,22 +1589,15 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 	}
 	router := NewRouter(cfg)
 
-	var got []string
-	if err := chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		got = append(got, method+" "+route)
-		return nil
-	}); err != nil {
+	routeSet, err := oapiserver.CollectRoutes(router)
+	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(got)
+	got := routeSet.Patterns()
 
 	want := []string{
-		"CONNECT /api/v2/api/v2/*",
-		"CONNECT /app/application_icon/*",
-		"CONNECT /app/application_tool_icon/*",
 		"DELETE /api/v2/admin/gateway/governance/{id}",
 		"DELETE /api/v2/admin/users/{mode}/{projectID}",
-		"DELETE /api/v2/api/v2/*",
 		"DELETE /api/v2/artifacts/buckets/{projectID}/{bucket}",
 		"DELETE /api/v2/artifacts/objects/{projectID}/{bucket}/*",
 		"DELETE /api/v2/auth/token/{tokenUUID}",
@@ -1618,8 +1629,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
-		"DELETE /app/application_icon/*",
-		"DELETE /app/application_tool_icon/*",
 		"GET /api/v2/admin/active_tasks/{mode}",
 		"GET /api/v2/admin/auth_users/{mode}",
 		"GET /api/v2/admin/gateway/*/budget-alerts",
@@ -1642,7 +1651,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/admin/tasks/{mode}",
 		"GET /api/v2/admin/tasks/{mode}/",
 		"GET /api/v2/admin/users/{mode}/{projectID}",
-		"GET /api/v2/api/v2/*",
 		"GET /api/v2/artifacts/buckets/{projectID}",
 		"GET /api/v2/artifacts/buckets/{projectID}/{bucket}",
 		"GET /api/v2/artifacts/objects/{projectID}/{bucket}",
@@ -1747,22 +1755,13 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/support_assistant/config/",
 		"GET /api/v2/webhooks/prompt_lib/{projectID}/",
 		"GET /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
-		"GET /app/application_icon/*",
-		"GET /app/application_tool_icon/*",
 		"GET /auth",
 		"GET /healthz",
 		"GET /icons/{projectID}/{filename}",
 		"GET /readyz",
 		"GET /startupz",
-		"HEAD /api/v2/api/v2/*",
 		"HEAD /api/v2/artifacts/objects/{projectID}/{bucket}/*",
 		"HEAD /api/v2/branding/bootstrap.js",
-		"HEAD /app/application_icon/*",
-		"HEAD /app/application_tool_icon/*",
-		"OPTIONS /api/v2/api/v2/*",
-		"OPTIONS /app/application_icon/*",
-		"OPTIONS /app/application_tool_icon/*",
-		"PATCH /api/v2/api/v2/*",
 		"PATCH /api/v2/artifacts/buckets/{projectID}/{bucket}",
 		"PATCH /api/v2/elitea_core/application_relation/prompt_lib/{projectID}/{appID}/{versionID}",
 		"PATCH /api/v2/elitea_core/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}",
@@ -1772,8 +1771,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PATCH /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/skill_default_version/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
-		"PATCH /app/application_icon/*",
-		"PATCH /app/application_tool_icon/*",
 		"POST /api/v2/admin/auth_users/{mode}",
 		"POST /api/v2/admin/gateway/governance",
 		"POST /api/v2/admin/gateway/governance/validate-cel",
@@ -1784,7 +1781,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/admin/runtime_remote_config/{mode}/{pluginID}",
 		"POST /api/v2/admin/users/administration/{projectID}",
 		"POST /api/v2/admin/users/{mode}/{projectID}",
-		"POST /api/v2/api/v2/*",
 		"POST /api/v2/artifacts/buckets/{projectID}",
 		"POST /api/v2/artifacts/grants/{projectID}/{bucket}",
 		"POST /api/v2/artifacts/grants/{projectID}/{grantID}/parts/{partNumber}",
@@ -1848,8 +1844,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"POST /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"POST /api/v2/webhooks/prompt_lib/{projectID}/",
-		"POST /app/application_icon/*",
-		"POST /app/application_tool_icon/*",
 		"PUT /api/v2/admin/gateway/*/budget-alerts",
 		"PUT /api/v2/admin/gateway/governance/{id}",
 		"PUT /api/v2/admin/maintenance/{mode}",
@@ -1861,7 +1855,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PUT /api/v2/admin/user_suspend/{mode}/{userID}",
 		"PUT /api/v2/admin/users/administration/{projectID}",
 		"PUT /api/v2/admin/users/{mode}/{projectID}",
-		"PUT /api/v2/api/v2/*",
 		"PUT /api/v2/configurations/configuration/{mode}/{projectID}/{configID}",
 		"PUT /api/v2/configurations/configuration/{projectID}/{configID}",
 		"PUT /api/v2/context_manager/summary/{projectID}/{conversationID}/{summaryID}",
@@ -1888,11 +1881,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PUT /api/v2/social/author",
 		"PUT /api/v2/social/author/",
 		"PUT /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
-		"PUT /app/application_icon/*",
-		"PUT /app/application_tool_icon/*",
-		"TRACE /api/v2/api/v2/*",
-		"TRACE /app/application_icon/*",
-		"TRACE /app/application_tool_icon/*",
 	}
 
 	if len(got) != len(want) {
@@ -2026,31 +2014,47 @@ func TestProductionBrowserAuthSurfaceNeverSucceedsWithoutCredentials(t *testing.
 	routes := []struct {
 		method string
 		path   string
+		want   int
 	}{
-		{method: http.MethodGet, path: "/forward-auth/auth"},
-		{method: http.MethodHead, path: "/forward-auth/auth"},
-		{method: http.MethodOptions, path: "/forward-auth/auth"},
-		{method: http.MethodGet, path: "/forward-auth/login"},
-		{method: http.MethodHead, path: "/forward-auth/login"},
-		{method: http.MethodOptions, path: "/forward-auth/login"},
-		{method: http.MethodGet, path: "/forward-auth/auth_form/login"},
-		{method: http.MethodHead, path: "/forward-auth/auth_form/login"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_form/login"},
-		{method: http.MethodPost, path: "/forward-auth/auth_form/authorize"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_form/authorize"},
-		{method: http.MethodGet, path: "/forward-auth/logout"},
-		{method: http.MethodHead, path: "/forward-auth/logout"},
-		{method: http.MethodOptions, path: "/forward-auth/logout"},
-		{method: http.MethodGet, path: "/forward-auth/auth_form/logout"},
-		{method: http.MethodHead, path: "/forward-auth/auth_form/logout"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_form/logout"},
-		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login"},
-		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login"},
-		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login_callback"},
-		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login_callback"},
-		{method: http.MethodPost, path: "/forward-auth/auth_oidc/login_callback"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login_callback"},
+		// Not a registered route at all: "/forward-auth/auth" (the Traefik
+		// ForwardAuth check) is a top-level "/auth" route, distinct from the
+		// "/forward-auth/*" browser session group.
+		{method: http.MethodGet, path: "/forward-auth/auth", want: http.StatusNotFound},
+		{method: http.MethodHead, path: "/forward-auth/auth", want: http.StatusNotFound},
+		{method: http.MethodOptions, path: "/forward-auth/auth", want: http.StatusNotFound},
+		// GET redirects into the login flow; only GET is registered.
+		{method: http.MethodGet, path: "/forward-auth/login", want: http.StatusFound},
+		{method: http.MethodHead, path: "/forward-auth/login", want: http.StatusMethodNotAllowed},
+		{method: http.MethodOptions, path: "/forward-auth/login", want: http.StatusMethodNotAllowed},
+		// Legacy form-auth login/authorize are never mounted: SessionHandler
+		// wires the OIDC session flow only (see router.go's "/forward-auth"
+		// Route block), not the legacy form-auth handlers.
+		{method: http.MethodGet, path: "/forward-auth/auth_form/login", want: http.StatusNotFound},
+		{method: http.MethodHead, path: "/forward-auth/auth_form/login", want: http.StatusNotFound},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/login", want: http.StatusNotFound},
+		{method: http.MethodPost, path: "/forward-auth/auth_form/authorize", want: http.StatusNotFound},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/authorize", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/forward-auth/logout", want: http.StatusFound},
+		{method: http.MethodHead, path: "/forward-auth/logout", want: http.StatusMethodNotAllowed},
+		{method: http.MethodOptions, path: "/forward-auth/logout", want: http.StatusMethodNotAllowed},
+		{method: http.MethodGet, path: "/forward-auth/auth_form/logout", want: http.StatusFound},
+		{method: http.MethodHead, path: "/forward-auth/auth_form/logout", want: http.StatusMethodNotAllowed},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/logout", want: http.StatusMethodNotAllowed},
+		// GET 500s here because newCompleteProductionRouter's OIDCHandler is
+		// a zero-value test double with no real OAuth2 config — a real
+		// OIDCHandler (as main.go constructs via NewOIDCHandler, which does
+		// live OIDC discovery) redirects (302) instead. Pinned exactly
+		// rather than accepted as "any non-2xx" so a change to *this*
+		// specific crash doesn't slip past silently either.
+		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login", want: http.StatusInternalServerError},
+		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login", want: http.StatusMethodNotAllowed},
+		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login", want: http.StatusMethodNotAllowed},
+		// Not a registered route: the OIDC callback path is "auth_oidc/callback",
+		// not "auth_oidc/login_callback".
+		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
+		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
+		{method: http.MethodPost, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
+		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
 	}
 
 	for _, route := range routes {
@@ -2058,8 +2062,11 @@ func TestProductionBrowserAuthSurfaceNeverSucceedsWithoutCredentials(t *testing.
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(route.method, route.path, nil)
 			router.ServeHTTP(recorder, request)
+			if recorder.Code != route.want {
+				t.Fatalf("status = %d, want %d", recorder.Code, route.want)
+			}
 			if recorder.Code >= 200 && recorder.Code < 300 {
-				t.Fatalf("status = %d, want a non-2xx response without credentials", recorder.Code)
+				t.Fatalf("status = %d, a bare success without credentials", recorder.Code)
 			}
 		})
 	}
@@ -2069,16 +2076,10 @@ func newCompleteProductionRouter(sessionSecret string) chi.Router {
 	runtimeHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		panic(fmt.Errorf("route coverage test must not execute runtime handler"))
 	})
-	// A nil redis.UniversalClient makes cutover.Tracker.Get panic (it calls
-	// t.redis.HGet without a nil check) the moment any request reaches
-	// CutoverRouter.Middleware — unreachable while NewRouter's dead
-	// "reviewed production router" branch existed (it never wired
-	// CutoverRouter), so nothing exercised this before #243. Point the
-	// client at an address nothing listens on instead: Get() then returns a
-	// connection error, which the middleware already treats as "fall
-	// through to next.ServeHTTP" (see cutover/router.go), giving the same
-	// pass-through behavior tests need without crashing.
-	unreachableRedis := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1", DialTimeout: 50 * time.Millisecond})
+	// NewRouter's dead "reviewed production router" branch never wired
+	// CutoverRouter/CutoverTracker, so nothing exercised them before #243;
+	// see newUnreachableRedisClient for why a nil client isn't safe here.
+	unreachableRedis := newUnreachableRedisClient()
 	return NewRouter(RouterConfig{
 		SessionHandler: v2auth.NewSessionHandler(nil, sessionSecret),
 		OIDCHandler:    &v2auth.OIDCHandler{},

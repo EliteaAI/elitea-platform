@@ -730,9 +730,14 @@ exactly one caller, `main()`.
   tolerating `ErrNotFound` but not `ErrAccessDenied` or a transport error.
 - Add an `ObjectStore` field to `RouterConfig` and assign it. **Do not assume
   assigning the existing `Storage` field puts the backend on the request path** —
-  it is read only inside `newPrototypeCompatibilityRouter`, and
-  `prototypeCompatibilityRequested` does not include it, so `main.go` never
-  reaches that branch. S11 is what actually mounts the routes.
+  at the time this stage was written, it was read only inside
+  `newProductionRouter` (then `newPrototypeCompatibilityRouter`), reached only
+  when `prototypeCompatibilityRequested(cfg)` held; `main.go` didn't set any
+  triggering field yet, so it never reached that branch. (#243 later deleted
+  that predicate and the separate branch it gated — `NewRouter` now always
+  builds via `newProductionRouter` — but the underlying caution still
+  applies: assigning `ObjectStore` alone doesn't mount routes. S11 is what
+  actually mounts the routes.)
 
 **Acceptance criteria:**
 
@@ -1020,7 +1025,7 @@ resolve to until something registers them, and the test fails with all 13
 unresolved. **This stage must also register a minimal stub route for each of
 the 13 new paths**, so the shape resolves; the *behaviour* is filled in by
 S8/S9. Do this in `internal/api/router.go`, inside
-`newPrototypeCompatibilityRouter`: replace the existing
+`newProductionRouter`: replace the existing
 `r.Route("/artifacts", func(r chi.Router) { ... })` block (currently ~11
 registrations built on `v2artifacts.NewInMemoryHandler()`, around line 670)
 with the 13 new paths from the table above, each pointing at one shared
@@ -1125,7 +1130,7 @@ with the typed error envelope instead of 404.
 **Preconditions:** S5, S6, S7.
 **Read first:** `internal/api/v2/artifacts/handler.go`, `pg_repo.go`,
 `handler_test.go`, and the 13-path stub block S7 added to
-`newPrototypeCompatibilityRouter` in `internal/api/router.go`.
+`newProductionRouter` in `internal/api/router.go`.
 
 Rewrite the bucket half of `internal/api/v2/artifacts/handler.go` against the S6
 repositories and the S1 `ObjectStore`, serving the S7 contract.
@@ -1415,9 +1420,13 @@ ever seems to need one of those, the surface has been reintroduced by mistake.
 `internal/api/oapiserver/conformance_test.go`.
 
 **Extract a single `mountArtifactRoutes(r chi.Router, deps ArtifactDeps)` and
-call it from both `newPrototypeCompatibilityRouter` and the production router.**
-Registering only in production breaks the oapiserver conformance test, which
-walks the prototype router. One shared mount function satisfies both.
+call it from both `newProductionRouter` and `production_router.go`'s
+`NewRouter`.** (#243 later deleted `NewRouter`'s own inline build — it was
+dead code, unreachable in every real deployment — and made it delegate to
+`newProductionRouter` unconditionally, so `mountArtifactRoutes` now has a
+single call site inside `newProductionRouter`.) Registering only in
+production breaks the oapiserver conformance test, which walks the prototype
+router. One shared mount function satisfies both.
 
 - Apply `apimw.Auth` plus `apimw.RequireResolvedPermissionsForProject` to
   **every** route. The current `/api/v2/artifacts/*` routes have authentication
@@ -3046,7 +3055,7 @@ namespacing — no Postgres involvement at all beyond what `UploadIcon`/
 **`DownloadIcon` is a standalone function, not a `*Handler` method — the
 auth-group scoping forced this, not style preference.** `coreHandler` (the
 real `eliteacore.Handler` instance `UploadIcon`/`DeleteIcon` are methods on)
-is constructed *inside* `newPrototypeCompatibilityRouter`'s
+is constructed *inside* `newProductionRouter`'s
 `r.Group(func(r chi.Router) { r.Use(apimw.Auth(...)); ... })` closure — a
 Go closure-scoped local variable, not reachable outside it. The route this
 stage adds must sit *outside* that closure, alongside the two sibling

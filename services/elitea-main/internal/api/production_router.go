@@ -62,10 +62,10 @@ func NewRouter(cfg RouterConfig) chi.Router {
 // additions must never remove or replace these admitted routes.
 //
 // It does not register promptcontextreadsapi.CurrentProjectContextPath: that
-// literal path (/api/v2/elitea_core/project_context/prompt_lib/{projectID}/
-// project-context) is owned unconditionally by newProductionRouter's broader
-// coreHandler.ProjectContext registration, so a second registration here
-// would never be reached.
+// path is owned unconditionally by newProductionRouter's broader
+// coreHandler.ProjectContext registration (router.go), which derives its
+// route from the same CurrentProjectContextPath constant, so a second
+// registration here would never be reached.
 func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	if cfg.ProductionAuth != nil {
 		r.Mount(browserauth.BasePath, cfg.ProductionAuth.browser)

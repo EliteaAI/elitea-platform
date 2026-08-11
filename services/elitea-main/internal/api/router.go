@@ -1102,8 +1102,15 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.Get("/project_icon/prompt_lib/{projectID}", coreHandler.ListProjectIcons)
 				r.Post("/project_icon/prompt_lib/{projectID}", coreHandler.CreateProjectIcon)
 				r.Delete("/project_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteProjectIcon)
-				r.Get("/project_context/prompt_lib/{projectID}/project-context", coreHandler.ProjectContext)
-				r.Put("/project_context/prompt_lib/{projectID}/project-context", coreHandler.UpdateProjectContext)
+				// The relative suffix is derived from
+				// v2promptcontextreads.CurrentProjectContextPath (the "/api/v2/elitea_core"
+				// prefix comes from this route's enclosing r.Route groups)
+				// rather than a second hardcoded literal, so this
+				// registration and mountReviewedProductionRoutes' decision
+				// not to duplicate it (production_router.go) can't silently
+				// drift apart.
+				r.Get(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.ProjectContext)
+				r.Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
 
 				// Platform settings
 				r.Get("/platform_settings/prompt_lib/{projectID}", coreHandler.PlatformSettings)

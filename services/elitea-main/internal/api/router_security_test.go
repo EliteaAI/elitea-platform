@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
@@ -72,15 +71,13 @@ func TestObjectDownloadRejectsRawTraversalKey(t *testing.T) {
 	}
 }
 
-func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *testing.T) {
+func TestInternalAdminRoutesGateOnInternalAdminTokenStrengthAndValue(t *testing.T) {
 	comparator := shadow.NewComparator(shadow.Config{Timeout: time.Second})
 	metrics := shadow.NewMetrics(10)
-	// A nil redis.UniversalClient makes Tracker.List/Get panic the instant a
-	// request reaches the handler (they call the client with no nil check).
-	// Point at an address nothing listens on instead, so an authorized
-	// request gets a real (connection-error) response rather than a
-	// panic-recovered 500.
-	tracker := cutover.NewTracker(goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1", DialTimeout: 50 * time.Millisecond}))
+	// See newUnreachableRedisClient (production_router_test.go): a nil
+	// redis.UniversalClient makes Tracker.List/Get panic the instant a
+	// request reaches the handler.
+	tracker := cutover.NewTracker(newUnreachableRedisClient())
 	strongToken := strings.Repeat("i", middleware.MinimumInternalAdminTokenBytes)
 
 	for _, token := range []string{"", "short", strongToken} {
@@ -500,57 +497,3 @@ func TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject(t *testing.
 	}
 }
 
-// TestArtifactRoutesGateIdenticallyThroughProductionRouter proves the
-// auth/RBAC gating above isn't specific to the prototype-compatibility
-// router. Every other test in this file builds its RouterConfig with
-// AppsRepo set, which trips prototypeCompatibilityRequested and always
-// dispatches to newProductionRouter — none of them ever
-// exercises production_router.go's own NewRouter branch, even though it
-// calls the identical mountArtifactRoutes with independently constructed
-// ArtifactDeps. This constructs a RouterConfig with none of
-// prototypeCompatibilityRequested's trigger fields set, so NewRouter takes
-// the production branch, and checks the same three outcomes (401
-// unauthenticated, 403 wrong permission, 2xx right permission) there too.
-func TestArtifactRoutesGateIdenticallyThroughProductionRouter(t *testing.T) {
-	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
-	const path = "/api/v2/artifacts/buckets/1"
-
-	t.Run("401 unauthenticated", func(t *testing.T) {
-		t.Setenv("AUTH_DEV_MODE", "false")
-		router := NewRouter(RouterConfig{
-			ArtifactHandler:            handler,
-			ArtifactPermissionResolver: fakePermissionResolver{granted: allArtifactPermissions},
-		})
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-		}
-	})
-
-	t.Run("403 wrong permission", func(t *testing.T) {
-		t.Setenv("AUTH_DEV_MODE", "true")
-		router := NewRouter(RouterConfig{
-			ArtifactHandler:            handler,
-			ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
-		})
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
-		}
-	})
-
-	t.Run("2xx right permission", func(t *testing.T) {
-		t.Setenv("AUTH_DEV_MODE", "true")
-		router := NewRouter(RouterConfig{
-			ArtifactHandler:            handler,
-			ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
-		})
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
-		}
-	})
-}
