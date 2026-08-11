@@ -7,7 +7,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/browserauth"
-	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
@@ -61,11 +60,16 @@ func NewRouter(cfg RouterConfig) chi.Router {
 // reviewed. Hybrid deployments add broad parity repositories, but those
 // additions must never remove or replace these admitted routes.
 //
-// It does not register promptcontextreadsapi.CurrentProjectContextPath: that
-// path is owned unconditionally by newProductionRouter's broader
-// coreHandler.ProjectContext registration (router.go), which derives its
-// route from the same CurrentProjectContextPath constant, so a second
-// registration here would never be reached.
+// promptcontextreadsapi.CurrentProjectContextPath is one of two registration
+// sources for the same path — mutually exclusive with newProductionRouter's
+// broader coreHandler.ProjectContext registration (router.go), which only
+// registers it when cfg.CurrentPromptContextReads is nil. When
+// CurrentPromptContextReads is composed, it must be the one to serve this
+// path: it carries its own ForwardedIdentityVerifier/PrincipalValidator and
+// RBAC, independent of this router's own AuthClient/Pool, and coreHandler's
+// version does not honor that contract — see internal/api/v2/promptcontextreads'
+// own postgres integration test, which caught the gap when this registration
+// was briefly deleted as apparently-redundant (#243 follow-up).
 func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	if cfg.ProductionAuth != nil {
 		r.Mount(browserauth.BasePath, cfg.ProductionAuth.browser)
@@ -91,6 +95,7 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	}
 	if cfg.CurrentPromptContextReads != nil {
 		r.Method(http.MethodGet, promptcontextreadsapi.CurrentChatConfigPath, cfg.CurrentPromptContextReads)
+		r.Method(http.MethodGet, promptcontextreadsapi.CurrentProjectContextPath, cfg.CurrentPromptContextReads)
 	}
 	if cfg.CurrentConfigurationAvailable != nil {
 		r.Method(http.MethodGet, configurationapi.CurrentAvailablePath, cfg.CurrentConfigurationAvailable)
@@ -172,20 +177,13 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	if cfg.CurrentModelDefault != nil {
 		r.Method(http.MethodPost, configurationapi.CurrentModelDefaultPath, cfg.CurrentModelDefault)
 	}
-	if cfg.GatewayProxy != nil {
-		r.Group(func(r chi.Router) {
-			r.Use(apimw.Auth(apimw.AuthConfig{
-				Client:                    cfg.AuthClient,
-				Validator:                 cfg.AuthValidator,
-				PrincipalValidator:        cfg.PrincipalValidator,
-				ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
-				SessionSecret:             cfg.SessionSecret,
-				TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
-			}))
-			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: cfg.GatewayProjectResolver}))
-			r.Mount("/llm", cfg.GatewayProxy)
-		})
-	} else if cfg.CurrentLLMFacade != nil {
+	// GatewayProxy and LLMProxy are mounted at /llm directly inside
+	// newProductionRouter (router.go's "/llm has two possible backends"
+	// comment) — the sole caller of this function, so a second /llm
+	// registration here would double-mount and panic (chi disallows
+	// mounting the same pattern twice). CurrentLLMFacade only gets to serve
+	// /llm when neither of those backends is composed.
+	if cfg.GatewayProxy == nil && cfg.LLMProxy == nil && cfg.CurrentLLMFacade != nil {
 		r.Handle("/llm/*", cfg.CurrentLLMFacade)
 	}
 }

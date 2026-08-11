@@ -1102,15 +1102,26 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.Get("/project_icon/prompt_lib/{projectID}", coreHandler.ListProjectIcons)
 				r.Post("/project_icon/prompt_lib/{projectID}", coreHandler.CreateProjectIcon)
 				r.Delete("/project_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteProjectIcon)
+				// Only the fallback registration when CurrentPromptContextReads
+				// isn't composed: when it is, its own project-context handler
+				// (mountReviewedProductionRoutes, production_router.go) carries
+				// its own ForwardedIdentityVerifier/PrincipalValidator and RBAC,
+				// scoped independently of this router's own AuthClient/Pool —
+				// registering both for the same path would either panic (chi
+				// disallows registering the same method+path twice) or silently
+				// route real requests through whichever has no auth configured,
+				// as internal/api/v2/promptcontextreads' own integration test
+				// caught when both were briefly registered unconditionally.
 				// The relative suffix is derived from
 				// v2promptcontextreads.CurrentProjectContextPath (the "/api/v2/elitea_core"
 				// prefix comes from this route's enclosing r.Route groups)
-				// rather than a second hardcoded literal, so this
-				// registration and mountReviewedProductionRoutes' decision
-				// not to duplicate it (production_router.go) can't silently
-				// drift apart.
-				r.Get(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.ProjectContext)
-				r.Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
+				// rather than a second hardcoded literal, so this registration
+				// and mountReviewedProductionRoutes' mirror-image guard can't
+				// silently drift apart.
+				if cfg.CurrentPromptContextReads == nil {
+					r.Get(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.ProjectContext)
+					r.Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
+				}
 
 				// Platform settings
 				r.Get("/platform_settings/prompt_lib/{projectID}", coreHandler.PlatformSettings)
@@ -1244,12 +1255,12 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	// (LLM_GATEWAY_URL); LLMProxy is the older LiteLLM facade, reachable only
 	// under ELITEA_CONFIGURATIONS_ENABLED, which no deployment sets.
 	//
-	// The gateway arm must be mounted HERE and not only in production_router.go:
-	// prototypeCompatibilityRequested is true whenever AppsRepo/auth/etc. is
-	// assigned — i.e. in every real deployment — so NewRouter always returns this
-	// router and a gateway mounted only over there is unreachable. GatewayProxy
-	// is deliberately absent from the prototype-gate field list, so wiring it
-	// does not itself force this router.
+	// The gateway arm is mounted HERE, not in production_router.go's
+	// mountReviewedProductionRoutes: NewRouter always builds this router
+	// (#243 deleted the only other build path, which was unreachable in
+	// every real deployment), so mounting it in exactly one place is what
+	// matters now — mountReviewedProductionRoutes explicitly defers to this
+	// registration rather than mounting /llm itself.
 	//
 	// Gateway wins when both are composed: it is the migration target, and
 	// serving the superseded facade in preference to it would be a silent
