@@ -1,5 +1,4 @@
 # Build artifacts
-apps/admin-ui/static/dist/assets/*.js.map
 **/__pycache__/
 *.py[cod]
 

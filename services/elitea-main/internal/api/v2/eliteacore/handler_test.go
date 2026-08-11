@@ -210,19 +210,13 @@ func TestTrendingAuthors(t *testing.T) {
 	}
 }
 
-// ---- ModerationStatus -------------------------------------------------------
-
-func TestModerationStatus(t *testing.T) {
-	h := newHandler()
-	w := httptest.NewRecorder()
-	h.ModerationStatus(w, httptest.NewRequest(http.MethodGet, "/", nil))
-
-	assertStatus(t, w, http.StatusOK)
-	body := decodeObj(t, w)
-	if status, _ := body["status"].(string); status != "approved" {
-		t.Errorf("status: want 'approved', got %q", status)
-	}
-}
+// `TestModerationStatus` used to sit here, and it PASSED: it asserted that the
+// handler answers `{"status":"approved"}` to a request with no project, no
+// entity and no principal. That is the whole trouble with pinning a stub — the
+// test agreed with the code and both were wrong about the product. The
+// replacement is
+// internal/api/v2/moderation/requests_postgres_integration_test.go, which reads
+// back what it wrote through a real database.
 
 // ---- Permissions ------------------------------------------------------------
 

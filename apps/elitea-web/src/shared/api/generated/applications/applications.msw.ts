@@ -63,8 +63,6 @@ import type {
   IconUploadResponse,
   ImportWizardResponse,
   OkResponse,
-  PipelineTrigger,
-  PredictResponse,
   Project,
   ProjectContext,
   ProjectGroupsUpdate,
@@ -3047,44 +3045,6 @@ export const getGetDocumentLoadersResponseMock = (
   ...overrideResponse,
 });
 
-export const getGetPipelineTriggerResponseMock = (
-  overrideResponse: Partial<Extract<PipelineTrigger, object>> = {},
-): PipelineTrigger => ({
-  version_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  enabled: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
-  schedule: faker.helpers.arrayElement([
-    faker.helpers.arrayElement([{}, null]),
-    null,
-  ]),
-  type: faker.helpers.arrayElement([
-    faker.helpers.arrayElement([
-      faker.string.alpha({ length: { min: 10, max: 20 } }),
-      null,
-    ]),
-    undefined,
-  ]),
-  ...overrideResponse,
-});
-
-export const getUpdatePipelineTriggerResponseMock = (
-  overrideResponse: Partial<Extract<PipelineTrigger, object>> = {},
-): PipelineTrigger => ({
-  version_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  enabled: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
-  schedule: faker.helpers.arrayElement([
-    faker.helpers.arrayElement([{}, null]),
-    null,
-  ]),
-  type: faker.helpers.arrayElement([
-    faker.helpers.arrayElement([
-      faker.string.alpha({ length: { min: 10, max: 20 } }),
-      null,
-    ]),
-    undefined,
-  ]),
-  ...overrideResponse,
-});
-
 export const getGetAuthorDetailResponseMock = (
   overrideResponse: Partial<Extract<AuthorDetail, object>> = {},
 ): AuthorDetail => ({
@@ -3438,57 +3398,6 @@ export const getGetAgentCategoriesResponseMock = (
     is_default: faker.datatype.boolean(),
   })),
   total: faker.number.int(),
-  ...overrideResponse,
-});
-
-export const getGenerateAgentDraftResponseMock = (
-  overrideResponse: Partial<Extract<PredictResponse, object>> = {},
-): PredictResponse => ({
-  message_group_uid: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  content: faker.helpers.arrayElement([
-    faker.string.alpha({ length: { min: 10, max: 20 } }),
-    undefined,
-  ]),
-  is_streaming: faker.datatype.boolean(),
-  usage: faker.helpers.arrayElement([
-    {
-      prompt_tokens: faker.number.int(),
-      completion_tokens: faker.number.int(),
-      total_tokens: faker.number.int(),
-    },
-    undefined,
-  ]),
-  tool_calls: faker.helpers.arrayElement([
-    Array.from(
-      { length: faker.number.int({ min: 1, max: 10 }) },
-      (_, i) => i + 1,
-    ).map(() => ({
-      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
-      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-      input: faker.string.alpha({ length: { min: 10, max: 20 } }),
-      output: faker.helpers.arrayElement([
-        faker.string.alpha({ length: { min: 10, max: 20 } }),
-        undefined,
-      ]),
-      status: faker.string.alpha({ length: { min: 10, max: 20 } }),
-      duration_ms: faker.helpers.arrayElement([faker.number.int(), undefined]),
-    })),
-    undefined,
-  ]),
-  child_messages: faker.helpers.arrayElement([
-    Array.from(
-      { length: faker.number.int({ min: 1, max: 10 }) },
-      (_, i) => i + 1,
-    ).map(() => ({
-      role: faker.string.alpha({ length: { min: 10, max: 20 } }),
-      content: faker.string.alpha({ length: { min: 10, max: 20 } }),
-      agent_id: faker.helpers.arrayElement([
-        faker.string.alpha({ length: { min: 10, max: 20 } }),
-        undefined,
-      ]),
-    })),
-    undefined,
-  ]),
   ...overrideResponse,
 });
 
@@ -4352,58 +4261,6 @@ export const getGetDocumentLoadersMockHandler = (
   );
 };
 
-export const getGetPipelineTriggerMockHandler = (
-  overrideResponse?:
-    | PipelineTrigger
-    | ((
-        info: Parameters<Parameters<typeof http.get>[1]>[0],
-      ) => Promise<PipelineTrigger> | PipelineTrigger),
-  options?: RequestHandlerOptions,
-) => {
-  return http.get(
-    "*/elitea_core/pipeline_trigger/prompt_lib/:projectId/pipeline/:versionId/trigger",
-    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
-      await delay(0);
-
-      return HttpResponse.json(
-        overrideResponse !== undefined
-          ? typeof overrideResponse === "function"
-            ? await overrideResponse(info)
-            : overrideResponse
-          : getGetPipelineTriggerResponseMock(),
-        { status: 200 },
-      );
-    },
-    options,
-  );
-};
-
-export const getUpdatePipelineTriggerMockHandler = (
-  overrideResponse?:
-    | PipelineTrigger
-    | ((
-        info: Parameters<Parameters<typeof http.put>[1]>[0],
-      ) => Promise<PipelineTrigger> | PipelineTrigger),
-  options?: RequestHandlerOptions,
-) => {
-  return http.put(
-    "*/elitea_core/pipeline_trigger/prompt_lib/:projectId/pipeline/:versionId/trigger",
-    async (info: Parameters<Parameters<typeof http.put>[1]>[0]) => {
-      await delay(0);
-
-      return HttpResponse.json(
-        overrideResponse !== undefined
-          ? typeof overrideResponse === "function"
-            ? await overrideResponse(info)
-            : overrideResponse
-          : getUpdatePipelineTriggerResponseMock(),
-        { status: 200 },
-      );
-    },
-    options,
-  );
-};
-
 export const getGetAuthorDetailMockHandler = (
   overrideResponse?:
     | AuthorDetail
@@ -4501,32 +4358,6 @@ export const getGetAgentCategoriesMockHandler = (
             ? await overrideResponse(info)
             : overrideResponse
           : getGetAgentCategoriesResponseMock(),
-        { status: 200 },
-      );
-    },
-    options,
-  );
-};
-
-export const getGenerateAgentDraftMockHandler = (
-  overrideResponse?:
-    | PredictResponse
-    | ((
-        info: Parameters<Parameters<typeof http.post>[1]>[0],
-      ) => Promise<PredictResponse> | PredictResponse),
-  options?: RequestHandlerOptions,
-) => {
-  return http.post(
-    "*/elitea_core/generate_application_draft/prompt_lib/:projectId",
-    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
-      await delay(0);
-
-      return HttpResponse.json(
-        overrideResponse !== undefined
-          ? typeof overrideResponse === "function"
-            ? await overrideResponse(info)
-            : overrideResponse
-          : getGenerateAgentDraftResponseMock(),
         { status: 200 },
       );
     },
@@ -4695,13 +4526,10 @@ export const getApplicationsMock = () => [
   getSetAgentAttachmentStorageMockHandler(),
   getGetRecommendationsMockHandler(),
   getGetDocumentLoadersMockHandler(),
-  getGetPipelineTriggerMockHandler(),
-  getUpdatePipelineTriggerMockHandler(),
   getGetAuthorDetailMockHandler(),
   getGetTrendingAuthorsMockHandler(),
   getForkAgentMockHandler(),
   getGetAgentCategoriesMockHandler(),
-  getGenerateAgentDraftMockHandler(),
   getListProjectsMockHandler(),
   getListGroupsMockHandler(),
   getPutProjectGroupsMockHandler(),

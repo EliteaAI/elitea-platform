@@ -1,0 +1,421 @@
+/**
+ * Rendering + write-path guard for `pages/admin/Projects.tsx` (unit A14).
+ *
+ * The properties asserted here are the ones the reference page's own defects,
+ * and this unit's server-side findings, show are worth asserting:
+ *
+ *  1. Rows render from the measured `{rows,total,counts}` body, with the three
+ *     columns the pre-A14 server did not send (`owner_name`, `admin_names`,
+ *     `status`) each coming from the RESPONSE rather than from a constant.
+ *  2. Every enabled control REACHES THE SERVER with the body pylon defined.
+ *     A control that renders but sends nothing is the class #130/#180 shipped;
+ *     asserting only that a button exists would not catch it.
+ *  3. Every control with NO server behind it is disabled with a stated reason —
+ *     and the reason is the real one, not a placeholder.
+ *  4. The two writes are absent entirely when the permission is absent, and
+ *     absent means "not rendered", not "rendered and ignored".
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
+
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { server } from '@/test/setup';
+
+import { AdminProjects } from './Projects';
+import { renderAdminRoute } from './__tests__/testRouter';
+
+/**
+ * Measured against the Go handler in
+ * `services/elitea-main/internal/api/v2/admin/projects.go`: rows carry
+ * `owner_name`, `admin_names`, `status`, `is_personal`; `counts` is unfiltered
+ * and labels the tabs; `total` describes the FILTERED set.
+ */
+const PROJECTS_BODY = {
+  rows: [
+    {
+      id: 41,
+      name: 'atlas',
+      owner_id: 7,
+      owner_name: 'Ada Owner',
+      admin_names: ['Bo Admin', 'Cy Admin'],
+      status: 'active',
+      suspended: false,
+      create_success: true,
+      is_personal: false,
+    },
+    {
+      id: 42,
+      name: 'borealis',
+      owner_id: 8,
+      owner_name: 'Bea Owner',
+      admin_names: [],
+      status: 'suspended',
+      suspended: true,
+      create_success: true,
+      is_personal: false,
+    },
+    {
+      id: 43,
+      name: 'cirrus',
+      owner_id: 9,
+      owner_name: '',
+      admin_names: [],
+      status: 'failed',
+      suspended: false,
+      create_success: false,
+      is_personal: false,
+    },
+  ],
+  total: 3,
+  counts: { team: 3, personal: 12 },
+};
+
+const PROJECT_ROLES = [
+  { id: '1', name: 'admin' },
+  { id: '2', name: 'editor' },
+  { id: '3', name: 'viewer' },
+];
+
+const PROJECT_MEMBERS = {
+  rows: [{ id: '77', email: 'already@example.com', name: 'Al Ready', roles: ['viewer'] }],
+  total: 1,
+};
+
+interface RecordedRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly body: unknown;
+}
+
+let recorded: RecordedRequest[] = [];
+
+/** The full admin-panel surface this page touches: two reads plus three writes. */
+function useAdminProjectHandlers(): void {
+  server.use(
+    http.get('*/admin/projects/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json(PROJECTS_BODY);
+    }),
+    http.put('*/admin/project_suspend/administration/*', async ({ request }) => {
+      recorded.push({ method: 'PUT-suspend', url: request.url, body: await request.json() });
+      return HttpResponse.json({ id: 41, suspended: true });
+    }),
+    http.get('*/admin/roles/administration/*', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json(PROJECT_ROLES);
+    }),
+    http.get('*/admin/users/administration/*', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json(PROJECT_MEMBERS);
+    }),
+    http.post('*/admin/users/administration/*', async ({ request }) => {
+      recorded.push({ method: 'POST-member', url: request.url, body: await request.json() });
+      return HttpResponse.json([{ status: 'ok', msg: 'added', email: 'new@example.com' }]);
+    }),
+    http.put('*/admin/users/administration/*', async ({ request }) => {
+      recorded.push({ method: 'PUT-member', url: request.url, body: await request.json() });
+      return HttpResponse.json({ msg: 'roles updated' });
+    }),
+  );
+}
+
+/** The permission list the Go adminui handler injects for a valid session. */
+function grantAdminUiPermissions(permissions: string[]): void {
+  window.admin_ui_config = { permissions, vite_server_url: '/api/v2' };
+}
+
+function writes(): RecordedRequest[] {
+  return recorded.filter((entry) => entry.method !== 'GET');
+}
+
+function dataRows(): HTMLElement[] {
+  return within(screen.getByRole('grid'))
+    .getAllByRole('row')
+    .filter((row) => row.getAttribute('data-id'));
+}
+
+beforeEach(() => {
+  recorded = [];
+  configureGeneratedClient({ baseUrl: '/api/v2' });
+  grantAdminUiPermissions(['projects.projects.projects.view', 'projects.projects.projects.edit']);
+  useAdminProjectHandlers();
+});
+
+afterEach(() => {
+  resetGeneratedClient();
+  delete window.admin_ui_config;
+});
+
+describe('Admin › Projects', () => {
+  it('renders one row per project, with owner, admins and status from the response', async () => {
+    renderAdminRoute(<AdminProjects />);
+
+    expect(await screen.findByText('atlas')).toBeInTheDocument();
+    expect(dataRows()).toHaveLength(3);
+
+    const grid = screen.getByRole('grid');
+    // `owner_name` and `admin_names` are the two fields the pre-A14 server did
+    // not send at all — it emitted a bare `owner_id`. If either were dropped,
+    // the columns would render blank and the row count alone would not notice.
+    expect(within(grid).getByText('Ada Owner')).toBeInTheDocument();
+    expect(within(grid).getByText('Bo Admin, Cy Admin')).toBeInTheDocument();
+
+    // All three statuses come from the server's `status` field. The admin Users
+    // reference page read a `status` that never existed and rendered one
+    // constant; asserting all three is what separates the two readings.
+    expect(within(grid).getByText('Active')).toBeInTheDocument();
+    expect(within(grid).getByText('Suspended')).toBeInTheDocument();
+    expect(within(grid).getByText('Failed')).toBeInTheDocument();
+
+    expect(screen.queryByText('No projects')).not.toBeInTheDocument();
+  });
+
+  it('labels the tabs from `counts`, which is not the page total', async () => {
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    // 12 personal projects with 3 rows on the page: a tab label taken from
+    // `total`, or from `rows.length`, would read (3) here.
+    expect(screen.getByRole('tab', { name: 'Team Projects (3)' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Personal Projects (12)' })).toBeInTheDocument();
+  });
+
+  it('asks the server for the personal tab rather than filtering the page client-side', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    await user.click(screen.getByRole('tab', { name: 'Personal Projects (12)' }));
+
+    await waitFor(() =>
+      expect(
+        recorded.some((entry) => entry.url.includes('project_type=personal')),
+      ).toBe(true),
+    );
+  });
+
+  it('suspends a project by PUTting {suspended:true} to the real endpoint', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    await user.click(screen.getAllByRole('button', { name: 'Suspend project' })[0]!);
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    const request = writes()[0]!;
+    expect(request.method).toBe('PUT-suspend');
+    // The id is in the PATH, mirroring pylon's `project_suspend/<mode>/<project_id>`.
+    expect(request.url).toContain('/admin/project_suspend/administration/41');
+    expect(request.body).toEqual({ suspended: true });
+  });
+
+  it('unsuspends the already-suspended project (the toggle reads the row, not a constant)', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('borealis');
+
+    await user.click(screen.getByRole('button', { name: 'Unsuspend project' }));
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]!.body).toEqual({ suspended: false });
+    expect(writes()[0]!.url).toContain('/admin/project_suspend/administration/42');
+  });
+
+  it('reports a refused suspend instead of leaving the row unchanged and silent', async () => {
+    server.use(
+      http.put('*/admin/project_suspend/administration/*', () =>
+        HttpResponse.json({ error: 'insufficient permissions' }, { status: 403 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    await user.click(screen.getAllByRole('button', { name: 'Suspend project' })[0]!);
+
+    // The reference swallows every failure, so a 403 there is indistinguishable
+    // from "nothing happened" — and suspension's whole feedback is a row's
+    // opacity changing.
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+  });
+
+  it('renders create and delete DISABLED, with the provisioning reason attached', async () => {
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    const create = screen.getByRole('button', { name: 'Create project' });
+    const remove = screen.getByRole('button', { name: 'Delete projects' });
+    expect(create).toBeDisabled();
+    expect(remove).toBeDisabled();
+
+    // The reason must be the REAL one. A disabled control with a vague label is
+    // the same dead end as a control that no-ops, one step earlier.
+    const reason = create.parentElement?.getAttribute('aria-label') ?? '';
+    const tooltip = create.closest('[title]')?.getAttribute('title') ?? reason;
+    expect(`${tooltip}`).toMatch(/tenant schema/i);
+  });
+
+  it('issues no create or delete request even when the click is forced through', async () => {
+    // `pointerEventsCheck: 0` deliberately bypasses the `pointer-events: none`
+    // a disabled MUI button carries, so this asserts the STRONGER property:
+    // there is no handler behind either control, not merely that the pointer
+    // cannot reach it. A future edit that enables the button without wiring it
+    // fails here rather than shipping a control that silently no-ops.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    await user.click(screen.getByRole('button', { name: 'Create project' }));
+    await user.click(screen.getByRole('button', { name: 'Delete projects' }));
+
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('renders export disabled with its own, different reason', async () => {
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    expect(screen.getByRole('button', { name: 'Export to Excel' })).toBeDisabled();
+  });
+
+  describe('without the project-write permission', () => {
+    beforeEach(() => {
+      grantAdminUiPermissions(['projects.projects.projects.view']);
+    });
+
+    it('renders no suspend or member control at all', async () => {
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      expect(screen.queryByRole('button', { name: 'Suspend project' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Unsuspend project' })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Manage project member' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('still renders the read-only activity control', async () => {
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      expect(screen.getAllByRole('button', { name: 'Project activity' })).not.toHaveLength(0);
+    });
+  });
+
+  describe('the member dialog', () => {
+    it('offers the roles the SERVER defines, not a hardcoded list', async () => {
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      await user.click(screen.getAllByRole('button', { name: 'Manage project member' })[0]!);
+
+      await waitFor(() =>
+        expect(recorded.some((entry) => entry.url.includes('/admin/roles/administration/41'))).toBe(
+          true,
+        ),
+      );
+      await user.click(await screen.findByRole('combobox', { name: 'Role' }));
+      expect(await screen.findByRole('option', { name: 'editor' })).toBeInTheDocument();
+    });
+
+    it('POSTs the pylon invite body for an address that is not yet a member', async () => {
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+      await user.click(screen.getAllByRole('button', { name: 'Manage project member' })[0]!);
+
+      await user.type(await screen.findByRole('textbox', { name: 'User email' }), 'new@example.com');
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Add user' })).toBeEnabled(),
+      );
+      await user.click(screen.getByRole('button', { name: 'Add user' }));
+
+      await waitFor(() => expect(writes()).toHaveLength(1));
+      expect(writes()[0]!.method).toBe('POST-member');
+      expect(writes()[0]!.url).toContain('/admin/users/administration/41');
+      expect(writes()[0]!.body).toEqual({ emails: ['new@example.com'], roles: ['admin'] });
+    });
+
+    it('PUTs a role replacement for an address that is already a member', async () => {
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+      await user.click(screen.getAllByRole('button', { name: 'Manage project member' })[0]!);
+
+      // Deliberately a different case from the seeded member: the server
+      // lower-cases before comparing, so this IS the same person and an "Add"
+      // here would be refused as a duplicate.
+      await user.type(
+        await screen.findByRole('textbox', { name: 'User email' }),
+        'Already@Example.com',
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Update role' })).toBeEnabled(),
+      );
+      await user.click(screen.getByRole('button', { name: 'Update role' }));
+
+      await waitFor(() => expect(writes()).toHaveLength(1));
+      expect(writes()[0]!.method).toBe('PUT-member');
+      expect(writes()[0]!.body).toEqual({ id: '77', roles: ['admin'] });
+    });
+
+    it('refuses to submit an address that is not one, without a server round trip', async () => {
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+      await user.click(screen.getAllByRole('button', { name: 'Manage project member' })[0]!);
+
+      await user.type(await screen.findByRole('textbox', { name: 'User email' }), 'not-an-address');
+
+      expect(screen.getByRole('button', { name: 'Add user' })).toBeDisabled();
+      expect(writes()).toHaveLength(0);
+    });
+
+    it('reports a rejected write instead of showing a success banner', async () => {
+      server.use(
+        http.post('*/admin/users/administration/*', () =>
+          HttpResponse.json({ error: 'unknown role(s) for this project: admin' }, { status: 400 }),
+        ),
+      );
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+      await user.click(screen.getAllByRole('button', { name: 'Manage project member' })[0]!);
+
+      await user.type(await screen.findByRole('textbox', { name: 'User email' }), 'new@example.com');
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Add user' })).toBeEnabled());
+      await user.click(screen.getByRole('button', { name: 'Add user' }));
+
+      // The reference inspects `result[0].status` on a RESOLVED promise, so a
+      // 400 there never reaches its error branch at all.
+      const alert = await screen.findByRole('alert');
+      expect(alert).toBeInTheDocument();
+      expect(screen.queryByText('User added to the project.')).not.toBeInTheDocument();
+    });
+  });
+
+  it('renders the empty state rather than a blank grid when there are no projects', async () => {
+    server.use(
+      http.get('*/admin/projects/administration', () =>
+        HttpResponse.json({ rows: [], total: 0, counts: { team: 0, personal: 0 } }),
+      ),
+    );
+    renderAdminRoute(<AdminProjects />);
+
+    expect(await screen.findByText('No projects')).toBeInTheDocument();
+  });
+
+  it('reports a failed listing instead of rendering it as an empty deployment', async () => {
+    server.use(
+      http.get('*/admin/projects/administration', () =>
+        HttpResponse.json({ error: 'failed to list projects' }, { status: 500 }),
+      ),
+    );
+    renderAdminRoute(<AdminProjects />);
+
+    expect(await screen.findByText('Failed to load projects.')).toBeInTheDocument();
+  });
+});

@@ -43,15 +43,40 @@ export const EditUserRolesDialog = ({
 }: EditUserRolesDialogProps) => {
   const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>(originalRoles);
 
-  const hasChanged = useMemo(() => {
-    const a = [...selectedRoleIds].sort();
-    const b = [...originalRoles].sort();
-    return JSON.stringify(a) !== JSON.stringify(b);
-  }, [selectedRoleIds, originalRoles]);
+  /**
+   * `originalRoles` arrives as a fresh array literal on every parent render —
+   * `EditUsersButton` passes `(_userRoles as string[] | undefined) ?? []`, and
+   * `useUsersActions` rebuilds the `userRoles` behind it. Keying the reset
+   * effect on that identity meant ANY re-render of the Users page while the
+   * dialog was open (a react-query refetch flipping `isFetching`, the
+   * toast-clear timer) threw away the user's in-dialog selection and re-disabled
+   * Save mid-edit — J22f's documented ~1-in-15 failure. So collapse the prop to
+   * a value-derived key first, and hang both the reset and the `hasChanged`
+   * comparison off that: identity churn is invisible, a genuine change of roles
+   * is not.
+   */
+  const originalRolesKey = useMemo(
+    () => JSON.stringify([...originalRoles].sort()),
+    [originalRoles],
+  );
+
+  // Parsing back what we just serialised round-trips any string array exactly,
+  // including edge values a delimiter-joined key would mangle. This is also the
+  // same comparison `hasChanged` used before the fix, so the enabled/disabled
+  // semantics of Save are unchanged — only what re-triggers the reset is.
+  const normalizedOriginalRoles = useMemo(
+    () => JSON.parse(originalRolesKey) as string[],
+    [originalRolesKey],
+  );
+
+  const hasChanged = useMemo(
+    () => JSON.stringify([...selectedRoleIds].sort()) !== originalRolesKey,
+    [selectedRoleIds, originalRolesKey],
+  );
 
   useEffect(() => {
-    setSelectedRoleIds(originalRoles);
-  }, [open, originalRoles]);
+    setSelectedRoleIds(normalizedOriginalRoles);
+  }, [open, normalizedOriginalRoles]);
 
   const handleConfirm = useCallback(() => {
     onConfirm(selectedRoleIds);

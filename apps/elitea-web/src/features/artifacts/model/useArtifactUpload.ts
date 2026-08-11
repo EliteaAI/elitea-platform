@@ -1,9 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
-import { useGetChatConfig } from '@/shared/api/generated/chat/chat';
 import { uploadArtifactObject } from '@/shared/api/artifacts';
 import { getConfig } from '@/shared/config';
 
+import { useChatConfig } from '../api/chatConfigApi';
 import { computeSecurePath, validateFileName, validateFolderPath } from '../lib/pathValidation';
 import type { ArtifactUploadPlan } from './types';
 import type { Artifact } from '@/entities/artifact';
@@ -97,10 +97,8 @@ export function useArtifactUpload(options: UseArtifactUploadOptions) {
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string>();
-  const chatConfig = useGetChatConfig(options.projectId ?? '', {
-    query: { enabled: options.projectId !== undefined && options.projectId !== '' },
-  });
-  const maxFileSize = useMemo(() => readUploadLimit(chatConfig.data?.data), [chatConfig.data]);
+  const chatConfig = useChatConfig(options.projectId);
+  const maxFileSize = useMemo(() => readUploadLimit(chatConfig.data), [chatConfig.data]);
 
   const chooseFiles = useCallback(() => inputRef.current?.click(), []);
   const stageFiles = useCallback((files: readonly File[]) => {

@@ -98,7 +98,7 @@ func TestProjectAuthorizationAndToolkitRedaction(t *testing.T) {
 		VALUES ('private-toolkit', 'github', '', 2, 2, '{"repository":"EliteaAI/elitea-platform","access_token":"must-not-leak"}')`); err != nil {
 		t.Fatalf("seed toolkit: %v", err)
 	}
-	h := v2toolkits.NewHandler(pool, nil)
+	h := v2toolkits.NewHandler(pool)
 	toolkitRouter := chi.NewRouter()
 	toolkitRouter.Get("/tools/{projectID}", h.List)
 	result := httptest.NewRecorder()

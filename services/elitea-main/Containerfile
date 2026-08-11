@@ -1,18 +1,31 @@
 # syntax=docker/dockerfile:1.7
 
 # ── Stage 1: admin UI builder ─────────────────────────────────────────────────
+# The admin SPA is `apps/elitea-web`'s admin build target (src/entries/admin),
+# served by internal/api/adminui at /admin/app.
+#
+# It used to be the `apps/admin-ui` git submodule, and only the E2E image used
+# the elitea-web build — so E2E tested one artefact while releases shipped
+# another (issue #122). Unit A14 (#200) ported the admin console into
+# elitea-web, so the split has no reason left to exist: the submodule is gone
+# (#199) along with its orphaned pin that broke every release (#8), and every
+# target below builds from this one stage.
 FROM node:24-alpine AS admin-builder
 
-WORKDIR /admin/frontend
+WORKDIR /build
 
-# Cache npm install separately from source.
-COPY apps/admin-ui/frontend/package.json apps/admin-ui/frontend/package-lock.json ./
+# npm ci + package-lock.json: apps/elitea-web has no packageManager field and
+# ships a package-lock.json, so npm is the package manager, not pnpm/yarn.
+COPY apps/elitea-web/package.json apps/elitea-web/package-lock.json ./
 RUN npm ci
 
-COPY apps/admin-ui/frontend/ .
-# vite.config.js outDir '../static/dist' relative to WORKDIR /admin/frontend
-# resolves to /admin/static/dist.
-RUN npm run build
+COPY apps/elitea-web/index.html apps/elitea-web/tsconfig.json apps/elitea-web/vite.config.ts ./
+COPY apps/elitea-web/src/ ./src/
+
+# vite.config.ts `admin` mode: root src/entries/admin, base '/admin/app/',
+# outDir dist/admin.
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+RUN npm run build:admin
 
 # ── Stage 2: Go builder ───────────────────────────────────────────────────────
 FROM golang:1.25-alpine AS builder
@@ -63,33 +76,26 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["/elitea-main"]
 
-# The mixed Centry deployment keeps the current Admin UI and does not require
-# either UI submodule to build the selected Go slices.
+# ── Stage 5: mixed Centry deployment ──────────────────────────────────────────
+# `/nonexistent` is deliberate and stays that way. In deploy/centry-hybrid the
+# traefik router sends only /healthz and a short list of API paths to
+# elitea-main; `/admin/app` falls through the `current-platform` PathPrefix(`/`)
+# router to pylon_main, which serves the legacy admin_ui plugin. This image is
+# not an admin server, so it carries no admin bundle.
 FROM runtime AS hybrid
 
 ENV ADMIN_UI_STATIC_DIR=/nonexistent
 
-# ── Stage 5: standalone final image ───────────────────────────────────────────
-FROM runtime AS final
-
-COPY --from=admin-builder /admin/static/dist /data/admin_ui/static/dist
-
 # ── Stage 6: E2E test image ───────────────────────────────────────────────────
-# Uses the elitea-web admin SPA (src/entries/admin) instead of the admin-ui
-# submodule, so E2E runs don't require the submodule checkout.
-FROM node:24-alpine AS elitea-web-admin-builder
-
-WORKDIR /build
-
-COPY apps/elitea-web/package.json apps/elitea-web/package-lock.json ./
-RUN npm ci
-
-COPY apps/elitea-web/index.html apps/elitea-web/tsconfig.json apps/elitea-web/vite.config.ts ./
-COPY apps/elitea-web/src/ ./src/
-
-ENV NODE_OPTIONS="--max-old-space-size=4096"
-RUN npm run build:admin
-
+# Byte-identical to `final` below, which derives from it. The separate name is
+# kept only because deploy/docker-compose.e2e-standalone.yml selects
+# `target: e2e`; keeping `final` a child of this stage makes "E2E exercises the
+# artefact that ships" true by construction rather than by convention (#122).
 FROM runtime AS e2e
 
-COPY --from=elitea-web-admin-builder /build/dist/admin /data/admin_ui/static/dist
+COPY --from=admin-builder /build/dist/admin /data/admin_ui/static/dist
+
+# ── Stage 7: standalone final image (default target) ──────────────────────────
+# Last stage, so a `docker build` with no --target still produces the shipping
+# image. publish.yml and docker-bake.hcl also name it explicitly.
+FROM e2e AS final

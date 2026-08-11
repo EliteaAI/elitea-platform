@@ -86,20 +86,21 @@ const EXEMPT = new Map([
   // What remains true is only that this route has never been snapshotted, and
   // nobody has confirmed a conversation can actually be created end-to-end.
   ['/chat/:conversationId', 'not snapshotted — needs a deterministic conversation list, NOT a missing backend. POST /api/v2/elitea_core/conversations/prompt_lib/1 was verified returning 201 against the running stack; the route renders (chat.tsx supplies ChatWithEditors + <Outlet/>, so the child\'s `component: () => null` is by design). The obstacle is that seeding a conversation per run grows the sidebar list, so the snapshot would differ every time. It is now closer to tractable: the sidebar is mounted (#128) and /chat\'s own landmark ("Still no conversations created.") is the empty branch of that very list, so a seed producing a FIXED conversation set unblocks all four shots.'],
-  // Wired at the route layer as of the #61 re-classification — it renders
-  // `pages/help-center/HelpCenterPage`, not scaffolding — but deliberately not
-  // snapshotted. `useResourcesConfig` has no backend (issue #26 Key Decision
-  // #2, disclosed in the page's own module doc), so every one of its five
-  // cards renders "No links configured" and the version bar is blank.
+  // Wired at the route layer as of the #61 re-classification, and still exempt
+  // — but for a NARROWER reason since the admin Configuration port (#200).
   //
-  // This is NOT the same as an empty screen, and the distinction is the whole
-  // reason it is exempt rather than covered: `/artifacts`, `/skills/:tab` and
-  // the list pages render resolved, legitimately-empty data from endpoints that
-  // work, so their empty states are real UI and worth a reference. Help
-  // Center's content cannot be configured at all yet, so a baseline would make
-  // a screen with no content the official reference — exactly what the
-  // `wired`-only rule exists to prevent.
-  ['/help-center', 'not snapshotted — the route is wired and renders its real page, but every card\'s link list and the version bar come from `useResourcesConfig`, which has no backend (issue #26). A baseline would pin a screen whose entire content is missing. Cover it in the same change that lands #26; measured meanwhile, its stalled and loaded renders are byte-identical, so it will need only a mount guard, not a data landmark.'],
+  // `useResourcesConfig` used to make no request at all, because the endpoint
+  // behind it returned chat and upload limits rather than resource links. It
+  // now reads `GET /admin/plugin_config_values/prompt_lib/resources`, which
+  // serves the section an administrator edits on Admin > Configuration >
+  // Resources, and journey 36g asserts that round trip end to end.
+  //
+  // What is left is a SEEDING question rather than a wiring one, which is the
+  // same shape as `/chat/:conversationId` above: this stack configures no
+  // resource links, so the cards still render "No links configured" and a
+  // baseline would still make an unconfigured screen the official reference.
+  // Seed a fixed set of links and the route becomes coverable.
+  ['/help-center', 'not snapshotted — needs seeded resource links, NOT a missing backend. `useResourcesConfig` reads GET /admin/plugin_config_values/prompt_lib/resources, which the admin port (#200) made serve real values; the section is authored on Admin › Features and journey 36g asserts the round trip. This stack configures none, so a baseline would still pin an unconfigured screen; seed a fixed set of links and it is coverable. Measured meanwhile, its stalled and loaded renders are byte-identical, so it will need only a mount guard, not a data landmark.'],
 ]);
 
 const wired = shots.filter((s) => s.wiringStatus === 'wired');

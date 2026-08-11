@@ -1,8 +1,144 @@
 package admin
 
+// Why most of these sections carry an `unavailable_reason` — unit A14, #200.
+//
+// This file describes what the admin Configuration page can offer. In pylon
+// those descriptions are assembled at request time from every plugin's
+// `admin_schema.json` as announced over the Arbiter bus, and each field's `path`
+// addresses a key inside that plugin's YAML config; saving one re-serialises the
+// YAML and ships it back to the pylon that owns it
+// (legacy/plugins/admin/api/v2/plugin_config_values.py — see the header of
+// config_values.go for the whole chain).
+//
+// None of that exists here, and AGENTS.md says it is not meant to: "Do not
+// preserve Pylon plugin loading … as target architecture." A field whose only
+// consumer is a Pylon plugin descriptor therefore has nowhere to go, and the
+// honest answer is to say so ON THE SECTION rather than to render a form.
+//
+// `unavailable_reason` is declared HERE, on the server, for the same reason the
+// permission is: it is a fact about the deployment, and a page that decided it
+// locally would drift from what the endpoints actually do. `config_values.go`
+// answers 501 with this exact string, and the ported page renders it.
+//
+// Removing a reason is how a section becomes live — and it is only correct to
+// remove one once something in this platform READS the values. `resources` is
+// the section that passes that test: apps/elitea-web's Help Center reads it back
+// through `GET /admin/plugin_config_values/prompt_lib/resources`.
+import "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
+
+const (
+	// pylonPluginConfigUnavailable covers every section whose fields address a
+	// key inside a Pylon plugin's YAML config and are read by that plugin at
+	// load time — guardrails, MCP server definitions, tracing switches, the
+	// indexer worker's runtime flags, the auth provider.
+	pylonPluginConfigUnavailable = "these settings configure Pylon plugin runtimes: the reference page collects them " +
+		"from plugin heartbeats and saves them by shipping patched plugin YAML back over the Arbiter bus. This " +
+		"platform has no plugin descriptors to reconfigure and nothing here reads these values, so editing them " +
+		"would have no effect. Use the Pylon admin panel while the hybrid deployment is running."
+
+	// extraUIConfigUnavailable covers the `extra_ui_config.*` sections other
+	// than `resources`. These are not Pylon RUNTIME concerns — they are product
+	// settings that legacy delivered by injecting the whole of elitea_core's
+	// `extra_ui_config` into `window.elitea_ui_config`. They are unavailable for
+	// the narrower reason that no surface in this platform reads them yet, which
+	// is a gap to close rather than a boundary to respect.
+	extraUIConfigUnavailable = "nothing in this platform reads this setting yet. The legacy UI received it by " +
+		"injecting the plugin's extra_ui_config into the page; no equivalent consumer has been built here, so the " +
+		"control is withheld rather than shown saving into a void."
+
+	// maintenanceSplashUnavailable — pylon's maintenance mode is a gevent router
+	// hook installed on the bootstrap plugin's persisted state, serving a 503
+	// splash to anyone whose administration-mode roles do not include admin
+	// (legacy/plugins/bootstrap/tools/splash.py). Nothing in this service
+	// installs such a hook, and inventing one would be a new product feature.
+	maintenanceSplashUnavailable = "maintenance mode is a Pylon request hook that serves a 503 splash to non-admin " +
+		"users; this platform installs no such hook, so the switch would toggle a setting nothing enforces."
+
+	// advancedRuntimeUnavailable — the Advanced section is raw plugin YAML
+	// editing, per-pylon log tailing and plugin update/reload. All four of its
+	// endpoints are Pylon runtime introspection.
+	advancedRuntimeUnavailable = "the Advanced section edits raw plugin YAML, tails pylon logs and reloads plugins " +
+		"on live Pylon runtimes. Those runtimes are not part of this platform."
+
+	// governanceElsewhereUnavailable — the LLM-governance fields are NOT saved
+	// through this endpoint even in the reference: elitea-main has its own CRUD
+	// at `/admin/gateway/governance` writing `gateway.governance_config`. That
+	// surface is real, but nothing reads it — see internal/api/gateway/governance.go
+	// and the note in the PR: the gateway's GovernanceStore never queries the
+	// table, despite both the migration and this file previously claiming it did.
+	governanceElsewhereUnavailable = "LLM governance is authored through /admin/gateway/governance, not through this " +
+		"page. It is withheld here because the gateway does not yet read gateway.governance_config, so definitions " +
+		"saved through either surface are not enforced."
+
+	// serviceDescriptorsElsewhereUnavailable — the section is unavailable for
+	// the SAME reason its own page is, and says so in the same words.
+	//
+	// Until that page was ported this said only "service descriptors are a page
+	// of their own in the admin port (issue #200)", which deferred to a surface
+	// that did not exist yet. Deferring to one that now exists and itself says
+	// "unavailable" would be worse: an operator following the pointer would be
+	// told something different at the other end. The constant lives with the
+	// endpoints that enforce it.
+	serviceDescriptorsElsewhereUnavailable = eliteacore.ServiceDescriptorsUnavailableReason
+
+	// skillPublishingUnavailable — the reference's Skill Publishing section
+	// governs a publishing pipeline this service does not have. `grep -rn
+	// skill_publishing_guardrail services/` returns nothing; there is no skill
+	// publish handler, no skill categories endpoint and no skill catalog filter
+	// bar to feed. Declaring the four fields so the form could render them would
+	// be inventing settings for a subsystem that is not here.
+	skillPublishingUnavailable = "skill publishing is not implemented in this service: there is no skill publish " +
+		"endpoint, no skill catalog and no skill categories surface for these settings to govern. The controls are " +
+		"withheld rather than shown governing nothing."
+
+	// supportAssistantWidgetUnavailable replaces the generic extra_ui_config
+	// reason with the specific one. The switch would be read by
+	// `GET /support_assistant/config`, whose only client is
+	// `widgets/support-assistant/ui/SupportAssistantWidget.tsx` — and that
+	// widget is not mounted anywhere (`grep -rn SupportAssistantWidget src/`
+	// finds one doc-comment mention and no JSX site), renders no floating
+	// assistant, and documents in its own body that `@eliteaai/elitea-assistant`
+	// is not a dependency of this app. Turning the switch on would change one
+	// boolean in an unmounted component.
+	supportAssistantWidgetUnavailable = "the in-app support assistant is not mounted in this application: the " +
+		"@eliteaai/elitea-assistant package is not a dependency and SupportAssistantWidget has no render site, so " +
+		"enabling it would change a flag no rendered surface reads."
+
+	// publishValidationRulesUnavailable is a FIELD-level reason, not a section
+	// one. The rest of `agent_publishing` is enforced for real; this one field
+	// alone has nothing behind it. `runPublishValidation` in
+	// internal/api/v2/eliteacore/handler.go is entirely deterministic — version
+	// name collisions, generic names, sub-agent cycles and depth — with no model
+	// call anywhere in it, so a custom evaluation prompt has no evaluator to
+	// reach. A section-level reason would have withheld three working controls
+	// to disclose one broken one.
+	publishValidationRulesUnavailable = "publish validation in this service is deterministic (name collisions, " +
+		"sub-agent cycles and depth); there is no AI evaluator for custom criteria to reach, so these rules would " +
+		"never be applied."
+)
+
+// Which page a section belongs to.
+//
+// The reference decides this IN THE CLIENT: `FeaturesPage.jsx` hardcodes a list
+// of six sections and `ConfigurationPage.jsx` hardcodes the complementary
+// `MOVED_TO_FEATURES` array plus three config-path prefixes to subtract from
+// Guardrails. Two client-side lists that must stay each other's complement is a
+// drift waiting to happen, and it is the same mistake #217 removed when it moved
+// `service_descriptors` out of the client's section list and onto the server.
+//
+// So placement is declared here, next to the fields, and both pages filter on
+// it. A section with no `page` belongs to Configuration — the default keeps the
+// eight sections that were already there exactly where they were.
+const (
+	configPageFeatures = "features"
+)
+
 func configSections() []map[string]any {
 	return []map[string]any{
 		guardrailsSection(),
+		mcpConfigurationSection(),
+		agentPublishingSection(),
+		skillPublishingSection(),
 		mcpServersSection(),
 		observabilitySection(),
 		litellmSection(),
@@ -14,18 +150,40 @@ func configSections() []map[string]any {
 		dedicatedBannerSection(),
 		supportAssistantSection(),
 		voiceFeaturesSection(),
+		serviceDescriptorsSection(),
 		maintenanceSection(),
 		advancedSection(),
 	}
 }
 
+// serviceDescriptorsSection is declared HERE rather than appended by the page.
+//
+// The reference client injects `{id: "service_descriptors", title: …}` into the
+// section list itself, so the sidebar shows an entry the server never described.
+// Every other section — including its permission and, now, its availability — is
+// server-declared, and one that is not is one the page can get wrong on its own.
+func serviceDescriptorsSection() map[string]any {
+	return map[string]any{
+		"id":                  "service_descriptors",
+		"unavailable_reason":  serviceDescriptorsElsewhereUnavailable,
+		"title":               "Service Descriptors",
+		"description":         "Registered provider service descriptors.",
+		"order":               8,
+		"icon":                "settings_input_component",
+		"always_visible":      true,
+		"required_permission": "configuration.service_descriptors",
+		"fields":              []map[string]any{},
+	}
+}
+
 func guardrailsSection() map[string]any {
 	return map[string]any{
-		"id":          "guardrails",
-		"title":       "Guardrails",
-		"description": "Control platform-wide security policies, toolkit restrictions, and MCP exposure settings.",
-		"order":       1,
-		"icon":        "security",
+		"id":                 "guardrails",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Guardrails",
+		"description":        "Control platform-wide security policies, toolkit restrictions, and MCP exposure settings.",
+		"order":              1,
+		"icon":               "security",
 		"fields": []map[string]any{
 			{
 				"key":         "blocked_toolkits",
@@ -80,82 +238,174 @@ func guardrailsSection() map[string]any {
 				"section":     "guardrails",
 				"default":     "",
 			},
+			// `mcp_exposure.*` and `publishing_guardrail.*` used to be declared
+			// here. They are the fields the reference relocates onto the Features
+			// page by config-path prefix, and they are the only fields in this
+			// section this platform actually reads — so they now live in
+			// `mcpConfigurationSection()` and `agentPublishingSection()`, which
+			// carry no `unavailable_reason`. Leaving copies here would have been
+			// two declarations of one setting, and the unavailable one would have
+			// told the operator the opposite of the truth.
+		},
+	}
+}
+
+// mcpConfigurationSection — the Features page's MCP switches. LIVE.
+//
+// This is the master switch pylon exposes as `mcp_exposure.enabled`, read into
+// module state at plugin load and consulted by every MCP surface it has
+// (legacy/plugins/elitea_core/utils/mcp_config.py, and its callers in
+// mcp_dcr_proxy, mcp_oauth_proxy, mcp_sync_tools and routes/mcp_sse).
+//
+// It is available here because this platform now reads it in both of the places
+// that matter:
+//
+//   - `GET /elitea_core/platform_settings/prompt_lib` marshals `mcp_enabled` and
+//     `mcp_in_menu_enabled` from these rows, and apps/elitea-web's four
+//     `useIsMcpVisible` hooks and its `/mcps` route gate on them;
+//   - the three MCP proxy routes (`mcp_oauth_proxy`, `mcp_dcr_proxy`,
+//     `mcp_sync_tools`) refuse with 403 when the master switch is off, which is
+//     what "removes all MCP-related functionality … including API endpoints"
+//     has to mean. A switch that only hides the buttons is not a kill switch,
+//     and an operator who read that description and turned it off would believe
+//     they had closed the API.
+func mcpConfigurationSection() map[string]any {
+	return map[string]any{
+		"id":          "mcp_configuration",
+		"page":        configPageFeatures,
+		"title":       "MCP Configuration",
+		"description": "Control Model Context Protocol exposure across the platform.",
+		"order":       10,
+		"icon":        "extension",
+		"fields": []map[string]any{
 			{
-				"key":              "mcp_enabled",
-				"type":             "boolean",
-				"title":            "Enable MCP",
-				"description":      "Master switch for MCP (Model Context Protocol). When disabled, removes all MCP-related functionality across the entire application including API endpoints and all UI entry points.",
-				"path":             "mcp_exposure.enabled",
-				"section":          "guardrails",
-				"default":          true,
-				"requires_restart": true,
+				"key":         "mcp_enabled",
+				"type":        "boolean",
+				"title":       "Enable MCP",
+				"description": "Master switch for MCP (Model Context Protocol). When disabled, the MCP proxy and tool-sync endpoints refuse with 403 and every MCP entry point is hidden.",
+				"path":        "mcp_exposure.enabled",
+				"section":     "mcp_configuration",
+				"default":     true,
+				// No `requires_restart`. The reference marks both fields as
+				// needing one because a pylon reads them into module state at
+				// plugin load; here every consumer reads the row per request, so
+				// the change is live on the next call. Carrying the flag over
+				// would have asked the operator to press a reload button that
+				// answers 501.
 			},
 			{
-				"key":              "mcp_in_menu",
-				"type":             "boolean",
-				"title":            "Show MCPs in UI",
-				"description":      "When disabled, hides all MCP entry points across the UI while keeping MCP API functionality intact.",
-				"path":             "mcp_exposure.in_menu",
-				"section":          "guardrails",
-				"default":          true,
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "mcp_enabled", "value": true},
+				"key":         "mcp_in_menu",
+				"type":        "boolean",
+				"title":       "Show MCPs in UI",
+				"description": "When disabled, hides MCP entry points in the UI while leaving the MCP API endpoints working.",
+				"path":        "mcp_exposure.in_menu",
+				"section":     "mcp_configuration",
+				"default":     true,
+				// Rendered only while the master switch is on: "hide the menu
+				// entry" is not a meaningful choice once the whole subsystem is
+				// off, and showing it would imply the two combine in some way
+				// they do not.
+				"visible_when": map[string]any{"field": "mcp_enabled", "value": true},
+			},
+		},
+	}
+}
+
+// agentPublishingSection — the Features page's publishing guardrail. LIVE,
+// except for one field that says why it is not.
+//
+// `is_publish_blocked` and `publish_whitelist_project_ids` are enforced in
+// `POST /elitea_core/publish/prompt_lib/{projectID}/{versionID}` — before this
+// unit that handler validated the version name, the agent type and the publish
+// status and never once asked whether publishing was blocked, so the switch the
+// reference page offers had no effect on the only publish path this service has.
+//
+// `agent_categories` is merged into `GET /elitea_core/agent_categories/…`, which
+// apps/elitea-web's `useAgentHubData` reads for the Agents Hub filter bar.
+func agentPublishingSection() map[string]any {
+	return map[string]any{
+		"id":          "agent_publishing",
+		"page":        configPageFeatures,
+		"title":       "Agent Publishing",
+		"description": "Control who may publish agents, and which categories they may publish into.",
+		"order":       11,
+		"icon":        "publish",
+		"fields": []map[string]any{
+			{
+				"key":         "is_publish_blocked",
+				"type":        "boolean",
+				"title":       "Block Agent Publishing",
+				"description": "When enabled, agent publishing is refused platform-wide except from the projects listed below.",
+				"path":        "publishing_guardrail.is_publish_blocked",
+				"section":     "agent_publishing",
+				"default":     false,
 			},
 			{
-				"key":              "is_publish_blocked",
-				"type":             "boolean",
-				"title":            "Block Agent Publishing",
-				"description":      "When enabled, agent publishing is blocked platform-wide except for whitelisted projects. Admin publishes from the public project are always exempt.",
-				"path":             "publishing_guardrail.is_publish_blocked",
-				"section":          "guardrails",
-				"default":          false,
-				"requires_restart": true,
-			},
-			{
-				"key":              "publish_whitelist_project_ids",
-				"type":             "array",
-				"items":            map[string]any{"type": "integer"},
-				"title":            "Publishing Allowed Projects",
-				"description":      "Projects where publishing remains allowed when blocked globally. If empty, publishing is blocked for all projects.",
-				"path":             "publishing_guardrail.whitelist_project_ids",
-				"section":          "guardrails",
-				"default":          []any{},
-				"requires_restart": true,
-				"enum_source":      "projects",
-				"visible_when":     map[string]any{"field": "is_publish_blocked", "value": true},
-			},
-			{
-				"key":              "publish_validation_rules",
-				"type":             "string",
-				"format":           "textarea",
-				"title":            "Publish Validation Rules",
-				"description":      "Custom evaluation criteria for AI validation of agents before publishing. Leave empty to use built-in rules.",
-				"path":             "publishing_guardrail.publish_validation_rules",
-				"section":          "guardrails",
-				"default":          "",
-				"requires_restart": true,
+				"key":         "publish_whitelist_project_ids",
+				"type":        "array",
+				"items":       map[string]any{"type": "integer"},
+				"title":       "Publishing Allowed Projects",
+				"description": "Projects where publishing remains allowed while it is blocked globally. If empty, publishing is blocked everywhere.",
+				"path":        "publishing_guardrail.whitelist_project_ids",
+				"section":     "agent_publishing",
+				"default":     []any{},
+				"visible_when": map[string]any{
+					"field": "is_publish_blocked", "value": true,
+				},
 			},
 			{
 				"key":         "agent_categories",
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
 				"title":       "Agent Categories",
-				"description": "Additional agent categories available in the publish modal and Agent Studio filter bar. Built-in defaults cannot be removed here. New categories take effect immediately without a restart.",
+				"description": "Additional agent categories offered alongside the built-in defaults. The built-in defaults cannot be removed here.",
 				"path":        "publishing_guardrail.agent_categories",
-				"section":     "guardrails",
+				"section":     "agent_publishing",
 				"default":     []any{},
+			},
+			{
+				"unavailable_reason": publishValidationRulesUnavailable,
+				"key":                "publish_validation_rules",
+				"type":               "string",
+				"format":             "textarea",
+				"title":              "Publish Validation Rules",
+				"description":        "Custom evaluation criteria for AI validation of agents before publishing.",
+				"path":               "publishing_guardrail.publish_validation_rules",
+				"section":            "agent_publishing",
+				"default":            "",
+				
 			},
 		},
 	}
 }
 
+// skillPublishingSection — declared, and declared unavailable.
+//
+// The alternative was to omit it. Omitting it would have made the section
+// silently disappear relative to the reference, which reads to an operator as a
+// page that lost a feature rather than a platform that does not have one; the
+// reason is the only thing that distinguishes those two.
+func skillPublishingSection() map[string]any {
+	return map[string]any{
+		"id":                 "skill_publishing",
+		"page":               configPageFeatures,
+		"unavailable_reason": skillPublishingUnavailable,
+		"title":              "Skill Publishing",
+		"description":        "Control who may publish skills, and which categories they may publish into.",
+		"order":              12,
+		"icon":               "bolt",
+		"fields":             []map[string]any{},
+	}
+}
+
 func mcpServersSection() map[string]any {
 	return map[string]any{
-		"id":          "mcp_servers",
-		"title":       "MCP Servers",
-		"description": "Configure Model Context Protocol server definitions available to the indexer runtime.",
-		"order":       2,
-		"icon":        "dns",
+		"id":                 "mcp_servers",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "MCP Servers",
+		"description":        "Configure Model Context Protocol server definitions available to the indexer runtime.",
+		"order":              2,
+		"icon":               "dns",
 		"fields": []map[string]any{
 			{
 				"key":              "mcp_servers",
@@ -173,11 +423,12 @@ func mcpServersSection() map[string]any {
 
 func observabilitySection() map[string]any {
 	return map[string]any{
-		"id":          "observability",
-		"title":       "Observability",
-		"description": "Manage distributed tracing and audit trail settings across all pylons.",
-		"order":       3,
-		"icon":        "monitoring",
+		"id":                 "observability",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Observability",
+		"description":        "Manage distributed tracing and audit trail settings across all pylons.",
+		"order":              3,
+		"icon":               "monitoring",
 		"fields": []map[string]any{
 			{
 				"key":              "tracing_enabled",
@@ -215,11 +466,12 @@ func observabilitySection() map[string]any {
 
 func litellmSection() map[string]any {
 	return map[string]any{
-		"id":          "litellm",
-		"title":       "LiteLLM",
-		"description": "Configure the LiteLLM proxy — connection mode, credentials, and model access policies.",
-		"order":       4,
-		"icon":        "model_training",
+		"id":                 "litellm",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "LiteLLM",
+		"description":        "Configure the LiteLLM proxy — connection mode, credentials, and model access policies.",
+		"order":              4,
+		"icon":               "model_training",
 		"fields": []map[string]any{
 			{
 				"key":              "litellm_mode",
@@ -357,6 +609,7 @@ func litellmSection() map[string]any {
 func governanceSection() map[string]any {
 	return map[string]any{
 		"id":                  "governance",
+		"unavailable_reason":  governanceElsewhereUnavailable,
 		"title":               "LLM Governance",
 		"description":         "Author LLM-gateway governance: budgets, rate limits, credential billing policy, per-model/provider scopes, MCP allowlists, and CEL routing rules. Definitions are read by the gateway for enforcement.",
 		"order":               5,
@@ -549,11 +802,12 @@ func governanceSection() map[string]any {
 
 func runtimeSection() map[string]any {
 	return map[string]any{
-		"id":          "runtime",
-		"title":       "Runtime",
-		"description": "Configure indexer worker runtime behavior, task processing, and development settings.",
-		"order":       5,
-		"icon":        "settings",
+		"id":                 "runtime",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Runtime",
+		"description":        "Configure indexer worker runtime behavior, task processing, and development settings.",
+		"order":              5,
+		"icon":               "settings",
 		"fields": []map[string]any{
 			{
 				"key":              "ai_project_id",
@@ -655,22 +909,24 @@ func runtimeSection() map[string]any {
 
 func adminPanelSection() map[string]any {
 	return map[string]any{
-		"id":          "admin_panel",
-		"title":       "Admin Panel",
-		"description": "Manage admin panel plugin availability and reload capabilities.",
-		"order":       6,
-		"icon":        "admin_panel_settings",
-		"fields":      []map[string]any{},
+		"id":                 "admin_panel",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Admin Panel",
+		"description":        "Manage admin panel plugin availability and reload capabilities.",
+		"order":              6,
+		"icon":               "admin_panel_settings",
+		"fields":             []map[string]any{},
 	}
 }
 
 func authSection() map[string]any {
 	return map[string]any{
-		"id":          "auth",
-		"title":       "Authentication",
-		"description": "Configure the authentication provider and identity settings.",
-		"order":       7,
-		"icon":        "lock",
+		"id":                 "auth",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Authentication",
+		"description":        "Configure the authentication provider and identity settings.",
+		"order":              7,
+		"icon":               "lock",
 		"fields": []map[string]any{
 			{
 				"key":              "auth_provider",
@@ -830,10 +1086,22 @@ func resourcesSection() map[string]any {
 	result = append(result, fields[4:]...)
 
 	return map[string]any{
-		"id":             "resources",
-		"title":          "Resources",
-		"description":    "Configure resource cards displayed on the environment-wide Resources page.",
-		"order":          88,
+		"id":   "resources",
+		"page": configPageFeatures,
+		// #217 rendered this section on the Configuration page and said in its
+		// own report that it belonged here — it put it there because that is
+		// where the server's schema had it, and leaving it out would have kept
+		// #26 (every Help Center card reading "No links configured") open for
+		// another unit. The reference is unambiguous: `ConfigurationPage.jsx`
+		// subtracts `resources` via `MOVED_TO_FEATURES` and `FeaturesPage.jsx`
+		// renders it as "Help Center". It moves now.
+		//
+		// Nothing about the Help Center's own read changes: it calls
+		// `GET /admin/plugin_config_values/prompt_lib/resources`, which is a
+		// separate route with no notion of which admin page authored the row.
+		"title":          "Help Center",
+		"description":    "Configure the resource cards shown on the environment-wide Help Center page.",
+		"order":          13,
 		"icon":           "menu_book",
 		"always_visible": true,
 		"fields":         result,
@@ -842,12 +1110,13 @@ func resourcesSection() map[string]any {
 
 func dedicatedBannerSection() map[string]any {
 	return map[string]any{
-		"id":             "dedicated_banner",
-		"title":          "Banner",
-		"description":    "Enable dedicated banner to communicate important notifications across the platform.",
-		"order":          89,
-		"icon":           "campaign",
-		"always_visible": true,
+		"id":                 "dedicated_banner",
+		"unavailable_reason": extraUIConfigUnavailable,
+		"title":              "Banner",
+		"description":        "Enable dedicated banner to communicate important notifications across the platform.",
+		"order":              89,
+		"icon":               "campaign",
+		"always_visible":     true,
 		"fields": []map[string]any{
 			{
 				"key":         "banner_enabled",
@@ -902,12 +1171,19 @@ func dedicatedBannerSection() map[string]any {
 
 func supportAssistantSection() map[string]any {
 	return map[string]any{
-		"id":             "support_assistant",
-		"title":          "Support Assistant",
-		"description":    "Enable the in-app support assistant widget for all users.",
-		"order":          89,
-		"icon":           "support_agent",
-		"always_visible": true,
+		"id":   "support_assistant",
+		"page": configPageFeatures,
+		// The reason is narrowed from the generic extra_ui_config one: this
+		// section's switch DOES have a wire (`GET /support_assistant/config`),
+		// and the wire is not what is missing. What is missing is a rendered
+		// consumer at the other end. Saying "nothing reads this yet" would have
+		// been true but pointed at the wrong thing to fix.
+		"unavailable_reason": supportAssistantWidgetUnavailable,
+		"title":              "Support Assistant",
+		"description":        "Enable the in-app support assistant widget for all users.",
+		"order":              14,
+		"icon":               "support_agent",
+		"always_visible":     true,
 		"fields": []map[string]any{
 			{
 				"key":         "vite_elitea_assistant",
@@ -969,12 +1245,21 @@ func supportAssistantSection() map[string]any {
 
 func voiceFeaturesSection() map[string]any {
 	return map[string]any{
-		"id":             "voice_features",
-		"title":          "Voice Features",
-		"description":    "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
-		"order":          90,
-		"icon":           "record_voice_over",
-		"always_visible": true,
+		"id":   "voice_features",
+		"page": configPageFeatures,
+		// LIVE. The first pass of this unit marked this section unavailable on
+		// the strength of `VoiceControlButton`/`VoiceMiniPlayer` in
+		// `features/chat-input` having no render site — which is true, and was
+		// the wrong component. `widgets/chat/ui/chat-button/VoiceButton.tsx` is
+		// a SECOND voice control, hardcoding the same two flags as module
+		// constants, and it IS mounted: `pages/chat` → `ChatBox` →
+		// `buildChatBoxInputSlots()` → `<VoiceButton>`. Both flags are now
+		// marshalled by `GET /elitea_core/platform_settings/…` and read there.
+		"title":              "Voice Features",
+		"description":        "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
+		"order":              15,
+		"icon":               "record_voice_over",
+		"always_visible":     true,
 		"fields": []map[string]any{
 			{
 				"key":         "vite_voice_features_enabled",
@@ -1000,19 +1285,21 @@ func voiceFeaturesSection() map[string]any {
 
 func maintenanceSection() map[string]any {
 	return map[string]any{
-		"id":             "maintenance",
-		"title":          "Maintenance",
-		"description":    "Enable maintenance mode to show a splash screen to all non-admin users.",
-		"order":          91,
-		"icon":           "construction",
-		"always_visible": true,
-		"fields":         []map[string]any{},
+		"id":                 "maintenance",
+		"unavailable_reason": maintenanceSplashUnavailable,
+		"title":              "Maintenance",
+		"description":        "Enable maintenance mode to show a splash screen to all non-admin users.",
+		"order":              91,
+		"icon":               "construction",
+		"always_visible":     true,
+		"fields":             []map[string]any{},
 	}
 }
 
 func advancedSection() map[string]any {
 	return map[string]any{
 		"id":                  "advanced",
+		"unavailable_reason":  advancedRuntimeUnavailable,
 		"title":               "Advanced",
 		"description":         "View and edit raw plugin configurations for all connected pylons.",
 		"order":               100,

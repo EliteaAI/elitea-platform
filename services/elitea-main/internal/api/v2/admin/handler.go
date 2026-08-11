@@ -1,25 +1,44 @@
 package admin
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"runtime"
-	"sort"
 	"strconv"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 type Handler struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	resolver auth.PermissionResolver
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+// Option configures a Handler at construction time.
+type Option func(*Handler)
+
+// WithPermissionResolver supplies the resolver the WRITE handlers in users.go
+// use for their own, finer-grained checks — specifically the `super_admin`
+// escalation guard, which the route-level middleware cannot express because it
+// depends on the request body and on the TARGET user's current roles.
+//
+// Route middleware still gates every write on `admin.auth.users`; this resolver
+// is an ADDITIONAL server-side check, never a replacement for it. Fail-closed:
+// when it is nil, the escalation-sensitive branches answer 403 rather than
+// proceeding unchecked.
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(h *Handler) { h.resolver = resolver }
 }
 
+func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
+	handler := &Handler{pool: pool}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
+}
 
 func (h *Handler) SystemInfo(w http.ResponseWriter, _ *http.Request) {
 	info := map[string]any{
@@ -34,341 +53,140 @@ func (h *Handler) SystemInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
-func (h *Handler) ResourcesConfig(w http.ResponseWriter, _ *http.Request) {
-	config := map[string]any{
-		"max_file_size":        52428800,
-		"max_upload_files":     10,
-		"allowed_extensions":   []string{"pdf", "txt", "md", "json", "csv", "docx", "xlsx"},
-		"max_context_length":   128000,
-		"max_output_tokens":    4096,
-		"streaming_enabled":    true,
-		"attachments_enabled":  true,
-		"artifacts_enabled":    true,
-		"mcp_enabled":          true,
-		"canvas_enabled":       true,
-		"voice_enabled":        false,
-		"image_gen_enabled":    false,
-		"realtime_enabled":     true,
-		"max_participants":     10,
-		"max_conversations":    100,
-		"max_messages_per_day": 1000,
-	}
-	writeJSON(w, http.StatusOK, config)
-}
+// ResourcesConfig, PluginConfigValues and PluginConfigValuesSave are implemented
+// in config_values.go (unit A14). All three were stubs of the three shapes this
+// unit exists to remove:
+//
+//   - `ResourcesConfig` — the route the Help Center calls — answered with chat
+//     and upload limits (`max_file_size`, `max_context_length`, …) under no
+//     `values` wrapper. It had a route, it returned 200, and it answered a
+//     different question than the page asked. Issue #26 records the symptom:
+//     every Help Center card renders "No links configured".
+//   - `PluginConfigValues` returned the schema's DEFAULTS for EVERY section at
+//     once, ignoring the `{plugin}` segment entirely.
+//   - `PluginConfigValuesSave` never read the request body.
 
-func (h *Handler) AuthUsers(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	limit, offset := paginationParams(r)
-	userType := r.URL.Query().Get("user_type")
-
-	users, total := h.queryUsers(ctx, limit, offset, userType)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":   users,
-		"total":  total,
-		"counts": map[string]int{"platform": total, "system": 0},
-	})
-}
-
-func (h *Handler) queryUsers(ctx context.Context, limit, offset int, userType string) ([]map[string]any, int) {
-	if h.pool == nil {
-		return []map[string]any{}, 0
-	}
-
-	// system users have email like '%@centry.user', platform users don't
-	whereClause := ""
-	switch userType {
-	case "system":
-		whereClause = " WHERE u.email LIKE '%@centry.user'"
-	case "platform":
-		whereClause = " WHERE u.email NOT LIKE '%@centry.user'"
-	}
-
-	var total int
-	err := h.pool.QueryRow(ctx, `SELECT COUNT(*) FROM auth_core__user u`+whereClause).Scan(&total)
-	if err != nil {
-		return []map[string]any{}, 0
-	}
-
-	rows, err := h.pool.Query(ctx,
-		`SELECT u.id, COALESCE(u.name, u.email) as name, u.email,
-		        u.last_login::text, COALESCE(u.suspended, false),
-		        r.name as role_name
-		 FROM auth_core__user u
-		 LEFT JOIN auth_core__user_role ur ON ur.user_id = u.id
-		 LEFT JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
-		`+whereClause+`
-		 ORDER BY u.id
-		 LIMIT $1 OFFSET $2`, limit, offset)
-	if err != nil {
-		return []map[string]any{}, total
-	}
-	defer rows.Close()
-
-	items := make([]map[string]any, 0)
-	for rows.Next() {
-		var id int
-		var name, email string
-		var lastLogin *string
-		var suspended bool
-		var roleName *string
-		if err := rows.Scan(&id, &name, &email, &lastLogin, &suspended, &roleName); err != nil {
-			continue
-		}
-		item := map[string]any{
-			"id":         id,
-			"name":       name,
-			"email":      email,
-			"last_login": lastLogin,
-			"is_active":  !suspended,
-			"admin_role": roleName,
-		}
-		items = append(items, item)
-	}
-	return items, total
-}
-
-func (h *Handler) AdminPermissions(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	mode := chi.URLParam(r, "mode")
-
-	if h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
-		return
-	}
-
-	rows, err := h.pool.Query(ctx,
-		`SELECT r.id, r.name,
-		        COALESCE(array_agg(rp.permission ORDER BY rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}')
-		 FROM auth_core__role r
-		 LEFT JOIN auth_core__role_permission rp ON rp.role_id = r.id
-		 WHERE r.mode = $1
-		 GROUP BY r.id, r.name
-		 ORDER BY r.id`, mode)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
-		return
-	}
-	defer rows.Close()
-
-	// Build role → permission set mapping
-	type roleData struct {
-		name  string
-		perms map[string]bool
-	}
-	var roles []roleData
-	allPerms := make(map[string]bool)
-
-	for rows.Next() {
-		var id int
-		var name string
-		var permissions []string
-		if err := rows.Scan(&id, &name, &permissions); err != nil {
-			continue
-		}
-		permSet := make(map[string]bool, len(permissions))
-		for _, p := range permissions {
-			permSet[p] = true
-			allPerms[p] = true
-		}
-		roles = append(roles, roleData{name: name, perms: permSet})
-	}
-
-	// Invert: one row per permission with boolean flags per role
-	permNames := make([]string, 0, len(allPerms))
-	for p := range allPerms {
-		permNames = append(permNames, p)
-	}
-	sort.Strings(permNames)
-
-	items := make([]map[string]any, 0, len(permNames))
-	for _, perm := range permNames {
-		row := map[string]any{"name": perm}
-		for _, role := range roles {
-			row[role.name] = role.perms[perm]
-		}
-		items = append(items, row)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  items,
-		"total": len(items),
-	})
-}
-
-func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	limit, offset := paginationParams(r)
-
-	if h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
-		return
-	}
-
-	var total int
-	err := h.pool.QueryRow(ctx, `SELECT COUNT(*) FROM centry.project`).Scan(&total)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
-		return
-	}
-
-	rows, err := h.pool.Query(ctx,
-		`SELECT id, name, COALESCE(owner_id, 0), COALESCE(suspended, false)
-		 FROM centry.project
-		 ORDER BY id
-		 LIMIT $1 OFFSET $2`, limit, offset)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": total})
-		return
-	}
-	defer rows.Close()
-
-	items := make([]map[string]any, 0)
-	for rows.Next() {
-		var id, ownerID int
-		var name string
-		var suspended bool
-		if err := rows.Scan(&id, &name, &ownerID, &suspended); err != nil {
-			continue
-		}
-		items = append(items, map[string]any{
-			"id":        id,
-			"name":      name,
-			"owner_id":  ownerID,
-			"suspended": suspended,
-		})
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  items,
-		"total": total,
-	})
-}
+// Projects and ProjectSuspend live in projects.go (unit A14).
 
 func (h *Handler) PluginConfigSchemas(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sections":                     configSections(),
+		"sections": configSections(),
+		// Whether the caller may VIEW the descriptors page, which is a different
+		// question from whether this section can edit them (it cannot — see
+		// serviceDescriptorsSection).
 		"can_view_service_descriptors": true,
 	})
 }
 
-func (h *Handler) PluginConfigValues(w http.ResponseWriter, r *http.Request) {
-	values := make(map[string]any)
-	for _, section := range configSections() {
-		fields, _ := section["fields"].([]map[string]any)
-		for _, f := range fields {
-			key, _ := f["key"].(string)
-			if key == "" {
-				continue
-			}
-			if def, ok := f["default"]; ok {
-				values[key] = def
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"values": values})
+// pylonRuntimeUnavailable is what the five Pylon-runtime endpoints behind the
+// Configuration page's Advanced section answer, and why.
+//
+// Each of them drives a live Pylon: `plugin_config_restart` fires a reload or a
+// process restart onto the Arbiter bus; `runtime_remote` lists the plugins every
+// pylon announced in the last 60 seconds; `runtime_remote_config` reads and
+// writes a plugin's raw YAML; `runtime_plugin` resolves and installs plugin
+// versions from a repository; `runtime_pylons` tails a pylon's in-memory log
+// buffer (legacy/plugins/admin/api/v2/*.py). AGENTS.md names Pylon plugin
+// loading and Arbiter transport as things the target architecture does not
+// preserve, so there is nothing to point these at.
+//
+// Until this unit all five answered 200: `{"status":"ok"}` for the two that act,
+// `{"remotes":[]}`/`{"logs":[]}`/`{"config":{}}` for the three that read. That is
+// the failure the `Tasks` comment below already condemns, twice over — a restart
+// signal that reports success and does nothing, and an empty plugin list that
+// reads as "this pylon has no plugins" rather than "this platform cannot see
+// any". `runtime_remote` did not even return the shape its client reads
+// (`{"remotes": …}` against a client indexing `data.rows`), so the Advanced
+// table was structurally empty as well.
+const pylonRuntimeUnavailable = "pylon runtime administration (plugin reload, remote plugin config, plugin " +
+	"updates and pylon logs) has no equivalent in this service; see AGENTS.md architecture boundaries"
+
+func (h *Handler) PluginConfigRestart(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-func (h *Handler) PluginConfigValuesSave(w http.ResponseWriter, r *http.Request) {
-	// Accept PUT and return success (no-op without real runtime)
-	writeJSON(w, http.StatusOK, map[string]any{"values": map[string]any{}, "requires_restart": []any{}})
+func (h *Handler) RuntimeRemoteConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-func (h *Handler) PluginConfigRestart(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+func (h *Handler) RuntimePlugin(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-func (h *Handler) RuntimeRemoteConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"config": map[string]any{}})
-}
-
-func (h *Handler) RuntimePlugin(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
-}
-
-func (h *Handler) RuntimePylonLogs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"logs": []any{}})
-}
-
-func (h *Handler) PluginConfigSuggestions(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, []string{})
-}
-
-func (h *Handler) ModerationStatuses(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  []any{},
-		"total": 0,
-	})
-}
-
-func (h *Handler) Maintenance(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": false,
-		"message": "",
-	})
+func (h *Handler) RuntimePylonLogs(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
 func (h *Handler) RuntimeRemote(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"remotes": []any{},
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
+}
+
+// PluginConfigSuggestions answered `[]` — a BARE ARRAY, where every client reads
+// `data.values` and `data.labels` (admin_ui's `SchemaField.jsx`). So the field
+// that asked for suggestions got `undefined`, not an empty list, on top of the
+// list being empty.
+//
+// The sources pylon serves are `toolkit_names` and `toolkit_tools` (read out of
+// the elitea_core plugin's in-process toolkit registry) and `projects`. The
+// first two have no source of truth in this service. Rather than answer an empty
+// list for a source this platform cannot enumerate, it says so — and the only
+// sections whose fields declare an `enum_source` are unavailable anyway, so no
+// rendered control depends on this today.
+func (h *Handler) PluginConfigSuggestions(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error": "configuration value suggestions are sourced from the Pylon toolkit registry, " +
+			"which has no equivalent in this service",
 	})
 }
 
+// `ModerationStatuses` and `ModerationStatusSingle` used to sit here: two copies
+// of a `_ *http.Request` stub answering a fixed empty page, one mounted ungated
+// on `/admin/moderation_statuses/{mode}` and the other mounted on no route at
+// all. Unit A14 replaces them with a real read and a real write over
+// `centry.moderation_state` — see internal/api/v2/moderation/requests.go.
+
+// Maintenance was registered on BOTH verbs pointing at the same handler, so the
+// PUT discarded its body and the GET reported `enabled: false` unconditionally —
+// a maintenance switch that always read "off" and never turned on.
+//
+// pylon's maintenance mode is a request hook installed on the bootstrap plugin's
+// persisted state, serving a 503 splash to every user whose administration-mode
+// roles do not include admin (legacy/plugins/bootstrap/tools/splash.py). Nothing
+// in this service installs such a hook. Reporting "maintenance is off" when the
+// deployment cannot enter maintenance at all is the same conflation `Tasks` was
+// corrected for.
+func (h *Handler) Maintenance(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": maintenanceSplashUnavailable})
+}
+
+// arbiterTaskNodeUnavailable is what `/admin/tasks` and `/admin/active_tasks`
+// answer, and why. Both surfaces are pure Pylon runtime introspection: pylon's
+// handlers reach into `self.module.context.module_manager.modules[…].task_node`
+// and read its in-process `global_task_state` / `global_pool_state`, then start
+// and stop tasks through the Arbiter (legacy/plugins/admin/api/v2/tasks.py and
+// active_tasks.py). There is no such registry in this service and there is not
+// meant to be one: AGENTS.md's architecture boundaries name "Pylon plugin
+// loading" and "Arbiter pickle payloads" as things the target architecture does
+// NOT preserve.
+//
+// Until unit A14 both answered 200 with an empty collection. That is the worse
+// failure: "no maintenance tasks are running" and "this deployment cannot see
+// whether any are running" render identically, and an operator reading the
+// former during an incident concludes the system is idle. `ActiveTasks` did not
+// even return the shape its client reads (`{"lines": []}` against a client
+// expecting `{"nodes": […]}`), so the emptiness was structural.
+//
+// 501 with a reason is the honest answer, and it is what the ported admin page
+// renders as an unavailable tab rather than as an empty list.
+const arbiterTaskNodeUnavailable = "admin task nodes are a Pylon/Arbiter runtime surface with no equivalent in " +
+	"this service; see AGENTS.md architecture boundaries"
+
 func (h *Handler) Tasks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  []any{},
-		"total": 0,
-	})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": arbiterTaskNodeUnavailable})
 }
 
 func (h *Handler) ActiveTasks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"lines": []any{},
-	})
-}
-
-func (h *Handler) UserSuspend(w http.ResponseWriter, r *http.Request) {
-	userID := chi.URLParam(r, "userID")
-	var body struct {
-		Suspended bool `json:"suspended"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
-
-	if h.pool != nil {
-		if _, err := h.pool.Exec(r.Context(), `UPDATE auth_core__user SET suspended = $1 WHERE id = $2`, body.Suspended, userID); err != nil {
-			http.Error(w, `{"error":"failed to update user"}`, http.StatusInternalServerError)
-			return
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (h *Handler) ProjectSuspend(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	var body struct {
-		Suspended bool `json:"suspended"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
-
-	if h.pool != nil {
-		if _, err := h.pool.Exec(r.Context(), `UPDATE centry.project SET suspended = $1 WHERE id = $2`, body.Suspended, projectID); err != nil {
-			http.Error(w, `{"error":"failed to update project"}`, http.StatusInternalServerError)
-			return
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (h *Handler) ModerationStatusSingle(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  []any{},
-		"total": 0,
-	})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": arbiterTaskNodeUnavailable})
 }
 
 func paginationParams(r *http.Request) (limit, offset int) {

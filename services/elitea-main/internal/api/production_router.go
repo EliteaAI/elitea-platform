@@ -224,12 +224,6 @@ func prototypeCompatibilityRequested(cfg RouterConfig) bool {
 		cfg.Auth.Validator != nil ||
 		cfg.Auth.SessionHandler != nil ||
 		cfg.Auth.OIDCHandler != nil ||
-		cfg.Indexer.Predictor != nil ||
-		cfg.Indexer.LLMService != nil ||
-		cfg.Indexer.ChatService != nil ||
-		cfg.Indexer.PipelineRunner != nil ||
-		cfg.Indexer.ToolTester != nil ||
-		cfg.Indexer.MCPSyncer != nil ||
 		cfg.AppsRepo != nil ||
 		cfg.SkillsRepo != nil ||
 		cfg.FoldersRepo != nil ||

@@ -49,4 +49,50 @@ describe('useIsMcpVisible', () => {
     const { result } = renderHookWithProviders(() => useIsMcpVisible());
     expect(result.current).toBe(true);
   });
+
+  // ── the second flag (A14, issue 200) ──────────────────────────────────
+  //
+  // The baseline hides MCP when EITHER flag is false, and until A14 this file
+  // had no wire field for the second one — `mcp_in_menu_enabled` is now
+  // marshalled from the admin Features page's MCP Configuration section.
+  //
+  // These three cases exist because a mutation survived without them: dropping
+  // `&& platformSettings?.mcp_in_menu_enabled !== false` from the hook left
+  // every test here passing, which means the half of the rule this unit added
+  // was asserted nowhere.
+
+  it('is false when only mcp_in_menu_enabled is false — the API stays open, the UI does not', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/platform_settings/prompt_lib', () =>
+        HttpResponse.json({ ...ALL_ENABLED, mcp_enabled: true, mcp_in_menu_enabled: false }),
+      ),
+    );
+
+    const { result } = renderHookWithProviders(() => useIsMcpVisible());
+    await waitFor(() => expect(result.current).toBe(false));
+  });
+
+  it('is true when both flags are true', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/platform_settings/prompt_lib', () =>
+        HttpResponse.json({ ...ALL_ENABLED, mcp_enabled: true, mcp_in_menu_enabled: true }),
+      ),
+    );
+
+    const { result } = renderHookWithProviders(() => useIsMcpVisible());
+    await waitFor(() => expect(result.current).toBe(true));
+  });
+
+  it('stays visible on a deployment that does not marshal mcp_in_menu_enabled at all', async () => {
+    // `!== false` rather than `=== true`, deliberately: an older deployment
+    // omits the key entirely, and reading that as "hidden" would blank every
+    // MCP entry point on an upgrade path this unit is supposed to be safe for.
+    server.use(
+      http.get('/api/v2/elitea_core/platform_settings/prompt_lib', () =>
+        HttpResponse.json({ ...ALL_ENABLED, mcp_enabled: true })),
+    );
+
+    const { result } = renderHookWithProviders(() => useIsMcpVisible());
+    await waitFor(() => expect(result.current).toBe(true));
+  });
 });

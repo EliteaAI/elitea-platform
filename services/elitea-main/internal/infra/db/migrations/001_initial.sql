@@ -97,6 +97,156 @@ CREATE TABLE IF NOT EXISTS centry.notifications (
 CREATE INDEX IF NOT EXISTS notifications_user_id_id_idx
     ON centry.notifications (user_id, id);
 
+-- Audit trail (unit A14). READ-ONLY from this service: the write path belongs
+-- to the legacy tracing plugin, whose SQLAlchemy model
+-- (legacy/plugins/tracing/models/audit_event.py) this mirrors column for column
+-- and index for index. A legacy-backed deployment already has the table and
+-- these IF NOT EXISTS statements are no-ops; a Go-only deployment gets it here,
+-- so `GET /elitea_core/audit*` reads an empty table rather than failing with
+-- "relation does not exist".
+CREATE TABLE IF NOT EXISTS centry.audit_events (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    user_id INTEGER,
+    user_email VARCHAR(256),
+    project_id INTEGER,
+    event_type VARCHAR(32) NOT NULL,
+    action VARCHAR(512) NOT NULL,
+    http_method VARCHAR(10),
+    http_route VARCHAR(512),
+    status_code SMALLINT,
+    duration_ms DOUBLE PRECISION,
+    is_error BOOLEAN NOT NULL DEFAULT FALSE,
+    entity_type VARCHAR(32),
+    entity_id INTEGER,
+    entity_name VARCHAR(256),
+    tool_name VARCHAR(256),
+    model_name VARCHAR(256),
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    llm_cost NUMERIC(18, 8),
+    token_source VARCHAR(16),
+    cost_source VARCHAR(64),
+    trace_id VARCHAR(32),
+    span_id VARCHAR(16),
+    parent_span_id VARCHAR(16)
+);
+
+CREATE INDEX IF NOT EXISTS ix_audit_events_timestamp ON centry.audit_events (timestamp);
+CREATE INDEX IF NOT EXISTS ix_audit_events_user_id ON centry.audit_events (user_id);
+CREATE INDEX IF NOT EXISTS ix_audit_events_project_id ON centry.audit_events (project_id);
+CREATE INDEX IF NOT EXISTS ix_audit_events_trace_id ON centry.audit_events (trace_id);
+CREATE INDEX IF NOT EXISTS ix_audit_events_entity ON centry.audit_events (entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS ix_audit_events_model_name ON centry.audit_events (model_name);
+
+-- Cron schedules (unit A14). Mirrors the legacy SQLAlchemy model column for
+-- column (legacy/plugins/scheduling/models/schedule.py) — same table name, same
+-- types, same nullability, same `active` default.
+--
+-- This is NOT a table this service invented. `services/elitea-scheduler`
+-- ALREADY reads and updates it every minute
+-- (internal/scheduler/scheduler.go: `SELECT ... FROM centry.schedule`,
+-- `UPDATE centry.schedule SET last_run`), and until now no migration in this
+-- repository created it: a Go-only deployment ran a scheduler whose every tick
+-- failed with "relation does not exist". A legacy-backed deployment already has
+-- the table from the plugin's own init_db and this IF NOT EXISTS is a no-op.
+--
+-- `rpc_func` names an INTERNAL platform RPC that the scheduler dispatches with
+-- no principal and full privilege (see internal/api/v2/scheduling/schedules.go
+-- for why the admin write path refuses to set it).
+CREATE TABLE IF NOT EXISTS centry.schedule (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(64) NOT NULL,
+    project_id INTEGER DEFAULT NULL,
+    cron VARCHAR(64) NOT NULL,
+    active BOOLEAN DEFAULT TRUE,
+    rpc_func VARCHAR(64) NOT NULL,
+    rpc_kwargs JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_run TIMESTAMP
+);
+
+-- The scheduler's tick reads `WHERE active = true`; the admin listing reads the
+-- whole table ordered by name.
+CREATE INDEX IF NOT EXISTS ix_schedule_active ON centry.schedule (active);
+
+-- App requests / moderation state (unit A14). Mirrors the legacy SQLAlchemy
+-- model column for column (legacy/plugins/admin/models/moderation.py) — same
+-- table name, same types, same nullability, same `pending` server default, same
+-- four indexes.
+--
+-- The schema is `centry` and NOT a tenant schema, which looks wrong for a table
+-- carrying `project_id` and is not: the legacy model declares
+-- `{'schema': c.POSTGRES_SCHEMA}` (the shared schema, default `centry`) rather
+-- than `POSTGRES_TENANT_SCHEMA`, and all four legacy endpoints open the session
+-- with `db.with_project_schema_session(None)`. One shared table, filtered by
+-- `project_id`. Reproduced rather than corrected because the admin listing reads
+-- ACROSS projects by design, and moving the rows per tenant would make that
+-- listing a fan-out over every `p_*` schema.
+--
+-- Unlike `centry.schedule` above, no deployment of this service has ever had
+-- this table: nothing in Go creates it and nothing in Go read it — the two
+-- endpoints that serve it answered from constants. A legacy-backed deployment
+-- already has it from the admin plugin's own `create_tables`, and this
+-- IF NOT EXISTS is a no-op there.
+--
+-- `status` is TEXT, not a PG enum, for the same reason `notifications.event_type`
+-- is: the legacy column is `String(64)` with the vocabulary enforced in pydantic.
+-- internal/api/v2/moderation/requests.go is where the three legal values live.
+CREATE TABLE IF NOT EXISTS centry.moderation_state (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    issue_type VARCHAR(256) NOT NULL,
+    entity_id VARCHAR,
+    description TEXT NOT NULL,
+    status VARCHAR(64) NOT NULL DEFAULT 'pending',
+    rejection_comment TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    meta JSONB
+);
+
+-- The four `index=True` columns of the legacy model. The per-entity read filters
+-- (project_id, entity_id, user_id) and the admin listing sorts on created_at.
+CREATE INDEX IF NOT EXISTS ix_moderation_state_user_id ON centry.moderation_state (user_id);
+CREATE INDEX IF NOT EXISTS ix_moderation_state_project_id ON centry.moderation_state (project_id);
+CREATE INDEX IF NOT EXISTS ix_moderation_state_issue_type ON centry.moderation_state (issue_type);
+CREATE INDEX IF NOT EXISTS ix_moderation_state_entity_id ON centry.moderation_state (entity_id);
+
+-- =============================================================================
+-- PLATFORM CONFIGURATION (unit A14, admin Configuration page)
+-- =============================================================================
+--
+-- Global, admin-authored platform settings: one row per (section, key) of the
+-- schema `internal/api/v2/admin/config_schemas.go` publishes.
+--
+-- This table has no counterpart in the legacy deployment, and that is the point.
+-- pylon has no configuration table either: the admin Configuration page reads an
+-- IN-PROCESS dict of pylon heartbeats (`admin.remote_runtimes`, 15s announce /
+-- 60s freshness cut-off), and its save re-serialises a plugin's whole YAML and
+-- fires `bootstrap_runtime_update` onto the Arbiter bus fire-and-forget, where a
+-- bootstrap handler on the target pylon upserts it into that pylon's own
+-- `plugin_config` table (legacy/plugins/admin/api/v2/plugin_config_values.py:275-305,
+-- legacy/pylon/pylon/core/providers/internal/db_config.py:65-88).
+--
+-- That mechanism is Pylon plugin loading plus Arbiter transport, which AGENTS.md
+-- names as things the target architecture does NOT preserve — and "Go owns
+-- product data and migrations". So the settings this platform actually consumes
+-- are owned here, in a table, rather than announced over a bus.
+--
+-- `value` is JSONB rather than TEXT because the schema's field types include
+-- arrays and objects (a resource card's `links` is an array of {title,url}), and
+-- because a typed read is what lets the write validate against the declared type
+-- instead of round-tripping strings.
+CREATE TABLE IF NOT EXISTS centry.platform_config (
+    section VARCHAR(64) NOT NULL,
+    key VARCHAR(128) NOT NULL,
+    value JSONB NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_by VARCHAR(255),
+    PRIMARY KEY (section, key)
+);
+
 -- =============================================================================
 -- TENANT SCHEMA FUNCTION
 -- Creates all per-project tables in a given schema (e.g. "p_1")
@@ -515,6 +665,83 @@ INSERT INTO auth_core__role (id, name, mode) VALUES
     (3, 'viewer', 'default')
 ON CONFLICT (id) DO NOTHING;
 
+-- Administration-mode roles.
+--
+-- These used to be absent, and that absence was load-bearing in the wrong
+-- direction. `legacyrbac.PostgresResolver` resolves the `administration` and
+-- `developer` modes from auth_core__user_role/auth_core__role/…role_permission
+-- with the project id ignored, so with no administration-mode row anywhere
+-- EVERY central permission resolved to the empty set for EVERY user. Unit A14
+-- could therefore only gate the admin panel's WRITES: gating a READ would have
+-- turned "the admin panel works" into "403 for everyone" on a fresh database.
+-- The reads are gated now (internal/api/router.go), so the roles have to exist.
+--
+-- pylon's equivalent is auth_core/db/migrations/202202021633_core.py plus
+-- 202604161400_add_super_admin_role.py. `system` is omitted: it is not in the
+-- Go product's role vocabulary (users.go `adminRolePriority` is
+-- super_admin/admin/editor/viewer) and nothing assigns it.
+INSERT INTO auth_core__role (id, name, mode) VALUES
+    (4, 'super_admin', 'administration'),
+    (5, 'admin', 'administration'),
+    (6, 'editor', 'administration'),
+    (7, 'viewer', 'administration')
+ON CONFLICT (id) DO NOTHING;
+
+-- Administration-mode grants, transcribed from the `recommended_roles` each
+-- pylon handler declares in legacy/plugins/admin/api/v2/.
+--
+-- Two things about that transcription are easy to get wrong. First, a BARE list
+-- (`check_api(["runtime.plugins"])`) is not "no recommended roles" — it parses
+-- into the RecommendedRoles defaults, which are system/super_admin/admin True.
+-- Second, a dict that names only `{"admin": True, "viewer": False,
+-- "editor": False}` still leaves `super_admin` at its default True. So
+-- super_admin holds everything and admin holds everything except the
+-- super_admin escalation permission, which auth_users.py checks separately
+-- (admin/module.py registers it with admin explicitly False).
+--
+-- `editor` and `viewer` get nothing: every declaration sets them False.
+--
+-- Only the `administration` mode is seeded. pylon also registers these in
+-- `developer` and `default`, but no Go route resolves an admin-panel permission
+-- in either, and granting `admin.auth.users` to the DEFAULT-mode `admin` role
+-- would leak it into project-scoped resolution — projectPermissions() falls
+-- back to central default-mode grants by role name when a project has no
+-- per-project rows.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT role.id, grant_row.permission
+FROM auth_core__role AS role
+JOIN (VALUES
+    ('super_admin', 'admin.auth.users'),
+    ('super_admin', 'admin.auth.users.super_admin'),
+    ('super_admin', 'runtime.plugins'),
+    ('super_admin', 'projects.projects.projects.view'),
+    ('super_admin', 'configuration.roles.permissions.view'),
+    ('super_admin', 'admin.moderation'),
+    -- Unit A14, Service Descriptors. `elitea_core/api/v2/admin.py` declares a
+    -- BARE `check_api(["runtime.airun.serviceproviders"])` — which, per the note
+    -- above, is system/super_admin/admin True — and
+    -- `elitea_core/api/v2/register_descriptor.py` declares
+    -- `provider_hub.descriptor.register` with `{"admin": True, "viewer": False,
+    -- "editor": False}` in administration mode, leaving super_admin at its
+    -- default True.
+    --
+    -- The routes they gate answer 501: this platform has no provider hub. The
+    -- grants exist anyway because the gate runs BEFORE the refusal, and without
+    -- them every administrator would get a bare 403 instead of the sentence
+    -- explaining why the page is empty — which is the whole point of the page.
+    ('super_admin', 'runtime.airun.serviceproviders'),
+    ('super_admin', 'provider_hub.descriptor.register'),
+    ('admin', 'admin.auth.users'),
+    ('admin', 'runtime.plugins'),
+    ('admin', 'projects.projects.projects.view'),
+    ('admin', 'configuration.roles.permissions.view'),
+    ('admin', 'admin.moderation'),
+    ('admin', 'runtime.airun.serviceproviders'),
+    ('admin', 'provider_hub.descriptor.register')
+) AS grant_row(role_name, permission) ON grant_row.role_name = role.name
+WHERE role.mode = 'administration'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
 -- Default dev user
 INSERT INTO auth_core__user (id, email, name)
 VALUES (1, 'dev@elitea.ai', 'Dev User')
@@ -523,6 +750,26 @@ ON CONFLICT (id) DO NOTHING;
 -- Give dev user admin role
 INSERT INTO auth_core__user_role (user_id, role_id)
 VALUES (1, 1)
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- …and the administration-mode `admin` role, so a fresh database has one
+-- account that can actually reach the admin panel. Without this the roles above
+-- exist and nobody holds them, which is the same 403-for-everyone outcome by a
+-- different route.
+--
+-- `admin`, deliberately, not `super_admin`. Least privilege is the first
+-- reason: a bootstrap seed should not hand out the escalation permission
+-- unprompted, and `admin` holds every permission this file grants except
+-- `admin.auth.users.super_admin`. The second reason is concrete —
+-- eliteacore/handler.go's project-member listing UNIONs project members with
+-- every holder of a role NAMED `super_admin`, and it does not filter on
+-- `mode`, so a global super_admin appears as a member of every project on
+-- every page that reads it. Whether that union should be mode-filtered is a
+-- separate question; seeding `admin` means this file does not force the answer.
+INSERT INTO auth_core__user_role (user_id, role_id)
+SELECT 1, role.id
+FROM auth_core__role AS role
+WHERE role.name = 'admin' AND role.mode = 'administration'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
 -- Default project

@@ -130,9 +130,18 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * 102 -> 109 when #151 added the seven `secrets` paths, a domain v2.yaml had
  * never described — which is why nothing generated or contract-tested caught
  * the URL divergence #137 codified.
+ * 109 -> 104 when #126 retired the prototype indexer transport: five spec
+ * operations lost the routes behind them (`getPipelineTrigger`,
+ * `updatePipelineTrigger`, `generateAgentDraft`, `webchatSync`,
+ * `getChatConfig`) and were removed from v2.yaml. This is a DELIBERATE
+ * downward bump — the first one — and the tripwire firing is it working.
+ * 180 -> 179 in the same change: `chat.webchatSync` was dropped (its
+ * operation, its route and its callers are all gone); the other four flipped
+ * to `source: handwritten` rather than disappearing, because the app still
+ * issues those exact requests.
  */
-const GENERATED_OPERATION_COUNT = 109;
-const MANIFEST_ENTRY_COUNT = 180;
+const GENERATED_OPERATION_COUNT = 104;
+const MANIFEST_ENTRY_COUNT = 179;
 
 describe('GREEN — the real, checked-in manifest', () => {
   it('exits 0 against src/shared/api/endpoints.manifest.json, unmodified', () => {

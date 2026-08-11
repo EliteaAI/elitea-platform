@@ -1,0 +1,299 @@
+/**
+ * Rendering + write-path guard for `pages/admin/Users.tsx` (unit A14).
+ *
+ * `pages/settings/Users.tsx` had NO rendering test before #130, which is how a
+ * totally-empty members table shipped. This file exists so the admin twin
+ * cannot repeat it, and it asserts the two properties that the reference page's
+ * own defects show are worth asserting:
+ *
+ *  1. Rows actually render from the measured `{rows,total,counts}` body — the
+ *     one shape `/admin/auth_users/administration` returns.
+ *  2. Every enabled control REACHES THE SERVER with the body pylon defined, and
+ *     every control with no server behind it is disabled with a stated reason.
+ *     A control that renders but sends nothing is exactly the class #130/#180
+ *     shipped; asserting only that a button exists would not catch it.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
+
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { server } from '@/test/setup';
+
+import { AdminUsers } from './Users';
+import { renderAdminRoute } from './__tests__/testRouter';
+
+/**
+ * Measured against the Go handler: rows carry `suspended` (boolean) and
+ * `admin_role` (string or null); `counts` is unfiltered and labels the tabs.
+ */
+const USERS_BODY = {
+  rows: [
+    {
+      id: 11,
+      name: 'Ada Admin',
+      email: 'ada@example.com',
+      last_login: '2026-08-01T10:00:00',
+      suspended: false,
+      is_admin: true,
+      admin_role: 'admin',
+    },
+    {
+      id: 12,
+      name: 'Bo Blocked',
+      email: 'bo@example.com',
+      last_login: null,
+      suspended: true,
+      is_admin: false,
+      admin_role: null,
+    },
+  ],
+  total: 2,
+  counts: { platform: 2, system: 1 },
+};
+
+interface RecordedRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly body: unknown;
+}
+
+let recorded: RecordedRequest[] = [];
+
+/** Full admin-panel surface: the listing plus both write routes. */
+function useAdminUserHandlers(): void {
+  server.use(
+    http.get('*/admin/auth_users/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json(USERS_BODY);
+    }),
+    http.post('*/admin/auth_users/administration', async ({ request }) => {
+      recorded.push({ method: 'POST', url: request.url, body: await request.json() });
+      return HttpResponse.json({ ok: true });
+    }),
+    http.put('*/admin/user_suspend/administration/*', async ({ request }) => {
+      recorded.push({ method: 'PUT', url: request.url, body: await request.json() });
+      return HttpResponse.json({ id: 11, suspended: true });
+    }),
+  );
+}
+
+/** The permission list the Go adminui handler injects for a valid session. */
+function grantAdminUiPermissions(permissions: string[]): void {
+  window.admin_ui_config = { permissions, vite_server_url: '/api/v2' };
+}
+
+function writes(): RecordedRequest[] {
+  return recorded.filter((entry) => entry.method !== 'GET');
+}
+
+beforeEach(() => {
+  recorded = [];
+  configureGeneratedClient({ baseUrl: '/api/v2' });
+  grantAdminUiPermissions(['admin.auth.users', 'admin.auth.users.super_admin']);
+  useAdminUserHandlers();
+});
+
+afterEach(() => {
+  resetGeneratedClient();
+  delete window.admin_ui_config;
+});
+
+describe('Admin › Users', () => {
+  it('renders one row per user from the {rows,total,counts} body, with status from `suspended`', async () => {
+    renderAdminRoute(<AdminUsers />);
+
+    expect(await screen.findByText('Ada Admin')).toBeInTheDocument();
+    expect(screen.getByText('ada@example.com')).toBeInTheDocument();
+    expect(screen.getByText('Bo Blocked')).toBeInTheDocument();
+
+    const grid = screen.getByRole('grid');
+    const rows = within(grid)
+      .getAllByRole('row')
+      .filter((row) => row.getAttribute('data-id'));
+    expect(rows).toHaveLength(2);
+
+    // Status comes from the boolean `suspended`. The reference page reads a
+    // `status` string that no response carries, so its chip was always "Active"
+    // — this assertion is what separates the two readings.
+    expect(within(grid).getByText('Active')).toBeInTheDocument();
+    expect(within(grid).getByText('Suspended')).toBeInTheDocument();
+
+    // A null `last_login` is "Never", not a blank cell or an Invalid Date.
+    expect(within(grid).getByText('Never')).toBeInTheDocument();
+
+    expect(screen.queryByText('No users')).not.toBeInTheDocument();
+    // `counts` labels the tabs and is read from the same body.
+    expect(screen.getByRole('tab', { name: 'Platform Users (2)' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'System Users (1)' })).toBeInTheDocument();
+  });
+
+  it('suspends a user by PUTting {suspended:true} to the real endpoint', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    await user.click(screen.getAllByRole('button', { name: 'Suspend user' })[0]!);
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    const request = writes()[0]!;
+    expect(request.method).toBe('PUT');
+    // The id is in the PATH, mirroring pylon's `user_suspend/<mode>/<user_id>`.
+    expect(request.url).toContain('/admin/user_suspend/administration/11');
+    expect(request.body).toEqual({ suspended: true });
+  });
+
+  it('unsuspends the already-suspended user (the toggle reads the row, not a constant)', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Bo Blocked');
+
+    await user.click(screen.getByRole('button', { name: 'Unsuspend user' }));
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    // `suspended: false`. The reference computes `user.status !== 'suspended'`
+    // against a field that does not exist, so it could only ever send `true` —
+    // its unsuspend control was incapable of unsuspending anyone.
+    expect(writes()[0]!.body).toEqual({ suspended: false });
+    expect(writes()[0]!.url).toContain('/admin/user_suspend/administration/12');
+  });
+
+  it('sends the pylon set_admin_role body when the role select changes', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    await user.click(screen.getAllByRole('combobox', { name: 'Admin Role' })[0]!);
+    await user.click(await screen.findByRole('option', { name: 'Viewer' }));
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]!.method).toBe('POST');
+    expect(writes()[0]!.body).toEqual({
+      action: 'set_admin_role',
+      user_id: 11,
+      role_name: 'viewer',
+    });
+  });
+
+  it('clears every admin role by sending role_name: null, not the empty string', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    await user.click(screen.getAllByRole('combobox', { name: 'Admin Role' })[0]!);
+    await user.click(await screen.findByRole('option', { name: 'None' }));
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    // `''` is the DOM value; the server's validator accepts a role name or
+    // `null`, and would reject `""` as an invalid role.
+    expect(writes()[0]!.body).toEqual({
+      action: 'set_admin_role',
+      user_id: 11,
+      role_name: null,
+    });
+  });
+
+  it('deletes only after the confirmation modal is confirmed', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    await user.click(screen.getAllByRole('button', { name: 'Delete user' })[0]!);
+
+    // Opening the modal must not itself write. Checked AFTER letting the event
+    // loop settle: an eager `mutate()` on open resolves a tick later, so an
+    // immediate assertion here would pass against that bug too.
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(writes()).toHaveLength(0);
+
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]!.method).toBe('POST');
+    expect(writes()[0]!.body).toEqual({ action: 'delete', users: [{ id: 11 }] });
+  });
+
+  it('surfaces a refused write instead of swallowing it', async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.put('*/admin/user_suspend/administration/*', () =>
+        HttpResponse.json({ error: 'insufficient permissions' }, { status: 403 }),
+      ),
+    );
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    await user.click(screen.getAllByRole('button', { name: 'Suspend user' })[0]!);
+
+    // The reference page catches and discards every mutation error, so a 403
+    // is indistinguishable from success followed by nothing happening.
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+  });
+
+  it('renders the two unbacked controls as disabled, each stating why', async () => {
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    // Export: no spreadsheet dependency in this app.
+    const exportButton = screen.getByRole('button', { name: 'Export to Excel' });
+    expect(exportButton).toBeDisabled();
+    expect(exportButton.closest('span')).toHaveAttribute(
+      'aria-label',
+      expect.stringContaining('Export is unavailable'),
+    );
+
+    // Activity: the per-user activity view has no server. (The audit-trail API
+    // its original reason cited now exists — see pages/admin/AuditTrail.tsx —
+    // so that reason was corrected rather than left to go quietly stale.)
+    const activityButtons = screen.getAllByRole('button', { name: 'User activity' });
+    expect(activityButtons).toHaveLength(2);
+    activityButtons.forEach((button) => expect(button).toBeDisabled());
+  });
+
+  it('renders no write control at all when the served config advertises none', async () => {
+    grantAdminUiPermissions([]);
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    // Presentation only — the server refuses these regardless. What matters
+    // here is that hiding them does not also hide the LISTING.
+    expect(screen.queryByRole('button', { name: 'Delete user' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Suspend user' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Admin Role' })).not.toBeInTheDocument();
+    expect(screen.getByText('ada@example.com')).toBeInTheDocument();
+  });
+
+  it('switches to the system tab without offering the write controls there', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    await user.click(screen.getByRole('tab', { name: 'System Users (1)' }));
+
+    await waitFor(() => {
+      const listings = recorded.filter((entry) => entry.method === 'GET');
+      expect(listings.some((entry) => entry.url.includes('user_type=system'))).toBe(true);
+    });
+    // System users are the platform's own service accounts; pylon offers no
+    // role/suspend/delete control for them and neither does this port.
+    expect(screen.queryByRole('button', { name: 'Delete user' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Admin Role' })).not.toBeInTheDocument();
+  });
+
+  it('asks the server for the search term rather than filtering the loaded page', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    await user.type(screen.getByPlaceholderText('Search by name or email'), 'ada');
+
+    // The listing is paginated server-side, so a client-side filter would only
+    // ever search the 20 rows already loaded.
+    await waitFor(() => {
+      const listings = recorded.filter((entry) => entry.method === 'GET');
+      expect(listings.some((entry) => entry.url.includes('search=ada'))).toBe(true);
+    });
+  });
+});

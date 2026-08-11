@@ -1,8 +1,6 @@
 import { useCallback, useState } from 'react';
 
-import { useQueryClient } from '@tanstack/react-query';
-
-import { getGenerateAgentDraftQueryOptions } from '@/shared/api/generated/applications/applications';
+import { eliteaFetch } from '@/shared/api/generated/mutator';
 import type { PredictResponse } from '@/shared/api/generated/model';
 
 /**
@@ -41,6 +39,15 @@ import type { PredictResponse } from '@/shared/api/generated/model';
  *     `validateAgentDraft` can check it. Returning the raw
  *     `PredictResponse` here rather than pretending it is already an
  *     `AgentDraft` keeps that gap honest at the type level.
+ *
+ * NOTE(#126): this used to go through orval's
+ * `getGenerateAgentDraftQueryOptions`. That operation was removed from
+ * `api/openapi/v2.yaml` when #126 step 1 deleted the route behind it — it was
+ * gated on a `RouterConfig.Predictor` nothing ever assigned, so
+ * `POST /elitea_core/generate_application_draft/prompt_lib/{projectId}`
+ * answered 404 in every deployment. The request issued below is identical to
+ * the generated one, so this hook behaves exactly as it did; #194 tracks the
+ * missing backend.
  */
 export interface UseGenerateAgentDraftMutationArgs {
   readonly projectId: string;
@@ -66,7 +73,6 @@ export interface UseGenerateAgentDraftMutationResult {
  * need (a "click to generate" button, not an auto-firing query).
  */
 export function useGenerateAgentDraftMutation(): UseGenerateAgentDraftMutationResult {
-  const queryClient = useQueryClient();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<unknown>(undefined);
 
@@ -75,12 +81,18 @@ export function useGenerateAgentDraftMutation(): UseGenerateAgentDraftMutationRe
       setIsLoading(true);
       setError(undefined);
       try {
-        const options = getGenerateAgentDraftQueryOptions(projectId, { input: user_description });
-        const response = await queryClient.fetchQuery(options);
         // Error-envelope response variants (400/401/403) are never actually reachable here —
         // `eliteaFetch` throws `EliteaApiError` instead of resolving with them (mutator.ts's
         // §3.6 unwrap contract; same cast convention as `entities/application-form`'s hooks).
-        return (response as { data: PredictResponse }).data;
+        const response = await eliteaFetch<{ data: PredictResponse }>(
+          `/elitea_core/generate_application_draft/prompt_lib/${projectId}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: user_description }),
+          },
+        );
+        return response.data;
       } catch (caught) {
         setError(caught);
         return undefined;
@@ -88,7 +100,7 @@ export function useGenerateAgentDraftMutation(): UseGenerateAgentDraftMutationRe
         setIsLoading(false);
       }
     },
-    [queryClient],
+    [],
   );
 
   const reset = useCallback(() => {

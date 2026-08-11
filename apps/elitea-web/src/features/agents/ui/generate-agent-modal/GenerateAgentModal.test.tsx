@@ -4,15 +4,28 @@ import { http, HttpResponse } from 'msw';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  getCreateApplicationMockHandler,
-  getGenerateAgentDraftMockHandler,
-} from '@/shared/api/generated/applications/applications.msw';
+import { getCreateApplicationMockHandler } from '@/shared/api/generated/applications/applications.msw';
+import type { PredictResponse } from '@/shared/api/generated/model';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 import { server } from '@/test/setup';
 
 import { GenerateAgentModal, type GenerateAgentModalProps } from './GenerateAgentModal';
+
+/**
+ * NOTE(#126): orval's `getGenerateAgentDraftMockHandler` disappeared when the
+ * `generateAgentDraft` operation was removed from `api/openapi/v2.yaml` — its
+ * route was gated on a `RouterConfig.Predictor` nothing ever assigned and
+ * answered 404 in every deployment. This local factory stands in for it and
+ * matches the same URL and response shape, so the assertions below are
+ * unchanged.
+ */
+function generateAgentDraftHandler(body?: PredictResponse) {
+  return http.post('*/elitea_core/generate_application_draft/prompt_lib/:projectId', () =>
+    HttpResponse.json(body ?? { message_group_uid: 'mg-default', content: 'draft', is_streaming: false }),
+  );
+}
+
 
 function renderModal(overrides: Partial<GenerateAgentModalProps> = {}): ReturnType<typeof renderWithTheme> {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
@@ -44,7 +57,7 @@ describe('GenerateAgentModal', () => {
   });
 
   it('generates a draft and transitions to the review step, seeding instructions from the response content', async () => {
-    server.use(getGenerateAgentDraftMockHandler({ message_group_uid: 'm1', content: 'Answer support questions.', is_streaming: false }));
+    server.use(generateAgentDraftHandler({ message_group_uid: 'm1', content: 'Answer support questions.', is_streaming: false }));
     renderModal();
 
     fireEvent.change(screen.getByPlaceholderText(/Describe your agent/), { target: { value: 'A support bot' } });
@@ -74,7 +87,7 @@ describe('GenerateAgentModal', () => {
   });
 
   it('going back to the prompt clears the draft', async () => {
-    server.use(getGenerateAgentDraftMockHandler({ message_group_uid: 'm1', content: 'Draft text', is_streaming: false }));
+    server.use(generateAgentDraftHandler({ message_group_uid: 'm1', content: 'Draft text', is_streaming: false }));
     renderModal();
 
     fireEvent.change(screen.getByPlaceholderText(/Describe your agent/), { target: { value: 'A support bot' } });
@@ -88,7 +101,7 @@ describe('GenerateAgentModal', () => {
 
   it('creates the agent and calls onAgentCreated on approve', async () => {
     server.use(
-      getGenerateAgentDraftMockHandler({ message_group_uid: 'm1', content: 'Draft text', is_streaming: false }),
+      generateAgentDraftHandler({ message_group_uid: 'm1', content: 'Draft text', is_streaming: false }),
       getCreateApplicationMockHandler({
         id: '42',
         name: 'New Agent',
@@ -121,7 +134,7 @@ describe('GenerateAgentModal', () => {
 
   it('reports a failed approve via onApproveError instead of throwing', async () => {
     server.use(
-      getGenerateAgentDraftMockHandler({ message_group_uid: 'm1', content: 'Draft text', is_streaming: false }),
+      generateAgentDraftHandler({ message_group_uid: 'm1', content: 'Draft text', is_streaming: false }),
       http.post('*/elitea_core/applications/prompt_lib/:projectId', () =>
         HttpResponse.json({ error: 'create failed' }, { status: 500 }),
       ),
@@ -145,7 +158,7 @@ describe('GenerateAgentModal', () => {
   });
 
   it('disables Create Agent while the draft is invalid (blank name)', async () => {
-    server.use(getGenerateAgentDraftMockHandler({ message_group_uid: 'm1', content: 'Draft text', is_streaming: false }));
+    server.use(generateAgentDraftHandler({ message_group_uid: 'm1', content: 'Draft text', is_streaming: false }));
     renderModal();
 
     fireEvent.change(screen.getByPlaceholderText(/Describe your agent/), { target: { value: 'A support bot' } });
@@ -163,7 +176,7 @@ describe('GenerateAgentModal', () => {
   });
 
   it('pressing Enter in the description field triggers Generate', async () => {
-    server.use(getGenerateAgentDraftMockHandler({ message_group_uid: 'm1', content: 'From Enter', is_streaming: false }));
+    server.use(generateAgentDraftHandler({ message_group_uid: 'm1', content: 'From Enter', is_streaming: false }));
     renderModal();
 
     const textarea = screen.getByPlaceholderText(/Describe your agent/);

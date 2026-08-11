@@ -34,13 +34,8 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-type MCPToolSyncer interface {
-	MCPSyncTools(ctx context.Context, payload map[string]any) (json.RawMessage, error)
-}
-
 type Handler struct {
 	pool               *pgxpool.Pool
-	mcpSyncer          MCPToolSyncer
 	permissionResolver auth.PermissionResolver
 	httpClient         *http.Client
 	store              storage.ObjectStore
@@ -86,10 +81,6 @@ func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	return handler
 }
 
-func (h *Handler) SetMCPSyncer(s MCPToolSyncer) {
-	h.mcpSyncer = s
-}
-
 func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 	defaults := map[string]any{
 		"chat_enabled":         true,
@@ -119,6 +110,39 @@ func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// The platform-wide MCP switch is applied LAST, after the per-project
+	// overlay, and that ordering is the whole point of it.
+	//
+	// A project's `environment_settings` row can carry `mcp_enabled`, so a
+	// global switch applied before it would be a kill switch any project could
+	// re-open for itself — which is not what "master switch … across the entire
+	// application" means, and not what the operator who turned it off believes
+	// they did. Applied last it is a floor: globally off is off everywhere.
+	// While globally on, a project may still disable MCP for itself, which is
+	// the pre-existing behaviour and is unaffected.
+	//
+	// `mcp_in_menu_enabled` is added rather than overlaid: it is a NEW key, the
+	// second half of the pair the reference's own platform_settings endpoint
+	// returned (legacy/plugins/elitea_core/api/v2/platform_settings.py:45-46)
+	// and the one apps/elitea-web's four `useIsMcpVisible` hooks each document
+	// as missing from the wire. The schema declares
+	// `additionalProperties: true`, so this is an addition the contract already
+	// permits.
+	mcp := h.mcpFlags(r.Context())
+	if !mcp.enabled {
+		defaults["mcp_enabled"] = false
+	}
+	defaults["mcp_in_menu_enabled"] = mcp.inMenu
+
+	// The Voice Features pair, for the same reason and by the same route.
+	// `widgets/chat/ui/chat-button/VoiceButton.tsx` hardcoded both of these as
+	// module constants — `true` and `false` — so the admin switch named after
+	// the control had no relationship to it. The button IS mounted: `/chat` →
+	// `ChatBox` → `buildChatBoxInputSlots()` → `<VoiceButton>`.
+	voice := h.voiceFlags(r.Context())
+	defaults["voice_features_enabled"] = voice.enabled
+	defaults["voice_features_temporarily_disabled"] = voice.temporarilyDisabled
 
 	writeJSON(w, http.StatusOK, defaults)
 }
@@ -484,6 +508,26 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "versionID")
 	s := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
+
+	// The publishing guardrail, enforced.
+	//
+	// Until this unit the admin Features page offered "Block Agent Publishing"
+	// and this — the only publish path in the service — never asked. The switch
+	// was a form control over a value nothing read, which on a guardrail is
+	// worse than a missing feature: an operator who blocked publishing during an
+	// incident would have been told it was blocked while every publish kept
+	// succeeding.
+	//
+	// Checked FIRST, before the body is decoded and before the version is
+	// looked up. A refusal that arrives after validation leaks which version
+	// ids exist and whether their names collide, to a caller the platform has
+	// just decided may not publish at all.
+	if guard := h.publishGuardrail(ctx); !guard.allows(parseProjectID(projectID)) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error": "publishing is blocked on this deployment",
+		})
+		return
+	}
 
 	var body struct {
 		VersionName     string `json:"version_name"`
@@ -1625,9 +1669,11 @@ func (h *Handler) TrendingAuthors(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, []any{})
 }
 
-func (h *Handler) ModerationStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "approved"})
-}
+// `ModerationStatus` used to sit here, answering `{"status":"approved"}` to
+// every caller for every entity — a gate that always said yes — while the POST
+// registered on the same handler created nothing. Unit A14 replaces both with
+// real project-scoped handlers over `centry.moderation_state`; see
+// internal/api/v2/moderation/requests.go.
 
 func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
@@ -3028,6 +3074,9 @@ func (h *Handler) doMCPProxyRequest(req *http.Request) (*http.Response, error) {
 }
 
 func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
+	if !h.requireMCPEnabled(w, r) {
+		return
+	}
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
 
@@ -3127,6 +3176,9 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) MCPDCRProxy(w http.ResponseWriter, r *http.Request) {
+	if !h.requireMCPEnabled(w, r) {
+		return
+	}
 	ctx := r.Context()
 
 	var body struct {
@@ -3180,30 +3232,31 @@ func (h *Handler) MCPDCRProxy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp.StatusCode, dcrResp)
 }
 
+// MCPSyncTools reports that MCP tool discovery has no backend in this stack.
+//
+// NOTE(#126): it used to forward to an injected MCPToolSyncer, whose only
+// implementation was the prototype indexersvc Redis RPC client. That client was
+// never assigned in any composition root, so this endpoint has always answered
+// 503 — the injection seam was decoration on an unconditional failure. The
+// transport it spoke was retired (see the IndexerDeps note in
+// internal/api/router.go), so the seam went with it and the 503 is now stated
+// directly. This route stays registered and its response is byte-identical to
+// what every deployment already returned. #194 records the missing capability.
 func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-
+	// Gated BEFORE the body is decoded, so a disabled deployment answers the
+	// same 403 to a well-formed request and a malformed one. Deciding after the
+	// decode would let a caller distinguish the two and learn that the route
+	// exists and parses MCP payloads.
+	if !h.requireMCPEnabled(w, r) {
+		return
+	}
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request"})
 		return
 	}
-	body["project_id"] = projectID
 
-	if h.mcpSyncer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "indexer service not available"})
-		return
-	}
-
-	data, err := h.mcpSyncer.MCPSyncTools(r.Context(), body)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data) // response writer; connection already committed
+	writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "indexer service not available"})
 }
 
 func (h *Handler) SupportConfig(w http.ResponseWriter, _ *http.Request) {
@@ -3235,7 +3288,27 @@ func (h *Handler) AgentCategories(w http.ResponseWriter, r *http.Request) {
 		categories = append(categories, map[string]any{"name": name, "is_default": true})
 	}
 
-	// Check publishing_guardrail config for extra categories
+	// Extras from the admin Features page, which is where an operator can
+	// actually author them.
+	//
+	// The pre-existing read below looks for a `publishing_guardrail` row in the
+	// PROJECT's own `configuration` table. That row is per project, and the
+	// setting is not: the reference authors it once, globally, in the pylon
+	// plugin's config, and no surface in this platform writes a per-project
+	// `publishing_guardrail` row at all. So the project read was a lookup that
+	// could only ever miss, and every deployment got the nine hardcoded
+	// defaults no matter what an administrator configured.
+	//
+	// Both are consulted, global first. The project row is kept because it is
+	// the shape a hybrid deployment's data would already be in, and dropping it
+	// would silently discard categories some environment may be carrying.
+	for _, name := range h.extraAgentCategories(ctx) {
+		if !seen[name] {
+			seen[name] = true
+			categories = append(categories, map[string]any{"name": name, "is_default": false})
+		}
+	}
+
 	q := fmt.Sprintf(`SELECT data FROM %q.configuration WHERE section = 'publishing_guardrail' LIMIT 1`, s)
 	var data []byte
 	if err := h.pool.QueryRow(ctx, q).Scan(&data); err == nil && len(data) > 0 {
@@ -3309,45 +3382,19 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) AuditTraces(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": []any{},
-		"total": 0,
-	})
-}
+// AuditTraces and AuditTraceHeatmap used to live here as stubs — empty arrays,
+// request discarded, database untouched. Unit A14 implemented them for real,
+// together with the two audit reads that had no route at all; see audit.go.
 
-func (h *Handler) AuditTraceHeatmap(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"data": []any{},
-	})
-}
+// ProjectUserActivity was a third stub of the same shape — `{"rows":[],"total":0}`
+// with `_ *http.Request` and no route — and is now implemented for real in
+// project_activity.go.
 
-func (h *Handler) ProjectUserActivity(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  []any{},
-		"total": 0,
-	})
-}
-
-func (h *Handler) RegisterDescriptor(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodDelete {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
-	}
-	var body map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional; ignore decode errors
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (h *Handler) ServiceDescriptors(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows": []map[string]any{
-			{"name": "elitea_core", "status": "active", "version": "2.0.0", "description": "Core platform service"},
-			{"name": "auth", "status": "active", "version": "2.0.0", "description": "Authentication service"},
-			{"name": "indexer", "status": "active", "version": "2.0.0", "description": "Agent runtime & indexing"},
-		},
-	})
-}
+// `RegisterDescriptor` and `ServiceDescriptors` — the admin Service Descriptors
+// page's three endpoints — moved to service_descriptors.go when unit A14 ported
+// that page. Both were stubs: the listing answered 200 with three hardcoded rows
+// naming Pylon plugins in a shape the client does not read, and the registration
+// answered `{"ok": true}` to a body it discarded, from no route at all.
 
 // --- Collections ---
 

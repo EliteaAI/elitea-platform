@@ -14,8 +14,8 @@ elitea-platform/
 │   └── pylon-indexer/       # Transitional Pylon runtime (plugin-driven)
 ├── apps/
 │   ├── elitea-ui/           # React SPA (git submodule)
-│   ├── admin-ui/            # Admin console SPA (git submodule)
-│   └── elitea-web/          # Shared web client packages
+│   └── elitea-web/          # React SPA rewrite; also builds the admin console
+│                            #   (src/entries/admin) served by elitea-main
 ├── proto/                   # Protobuf contracts (buf v2) → gen/go, gen/python
 ├── gen/                     # Generated protobuf stubs (Go + Python)
 ├── libs/go/                 # Shared Go libraries

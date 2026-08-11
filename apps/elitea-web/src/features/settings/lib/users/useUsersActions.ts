@@ -41,11 +41,14 @@ export interface UseUsersActionsResult {
  * Invite-users mutation.
  *
  * `entities/user` (spec §3.3, ≤20-export budget) does not curate a create/
- * invite hook — `userCreate` is a live no-op on the Go router today (same
- * NOTE(W2) as `userUpdate`/`userDelete`, `entities/user/model/types.ts`),
- * but the UI still needs to fire the real request and react to the real
- * result rather than fake success (old-app parity: `Users.jsx`'s
- * `useUserCreateMutation()`). Wrapping the generated `userCreate` fetcher
+ * invite hook. `userCreate` used to be a live no-op on the Go router — the
+ * router mounted POST on the listing handler, so this mutation's `onSuccess`
+ * fired and nothing was written (#130). It now POSTs to a real handler that
+ * takes exactly the `{emails, roles}` body built below, so the success toast
+ * finally means what it says. Firing the real request and reacting to the
+ * real result (old-app parity: `Users.jsx`'s
+ * `useUserCreateMutation()`) is what made that fixable at all — a faked
+ * success would have hidden it. Wrapping the generated `userCreate` fetcher
  * with `useMutation` locally — rather than adding a new curated export to
  * `entities/user` — mirrors the same "local, feature-owned hook" call this
  * cluster already makes for `useHasPermission` (`features/agents/lib/
@@ -68,11 +71,12 @@ function useInviteUsers(projectId: string, onSuccess: () => void, onError: (erro
     },
   });
 
+  const { mutate } = mutation;
   const inviteUsers = useCallback(
     (emails: string[], roles: string[]) => {
-      mutation.mutate({ emails, roles });
+      mutate({ emails, roles });
     },
-    [mutation],
+    [mutate],
   );
 
   return { inviteUsers, isLoading: mutation.isPending };
@@ -112,23 +116,33 @@ export function useUsersActions({
   const inviteHook = useInviteUsers(projectId, onInviteSuccess, onInviteError);
 
   /* ── callbacks ─────────────────────────────────────────────────────── */
+  // Destructure the stable callbacks out of each hook result. The hook results
+  // themselves are fresh object literals every render, so closing over them
+  // rebuilt `singleAction`/`batchAction` — and therefore the `userRoles` array
+  // handed to `EditUserRolesDialog` — on every render of the Users page,
+  // including background refetches while the Edit-roles dialog is open.
+  const { saveUser } = editHook;
+  const { saveUsers } = batchEditHook;
+  const { deleteUserIds } = deleteUserMutation;
+  const { inviteUsers } = inviteHook;
+
   const handleDelete = useCallback(() => {
     const ids = selectedUsers.map((u) => parseInt(u.id, 10));
-    deleteUserMutation.deleteUserIds(ids);
-  }, [selectedUsers, deleteUserMutation]);
+    deleteUserIds(ids);
+  }, [selectedUsers, deleteUserIds]);
 
   const handleBatchRoleSave = useCallback(
     (roles: string[]) => {
-      batchEditHook.saveUsers(roles);
+      saveUsers(roles);
     },
-    [batchEditHook],
+    [saveUsers],
   );
 
   const handleInviteConfirm = useCallback(
     (data: { emails: string[]; roles: string[] }) => {
-      inviteHook.inviteUsers(data.emails, data.roles);
+      inviteUsers(data.emails, data.roles);
     },
-    [inviteHook],
+    [inviteUsers],
   );
 
   /* ── action configs ────────────────────────────────────────────────── */
@@ -140,7 +154,7 @@ export function useUsersActions({
       userRoles: Array.from(user.roles),
       rolesOptions,
       onConfirm: (roles: string[]) => {
-        editHook.saveUser(user.id, roles);
+        saveUser(user.id, roles);
       },
     };
     if (editHook.isLoading !== undefined) editProps.isLoading = editHook.isLoading;
@@ -148,7 +162,7 @@ export function useUsersActions({
       userIds: [user.id],
       onConfirm: () => {
         const ids = [parseInt(user.id, 10)];
-        deleteUserMutation.deleteUserIds(ids);
+        deleteUserIds(ids);
       },
     };
 
@@ -156,7 +170,7 @@ export function useUsersActions({
       edit: editProps as unknown as EditUsersButtonProps,
       delete: deleteProps as unknown as DeleteUserButtonProps,
     };
-  }, [selectedUsers, rolesOptions, editHook, deleteUserMutation]);
+  }, [selectedUsers, rolesOptions, saveUser, editHook.isLoading, deleteUserIds]);
 
   const batchAction = useMemo(() => {
     if (selectedUsers.length < 2) return null;
@@ -175,7 +189,7 @@ export function useUsersActions({
       edit: editProps as unknown as EditUsersButtonProps,
       delete: deleteProps as unknown as DeleteUserButtonProps,
     };
-  }, [selectedUsers, rolesOptions, batchEditHook, handleBatchRoleSave, handleDelete]);
+  }, [selectedUsers, rolesOptions, batchEditHook.isLoading, handleBatchRoleSave, handleDelete]);
 
   const actions = batchAction ?? singleAction;
 

@@ -2,10 +2,17 @@
  * Edit user roles and delete mutations.
  *
  * The generated admin hooks (`useUserUpdate`, `useUserDelete`, etc.) are all
- * `useQuery`-based because the Go handlers are "live no-ops" — they always
- * return the user list regardless of HTTP method. To perform mutations we
- * wrap the raw fetcher functions (`userUpdate`, `userDelete`) with
- * `useMutation` from `@tanstack/react-query`.
+ * `useQuery`-based, because orval emits a query hook per operation. To perform
+ * mutations we wrap the raw fetcher functions (`userUpdate`, `userDelete`)
+ * with `useMutation` from `@tanstack/react-query`.
+ *
+ * These used to carry a "the Go handlers are live no-ops — they always return
+ * the user list regardless of HTTP method" note. That was true and is no
+ * longer (#130): PUT and DELETE now reach real handlers
+ * (services/elitea-main/internal/api/v2/eliteacore/users_write.go). The bodies
+ * below are unchanged — the server was aligned to what this file already sent,
+ * `{userId, roles}` with role NAMES and a comma-joined id list for a batch —
+ * so if you change either shape, change both.
  *
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/lib/hooks/useEditUser.hooks.js`.
  */
@@ -37,11 +44,16 @@ export function useEditUser({ projectId, onSuccess, onError }: UseEditUserOption
     },
   });
 
+  // `mutation.mutate` is reference-stable across renders (react-query v5); the
+  // whole `mutation` object is not. Depending on the object made `saveUser` a
+  // fresh function every render, which propagated all the way to
+  // `EditUserRolesDialog`'s `originalRoles` prop identity.
+  const { mutate } = mutation;
   const saveUser = useCallback(
     (userId: string, roles: string[]) => {
-      mutation.mutate({ userId, roles });
+      mutate({ userId, roles });
     },
-    [mutation],
+    [mutate],
   );
 
   return { saveUser, isLoading: mutation.isPending };
@@ -68,11 +80,12 @@ export function useBatchEditUsers({
     },
   });
 
+  const { mutate } = mutation;
   const saveUsers = useCallback(
     (roles: string[]) => {
-      mutation.mutate({ roles });
+      mutate({ roles });
     },
-    [mutation],
+    [mutate],
   );
 
   return { saveUsers, isLoading: mutation.isPending };
@@ -98,11 +111,12 @@ export function useDeleteUsers({
     },
   });
 
+  const { mutate } = mutation;
   const deleteUserIds = useCallback(
     (ids: number[]) => {
-      mutation.mutate({ ids });
+      mutate({ ids });
     },
-    [mutation],
+    [mutate],
   );
 
   return { deleteUserIds, isLoading: mutation.isPending };

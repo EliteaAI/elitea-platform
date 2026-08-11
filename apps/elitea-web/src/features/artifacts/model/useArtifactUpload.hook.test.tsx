@@ -3,10 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { uploadArtifactObject } from '@/shared/api/artifacts';
 import * as sharedArtifacts from '@/shared/api/artifacts';
-import * as chatApi from '@/shared/api/generated/chat/chat';
 import * as runtimeConfig from '@/shared/config';
 import type { Artifact } from '@/entities/artifact';
 
+import * as chatConfigApi from '../api/chatConfigApi';
 import { renderHookWithProviders } from '../__tests__/testUtils';
 import { useArtifactUpload } from './useArtifactUpload';
 
@@ -17,9 +17,9 @@ const contents: Artifact[] = [
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(sharedArtifacts, 'uploadArtifactObject');
-  vi.spyOn(chatApi, 'useGetChatConfig').mockReturnValue({
-    data: { data: { limits: { DEFAULT_MAX_FILE_SIZE: 100 } } },
-  } as never);
+  vi.spyOn(chatConfigApi, 'useChatConfig').mockReturnValue({
+    data: { limits: { DEFAULT_MAX_FILE_SIZE: 100 } },
+  });
   vi.spyOn(runtimeConfig, 'getConfig').mockReturnValue({
     status: 'ok',
     config: {

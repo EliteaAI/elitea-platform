@@ -352,9 +352,24 @@ func NewCurrentRoutes(
 	authConfig apimw.AuthConfig,
 	permissions auth.PermissionResolver,
 ) (*CurrentRoutes, error) {
-	if chat == nil || projectContext == nil ||
-		authConfig.PrincipalValidator == nil ||
-		authConfig.ForwardedIdentityVerifier == nil || permissions == nil {
+	// PrincipalValidator and ForwardedIdentityVerifier are optional — when nil
+	// the auth middleware falls back to session-cookie verification, which is
+	// the only credential OIDC-only deployments have (no
+	// ELITEA_AUTH_CONFIG_FILE, hence no FormGraph). Requiring them made these
+	// routes composable ONLY under Form auth, so
+	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` — the URL
+	// `features/artifacts`' chatConfigApi actually calls — could not be served
+	// in the E2E stack or in any other OIDC-only deployment (#194). Same
+	// relaxation, and the same reason, as
+	// notificationsapi.NewCurrentNotificationEventsRoute (#152) and
+	// v2projects.NewCurrentProjectListRoute.
+	//
+	// This does NOT weaken authorization: apimw.Auth still rejects an
+	// unauthenticated request, and RequireResolvedPermissionsForProject still
+	// resolves models.chat.conversation.details (chat config) or
+	// models.project_context.view (project context) against the requested
+	// project before either handler runs.
+	if chat == nil || projectContext == nil || permissions == nil {
 		return nil, ErrInvalidCurrentPromptContextRoute
 	}
 

@@ -10,7 +10,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { unwrapList, unwrapListPage } from './unwrap';
+import { unwrapBody, unwrapList, unwrapListPage } from './unwrap';
 
 interface Row {
   readonly id: string;
@@ -153,5 +153,47 @@ describe('an unrecognised shape', () => {
   it('reports the type for a scalar body', () => {
     vi.stubEnv('DEV', true);
     expect(() => unwrapList('not a list', 'userList')).toThrow(/got string/);
+  });
+});
+
+/**
+ * `unwrapBody` (unit A14) — the transport peel on its own, for bodies carrying
+ * a sibling the rows do not describe (`/admin/auth_users`'s `counts`). Without
+ * it such a call site re-derives `resp.data` by hand, which is the envelope
+ * knowledge R-A6 keeps out of call sites.
+ */
+describe('unwrapBody', () => {
+  it('peels the transport envelope and returns the body', () => {
+    const body = { rows: ROWS, total: 2, counts: { platform: 2, system: 1 } };
+    expect(unwrapBody(envelope(body))).toBe(body);
+  });
+
+  it('returns a bare body unchanged — "too shallow" is not expressible either', () => {
+    const body = { rows: ROWS, total: 2 };
+    expect(unwrapBody(body)).toBe(body);
+  });
+
+  it('peels exactly once, so a doubly-enveloped response yields the INNER envelope', () => {
+    const body = { rows: ROWS };
+    const inner = envelope(body);
+    // Same rule as unwrapListPage: peeling recursively would let a body that
+    // happens to look like an envelope be silently accepted, and this is the
+    // input where the two readings differ — `{data:{data:…}}` alone does not,
+    // because the intermediate object is not a full transport envelope.
+    expect(unwrapBody(envelope(inner))).toBe(inner);
+    expect(unwrapBody(envelope(inner))).not.toBe(body);
+  });
+
+  it('passes an unresolved query and non-objects straight through', () => {
+    expect(unwrapBody(undefined)).toBeUndefined();
+    expect(unwrapBody(null)).toBeNull();
+    expect(unwrapBody('scalar')).toBe('scalar');
+    expect(unwrapBody(ROWS)).toBe(ROWS);
+  });
+
+  it('does not peel an object that merely HAS a data key', () => {
+    // Only the full {data,status,headers} triple is the transport envelope.
+    const body = { data: 'payload' };
+    expect(unwrapBody(body)).toBe(body);
   });
 });

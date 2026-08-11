@@ -531,6 +531,83 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		logger.Info("current Configurations services enabled", "public_project_id", currentConfigurationsConfig.PublicProjectID)
 	}
 
+	// The chat-config read has to be composable WITHOUT the Configurations
+	// chain (#194). Its only registration used to sit inside the deleted
+	// `ChatService` gate on the prototype eliteacore handler, and the current
+	// implementation above is reachable only under
+	// ELITEA_PROMPT_CONTEXT_READS_ENABLED, which itself requires
+	// ELITEA_CONFIGURATIONS_ENABLED + ELITEA_AI_PROJECT_ID +
+	// ELITEA_LITELLM_*. None of those is set in any deployment, so
+	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` has
+	// answered 404 everywhere for as long as the gate has existed — while
+	// `features/artifacts`' chatConfigApi has been querying it on every
+	// artifacts page load and silently falling back to a 150 MB default.
+	//
+	// Turning the chain on was rejected as the fix for the same reason #131
+	// rejected it: the flag gates composition, but the router every
+	// environment actually runs is the compatibility router, and enabling the
+	// chain would additionally light up ~10 unrelated Configurations/LLM
+	// routes that are deliberately dark. The reader itself needs nothing from
+	// that chain — only a *pgxpool.Pool and the optional vault master key —
+	// so it is composed here instead, exactly like the OIDC-only project-list
+	// and notification-event routes above.
+	//
+	// CurrentRoutes is an atomic pair, so the project-context read is
+	// constructed alongside it. Which PATHS become reachable is decided at the
+	// router: the compatibility router (the one every deployment gets) mounts
+	// only the chat_config path, because that is #194's half and the
+	// project-context path is already served there by the prototype eliteacore
+	// handler. The production router — which NewRouter never reaches while any
+	// prototype field is set, i.e. in no deployment today — mounts both, so
+	// composing here does make the current project-context implementation
+	// reachable THERE where the flag chain previously left it dark.
+	if currentPromptContextReads == nil && (formGraph != nil || oidcSessionHandler != nil) {
+		// Reuse the Configurations runtime's loader when it exists, so a
+		// deployment that DOES set ELITEA_VAULT_MASTER_KEY_FILE keeps reading
+		// master-key-wrapped project keys. Without that chain the master-key
+		// file cannot be expressed at all today (currentConfigurationsConfig
+		// rejects it unless ELITEA_CONFIGURATIONS_ENABLED=true), so the
+		// unwrapped loader is the only reachable shape there — which is also
+		// the shape centry writes when SECRETS_MASTER_KEY is unset.
+		chatConfigVaults := currentConfigurationsRoot.VaultLoader()
+		if chatConfigVaults == nil {
+			unwrapped, vaultErr := storage.NewPostgresSecretVaultLoader(pool, nil)
+			if vaultErr != nil {
+				return fmt.Errorf("compose ungated chat configuration vault loader: %w", vaultErr)
+			}
+			defer unwrapped.Destroy()
+			chatConfigVaults = unwrapped
+		}
+		chatConfigReader, readerErr :=
+			promptcontextreadsapi.NewCurrentChatConfigVaultReader(chatConfigVaults)
+		if readerErr != nil {
+			return fmt.Errorf("compose ungated chat configuration reader: %w", readerErr)
+		}
+		projectContextReader, readerErr :=
+			promptcontextreadsapi.NewCurrentProjectContextRepository(pool)
+		if readerErr != nil {
+			return fmt.Errorf("compose ungated project-context reader: %w", readerErr)
+		}
+		chatConfigAuth := apimw.AuthConfig{SessionSecret: os.Getenv("APPLICATION_SECRET_KEY")}
+		if formGraph != nil {
+			chatConfigAuth = apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			}
+		}
+		currentPromptContextReads, err = promptcontextreadsapi.NewCurrentRoutes(
+			chatConfigReader,
+			projectContextReader,
+			chatConfigAuth,
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose ungated chat configuration route: %w", err)
+		}
+		logger.Info("chat-config route enabled (ungated)")
+	}
+
 	runtimeConfig, err := runtimecomposition.ConfigFromEnv(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("load optional runtime configuration: %w", err)
@@ -892,10 +969,16 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		RedisClient: eventStreamRedis,
 	})
 
-	// Socket.IO remains unmounted until its legacy connection authentication,
-	// project-membership checks, room authorization, and per-event
-	// permission contract are implemented. Mounting the current prototype
-	// would expose cross-tenant rooms and execution events.
+	// NOTE(#126): the Socket.IO prototype server (internal/api/socketio) is
+	// gone. It was never mounted — the comment that stood here said it stayed
+	// unmounted until connection authentication, project-membership checks,
+	// room authorization and a per-event permission contract existed, since
+	// mounting it would have exposed cross-tenant rooms and execution events.
+	// Every one of its handlers proxied to indexersvc.Client, the prototype
+	// Redis RPC transport this change retires, so it could not have been
+	// mounted after the deletion either. The chat-dispatch migration it was a
+	// placeholder for is #93; the web client's own socket.io still points at
+	// pylon and is unaffected.
 	srv := newHTTPServer(publicAddress, r)
 
 	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)

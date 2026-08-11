@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -19,7 +20,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 // Handler serves the secrets API, backed by the same centry.secrets_key /
@@ -37,17 +42,36 @@ import (
 type Handler struct {
 	pool      *pgxpool.Pool
 	masterKey []byte // nil when SECRETS_MASTER_KEY is unset
+	// permissionResolver authorises BOTH mode families: the `administration`
+	// routes (admin.go, central mode) and the project routes below (`default`
+	// mode, keyed on the `{projectID}` in the path). nil for the two
+	// programmatic constructors that never serve HTTP, which is safe: both
+	// gates fail closed on a nil resolver.
+	permissionResolver auth.PermissionResolver
+}
+
+// Option configures a Handler. Same shape as the other v2 packages'.
+type Option func(*Handler)
+
+// WithPermissionResolver supplies the resolver EVERY route is gated on — the
+// `administration`-mode ones in admin.go and the project ones in Routes().
+// Without it every one of them answers 403.
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(h *Handler) { h.permissionResolver = resolver }
 }
 
 // NewHandler constructs the secrets handler.  The pool is used for
 // centry.secrets_key / centry.secrets_data reads and writes.
-func NewHandler(pool *pgxpool.Pool) *Handler {
+func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	h := &Handler{pool: pool}
 	if mk := os.Getenv("SECRETS_MASTER_KEY"); mk != "" {
 		raw, err := fernetDecodeKey(mk)
 		if err == nil {
 			h.masterKey = raw
 		}
+	}
+	for _, opt := range opts {
+		opt(h)
 	}
 	return h
 }
@@ -65,8 +89,12 @@ const (
 	modeDefault = "default"
 	// modeAdministration is pylon's c.ADMINISTRATION_MODE: a DIFFERENT
 	// handler over the GLOBAL vault (a bare VaultClient(), project_id nil
-	// → row id "project-None"), with different request/response shapes.
-	// This Go handler implements the project handler only; see requireMode.
+	// → row id "admin"), with different request/response shapes.  Unit A14
+	// implements it, in admin.go — see that file's header for why it had to
+	// be a separate handler rather than a flag on this one, and where the
+	// "admin" row id is established.  (Earlier revisions of this comment
+	// said the row id was "project-None"; that is the HashiCorp engine's
+	// naming, not the database engine this deployment runs.)
 	modeAdministration = "administration"
 )
 
@@ -87,18 +115,47 @@ const (
 // all four; #151 restores them and moves the new client onto this shape.
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
+	// Each route serves BOTH pylon modes: the first handler is the project
+	// vault, the second the global vault (admin.go).  They are separate
+	// handlers over separate stores with separate bodies — see withModes.
+	//
 	// GET  /secrets/{mode}/{projectID}            – list secret names
-	r.Get("/secrets/{mode}/{projectID}", requireMode(h.List))
+	r.Get("/secrets/{mode}/{projectID}", h.withModes(
+		h.projectGate(permSecretList, h.List),
+		h.adminGate(permSecretView, h.AdminList)))
 	// POST /secrets/{mode}/{projectID}            – create a new secret
-	r.Post("/secrets/{mode}/{projectID}", requireMode(h.Create))
+	//
+	// The administration form of this ONE route is not implemented.  Pylon's
+	// `AdminAPI.post` takes `{"secrets": {…}}` and REPLACES the entire global
+	// vault in a single call; no client in this workspace calls it (admin_ui
+	// creates through /secret/…/{name}, and elitea-sdk and qa/ never touch
+	// administration mode), so it is a bulk-destructive operation with no
+	// caller and no test that could discriminate a correct implementation
+	// from a wrong one.  501 says so instead of guessing.
+	r.Post("/secrets/{mode}/{projectID}", h.withModes(
+		h.projectGate(permSecretCreate, h.Create), notImplementedBulkReplace))
 	// GET  /secret/{mode}/{projectID}/{name}      – get a single secret (with value)
-	r.Get("/secret/{mode}/{projectID}/{name}", requireMode(h.Get))
+	r.Get("/secret/{mode}/{projectID}/{name}", h.withModes(
+		h.projectGate(permSecretUnsecret, h.Get),
+		h.adminGate(permSecretView, h.AdminGet)))
+	// POST /secret/{mode}/{projectID}/{name}      – administration-mode create
+	//
+	// Project mode has no POST on this path (pylon's ProjectAPI defines only
+	// get/put/delete here), so it 405s rather than pretending.
+	r.Post("/secret/{mode}/{projectID}/{name}", h.withModes(methodNotAllowed,
+		h.adminGate(permSecretCreate, h.AdminCreate)))
 	// PUT  /secret/{mode}/{projectID}/{name}      – rename / update a secret
-	r.Put("/secret/{mode}/{projectID}/{name}", requireMode(h.Update))
+	r.Put("/secret/{mode}/{projectID}/{name}", h.withModes(
+		h.projectGate(permSecretEdit, h.Update),
+		h.adminGate(permSecretEdit, h.AdminUpdate)))
 	// DELETE /secret/{mode}/{projectID}/{name}    – delete a secret
-	r.Delete("/secret/{mode}/{projectID}/{name}", requireMode(h.Delete))
+	r.Delete("/secret/{mode}/{projectID}/{name}", h.withModes(
+		h.projectGate(permSecretDelete, h.Delete),
+		h.adminGate(permSecretDelete, h.AdminDelete)))
 	// POST /hide/{mode}/{projectID}/{name}        – move secret to hidden_secrets
-	r.Post("/hide/{mode}/{projectID}/{name}", requireMode(h.Hide))
+	r.Post("/hide/{mode}/{projectID}/{name}", h.withModes(
+		h.projectGate(permSecretHide, h.Hide),
+		h.adminGate(permSecretEdit, h.AdminHide)))
 
 	// The mode-LESS form of the show route, which pylon also serves
 	// (with_modes registers `<project_id>/<secret>` alongside
@@ -109,38 +166,111 @@ func (h *Handler) Routes() chi.Router {
 	// Only this one variant is registered: pylon serves the mode-less form
 	// of every route, but no consumer in the workspace calls any of the
 	// others, and a route with no caller is a route no test can discriminate.
-	r.Get("/secret/{projectID}/{name}", h.Get)
+	//
+	// It carries the SAME gate as the mode-ful GET, because in pylon it IS
+	// the mode-ful GET. `api_tools.with_modes` registers the mode-less URL
+	// against the same `APIBase`, and `proxy_method`'s signature is
+	// `def proxy_method(self, method, mode='default', **kwargs)` — so a
+	// request with no mode segment dispatches to `DEFAULT_MODE` →
+	// `ProjectAPI.get`, which declares
+	// `configuration.secrets.secret.unsecret` (secret.py:26). The runtime is
+	// therefore already passing this exact check against pylon in production;
+	// gating it here is parity, not a new restriction.
+	//
+	// The principal is not a permission-less service identity: both SDK
+	// clients send `Authorization: Bearer <auth_token>` of the invoking user
+	// (runtime/clients/client.py:92, sandbox_client.py:228), and
+	// legacyrbac.PostgresResolver resolves a token to its OWNING USER and
+	// then that user's project roles. The `X-SECRET` header those clients
+	// also send is not an auth credential — pylon compares it to the
+	// `secrets_header_value` secret purely to decide whether to suppress
+	// default secret keys (`ignore_default_secret_api`), and it grants
+	// nothing.
+	r.Get("/secret/{projectID}/{name}", h.projectGate(permSecretUnsecret, h.Get))
 	return r
 }
 
-// requireMode reproduces pylon's mode dispatch for the routes that carry a
+// The permissions pylon's `ProjectAPI` methods declare that its `AdminAPI`
+// ones do not (legacy/plugins/secrets/api/v2/{secrets,secret,hide}.py). The
+// three the two families share — create, edit, delete — are declared once in
+// admin.go and reused here; the values are the same strings in both modes.
+const (
+	permSecretList     = "configuration.secrets.secret.list"
+	permSecretUnsecret = "configuration.secrets.secret.unsecret"
+	permSecretHide     = "configuration.secrets.secret.hide"
+)
+
+// projectGate wraps a project-mode handler in the central permission check,
+// resolved against the `{projectID}` in the path in `default` mode.
+//
+// It is applied here rather than in `router.go` because the mode that selects
+// this handler is a PATH SEGMENT resolved at request time: one chi route serves
+// both pylon modes, so route-level middleware could not gate one and not the
+// other.
+//
+// It is passed as the `project` branch of withModes rather than wrapped around
+// it, so each mode keeps its OWN gate: `administration` resolves centrally via
+// adminGate (it ignores the {projectID} entirely), and an unknown mode stays a
+// 404 rather than becoming a 403 that says nothing about why.
+//
+// Fail-closed by construction — RequireResolvedPermissionsForProject answers
+// 403 when the resolver is nil, so a Handler built without one (the
+// programmatic constructors in applications/ and conversations/, which never
+// serve HTTP) exposes nothing.
+func (h *Handler) projectGate(permission string, next http.HandlerFunc) http.HandlerFunc {
+	gated := apimw.RequireResolvedPermissionsForProject(
+		h.permissionResolver,
+		auth.PermissionModeDefault,
+		func(r *http.Request) (string, bool) {
+			projectID := chi.URLParam(r, "projectID")
+			return projectID, projectID != ""
+		},
+		permission,
+	)(next)
+	return gated.ServeHTTP
+}
+
+// withModes reproduces pylon's mode dispatch for the routes that carry a
 // {mode} segment.  Anything other than the two modes pylon defines is a 404,
 // exactly as APIBase.proxy_method's `abort(404)` on an unknown mode — which
 // is what makes the third convention the new client had invented
 // (`prompt_lib`, #151) a hard error rather than a silently-accepted alias.
 //
-// `administration` is deliberately 501, NOT served: pylon's AdminAPI reads
-// and writes the GLOBAL vault (VaultClient() with no project → row id
-// "project-None") with its own request/response shapes, while every method
-// on this Handler is the project handler keyed by dbKey(projectID).  Serving
-// admin_ui's /secrets/secret/administration/0/{name} from this handler would
-// answer with project 0's vault — the wrong store — and its PUT/DELETE would
-// WRITE it.  A 501 says "not implemented here" instead of quietly returning
-// and mutating the wrong secrets.
-func requireMode(next http.HandlerFunc) http.HandlerFunc {
+// The two branches are genuinely different handlers, not one handler with a
+// flag.  `project` is keyed by dbKey(projectID); `administration` addresses the
+// GLOBAL vault (row id "admin") with its own request and response bodies, and
+// IGNORES the {projectID} segment entirely — which is why admin_ui sends the
+// placeholder `0` there.  Routing `administration` into the project handler
+// would read and WRITE project 0's vault: the wrong store, silently.  That is
+// what the 501 this replaced was protecting against; unit A14 implements the
+// real second handler in admin.go instead.
+func (h *Handler) withModes(project, administration http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch chi.URLParam(r, "mode") {
 		case modeDefault:
-			next(w, r)
+			project(w, r)
 		case modeAdministration:
-			writeJSON(w, http.StatusNotImplemented, map[string]string{
-				"error": "administration mode is not implemented by elitea-main; " +
-					"it addresses the global vault, not a project vault",
-			})
+			administration(w, r)
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown mode"})
 		}
 	}
+}
+
+// notImplementedBulkReplace is the administration branch of
+// `POST /secrets/{mode}/{projectID}` — see the route comment for why it is not
+// built.
+func notImplementedBulkReplace(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"error": "bulk replacement of the global vault is not implemented; " +
+			"create secrets one at a time through POST /secret/administration/{projectID}/{name}",
+	})
+}
+
+// methodNotAllowed is the project branch of routes pylon defines for the
+// administration mode only.
+func methodNotAllowed(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed for this mode"})
 }
 
 // ─── response models ─────────────────────────────────────────────────────────
@@ -178,12 +308,21 @@ func dbKey(projectID string) string {
 
 // List returns the names of all (non-hidden) secrets for a project.
 // Response format: JSON array of SecretListItem (same as Python plugin).
+//
+// A project with no vault is an empty list: it simply has no secrets, and
+// 500ing would make every new project look broken.  A vault that EXISTS and
+// will not open is a 500 — it used to be an empty list too, which showed the
+// page "no secrets" for a project whose secrets were all still there, and
+// invited the create that would then have replaced them.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
-		// Project may not have a vault yet → return empty list
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		writeJSON(w, http.StatusOK, []SecretListItem{})
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 	items := make([]SecretListItem, 0, len(vault.Secrets))
@@ -209,9 +348,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vault, err := h.readOrInitVault(r, projectID)
+	// An absent vault is initialised here; an UNREADABLE one is refused.  The
+	// fallback this replaced wrote a fresh empty vault on any read failure, so
+	// one create against a vault that would not decrypt replaced every secret
+	// in it and answered 201.
+	vault, err := h.readOrInitVaultCtx(r.Context(), projectID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		vaultUnreadable(w)
 		return
 	}
 	if _, exists := vault.Secrets[body.Name]; exists {
@@ -219,8 +362,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vault.Secrets[body.Name] = body.Value
-	if err := h.writeVault(r, projectID, vault); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+	if err := h.writeVaultCtx(r.Context(), projectID, vault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save the secret"})
 		return
 	}
 	writeJSON(w, http.StatusCreated, SecretListItem{
@@ -234,9 +377,13 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	name := chi.URLParam(r, "name")
 
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		http.Error(w, `{"error":"secret not found"}`, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 
@@ -278,9 +425,13 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		body.Name = oldName
 	}
 
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, oldName), http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 	if _, ok := vault.Secrets[oldName]; !ok {
@@ -289,8 +440,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(vault.Secrets, oldName)
 	vault.Secrets[body.Name] = body.Value
-	if err := h.writeVault(r, projectID, vault); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+	if err := h.writeVaultCtx(r.Context(), projectID, vault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save the secret"})
 		return
 	}
 	writeJSON(w, http.StatusOK, SecretListItem{
@@ -300,18 +451,28 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delete removes a secret by name (from either secrets or hidden_secrets).
+// Deleting from a project that has no vault is a no-op success, as in pylon.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	name := chi.URLParam(r, "name")
 
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 	delete(vault.Secrets, name)
 	delete(vault.HiddenSecrets, name)
-	_ = h.writeVault(r, projectID, vault)
+	// The write error was swallowed here, so a delete that did not persist
+	// still answered 204 and the page removed the row it had just re-listed.
+	if err := h.writeVaultCtx(r.Context(), projectID, vault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete the secret"})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -320,9 +481,13 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	name := chi.URLParam(r, "name")
 
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, name), http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 	val, ok := vault.Secrets[name]
@@ -332,50 +497,105 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(vault.Secrets, name)
 	vault.HiddenSecrets[name] = val
-	if err := h.writeVault(r, projectID, vault); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+	if err := h.writeVaultCtx(r.Context(), projectID, vault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to hide the secret"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Project secret was moved to hidden secrets"})
 }
 
 // ─── vault read / write ───────────────────────────────────────────────────────
+//
+// One vault is one `centry.secrets_key` row plus the `centry.secrets_data` row
+// with the same id.  The three functions below are keyed by that id and know
+// nothing else about the vault, so the project store (`project-<id>`) and the
+// global store (`admin`, admin.go) go through the SAME code.  They used to be
+// two implementations with two different error contracts, and only the global
+// one distinguished "there is nothing here" from "I could not open this".
+//
+// The distinction is the whole point.  A read failure has two causes that look
+// identical to a caller comparing against nil:
+//
+//   - the rows do not exist — a project that has never had a secret, where a
+//     write must create them; and
+//   - the rows exist and would not open — the wrong SECRETS_MASTER_KEY, a key
+//     row in an unexpected format, a data row that is not a Fernet token, a
+//     vault body that is not `{"secrets":{…},"hidden_secrets":{…}}`.
+//
+// Collapsing the two is a silent data loss: the project path's old
+// readOrInitVault answered ANY read failure by writing a fresh empty vault, so
+// a single POST against an unreadable-but-present vault replaced every secret
+// in it and reported 201.  errVaultAbsent is returned for the first cause only,
+// and only a caller that has checked for it may write.
 
-// readVault decrypts and returns the vault for a project.
-// Returns an error when the project has no vault yet.
-func (h *Handler) readVault(r *http.Request, projectID string) (vaultData, error) {
-	ctx := r.Context()
-	key := dbKey(projectID)
+// errVaultAbsent means the vault's rows do not exist yet — the only condition
+// under which a write is allowed to create them.  Any OTHER read failure means
+// rows exist that could not be opened, and must never be overwritten.
+var errVaultAbsent = errors.New("secrets: vault has not been initialised")
 
-	var keyBytes, dataBytes []byte
+// newFernetKey returns 32 fresh random bytes — the raw form; `encryptKey`
+// renders them in centry's on-disk representation.
+func newFernetKey() ([]byte, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate fernet key: %w", err)
+	}
+	return key, nil
+}
+
+// vaultKeyRow reads one vault's raw `centry.secrets_key` blob.  pgx.ErrNoRows
+// is returned unwrapped so callers can tell it from a transport failure — the
+// conflation the project path used to make, where a dropped connection during
+// the key lookup was indistinguishable from a project with no vault and led
+// straight to minting a second key over the first.
+func (h *Handler) vaultKeyRow(ctx context.Context, vaultID string) ([]byte, error) {
+	var keyBytes []byte
 	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
+		`SELECT data FROM centry.secrets_key WHERE id = $1`, vaultID,
 	).Scan(&keyBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("secrets_key not found for project %s", projectID)
+	return keyBytes, err
+}
+
+// readVaultByID reads and decrypts one vault.
+//
+// It returns errVaultAbsent ONLY when neither row exists.  Every other failure —
+// a missing key row beside a present data row, a decrypt failure, a body that is
+// not the expected shape — is returned as itself, so no caller can mistake
+// "I could not open this" for "there is nothing here" and write over it.
+func (h *Handler) readVaultByID(ctx context.Context, vaultID string) (vaultData, error) {
+	keyBytes, err := h.vaultKeyRow(ctx, vaultID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return vaultData{}, errVaultAbsent
 	}
-	err = h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_data WHERE id = $1`, key,
-	).Scan(&dataBytes)
 	if err != nil {
-		return vaultData{}, fmt.Errorf("secrets_data not found for project %s", projectID)
+		return vaultData{}, fmt.Errorf("read %s secrets_key: %w", vaultID, err)
 	}
 
-	// Decrypt the Fernet key with the master key (if set).
+	var dataBytes []byte
+	err = h.pool.QueryRow(ctx,
+		`SELECT data FROM centry.secrets_data WHERE id = $1`, vaultID,
+	).Scan(&dataBytes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A key with no data is a half-initialised vault, not an absent one.
+		// Treating it as absent would let the next write mint a SECOND key over
+		// the first, orphaning whatever data row arrives later.
+		return vaultData{}, fmt.Errorf("vault %s has a key row but no data row", vaultID)
+	}
+	if err != nil {
+		return vaultData{}, fmt.Errorf("read %s secrets_data: %w", vaultID, err)
+	}
+
 	fernetKey, err := h.decryptKey(keyBytes)
 	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt project key: %w", err)
+		return vaultData{}, fmt.Errorf("decrypt %s vault key: %w", vaultID, err)
 	}
-
-	// Decrypt the vault data with the project Fernet key.
 	plaintext, err := fernetDecrypt(fernetKey, dataBytes)
 	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt vault data: %w", err)
+		return vaultData{}, fmt.Errorf("decrypt %s vault data: %w", vaultID, err)
 	}
-
 	var v vaultData
 	if err := json.Unmarshal(plaintext, &v); err != nil {
-		return vaultData{}, fmt.Errorf("unmarshal vault data: %w", err)
+		return vaultData{}, fmt.Errorf("unmarshal %s vault data: %w", vaultID, err)
 	}
 	if v.Secrets == nil {
 		v.Secrets = map[string]string{}
@@ -386,95 +606,154 @@ func (h *Handler) readVault(r *http.Request, projectID string) (vaultData, error
 	return v, nil
 }
 
-// readOrInitVault returns an existing vault or creates a new empty one
-// (generating a fresh Fernet key and writing both rows to the DB).
-func (h *Handler) readOrInitVault(r *http.Request, projectID string) (vaultData, error) {
-	v, err := h.readVault(r, projectID)
-	if err == nil {
-		return v, nil
+// vaultForWriteByID is readVaultByID with the one safe fallback: an ABSENT vault
+// becomes an empty one, ready to be written.  An unreadable vault still fails,
+// and its rows are left exactly as they are.
+func (h *Handler) vaultForWriteByID(ctx context.Context, vaultID string) (vaultData, error) {
+	v, err := h.readVaultByID(ctx, vaultID)
+	if errors.Is(err, errVaultAbsent) {
+		return vaultData{Secrets: map[string]string{}, HiddenSecrets: map[string]string{}}, nil
 	}
-	// Initialise a new vault.
-	v = vaultData{
-		Secrets:       map[string]string{},
-		HiddenSecrets: map[string]string{},
-	}
-	return v, h.writeVault(r, projectID, v)
+	return v, err
 }
 
-// writeVault encrypts and persists vault data to the DB.
-// If no key row exists yet, a new Fernet key is generated for the project.
-func (h *Handler) writeVault(r *http.Request, projectID string, v vaultData) error {
-	ctx := r.Context()
-	key := dbKey(projectID)
-
-	// Load or generate the project Fernet key.
-	var keyBytes []byte
-	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
-	).Scan(&keyBytes)
-
-	var fernetKey []byte
-	if err != nil {
-		// No key yet → generate a new one.
-		fernetKey = make([]byte, 32)
-		if _, err := rand.Read(fernetKey); err != nil {
-			return fmt.Errorf("generate fernet key: %w", err)
-		}
-		// Persist it (encrypted with master key if set).
-		storedKey, err := h.encryptKey(fernetKey)
+// vaultFernetKey returns the vault's Fernet key, minting and persisting one on
+// first write.
+//
+// The key row is inserted with DO NOTHING and then RE-READ, rather than
+// upserted.  Both halves matter: an upsert would replace an existing key row —
+// which orphans the data row encrypted under the old key — and using the key we
+// minted rather than the one that is actually stored would, under a concurrent
+// first write, produce a data row that nothing can open.  Whatever key survives
+// the insert is the key the data is encrypted with.
+func (h *Handler) vaultFernetKey(ctx context.Context, vaultID string) ([]byte, error) {
+	storedKey, err := h.vaultKeyRow(ctx, vaultID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		minted, err := newFernetKey()
 		if err != nil {
-			return fmt.Errorf("encrypt project key: %w", err)
+			return nil, err
 		}
-		_, err = h.pool.Exec(ctx,
+		encoded, err := h.encryptKey(minted)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt %s vault key: %w", vaultID, err)
+		}
+		if _, err := h.pool.Exec(ctx,
 			`INSERT INTO centry.secrets_key (id, data) VALUES ($1, $2)
-			 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-			key, storedKey,
-		)
-		if err != nil {
-			return fmt.Errorf("write secrets_key: %w", err)
+			 ON CONFLICT (id) DO NOTHING`,
+			vaultID, encoded,
+		); err != nil {
+			return nil, fmt.Errorf("write %s secrets_key: %w", vaultID, err)
 		}
-	} else {
-		fernetKey, err = h.decryptKey(keyBytes)
+		storedKey, err = h.vaultKeyRow(ctx, vaultID)
 		if err != nil {
-			return fmt.Errorf("decrypt project key: %w", err)
+			return nil, fmt.Errorf("read back %s secrets_key: %w", vaultID, err)
 		}
+	case err != nil:
+		return nil, fmt.Errorf("read %s secrets_key: %w", vaultID, err)
 	}
 
-	// Encrypt the vault data.
+	fernetKey, err := h.decryptKey(storedKey)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt %s vault key: %w", vaultID, err)
+	}
+	return fernetKey, nil
+}
+
+// writeVaultByID encrypts and persists one vault, generating its Fernet key on
+// first write.
+//
+// The key is stored in centry's on-disk form (the 44-byte base64 ENCODING of the
+// 32 key bytes) via `encryptKey`, not as the raw bytes — see that function for
+// why (#196/#197).
+func (h *Handler) writeVaultByID(ctx context.Context, vaultID string, v vaultData) error {
+	fernetKey, err := h.vaultFernetKey(ctx, vaultID)
+	if err != nil {
+		return err
+	}
 	plaintext, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("marshal vault data: %w", err)
+		return fmt.Errorf("marshal %s vault data: %w", vaultID, err)
 	}
 	ciphertext, err := fernetEncrypt(fernetKey, plaintext)
 	if err != nil {
-		return fmt.Errorf("encrypt vault data: %w", err)
+		return fmt.Errorf("encrypt %s vault data: %w", vaultID, err)
 	}
-
-	_, err = h.pool.Exec(ctx,
+	if _, err := h.pool.Exec(ctx,
 		`INSERT INTO centry.secrets_data (id, data) VALUES ($1, $2)
 		 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-		key, ciphertext,
-	)
-	return err
-}
-
-// encryptKey wraps a raw 32-byte Fernet key with the master key (if set).
-func (h *Handler) encryptKey(raw []byte) ([]byte, error) {
-	if h.masterKey == nil {
-		return raw, nil
+		vaultID, ciphertext,
+	); err != nil {
+		return fmt.Errorf("write %s secrets_data: %w", vaultID, err)
 	}
-	return fernetEncrypt(h.masterKey, raw)
+	return nil
 }
 
-// decryptKey unwraps the stored key bytes back to a 32-byte Fernet key.
-func (h *Handler) decryptKey(stored []byte) ([]byte, error) {
+// ─── the project vault ────────────────────────────────────────────────────────
+
+// readVaultCtx reads project `projectID`'s vault.  errVaultAbsent means the
+// project has no vault yet; any other error means one exists and would not open.
+func (h *Handler) readVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
+	return h.readVaultByID(ctx, dbKey(projectID))
+}
+
+// readOrInitVaultCtx returns the project's vault, or an empty one to write when
+// the project has none.  It does NOT fall back for an unreadable vault.
+func (h *Handler) readOrInitVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
+	return h.vaultForWriteByID(ctx, dbKey(projectID))
+}
+
+func (h *Handler) writeVaultCtx(ctx context.Context, projectID string, v vaultData) error {
+	return h.writeVaultByID(ctx, dbKey(projectID), v)
+}
+
+// vaultUnreadable answers the one failure every project route shares: the vault
+// exists and could not be opened.  It is a 500 and not an empty result, because
+// an empty result is what invites the write that destroys it.
+func vaultUnreadable(w http.ResponseWriter) {
+	writeJSON(w, http.StatusInternalServerError, map[string]string{
+		"error": "project vault is unreadable",
+	})
+}
+
+// encryptKey renders a raw 32-byte Fernet key in the ON-DISK representation
+// centry writes, then wraps it with the master key (if set).
+//
+// centry's database secret engine stores `cryptography.fernet.Fernet.
+// generate_key()` output — the 44-byte URL-safe base64 ENCODING of the 32 key
+// bytes — not the raw bytes (legacy/…/secret_engines/database.py `_write_key`).
+// This handler used to persist the raw 32 bytes, which no other reader in this
+// repository can open: `centrysecrets.decodeFernetKey` (the reader behind the
+// current chat-config and Configurations vault paths) requires exactly 44
+// base64 bytes and rejects a 32-byte row outright. A project whose vault this
+// handler created was therefore unreadable by the current generation, and a
+// project whose vault centry created was unwritable by this handler
+// (`fernetEncrypt` would slice a 28-byte AES key out of the 44 and fail).
+// Found while making the chat-config route reachable (#194).
+func (h *Handler) encryptKey(raw []byte) ([]byte, error) {
+	encoded := []byte(base64.URLEncoding.EncodeToString(raw))
 	if h.masterKey == nil {
-		if len(stored) != 32 {
-			return nil, fmt.Errorf("unexpected key length %d", len(stored))
+		return encoded, nil
+	}
+	return fernetEncrypt(h.masterKey, encoded)
+}
+
+// decryptKey unwraps the stored key bytes back to a 32-byte Fernet key. It
+// accepts BOTH representations: centry's 44-byte base64 encoding (what
+// encryptKey now writes) and the raw 32 bytes earlier builds of this handler
+// wrote, so an existing database keeps opening.
+func (h *Handler) decryptKey(stored []byte) ([]byte, error) {
+	if h.masterKey != nil {
+		unwrapped, err := fernetDecrypt(h.masterKey, stored)
+		if err != nil {
+			return nil, err
 		}
+		stored = unwrapped
+	}
+	if len(stored) == 32 {
 		return stored, nil
 	}
-	return fernetDecrypt(h.masterKey, stored)
+	return fernetDecodeKey(string(stored))
 }
 
 // ─── Fernet implementation ────────────────────────────────────────────────────
@@ -641,100 +920,6 @@ func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, n
 	}
 	vault.Secrets[name] = value
 	return h.writeVaultCtx(ctx, projectID, vault)
-}
-
-func (h *Handler) readVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
-	key := dbKey(projectID)
-	var keyBytes, dataBytes []byte
-	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
-	).Scan(&keyBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("secrets_key not found for project %s", projectID)
-	}
-	err = h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_data WHERE id = $1`, key,
-	).Scan(&dataBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("secrets_data not found for project %s", projectID)
-	}
-	fernetKey, err := h.decryptKey(keyBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt project key: %w", err)
-	}
-	plaintext, err := fernetDecrypt(fernetKey, dataBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt vault data: %w", err)
-	}
-	var v vaultData
-	if err := json.Unmarshal(plaintext, &v); err != nil {
-		return vaultData{}, fmt.Errorf("unmarshal vault data: %w", err)
-	}
-	if v.Secrets == nil {
-		v.Secrets = map[string]string{}
-	}
-	if v.HiddenSecrets == nil {
-		v.HiddenSecrets = map[string]string{}
-	}
-	return v, nil
-}
-
-func (h *Handler) readOrInitVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
-	v, err := h.readVaultCtx(ctx, projectID)
-	if err == nil {
-		return v, nil
-	}
-	v = vaultData{
-		Secrets:       map[string]string{},
-		HiddenSecrets: map[string]string{},
-	}
-	return v, h.writeVaultCtx(ctx, projectID, v)
-}
-
-func (h *Handler) writeVaultCtx(ctx context.Context, projectID string, v vaultData) error {
-	key := dbKey(projectID)
-	var keyBytes []byte
-	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
-	).Scan(&keyBytes)
-	var fernetKey []byte
-	if err != nil {
-		fernetKey = make([]byte, 32)
-		if _, err := rand.Read(fernetKey); err != nil {
-			return fmt.Errorf("generate fernet key: %w", err)
-		}
-		storedKey, err := h.encryptKey(fernetKey)
-		if err != nil {
-			return fmt.Errorf("encrypt project key: %w", err)
-		}
-		_, err = h.pool.Exec(ctx,
-			`INSERT INTO centry.secrets_key (id, data) VALUES ($1, $2)
-			 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-			key, storedKey,
-		)
-		if err != nil {
-			return fmt.Errorf("write secrets_key: %w", err)
-		}
-	} else {
-		fernetKey, err = h.decryptKey(keyBytes)
-		if err != nil {
-			return fmt.Errorf("decrypt project key: %w", err)
-		}
-	}
-	plaintext, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("marshal vault data: %w", err)
-	}
-	ciphertext, err := fernetEncrypt(fernetKey, plaintext)
-	if err != nil {
-		return fmt.Errorf("encrypt vault data: %w", err)
-	}
-	_, err = h.pool.Exec(ctx,
-		`INSERT INTO centry.secrets_data (id, data) VALUES ($1, $2)
-		 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-		key, ciphertext,
-	)
-	return err
 }
 
 // ResolveSecretValue resolves a {{secret.name}} reference to its plaintext value.

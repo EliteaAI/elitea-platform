@@ -281,11 +281,13 @@
             "id": "applications.generateAgentDraft",
             "method": "POST",
             "path": "/elitea_core/generate_application_draft/prompt_lib/{project_id}",
-            "operationId": "generateAgentDraft",
-            "source": "generated",
+            "operationId": null,
+            "source": "handwritten",
             "responseSchema": "PredictResponse",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/agents"
+            ]
         },
         {
             "id": "applications.getAgentCategories",
@@ -351,11 +353,15 @@
             "id": "applications.getPipelineTrigger",
             "method": "GET",
             "path": "/elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger",
-            "operationId": "getPipelineTrigger",
-            "source": "generated",
+            "operationId": null,
+            "source": "handwritten",
             "responseSchema": "PipelineTrigger",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "entities/pipeline",
+                "features/agents",
+                "features/pipelines"
+            ]
         },
         {
             "id": "applications.getProjectContext",
@@ -541,11 +547,15 @@
             "id": "applications.updatePipelineTrigger",
             "method": "PUT",
             "path": "/elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger",
-            "operationId": "updatePipelineTrigger",
-            "source": "generated",
+            "operationId": null,
+            "source": "handwritten",
             "responseSchema": "PipelineTrigger",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "entities/pipeline",
+                "features/agents",
+                "features/pipelines"
+            ]
         },
         {
             "id": "applications.updateProjectContext",
@@ -709,23 +719,13 @@
             "id": "chat.getChatConfig",
             "method": "GET",
             "path": "/elitea_core/chat_config/prompt_lib/{project_id}",
-            "operationId": "getChatConfig",
-            "source": "generated",
+            "operationId": null,
+            "source": "handwritten",
             "responseSchema": "ChatConfig",
             "fixture": null,
             "usedBy": [
                 "features/artifacts"
             ]
-        },
-        {
-            "id": "chat.webchatSync",
-            "method": "POST",
-            "path": "/elitea_core/webchat/prompt_lib/{project_id}/{version_id}",
-            "operationId": "webchatSync",
-            "source": "generated",
-            "responseSchema": "PredictResponse",
-            "fixture": null,
-            "usedBy": []
         },
         {
             "id": "default.getBrandingBootstrap",
@@ -1016,7 +1016,7 @@
             ]
         },
         {
-            "$comment": "Issue #93 — SSE dispatch for an index_data run. Body is the Go `currentStartBody` contract (toolkit_config + tool_name index_data + tool_params), query `await_response=false&execution_contract=index.ingest.v1`; the response's `task_id` names the execution whose stream is `runtime.executionEvents` below. A `task_id` does NOT prove the Go runtime answered (legacy pylon returns one too), so the caller also treats a stream that fails to open as the socket.io fallback signal.",
+            "$comment": "Issue #93 \u2014 SSE dispatch for an index_data run. Body is the Go `currentStartBody` contract (toolkit_config + tool_name index_data + tool_params), query `await_response=false&execution_contract=index.ingest.v1`; the response's `task_id` names the execution whose stream is `runtime.executionEvents` below. A `task_id` does NOT prove the Go runtime answered (legacy pylon returns one too), so the caller also treats a stream that fails to open as the socket.io fallback signal.",
             "id": "toolkits.startIndexExecution",
             "method": "POST",
             "path": "/elitea_core/test_toolkit_tool/prompt_lib/{projectId}",
@@ -1029,7 +1029,7 @@
             ]
         },
         {
-            "$comment": "Issue #93 — SSE dispatch for a chat message. `execution_contract` is agent.execute.application.v1 or agent.execute.adhoc.v1 (services/elitea-main/internal/api/v2/agentexecution/current_route.go). The response's `events_url` is the stream to follow. REST LAYER ONLY, NO UI CALL SITE YET: the chat surface has no consumer for the streamed execution.node_event envelope (the chat_predict streaming reducer was never ported), so widgets/chat-box deliberately still sends over socket.io. Note the Go route wants the prompt at payload.user_input with a numeric project_id — a caller must build that body, not reuse the socket predict payload.",
+            "$comment": "Issue #93 \u2014 SSE dispatch for a chat message. `execution_contract` is agent.execute.application.v1 or agent.execute.adhoc.v1 (services/elitea-main/internal/api/v2/agentexecution/current_route.go). The response's `events_url` is the stream to follow. REST LAYER ONLY, NO UI CALL SITE YET: the chat surface has no consumer for the streamed execution.node_event envelope (the chat_predict streaming reducer was never ported), so widgets/chat-box deliberately still sends over socket.io. Note the Go route wants the prompt at payload.user_input with a numeric project_id \u2014 a caller must build that body, not reuse the socket predict payload.",
             "id": "conversation.startAgentExecution",
             "method": "POST",
             "path": "/elitea_core/messages/prompt_lib/{projectId}/{conversationUuid}",
@@ -1042,7 +1042,7 @@
             ]
         },
         {
-            "$comment": "Issue #93 — the durable execution-replay SSE stream shared by every long-running execution (index ingest, agent chat, agent regeneration). text/event-stream; event names are the durable replay event types: execution.node_event, index.ingest.completed, execution.failed. Opened with EventSource, so it carries the session cookie and no Authorization header.",
+            "$comment": "Issue #93 \u2014 the durable execution-replay SSE stream shared by every long-running execution (index ingest, agent chat, agent regeneration). text/event-stream; event names are the durable replay event types: execution.node_event, index.ingest.completed, execution.failed. Opened with EventSource, so it carries the session cookie and no Authorization header.",
             "id": "runtime.executionEvents",
             "method": "GET",
             "path": "/executions/{projectId}/{executionId}/events",
@@ -1055,7 +1055,7 @@
             ]
         },
         {
-            "$comment": "Server-Sent Events stream, not a request/response call (issue #92): opened with EventSource via features/notifications' useNotificationsSSE, served by services/elitea-main/internal/api/v2/notifications/current_events.go. It replaces the notifications_notify socket.io push. Events: notifications_ready (cursor handshake / oversized-payload substitute) and notifications_notify (one new notification). No response body schema exists to name — the payload is a text/event-stream, and the durable list endpoint above stays authoritative for content.",
+            "$comment": "Server-Sent Events stream, not a request/response call (issue #92): opened with EventSource via features/notifications' useNotificationsSSE, served by services/elitea-main/internal/api/v2/notifications/current_events.go. It replaces the notifications_notify socket.io push. Events: notifications_ready (cursor handshake / oversized-payload substitute) and notifications_notify (one new notification). No response body schema exists to name \u2014 the payload is a text/event-stream, and the durable list endpoint above stays authoritative for content.",
             "id": "notifications.eventStream",
             "method": "GET",
             "path": "/notifications/events/prompt_lib/{projectId}",

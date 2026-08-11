@@ -53,7 +53,9 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  ErrorResponse,
   IgnoredRequestBody,
+  MessageResponse,
   ModerationStatusResponse,
   N400Response,
   N401Response,
@@ -64,8 +66,11 @@ import type {
   RoleListParams,
   SupportAssistantConfig,
   UserDeleteParams,
+  UserInviteRequest,
+  UserInviteResult,
   UserListParams,
   UserListResponse,
+  UserRolesUpdateRequest,
 } from "../model";
 
 import { eliteaFetch } from ".././mutator";
@@ -295,12 +300,12 @@ export function useUserList<
 }
 
 export type userCreateResponse200 = {
-  data: UserListResponse;
+  data: UserInviteResult[];
   status: 200;
 };
 
 export type userCreateResponse400 = {
-  data: N400Response;
+  data: UserInviteResult[] | ErrorResponse;
   status: 400;
 };
 
@@ -331,41 +336,43 @@ export const getUserCreateUrl = (projectId: string) => {
 };
 
 /**
- * NOTE(W2): the Go handler ignores the method and body and returns the
- * user listing (eliteacore/handler.go:190-263) — user creation is not
- * implemented on the Go router.
- * @summary Create a user inside a project (live no-op)
+ * Adds each address to the project with the given role names, creating an
+ * auth_core__user row for an address that has no account yet (that is what
+ * makes an invite an invite; the OIDC provisioning path links the provider
+ * on first login). An address that is already a member is reported as an
+ * error element and makes the whole response 400.
+ * @summary Invite users into a project by email
  */
 export const userCreate = async (
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userInviteRequest: UserInviteRequest,
   options?: Parameters<typeof eliteaFetch>[1],
 ): Promise<userCreateResponse> => {
   return eliteaFetch<userCreateResponse>(getUserCreateUrl(projectId), {
     ...options,
     method: "POST",
     headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(ignoredRequestBody),
+    body: JSON.stringify(userInviteRequest),
   });
 };
 
 export const getUserCreateQueryKey = (
   projectId: string,
-  ignoredRequestBody?: IgnoredRequestBody,
+  userInviteRequest?: UserInviteRequest,
 ) => {
   return [
     "POST",
     `/admin/users/default/${projectId}`,
-    ignoredRequestBody,
+    userInviteRequest,
   ] as const;
 };
 
 export const getUserCreateQueryOptions = <
   TData = Awaited<ReturnType<typeof userCreate>>,
-  TError = N400Response | N401Response | N403Response,
+  TError = UserInviteResult[] | ErrorResponse | N401Response | N403Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userInviteRequest: UserInviteRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userCreate>>, TError, TData>
@@ -377,12 +384,11 @@ export const getUserCreateQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getUserCreateQueryKey(projectId, ignoredRequestBody);
+    getUserCreateQueryKey(projectId, userInviteRequest);
 
   const queryFn: QueryFunction<Awaited<ReturnType<typeof userCreate>>> = ({
     signal,
-  }) =>
-    userCreate(projectId, ignoredRequestBody, { signal, ...requestOptions });
+  }) => userCreate(projectId, userInviteRequest, { signal, ...requestOptions });
 
   return {
     queryKey,
@@ -399,14 +405,15 @@ export const getUserCreateQueryOptions = <
 export type UserCreateQueryResult = NonNullable<
   Awaited<ReturnType<typeof userCreate>>
 >;
-export type UserCreateQueryError = N400Response | N401Response | N403Response;
+export type UserCreateQueryError =
+  UserInviteResult[] | ErrorResponse | N401Response | N403Response;
 
 export function useUserCreate<
   TData = Awaited<ReturnType<typeof userCreate>>,
-  TError = N400Response | N401Response | N403Response,
+  TError = UserInviteResult[] | ErrorResponse | N401Response | N403Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userInviteRequest: UserInviteRequest,
   options: {
     query: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userCreate>>, TError, TData>
@@ -427,10 +434,10 @@ export function useUserCreate<
 };
 export function useUserCreate<
   TData = Awaited<ReturnType<typeof userCreate>>,
-  TError = N400Response | N401Response | N403Response,
+  TError = UserInviteResult[] | ErrorResponse | N401Response | N403Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userInviteRequest: UserInviteRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userCreate>>, TError, TData>
@@ -451,10 +458,10 @@ export function useUserCreate<
 };
 export function useUserCreate<
   TData = Awaited<ReturnType<typeof userCreate>>,
-  TError = N400Response | N401Response | N403Response,
+  TError = UserInviteResult[] | ErrorResponse | N401Response | N403Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userInviteRequest: UserInviteRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userCreate>>, TError, TData>
@@ -466,15 +473,15 @@ export function useUserCreate<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Create a user inside a project (live no-op)
+ * @summary Invite users into a project by email
  */
 
 export function useUserCreate<
   TData = Awaited<ReturnType<typeof userCreate>>,
-  TError = N400Response | N401Response | N403Response,
+  TError = UserInviteResult[] | ErrorResponse | N401Response | N403Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userInviteRequest: UserInviteRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userCreate>>, TError, TData>
@@ -487,7 +494,7 @@ export function useUserCreate<
 } {
   const queryOptions = getUserCreateQueryOptions(
     projectId,
-    ignoredRequestBody,
+    userInviteRequest,
     options,
   );
 
@@ -500,7 +507,7 @@ export function useUserCreate<
 }
 
 export type userUpdateResponse200 = {
-  data: UserListResponse;
+  data: MessageResponse;
   status: 200;
 };
 
@@ -544,31 +551,33 @@ export const getUserUpdateUrl = (projectId: string) => {
 };
 
 /**
- * NOTE(W2): same handler as userList; body ignored
- * (eliteacore/handler.go:190-263).
- * @summary Replace an existing user record (live no-op)
+ * REPLACES the users' project role set with `roles` — unchecked boxes in
+ * the Edit-roles dialog have to mean something. An empty `roles` array is
+ * rejected rather than treated as "remove from project"; DELETE is the
+ * verb for that.
+ * @summary Replace the project roles of one or more users
  */
 export const userUpdate = async (
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userRolesUpdateRequest: UserRolesUpdateRequest,
   options?: Parameters<typeof eliteaFetch>[1],
 ): Promise<userUpdateResponse> => {
   return eliteaFetch<userUpdateResponse>(getUserUpdateUrl(projectId), {
     ...options,
     method: "PUT",
     headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(ignoredRequestBody),
+    body: JSON.stringify(userRolesUpdateRequest),
   });
 };
 
 export const getUserUpdateQueryKey = (
   projectId: string,
-  ignoredRequestBody?: IgnoredRequestBody,
+  userRolesUpdateRequest?: UserRolesUpdateRequest,
 ) => {
   return [
     "PUT",
     `/admin/users/default/${projectId}`,
-    ignoredRequestBody,
+    userRolesUpdateRequest,
   ] as const;
 };
 
@@ -577,7 +586,7 @@ export const getUserUpdateQueryOptions = <
   TError = N400Response | N401Response | N403Response | N404Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userRolesUpdateRequest: UserRolesUpdateRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userUpdate>>, TError, TData>
@@ -589,12 +598,15 @@ export const getUserUpdateQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getUserUpdateQueryKey(projectId, ignoredRequestBody);
+    getUserUpdateQueryKey(projectId, userRolesUpdateRequest);
 
   const queryFn: QueryFunction<Awaited<ReturnType<typeof userUpdate>>> = ({
     signal,
   }) =>
-    userUpdate(projectId, ignoredRequestBody, { signal, ...requestOptions });
+    userUpdate(projectId, userRolesUpdateRequest, {
+      signal,
+      ...requestOptions,
+    });
 
   return {
     queryKey,
@@ -619,7 +631,7 @@ export function useUserUpdate<
   TError = N400Response | N401Response | N403Response | N404Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userRolesUpdateRequest: UserRolesUpdateRequest,
   options: {
     query: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userUpdate>>, TError, TData>
@@ -643,7 +655,7 @@ export function useUserUpdate<
   TError = N400Response | N401Response | N403Response | N404Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userRolesUpdateRequest: UserRolesUpdateRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userUpdate>>, TError, TData>
@@ -667,7 +679,7 @@ export function useUserUpdate<
   TError = N400Response | N401Response | N403Response | N404Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userRolesUpdateRequest: UserRolesUpdateRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userUpdate>>, TError, TData>
@@ -679,7 +691,7 @@ export function useUserUpdate<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Replace an existing user record (live no-op)
+ * @summary Replace the project roles of one or more users
  */
 
 export function useUserUpdate<
@@ -687,7 +699,7 @@ export function useUserUpdate<
   TError = N400Response | N401Response | N403Response | N404Response,
 >(
   projectId: string,
-  ignoredRequestBody: IgnoredRequestBody,
+  userRolesUpdateRequest: UserRolesUpdateRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof userUpdate>>, TError, TData>
@@ -700,7 +712,7 @@ export function useUserUpdate<
 } {
   const queryOptions = getUserUpdateQueryOptions(
     projectId,
-    ignoredRequestBody,
+    userRolesUpdateRequest,
     options,
   );
 
@@ -713,7 +725,7 @@ export function useUserUpdate<
 }
 
 export type userDeleteResponse200 = {
-  data: UserListResponse;
+  data: MessageResponse;
   status: 200;
 };
 
@@ -772,11 +784,11 @@ export const getUserDeleteUrl = (
 };
 
 /**
- * NOTE(W2): the old SPA sends ?id[]=N (repeated); the Go handler ignores
- * the query entirely and returns the listing
- * (eliteacore/handler.go:190-263) — deletion is not implemented on the
- * Go router.
- * @summary Remove one or more users from a project (live no-op)
+ * Clears the users' rows in auth_core__project_user_role for this project.
+ * The auth_core__user account survives — the person may be a member of
+ * other projects, and "remove from project" is not "delete the account"
+ * (parity with pylon's remove_users_from_project).
+ * @summary Remove one or more users from a project
  */
 export const userDelete = async (
   projectId: string,
@@ -905,7 +917,7 @@ export function useUserDelete<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Remove one or more users from a project (live no-op)
+ * @summary Remove one or more users from a project
  */
 
 export function useUserDelete<

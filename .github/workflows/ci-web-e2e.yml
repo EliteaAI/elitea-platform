@@ -140,7 +140,8 @@ jobs:
         # effort once.
         #
         # elitea-main uses the `e2e` target, which builds the admin SPA from
-        # apps/elitea-web/src/entries/admin (no admin-ui submodule required).
+        # apps/elitea-web/src/entries/admin — the same bundle the shipping
+        # `final` stage carries, since `final` derives from `e2e`.
         working-directory: ${{ github.workspace }}
         run: |
           docker build \
