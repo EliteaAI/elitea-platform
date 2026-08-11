@@ -19,18 +19,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROJECT="elitea-standalone"
 COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.yml"
 
-# Same detection as apps/elitea-web/scripts/e2e-stack.sh: CI has the docker
-# compose v2 plugin, this machine has podman.
-if [ -z "${COMPOSE_BIN:-}" ]; then
-  if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
-    COMPOSE_BIN="docker compose"
-  elif command -v podman &>/dev/null; then
-    COMPOSE_BIN="podman compose"
-  else
-    echo "ERROR: neither 'docker compose' nor 'podman' found. Set COMPOSE_BIN." >&2
-    exit 1
-  fi
-fi
+# Shared with apps/elitea-web/scripts/e2e-stack.sh: CI has the docker compose
+# v2 plugin, this machine has podman.
+# shellcheck source=../../apps/elitea-web/scripts/lib/compose-detect.sh
+. "${REPO_ROOT}/apps/elitea-web/scripts/lib/compose-detect.sh"
+detect_compose_bin
 
 PORT="${STANDALONE_PORT:-8084}"
 
@@ -50,7 +43,13 @@ case "${1:-}" in
     # derived from the Host header), so 9400 cannot be remapped and the E2E
     # stack cannot be up at the same time. Detect that here: the raw failure is
     # an opaque "proxy already running" from the podman machine.
-    if command -v lsof &>/dev/null && lsof -nP -iTCP:9400 -sTCP:LISTEN &>/dev/null; then
+    #
+    # Only a conflict if the listener is NOT this project's own oidc-mock:
+    # `compose up -d --wait` is meant to be safely re-runnable, and without
+    # this exemption a second `up` against an already-healthy standalone stack
+    # would find its own container on 9400 and misreport it as the E2E stack.
+    if ! $COMPOSE_BIN $COMPOSE_F ps --format '{{.Names}}' 2>/dev/null | grep -q 'oidc-mock' \
+       && command -v lsof &>/dev/null && lsof -nP -iTCP:9400 -sTCP:LISTEN &>/dev/null; then
       echo "ERROR: port 9400 (oidc-mock) is already in use." >&2
       echo "       The E2E stack cannot run alongside this one. Stop it with:" >&2
       echo "         apps/elitea-web/scripts/e2e-stack.sh down" >&2

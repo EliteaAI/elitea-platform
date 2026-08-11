@@ -186,20 +186,16 @@ func main() {
 	// load-balancer rotation. govStore is nil when enforcement is disabled, in
 	// which case the route reports healthy unconditionally.
 	//
-	// The nil must be dropped BEFORE the interface conversion, exactly as the
-	// drain path does. Passing a nil *GovernanceStore straight into the pinger
-	// parameter produces a NON-nil interface holding a nil pointer, so
-	// makeHealthzHandler's `p != nil` guard stayed true and Ping dereferenced a
-	// nil receiver: every /healthz request panicked whenever GATEWAY_NATS_URL
-	// was unset. That is the standard local/dev posture AND the pre-NATS window
-	// in a cluster, where /healthz is the liveness probe — so the panic would
-	// crash-loop the pod it was added to protect. Measured against the
-	// standalone compose stack.
-	var healthPinger pinger
-	if govStore != nil {
-		healthPinger = govStore
-	}
-	mux.HandleFunc("/healthz", makeHealthzHandler(healthPinger))
+	// Passing govStore straight into the pinger parameter puts a typed nil
+	// *GovernanceStore into a non-nil interface, so makeHealthzHandler's
+	// `p != nil` guard stays true and this dispatches to Ping. That used to
+	// panic — every /healthz request, whenever GATEWAY_NATS_URL was unset
+	// (the standard local/dev posture AND the pre-NATS window in a cluster) —
+	// but Ping itself is now nil-receiver safe (see GovernanceStore.Ping),
+	// which is the one guard this needs: any future caller that boxes a typed
+	// nil *GovernanceStore into an interface is covered too, not just this
+	// call site. Measured against the standalone compose stack.
+	mux.HandleFunc("/healthz", makeHealthzHandler(govStore))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert

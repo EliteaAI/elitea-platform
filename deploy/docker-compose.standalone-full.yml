@@ -8,6 +8,15 @@
 #                                      (Bifrost), wired into elitea-main's /llm.
 #   centry-hybrid/                     legacy mixed deployment. Not needed here.
 #
+# The postgres/redis/rustfs/rustfs-bucket-init/oidc-mock blocks below are
+# hand-duplicated from docker-compose.e2e-standalone.yml rather than layered
+# with `-f base -f overlay`: this file's postgres also needs an explicit PGDATA
+# mount and elitea-main/elitea-web need the gateway's extra env/volumes, so a
+# generic overlay would still have to redeclare most of each service anyway.
+# A change to shared behaviour in one of those blocks (a healthcheck workaround,
+# a volume fix) belongs in BOTH files — check the other one before assuming a
+# fix here is complete, and vice versa.
+#
 # There is no pylon, no centry, no LiteLLM in this stack. LiteLLM is superseded
 # by the gateway: elitea-main only reads ELITEA_LITELLM_* under
 # ELITEA_CONFIGURATIONS_ENABLED=true, which nothing here sets.
@@ -109,7 +118,8 @@ services:
     healthcheck:
       # Neither this image nor its dependents ship curl — only wget — and wget's
       # exit code does not distinguish "reachable but 403" from "refused". Treat
-      # a captured "server returned error" as reachable.
+      # a captured "server returned error" as reachable. Kept in sync with the
+      # identical block in docker-compose.e2e-standalone.yml.
       test: ["CMD-SHELL", "out=$$(wget -q -O /dev/null http://127.0.0.1:9000/ 2>&1); [ $$? -eq 0 ] || echo \"$$out\" | grep -q 'server returned error'"]
       interval: 2s
       timeout: 3s
