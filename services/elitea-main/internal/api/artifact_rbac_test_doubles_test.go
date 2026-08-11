@@ -33,7 +33,17 @@ type testTokenValidator struct {
 	user auth.User
 }
 
-func (t testTokenValidator) ValidateToken(_ context.Context, _ string) (auth.User, error) {
+// testAuthToken is the only token testTokenValidator accepts. It rejects
+// everything else rather than accepting any string, so tests that enumerate
+// credential shapes keep a genuine invalid case — a blanket-accept stub makes
+// "invalid" indistinguishable from a valid token and silently retires that
+// coverage.
+const testAuthToken = "test-token"
+
+func (t testTokenValidator) ValidateToken(_ context.Context, token string) (auth.User, error) {
+	if token != testAuthToken {
+		return auth.User{}, fmt.Errorf("test validator: unexpected token %q", token)
+	}
 	return t.user, nil
 }
 
@@ -47,7 +57,7 @@ func authenticatedTestUser() auth.User {
 // Requests without it are unauthenticated and must 401 — several tests below
 // depend on exactly that.
 func testAuthHeader(r *http.Request) *http.Request {
-	r.Header.Set("Authorization", "Bearer test-token")
+	r.Header.Set("Authorization", "Bearer "+testAuthToken)
 	return r
 }
 

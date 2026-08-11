@@ -291,7 +291,13 @@ func newArtifactContractStore(ctx context.Context) (storage.ObjectStore, error) 
 // middleware: header parsing, validation, and PrincipalValidator all run.
 type artifactContractValidator struct{}
 
-func (artifactContractValidator) ValidateToken(context.Context, string) (platformauth.User, error) {
+func (artifactContractValidator) ValidateToken(_ context.Context, token string) (platformauth.User, error) {
+	// Compare rather than accept anything: a helper that sends the wrong
+	// credential should fail here, not authenticate silently and leave the
+	// suite green while exercising a credential path nothing validates.
+	if token != artifactAuthToken {
+		return platformauth.User{}, fmt.Errorf("artifact contract suite: unexpected token %q", token)
+	}
 	return platformauth.User{ID: "1", UserID: "1", Email: "contract@test.local", AuthType: "token"}, nil
 }
 
