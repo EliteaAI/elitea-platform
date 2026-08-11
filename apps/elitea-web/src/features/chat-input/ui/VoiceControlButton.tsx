@@ -46,6 +46,7 @@ import Box from '@mui/material/Box';
 import Tooltip from '@mui/material/Tooltip';
 import type { Theme } from '@mui/material/styles';
 
+import { useVoiceFeatureFlags } from '@/shared/lib/hooks/useVoiceFeatureFlags';
 import { t } from '@/shared/i18n';
 import { BaseBtn, BUTTON_VARIANTS } from '@/shared/ui/BaseBtn';
 import { GearIcon } from '@/shared/ui/icons/gear-icon';
@@ -58,8 +59,6 @@ import type { VoiceConfig, VoiceConfigUpdate } from '../lib/hooks/useVoiceConfig
 
 import { VoiceConfigDialog } from './VoiceConfigDialog';
 
-const VOICE_FEATURES_ENABLED = true;
-const VOICE_FEATURES_TEMPORARILY_DISABLED = false;
 
 /** @public Type-identical to `useReadAloud.hooks.ts`'s `VoicePlayerProps` — see this file's module doc for the cross-cluster coordination this alignment fixes. */
 export interface VoiceControlButtonProps {
@@ -116,6 +115,7 @@ export function VoiceControlButton({
   hasModelTTS,
 }: VoiceControlButtonProps): ReactNode {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const voiceFlags = useVoiceFeatureFlags();
 
   const handleDialogOpen = useCallback(() => setDialogOpen(true), []);
   const handleDialogClose = useCallback(() => setDialogOpen(false), []);
@@ -127,9 +127,15 @@ export function VoiceControlButton({
     [onVoiceConfigChange],
   );
 
-  if (!VOICE_FEATURES_ENABLED) return null;
+  // Same platform switch as `widgets/chat`'s VoiceButton (A14, issue 200).
+  // This component has no render site today — it and `VoiceMiniPlayer` are
+  // exported from this slice's barrel and imported by nothing — so wiring it
+  // changes nothing a user sees. It is wired anyway: leaving one of the two
+  // voice controls reading a hardcoded `true` is how the next person to mount
+  // it reintroduces the defect without noticing.
+  if (!voiceFlags.enabled) return null;
 
-  const playStopLabel = VOICE_FEATURES_TEMPORARILY_DISABLED
+  const playStopLabel = voiceFlags.temporarilyDisabled
     ? t('features.chatInput.voiceControlButton.disabledTooltip', 'Voice features temporarily disabled')
     : isPlaying
       ? t('features.chatInput.voiceControlButton.stopTooltip', 'Stop speaking')

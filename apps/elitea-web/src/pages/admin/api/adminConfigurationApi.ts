@@ -62,6 +62,21 @@ export interface AdminConfigField {
   readonly format?: string;
   readonly enum?: readonly string[];
   readonly default?: unknown;
+  /** The element type of an `array` field, when the schema declares one. */
+  readonly items?: { readonly type?: string };
+  /**
+   * The FIELD-level twin of the section-level reason — unit A14's Features page.
+   *
+   * A section is the wrong granularity when one control inside a working section
+   * has nothing behind it: `agent_publishing` enforces its block switch and its
+   * whitelist for real and feeds its categories to the Agents Hub, and only
+   * `publish_validation_rules` is inert. Withholding the whole section would
+   * have taken three working controls away to disclose one broken one.
+   *
+   * The server refuses a write to such a field with a 400 naming it, so this is
+   * presentation of a fact the endpoint enforces, never the enforcement itself.
+   */
+  readonly unavailable_reason?: string;
   /** Renders the field only while another field in the same section holds a value. */
   readonly visible_when?:
     | { readonly field: string; readonly value: unknown }
@@ -82,7 +97,24 @@ export interface AdminConfigSection {
   readonly description?: string;
   readonly fields?: readonly AdminConfigField[];
   readonly unavailable_reason?: string;
+  /**
+   * Which admin page renders this section — `'features'`, or absent for
+   * Configuration.
+   *
+   * Server-declared, and that is the point. The reference keeps this in TWO
+   * client-side lists that must stay each other's exact complement:
+   * `FeaturesPage.jsx` hardcodes six sections and three config-path prefixes,
+   * and `ConfigurationPage.jsx` hardcodes `MOVED_TO_FEATURES` plus the same
+   * three prefixes to subtract. A section added on the server would appear on
+   * Configuration, or on both, depending on which list was updated. Declaring it
+   * once, next to the fields, is the same correction #217 made when it moved
+   * `service_descriptors` out of the client's section list.
+   */
+  readonly page?: string;
 }
+
+/** The value of `page` for the sections the Features page owns. */
+export const ADMIN_CONFIG_PAGE_FEATURES = 'features';
 
 /** The GET body. Not exported: no call site outside this module reads it. */
 interface AdminConfigValues {

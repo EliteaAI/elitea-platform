@@ -8,6 +8,7 @@ import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 
 import { voiceHooks } from '@/features/chat-input';
+import { useVoiceFeatureFlags } from '@/shared/lib/hooks/useVoiceFeatureFlags';
 import { t } from '@/shared/i18n';
 
 /**
@@ -36,11 +37,13 @@ import { t } from '@/shared/i18n';
  * see `features/mcps/model/useMcpAuthModal.ts`'s identical disclosure); the
  * caller decides how to surface the message until one lands.
  *
- * `VOICE_FEATURES_ENABLED`/`VOICE_FEATURES_TEMPORARILY_DISABLED` are
- * hardcoded to baseline's own env-flag defaults, same disclosed
- * `shared/config` `ConfigSchema` gap `features/chat-input/ui/
- * VoiceControlButton.tsx` already established (no schema field yet; not
- * this widget's gap to close unilaterally).
+ * The two voice flags are READ FROM THE PLATFORM (`useVoiceFeatureFlags`,
+ * A14/issue 200), not hardcoded. They used to be `VOICE_FEATURES_ENABLED =
+ * true` / `VOICE_FEATURES_TEMPORARILY_DISABLED = false` module constants,
+ * disclosed as a `shared/config` gap — but the gap was not in `shared/config`:
+ * the admin Features page has always offered switches named after both, and
+ * they reached nothing. `GET /elitea_core/platform_settings/…` now marshals
+ * them from `centry.platform_config`.
  *
  * Prop contract (injected by the composition root through `slots.voiceButton`):
  *   - `disabled`          — disables the button entirely
@@ -71,8 +74,6 @@ export interface VoiceButtonProps {
   projectId?: string;
 }
 
-const VOICE_FEATURES_ENABLED = true;
-const VOICE_FEATURES_TEMPORARILY_DISABLED = false;
 
 /** Maps a speech-recognition error code to human-readable text — split out of `handleVoiceError` purely so each message can carry its own `t()` call. Unmapped codes (e.g. 'no-speech'/'aborted') resolve to `undefined`, same as the plain-object lookup this replaces. */
 function voiceErrorMessage(error: string): string | undefined {
@@ -166,6 +167,7 @@ function deriveVoiceButtonUiState(disabled: boolean, isRecording: boolean, isAdm
 export const VoiceButton = memo(
   forwardRef<VoiceButtonHandle, VoiceButtonProps>(
     ({ disabled = false, onRecordingChange, onError, inputRef, projectId }, ref) => {
+      const voiceFlags = useVoiceFeatureFlags();
       // Text before/after the cursor at the moment recording started, plus the
       // finalized voice text accumulated so far this session — same 3-ref
       // cursor-aware-insertion scheme as baseline `VoiceButton.jsx`.
@@ -263,9 +265,15 @@ export const VoiceButton = memo(
       useImperativeHandle(ref, () => ({ stop: handleStopRecording }), [handleStopRecording]);
 
       if (!isSupported) return null;
-      if (!VOICE_FEATURES_ENABLED) return null;
+      // The platform switch, read rather than hardcoded (A14, issue 200). These
+      // were `const VOICE_FEATURES_ENABLED = true` / `= false` module
+      // constants, so the admin Features page's Voice Features section named
+      // this control and could not change it. This component is the MOUNTED
+      // voice control — `/chat` → `ChatBox` → `buildChatBoxInputSlots()` — which
+      // is what makes that section live rather than withheld.
+      if (!voiceFlags.enabled) return null;
 
-      const ui = deriveVoiceButtonUiState(disabled, isRecording, VOICE_FEATURES_TEMPORARILY_DISABLED);
+      const ui = deriveVoiceButtonUiState(disabled, isRecording, voiceFlags.temporarilyDisabled);
 
       return (
         <Box

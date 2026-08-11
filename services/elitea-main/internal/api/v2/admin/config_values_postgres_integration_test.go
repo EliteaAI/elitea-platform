@@ -487,9 +487,16 @@ func TestUnavailableSectionsRefuseWithAReason(t *testing.T) {
 		// `advanced`, `governance` and `service_descriptors` are omitted here
 		// because they additionally declare a `required_permission`, which is
 		// checked FIRST — they are covered by the permission cases below.
+		// `voice_features` was in this list until unit A14's Features page:
+		// #217 marked it unavailable because "nothing reads this setting yet",
+		// which was true of the components it had looked at
+		// (`features/chat-input`'s VoiceControlButton and VoiceMiniPlayer, both
+		// unmounted) and false of the one it had not — `widgets/chat`'s
+		// VoiceButton, which `/chat` mounts through ChatBox's slot bundle. It
+		// is live now and is covered by the Features suite instead.
 		"guardrails", "mcp_servers", "observability", "litellm", "runtime",
 		"admin_panel", "auth", "dedicated_banner", "support_assistant",
-		"voice_features", "maintenance",
+		"maintenance",
 	} {
 		target := "/admin/plugin_config_values/administration/" + section
 		read := configDo(t, router, http.MethodGet, target, nil)
@@ -608,7 +615,7 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 	if len(schema.Sections) == 0 {
 		t.Fatal("no sections")
 	}
-	available := 0
+	available := map[string]bool{}
 	for _, section := range schema.Sections {
 		if section.Title == "" {
 			t.Errorf("section %q has no title", section.ID)
@@ -616,16 +623,91 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 		if section.UnavailableReason != "" {
 			continue
 		}
-		available++
+		available[section.ID] = true
 		if len(section.Fields) == 0 {
 			t.Errorf("section %q is offered as editable but declares no fields", section.ID)
 		}
 	}
-	// Exactly one section is live today. If this number changes, a section was
-	// made writable and the change must come with a consumer that READS it —
-	// which is the whole argument of this unit.
-	if available != 1 {
-		t.Fatalf("available sections = %d, want exactly 1 (resources)", available)
+	// The live set is enumerated, not counted. #217 pinned the COUNT at one, and
+	// a count cannot tell "a section was made live with a consumer behind it"
+	// from "a section lost its reason by accident" — both read as 2. Naming them
+	// means a section becoming live has to be written down here, next to the
+	// consumer that justifies it:
+	//
+	//	resources         → apps/elitea-web pages/help-center, through
+	//	                    GET /admin/plugin_config_values/prompt_lib/resources
+	//	mcp_configuration → eliteacore PlatformSettings (mcp_enabled,
+	//	                    mcp_in_menu_enabled) and the 403 on the three MCP
+	//	                    proxy/sync routes
+	//	agent_publishing  → eliteacore Publish (the guardrail) and
+	//	                    AgentCategories (the extra categories)
+	//	voice_features    → eliteacore PlatformSettings (voice_features_enabled,
+	//	                    voice_features_temporarily_disabled), read by
+	//	                    widgets/chat's VoiceButton, which /chat mounts
+	want := map[string]bool{
+		"resources": true, "mcp_configuration": true,
+		"agent_publishing": true, "voice_features": true,
+	}
+	for id := range want {
+		if !available[id] {
+			t.Errorf("section %q should be available and is not", id)
+		}
+	}
+	for id := range available {
+		if !want[id] {
+			t.Errorf("section %q became available with no consumer recorded here", id)
+		}
+	}
+}
+
+// TestEverySectionDeclaresWhichPageItBelongsTo — the placement the reference
+// keeps in two client-side lists that must stay each other's complement
+// (`FeaturesPage.jsx`'s six-section array and `ConfigurationPage.jsx`'s
+// `MOVED_TO_FEATURES` plus three path prefixes). Here the server says it, so a
+// section cannot end up on both pages or on neither.
+func TestEverySectionDeclaresWhichPageItBelongsTo(t *testing.T) {
+	_, router := newConfigEnvironment(t)
+	recorder := configDo(t, router, http.MethodGet, "/admin/plugin_config_schemas/administration", nil)
+	var schema struct {
+		Sections []struct {
+			ID   string `json:"id"`
+			Page string `json:"page"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+
+	features := map[string]bool{}
+	for _, section := range schema.Sections {
+		switch section.Page {
+		case "features":
+			features[section.ID] = true
+		case "":
+			// Configuration, by omission.
+		default:
+			t.Errorf("section %q declares unknown page %q", section.ID, section.Page)
+		}
+	}
+
+	// The reference's own six, in the reference's own order.
+	for _, id := range []string{
+		"mcp_configuration", "agent_publishing", "skill_publishing",
+		"resources", "support_assistant", "voice_features",
+	} {
+		if !features[id] {
+			t.Errorf("section %q is not on the Features page", id)
+		}
+	}
+	if len(features) != 6 {
+		t.Errorf("Features page has %d sections, want the reference's 6", len(features))
+	}
+	// `resources` moving is the entanglement #217 recorded and deferred: it put
+	// the section on Configuration because that is where the server's schema had
+	// it, and said it should move when Features landed. This is that move, and
+	// this assertion is what stops it drifting back.
+	if !features["resources"] {
+		t.Error("resources must be on the Features page, not Configuration")
 	}
 }
 

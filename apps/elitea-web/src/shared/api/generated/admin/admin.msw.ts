@@ -137,6 +137,18 @@ export const getGetPlatformSettingsResponseMock = (
   moderation_enabled: faker.datatype.boolean(),
   mcp_enabled: faker.datatype.boolean(),
   support_chat_enabled: faker.datatype.boolean(),
+  mcp_in_menu_enabled: faker.helpers.arrayElement([
+    faker.datatype.boolean(),
+    undefined,
+  ]),
+  voice_features_enabled: faker.helpers.arrayElement([
+    faker.datatype.boolean(),
+    undefined,
+  ]),
+  voice_features_temporarily_disabled: faker.helpers.arrayElement([
+    faker.datatype.boolean(),
+    undefined,
+  ]),
   ...overrideResponse,
 });
 

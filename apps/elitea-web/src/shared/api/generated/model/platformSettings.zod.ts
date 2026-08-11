@@ -53,6 +53,24 @@ export const PlatformSettings = zod
     moderation_enabled: zod.boolean(),
     mcp_enabled: zod.boolean(),
     support_chat_enabled: zod.boolean(),
+    mcp_in_menu_enabled: zod
+      .boolean()
+      .optional()
+      .describe(
+        "A14 (issue 200): the second half of the MCP switch pair. The reference's platform_settings returns `mcp_exposure_enabled` and `mcp_in_menu_enabled` (legacy elitea_core\/api\/v2\/platform_settings.py:45-46) and every `useIsMcpVisible` hook in apps\/elitea-web documents this key as the one it wanted and could not find. Now written by the admin Features page's MCP Configuration section and marshalled from `centry.platform_config`. Optional rather than required: it is always present in the response, but a client pinned to an older deployment must not fail validation on its absence.\n",
+      ),
+    voice_features_enabled: zod
+      .boolean()
+      .optional()
+      .describe(
+        "A14 (issue 200): written by the admin Features page's Voice Features section and read by widgets\/chat's VoiceButton, which is mounted on \/chat through ChatBox's slot bundle. It replaced a module constant hardcoded to `true`, so the admin switch had no effect on the control it names. Optional for the same reason as mcp_in_menu_enabled.\n",
+      ),
+    voice_features_temporarily_disabled: zod
+      .boolean()
+      .optional()
+      .describe(
+        "A14 (issue 200): the second voice flag. Leaves the control VISIBLE but non-interactive with an admin tooltip, which the button already renders (`tooltipAdminDisabled`) against a constant hardcoded to `false`.\n",
+      ),
   })
   .describe(
     "NOTE(W2): defaults at eliteacore\/handler.go:52-63 — the ten booleans are built unconditionally and the DB overlay (:74-76) can only add or override, never delete, so they are always present (hence required). On the sole documented route (project-less) the DB branch is skipped entirely and the response is exactly the ten booleans.\n",
