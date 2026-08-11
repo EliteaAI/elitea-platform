@@ -9,6 +9,12 @@
  * that only this route's resolved data can produce, masks the regions that
  * legitimately vary run to run, and snapshots.
  *
+ * This file covers the MAIN app only (`/app/**`). The admin SPA
+ * (`/admin/app/**`) is in `admin.visual.spec.ts`, which needs a different
+ * persona and a different shell guard — see that file's header and the README.
+ * Shared helpers are in `lib/settle.ts`; they are deliberately not imported
+ * from here, because importing a `*.spec.ts` re-registers its tests.
+ *
  * ── The landmark rule, and how every landmark here was proven ───────────────
  *
  * `toHaveScreenshot` on a page that has not finished rendering produces a
@@ -67,27 +73,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { BASE_URL } from '../../playwright.config';
-
-/**
- * Regions whose content is legitimately different on every run — timestamps,
- * relative dates, generated ids. Masked rather than asserted so the suite fails
- * on LAYOUT and STYLE changes only, which is what it is for. Masking is the
- * honest alternative to a high `maxDiffPixels`, which would hide real drift
- * everywhere instead of in the two places it is expected.
- */
-function volatileRegions(page: Page) {
-  return [
-    page.locator('[data-testid$="-timestamp"]'),
-    page.locator('time'),
-    // The analytics date-range filter renders `now-24h … now` as formatted
-    // wall-clock text (`DateRangeField`, format `dd/MM/yyyy HH:mm`). It is
-    // different on every run by construction: the first observed run of this
-    // job diffed a baseline reading 06/08/2026 23:21 against a page reading
-    // 09/08/2026 00:51 (run 31345403013, issue #159). A locator that matches
-    // nothing on the other routes is a no-op there.
-    page.locator('[data-testid="analytics-date-range"]'),
-  ];
-}
+import { SNAPSHOT_TOLERANCE, settle, volatileRegions } from './lib/settle';
 
 /**
  * The shell landmark — see this file's header for the measurement. Both halves
@@ -110,23 +96,6 @@ async function shellSettled(page: Page): Promise<void> {
   await expect(page.locator('button').filter({ hasText: 'Default Project' }).first()).toBeVisible({
     timeout: 20_000,
   });
-}
-
-async function settle(page: Page): Promise<void> {
-  // Fonts must be loaded before the snapshot, or the first run captures a
-  // fallback-font layout and pins it as truth.
-  await page.evaluate(() => document.fonts.ready);
-  // Kill animation/transition timing as a diff source.
-  await page.addStyleTag({
-    content: `*, *::before, *::after {
-      animation-duration: 0s !important;
-      animation-delay: 0s !important;
-      transition-duration: 0s !important;
-      transition-delay: 0s !important;
-      caret-color: transparent !important;
-    }`,
-  });
-  await page.waitForTimeout(300);
 }
 
 interface VisualRoute {
@@ -410,9 +379,7 @@ for (const route of ROUTES) {
     await expect(page).toHaveScreenshot(`${route.name}.png`, {
       fullPage: false,
       mask: volatileRegions(page),
-      // Small tolerance for the last of the antialiasing noise. Deliberately
-      // NOT large: a permissive threshold turns a green suite into no suite.
-      maxDiffPixelRatio: 0.002,
+      ...SNAPSHOT_TOLERANCE,
     });
   });
 }
@@ -477,7 +444,7 @@ for (const route of ROUTES.filter((r) => r.light)) {
     await expect(page).toHaveScreenshot(`${route.name}-light.png`, {
       fullPage: false,
       mask: volatileRegions(page),
-      maxDiffPixelRatio: 0.002,
+      ...SNAPSHOT_TOLERANCE,
     });
   });
 }
@@ -517,7 +484,7 @@ test('@visual chat-empty-rail-collapsed', async ({ page }) => {
   await expect(page).toHaveScreenshot('chat-empty-rail-collapsed.png', {
     fullPage: false,
     mask: volatileRegions(page),
-    maxDiffPixelRatio: 0.002,
+    ...SNAPSHOT_TOLERANCE,
   });
 });
 

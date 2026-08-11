@@ -68,6 +68,30 @@ landmark wait BEFORE any screenshot is taken. Measured, not hoped for: running
 the suite against a tenant the journeys had just written to produced seven
 `toBeVisible() failed … element(s) not found` errors and zero snapshot writes.
 
+## Two spec files, two shells
+
+`routes.visual.spec.ts` covers the MAIN app (`/app/**`) and
+`admin.visual.spec.ts` covers the ADMIN SPA (`/admin/app/**`, issue #229).
+They are separate files because they need different things, not for tidiness:
+
+- **A different persona.** The `visual` project's default `storageState` is the
+  member persona; every admin route is gated server-side on
+  `administration`-mode permissions only the admin persona holds, so
+  `admin.visual.spec.ts` sets `test.use({ storageState: STORAGE_STATE.admin })`.
+  Without it every admin shot would be a photograph of a 403.
+- **A different shell guard.** `shellSettled()` exists because the main app's
+  sidebar is permission-FILTERED and renders shorter while
+  `GET /auth/permissions/...` is in flight. The admin nav has no query behind it
+  at all — it filters on `window.admin_ui_config.permissions`, which the Go
+  handler substitutes into the HTML at request time — so `adminShellSettled()`
+  asserts something else instead: that the SPA mounted and the rail is expanded
+  (its collapsed flag is persisted in `localStorage`).
+
+Shared helpers (`settle()`, the base mask list, the diff tolerance) live in
+`lib/settle.ts`. They are NOT imported from `routes.visual.spec.ts`: importing a
+`*.spec.ts` re-runs its `test()` registrations inside the importer, so every
+route would be snapshotted twice under two names.
+
 ## Every landmark is proven, not chosen
 
 A snapshot taken before a screen has finished rendering pins the loading state
@@ -123,6 +147,14 @@ render it". The wiring plan has since run, and the #61 review flipped fourteen
 routes to `wired` on that basis plus a per-route check against the running
 stack. See `screenshot-index.json`'s `wiringStatusReview` for what was flipped,
 what was deliberately not, and why.
+
+The admin routes were added to that index by #229, derived from
+`src/pages/admin/router.tsx`'s own route table —
+`src/pages/admin/adminVisualIndex.test.ts` asserts the two cannot drift, the way
+`AdminNav.test.tsx` does for the nav. Before that change the index held zero
+`/admin/app/*` rows, so the gate could not fail for an admin screen: #225 added
+persistent navigation to all ten admin pages and altered zero snapshots, with
+both `Visual regression` and `check-visual-coverage` green.
 
 A route being `wired` is necessary but not sufficient: `/help-center`'s route
 renders its real page and is marked `wired`, yet it is EXEMPT from snapshots

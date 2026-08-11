@@ -555,6 +555,126 @@
       "theme": "light",
       "wiringStatus": "needs-route-state",
       "notes": "Light counterpart, owner mode with the status filter."
+    },
+    {
+      "file": null,
+      "route": "/admin/app/users",
+      "targetComponent": "src/pages/admin/Users.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Platform/System tabs with counts, DataGrid (Name/Email/Last login/Status/Admin Role/Actions), disabled Excel export, pager. Last login is masked in the snapshot — toLocaleString of a value that moves whenever a persona authenticates.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-users-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/users",
+      "targetComponent": "src/pages/admin/Users.tsx",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "The light half of the DataGrid pages: magenta/lavender accent on tabs and chips, light grid chrome, light nav rail. Scheme switched through the admin nav's own ThemeModeToggle.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-users-light-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/roles",
+      "targetComponent": "src/pages/admin/Roles.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Permission matrix, Admin Roles scope, all groups collapsed (the page's default). Columns are derived from the roles the deployment declares, rows from the recorded grants — including e2e.roles, which exists only in the seeded database.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-roles-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/projects",
+      "targetComponent": "src/pages/admin/Projects.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Team/Personal tabs, DataGrid with the seeded fixture (Default Project, e2e-team-active with two admins, e2e-team-suspended at 55% opacity), disabled Create/Delete/Export with their stated reasons.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-projects-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/secrets",
+      "targetComponent": "src/pages/admin/Secrets.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "The global vault: five seeded chat upload limits, values rendered as the 8-bullet mask (never revealed), User/Internal tabs, Create secret enabled.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-secrets-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/schedules",
+      "targetComponent": "src/pages/admin/SchedulesTasks.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Schedules tab: the two inactive probe rows, cron as an editable monospace link, Last run reading the literal 'Never' (this stack runs no scheduler, so the column is stable and deliberately NOT masked).",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-schedules-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/app-requests",
+      "targetComponent": "src/pages/admin/AppRequests.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Pending queue with the two seeded probe requests, approve/reject controls live. Requested At is masked — it is the wall clock of whenever the stack was provisioned.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-app-requests-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/configuration",
+      "targetComponent": "src/pages/admin/Configuration.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Twelve sections, every one 'Not available here', body showing the SERVER's unavailable_reason. A refusal screen, not scaffolding — see the classification note in e2e/visual/admin.visual.spec.ts.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-configuration-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/configuration",
+      "targetComponent": "src/pages/admin/Configuration.tsx",
+      "theme": "light",
+      "wiringStatus": "wired",
+      "notes": "The light half of the section-list pages: nav List, secondary 'Not available here' labels, and an Alert severity=info whose light palette is the other accent hue.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-configuration-light-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/features",
+      "targetComponent": "src/pages/admin/Features.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "MCP Configuration (the first AVAILABLE section, selected by default) with both switches on and Discard/Save disabled; sidebar shows Skill Publishing and Support Assistant unavailable. Requires BOTH the section-list and the section-values queries to have resolved.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-features-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/service-descriptors",
+      "targetComponent": "src/pages/admin/ServiceDescriptors.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "The 501 refusal, carrying the server's own sentence rather than a copy the page holds. If anyone wires that endpoint to a 200 stub, this baseline changes — which is the regression the port exists to prevent.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-service-descriptors-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/audit",
+      "targetComponent": "src/pages/admin/AuditTrail.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "Audit Trail on its default Today preset: heatmap + traces table. WIRED and deliberately NOT snapshotted — see the EXEMPT entry in scripts/check-visual-coverage.mjs. Every visible value is a function of the wall clock at seed time.",
+      "surface": "admin",
+      "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-audit-visual-linux.png"
     }
   ],
   "gaps": [],
@@ -579,11 +699,12 @@
     }
   },
   "coverage": {
-    "shots": 63,
-    "routes": 29,
+    "shots": 75,
+    "routes": 39,
     "bothSchemes": true,
     "listAndGridModes": true,
-    "emptyAndPopulated": true
+    "emptyAndPopulated": true,
+    "provenance": "63 shots captured from production (see `source`/`captured`); 12 admin shots added by #229 with no production capture — see `adminSurface`."
   },
   "wiringStatusReview": {
     "reviewed": "2026-08-10",
@@ -600,5 +721,14 @@
     "exemptAfterFlip": {
       "/help-center": "Flipped to wired (the route renders its real page) but EXEMPT from snapshots: useResourcesConfig has no backend (issue #26), so all five cards render “No links configured” and the version bar is blank. A baseline would make a screen with no content the official reference."
     }
+  },
+  "adminSurface": {
+    "added": "2026-08-11",
+    "issue": "https://github.com/EliteaAI/elitea-platform/issues/229",
+    "what": "The ten /admin/app/* routes, derived from src/pages/admin/router.tsx's own route table (src/pages/admin/adminVisualIndex.test.ts asserts the two cannot drift, the way AdminNav.test.tsx does for the nav).",
+    "whyTheyWereMissing": "This index was captured from next.elitea.ai on 2026-08-06, when /admin/app/ was served by the separate admin_ui SPA and elitea-web's admin entry was a ~160-line placeholder. A parity index of elitea-web reasonably had no admin rows. #200 then ported ten real admin pages into this app and #223 retired the submodule and pinned the published image at target: final (which is FROM e2e), so the admin SPA this bundle builds is the one that ships.",
+    "file": "null on every admin row, and that is a fact rather than an omission: there is NO production JPEG for these screens. The other 63 rows point at a captured screenshot of the OLD app; the admin rows point at nothing, because the app that served those URLs in production was admin_ui, which no longer exists in this repo. `baseline` names the Playwright PNG instead — that is what these rows are compared against.",
+    "humanReference": "apps/admin-ui is gone (#223). The read-only reference each ported page names in its own module header is frontends/admin_ui/frontend/src/pages/**, outside this repo.",
+    "notCaptured": "The admin index route (/admin/app/, which renders AdminUsers rather than redirecting), every dialog and drawer, and the non-default tab of each page. Listed in e2e/visual/admin.visual.spec.ts's NOT COVERED block with the reason for each."
   }
 }
