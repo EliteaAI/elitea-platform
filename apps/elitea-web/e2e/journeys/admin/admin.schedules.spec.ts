@@ -1,7 +1,7 @@
 /**
- * Journey 32: The admin Schedules tab shows the platform cron table the
+ * Journey 33: The admin Schedules tab shows the platform cron table the
  *             scheduler actually runs, and its switch really flips a row
- *             (JRNY-032)
+ *             (JRNY-033)
  *
  * ## Why this journey needs to exist at all
  *
@@ -42,8 +42,8 @@ import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
 adminTest.use({ storageState: STORAGE_STATE.admin });
 
 // Serial, and not because these are slow. `fullyParallel` is on, and every test
-// below reads or writes this engine's ONE seeded row — J32c enables it and
-// disables it again, J32 and J32b assert it is disabled, J32d asserts its cron
+// below reads or writes this engine's ONE seeded row — J33c enables it and
+// disables it again, J33 and J33b assert it is disabled, J33d asserts its cron
 // is untouched. Run concurrently they would pass or fail on scheduling luck.
 // This orders them within a browser project; `seededSchedule` below is what
 // keeps the two projects out of each other's way.
@@ -74,7 +74,7 @@ function probeSwitch(page: Page, schedule: string) {
   return page.getByRole('switch', { name: `Schedule enabled: ${schedule}` });
 }
 
-adminTest('J32: the listing is the platform cron table, read from the database', async ({ page }, testInfo) => {
+adminTest('J33: the listing is the platform cron table, read from the database', async ({ page }, testInfo) => {
   const SEEDED_SCHEDULE = seededSchedule(testInfo.project.name);
   await openSchedules(page, SEEDED_SCHEDULE);
 
@@ -97,7 +97,7 @@ adminTest('J32: the listing is the platform cron table, read from the database',
   await checkA11y(page);
 });
 
-adminTest('J32b: what a schedule INVOKES cannot be edited from this page', async ({ page }, testInfo) => {
+adminTest('J33b: what a schedule INVOKES cannot be edited from this page', async ({ page }, testInfo) => {
   const SEEDED_SCHEDULE = seededSchedule(testInfo.project.name);
   await openSchedules(page, SEEDED_SCHEDULE);
   const row = page.getByRole('row').filter({ hasText: SEEDED_SCHEDULE });
@@ -138,7 +138,7 @@ adminTest('J32b: what a schedule INVOKES cannot be edited from this page', async
   ).toBeVisible();
 });
 
-adminTest('J32c: enabling a schedule reaches the server and survives a full reload', async ({ page }, testInfo) => {
+adminTest('J33c: enabling a schedule reaches the server and survives a full reload', async ({ page }, testInfo) => {
   const SEEDED_SCHEDULE = seededSchedule(testInfo.project.name);
   await openSchedules(page, SEEDED_SCHEDULE);
 
@@ -181,7 +181,7 @@ adminTest('J32c: enabling a schedule reaches the server and survives a full relo
   await expect(probeSwitch(page, SEEDED_SCHEDULE)).not.toBeChecked();
 });
 
-adminTest('J32d: the server refuses a cron its own scheduler could not run', async ({ page }, testInfo) => {
+adminTest('J33d: the server refuses a cron its own scheduler could not run', async ({ page }, testInfo) => {
   const SEEDED_SCHEDULE = seededSchedule(testInfo.project.name);
   await openSchedules(page, SEEDED_SCHEDULE);
   const row = page.getByRole('row').filter({ hasText: SEEDED_SCHEDULE });
@@ -215,7 +215,7 @@ adminTest('J32d: the server refuses a cron its own scheduler could not run', asy
   ).toBeVisible();
 });
 
-adminTest('J32e: the tabs with no backend say so instead of showing an empty list', async ({ page }, testInfo) => {
+adminTest('J33e: the tabs with no backend say so instead of showing an empty list', async ({ page }, testInfo) => {
   await openSchedules(page, seededSchedule(testInfo.project.name));
 
   for (const tab of ['Tasks', 'Active Tasks']) {
