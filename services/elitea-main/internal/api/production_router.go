@@ -59,6 +59,42 @@ func NewRouter(cfg RouterConfig) chi.Router {
 
 	// Public, non-product-data routes.
 	r.Mount("/", health.RoutesWithDeps(cfg.HealthDeps))
+	mountReviewedProductionRoutes(r, cfg)
+
+	// Artifacts (S11): mounted unconditionally, unlike the cfg.CurrentXxx
+	// routes above. Auth/RBAC gating must not depend on whether the storage
+	// backend happens to be wired — mountArtifactRoutes degrades every route
+	// to notImplementedArtifact when it isn't (see ArtifactDeps), but still
+	// enforces authentication and permission on all of them either way.
+	artifactResolver := cfg.ArtifactPermissionResolver
+	if artifactResolver == nil {
+		artifactResolver = legacyrbac.NewPostgresResolver(cfg.Pool)
+	}
+	artifactHandler := cfg.ArtifactHandler
+	if artifactHandler == nil {
+		artifactHandler, _ = newArtifactHandler(cfg)
+	}
+	mountArtifactRoutes(r, ArtifactDeps{
+		Handler: artifactHandler,
+		Authenticate: apimw.Auth(apimw.AuthConfig{
+			Client:                    cfg.AuthClient,
+			Validator:                 cfg.AuthValidator,
+			PrincipalValidator:        cfg.PrincipalValidator,
+			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
+			SessionSecret:             cfg.SessionSecret,
+			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
+		}),
+		Resolver: artifactResolver,
+	})
+
+	return r
+}
+
+// mountReviewedProductionRoutes is the single registration source for every
+// current-compatibility route whose production authorization contract has been
+// reviewed. Hybrid deployments add broad parity repositories, but those
+// additions must never remove or replace these admitted routes.
+func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	if cfg.ProductionAuth != nil {
 		r.Mount(browserauth.BasePath, cfg.ProductionAuth.browser)
 		// This address is reached only by the gateway's ForwardAuth middleware;
@@ -181,34 +217,6 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	} else if cfg.CurrentLLMFacade != nil {
 		r.Handle("/llm/*", cfg.CurrentLLMFacade)
 	}
-
-	// Artifacts (S11): mounted unconditionally, unlike the cfg.CurrentXxx
-	// routes above. Auth/RBAC gating must not depend on whether the storage
-	// backend happens to be wired — mountArtifactRoutes degrades every route
-	// to notImplementedArtifact when it isn't (see ArtifactDeps), but still
-	// enforces authentication and permission on all of them either way.
-	artifactResolver := cfg.ArtifactPermissionResolver
-	if artifactResolver == nil {
-		artifactResolver = legacyrbac.NewPostgresResolver(cfg.Pool)
-	}
-	artifactHandler := cfg.ArtifactHandler
-	if artifactHandler == nil {
-		artifactHandler, _ = newArtifactHandler(cfg)
-	}
-	mountArtifactRoutes(r, ArtifactDeps{
-		Handler: artifactHandler,
-		Authenticate: apimw.Auth(apimw.AuthConfig{
-			Client:                    cfg.AuthClient,
-			Validator:                 cfg.AuthValidator,
-			PrincipalValidator:        cfg.PrincipalValidator,
-			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
-			SessionSecret:             cfg.SessionSecret,
-			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
-		}),
-		Resolver: artifactResolver,
-	})
-
-	return r
 }
 
 func prototypeCompatibilityRequested(cfg RouterConfig) bool {

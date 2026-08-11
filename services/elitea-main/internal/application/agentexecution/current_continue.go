@@ -439,6 +439,11 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 	}
 	var input *runtimev1.AgentExecutionInputV1
 	var capabilityID string
+	suggestionPolicy := service.resolveNextInputSuggestionPolicy(
+		ctx,
+		request.ProjectID,
+		request.ActorUserID,
+	)
 	switch target.Kind {
 	case CurrentRegenerationApplication:
 		start := CurrentApplicationStartRequest{
@@ -462,7 +467,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 			return nil, nil, "", err
 		}
 		resolved.VersionDetails = frozen
-		input, err = currentApplicationInput(start, resolved)
+		input, err = currentApplicationInput(start, resolved, suggestionPolicy)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -495,7 +500,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		if err != nil {
 			return nil, nil, "", err
 		}
-		input, err = currentAdhocInput(start, resolved, frozen)
+		input, err = currentAdhocInput(start, resolved, frozen, suggestionPolicy)
 		if err != nil {
 			return nil, nil, "", err
 		}

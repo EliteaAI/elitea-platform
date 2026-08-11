@@ -55,9 +55,15 @@ services:
       ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM: commands.v1.index.ingest.indexing.shared.2.0
       ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP: elitea-indexer-worker-v2
       ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES: "16"
+      # Optional, live current-platform policy lookup for next-input suggestions.
+      # The exact actor PAT crosses only the private gateway route below; lookup
+      # failure suppresses the suggestion and never blocks the primary turn.
+      ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL: https://elitea-gateway
     depends_on:
       runtime-index-v2-bootstrap:
         condition: service_completed_successfully
+    networks:
+      - runtime_gateway
 
   elitea-migrate:
     # Main is the single build owner for this shared image tag.

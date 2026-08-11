@@ -43,11 +43,9 @@ type PublicRoutes struct {
 	IndexScheduleDelete indexingapi.CurrentIndexScheduleDeleter
 }
 
-// Phase one uses durable PostgreSQL replay without a notification sidecar.
-// Polling every two seconds makes completion visibility explicitly bounded by
-// roughly two seconds plus query time. Each idle poll is also the SSE heartbeat
-// and reauthorization cadence. An already-authorized replay batch has the
-// separate bounded write exposure documented by the execution event handler.
+// Durable PostgreSQL replay remains authoritative. The advisory waiter wakes
+// streams after a committed projection; this interval is the bounded fallback
+// for a lost wake and the idle heartbeat/reauthorization cadence.
 const phaseOneReplayPollInterval = 2 * time.Second
 
 type validationSubmitter interface {
@@ -58,6 +56,7 @@ func newPublicRoutes(
 	authorizer *postgresPublicAuthorizer,
 	submitter validationSubmitter,
 	replay executionapi.EventRepository,
+	waiter executionapi.ReplayWaiter,
 	indexStart indexingapi.StartUseCase,
 	agentStart agentexecutionapi.StartUseCase,
 	replayCapacity int,
@@ -69,7 +68,7 @@ func newPublicRoutes(
 	events, err := executionapi.NewEventHandlerWithReplayCapacity(
 		authorizer,
 		replay,
-		pollingReplayWaiter{interval: phaseOneReplayPollInterval},
+		waiter,
 		replayCapacity,
 	)
 	if err != nil {

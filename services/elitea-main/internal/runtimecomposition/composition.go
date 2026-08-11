@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	executionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/executions"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
@@ -18,6 +19,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/currentcore"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
@@ -478,11 +480,24 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if targetErr != nil {
 			return nil, fmt.Errorf("construct current agent configuration materializer: %w", targetErr)
 		}
+		currentMainClient, targetErr := currentcore.NewTLSClient(config.RedisCAFile)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct current Main policy client: %w", targetErr)
+		}
+		nextInputSuggestionResolver, targetErr := currentcore.NewNextInputSuggestionResolver(
+			config.CurrentMainBaseURL,
+			dependencies.ActorTokenIssuer,
+			currentMainClient,
+		)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct next-input-suggestion policy resolver: %w", targetErr)
+		}
 		agentStart, targetErr = agentexecutionapp.NewCurrentApplicationStartService(
 			agentTargets,
 			agentTargets,
 			agentTargets,
 			agentTargets,
+			nextInputSuggestionResolver,
 			agentVersions,
 			agentAdmissions,
 		)
@@ -521,11 +536,24 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		}
 	}
 	var nodeEvents *repos.NodeEventsRepository
+	var replayWake *redisExecutionReplayWakeBus
+	var replayWaiter executionapi.ReplayWaiter = pollingReplayWaiter{
+		interval: phaseOneReplayPollInterval,
+	}
 	if config.IndexIngestDispatchEnabled || config.AgentExecutionDispatchEnabled {
 		nodeEvents, err = repos.NewNodeEventsRepository(dependencies.OutputPool)
 		if err != nil {
 			return nil, fmt.Errorf("construct node event replay repository: %w", err)
 		}
+		replayWake, err = newRedisExecutionReplayWakeBus(controlRedis, dependencies.Logger)
+		if err != nil {
+			return nil, fmt.Errorf("construct execution replay wake bus: %w", err)
+		}
+		publisherRoot, err = newPublisherSet(publisherRoot, replayWake)
+		if err != nil {
+			return nil, fmt.Errorf("compose execution replay wake bus: %w", err)
+		}
+		replayWaiter = replayWake
 		replayRetention, retentionErr := newExecutionReplayRetentionJanitor(
 			nodeEvents,
 			executionReplayRetentionPollInterval,
@@ -755,6 +783,22 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, err
 		}
 	}
+	var agentOutputIngestor output.AgentExecutionIngestor = agentOutput
+	var nodeEventOutputIngestor output.NodeEventIngestor = nodeEventOutput
+	if replayWake != nil {
+		if agentOutput != nil {
+			agentOutputIngestor = wakingAgentExecutionIngestor{
+				next: agentOutput,
+				wake: replayWake,
+			}
+		}
+		if nodeEventOutput != nil {
+			nodeEventOutputIngestor = wakingNodeEventIngestor{
+				next: nodeEventOutput,
+				wake: replayWake,
+			}
+		}
+	}
 	if config.IndexIngestDispatchEnabled {
 		indexResults, err := repos.NewIndexIngestResultsRepository(dependencies.OutputPool, repos.IndexIngestOutputPolicy{
 			LimitsRevision:    limitsRevision,
@@ -775,8 +819,8 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 				validationOutput,
 				runtimeFailures,
 				indexOutput,
-				agentOutput,
-				nodeEventOutput,
+				agentOutputIngestor,
+				nodeEventOutputIngestor,
 			)
 		} else {
 			outputServer, outputServerErr = output.NewServerWithIndexIngestAndNodeEvents(
@@ -785,7 +829,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 				validationOutput,
 				runtimeFailures,
 				indexOutput,
-				nodeEventOutput,
+				nodeEventOutputIngestor,
 			)
 		}
 	} else if config.AgentExecutionDispatchEnabled {
@@ -794,8 +838,8 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			outputPeerAuthorizer,
 			validationOutput,
 			runtimeFailures,
-			agentOutput,
-			nodeEventOutput,
+			agentOutputIngestor,
+			nodeEventOutputIngestor,
 		)
 	} else {
 		outputServer, outputServerErr = output.NewServer(
@@ -1147,6 +1191,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		publicAuthorizer,
 		validationSubmitter,
 		replay,
+		replayWaiter,
 		indexStart,
 		agentStart,
 		int(dependencies.ReplayPool.Config().MaxConns),

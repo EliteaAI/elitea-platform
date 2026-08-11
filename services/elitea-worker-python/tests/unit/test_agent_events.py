@@ -283,6 +283,74 @@ def test_hitl_terminal_keeps_current_shape_and_is_not_a_full_message() -> None:
     ]
 
 
+def test_next_input_suggestion_follows_primary_response_and_precedes_terminal() -> None:
+    callback, events = _callback()
+
+    response = callback.emit_completed_response(
+        {"thread_id": "thread-1", "output": "Primary answer"}
+    )
+    suggestion = callback.emit_next_input_suggestion("Continue with tests.")
+    terminal = callback.emit_terminal(
+        {"thread_id": "thread-1", "output": "Primary answer"},
+        _request_payload(),
+        response_emitted=True,
+    )
+
+    decoded = [_json(event) for event in events]
+    assert terminal.type == "full_message"
+    assert response.type == "agent_response"
+    assert suggestion is not None
+    assert [event["type"] for event in decoded] == [
+        "agent_response",
+        "next_input_suggestion_ready",
+        "full_message",
+    ]
+    assert decoded[1]["stream_id"] == "conversation-1"
+    assert decoded[1]["message_id"] == "message-1"
+    assert decoded[1]["execution_generation"] == "generation-1"
+    assert decoded[1]["response_metadata"] == {
+        "suggestion": "Continue with tests."
+    }
+
+
+def test_completed_response_content_excludes_hitl_and_authorization_pauses() -> None:
+    callback, _ = _callback()
+
+    assert callback.completed_response_content({"output": "Primary answer"}) == (
+        "Primary answer"
+    )
+    assert (
+        callback.completed_response_content(
+            {
+                "paused": True,
+                "pause_type": "mcp_auth",
+                "error": "Authorization required.",
+            }
+        )
+        is None
+    )
+    assert (
+        callback.completed_response_content(
+            {
+                "execution_finished": False,
+                "hitl_interrupt": {
+                    "interrupt_id": "interrupt-1",
+                    "message": "Awaiting review.",
+                },
+            }
+        )
+        is None
+    )
+
+
+def test_next_input_suggestion_rejects_empty_and_oversized_text() -> None:
+    callback, events = _callback()
+
+    assert callback.emit_next_input_suggestion("") is None
+    assert callback.emit_next_input_suggestion("x" * 2049) is None
+    assert events == []
+
+
 def test_delegated_authorization_terminal_preserves_exact_requests() -> None:
     callback, events = _callback()
     payload = _request_payload()

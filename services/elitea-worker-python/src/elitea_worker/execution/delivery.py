@@ -2254,7 +2254,27 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
         def invoke_agent():
             callback.emit_agent_start(invoked_skills=payload.invoked_skills)
             result = handler.execute(resolved_input.request)
-            terminal_event = callback.emit_terminal(result.sdk_result, payload)
+            callback.raise_if_failed()
+            completed_content = callback.completed_response_content(result.sdk_result)
+            if completed_content is not None:
+                callback.emit_completed_response(result.sdk_result)
+                callback.raise_if_failed()
+                try:
+                    suggestion = adapter.suggest_next_input(
+                        payload,
+                        output_text=completed_content,
+                    )
+                    if suggestion:
+                        callback.emit_next_input_suggestion(suggestion)
+                except Exception:
+                    # Suggestions are best-effort and must never replace the
+                    # primary execution's authoritative terminal outcome.
+                    pass
+            terminal_event = callback.emit_terminal(
+                result.sdk_result,
+                payload,
+                response_emitted=completed_content is not None,
+            )
             callback.raise_if_failed()
             return result, terminal_event
 

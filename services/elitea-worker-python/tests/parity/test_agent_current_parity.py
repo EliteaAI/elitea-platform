@@ -23,13 +23,13 @@ _CURRENT_WORKER_UTILS = (
 _MEMORY_HELPERS = _CURRENT_WORKER_UTILS / "agent_execution_common.py"
 _MEMORY_CONFIG = _PROJECTS_ROOT / "centry/pylon_indexer/configs/indexer_worker.yml"
 _APPLICATION_SHA256 = (
-    "bbbdd75bb5228d55516e71677044430ee348396108f11f7bb7428f950ca8ca54"
+    "34dff10d710acb706c13fe079a79e609300fc3a443cef70e2cb4a3da65008fc8"
 )
 _ADHOC_SHA256 = (
-    "76b32ae4c4554c07c0819d54113239e763b78c1888662b0562524d215896d53f"
+    "5b38754341ce78e5d133b3f97f2a9fdd3b9aa8429919b068d55df64940aa525c"
 )
 _MEMORY_HELPERS_SHA256 = (
-    "4955df5e16ee30a87fcdc87b85da3d43f79594662a3e0774bdf978664d3e4d35"
+    "11fe45cd0db90756a1892e8598126854e66336a7e297955f16def017a6225090"
 )
 _CURRENT_MAIN = _PROJECTS_ROOT / "centry/pylon_main/plugins/elitea_core"
 _TRACE_WRITER = _CURRENT_MAIN / "utils/trace_step_writer.py"
@@ -37,7 +37,7 @@ _MESSAGE_STREAM = _CURRENT_MAIN / "utils/message_stream.py"
 _TOOL_CALL_DEDUP = _CURRENT_MAIN / "utils/tool_call_dedup.py"
 _TRACE_MODEL = _CURRENT_MAIN / "models/message_trace_step.py"
 _TRACE_WRITER_SHA256 = (
-    "ec82b3550fcb0824a16f1c737b24abf8e461c7f361709f0f0a5bffe90f5cf73b"
+    "8984544a53813f21832703a359fca65d07006fe9639b160352faafd9b507908b"
 )
 _MESSAGE_STREAM_SHA256 = (
     "efb37d190b56210018cd22aa28c46756ac022df43fa2c27f2484b7448ec32257"
@@ -96,6 +96,27 @@ def test_adhoc_agent_keeps_its_distinct_sdk_constructor_and_invoke() -> None:
         "memory",
         "tools",
     }
+
+
+@pytest.mark.parametrize(
+    ("path", "function_name"),
+    (
+        (_APPLICATION, "_indexer_agent_task_inner"),
+        (_ADHOC, "_indexer_predict_agent_task_inner"),
+    ),
+)
+def test_current_agent_paths_emit_next_input_suggestions(
+    path: Path,
+    function_name: str,
+) -> None:
+    function = _current_function(path, function_name)
+    calls = {
+        node.func.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "maybe_emit_next_input_suggestion" in calls
 
 
 @pytest.mark.parametrize(
@@ -263,6 +284,24 @@ def test_current_trace_reconcile_keeps_delta_accumulation_and_stable_rows() -> N
         "_apply_row_values",
     } <= calls
     assert {"add", "delete"} <= attributes
+
+
+def test_current_trace_writer_round_trips_midturn_injection_identity() -> None:
+    to_row = _current_function(_TRACE_WRITER, "thinking_step_to_row")
+    from_row = _current_function(_TRACE_WRITER, "_row_to_thinking_step")
+
+    def string_constants(function: ast.FunctionDef) -> set[str]:
+        return {
+            node.value
+            for node in ast.walk(function)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+
+    assert {
+        "midturn_injection_id",
+        "midturn_injection_text",
+    } <= string_constants(to_row)
+    assert "midturn_injection_id" in string_constants(from_row)
 
 
 def test_current_message_stream_persists_trace_deltas_outside_group_meta() -> None:

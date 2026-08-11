@@ -90,6 +90,9 @@ def request_from(
     parallel_terminal_errors = _json_list(
         message.parallel_terminal_errors, "parallel terminal errors"
     )
+    next_input_suggestion = _next_input_suggestion_policy(
+        message.next_input_suggestion
+    )
     if message.steps_limit < 1 and message.HasField("steps_limit"):
         raise InvalidInput("The agent step limit must be positive.")
     if (
@@ -157,6 +160,7 @@ def request_from(
             input_attachments=input_attachments,
             parallel_reconcile=parallel_reconcile,
             parallel_terminal_errors=parallel_terminal_errors,
+            next_input_suggestion=next_input_suggestion,
             exception_handling_enabled=(
                 message.exception_handling_enabled
                 if message.HasField("exception_handling_enabled")
@@ -216,6 +220,53 @@ def _optional_json_object(raw: bytes, name: str) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         raise InvalidInput(f"The agent {name} must be an object or null.")
     return value
+
+
+def _next_input_suggestion_policy(raw: bytes) -> dict[str, Any]:
+    if not raw:
+        return {}
+    value = parse_json_value(raw)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise InvalidInput(
+            "The agent next input suggestion policy must be an object or null."
+        )
+    allowed = {"enabled", "min_response_chars", "timeout_seconds"}
+    if set(value) - allowed:
+        raise InvalidInput(
+            "The agent next input suggestion policy contains unsupported fields."
+        )
+    enabled = value.get("enabled", False)
+    min_chars = value.get("min_response_chars", 150)
+    timeout = value.get("timeout_seconds", 15)
+    if not isinstance(enabled, bool):
+        raise InvalidInput(
+            "The agent next input suggestion enabled flag must be boolean."
+        )
+    if (
+        isinstance(min_chars, bool)
+        or not isinstance(min_chars, int)
+        or min_chars < 1
+        or min_chars > 100_000
+    ):
+        raise InvalidInput(
+            "The agent next input suggestion minimum length is invalid."
+        )
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, int)
+        or timeout < 1
+        or timeout > 300
+    ):
+        raise InvalidInput(
+            "The agent next input suggestion timeout is invalid."
+        )
+    return {
+        "enabled": enabled,
+        "min_response_chars": min_chars,
+        "timeout_seconds": timeout,
+    }
 
 
 def _json_list(raw: bytes, name: str) -> list[Any]:

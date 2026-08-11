@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	executionsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/executions"
@@ -15,7 +16,7 @@ func TestReplayEventsRepositoryVerifiesDurableDigestAndCopiesData(t *testing.T) 
 	executor := &scriptedExecutor{
 		rowResults: []scriptedRow{{values: []any{int64(0), int64(7), true, true}}},
 		rowsResult: &scriptedRows{rows: []scriptedRow{{values: []any{
-			int64(7), "configuration.validation.completed", data, digest[:],
+			int64(7), "configuration.validation.completed", data, digest[:], true,
 		}}}},
 	}
 	repository := newReplayEventsRepository(executor)
@@ -32,13 +33,76 @@ func TestReplayEventsRepositoryVerifiesDurableDigestAndCopiesData(t *testing.T) 
 	}
 }
 
+func TestReplayEventsRepositoryHidesAgentTerminalUntilProjectionCommits(t *testing.T) {
+	suggestion := []byte(`{"type":"next_input_suggestion_ready","content":"Continue?"}`)
+	suggestionDigest := runtimedomain.SHA256(suggestion)
+	terminal := []byte(`{"type":"full_message","content":"Done"}`)
+	terminalDigest := runtimedomain.SHA256(terminal)
+	executor := &scriptedExecutor{
+		rowResults: []scriptedRow{{values: []any{int64(0), int64(7), true, true}}},
+		rowsResult: &scriptedRows{rows: []scriptedRow{
+			{values: []any{int64(6), replayEventNodeEvent, suggestion, suggestionDigest[:], true}},
+			{values: []any{int64(7), replayEventNodeEvent, terminal, terminalDigest[:], false}},
+		}},
+	}
+	events, err := newReplayEventsRepository(executor).Replay(
+		context.Background(),
+		"42",
+		"execution-1",
+		0,
+		10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Cursor != 6 {
+		t.Fatalf("nonterminal replay = %+v", events)
+	}
+	query := executor.queryCalls[0].sql
+	for _, required := range []string{
+		"'full_message'",
+		"'agent_hitl_interrupt'",
+		"'mcp_authorization_required'",
+		"terminal.payload_type = 'AGENT_EXECUTION_RESULT'",
+		"terminal.projected_at IS NOT NULL",
+	} {
+		if !strings.Contains(query, required) {
+			t.Fatalf("terminal visibility barrier is missing %q: %s", required, query)
+		}
+	}
+}
+
+func TestReplayEventsRepositoryReleasesAgentTerminalAfterProjectionCommits(t *testing.T) {
+	terminal := []byte(`{"type":"full_message","content":"Done"}`)
+	digest := runtimedomain.SHA256(terminal)
+	executor := &scriptedExecutor{
+		rowResults: []scriptedRow{{values: []any{int64(0), int64(7), true, true}}},
+		rowsResult: &scriptedRows{rows: []scriptedRow{{values: []any{
+			int64(7), replayEventNodeEvent, terminal, digest[:], true,
+		}}}},
+	}
+	events, err := newReplayEventsRepository(executor).Replay(
+		context.Background(),
+		"42",
+		"execution-1",
+		6,
+		10,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Cursor != 7 || string(events[0].Data) != string(terminal) {
+		t.Fatalf("terminal replay = %+v", events)
+	}
+}
+
 func TestReplayEventsRepositoryRejectsTamperedDurableData(t *testing.T) {
 	data := []byte(`{"valid":true}`)
 	wrong := runtimedomain.SHA256([]byte("other"))
 	repository := newReplayEventsRepository(&scriptedExecutor{
 		rowResults: []scriptedRow{{values: []any{int64(0), int64(7), true, true}}},
 		rowsResult: &scriptedRows{rows: []scriptedRow{{values: []any{
-			int64(7), "configuration.validation.completed", data, wrong[:],
+			int64(7), "configuration.validation.completed", data, wrong[:], true,
 		}}}},
 	})
 	_, err := repository.Replay(context.Background(), "42", "execution-1", 0, 10)
@@ -53,7 +117,7 @@ func TestReplayEventsRepositoryEmitsResetThenRetainedTerminal(t *testing.T) {
 	executor := &scriptedExecutor{
 		rowResults: []scriptedRow{{values: []any{int64(11), int64(15), true, false}}},
 		rowsResult: &scriptedRows{rows: []scriptedRow{{values: []any{
-			int64(15), "index.ingest.completed", terminal, digest[:],
+			int64(15), "index.ingest.completed", terminal, digest[:], true,
 		}}}},
 	}
 	events, err := newReplayEventsRepository(executor).Replay(context.Background(), "42", "execution-1", 3, 10)
@@ -95,7 +159,7 @@ func TestReplayEventsRepositoryBoundsStaleReconnectStorm(t *testing.T) {
 			values: []any{int64(11), int64(15), true, false},
 		})
 		executor.rowsResults = append(executor.rowsResults, &scriptedRows{rows: []scriptedRow{{values: []any{
-			int64(15), "index.ingest.completed", terminal, digest[:],
+			int64(15), "index.ingest.completed", terminal, digest[:], true,
 		}}}})
 	}
 	repository := newReplayEventsRepository(executor)

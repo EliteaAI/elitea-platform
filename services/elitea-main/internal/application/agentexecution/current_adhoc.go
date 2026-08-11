@@ -124,7 +124,12 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, fmt.Errorf("freeze current ad-hoc snapshot: %w", err)
 	}
-	input, err := currentAdhocInput(request, target, frozen)
+	suggestionPolicy := service.resolveNextInputSuggestionPolicy(
+		ctx,
+		request.ProjectID,
+		request.ActorUserID,
+	)
+	input, err := currentAdhocInput(request, target, frozen, suggestionPolicy)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, fmt.Errorf("build current ad-hoc execution input: %w", err)
 	}
@@ -247,6 +252,7 @@ func currentAdhocInput(
 	request CurrentAdhocStartRequest,
 	target CurrentAdhocTarget,
 	frozen json.RawMessage,
+	nextInputSuggestion json.RawMessage,
 ) (*runtimev1.AgentExecutionInputV1, error) {
 	var snapshot map[string]any
 	if err := decodeCurrentJSON(frozen, &snapshot); err != nil {
@@ -295,6 +301,7 @@ func currentAdhocInput(
 		AppliedSkills: []byte(`[]`), AttachedSkills: []byte(`[]`),
 		InputAttachments: []byte(`[]`), ParallelReconcile: []byte(`null`),
 		ParallelTerminalErrors: []byte(`[]`),
+		NextInputSuggestion:    bytes.Clone(nextInputSuggestion),
 	}
 	if stepsLimit != nil {
 		input.StepsLimit = stepsLimit

@@ -11,6 +11,7 @@ import hashlib
 import importlib
 import re
 import sys
+import threading
 from contextlib import contextmanager, redirect_stdout
 from copy import deepcopy
 from dataclasses import dataclass
@@ -36,6 +37,22 @@ from elitea_worker.handlers.agent import AgentExecutionPayload
 
 _CURRENT_APPLICATION_TOOL_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]")
 _MAX_CURRENT_APPLICATION_TOOL_NAME_BYTES = 128
+_NEXT_INPUT_SUGGESTION_PROMPT = (
+    "You suggest a likely next user message in a chat, based on the "
+    "assistant's latest reply. Reply with ONLY the suggested next user "
+    "message, or the single word NONE if the reply doesn't make one "
+    "obvious (e.g. a greeting, a simple acknowledgement, or a final "
+    "answer with no natural follow-up). Keep it short — one sentence, "
+    "written as if the user typed it.\n\n"
+    "Examples:\n"
+    "Assistant: Hi! How can I help you today?\n"
+    "Suggestion: NONE\n\n"
+    "Assistant: I've fixed the bug. Want me to also add a test for it?\n"
+    "Suggestion: Yes, please add a test.\n\n"
+    "Assistant: The capital of France is Paris.\n"
+    "Suggestion: NONE\n\n"
+    "Assistant reply:\n{reply}\n\nSuggestion:"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,6 +425,53 @@ class EliteaSdkAgentAdapter:
                 self._callbacks,
                 memory,
             )
+
+    def suggest_next_input(
+        self,
+        payload: AgentExecutionPayload,
+        *,
+        output_text: str,
+    ) -> str | None:
+        """Generate the current best-effort post-response suggestion."""
+
+        try:
+            policy = payload.next_input_suggestion
+            if not policy.get("enabled"):
+                return None
+            if len(output_text) < policy["min_response_chars"]:
+                return None
+
+            llm = self._client.get_low_tier_llm(max_tokens=64)
+            if llm is None:
+                return None
+
+            result: list[Any] = []
+
+            def invoke() -> None:
+                try:
+                    result.append(
+                        llm.invoke(
+                            _NEXT_INPUT_SUGGESTION_PROMPT.format(reply=output_text)
+                        )
+                    )
+                except Exception:
+                    return
+
+            thread = threading.Thread(target=invoke, daemon=True)
+            thread.start()
+            thread.join(timeout=policy["timeout_seconds"])
+            if thread.is_alive() or not result:
+                return None
+
+            suggestion = getattr(result[0], "content", result[0])
+            text = str(suggestion or "").strip()
+            if not text or text.upper() == "NONE":
+                return None
+            return text
+        except Exception:
+            # Exact current behavior: this optional follow-up cannot fail an
+            # otherwise successful primary execution.
+            return None
 
     @contextmanager
     def _execution_memory(self):

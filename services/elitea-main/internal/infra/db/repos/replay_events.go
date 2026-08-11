@@ -112,12 +112,32 @@ FROM replay_bounds`,
 	}
 
 	rows, err := r.store.Query(ctx, `
-SELECT cursor, event_type, event_bytes, event_digest
-FROM elitea_runtime.execution_replay_events
-WHERE projection_project_id = $1
-  AND execution_id = $2
-  AND cursor > $3
-ORDER BY cursor
+SELECT replay.cursor,
+       replay.event_type,
+       replay.event_bytes,
+       replay.event_digest,
+       CASE
+           WHEN replay.event_type = 'execution.node_event'
+            AND COALESCE(convert_from(replay.event_bytes, 'UTF8')::jsonb ->> 'type', '') IN (
+                'full_message',
+                'agent_hitl_interrupt',
+                'mcp_authorization_required'
+            )
+           THEN EXISTS (
+               SELECT 1
+               FROM elitea_runtime.output_inbox AS terminal
+               WHERE terminal.execution_id = replay.execution_id
+                 AND terminal.generation = replay.generation
+                 AND terminal.payload_type = 'AGENT_EXECUTION_RESULT'
+                 AND terminal.projected_at IS NOT NULL
+           )
+           ELSE TRUE
+       END AS visible
+FROM elitea_runtime.execution_replay_events AS replay
+WHERE replay.projection_project_id = $1
+  AND replay.execution_id = $2
+  AND replay.cursor > $3
+ORDER BY replay.cursor
 LIMIT $4`, projectionProjectID, executionID, effectiveCursor, limit-len(events))
 	if err != nil {
 		return nil, fmt.Errorf("query durable execution replay: %w", err)
@@ -128,7 +148,8 @@ LIMIT $4`, projectionProjectID, executionID, effectiveCursor, limit-len(events))
 		var cursor int64
 		var event executionsapi.DurableEvent
 		var digestBytes []byte
-		if err := rows.Scan(&cursor, &event.Type, &event.Data, &digestBytes); err != nil {
+		var visible bool
+		if err := rows.Scan(&cursor, &event.Type, &event.Data, &digestBytes, &visible); err != nil {
 			return nil, fmt.Errorf("scan durable execution replay: %w", err)
 		}
 		if cursor <= 0 || len(event.Data) == 0 || len(event.Data) > 64*1024 || !json.Valid(event.Data) {
@@ -137,6 +158,9 @@ LIMIT $4`, projectionProjectID, executionID, effectiveCursor, limit-len(events))
 		digest, err := storedDigest(digestBytes)
 		if err != nil || runtimedomain.SHA256(event.Data) != digest {
 			return nil, executionsapi.ErrInvalidEventStream
+		}
+		if !visible {
+			continue
 		}
 		event.Cursor = uint64(cursor)
 		event.Data = append(json.RawMessage(nil), event.Data...)

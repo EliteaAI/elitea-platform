@@ -48,7 +48,7 @@ func TestCurrentNodeEventParityCorpusRoundTripsWithoutChangingUISemantics(t *tes
 	if corpus.ContractRevision != "elitea.runtime.node-event.v1" || len(corpus.Cases) < 2 {
 		t.Fatal("current NodeEvent parity corpus is incomplete")
 	}
-	if len(corpus.CurrentEventTypes) != 35 {
+	if len(corpus.CurrentEventTypes) != 36 {
 		t.Fatalf("current NodeEvent type catalog changed: %v", corpus.CurrentEventTypes)
 	}
 	seenTypes := make(map[string]struct{}, len(corpus.CurrentEventTypes))

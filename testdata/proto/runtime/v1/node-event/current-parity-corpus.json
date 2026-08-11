@@ -40,7 +40,8 @@
     "swarm_child_message",
     "agent_hitl_interrupt",
     "summarization_started",
-    "summarization_finished"
+    "summarization_finished",
+    "next_input_suggestion_ready"
   ],
   "cases": [
     {

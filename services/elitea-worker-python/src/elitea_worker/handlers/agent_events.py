@@ -178,6 +178,8 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         self,
         result: dict[str, Any],
         payload: AgentExecutionPayload,
+        *,
+        response_emitted: bool = False,
     ) -> node_event_pb2.NodeEventV1:
         """Emit exactly one current terminal outcome for a completed or HITL run."""
 
@@ -247,21 +249,8 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         thread_id = result.get("thread_id")
         if not isinstance(thread_id, str) or not thread_id:
             thread_id = self._context.thread_id
-        if result.get("execution_finished") is True:
-            self._emit(
-                "pipeline_finish",
-                content=content,
-                response_metadata={
-                    "finish_reason": "finished",
-                    "next_step": "END",
-                    "thread_id": thread_id,
-                },
-            )
-        self._emit(
-            "agent_response",
-            content=content,
-            response_metadata={"finish_reason": "stop", "thread_id": thread_id},
-        )
+        if not response_emitted:
+            self.emit_completed_response(result)
         return self._emit(
             "full_message",
             content=content,
@@ -285,6 +274,34 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             },
         )
 
+    def emit_completed_response(
+        self,
+        result: dict[str, Any],
+    ) -> node_event_pb2.NodeEventV1:
+        """Publish completed content before optional post-turn enrichment."""
+
+        content = self.completed_response_content(result)
+        if content is None:
+            raise InvalidInput("The agent execution did not complete.")
+        thread_id = result.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id:
+            thread_id = self._context.thread_id
+        if result.get("execution_finished") is True:
+            self._emit(
+                "pipeline_finish",
+                content=content,
+                response_metadata={
+                    "finish_reason": "finished",
+                    "next_step": "END",
+                    "thread_id": thread_id,
+                },
+            )
+        return self._emit(
+            "agent_response",
+            content=content,
+            response_metadata={"finish_reason": "stop", "thread_id": thread_id},
+        )
+
     def emit_completion(
         self,
         result: dict[str, Any],
@@ -296,6 +313,31 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         if terminal.type != "full_message":
             raise InvalidInput("The agent execution did not complete.")
         return terminal
+
+    def completed_response_content(self, result: dict[str, Any]) -> str | None:
+        """Return completed output, excluding every intentional pause outcome."""
+
+        hitl_interrupt, _ = _normalize_hitl_pause(
+            result,
+            execution_id=self._context.execution_id,
+        )
+        if hitl_interrupt is not None or result.get("paused") is True:
+            return None
+        return _extract_response_content(result)
+
+    def emit_next_input_suggestion(
+        self,
+        suggestion: str,
+    ) -> node_event_pb2.NodeEventV1 | None:
+        """Emit one ephemeral suggestion before the durable terminal event."""
+
+        text = _bounded_text(suggestion, "")
+        if not text:
+            return None
+        return self._emit(
+            "next_input_suggestion_ready",
+            response_metadata={"suggestion": text},
+        )
 
     def on_tool_start(
         self,

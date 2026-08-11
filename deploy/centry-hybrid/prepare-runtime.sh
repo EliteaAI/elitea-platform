@@ -140,12 +140,13 @@ chmod 600 "$checkpoint_tmp"
 index_v1_stream='commands.v1.index.ingest.indexing.shared.1.0'
 index_v2_stream='commands.v1.index.ingest.indexing.shared.2.0'
 configuration_stream='commands.v1.configuration.validate.v1.validation-small.shared-credential-free.1.0'
+replay_wake_channel='elitea:runtime:execution-replay:wake:v1'
 
 printf '%s\n' \
   'user default off' \
   "user health on >$health_password -@all +@connection +ping +xlen +xpending +hlen +xinfo ~$index_v1_stream ~$index_v1_stream:delivery-index.v1 ~$index_v2_stream ~$index_v2_stream:delivery-index.v1" \
   "user bootstrap on >$bootstrap_password -@all +@connection +ping +xgroup +xinfo ~$configuration_stream ~$index_v1_stream ~$index_v2_stream" \
-  "user producer on >$producer_password -@all +@connection +ping +eval +evalsha +xlen +xadd +hget +xrange +hdel +hlen +hset ~$configuration_stream ~$configuration_stream:delivery-index.v1 ~$index_v1_stream ~$index_v1_stream:delivery-index.v1 ~$index_v2_stream ~$index_v2_stream:delivery-index.v1" \
+  "user producer on >$producer_password -@all +@connection +ping +eval +evalsha +xlen +xadd +hget +xrange +hdel +hlen +hset +publish +subscribe +unsubscribe ~$configuration_stream ~$configuration_stream:delivery-index.v1 ~$index_v1_stream ~$index_v1_stream:delivery-index.v1 ~$index_v2_stream ~$index_v2_stream:delivery-index.v1 &$replay_wake_channel" \
   "user worker on >$worker_password -@all +@connection +ping +eval +evalsha +xreadgroup +xclaim +xautoclaim +hget +xrange +xpending +xack +xdel +hdel ~$configuration_stream ~$configuration_stream:delivery-index.v1" \
   "user indexer-worker on >$indexer_worker_password -@all +@connection +ping +eval +evalsha +xreadgroup +xclaim +xautoclaim +hget +xrange +xpending +xack +xdel +hdel ~$index_v1_stream ~$index_v1_stream:delivery-index.v1 ~$index_v2_stream ~$index_v2_stream:delivery-index.v1" \
   > "$acl_tmp"

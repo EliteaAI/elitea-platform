@@ -181,6 +181,7 @@ func TestConfigAgentExecutionDispatchIsOptionalWorkerPooledAndBounded(t *testing
 
 	environment := validEnvironment()
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED"] = "true"
+	environment["ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL"] = "https://elitea-gateway"
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] = "commands.v1.agent.execute.agents.shared.1.0"
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"] = "elitea-agent-worker-v1"
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"] = "64"
@@ -206,6 +207,7 @@ func TestConfigAgentExecutionDispatchIsOptionalWorkerPooledAndBounded(t *testing
 	environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] = "elitea-indexer-worker-v2"
 	environment["ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"] = "64"
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED"] = "true"
+	environment["ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL"] = "https://elitea-gateway"
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] = environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"]
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"] = environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"]
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"] = "64"
@@ -219,11 +221,39 @@ func TestConfigAgentExecutionDispatchIsOptionalWorkerPooledAndBounded(t *testing
 
 	environment = validEnvironment()
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED"] = "true"
+	environment["ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL"] = "https://elitea-gateway"
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] = "commands.v1.agent.execute.agents.shared.1.0"
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"] = "elitea-agent-worker-v1"
 	environment["ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"] = "1025"
 	if _, err := ConfigFromEnv(mapLookup(environment)); err == nil {
 		t.Fatal("unbounded agent execution stream capacity was accepted")
+	}
+}
+
+func TestConfigAgentExecutionCurrentMainOriginFailsClosed(t *testing.T) {
+	for name, value := range map[string]string{
+		"plaintext": "http://elitea-gateway",
+		"path":      "https://elitea-gateway/api",
+		"userinfo":  "https://user@elitea-gateway",
+	} {
+		t.Run(name, func(t *testing.T) {
+			environment := validEnvironment()
+			environment["ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED"] = "true"
+			environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] = "commands.v1.agent.execute.agents.shared.1.0"
+			environment["ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"] = "elitea-agent-worker-v1"
+			environment["ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"] = "64"
+			environment["ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL"] = value
+			if _, err := ConfigFromEnv(mapLookup(environment)); err == nil {
+				t.Fatalf("unsafe current Main origin accepted: %q", value)
+			}
+		})
+	}
+
+	environment := validEnvironment()
+	environment["ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL"] = "https://elitea-gateway"
+	if _, err := ConfigFromEnv(mapLookup(environment)); err == nil ||
+		!strings.Contains(err.Error(), "explicit enablement") {
+		t.Fatalf("current Main origin without agent dispatch error=%v", err)
 	}
 }
 

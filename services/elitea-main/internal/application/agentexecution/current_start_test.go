@@ -27,6 +27,21 @@ type currentApplicationResolverStub struct {
 	adhocRequests        []CurrentAdhocStartRequest
 	regenerationRequests []CurrentRegenerationResolveRequest
 	continuationRequests []CurrentContinuationResolveRequest
+	nextSuggestionPolicy json.RawMessage
+	nextSuggestionErr    error
+	nextSuggestionCalls  [][2]int64
+}
+
+func (stub *currentApplicationResolverStub) ResolveNextInputSuggestionPolicy(
+	_ context.Context,
+	projectID int64,
+	actorUserID int64,
+) (json.RawMessage, error) {
+	stub.nextSuggestionCalls = append(stub.nextSuggestionCalls, [2]int64{projectID, actorUserID})
+	if stub.nextSuggestionPolicy == nil {
+		return json.RawMessage(`{"enabled":false,"min_response_chars":150,"timeout_seconds":15}`), stub.nextSuggestionErr
+	}
+	return bytes.Clone(stub.nextSuggestionPolicy), stub.nextSuggestionErr
 }
 
 type currentApplicationVersionFreezerStub struct {
@@ -131,7 +146,7 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
 	freezer := &currentApplicationVersionFreezerStub{}
-	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, resolver, freezer, admissions)
+	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, resolver, resolver, freezer, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +178,10 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		freezer.calls[0].ActorUserID != 11 {
 		t.Fatalf("version freezer calls=%+v", freezer.calls)
 	}
+	if !reflect.DeepEqual(resolver.nextSuggestionCalls, [][2]int64{{7, 11}}) ||
+		!bytes.Equal(submitted.Input.GetNextInputSuggestion(), []byte(`{"enabled":false,"min_response_chars":150,"timeout_seconds":15}`)) {
+		t.Fatalf("suggestion calls=%v policy=%s", resolver.nextSuggestionCalls, submitted.Input.GetNextInputSuggestion())
+	}
 	if submitted.Input.GetSchemaRevision() != "elitea.runtime.agent-execution-input.v1" ||
 		submitted.Input.GetThreadId() != request.ConversationUUID ||
 		submitted.Input.GetConversationId() != request.ConversationUUID ||
@@ -178,6 +197,49 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		application["id"] != float64(31) || application["version_id"] != float64(41) ||
 		application["version_details"].(map[string]any)["instructions"] != "Be concise" {
 		t.Fatalf("application=%+v error=%v", application, err)
+	}
+}
+
+func TestCurrentApplicationStartDoesNotBlockWhenSuggestionPolicyIsUnavailable(t *testing.T) {
+	resolver := &currentApplicationResolverStub{
+		target: CurrentApplicationTarget{
+			ApplicationID:        31,
+			ApplicationVersionID: 41,
+			Variables:            json.RawMessage(`[]`),
+			VersionDetails:       json.RawMessage(`{"id":41,"application_id":31,"agent_type":"agent","instructions":"Be concise","llm_settings":{"model_name":"test"},"meta":{},"tools":[]}`),
+			ChatHistory:          json.RawMessage(`[]`),
+		},
+		nextSuggestionErr: errors.New("current policy unavailable"),
+	}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "execution-1",
+		CommandID:   "command-1",
+		Created:     true,
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver,
+		resolver,
+		resolver,
+		resolver,
+		resolver,
+		&currentApplicationVersionFreezerStub{},
+		admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.StartCurrentApplication(
+		context.Background(),
+		validCurrentApplicationStartRequest(),
+	); err != nil {
+		t.Fatalf("suggestion policy failure blocked the primary turn: %v", err)
+	}
+	if len(admissions.requests) != 1 {
+		t.Fatalf("admissions=%d", len(admissions.requests))
+	}
+	if got := admissions.requests[0].Input.GetNextInputSuggestion(); !bytes.Equal(got, []byte(`null`)) {
+		t.Fatalf("next input suggestion policy=%s", got)
 	}
 }
 
@@ -201,7 +263,7 @@ func TestCurrentApplicationStartPreservesPipelineYAMLInTheExistingApplicationCon
 		ExecutionID: "pipeline-execution", CommandID: "pipeline-command", Created: true,
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver,
+		resolver, resolver, resolver, resolver, resolver,
 		&currentApplicationVersionFreezerStub{}, admissions,
 	)
 	if err != nil {
@@ -262,6 +324,7 @@ func TestCurrentApplicationStartIsDeterministicAcrossIdempotentRetries(t *testin
 		resolver,
 		resolver,
 		resolver,
+		resolver,
 		&currentApplicationVersionFreezerStub{},
 		admissions,
 	)
@@ -301,6 +364,7 @@ func TestCurrentApplicationStartKeepsStableThreadAndProjectsHistoryAcrossDistinc
 		Deadline:   time.Date(2026, 8, 3, 12, 1, 0, 0, time.UTC),
 	}}
 	service, err := NewCurrentApplicationStartService(
+		resolver,
 		resolver,
 		resolver,
 		resolver,
@@ -353,6 +417,7 @@ func TestCurrentApplicationStartRejectsUnsupportedTargetBeforeAdmission(t *testi
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(
+		resolver,
 		resolver,
 		resolver,
 		resolver,

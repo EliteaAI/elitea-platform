@@ -78,6 +78,18 @@ type CurrentApplicationResolver interface {
 	) (CurrentApplicationTarget, error)
 }
 
+// NextInputSuggestionPolicyResolver resolves the current platform's effective,
+// project-scoped suggestion policy for one authenticated execution actor. The
+// policy is optional execution metadata: an unavailable current dependency must
+// never prevent the primary agent turn from being admitted.
+type NextInputSuggestionPolicyResolver interface {
+	ResolveNextInputSuggestionPolicy(
+		context.Context,
+		int64,
+		int64,
+	) (json.RawMessage, error)
+}
+
 type admissionSubmitter interface {
 	Submit(context.Context, SubmitRequest) (executionapp.AdmissionOutcome, error)
 }
@@ -114,6 +126,7 @@ type CurrentApplicationStartService struct {
 	adhocResolver        CurrentAdhocResolver
 	regenerationResolver CurrentRegenerationResolver
 	continuationResolver CurrentContinuationResolver
+	suggestionResolver   NextInputSuggestionPolicyResolver
 	freezer              CurrentApplicationVersionFreezer
 	admissions           admissionSubmitter
 }
@@ -123,17 +136,19 @@ func NewCurrentApplicationStartService(
 	adhocResolver CurrentAdhocResolver,
 	regenerationResolver CurrentRegenerationResolver,
 	continuationResolver CurrentContinuationResolver,
+	suggestionResolver NextInputSuggestionPolicyResolver,
 	freezer CurrentApplicationVersionFreezer,
 	admissions admissionSubmitter,
 ) (*CurrentApplicationStartService, error) {
 	if resolver == nil || adhocResolver == nil || regenerationResolver == nil ||
-		continuationResolver == nil || freezer == nil || admissions == nil {
+		continuationResolver == nil || suggestionResolver == nil || freezer == nil || admissions == nil {
 		return nil, errors.New("current application start dependencies are required")
 	}
 	return &CurrentApplicationStartService{
 		resolver: resolver, adhocResolver: adhocResolver,
 		regenerationResolver: regenerationResolver,
 		continuationResolver: continuationResolver,
+		suggestionResolver:   suggestionResolver,
 		freezer:              freezer, admissions: admissions,
 	}, nil
 }
@@ -173,7 +188,12 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	if request.InteractionUUID != "" {
 		questionMeta, _ = json.Marshal(map[string]string{"interaction_uuid": request.InteractionUUID})
 	}
-	input, err := currentApplicationInput(request, target)
+	suggestionPolicy := service.resolveNextInputSuggestionPolicy(
+		ctx,
+		request.ProjectID,
+		request.ActorUserID,
+	)
+	input, err := currentApplicationInput(request, target, suggestionPolicy)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
@@ -213,6 +233,7 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 func currentApplicationInput(
 	request CurrentApplicationStartRequest,
 	target CurrentApplicationTarget,
+	nextInputSuggestion json.RawMessage,
 ) (*runtimev1.AgentExecutionInputV1, error) {
 	userInput, err := json.Marshal(request.UserInput)
 	if err != nil {
@@ -249,7 +270,24 @@ func currentApplicationInput(
 		InvokedSkills: []byte(`[]`), AppliedSkills: []byte(`[]`),
 		AttachedSkills: []byte(`[]`), InputAttachments: []byte(`[]`),
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
+		NextInputSuggestion: bytes.Clone(nextInputSuggestion),
 	}, nil
+}
+
+func (service *CurrentApplicationStartService) resolveNextInputSuggestionPolicy(
+	ctx context.Context,
+	projectID int64,
+	actorUserID int64,
+) json.RawMessage {
+	policy, err := service.suggestionResolver.ResolveNextInputSuggestionPolicy(
+		ctx,
+		projectID,
+		actorUserID,
+	)
+	if err != nil || !validJSONObject(policy) {
+		return json.RawMessage(`null`)
+	}
+	return bytes.Clone(policy)
 }
 
 func currentApplicationRuntimeLLM(versionDetails json.RawMessage) ([]byte, error) {
