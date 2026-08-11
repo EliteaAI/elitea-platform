@@ -439,6 +439,55 @@ func TestAdminAgentCategoriesReachTheHub(t *testing.T) {
 	}
 }
 
+// TestABlankCategoryNeverReachesTheHub.
+//
+// `Values.Strings` drops empty entries, and this is the test that says so. It
+// exists because a mutation removing that filter survived everything else:
+// nothing asserted what an empty category does, so the defence was real and
+// unpinned.
+//
+// It is reachable. The page's editor drops blank rows on save
+// (`withoutBlankListEntries`) and the server's `validateArrayItems` checks the
+// element TYPE and not its emptiness, so `{"agent_categories": [""]}` is a
+// well-typed body the admin endpoint accepts. Without the read-side filter that
+// row becomes a nameless entry in the Agents Hub filter bar — a control the
+// operator cannot see, name, or work out how to remove.
+func TestABlankCategoryNeverReachesTheHub(t *testing.T) {
+	pool := newFlagsPool(t)
+	router := flagsRouter(eliteacore.NewHandler(pool))
+	seedPublishableVersion(t, pool, 4, 40)
+
+	setFlag(t, pool, "agent_publishing", "agent_categories",
+		[]string{"", "   ", "Security Review"})
+
+	recorder := flagsDo(t, router, http.MethodGet, "/elitea_core/agent_categories/prompt_lib/4", nil)
+	var body struct {
+		Categories []struct {
+			Name string `json:"name"`
+		} `json:"categories"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, category := range body.Categories {
+		if category.Name == "" {
+			t.Error("an empty category name reached the hub")
+		}
+	}
+	// The real one still arrives — a filter that dropped everything would pass
+	// the assertion above and be useless.
+	found := false
+	for _, category := range body.Categories {
+		if category.Name == "Security Review" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the non-empty category was dropped along with the blanks")
+	}
+}
+
 /* ── failure is permissive, deliberately ───────────────────────────────── */
 
 // TestAnUnreadableStoreDoesNotDisableMCPOrBlockPublishing.
