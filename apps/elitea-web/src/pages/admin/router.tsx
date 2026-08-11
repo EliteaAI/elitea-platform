@@ -18,21 +18,17 @@
  * Features. Issue #200 scopes ELEVEN; the eleventh is LiteLLM, which is not
  * ported because #201 replaces LiteLLM with Bifrost — porting an admin page for
  * a subsystem being removed would be building a control for something on its
- * way out. The
+ * way out. `adminNav.ts` therefore has no LiteLLM entry either, and its test
+ * derives the legal nav targets from THIS route table so the two cannot drift.
  *
- * index route RENDERS it rather than redirecting to `/users`: a `redirect()`
+ * The index route RENDERS Users rather than redirecting to `/users`: a `redirect()`
  * here would be type-checked against the MAIN app's generated route ids (the
  * `Register` interface `routeTree.gen.ts` declares is global), which this
  * hand-built tree is not part of. Rendering also spares the extra history entry.
  */
-import {
-  Outlet,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  type AnyRouter,
-} from '@tanstack/react-router';
+import { createRootRoute, createRoute, createRouter, type AnyRouter } from '@tanstack/react-router';
 
+import { AdminLayout } from './AdminLayout';
 import { AdminAppRequests } from './AppRequests';
 import { AdminAuditTrail } from './AuditTrail';
 import { AdminConfiguration } from './Configuration';
@@ -46,7 +42,12 @@ import { AdminUsers } from './Users';
 
 const ADMIN_BASE_PATH = '/admin/app';
 
-const rootRoute = createRootRoute({ component: () => <Outlet /> });
+/**
+ * The root route renders `AdminLayout` — the nav plus an `<Outlet/>` — rather
+ * than the bare `<Outlet/>` it carried until issue #225. All ten pages were
+ * reachable only by typing a URL; nothing in the SPA linked any of them.
+ */
+const rootRoute = createRootRoute({ component: AdminLayout });
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
