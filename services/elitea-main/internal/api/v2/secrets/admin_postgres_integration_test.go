@@ -80,10 +80,18 @@ func grantingResolver(permissions ...string) permissionResolverFunc {
 	}
 }
 
-// allSecretPermissions is what an administration-mode `admin` holds on the
-// reference deployment.
+// allSecretPermissions is a caller who may do everything, in BOTH modes: the
+// four an administration-mode `admin` holds on the reference deployment, plus
+// the three the project routes add. The project ones are needed because these
+// tests also read the PROJECT surface (to prove the two stores stay separate),
+// and those routes are gated too — see project_postgres_integration_test.go.
+// A resolver limited to the admin four would make those reads 403 and the
+// store-separation assertions unreachable.
 func allSecretPermissions() permissionResolverFunc {
-	return grantingResolver(permSecretView, permSecretCreate, permSecretEdit, permSecretDelete)
+	return grantingResolver(
+		permSecretView, permSecretCreate, permSecretEdit, permSecretDelete,
+		permSecretList, permSecretUnsecret, permSecretHide,
+	)
 }
 
 // secretsRouter mounts the handler's OWN Routes() — the real thing, including
