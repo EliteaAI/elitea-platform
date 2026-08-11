@@ -13,8 +13,8 @@
  * adminui handler's `BasePath` — the handler serves this SPA at that prefix and
  * rewrites its asset URLs to match.
  *
- * Users, Audit Trail, Roles, Projects and Secrets exist so far; issue #200 lists
- * the remaining six. The
+ * Users, Audit Trail, Roles, Projects, Secrets and Schedules & Tasks exist so
+ * far; issue #200 lists the remaining five. The
  * index route RENDERS it rather than redirecting to `/users`: a `redirect()`
  * here would be type-checked against the MAIN app's generated route ids (the
  * `Register` interface `routeTree.gen.ts` declares is global), which this
@@ -31,6 +31,7 @@ import {
 import { AdminAuditTrail } from './AuditTrail';
 import { AdminProjects } from './Projects';
 import { AdminRoles } from './Roles';
+import { AdminSchedulesTasks } from './SchedulesTasks';
 import { AdminSecrets } from './Secrets';
 import { AdminUsers } from './Users';
 
@@ -74,6 +75,12 @@ const secretsRoute = createRoute({
   component: AdminSecrets,
 });
 
+const schedulesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/schedules',
+  component: AdminSchedulesTasks,
+});
+
 const adminRouteTree = rootRoute.addChildren([
   indexRoute,
   usersRoute,
@@ -81,6 +88,7 @@ const adminRouteTree = rootRoute.addChildren([
   rolesRoute,
   projectsRoute,
   secretsRoute,
+  schedulesRoute,
 ]);
 
 export function createAdminRouter(): AnyRouter {

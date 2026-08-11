@@ -692,8 +692,43 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			})
 
 			// === Scheduling ===
+			//
+			// The platform cron table (unit A14). The PUT had no route at all
+			// until this unit, so the admin Schedules tab's active switch and
+			// inline cron editor had nothing behind them; the GET had a route
+			// but read pipeline-trigger metadata out of the tenant schema and
+			// short-circuited on the `projectID=0` the admin page sends. See
+			// internal/api/v2/scheduling/schedules.go.
+			//
+			// Gated on the permissions pylon declares for the same handlers
+			// (legacy/plugins/scheduling/api/v2/schedules.py):
+			// `configuration.scheduling.schedules.view` and `…edit`.
+			//
+			// Registered as two pairs because the GATE differs, not the
+			// handler — the same split the admin user writes needed above.
+			// `legacyrbac.PostgresResolver` answers the `{mode}` routes purely
+			// from the caller's membership OF THAT PROJECT, and an operator
+			// disabling a PLATFORM job (`project_id IS NULL`) is a member of no
+			// project at all, so a project-scoped resolver would refuse every
+			// legitimate admin caller. The `administration` segment is STATIC so
+			// chi's trie prefers it, leaving the project routes untouched.
 			schedulingHandler := v2scheduling.NewHandler(cfg.Pool)
-			r.Get("/scheduling/schedules/{mode}/{projectID}", schedulingHandler.Schedules)
+			r.With(apimw.RequireCentralPermissions(
+				permissionResolver, platformauth.PermissionModeAdministration,
+				"configuration.scheduling.schedules.view",
+			)).Get("/scheduling/schedules/administration/{projectID}", schedulingHandler.AdministrationSchedules)
+			r.With(apimw.RequireCentralPermissions(
+				permissionResolver, platformauth.PermissionModeAdministration,
+				"configuration.scheduling.schedules.edit",
+			)).Put("/scheduling/schedules/administration/{projectID}", schedulingHandler.AdministrationSchedulesUpdate)
+			r.With(apimw.RequireResolvedPermissions(
+				permissionResolver, platformauth.PermissionModeDefault,
+				"configuration.scheduling.schedules.view",
+			)).Get("/scheduling/schedules/{mode}/{projectID}", schedulingHandler.Schedules)
+			r.With(apimw.RequireResolvedPermissions(
+				permissionResolver, platformauth.PermissionModeDefault,
+				"configuration.scheduling.schedules.edit",
+			)).Put("/scheduling/schedules/{mode}/{projectID}", schedulingHandler.SchedulesUpdate)
 
 			// === Configurations ===
 			r.Mount("/configurations", v2configs.NewHandler(
