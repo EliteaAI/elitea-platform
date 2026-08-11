@@ -392,6 +392,17 @@ describe('collapsed state', () => {
     expect(within(nav).getByRole('link', { name: 'Schedules & Tasks' })).toBeInTheDocument();
   });
 
+  it('drops the theme toggle from the collapsed header, which has no room for it', async () => {
+    // Mutation survivor: `{!collapsed && <ThemeModeToggle />}` flipped keeps a
+    // two-button control in a 3.75rem rail, overlapping the logo. Nothing else
+    // here looked at the header's contents.
+    await mountAdmin();
+    expect(screen.getByRole('group', { name: 'View toggle' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('admin-nav-collapse-toggle'));
+    expect(screen.queryByRole('group', { name: 'View toggle' })).toBeNull();
+  });
+
   it('persists through localStorage, under its own key', async () => {
     await mountAdmin();
     await userEvent.click(screen.getByTestId('admin-nav-collapse-toggle'));
@@ -534,6 +545,36 @@ describe('user footer', () => {
     setPermissions(ALL_PERMISSIONS, 'e2e-admin@autotest.local');
     await mountAdmin();
     expect(screen.getByText('e2e-admin@autotest.local')).toBeInTheDocument();
+  });
+
+  it('shows the operator initial on the avatar', async () => {
+    // Mutation survivors: every index of `name.slice(0, 1)` could be changed —
+    // to the empty string, or to the second letter — and nothing noticed. An
+    // avatar with no initial is the collapsed rail's only identity cue.
+    setPermissions(ALL_PERMISSIONS, 'ops@example.com');
+    await mountAdmin();
+    expect(within(screen.getByTestId('admin-nav-user-button')).getByText('O')).toBeInTheDocument();
+  });
+
+  it('reports the menu state on the button that opens it', async () => {
+    // Mutation survivor: `aria-expanded={anchorEl !== null}` inverted tells a
+    // screen-reader user the menu is open before they touch it and closed once
+    // it is. Invisible to a test that only looks for the Logout item.
+    await mountAdmin();
+    const button = screen.getByTestId('admin-nav-user-button');
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+
+    await userEvent.click(button);
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('names an operator the handler did not identify by role, not by invention', async () => {
+    // `adminUiUserName()`'s fallback chain. Mutating the guard makes the footer
+    // render an empty string, which reads as a broken page, or invents an
+    // identity — both worse than the generic role word.
+    (window as unknown as AdminUiConfigWindow).admin_ui_config = { permissions: ALL_PERMISSIONS };
+    await mountAdmin();
+    expect(within(screen.getByTestId('admin-nav-user-button')).getByText('Admin')).toBeInTheDocument();
   });
 
   it('offers Logout behind the user menu', async () => {
