@@ -169,28 +169,36 @@ WHERE u.email = 'e2e-admin@autotest.local'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
 -- ── administration-mode RBAC (unit A14) ──────────────────────────────────
--- 001_initial.sql seeds `default`-mode roles only, so before this block NO
--- persona held a single administration-mode permission and every admin-panel
--- WRITE (`POST /admin/auth_users/administration`,
--- `PUT /admin/user_suspend/administration/{id}`) answered 403 for everyone.
--- The listing is ungated, so the admin Users page LOOKED fine — which is
--- exactly the sort of half-wired stack a journey has to be able to tell apart.
+-- The ROLES are not created here any more. When A14 wrote this block,
+-- 001_initial.sql seeded `default`-mode roles only, so no persona held a single
+-- administration-mode permission and every admin-panel WRITE answered 403 for
+-- everyone — while the user listing, then ungated, made the page LOOK fine.
+-- Creating the roles here fixed this stack and left every other deployment
+-- broken, which is why A14 could not gate the READS.
 --
--- Note what this does NOT change: `window.admin_ui_config.permissions` is
--- hardcoded by adminui/handler.go and was always present. These rows are what
--- the SERVER resolves per request, and they are the only thing that authorises
--- anything.
-INSERT INTO auth_core__role (name, mode) VALUES
-    ('super_admin', 'administration'),
-    ('admin', 'administration'),
-    ('editor', 'administration'),
-    ('viewer', 'administration')
-ON CONFLICT (name, mode) DO NOTHING;
-
--- The administration `admin` role gets the user-administration permissions.
--- `admin.auth.users.super_admin` is deliberately INCLUDED so the journey can
--- exercise the role-assignment path; the escalation guard it gates is covered
--- by the Go integration tests, which can revoke it.
+-- That is fixed at the source now: 001_initial.sql seeds the four
+-- administration roles and their pylon-parity grants on a fresh database, and
+-- migrations/shared/0060_admin_central_rbac.sql back-fills databases that
+-- predate it. Both run before this seed (see `up`), so the roles already exist
+-- by the time this file runs, and the assertions at the end of `seed` check
+-- what those migrations produced.
+--
+-- The grants below stay, and are deliberately a SUPERSET of what the migrations
+-- seed. The migrations seed the pylon-parity baseline for the routes the server
+-- gates; this list is what the JOURNEYS need the admin persona to hold, which
+-- includes permissions no migration grants to `admin` (the audit, secrets and
+-- project-member ones below) and one it grants only to `super_admin`. Every
+-- statement is ON CONFLICT DO NOTHING, so the overlap is inert.
+--
+-- `admin.auth.users.super_admin` is the deliberate divergence: pylon and the
+-- migrations both make it super_admin-only, and it is granted to `admin` here
+-- so the journey can exercise the role-assignment path. The escalation guard it
+-- gates is covered by the Go integration tests, which can revoke it.
+--
+-- Note what none of this changes: `window.admin_ui_config.permissions` is
+-- hardcoded by adminui/handler.go and was always present. The rows below are
+-- what the SERVER resolves per request, and they are the only thing that
+-- authorises anything.
 INSERT INTO auth_core__role_permission (role_id, permission)
 SELECT r.id, p.permission
 FROM auth_core__role r
@@ -331,7 +339,10 @@ WHERE r.id = grant_row.role_id
 
 -- Only the ADMIN persona gets it. The member persona deliberately does not, so
 -- the difference between the two is a real server-side authorisation
--- difference and not a UI-visibility one.
+-- difference and not a UI-visibility one — and since A14 that difference is
+-- visible on the LISTING too, not just on the writes: `GET
+-- /admin/auth_users/administration` is gated on `admin.auth.users`, so the
+-- member persona is refused the global user list outright.
 INSERT INTO auth_core__user_role (user_id, role_id)
 SELECT u.id, r.id
 FROM auth_core__user u
@@ -396,6 +407,15 @@ CROSS JOIN (VALUES
     ('configuration.secrets.secret.edit'),
     ('configuration.secrets.secret.create'),
     ('configuration.secrets.secret.delete'),
+    -- The project secrets routes are gated in-package on the permission each
+    -- pylon `ProjectAPI` method declares (internal/api/v2/secrets/handler.go).
+    -- `.unsecret` gates the two routes that return a secret VALUE in plaintext
+    -- — the mode-ful GET and the mode-less one elitea-sdk's `unsecret()` calls
+    -- — and `.hide` gates POST /secrets/hide/…, which the Secrets page's row
+    -- menu invokes. Neither was in this list, because until the gate landed
+    -- neither route checked anything; absent, they 403.
+    ('configuration.secrets.secret.unsecret'),
+    ('configuration.secrets.secret.hide'),
     -- mountArtifactRoutes (services/elitea-main/internal/api/router.go:255-262)
     -- gates EVERY artifact route — buckets included — on the four
     -- `configuration.artifacts.artifacts.*` strings. `edit` (PATCH: retention,
@@ -666,26 +686,47 @@ ENDSQL
     fi
     echo "  ✓ RBAC verified: ${GRANTS} persona grant(s), ${PERMS} project permission(s)."
 
-    # Same posture for the administration-mode grant (unit A14). Without it the
-    # admin Users page still LISTS (the GET is ungated) while every write 403s,
-    # so a journey asserting only the listing would pass over a half-wired
-    # stack. Asserted as the RESOLVED permission — the exact join
+    # Same posture for the administration mode, and now for BOTH sides of it.
+    #
+    # The grants no longer come from this script — 001_initial.sql seeds them on
+    # a fresh database and migrations/shared/0060_admin_central_rbac.sql
+    # back-fills an existing one. So this assertion has a second job: if either
+    # migration failed to run or failed to seed, `admin.auth.users` resolves
+    # nowhere, and since the listing GET is gated the admin Users page is 403
+    # for everyone. Asserted as the RESOLVED permission — the exact join
     # legacyrbac.PostgresResolver performs — not as "the rows were inserted".
-    ADMIN_PERMS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
-      SELECT COUNT(DISTINCT rp.permission)
-      FROM auth_core__user u
-      JOIN auth_core__user_role ur ON ur.user_id = u.id
-      JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
-      JOIN auth_core__role_permission rp ON rp.role_id = r.id
-      WHERE u.email = 'e2e-admin@autotest.local'
-        AND rp.permission = 'admin.auth.users';")
+    resolves_admin_users() {
+      $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+        SELECT COUNT(DISTINCT rp.permission)
+        FROM auth_core__user u
+        JOIN auth_core__user_role ur ON ur.user_id = u.id
+        JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
+        JOIN auth_core__role_permission rp ON rp.role_id = r.id
+        WHERE u.email = '$1'
+          AND rp.permission = 'admin.auth.users';"
+    }
+    ADMIN_PERMS=$(resolves_admin_users 'e2e-admin@autotest.local')
+    MEMBER_PERMS=$(resolves_admin_users 'e2e-member@autotest.local')
 
     if [ "${ADMIN_PERMS:-0}" -lt 1 ]; then
-      echo "ERROR: seed did not grant the admin persona 'admin.auth.users' in administration mode." >&2
-      echo "  Without it every /admin/auth_users and /admin/user_suspend WRITE answers 403," >&2
-      echo "  while the listing still renders — a stack that looks working and is not." >&2
+      echo "ERROR: the admin persona does not resolve 'admin.auth.users' in administration mode." >&2
+      echo "  Every /admin/auth_users and /admin/user_suspend request — READ and write —" >&2
+      echo "  answers 403, so the admin Users page is empty for everyone. Check that" >&2
+      echo "  001_initial.sql and shared/0060_admin_central_rbac.sql both applied." >&2
       exit 1
     fi
+    # The negative half is what makes the difference a real authorisation
+    # boundary. A migration that promoted "everyone who looks like an admin"
+    # would hand it to the member persona and quietly delete the distinction the
+    # admin journeys rest on — and now that the user LISTING is gated too, J33
+    # asserts exactly this refusal over HTTP.
+    if [ "${MEMBER_PERMS:-0}" -ne 0 ]; then
+      echo "ERROR: the member persona resolves 'admin.auth.users' in administration mode." >&2
+      echo "  The two personas must differ in SERVER-SIDE authorisation, not just in" >&2
+      echo "  what the UI renders. Something granted the member an administration role." >&2
+      exit 1
+    fi
+
     # Same again for the Roles matrix (unit A14). Its READ is gated, so without
     # this grant the page is a 403 and the journey would be asserting against an
     # authorisation failure rather than against the matrix.
@@ -705,13 +746,13 @@ ENDSQL
     fi
 
     echo "  ✓ administration RBAC verified: admin persona resolves admin.auth.users"
-    echo "    and the roles-matrix view/edit pair."
+    echo "    (member does not) and the roles-matrix view/edit pair."
 
-    # The admin PROJECTS surface (unit A14). Unlike the user listing, the
-    # project listing is GATED, so a missing grant here is a 403 on the page
-    # itself rather than a write that quietly fails — but the failure mode is
-    # the same class, so it is asserted the same way: as the resolved
-    # permission, not as an inserted row.
+    # The admin PROJECTS surface (unit A14). Its listing is gated, as the user
+    # listing now is too, so a missing grant here is a 403 on the page itself
+    # rather than a write that quietly fails — but the failure mode is the same
+    # class, so it is asserted the same way: as the resolved permission, not as
+    # an inserted row.
     PROJECT_PERMS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
       SELECT COUNT(DISTINCT rp.permission)
       FROM auth_core__user u

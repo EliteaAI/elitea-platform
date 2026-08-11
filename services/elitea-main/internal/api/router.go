@@ -27,8 +27,8 @@ import (
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
-	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
+	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -539,47 +539,78 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// === Admin endpoints ===
 			adminHandler := admin.NewHandler(cfg.Pool, admin.WithPermissionResolver(permissionResolver))
 			moderationHandler := v2moderation.NewHandler(cfg.Pool)
-			// The admin panel's write surface (unit A14). Everything below is
-			// gated on the same pylon permission its Python counterpart declares
-			// (`admin.auth.users`, legacy/plugins/admin/api/v2/auth_users.py and
-			// user_suspend.py), resolved from the database in `administration`
-			// mode. The admin SPA's `window.admin_ui_config.permissions` is
-			// PRESENTATION state and is never consulted here.
-			requireAdminUsers := apimw.RequireCentralPermissions(
-				permissionResolver, platformauth.PermissionModeAdministration,
-				"admin.auth.users",
-			)
-			// The admin PROJECTS surface (unit A14). Gated on the permissions
-			// its pylon counterparts declare —
-			// legacy/plugins/admin/api/v2/projects.py declares
+			// The admin panel's surface. Every route below is gated on the same
+			// pylon permission its Python counterpart declares in
+			// legacy/plugins/admin/api/v2/, resolved from the database in
+			// `administration` mode. The admin SPA's
+			// `window.admin_ui_config.permissions` is PRESENTATION state and is
+			// never consulted here.
+			//
+			// Unit A14 gated the auth_users WRITES only and left that listing —
+			// and the whole plugin-config/runtime block — open, to avoid a
+			// behaviour change with blast radius outside that unit: no
+			// deployment bootstrapped by elitea-migrate had a single
+			// administration-mode role, so gating a read would have turned
+			// "the admin panel works" into "403 for everyone". That is fixed at
+			// the source — migrations/shared/0060_admin_central_rbac.sql seeds
+			// the administration roles and their grants, and
+			// internal/infra/db/migrations/001_initial.sql seeds them on a fresh
+			// database — so the remaining reads are gated to match pylon too.
+			//
+			// Read this as the parity table it is. `mode` in the URL does NOT
+			// select the permission mode: pylon reaches these handlers only
+			// through its `administration` AdminAPI, so the resolution mode is
+			// always `administration`.
+			central := func(permission string) func(http.Handler) http.Handler {
+				return apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					permission,
+				)
+			}
+			// auth_users.py, user_suspend.py
+			requireAdminUsers := central("admin.auth.users")
+			// system_info.py, plugin_config_*.py, maintenance.py, runtime_*.py,
+			// tasks.py, active_tasks.py — all declare ["runtime.plugins"].
+			requireRuntimePlugins := central("runtime.plugins")
+			// moderation_status.py / moderation_statuses.py. The queue itself is
+			// registered further down, next to the three other moderation routes
+			// this unit added, so all four read as one surface.
+			requireModeration := central("admin.moderation")
+			// The admin PROJECTS surface. projects.py declares
 			// `projects.projects.projects.view` and project_suspend.py declares
-			// `projects.projects.projects.edit` — resolved from the database in
-			// `administration` mode on every request.
+			// `projects.projects.projects.edit`.
 			//
 			// The listing is gated rather than open: a project row names the
 			// project, its owner and its admins across every tenant, so the
-			// listing itself is the sensitive part. That matches the audit
-			// reads, and differs from the admin USER listing only because that
-			// one predates this unit.
-			requireProjectsView := apimw.RequireCentralPermissions(
-				permissionResolver, platformauth.PermissionModeAdministration,
-				"projects.projects.projects.view",
-			)
-			requireProjectsEdit := apimw.RequireCentralPermissions(
-				permissionResolver, platformauth.PermissionModeAdministration,
-				"projects.projects.projects.edit",
-			)
+			// listing itself is the sensitive part. The same argument applies
+			// verbatim to the admin USER listing, which was left open only
+			// because it predated the migration that makes any of this
+			// resolvable.
+			requireProjectsView := central("projects.projects.projects.view")
+			requireProjectsEdit := central("projects.projects.projects.edit")
 			r.Route("/admin", func(r chi.Router) {
 				// Admin panel endpoints (administration mode, no projectID)
+				//
+				// The two `prompt_lib` routes stay open ON PURPOSE. They are the
+				// help-center's version/resource lookup, reached in pylon through
+				// `PromptLibAPI`, whose `get()` carries NO check_api decorator at
+				// all (system_info.py, plugin_config_values.py) — unlike the
+				// `AdminAPI` siblings one line below. chi matches a static
+				// segment ahead of a `{param}`, so these keep winning over
+				// `/system_info/{mode}` and `/plugin_config_values/{mode}/{plugin}`.
 				r.Get("/system_info/prompt_lib", adminHandler.SystemInfo)
-				r.Get("/system_info/{mode}", adminHandler.SystemInfo)
 				r.Get("/plugin_config_values/prompt_lib/resources", adminHandler.ResourcesConfig)
-				r.Get("/auth_users/{mode}", adminHandler.AuthUsers)
+
+				r.With(requireRuntimePlugins).Get("/system_info/{mode}", adminHandler.SystemInfo)
+				// Before this gate any authenticated session could read the
+				// global user list — id, name, email, last_login, suspended and
+				// administration role for every row of auth_core__user.
+				r.With(requireAdminUsers).Get("/auth_users/{mode}", adminHandler.AuthUsers)
 				r.With(requireAdminUsers).Post("/auth_users/{mode}", adminHandler.AuthUsersAction)
 				r.With(requireAdminUsers).Put("/user_suspend/{mode}/{userID}", adminHandler.UserSuspend)
-				// The admin Roles page (unit A14). Before it, only the GET
-				// existed — ungated, ignoring {scope}, and listing only
-				// already-granted permissions. See internal/api/v2/admin/roles.go.
+				// The admin Roles page. Before it, only the GET existed —
+				// ungated, ignoring {scope}, and listing only already-granted
+				// permissions. See internal/api/v2/admin/roles.go.
 				//
 				// Gated on the permissions the pylon originals declare
 				// (`configuration.roles.permissions.view` / `.edit`,
@@ -587,14 +618,8 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				// auth_core__user_role per request. The read is gated too: this
 				// matrix is the deployment's authorisation model, and knowing
 				// which role holds which privilege is itself sensitive.
-				requireRolesView := apimw.RequireCentralPermissions(
-					permissionResolver, platformauth.PermissionModeAdministration,
-					"configuration.roles.permissions.view",
-				)
-				requireRolesEdit := apimw.RequireCentralPermissions(
-					permissionResolver, platformauth.PermissionModeAdministration,
-					"configuration.roles.permissions.edit",
-				)
+				requireRolesView := central("configuration.roles.permissions.view")
+				requireRolesEdit := central("configuration.roles.permissions.edit")
 				r.With(requireRolesView).Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
 				r.With(requireRolesEdit).Put("/permissions/{scope}/{mode}", adminHandler.AdminPermissionsSave)
 				r.With(requireRolesEdit).Post("/permissions/{scope}/{mode}", adminHandler.AdminPermissionsSync)
@@ -608,22 +633,29 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				// are rendered unavailable in the UI rather than guessed at here.
 				r.With(requireProjectsEdit).
 					Put("/project_suspend/{mode}/{projectID}", adminHandler.ProjectSuspend)
-				r.Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
-				r.Get("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValues)
-				r.Put("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValuesSave)
-				r.Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
-				r.Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
-				r.Get("/maintenance/{mode}", adminHandler.Maintenance)
-				r.Put("/maintenance/{mode}", adminHandler.Maintenance)
-				r.Get("/runtime_remote/{mode}", adminHandler.RuntimeRemote)
-				r.Get("/runtime_remote_config/{mode}/{pluginID}", adminHandler.RuntimeRemoteConfig)
-				r.Post("/runtime_remote_config/{mode}/{pluginID}", adminHandler.RuntimeRemoteConfig)
-				r.Get("/runtime_plugin/{mode}/{pluginName}", adminHandler.RuntimePlugin)
-				r.Put("/runtime_plugin/{mode}/{pluginName}", adminHandler.RuntimePlugin)
-				r.Post("/runtime_pylons/{mode}", adminHandler.RuntimePylonLogs)
-				r.Get("/tasks/{mode}/", adminHandler.Tasks)
-				r.Get("/tasks/{mode}", adminHandler.Tasks)
-				r.Get("/active_tasks/{mode}", adminHandler.ActiveTasks)
+				r.With(requireRuntimePlugins).Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
+				r.With(requireRuntimePlugins).Get("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValues)
+				r.With(requireRuntimePlugins).Put("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValuesSave)
+				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
+				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
+				// `/moderation_statuses/…` is NOT registered here. #209 gated the
+				// stub that used to sit on this line; this unit replaced the stub
+				// with a real handler, registered below on a static
+				// `administration` segment. Re-adding a `{mode}` route here would
+				// resurrect the stub for every other mode — and since pylon reaches
+				// this surface only through its `administration` AdminAPI, the only
+				// thing that would answer is a constant nobody asked for.
+				r.With(requireRuntimePlugins).Get("/maintenance/{mode}", adminHandler.Maintenance)
+				r.With(requireRuntimePlugins).Put("/maintenance/{mode}", adminHandler.Maintenance)
+				r.With(requireRuntimePlugins).Get("/runtime_remote/{mode}", adminHandler.RuntimeRemote)
+				r.With(requireRuntimePlugins).Get("/runtime_remote_config/{mode}/{pluginID}", adminHandler.RuntimeRemoteConfig)
+				r.With(requireRuntimePlugins).Post("/runtime_remote_config/{mode}/{pluginID}", adminHandler.RuntimeRemoteConfig)
+				r.With(requireRuntimePlugins).Get("/runtime_plugin/{mode}/{pluginName}", adminHandler.RuntimePlugin)
+				r.With(requireRuntimePlugins).Put("/runtime_plugin/{mode}/{pluginName}", adminHandler.RuntimePlugin)
+				r.With(requireRuntimePlugins).Post("/runtime_pylons/{mode}", adminHandler.RuntimePylonLogs)
+				r.With(requireRuntimePlugins).Get("/tasks/{mode}/", adminHandler.Tasks)
+				r.With(requireRuntimePlugins).Get("/tasks/{mode}", adminHandler.Tasks)
+				r.With(requireRuntimePlugins).Get("/active_tasks/{mode}", adminHandler.ActiveTasks)
 
 				// Regular app admin endpoints (with projectID)
 				//
@@ -693,10 +725,10 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				// `administration` is a STATIC segment on the queue and the
 				// decision, so neither binds a `{mode}` param and both handlers
 				// state their mode by existing rather than sniffing the URL.
-				r.With(apimw.RequireCentralPermissions(
-					permissionResolver, platformauth.PermissionModeAdministration,
-					"admin.moderation",
-				)).Get("/moderation_statuses/administration", moderationHandler.AdministrationRequests)
+				// `requireModeration` is #209's `central("admin.moderation")` —
+				// the same middleware that gated the stub this route replaces.
+				r.With(requireModeration).
+					Get("/moderation_statuses/administration", moderationHandler.AdministrationRequests)
 				r.With(apimw.RequireCentralPermissions(
 					permissionResolver, platformauth.PermissionModeAdministration,
 					"admin.moderation.edit",
@@ -781,11 +813,14 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// admin_ui and qa/elitea-api-testing. #137 read it as a
 			// double-mount bug and moved the routes to the v2 root, which
 			// broke every consumer outside apps/elitea-web; #151 restores it.
-			// The resolver gates the `administration`-mode routes only — the
-			// GLOBAL vault behind the admin Secrets page (unit A14). Those
-			// gates live inside the package because the mode is a PATH
-			// SEGMENT: one chi route serves both modes, so route-level
-			// middleware here could not gate one and not the other.
+			// The resolver gates BOTH mode families: the `administration`
+			// routes over the GLOBAL vault (unit A14) and the `default`
+			// project routes, which until then had no gate at all — any
+			// authenticated caller could name any {projectID} and read that
+			// project's secret VALUES in plaintext. Both gates live inside
+			// the package because the mode is a PATH SEGMENT: one chi route
+			// serves both modes, so route-level middleware here could not
+			// gate one and not the other.
 			r.Mount("/secrets", v2secrets.NewHandler(
 				cfg.Pool,
 				v2secrets.WithPermissionResolver(permissionResolver),
