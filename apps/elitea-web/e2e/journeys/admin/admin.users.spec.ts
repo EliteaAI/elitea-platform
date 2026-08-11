@@ -70,8 +70,16 @@ adminTest('J27: the admin SPA is served with injected config and lists database 
   // auth_core__user, and neither string appears anywhere in the bundle — the
   // placeholder rendered `window.admin_ui_config.user_email` and a literal
   // "admin" role, which is precisely why it could never have passed this.
-  await expect(page.getByText(SEEDED_ADMIN)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(SEEDED_MEMBER)).toBeVisible();
+  //
+  // Scoped to <main>, which is the PAGE. The nav (#225) shows the signed-in
+  // operator's own name in its footer, and this browser is signed in as the
+  // admin persona — so an unscoped `getByText(SEEDED_ADMIN)` now matches the
+  // nav footer too, and would pass while the table was empty. That is the
+  // stronger assertion regardless: what this test claims is that the LISTING
+  // came from the database.
+  const listing = page.getByRole('main');
+  await expect(listing.getByText(SEEDED_ADMIN)).toBeVisible({ timeout: 15_000 });
+  await expect(listing.getByText(SEEDED_MEMBER)).toBeVisible();
 
   // The empty state and the table are mutually exclusive branches; a listing
   // that silently resolved to zero rows is the #130/#132 failure shape.
