@@ -12,6 +12,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+
+# resolve_container_name() — see scripts/lib/container-lookup.sh for why the
+# `cmd | grep -m1 A || cmd | grep -m1 B` idiom this replaces returned TWO
+# names under `set -o pipefail` (#228).
+# shellcheck source=lib/container-lookup.sh
+. "$(dirname "$0")/lib/container-lookup.sh"
 # Standalone file: self-contained, no port conflicts with the centry dev stack.
 # In CI set E2E_PORT=8080 (free on ubuntu-latest); locally defaults to 8082.
 # -p elitea-e2e: explicit project name avoids clashing with the deploy- project.
@@ -66,19 +72,16 @@ case "$CMD" in
     if [ -f "$INIT_SQL" ]; then
       EXEC_BIN_EARLY="${COMPOSE_BIN%% *}"
       # Detect the postgres container early (needed here before the full lookup below).
-      PG_EARLY=$(
-        $EXEC_BIN_EARLY ps --format '{{.Names}}' 2>/dev/null | grep -m1 "${E2E_PROJECT}.*postgres" || \
-        $EXEC_BIN_EARLY ps --format '{{.Names}}' 2>/dev/null | grep -m1 'postgres' || true
-      )
+      PG_EARLY=$(resolve_container_name "$E2E_PROJECT" 'postgres' \
+        "$($EXEC_BIN_EARLY ps --format '{{.Names}}' 2>/dev/null || true)")
       if [ -n "$PG_EARLY" ]; then
         echo "  → Applying 001_initial.sql (centry schema bootstrap)…"
         $EXEC_BIN_EARLY exec -i "$PG_EARLY" psql -U elitea -d elitea < "$INIT_SQL" >/dev/null 2>&1 || true
       fi
     fi
     # Run elitea-migrate (idempotent) to apply any pending shared history.
-    MAIN_CONTAINER=$(
-      "${COMPOSE_BIN%% *}" ps --format '{{.Names}}' 2>/dev/null | grep -m1 "${E2E_PROJECT}.*elitea-main" || true
-    )
+    MAIN_CONTAINER=$(resolve_container_name "$E2E_PROJECT" "${E2E_PROJECT}.*elitea-main" \
+      "$("${COMPOSE_BIN%% *}" ps --format '{{.Names}}' 2>/dev/null || true)")
     if [ -n "$MAIN_CONTAINER" ]; then
       echo "  → Running elitea-migrate…"
       "${COMPOSE_BIN%% *}" exec "$MAIN_CONTAINER" /elitea-migrate >/dev/null 2>&1 || true
@@ -87,10 +90,8 @@ case "$CMD" in
     # Resolve postgres container name.
     # Project name is `${E2E_PROJECT}` so the container is <project>-postgres-1.
     # Fallback: probe by name pattern in case the compose tool normalises differently.
-    POSTGRES_CONTAINER=$(
-      ${COMPOSE_BIN%% *} ps --format '{{.Names}}' 2>/dev/null | grep -m1 "${E2E_PROJECT}.*postgres" || \
-      ${COMPOSE_BIN%% *} ps --format '{{.Names}}' 2>/dev/null | grep -m1 'postgres' || true
-    )
+    POSTGRES_CONTAINER=$(resolve_container_name "$E2E_PROJECT" 'postgres' \
+      "$(${COMPOSE_BIN%% *} ps --format '{{.Names}}' 2>/dev/null || true)")
     if [ -z "$POSTGRES_CONTAINER" ]; then
       echo "ERROR: could not locate the postgres container. Is the stack up?" >&2
       exit 1
