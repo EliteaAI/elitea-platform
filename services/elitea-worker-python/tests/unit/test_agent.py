@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -201,6 +202,59 @@ def test_agent_input_is_canonical_and_strictly_typed() -> None:
 
     with pytest.raises(InvalidInput, match="canonical"):
         parse_agent_execution_input(raw + b"\xa0\x06\x01")
+
+
+def test_agent_input_preserves_bounded_next_input_suggestion_policy() -> None:
+    message = _input()
+    message.next_input_suggestion = _json(
+        {
+            "enabled": True,
+            "min_response_chars": 150,
+            "timeout_seconds": 15,
+        }
+    )
+
+    request = request_from(
+        message,
+        kind=AgentExecutionKind.APPLICATION,
+        input_bundle_id="bundle-1",
+        input_bundle_digest=b"b" * 32,
+        request_entry_id="agent-request",
+        request_immutable_version="v1",
+        request_content_digest=b"r" * 32,
+    )
+
+    assert request.payload.next_input_suggestion == {
+        "enabled": True,
+        "min_response_chars": 150,
+        "timeout_seconds": 15,
+    }
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        [],
+        {"enabled": "yes"},
+        {"enabled": True, "min_response_chars": 0},
+        {"enabled": True, "timeout_seconds": 0},
+        {"enabled": True, "unexpected": True},
+    ],
+)
+def test_agent_input_rejects_invalid_next_input_suggestion_policy(policy) -> None:
+    message = _input()
+    message.next_input_suggestion = _json(policy)
+
+    with pytest.raises(InvalidInput, match="next input suggestion"):
+        request_from(
+            message,
+            kind=AgentExecutionKind.APPLICATION,
+            input_bundle_id="bundle-1",
+            input_bundle_digest=b"b" * 32,
+            request_entry_id="agent-request",
+            request_immutable_version="v1",
+            request_content_digest=b"r" * 32,
+        )
 
 
 def test_agent_input_rejects_wrong_semantic_shapes() -> None:
@@ -409,6 +463,41 @@ class _Client:
         return self.adhoc_executor
 
 
+class _SuggestionLLM:
+    def __init__(
+        self,
+        result: Any = None,
+        *,
+        error: Exception | None = None,
+        wait: bool = False,
+    ) -> None:
+        self.result = result
+        self.error = error
+        self.wait = wait
+        self.calls: list[str] = []
+
+    def invoke(self, prompt: str):
+        self.calls.append(prompt)
+        if self.wait:
+            threading.Event().wait(1)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class _SuggestionClient(_Client):
+    def __init__(self, llm: Any) -> None:
+        super().__init__()
+        self.low_tier_llm = llm
+        self.low_tier_calls: list[int] = []
+
+    def get_low_tier_llm(self, *, max_tokens: int):
+        self.low_tier_calls.append(max_tokens)
+        if isinstance(self.low_tier_llm, Exception):
+            raise self.low_tier_llm
+        return self.low_tier_llm
+
+
 def _adapter(client: _Client) -> EliteaSdkAgentAdapter:
     adapter = object.__new__(EliteaSdkAgentAdapter)
     adapter._client = client  # type: ignore[attr-defined]
@@ -446,6 +535,98 @@ def test_sdk_adapter_preserves_constructor_split_without_forwarding_authority() 
         {"role": "user", "content": "earlier"}
     ]
     assert len(client.application_executor.calls[0][0]["messages"]) == 2
+
+
+def test_sdk_adapter_generates_one_current_next_input_suggestion() -> None:
+    llm = _SuggestionLLM(SimpleNamespace(content="  Yes, add the test.  "))
+    client = _SuggestionClient(llm)
+    payload = _request().payload
+    object.__setattr__(
+        payload,
+        "next_input_suggestion",
+        {"enabled": True, "min_response_chars": 5, "timeout_seconds": 1},
+    )
+
+    suggestion = _adapter(client).suggest_next_input(
+        payload,
+        output_text="The change is ready. Would you like a test?",
+    )
+
+    assert suggestion == "Yes, add the test."
+    assert client.low_tier_calls == [64]
+    assert len(llm.calls) == 1
+    assert "The change is ready" in llm.calls[0]
+
+
+@pytest.mark.parametrize(
+    ("policy", "output", "llm", "expected_llm_calls"),
+    [
+        (
+            {"enabled": False, "min_response_chars": 5, "timeout_seconds": 1},
+            "long enough",
+            _SuggestionLLM("unused"),
+            0,
+        ),
+        (
+            {"enabled": True, "min_response_chars": 50, "timeout_seconds": 1},
+            "short",
+            _SuggestionLLM("unused"),
+            0,
+        ),
+        (
+            {"enabled": True, "min_response_chars": 5, "timeout_seconds": 1},
+            "long enough",
+            None,
+            1,
+        ),
+        (
+            {"enabled": True, "min_response_chars": 5, "timeout_seconds": 1},
+            "long enough",
+            _SuggestionLLM("NONE"),
+            1,
+        ),
+        (
+            {"enabled": True, "min_response_chars": 5, "timeout_seconds": 1},
+            "long enough",
+            _SuggestionLLM(error=RuntimeError("model failed")),
+            1,
+        ),
+        (
+            {"enabled": True, "min_response_chars": 5, "timeout_seconds": 0.01},
+            "long enough",
+            _SuggestionLLM(wait=True),
+            1,
+        ),
+    ],
+)
+def test_sdk_adapter_suppresses_optional_suggestion_failures(
+    policy,
+    output,
+    llm,
+    expected_llm_calls,
+) -> None:
+    client = _SuggestionClient(llm)
+    payload = _request().payload
+    object.__setattr__(payload, "next_input_suggestion", policy)
+
+    assert _adapter(client).suggest_next_input(payload, output_text=output) is None
+    assert len(client.low_tier_calls) == expected_llm_calls
+
+
+def test_sdk_adapter_suppresses_low_tier_model_lookup_failure() -> None:
+    client = _SuggestionClient(RuntimeError("configuration unavailable"))
+    payload = _request().payload
+    object.__setattr__(
+        payload,
+        "next_input_suggestion",
+        {"enabled": True, "min_response_chars": 5, "timeout_seconds": 1},
+    )
+
+    assert (
+        _adapter(client).suggest_next_input(payload, output_text="long enough")
+        is None
+    )
+    assert client.low_tier_calls == [64]
 
 
 def test_sdk_adapter_prefers_callback_authorization_pause_over_graph_result() -> None:

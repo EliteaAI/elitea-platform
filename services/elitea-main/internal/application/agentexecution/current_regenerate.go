@@ -202,6 +202,11 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 		QuestionID: target.QuestionID, ResponseMessageID: request.ResponseMessageID,
 		ExecutionGeneration: request.RegenerationID,
 	}
+	suggestionPolicy := service.resolveNextInputSuggestionPolicy(
+		ctx,
+		request.ProjectID,
+		request.ActorUserID,
+	)
 	switch target.Kind {
 	case CurrentRegenerationApplication:
 		start := CurrentApplicationStartRequest{
@@ -226,7 +231,7 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 		}
 		resolved.VersionDetails = frozen
 		start.QuestionID = request.RegenerationID
-		input, err := currentApplicationInput(start, resolved)
+		input, err := currentApplicationInput(start, resolved, suggestionPolicy)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -261,7 +266,7 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 			return nil, nil, "", err
 		}
 		start.QuestionID = request.RegenerationID
-		input, err := currentAdhocInput(start, resolved, frozen)
+		input, err := currentAdhocInput(start, resolved, frozen, suggestionPolicy)
 		if err != nil {
 			return nil, nil, "", err
 		}

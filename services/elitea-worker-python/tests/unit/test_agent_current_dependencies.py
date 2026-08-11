@@ -57,12 +57,14 @@ def test_profile_digest_and_exact_requirements_match_project_dependencies() -> N
         "langchain-core==1.2.7",
         "langgraph==1.0.7",
         "langchain-mcp-adapters==0.1.14",
+        "mcp==1.27.1",
         "langgraph-checkpoint-postgres==2.0.21",
     ]
     assert "elitea-sdk==0.9.8" in dependencies
     assert "langchain-core==1.2.7" in dependencies
     assert "langgraph==1.0.7" in dependencies
     assert "langchain-mcp-adapters>=0.1.14,<0.2.0" in extras
+    assert "mcp==1.27.1" in extras
     assert "langgraph-checkpoint-postgres==2.0.21" in extras
 
 

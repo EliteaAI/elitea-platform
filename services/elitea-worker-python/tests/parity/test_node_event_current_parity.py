@@ -41,8 +41,8 @@ def test_current_node_event_parity_corpus_round_trips_without_ui_changes() -> No
     corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
     assert corpus["contract_revision"] == "elitea.runtime.node-event.v1"
     assert len(corpus["cases"]) >= 2
-    assert len(corpus["current_event_types"]) == 35
-    assert len(set(corpus["current_event_types"])) == 35
+    assert len(corpus["current_event_types"]) == 36
+    assert len(set(corpus["current_event_types"])) == 36
     for event_type in corpus["current_event_types"]:
         assert decode_current_node_event_json(_canonical({"type": event_type})).type == event_type
 
@@ -98,6 +98,22 @@ def test_current_node_event_codec_applies_defaults_and_strict_bounds() -> None:
     for raw in invalid:
         with pytest.raises(InvalidCurrentNodeEvent):
             decode_current_node_event_json(raw)
+
+
+def test_current_node_event_encoder_matches_go_durable_json_escaping() -> None:
+    event = decode_current_node_event_json(
+        _canonical(
+            {
+                "type": "full_message",
+                "content": "a < b > c & d\u2028next\u2029line",
+            }
+        )
+    )
+
+    encoded = encode_current_node_event_json(event)
+
+    assert b"a \\u003c b \\u003e c \\u0026 d\\u2028next\\u2029line" in encoded
+    assert b"a < b > c & d" not in encoded
 
 
 def test_current_node_event_encoder_rejects_bad_fragments_and_size() -> None:

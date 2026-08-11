@@ -193,8 +193,13 @@ type AgentExecutionInputV1 struct {
 	ParallelTerminalErrors      []byte                 `protobuf:"bytes,34,opt,name=parallel_terminal_errors,json=parallelTerminalErrors,proto3" json:"parallel_terminal_errors,omitempty"`
 	ExceptionHandlingEnabled    *bool                  `protobuf:"varint,35,opt,name=exception_handling_enabled,json=exceptionHandlingEnabled,proto3,oneof" json:"exception_handling_enabled,omitempty"`
 	DebugMode                   *bool                  `protobuf:"varint,36,opt,name=debug_mode,json=debugMode,proto3,oneof" json:"debug_mode,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	// A bounded, non-secret snapshot of the current live guardrail. The Go
+	// admission path resolves this policy before dispatch; the worker never
+	// reads Pylon configuration directly and treats suggestion generation as a
+	// best-effort post-response side effect.
+	NextInputSuggestion []byte `protobuf:"bytes,37,opt,name=next_input_suggestion,json=nextInputSuggestion,proto3" json:"next_input_suggestion,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *AgentExecutionInputV1) Reset() {
@@ -479,6 +484,13 @@ func (x *AgentExecutionInputV1) GetDebugMode() bool {
 	return false
 }
 
+func (x *AgentExecutionInputV1) GetNextInputSuggestion() []byte {
+	if x != nil {
+		return x.NextInputSuggestion
+	}
+	return nil
+}
+
 type AgentExecutionArtifactReferenceV1 struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ArtifactId       string                 `protobuf:"bytes,1,opt,name=artifact_id,json=artifactId,proto3" json:"artifact_id,omitempty"`
@@ -667,7 +679,7 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x10request_entry_id\x18\x01 \x01(\tR\x0erequestEntryId\x12(\n" +
 	"\x10client_stream_id\x18\x02 \x01(\tR\x0eclientStreamId\x12*\n" +
 	"\x11client_message_id\x18\x03 \x01(\tR\x0fclientMessageId\x12\x1b\n" +
-	"\tsio_event\x18\x04 \x01(\tR\bsioEventJ\x04\b\x05\x10\x10\"\xe6\f\n" +
+	"\tsio_event\x18\x04 \x01(\tR\bsioEventJ\x04\b\x05\x10\x10\"\x9a\r\n" +
 	"\x15AgentExecutionInputV1\x12'\n" +
 	"\x0fschema_revision\x18\x01 \x01(\tR\x0eschemaRevision\x12\x10\n" +
 	"\x03llm\x18\x02 \x01(\fR\x03llm\x12!\n" +
@@ -712,7 +724,8 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x18parallel_terminal_errors\x18\" \x01(\fR\x16parallelTerminalErrors\x12A\n" +
 	"\x1aexception_handling_enabled\x18# \x01(\bH\aR\x18exceptionHandlingEnabled\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"debug_mode\x18$ \x01(\bH\bR\tdebugMode\x88\x01\x01B\f\n" +
+	"debug_mode\x18$ \x01(\bH\bR\tdebugMode\x88\x01\x01\x122\n" +
+	"\x15next_input_suggestion\x18% \x01(\fR\x13nextInputSuggestionB\f\n" +
 	"\n" +
 	"_thread_idB\x10\n" +
 	"\x0e_checkpoint_idB\x0e\n" +
@@ -722,7 +735,7 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x15_execution_generationB\x12\n" +
 	"\x10_conversation_idB\x1d\n" +
 	"\x1b_exception_handling_enabledB\r\n" +
-	"\v_debug_modeJ\x04\b%\x10@\"\x94\x02\n" +
+	"\v_debug_modeJ\x04\b&\x10@\"\x94\x02\n" +
 	"!AgentExecutionArtifactReferenceV1\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12+\n" +

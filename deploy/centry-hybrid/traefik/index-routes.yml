@@ -64,6 +64,45 @@ http:
         - go-main-forward-auth
       service: current-main
 
+    # The Python execution worker resolves the effective low-tier model through
+    # the current SDK configurations client. Route that exact read-only API to
+    # the Go compatibility implementation through the same workload-token
+    # ForwardAuth boundary as the other worker-owned current reads. Without
+    # this route the private gateway fallback rejects the worker PAT before the
+    # request reaches either implementation, while browser-cookie reads still
+    # succeed and hide the deployment drift.
+    runtime-worker-go-current-models:
+      rule: >-
+        Host(`elitea-gateway`) &&
+        PathRegexp(`^/api/v2/configurations/models/[1-9][0-9]*$`) &&
+        Method(`GET`)
+      priority: 85
+      entryPoints: [websecure]
+      tls: {}
+      middlewares:
+        - strip-caller-auth-context
+        - normalize-runtime-public-authority
+        - go-main-forward-auth
+      service: elitea-main
+
+    # elitea-main resolves the current project-scoped suggestion policy with
+    # the exact execution actor PAT. Keep this optional compatibility lookup on
+    # the private gateway and retain current Main's RBAC/project-membership
+    # checks while that settings surface remains current-platform owned.
+    runtime-go-current-next-input-suggestion-policy:
+      rule: >-
+        Host(`elitea-gateway`) &&
+        PathRegexp(`^/api/v2/elitea_core/next_input_suggestion_config/prompt_lib/[1-9][0-9]*$`) &&
+        Method(`GET`)
+      priority: 85
+      entryPoints: [websecure]
+      tls: {}
+      middlewares:
+        - strip-caller-auth-context
+        - normalize-runtime-public-authority
+        - go-main-forward-auth
+      service: current-main
+
     # SDK 0.9.6 resolves an admitted nested application by reference. Keep the
     # current application/version handlers and RBAC semantics during hybrid
     # operation, while making the worker PAT pass through the same trusted

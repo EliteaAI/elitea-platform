@@ -33,6 +33,11 @@ agent-current = [
   # bridge directly from the worker runtime. Keep this aligned with the SDK's
   # admitted range until the worker owns the orchestration logic itself.
   "langchain-mcp-adapters>=0.1.14,<0.2.0",
+  # MCP 2.x moved its HTTP stack to httpx2/httpcore2 and requires h11>=0.16,
+  # which conflicts with the current SDK's admitted httpcore==1.0.7/h11<0.15.
+  # Pin the current deployed baseline explicitly so clean image builds cannot
+  # silently cross that incompatible major-version boundary.
+  "mcp==1.27.1",
   "langgraph-checkpoint-postgres==2.0.21",
 ]
 indexing-current = [

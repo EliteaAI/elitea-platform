@@ -180,6 +180,18 @@ def _dump_json(value: Any) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError, UnicodeEncodeError, RecursionError) as exc:
         raise InvalidCurrentNodeEvent("The current node event is malformed.") from exc
+    # Go's encoding/json is the authoritative serializer for the durable SSE
+    # projection.  Match its default string escaping byte-for-byte so the
+    # worker's terminal artifact digest is calculated over the exact bytes
+    # elitea-main persists.  These replacements are safe over the complete
+    # JSON document because none of the characters is JSON syntax.
+    raw = (
+        raw.replace(b"&", b"\\u0026")
+        .replace(b"<", b"\\u003c")
+        .replace(b">", b"\\u003e")
+        .replace("\u2028".encode(), b"\\u2028")
+        .replace("\u2029".encode(), b"\\u2029")
+    )
     if len(raw) > MAX_CURRENT_NODE_EVENT_JSON_BYTES or not _valid_json_nesting(raw):
         raise InvalidCurrentNodeEvent("The current node event is malformed.")
     return raw

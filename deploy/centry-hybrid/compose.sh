@@ -131,6 +131,9 @@ validate_model() {
         == .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM
       and .services["elitea-main"].environment.ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP
         == .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL
+        == "https://elitea-gateway"
+      and (.services["elitea-main"].networks | has("runtime_gateway"))
       and any(.services.auth_gateway.volumes[];
         .source == $route and .target == "/etc/traefik/dynamic/index.yml")
       and any(.services["elitea-indexer-worker"].volumes[];
@@ -164,6 +167,10 @@ validate_model() {
   grep -q 'agent.continue.hitl.v1' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q 'agent.continue.authorization.v1' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q '/api/v2/elitea_core/task/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q 'runtime-go-current-next-input-suggestion-policy:' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/elitea_core/next_input_suggestion_config/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q 'runtime-worker-go-current-models:' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/configurations/models/' "$ELITEA_INDEX_ROUTE_FILE"
 
   rm -f "$rendered"
   trap - EXIT
@@ -179,6 +186,18 @@ case "$action" in
   up)
     validate_model
     deploy_ui
+    # prepare-runtime.sh replaces the ACL file atomically. A running Redis
+    # container remains bound to the previous inode and does not reload ACLs,
+    # so recreate only this local PoV service before bringing up consumers.
+    # Its AOF/data volume is retained; this makes one-command deploys apply
+    # channel permissions without granting an application user +acl.
+    "${compose[@]}" --profile runtime up \
+      -d \
+      --force-recreate \
+      --no-deps \
+      --wait \
+      --wait-timeout "${ELITEA_HYBRID_WAIT_TIMEOUT:-600}" \
+      runtime_redis
     "${compose[@]}" --profile runtime up \
       -d \
       --build \

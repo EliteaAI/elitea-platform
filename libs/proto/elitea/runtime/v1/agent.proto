@@ -62,7 +62,12 @@ message AgentExecutionInputV1 {
   bytes parallel_terminal_errors = 34;
   optional bool exception_handling_enabled = 35;
   optional bool debug_mode = 36;
-  reserved 37 to 63;
+  // A bounded, non-secret snapshot of the current live guardrail. The Go
+  // admission path resolves this policy before dispatch; the worker never
+  // reads Pylon configuration directly and treats suggestion generation as a
+  // best-effort post-response side effect.
+  bytes next_input_suggestion = 37;
+  reserved 38 to 63;
 }
 
 enum AgentExecutionTerminalStateV1 {

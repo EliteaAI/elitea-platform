@@ -28,7 +28,6 @@ import (
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
-	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -396,50 +395,6 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	// reason as the two routes above: a browser <img src="..."> carries no
 	// Authorization header.
 	r.Get("/icons/{projectID}/{filename}", v2core.DownloadIcon(cfg.ObjectStore))
-
-	// CurrentProjectList: self-contained auth+RBAC chain; registered at the top
-	// level so it shadows the broad /api/v2/projects mount below (chi matches
-	// the most-specific registered route first).
-	if cfg.CurrentProjectList != nil {
-		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
-	}
-
-	// CurrentNotificationEvents: the notification SSE stream that
-	// `useNotificationsSSE` opens on every page carrying the sidebar. Same
-	// treatment as CurrentProjectList above — it owns its whole auth+RBAC chain
-	// — and registered HERE, at the top level, for the same reason the artifact
-	// routes are hoisted below: the shadow comparator wrapping the /api/v2
-	// group buffers the entire response and does not implement Unwrap, so an
-	// http.Flusher never reaches the handler and a stream inside that group
-	// could not flush an event.
-	//
-	// It was previously mounted only by the production router
-	// (production_router.go), which NewRouter never reaches while
-	// prototypeCompatibilityRequested(cfg) holds — i.e. in every deployment
-	// today. Composed or not, `GET /api/v2/notifications/events/prompt_lib/
-	// {projectID}` answered 404, and the client fell back to its list query
-	// with a console warning as the only signal (#152).
-	if cfg.CurrentNotificationEvents != nil {
-		r.Method(http.MethodGet, notificationsapi.CurrentNotificationEventsPath, cfg.CurrentNotificationEvents)
-	}
-
-	// The chat-config read, for the same reason and in the same shape (#194).
-	// Its only registration used to be the prototype eliteacore handler behind
-	// the never-assigned `ChatService` gate that #126/#195 deleted, so
-	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` answered 404
-	// in every deployment while `features/artifacts`' chatConfigApi queried it
-	// on every artifacts page load — silently degrading every upload to the
-	// client's own 150 MB default instead of the project's configured limit.
-	//
-	// Deliberately ONLY the chat-config path: `CurrentPromptContextReads` also
-	// carries `/project_context/prompt_lib/{projectID}/project-context`, which
-	// keeps its existing production-router registration. Registering that one
-	// here too would turn a second dark route on, which is outside #194's
-	// chat_config half.
-	if cfg.CurrentPromptContextReads != nil {
-		r.Method(http.MethodGet, v2promptcontextreads.CurrentChatConfigPath, cfg.CurrentPromptContextReads)
-	}
-
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
 	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})
@@ -1291,6 +1246,17 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			r.Mount("/llm", cfg.LLMProxy)
 		})
 	}
+
+	// Register reviewed current-compatible routes last. Some broad prototype
+	// repositories own the same path with a partial or older method set (for
+	// example conversations owns GET/DELETE messages and a legacy regenerate
+	// POST). The reviewed handlers must remain authoritative whenever those
+	// repositories are also composed; otherwise merely adding an unrelated
+	// compatibility repository can silently remove agent execution or SSE.
+	// The broad prototype compatibility handler above already owns the current
+	// project-context GET. Keep that single live registration while adding the
+	// reviewed routes it does not provide, including chat config and agent SSE.
+	mountReviewedProductionRoutes(r, cfg, false)
 
 	return r
 }

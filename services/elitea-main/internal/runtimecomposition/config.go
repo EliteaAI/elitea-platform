@@ -43,6 +43,7 @@ type Config struct {
 	AgentExecutionCommandStream    string
 	AgentExecutionConsumerGroup    string
 	AgentExecutionStreamMaxEntries int64
+	CurrentMainBaseURL             string
 	RedisURL                       string
 	RedisPasswordFile              string
 	RedisCAFile                    string
@@ -136,6 +137,7 @@ func ConfigFromEnv(lookup LookupEnv) (Config, error) {
 			"ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM",
 			"ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP",
 			"ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES",
+			"ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL",
 		} {
 			if value, ok := lookup(name); ok && value != "" {
 				return Config{}, errors.New("runtime agent execution dispatch settings require explicit enablement")
@@ -150,6 +152,9 @@ func ConfigFromEnv(lookup LookupEnv) (Config, error) {
 			return Config{}, err
 		}
 		if config.AgentExecutionStreamMaxEntries, err = integer("ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"); err != nil {
+			return Config{}, err
+		}
+		if config.CurrentMainBaseURL, err = required("ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL"); err != nil {
 			return Config{}, err
 		}
 	default:
@@ -302,7 +307,11 @@ func (c Config) Validate() error {
 		if c.AgentExecutionStreamMaxEntries <= 0 || c.AgentExecutionStreamMaxEntries > maxRuntimeStreamEntries {
 			return errors.New("runtime agent execution Redis stream capacity is invalid")
 		}
-	} else if c.AgentExecutionCommandStream != "" || c.AgentExecutionConsumerGroup != "" || c.AgentExecutionStreamMaxEntries != 0 {
+		if err := validateCurrentMainBaseURL(c.CurrentMainBaseURL); err != nil {
+			return err
+		}
+	} else if c.AgentExecutionCommandStream != "" || c.AgentExecutionConsumerGroup != "" ||
+		c.AgentExecutionStreamMaxEntries != 0 || c.CurrentMainBaseURL != "" {
 		return errors.New("runtime agent execution dispatch settings require explicit enablement")
 	}
 	if c.IndexSchedulingEnabled {
@@ -344,6 +353,19 @@ func (c Config) Validate() error {
 		if err := validateTCPAddress(address); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateCurrentMainBaseURL(raw string) error {
+	if raw == "" || len(raw) > 2048 || strings.TrimSpace(raw) != raw {
+		return errors.New("runtime current Main base URL is invalid")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		parsed.ForceQuery || parsed.RawPath != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return errors.New("runtime current Main base URL must be an HTTPS origin")
 	}
 	return nil
 }

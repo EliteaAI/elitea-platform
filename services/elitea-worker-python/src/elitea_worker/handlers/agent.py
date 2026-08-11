@@ -61,6 +61,7 @@ class AgentExecutionPayload:
     input_attachments: list[Any]
     parallel_reconcile: dict[str, Any] | None
     parallel_terminal_errors: list[Any]
+    next_input_suggestion: dict[str, Any]
     exception_handling_enabled: bool | None
     debug_mode: bool | None
 

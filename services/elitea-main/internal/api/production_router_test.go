@@ -30,6 +30,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 )
 
 func TestProductionRouterMountsAllCurrentAgentExecutionPaths(t *testing.T) {
@@ -242,6 +243,56 @@ func TestProductionRouterMountsOnlyReviewedAuthEdges(t *testing.T) {
 			router.ServeHTTP(recorder, httptest.NewRequest(route.method, route.path, nil))
 			if recorder.Code != route.want {
 				t.Fatalf("status = %d, want %d", recorder.Code, route.want)
+			}
+		})
+	}
+}
+
+func TestCompatibilityRouterRetainsReviewedProductionAuthEdges(t *testing.T) {
+	browser := chi.NewRouter()
+	browser.Get("/login", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	main := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	agentStart := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("X-Reviewed-Agent-Route", "true")
+		writer.WriteHeader(http.StatusAccepted)
+	})
+	authRoutes, err := NewProductionAuthRoutes(browser, main)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// AppsRepo is representative of the current hybrid composition and forces
+	// the compatibility router until that API has moved to production routes.
+	router := NewRouter(RouterConfig{
+		ProductionAuth:    authRoutes,
+		CurrentAgentStart: agentStart,
+		AppsRepo:          struct{ applications.Repository }{},
+	})
+
+	for _, route := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "/forward-auth/login", http.StatusNoContent},
+		{http.MethodGet, "/internal/forward-auth/main", http.StatusNoContent},
+		{http.MethodPost, "/internal/forward-auth/main", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/api/v2/elitea_core/messages/prompt_lib/2/conversation", http.StatusAccepted},
+		{http.MethodPost, "/api/v2/elitea_core/regenerate/prompt_lib/2/message", http.StatusAccepted},
+		{http.MethodPost, "/api/v2/elitea_core/continue_predict/prompt_lib/2/conversation", http.StatusAccepted},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(route.method, route.path, nil))
+			if recorder.Code != route.want {
+				t.Fatalf("status = %d, want %d", recorder.Code, route.want)
+			}
+			if route.want == http.StatusAccepted && recorder.Header().Get("X-Reviewed-Agent-Route") != "true" {
+				t.Fatal("request did not reach the reviewed current-agent route")
 			}
 		})
 	}
