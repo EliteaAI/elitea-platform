@@ -32,8 +32,8 @@
  * SECRET HYGIENE: the only secret value this file ever handles is a literal
  * created by the test itself. It is never printed, never asserted on by
  * value except as a NEGATIVE (`toHaveCount(0)` — "this must not be on
- * screen"), and every `autotest_*-sec` secret is deleted by the `afterAll`
- * sweep at the bottom of this file.
+ * screen"), and every `autotest_*-<engine>-sec` secret is deleted by the
+ * `afterAll` sweep at the bottom of this file.
  */
 import { test, expect } from '@playwright/test';
 
@@ -67,8 +67,27 @@ const SERVED_BASE = CLIENT_LIST_URL;
 const SERVED_ITEM = (name: string): string =>
   `${API_BASE}/secrets/secret/default/${DEFAULT_PROJECT_ID}/${encodeURIComponent(name)}`;
 
-/** Unique per run AND per file (`-sec`) so concurrent agents never collide. */
-const secretName = (): string => `${AUTOTEST_PREFIX}j21_${Date.now()}-sec`;
+/**
+ * Unique per run, per file (`-sec`) AND per Playwright project, so concurrent
+ * agents and concurrent ENGINES never collide.
+ *
+ * The engine tag is not decoration. `chromium` and `webkit` both match
+ * `testMatch: /journeys\/.+\.spec\.ts/` (playwright.config.ts) and run this
+ * same spec concurrently against the same shared project 1, so the `afterAll`
+ * sweep below — which deletes by name pattern, the only handle the secrets API
+ * gives it — used to delete the OTHER engine's in-flight secret. J21 then
+ * failed on whichever engine lost the race, at `toHaveCount(1)` or at the
+ * `toContain(name)` server check, non-deterministically. The tag partitions
+ * the namespace so each engine's sweep can only reach its own secrets.
+ *
+ * `-sec` stays the LAST segment — it is this file's marker, matching the
+ * `-tok`/`-usr` convention the sibling settings specs use.
+ */
+const engineSuffix = (projectName: string): string =>
+  `-${projectName.replace(/[^a-z0-9]+/gi, '').toLowerCase()}-sec`;
+
+const secretName = (projectName: string): string =>
+  `${AUTOTEST_PREFIX}j21_${Date.now()}${engineSuffix(projectName)}`;
 
 /* ────────────────────────────────────────────────────────────────────────
  * J21a — the page is real UI, not a stub. Asserted on form controls, not on
@@ -192,13 +211,13 @@ test('J21d: an empty secrets list renders a table, not a permanent skeleton', as
  * new row, so `createSecret` was NEVER called and the row was silently
  * dropped from state.
  * ──────────────────────────────────────────────────────────────────────── */
-test('J21: settings: create secret', async ({ page }) => {
+test('J21: settings: create secret', async ({ page }, testInfo) => {
   // 60s, and every action below carries its own short timeout, so a
   // regression lands as a bounded assertion/action error naming the step that
   // broke rather than as an opaque suite-level timeout.
   test.setTimeout(60_000);
 
-  const name = secretName();
+  const name = secretName(testInfo.project.name);
   // Value is a literal owned by the test; never logged, only asserted absent.
   const value = 'e2e-secret-value-sec';
 
@@ -244,10 +263,19 @@ test('J21: settings: create secret', async ({ page }) => {
 });
 
 /* ────────────────────────────────────────────────────────────────────────
- * Session-scoped safety net: sweep any `autotest_*-sec` secret this file
- * left behind, through whichever path is served.
+ * Session-scoped safety net: sweep the `autotest_*-<engine>-sec` secrets
+ * THIS Playwright project left behind, through whichever path is served.
+ *
+ * Scoped to this project's engine suffix, not to the bare `autotest_`/`-sec`
+ * pair. The unscoped version deleted every matching secret in the shared
+ * project 1 — including the one the other engine, running this same spec
+ * concurrently, had just created and not yet asserted on. Each engine sweeps
+ * only its own partition; between them they still cover everything this file
+ * creates, and a crashed earlier run's leftovers are collected by the next run
+ * of the same engine.
  * ──────────────────────────────────────────────────────────────────────── */
-test.afterAll(async ({ browser }) => {
+test.afterAll(async ({ browser }, testInfo) => {
+  const mySuffix = engineSuffix(testInfo.project.name);
   // Authenticated context: `browser.newContext()` with no storageState is
   // anonymous, so the sweep would silently 401 and delete nothing.
   const context = await browser.newContext({ storageState: STORAGE_STATE.member });
@@ -261,7 +289,7 @@ test.afterAll(async ({ browser }) => {
     expect(resp.status(), `cleanup sweep cannot list secrets at ${SERVED_BASE}`).toBe(200);
     const items = (await resp.json()) as { name: string }[];
     for (const item of items) {
-      if (item.name.startsWith(AUTOTEST_PREFIX) && item.name.endsWith('-sec')) {
+      if (item.name.startsWith(AUTOTEST_PREFIX) && item.name.endsWith(mySuffix)) {
         const deleted = await context.request.delete(SERVED_ITEM(item.name));
         expect(deleted.status(), `cleanup sweep failed to delete ${item.name}`).toBe(204);
       }
