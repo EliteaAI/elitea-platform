@@ -21,7 +21,7 @@
 import { RouterProvider } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '@mui/material/styles';
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -232,6 +232,28 @@ describe('permission filtering', () => {
     expect(groups.flatMap((group) => group.items.map((item) => item.id))).toContain('roles');
   });
 
+  it('separates the two groups with exactly one divider, and adds none for a group that is gone', async () => {
+    /*
+     * The reference's structure: a divider between the two groups, and one
+     * above the user footer. Mutation testing found the whole `{index > 0 &&
+     * <AdminNavDivider/>}` guard unprotected — `>` flipped, `&&` flipped, the
+     * index changed — because nothing counted them. A guard that fires on the
+     * FIRST group instead of the second puts a rule above Users and none
+     * between the groups, which is a different nav that no other assertion here
+     * distinguishes.
+     */
+    await mountAdmin();
+    const nav = screen.getByTestId('admin-nav');
+    expect(nav.querySelectorAll('hr')).toHaveLength(2);
+
+    // With only the first group visible there is nothing to separate, so the
+    // between-groups divider must not appear — only the footer's.
+    cleanup();
+    setPermissions(['admin.auth.users']);
+    await mountAdmin();
+    expect(screen.getByTestId('admin-nav').querySelectorAll('hr')).toHaveLength(1);
+  });
+
   it('drops a group that loses every item, rather than rendering an empty one', () => {
     const groups = visibleAdminNavGroups((permission) =>
       ['admin.auth.users', 'configuration.roles', 'projects', 'configuration.secrets.secret.list', 'admin.moderation'].includes(
@@ -330,6 +352,30 @@ describe('collapsed state', () => {
     // The LINK survives — collapsing must not remove navigation, only its text.
     expect(navItem('schedules')).toBeInTheDocument();
     expect(screen.queryByText('Elitea Admin')).toBeNull();
+  });
+
+  it('actually narrows the rail', async () => {
+    // Mutation testing found this: swapping the two widths changed nothing any
+    // test could see, so the nav could have "collapsed" to full width — labels
+    // gone, rail unchanged — and every other test here would still have passed.
+    await mountAdmin();
+    const nav = screen.getByTestId('admin-nav');
+    expect(getComputedStyle(nav).width).toBe('13.75rem');
+
+    await userEvent.click(screen.getByTestId('admin-nav-collapse-toggle'));
+    expect(getComputedStyle(nav).width).toBe('3.75rem');
+  });
+
+  it('points the chevron at what the click will do', async () => {
+    // The other half of the same class: `collapsed ? <ChevronRight/> :
+    // <ChevronLeft/>` swapped is an arrow pointing the wrong way, which the
+    // aria-label assertions do not see. MUI icons carry their own data-testid.
+    await mountAdmin();
+    const toggle = screen.getByTestId('admin-nav-collapse-toggle');
+    expect(within(toggle).getByTestId('ChevronLeftIcon')).toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(within(toggle).getByTestId('ChevronRightIcon')).toBeInTheDocument();
   });
 
   it('persists through localStorage, under its own key', async () => {
