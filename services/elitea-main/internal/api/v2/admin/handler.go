@@ -139,12 +139,11 @@ func (h *Handler) PluginConfigSuggestions(w http.ResponseWriter, _ *http.Request
 	})
 }
 
-func (h *Handler) ModerationStatuses(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  []any{},
-		"total": 0,
-	})
-}
+// `ModerationStatuses` and `ModerationStatusSingle` used to sit here: two copies
+// of a `_ *http.Request` stub answering a fixed empty page, one mounted ungated
+// on `/admin/moderation_statuses/{mode}` and the other mounted on no route at
+// all. Unit A14 replaces them with a real read and a real write over
+// `centry.moderation_state` — see internal/api/v2/moderation/requests.go.
 
 // Maintenance was registered on BOTH verbs pointing at the same handler, so the
 // PUT discarded its body and the GET reported `enabled: false` unconditionally —
@@ -188,13 +187,6 @@ func (h *Handler) Tasks(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) ActiveTasks(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": arbiterTaskNodeUnavailable})
-}
-
-func (h *Handler) ModerationStatusSingle(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  []any{},
-		"total": 0,
-	})
 }
 
 func paginationParams(r *http.Request) (limit, offset int) {

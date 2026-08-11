@@ -1616,9 +1616,11 @@ func (h *Handler) TrendingAuthors(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, []any{})
 }
 
-func (h *Handler) ModerationStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"status": "approved"})
-}
+// `ModerationStatus` used to sit here, answering `{"status":"approved"}` to
+// every caller for every entity — a gate that always said yes — while the POST
+// registered on the same handler created nothing. Unit A14 replaces both with
+// real project-scoped handlers over `centry.moderation_state`; see
+// internal/api/v2/moderation/requests.go.
 
 func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")

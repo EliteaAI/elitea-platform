@@ -7,7 +7,7 @@ import {
   createModerationRequest,
   getModerationStatusQueryOptions,
 } from '@/shared/api/generated/admin/admin';
-import type { IgnoredRequestBody, ModerationStatusResponse } from '@/shared/api/generated/model';
+import type { IgnoredRequestBody } from '@/shared/api/generated/model';
 
 import { APPLICATION_CATALOG, REQUEST_STATUS } from '../lib/constants';
 import type { RequestStatus } from '../lib/constants';
@@ -16,23 +16,28 @@ import { useSelectedProjectId } from './useSelectedProjectId';
 
 /**
  * The Go admin-moderation endpoints (`/admin/moderation_status/default/
- * {project_id}/{entity_id}`, both GET and POST — unit W2's own generated
- * comment: "NOTE(W2): static stub — always {"status":"approved"}
- * (internal/api/v2/eliteacore/handler.go:1586-1588)") type `entityId` as a
- * `number`. The baseline addresses catalog entries with a STRING key
- * instead (`useApplicationRequests.hooks.js:26`, `entityId: app.type`, e.g.
- * `"inventory"`) — there is no numeric id for an abstract catalogue TYPE
- * (only real configured application/toolkit INSTANCES have one), so the
- * baseline's own call would not type-check against this endpoint's real
- * contract at all, independent of the stub. A stable FNV-1a hash of the
- * type key stands in: deterministic (the same type always addresses the
+ * {project_id}/{entity_id}`, both GET and POST) type `entityId` as a
+ * `number` in the generated client. The baseline addresses catalog entries
+ * with a STRING key instead (`useApplicationRequests.hooks.js:26`,
+ * `entityId: app.type`, e.g. `"inventory"`) — there is no numeric id for an
+ * abstract catalogue TYPE (only real configured application/toolkit
+ * INSTANCES have one), so the baseline's own call would not type-check
+ * against this endpoint's declared contract at all. A stable FNV-1a hash of
+ * the type key stands in: deterministic (the same type always addresses the
  * same synthetic entity across requests/reloads) and collision-safe for
- * this catalogue's 2 entries. Since the endpoint is presently a static
- * stub that ignores `entityId` entirely, this choice has no observable
- * effect today; it exists so that IF the endpoint ever becomes real, each
- * catalog type still gets its own independently-addressable moderation
- * record instead of every type silently sharing one (which a constant
- * placeholder like `0` would cause).
+ * this catalogue's 2 entries.
+ *
+ * As of unit A14 the endpoint is real: `entity_id` is a `VARCHAR` column and
+ * the server stores whatever this sends, so each catalogue type does now get
+ * its own independently-addressable record — which is what this hash was
+ * written for. It also means the value is what an operator SEES in the admin
+ * App Requests queue, where a number is less legible than `"inventory"` would
+ * be. That page therefore renders `issue_type` (the human label this hook
+ * sends alongside) as its Application column, with the key beneath it. The
+ * remaining cost is that this app and the legacy EliteaUI address the same
+ * catalogue entry by two different keys, so a request filed in one is not
+ * visible to the other; fixing that means changing the generated contract's
+ * `entityId` type, which is a `v2.yaml` + orval change and is NOT done here.
  */
 export function entityIdForType(type: string): number {
   let hash = 0x811c9dc5;
@@ -43,13 +48,40 @@ export function entityIdForType(type: string): number {
   return hash >>> 0;
 }
 
-function statusFromResponse(response: ModerationStatusResponse | undefined): RequestStatus {
-  if (response === undefined) return REQUEST_STATUS.NONE;
-  const status = response.status;
-  if (status === REQUEST_STATUS.PENDING || status === REQUEST_STATUS.APPROVED || status === REQUEST_STATUS.REJECTED) {
-    return status;
+function asRequestStatus(status: unknown): RequestStatus | undefined {
+  return status === REQUEST_STATUS.PENDING ||
+    status === REQUEST_STATUS.APPROVED ||
+    status === REQUEST_STATUS.REJECTED
+    ? status
+    : undefined;
+}
+
+/**
+ * The status of the caller's most recent request for this entity, or `NONE`.
+ *
+ * Both shapes are read on purpose. The endpoint's REAL contract — pylon's, and
+ * the Go handler's since unit A14 — is a `{total, rows}` envelope of the
+ * caller's own rows, newest first. Until A14 the Go side answered a bare
+ * `{"status":"approved"}` from a static stub, which is the only shape the
+ * generated `ModerationStatusResponse` describes and the only one this function
+ * used to read: against a real server it found no `status` field, fell through
+ * to `NONE`, and the "Pending approval" state on a catalogue card was
+ * unreachable — the card would keep offering "Request Access" after the request
+ * had been filed.
+ *
+ * The bare-object branch stays because a hybrid deployment can still be served
+ * by a pylon that returns the create response's shape from the POST path this
+ * hook optimistically reads back.
+ */
+function statusFromResponse(response: unknown): RequestStatus {
+  if (typeof response !== 'object' || response === null) return REQUEST_STATUS.NONE;
+  const rows = (response as { rows?: unknown }).rows;
+  if (Array.isArray(rows)) {
+    const first: unknown = rows[0];
+    if (typeof first !== 'object' || first === null) return REQUEST_STATUS.NONE;
+    return asRequestStatus((first as { status?: unknown }).status) ?? REQUEST_STATUS.NONE;
   }
-  return REQUEST_STATUS.NONE;
+  return asRequestStatus((response as { status?: unknown }).status) ?? REQUEST_STATUS.NONE;
 }
 
 interface SubmitModerationRequestVariables {
@@ -104,13 +136,19 @@ function useCreateModerationRequestMutation(): UseMutationResult<
  * constant, so mapping it to one query-options object per entry is stable
  * across renders (never a variable-length hook call).
  *
- * **Practical consequence of the static-stub backend (see
- * `entityIdForType`'s doc comment above):** every status query resolves to
- * `"approved"` immediately, and `submitRequest` echoes the same
- * `"approved"` status back. `getRequestStatus` therefore never actually
- * returns `REQUEST_STATUS.PENDING` against the current Go stack — a
- * consequence of the documented backend stub, not a defect in this port's
- * client-side logic, which mirrors the baseline's state machine exactly.
+ * Until unit A14 the Go endpoints behind this hook were a static stub: every
+ * status query resolved to `"approved"` immediately and the POST created
+ * nothing, so `getRequestStatus` could never return `PENDING` and the button
+ * wrote nowhere. Both are real now
+ * (`services/elitea-main/internal/api/v2/moderation/requests.go`), which is
+ * what `statusFromResponse` above had to be corrected for.
+ *
+ * The POST body still carries `status: 'pending'` and `meta: {}`. Neither is
+ * applied — the server takes the status from nowhere but its own rule and
+ * refuses any other value, and refuses a non-empty `meta` — but an empty
+ * `meta` and an explicitly-pending status are tolerated precisely so the two
+ * shipped clients keep working, so they are left as they are rather than
+ * removed on one of the two.
  */
 export function useModerationRequests() {
   const projectId = useSelectedProjectId();
@@ -131,9 +169,11 @@ export function useModerationRequests() {
     APPLICATION_CATALOG.forEach((entry, index) => {
       // `.data.data`'s declared type includes the error-envelope variant —
       // never actually reachable here since `eliteaFetch` throws instead of
-      // resolving with it (mutator.ts's §3.6 unwrap contract).
-      const response = statusQueries[index]?.data?.data as ModerationStatusResponse | undefined;
-      map.set(entry.type, statusFromResponse(response));
+      // resolving with it (mutator.ts's §3.6 unwrap contract). It is passed as
+      // `unknown` rather than cast to the generated `ModerationStatusResponse`,
+      // because that type describes the retired static stub's shape and not what
+      // the endpoint now returns; `statusFromResponse` reads both.
+      map.set(entry.type, statusFromResponse(statusQueries[index]?.data?.data));
     });
     return map;
   }, [statusQueries]);

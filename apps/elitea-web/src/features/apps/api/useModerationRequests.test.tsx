@@ -81,6 +81,47 @@ describe('useModerationRequests', () => {
     expect(result.current.getRequestStatus('not-a-catalog-type')).toBe(REQUEST_STATUS.NONE);
   });
 
+  it('reads the {total, rows} envelope the real endpoint returns, newest row first', async () => {
+    // The shape unit A14's Go handler answers with, and pylon's before it. Until
+    // A14 the Go side returned a bare `{"status":"approved"}` from a static
+    // stub, and this hook read only that — so against a real server it found no
+    // `status` field, fell through to NONE, and the "Pending approval" state on
+    // a catalogue card was unreachable: the card kept offering "Request Access"
+    // after the request had been filed.
+    server.use(
+      http.get('*/admin/moderation_status/default/:projectId/:entityId', () =>
+        HttpResponse.json({
+          total: 2,
+          rows: [
+            { id: 2, status: REQUEST_STATUS.PENDING },
+            { id: 1, status: REQUEST_STATUS.REJECTED },
+          ],
+        }),
+      ),
+    );
+
+    const { result } = renderHookWithRouter(() => useModerationRequests(), { projectId: 'proj-1' });
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    // `rows[0]`, not `rows[1]`: the server orders newest first and the state the
+    // card wants is the most recent request, not the first one ever made.
+    expect(result.current.getRequestStatus('inventory')).toBe(REQUEST_STATUS.PENDING);
+  });
+
+  it('reports NONE when the envelope carries no rows', async () => {
+    // An entity nobody has asked about. The stub answered "approved" here.
+    server.use(
+      http.get('*/admin/moderation_status/default/:projectId/:entityId', () =>
+        HttpResponse.json({ total: 0, rows: [] }),
+      ),
+    );
+
+    const { result } = renderHookWithRouter(() => useModerationRequests(), { projectId: 'proj-1' });
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.getRequestStatus('inventory')).toBe(REQUEST_STATUS.NONE);
+  });
+
   it('reports the status the (stub) backend returns for a real project', async () => {
     server.use(getModerationStatusMockHandler({ status: REQUEST_STATUS.APPROVED }));
 
