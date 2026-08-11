@@ -95,9 +95,14 @@ export interface SortableHeaderCellProps {
 }
 
 /**
- * A sortable column header. Sorting is SERVER-side: the tables show one page of
- * a table with millions of rows, so a client-side comparator would only ever
- * order the 50 rows already fetched while claiming to order all of them.
+ * A sortable column header. It reports a click and renders the caller's current
+ * sort; WHERE the sort happens is the caller's business.
+ *
+ * For the audit tables it is SERVER-side, and has to be: they show one page of a
+ * table with millions of rows, so a client-side comparator would only ever order
+ * the 50 rows already fetched while claiming to order all of them. The Schedules
+ * table (unit A14) reuses this header for a client-side sort instead, which is
+ * honest there because its endpoint is unpaginated and returns every row.
  */
 export function SortableHeaderCell({
   field,

@@ -139,6 +139,36 @@ CREATE INDEX IF NOT EXISTS ix_audit_events_trace_id ON centry.audit_events (trac
 CREATE INDEX IF NOT EXISTS ix_audit_events_entity ON centry.audit_events (entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS ix_audit_events_model_name ON centry.audit_events (model_name);
 
+-- Cron schedules (unit A14). Mirrors the legacy SQLAlchemy model column for
+-- column (legacy/plugins/scheduling/models/schedule.py) — same table name, same
+-- types, same nullability, same `active` default.
+--
+-- This is NOT a table this service invented. `services/elitea-scheduler`
+-- ALREADY reads and updates it every minute
+-- (internal/scheduler/scheduler.go: `SELECT ... FROM centry.schedule`,
+-- `UPDATE centry.schedule SET last_run`), and until now no migration in this
+-- repository created it: a Go-only deployment ran a scheduler whose every tick
+-- failed with "relation does not exist". A legacy-backed deployment already has
+-- the table from the plugin's own init_db and this IF NOT EXISTS is a no-op.
+--
+-- `rpc_func` names an INTERNAL platform RPC that the scheduler dispatches with
+-- no principal and full privilege (see internal/api/v2/scheduling/schedules.go
+-- for why the admin write path refuses to set it).
+CREATE TABLE IF NOT EXISTS centry.schedule (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(64) NOT NULL,
+    project_id INTEGER DEFAULT NULL,
+    cron VARCHAR(64) NOT NULL,
+    active BOOLEAN DEFAULT TRUE,
+    rpc_func VARCHAR(64) NOT NULL,
+    rpc_kwargs JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_run TIMESTAMP
+);
+
+-- The scheduler's tick reads `WHERE active = true`; the admin listing reads the
+-- whole table ordered by name.
+CREATE INDEX IF NOT EXISTS ix_schedule_active ON centry.schedule (active);
+
 -- =============================================================================
 -- TENANT SCHEMA FUNCTION
 -- Creates all per-project tables in a given schema (e.g. "p_1")

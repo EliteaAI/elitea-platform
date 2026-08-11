@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -236,12 +238,21 @@ func dbKey(projectID string) string {
 
 // List returns the names of all (non-hidden) secrets for a project.
 // Response format: JSON array of SecretListItem (same as Python plugin).
+//
+// A project with no vault is an empty list: it simply has no secrets, and
+// 500ing would make every new project look broken.  A vault that EXISTS and
+// will not open is a 500 — it used to be an empty list too, which showed the
+// page "no secrets" for a project whose secrets were all still there, and
+// invited the create that would then have replaced them.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
-		// Project may not have a vault yet → return empty list
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		writeJSON(w, http.StatusOK, []SecretListItem{})
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 	items := make([]SecretListItem, 0, len(vault.Secrets))
@@ -267,9 +278,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vault, err := h.readOrInitVault(r, projectID)
+	// An absent vault is initialised here; an UNREADABLE one is refused.  The
+	// fallback this replaced wrote a fresh empty vault on any read failure, so
+	// one create against a vault that would not decrypt replaced every secret
+	// in it and answered 201.
+	vault, err := h.readOrInitVaultCtx(r.Context(), projectID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		vaultUnreadable(w)
 		return
 	}
 	if _, exists := vault.Secrets[body.Name]; exists {
@@ -277,8 +292,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vault.Secrets[body.Name] = body.Value
-	if err := h.writeVault(r, projectID, vault); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+	if err := h.writeVaultCtx(r.Context(), projectID, vault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save the secret"})
 		return
 	}
 	writeJSON(w, http.StatusCreated, SecretListItem{
@@ -292,9 +307,13 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	name := chi.URLParam(r, "name")
 
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		http.Error(w, `{"error":"secret not found"}`, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 
@@ -336,9 +355,13 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		body.Name = oldName
 	}
 
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, oldName), http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 	if _, ok := vault.Secrets[oldName]; !ok {
@@ -347,8 +370,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(vault.Secrets, oldName)
 	vault.Secrets[body.Name] = body.Value
-	if err := h.writeVault(r, projectID, vault); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+	if err := h.writeVaultCtx(r.Context(), projectID, vault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save the secret"})
 		return
 	}
 	writeJSON(w, http.StatusOK, SecretListItem{
@@ -358,18 +381,28 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delete removes a secret by name (from either secrets or hidden_secrets).
+// Deleting from a project that has no vault is a no-op success, as in pylon.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	name := chi.URLParam(r, "name")
 
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 	delete(vault.Secrets, name)
 	delete(vault.HiddenSecrets, name)
-	_ = h.writeVault(r, projectID, vault)
+	// The write error was swallowed here, so a delete that did not persist
+	// still answered 204 and the page removed the row it had just re-listed.
+	if err := h.writeVaultCtx(r.Context(), projectID, vault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete the secret"})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -378,9 +411,13 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	name := chi.URLParam(r, "name")
 
-	vault, err := h.readVault(r, projectID)
-	if err != nil {
+	vault, err := h.readVaultCtx(r.Context(), projectID)
+	if errors.Is(err, errVaultAbsent) {
 		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, name), http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		vaultUnreadable(w)
 		return
 	}
 	val, ok := vault.Secrets[name]
@@ -390,50 +427,105 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(vault.Secrets, name)
 	vault.HiddenSecrets[name] = val
-	if err := h.writeVault(r, projectID, vault); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+	if err := h.writeVaultCtx(r.Context(), projectID, vault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to hide the secret"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Project secret was moved to hidden secrets"})
 }
 
 // ─── vault read / write ───────────────────────────────────────────────────────
+//
+// One vault is one `centry.secrets_key` row plus the `centry.secrets_data` row
+// with the same id.  The three functions below are keyed by that id and know
+// nothing else about the vault, so the project store (`project-<id>`) and the
+// global store (`admin`, admin.go) go through the SAME code.  They used to be
+// two implementations with two different error contracts, and only the global
+// one distinguished "there is nothing here" from "I could not open this".
+//
+// The distinction is the whole point.  A read failure has two causes that look
+// identical to a caller comparing against nil:
+//
+//   - the rows do not exist — a project that has never had a secret, where a
+//     write must create them; and
+//   - the rows exist and would not open — the wrong SECRETS_MASTER_KEY, a key
+//     row in an unexpected format, a data row that is not a Fernet token, a
+//     vault body that is not `{"secrets":{…},"hidden_secrets":{…}}`.
+//
+// Collapsing the two is a silent data loss: the project path's old
+// readOrInitVault answered ANY read failure by writing a fresh empty vault, so
+// a single POST against an unreadable-but-present vault replaced every secret
+// in it and reported 201.  errVaultAbsent is returned for the first cause only,
+// and only a caller that has checked for it may write.
 
-// readVault decrypts and returns the vault for a project.
-// Returns an error when the project has no vault yet.
-func (h *Handler) readVault(r *http.Request, projectID string) (vaultData, error) {
-	ctx := r.Context()
-	key := dbKey(projectID)
+// errVaultAbsent means the vault's rows do not exist yet — the only condition
+// under which a write is allowed to create them.  Any OTHER read failure means
+// rows exist that could not be opened, and must never be overwritten.
+var errVaultAbsent = errors.New("secrets: vault has not been initialised")
 
-	var keyBytes, dataBytes []byte
+// newFernetKey returns 32 fresh random bytes — the raw form; `encryptKey`
+// renders them in centry's on-disk representation.
+func newFernetKey() ([]byte, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate fernet key: %w", err)
+	}
+	return key, nil
+}
+
+// vaultKeyRow reads one vault's raw `centry.secrets_key` blob.  pgx.ErrNoRows
+// is returned unwrapped so callers can tell it from a transport failure — the
+// conflation the project path used to make, where a dropped connection during
+// the key lookup was indistinguishable from a project with no vault and led
+// straight to minting a second key over the first.
+func (h *Handler) vaultKeyRow(ctx context.Context, vaultID string) ([]byte, error) {
+	var keyBytes []byte
 	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
+		`SELECT data FROM centry.secrets_key WHERE id = $1`, vaultID,
 	).Scan(&keyBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("secrets_key not found for project %s", projectID)
+	return keyBytes, err
+}
+
+// readVaultByID reads and decrypts one vault.
+//
+// It returns errVaultAbsent ONLY when neither row exists.  Every other failure —
+// a missing key row beside a present data row, a decrypt failure, a body that is
+// not the expected shape — is returned as itself, so no caller can mistake
+// "I could not open this" for "there is nothing here" and write over it.
+func (h *Handler) readVaultByID(ctx context.Context, vaultID string) (vaultData, error) {
+	keyBytes, err := h.vaultKeyRow(ctx, vaultID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return vaultData{}, errVaultAbsent
 	}
-	err = h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_data WHERE id = $1`, key,
-	).Scan(&dataBytes)
 	if err != nil {
-		return vaultData{}, fmt.Errorf("secrets_data not found for project %s", projectID)
+		return vaultData{}, fmt.Errorf("read %s secrets_key: %w", vaultID, err)
 	}
 
-	// Decrypt the Fernet key with the master key (if set).
+	var dataBytes []byte
+	err = h.pool.QueryRow(ctx,
+		`SELECT data FROM centry.secrets_data WHERE id = $1`, vaultID,
+	).Scan(&dataBytes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A key with no data is a half-initialised vault, not an absent one.
+		// Treating it as absent would let the next write mint a SECOND key over
+		// the first, orphaning whatever data row arrives later.
+		return vaultData{}, fmt.Errorf("vault %s has a key row but no data row", vaultID)
+	}
+	if err != nil {
+		return vaultData{}, fmt.Errorf("read %s secrets_data: %w", vaultID, err)
+	}
+
 	fernetKey, err := h.decryptKey(keyBytes)
 	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt project key: %w", err)
+		return vaultData{}, fmt.Errorf("decrypt %s vault key: %w", vaultID, err)
 	}
-
-	// Decrypt the vault data with the project Fernet key.
 	plaintext, err := fernetDecrypt(fernetKey, dataBytes)
 	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt vault data: %w", err)
+		return vaultData{}, fmt.Errorf("decrypt %s vault data: %w", vaultID, err)
 	}
-
 	var v vaultData
 	if err := json.Unmarshal(plaintext, &v); err != nil {
-		return vaultData{}, fmt.Errorf("unmarshal vault data: %w", err)
+		return vaultData{}, fmt.Errorf("unmarshal %s vault data: %w", vaultID, err)
 	}
 	if v.Secrets == nil {
 		v.Secrets = map[string]string{}
@@ -444,76 +536,114 @@ func (h *Handler) readVault(r *http.Request, projectID string) (vaultData, error
 	return v, nil
 }
 
-// readOrInitVault returns an existing vault or creates a new empty one
-// (generating a fresh Fernet key and writing both rows to the DB).
-func (h *Handler) readOrInitVault(r *http.Request, projectID string) (vaultData, error) {
-	v, err := h.readVault(r, projectID)
-	if err == nil {
-		return v, nil
+// vaultForWriteByID is readVaultByID with the one safe fallback: an ABSENT vault
+// becomes an empty one, ready to be written.  An unreadable vault still fails,
+// and its rows are left exactly as they are.
+func (h *Handler) vaultForWriteByID(ctx context.Context, vaultID string) (vaultData, error) {
+	v, err := h.readVaultByID(ctx, vaultID)
+	if errors.Is(err, errVaultAbsent) {
+		return vaultData{Secrets: map[string]string{}, HiddenSecrets: map[string]string{}}, nil
 	}
-	// Initialise a new vault.
-	v = vaultData{
-		Secrets:       map[string]string{},
-		HiddenSecrets: map[string]string{},
-	}
-	return v, h.writeVault(r, projectID, v)
+	return v, err
 }
 
-// writeVault encrypts and persists vault data to the DB.
-// If no key row exists yet, a new Fernet key is generated for the project.
-func (h *Handler) writeVault(r *http.Request, projectID string, v vaultData) error {
-	ctx := r.Context()
-	key := dbKey(projectID)
-
-	// Load or generate the project Fernet key.
-	var keyBytes []byte
-	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
-	).Scan(&keyBytes)
-
-	var fernetKey []byte
-	if err != nil {
-		// No key yet → generate a new one.
-		fernetKey = make([]byte, 32)
-		if _, err := rand.Read(fernetKey); err != nil {
-			return fmt.Errorf("generate fernet key: %w", err)
-		}
-		// Persist it (encrypted with master key if set).
-		storedKey, err := h.encryptKey(fernetKey)
+// vaultFernetKey returns the vault's Fernet key, minting and persisting one on
+// first write.
+//
+// The key row is inserted with DO NOTHING and then RE-READ, rather than
+// upserted.  Both halves matter: an upsert would replace an existing key row —
+// which orphans the data row encrypted under the old key — and using the key we
+// minted rather than the one that is actually stored would, under a concurrent
+// first write, produce a data row that nothing can open.  Whatever key survives
+// the insert is the key the data is encrypted with.
+func (h *Handler) vaultFernetKey(ctx context.Context, vaultID string) ([]byte, error) {
+	storedKey, err := h.vaultKeyRow(ctx, vaultID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		minted, err := newFernetKey()
 		if err != nil {
-			return fmt.Errorf("encrypt project key: %w", err)
+			return nil, err
 		}
-		_, err = h.pool.Exec(ctx,
+		encoded, err := h.encryptKey(minted)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt %s vault key: %w", vaultID, err)
+		}
+		if _, err := h.pool.Exec(ctx,
 			`INSERT INTO centry.secrets_key (id, data) VALUES ($1, $2)
-			 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-			key, storedKey,
-		)
-		if err != nil {
-			return fmt.Errorf("write secrets_key: %w", err)
+			 ON CONFLICT (id) DO NOTHING`,
+			vaultID, encoded,
+		); err != nil {
+			return nil, fmt.Errorf("write %s secrets_key: %w", vaultID, err)
 		}
-	} else {
-		fernetKey, err = h.decryptKey(keyBytes)
+		storedKey, err = h.vaultKeyRow(ctx, vaultID)
 		if err != nil {
-			return fmt.Errorf("decrypt project key: %w", err)
+			return nil, fmt.Errorf("read back %s secrets_key: %w", vaultID, err)
 		}
+	case err != nil:
+		return nil, fmt.Errorf("read %s secrets_key: %w", vaultID, err)
 	}
 
-	// Encrypt the vault data.
+	fernetKey, err := h.decryptKey(storedKey)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt %s vault key: %w", vaultID, err)
+	}
+	return fernetKey, nil
+}
+
+// writeVaultByID encrypts and persists one vault, generating its Fernet key on
+// first write.
+//
+// The key is stored in centry's on-disk form (the 44-byte base64 ENCODING of the
+// 32 key bytes) via `encryptKey`, not as the raw bytes — see that function for
+// why (#196/#197).
+func (h *Handler) writeVaultByID(ctx context.Context, vaultID string, v vaultData) error {
+	fernetKey, err := h.vaultFernetKey(ctx, vaultID)
+	if err != nil {
+		return err
+	}
 	plaintext, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("marshal vault data: %w", err)
+		return fmt.Errorf("marshal %s vault data: %w", vaultID, err)
 	}
 	ciphertext, err := fernetEncrypt(fernetKey, plaintext)
 	if err != nil {
-		return fmt.Errorf("encrypt vault data: %w", err)
+		return fmt.Errorf("encrypt %s vault data: %w", vaultID, err)
 	}
-
-	_, err = h.pool.Exec(ctx,
+	if _, err := h.pool.Exec(ctx,
 		`INSERT INTO centry.secrets_data (id, data) VALUES ($1, $2)
 		 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-		key, ciphertext,
-	)
-	return err
+		vaultID, ciphertext,
+	); err != nil {
+		return fmt.Errorf("write %s secrets_data: %w", vaultID, err)
+	}
+	return nil
+}
+
+// ─── the project vault ────────────────────────────────────────────────────────
+
+// readVaultCtx reads project `projectID`'s vault.  errVaultAbsent means the
+// project has no vault yet; any other error means one exists and would not open.
+func (h *Handler) readVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
+	return h.readVaultByID(ctx, dbKey(projectID))
+}
+
+// readOrInitVaultCtx returns the project's vault, or an empty one to write when
+// the project has none.  It does NOT fall back for an unreadable vault.
+func (h *Handler) readOrInitVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
+	return h.vaultForWriteByID(ctx, dbKey(projectID))
+}
+
+func (h *Handler) writeVaultCtx(ctx context.Context, projectID string, v vaultData) error {
+	return h.writeVaultByID(ctx, dbKey(projectID), v)
+}
+
+// vaultUnreadable answers the one failure every project route shares: the vault
+// exists and could not be opened.  It is a 500 and not an empty result, because
+// an empty result is what invites the write that destroys it.
+func vaultUnreadable(w http.ResponseWriter) {
+	writeJSON(w, http.StatusInternalServerError, map[string]string{
+		"error": "project vault is unreadable",
+	})
 }
 
 // encryptKey renders a raw 32-byte Fernet key in the ON-DISK representation
@@ -720,100 +850,6 @@ func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, n
 	}
 	vault.Secrets[name] = value
 	return h.writeVaultCtx(ctx, projectID, vault)
-}
-
-func (h *Handler) readVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
-	key := dbKey(projectID)
-	var keyBytes, dataBytes []byte
-	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
-	).Scan(&keyBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("secrets_key not found for project %s", projectID)
-	}
-	err = h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_data WHERE id = $1`, key,
-	).Scan(&dataBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("secrets_data not found for project %s", projectID)
-	}
-	fernetKey, err := h.decryptKey(keyBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt project key: %w", err)
-	}
-	plaintext, err := fernetDecrypt(fernetKey, dataBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt vault data: %w", err)
-	}
-	var v vaultData
-	if err := json.Unmarshal(plaintext, &v); err != nil {
-		return vaultData{}, fmt.Errorf("unmarshal vault data: %w", err)
-	}
-	if v.Secrets == nil {
-		v.Secrets = map[string]string{}
-	}
-	if v.HiddenSecrets == nil {
-		v.HiddenSecrets = map[string]string{}
-	}
-	return v, nil
-}
-
-func (h *Handler) readOrInitVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
-	v, err := h.readVaultCtx(ctx, projectID)
-	if err == nil {
-		return v, nil
-	}
-	v = vaultData{
-		Secrets:       map[string]string{},
-		HiddenSecrets: map[string]string{},
-	}
-	return v, h.writeVaultCtx(ctx, projectID, v)
-}
-
-func (h *Handler) writeVaultCtx(ctx context.Context, projectID string, v vaultData) error {
-	key := dbKey(projectID)
-	var keyBytes []byte
-	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
-	).Scan(&keyBytes)
-	var fernetKey []byte
-	if err != nil {
-		fernetKey = make([]byte, 32)
-		if _, err := rand.Read(fernetKey); err != nil {
-			return fmt.Errorf("generate fernet key: %w", err)
-		}
-		storedKey, err := h.encryptKey(fernetKey)
-		if err != nil {
-			return fmt.Errorf("encrypt project key: %w", err)
-		}
-		_, err = h.pool.Exec(ctx,
-			`INSERT INTO centry.secrets_key (id, data) VALUES ($1, $2)
-			 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-			key, storedKey,
-		)
-		if err != nil {
-			return fmt.Errorf("write secrets_key: %w", err)
-		}
-	} else {
-		fernetKey, err = h.decryptKey(keyBytes)
-		if err != nil {
-			return fmt.Errorf("decrypt project key: %w", err)
-		}
-	}
-	plaintext, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("marshal vault data: %w", err)
-	}
-	ciphertext, err := fernetEncrypt(fernetKey, plaintext)
-	if err != nil {
-		return fmt.Errorf("encrypt vault data: %w", err)
-	}
-	_, err = h.pool.Exec(ctx,
-		`INSERT INTO centry.secrets_data (id, data) VALUES ($1, $2)
-		 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-		key, ciphertext,
-	)
-	return err
 }
 
 // ResolveSecretValue resolves a {{secret.name}} reference to its plaintext value.

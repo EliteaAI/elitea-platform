@@ -17,10 +17,16 @@ services:
       POSTGRES_USER: elitea
       POSTGRES_PASSWORD: elitea
       POSTGRES_DB: elitea
+      # postgres:18 defaults PGDATA to /var/lib/postgresql/18/docker. Mounting an
+      # empty volume at the parent leaves the image's own directory tree visible,
+      # so the entrypoint decides the data dir "appears to contain a database",
+      # skips initdb, and never creates POSTGRES_USER/POSTGRES_DB. Pin PGDATA and
+      # mount the volume exactly at it.
+      PGDATA: /var/lib/postgresql/data
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U elitea"]
       interval: 5s
