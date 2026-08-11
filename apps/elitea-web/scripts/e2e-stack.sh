@@ -239,7 +239,15 @@ CROSS JOIN (VALUES
     -- reconnaissance on its own; `.edit` gates the switch that enables and
     -- disables those platform jobs.
     ('configuration.scheduling.schedules.view'),
-    ('configuration.scheduling.schedules.edit')
+    ('configuration.scheduling.schedules.edit'),
+    -- Unit A14, App Requests. The queue lists every tenant's access requests,
+    -- each naming a user, a project and what they asked for, so the listing
+    -- itself is the sensitive part; `.edit` gates the approve/reject decision,
+    -- which notifies the requester. Before this unit the queue route was
+    -- mounted UNGATED on a stub returning a fixed empty page, and the decision
+    -- had no route at all.
+    ('admin.moderation'),
+    ('admin.moderation.edit')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
@@ -270,6 +278,37 @@ ON CONFLICT DO NOTHING;
 UPDATE centry.schedule
 SET active = false, cron = '0 4 * * *'
 WHERE name LIKE 'e2e_schedule_probe_%';
+
+-- Unit A14, App Requests: one PENDING access request per browser project, for
+-- the journey to read and decide.
+--
+-- ONE ROW PER BROWSER PROJECT, for the same reason the schedule probe above is
+-- partitioned: `fullyParallel` is on and chromium and webkit run the same spec
+-- concurrently, while `describe.configure({ mode: 'serial' })` orders tests
+-- only WITHIN a project. A single shared row would have one engine's approval
+-- landing between the other's "assert pending" and its own decision.
+--
+-- Authored by the MEMBER persona, not the admin one: an operator answering
+-- their own request would not exercise the join that resolves the requester's
+-- address, and that column is the whole point of the queue.
+INSERT INTO centry.moderation_state
+    (user_id, project_id, issue_type, entity_id, description, status)
+SELECT u.id, 1, p.label, p.entity, 'E2E probe: please enable this catalogue entry.', 'pending'
+FROM auth_core__user u
+CROSS JOIN (VALUES
+    ('E2E Probe chromium', 'e2e_app_request_probe_chromium'),
+    ('E2E Probe webkit',   'e2e_app_request_probe_webkit')
+) AS p(label, entity)
+WHERE u.email = 'e2e-member@autotest.local'
+  AND NOT EXISTS (
+      SELECT 1 FROM centry.moderation_state existing WHERE existing.entity_id = p.entity
+  );
+
+-- Idempotent re-seed: each journey approves or rejects its row, so a second run
+-- would start from a decided one and the first assertion is that it is pending.
+UPDATE centry.moderation_state
+SET status = 'pending', rejection_comment = NULL
+WHERE entity_id LIKE 'e2e_app_request_probe_%';
 
 -- A permission that exists ONLY in the database, granted to the administration
 -- `viewer` role. The Roles matrix derives its rows from the recorded grants
@@ -387,7 +426,15 @@ CROSS JOIN (VALUES
     -- mounted (#152), and which is indistinguishable in the browser from the
     -- 404 it used to answer, since useNotificationsSSE treats every failed
     -- stream the same way.
-    ('models.notifications.notifications.list')
+    ('models.notifications.notifications.list'),
+    -- Unit A14, App Requests: the PRODUCT side of the same table the admin
+    -- queue reads. The application catalogue's "Request Access" button resolves
+    -- `admin.moderation.create` against the caller's membership of the project,
+    -- and reading back one's own requests resolves `admin.moderation.view`.
+    -- Both were unreachable before A14 — the routes existed but answered from a
+    -- constant — so neither string had ever needed to be granted anywhere.
+    ('admin.moderation.view'),
+    ('admin.moderation.create')
 ) AS p(permission)
 WHERE r.project_id = 1
 ON CONFLICT (project_id, role_id, permission) DO NOTHING;

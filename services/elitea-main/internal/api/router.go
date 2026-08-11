@@ -28,6 +28,7 @@ import (
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
+	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -537,6 +538,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 			// === Admin endpoints ===
 			adminHandler := admin.NewHandler(cfg.Pool, admin.WithPermissionResolver(permissionResolver))
+			moderationHandler := v2moderation.NewHandler(cfg.Pool)
 			// The admin panel's write surface (unit A14). Everything below is
 			// gated on the same pylon permission its Python counterpart declares
 			// (`admin.auth.users`, legacy/plugins/admin/api/v2/auth_users.py and
@@ -611,7 +613,6 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.Put("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValuesSave)
 				r.Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
-				r.Get("/moderation_statuses/{mode}", adminHandler.ModerationStatuses)
 				r.Get("/maintenance/{mode}", adminHandler.Maintenance)
 				r.Put("/maintenance/{mode}", adminHandler.Maintenance)
 				r.Get("/runtime_remote/{mode}", adminHandler.RuntimeRemote)
@@ -671,8 +672,43 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 					"configuration.users.users.edit",
 				)).Put("/users/administration/{projectID}", coreHandler.UsersUpdate)
 				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
-				r.Get("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
-				r.Post("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
+
+				// App requests / moderation (unit A14). Four routes, of which
+				// three did not exist and the fourth answered from a constant:
+				// `moderation_status/{mode}/{projectID}/{entityID}` returned
+				// `{"status":"approved"}` to every caller for every entity while
+				// its POST created nothing, so the catalogue's "Request Access"
+				// button wrote to nowhere and the gate it feeds always said yes.
+				// See internal/api/v2/moderation/requests.go.
+				//
+				// Gated on the permissions the pylon handlers declare
+				// (legacy/plugins/admin/api/v2/moderation_status*.py). The split
+				// between CENTRAL and RESOLVED is the same one the schedules and
+				// admin-user writes needed: an operator answering requests that
+				// arrive from every tenant is a member of none of those
+				// projects, so a project-scoped resolver would refuse every
+				// legitimate moderator — while the two project-scoped routes are
+				// exactly as project-scoped as they look.
+				//
+				// `administration` is a STATIC segment on the queue and the
+				// decision, so neither binds a `{mode}` param and both handlers
+				// state their mode by existing rather than sniffing the URL.
+				r.With(apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"admin.moderation",
+				)).Get("/moderation_statuses/administration", moderationHandler.AdministrationRequests)
+				r.With(apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"admin.moderation.edit",
+				)).Put("/moderation_status/administration", moderationHandler.AdministrationRequestUpdate)
+				r.With(apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					"admin.moderation.view",
+				)).Get("/moderation_status/{mode}/{projectID}/{entityID}", moderationHandler.Requests)
+				r.With(apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					"admin.moderation.create",
+				)).Post("/moderation_status/{mode}/{projectID}/{entityID}", moderationHandler.RequestCreate)
 
 				// Preserve current-main gateway administration. Server-side
 				// permission enforcement is required even when the UI hides
@@ -995,8 +1031,12 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.Get("/author/prompt_lib/{authorID}", coreHandler.Author)
 				r.Get("/trending_authors/prompt_lib/{projectID}", coreHandler.TrendingAuthors)
 
-				// Moderation
-				r.Get("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
+				// Moderation used to be registered here as well, on
+				// `/elitea_core/moderation_status/…`. pylon serves that resource
+				// under `admin` only and no client has ever called this copy; it
+				// is removed with the stub it pointed at rather than re-pointed
+				// at the real handler, which would publish a second URL for the
+				// same rows. See internal/api/v2/moderation/requests.go.
 
 				// Application relations
 				r.Get("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)

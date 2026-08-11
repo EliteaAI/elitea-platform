@@ -169,6 +169,50 @@ CREATE TABLE IF NOT EXISTS centry.schedule (
 -- whole table ordered by name.
 CREATE INDEX IF NOT EXISTS ix_schedule_active ON centry.schedule (active);
 
+-- App requests / moderation state (unit A14). Mirrors the legacy SQLAlchemy
+-- model column for column (legacy/plugins/admin/models/moderation.py) — same
+-- table name, same types, same nullability, same `pending` server default, same
+-- four indexes.
+--
+-- The schema is `centry` and NOT a tenant schema, which looks wrong for a table
+-- carrying `project_id` and is not: the legacy model declares
+-- `{'schema': c.POSTGRES_SCHEMA}` (the shared schema, default `centry`) rather
+-- than `POSTGRES_TENANT_SCHEMA`, and all four legacy endpoints open the session
+-- with `db.with_project_schema_session(None)`. One shared table, filtered by
+-- `project_id`. Reproduced rather than corrected because the admin listing reads
+-- ACROSS projects by design, and moving the rows per tenant would make that
+-- listing a fan-out over every `p_*` schema.
+--
+-- Unlike `centry.schedule` above, no deployment of this service has ever had
+-- this table: nothing in Go creates it and nothing in Go read it — the two
+-- endpoints that serve it answered from constants. A legacy-backed deployment
+-- already has it from the admin plugin's own `create_tables`, and this
+-- IF NOT EXISTS is a no-op there.
+--
+-- `status` is TEXT, not a PG enum, for the same reason `notifications.event_type`
+-- is: the legacy column is `String(64)` with the vocabulary enforced in pydantic.
+-- internal/api/v2/moderation/requests.go is where the three legal values live.
+CREATE TABLE IF NOT EXISTS centry.moderation_state (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    issue_type VARCHAR(256) NOT NULL,
+    entity_id VARCHAR,
+    description TEXT NOT NULL,
+    status VARCHAR(64) NOT NULL DEFAULT 'pending',
+    rejection_comment TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    meta JSONB
+);
+
+-- The four `index=True` columns of the legacy model. The per-entity read filters
+-- (project_id, entity_id, user_id) and the admin listing sorts on created_at.
+CREATE INDEX IF NOT EXISTS ix_moderation_state_user_id ON centry.moderation_state (user_id);
+CREATE INDEX IF NOT EXISTS ix_moderation_state_project_id ON centry.moderation_state (project_id);
+CREATE INDEX IF NOT EXISTS ix_moderation_state_issue_type ON centry.moderation_state (issue_type);
+CREATE INDEX IF NOT EXISTS ix_moderation_state_entity_id ON centry.moderation_state (entity_id);
+
 -- =============================================================================
 -- TENANT SCHEMA FUNCTION
 -- Creates all per-project tables in a given schema (e.g. "p_1")
