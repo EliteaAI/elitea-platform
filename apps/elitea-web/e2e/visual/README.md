@@ -12,8 +12,15 @@ developer host, so a host-generated baseline diffs against CI output on day one
 — for reasons that have nothing to do with the UI. Issue #61 calls this "the
 main thing that will make this suite useless if skipped".
 
+The container MOUNTS this directory rather than installing into it, so
+`node_modules` must already exist on the host — a fresh clone or a fresh git
+worktree fails with `Cannot find package '@playwright/test'` before any test
+runs. Run `npm ci` first. (The pinned image supplies the browsers, not the
+packages, which is why this is easy to miss.)
+
 ```bash
 # from apps/elitea-web, with the stack already up (up && seed)
+npm ci                        # once per checkout — the container installs nothing
 npm run e2e:visual            # compare against the committed baselines
 npm run e2e:visual:update     # regenerate them
 npm run e2e:visual -- --grep chat   # extra args pass through
