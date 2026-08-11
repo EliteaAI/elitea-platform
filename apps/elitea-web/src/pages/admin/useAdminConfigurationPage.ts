@@ -104,8 +104,14 @@ function cleanForSave(
  * files of ~500 lines each that share their state machine by duplication, and
  * their `MOVED_TO_FEATURES`/`FEATURES_SECTIONS` lists have to stay each other's
  * complement by hand.
+ *
+ * NOT exported. Its only two callers are the wrappers directly below it, and an
+ * export with no importer is what the dead-code gate exists to catch — the page
+ * id is not a knob a call site should be choosing, precisely because the two
+ * pages partitioning the sections between them is the invariant this whole
+ * mechanism protects.
  */
-export function useAdminConfigSectionsPage(page: string | undefined): AdminConfigurationPageState {
+function useAdminConfigSectionsPage(page: string | undefined): AdminConfigurationPageState {
   const sectionsQuery = useAdminConfigSections();
   const sections = useMemo(
     () => (sectionsQuery.data ?? []).filter((section) => (section.page ?? '') === (page ?? '')),
