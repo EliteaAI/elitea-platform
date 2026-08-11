@@ -128,7 +128,15 @@ case "$CMD" in
     # Adapted from deploy/scripts/seed-staging-oidc-user.sql.
     # DB: elitea (local compose default), user: elitea, host: postgres.
     # Write SQL to a temp file — avoids bash 3.x heredoc-in-subshell limits.
-    SEED_TMP="$(mktemp /tmp/e2e-seed-XXXXXX.sql)"
+    # The X placeholders must be the LAST characters of the template: BSD mktemp
+    # (macOS) rejects anything after them, so `…-XXXXXX.sql` created a file
+    # LITERALLY named `e2e-seed-XXXXXX.sql` on the first run and then failed
+    # `mkstemp failed: File exists` on every run after it — with `set -e`, the
+    # seed aborted before a single row was written while still printing its
+    # oidc-mock successes. GNU mktemp accepts the suffix, so CI never saw it and
+    # only a second local seed did.
+    SEED_TMP="$(mktemp "${TMPDIR:-/tmp}/e2e-seed-XXXXXX")"
+    trap 'rm -f "$SEED_TMP"' EXIT
     # Quoted delimiter: the SQL below contains backticks inside its comments
     # (`configuration.artifacts.artifacts.*` and friends). With an UNQUOTED
     # heredoc the shell ran those as command substitutions — every seed printed
@@ -255,7 +263,14 @@ CROSS JOIN (VALUES
     -- mounted UNGATED on a stub returning a fixed empty page, and the decision
     -- had no route at all.
     ('admin.moderation'),
-    ('admin.moderation.edit')
+    ('admin.moderation.edit'),
+    -- Unit A14, Configuration. `runtime.plugins` is the SINGLE permission every
+    -- pylon handler in that set declares — schemas, values, suggestions,
+    -- restart, maintenance and all four runtime_* endpoints — and pylon
+    -- registers its recommended roles as super_admin only. Without this row the
+    -- page renders a 403 for the section list, which a journey must be able to
+    -- tell apart from an unwired route.
+    ('runtime.plugins')
 ) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
@@ -274,11 +289,16 @@ ON CONFLICT (role_id, permission) DO NOTHING;
 -- would have chromium's "enable, reload, assert enabled" racing webkit's
 -- "assert disabled". There is no per-worker fixture that can partition a
 -- platform-wide table, so the partition is seeded here instead.
+-- \`centry.schedule\` has no unique constraint on \`name\` (it is pylon's model,
+-- column for column), so \`ON CONFLICT DO NOTHING\` has no conflict to detect and
+-- a second seed simply INSERTED the probe rows again. Two identically named rows
+-- then made the listing's name button ambiguous and every schedules journey
+-- failed Playwright strict mode. CI seeds once and never saw it. Delete first.
+DELETE FROM centry.schedule WHERE name LIKE 'e2e_schedule_probe_%';
 INSERT INTO centry.schedule (name, project_id, cron, active, rpc_func, rpc_kwargs, last_run)
 VALUES
     ('e2e_schedule_probe_chromium', NULL, '0 4 * * *', false, 'e2e_schedule_probe_noop', '{}'::jsonb, NULL),
-    ('e2e_schedule_probe_webkit',   NULL, '0 4 * * *', false, 'e2e_schedule_probe_noop', '{}'::jsonb, NULL)
-ON CONFLICT DO NOTHING;
+    ('e2e_schedule_probe_webkit',   NULL, '0 4 * * *', false, 'e2e_schedule_probe_noop', '{}'::jsonb, NULL);
 
 -- Idempotent re-seed: each journey leaves its row disabled with the original
 -- cron, but a run interrupted mid-way would not, and the first assertion is
@@ -317,6 +337,19 @@ WHERE u.email = 'e2e-member@autotest.local'
 UPDATE centry.moderation_state
 SET status = 'pending', rejection_comment = NULL
 WHERE entity_id LIKE 'e2e_app_request_probe_%';
+-- Unit A14, Configuration: the resources section starts from its SCHEMA
+-- DEFAULTS, so the journeys assert against a known baseline and can prove the
+-- value they write was not already there.
+--
+-- ONE CARD PER BROWSER PROJECT rather than one row: `fullyParallel` is on and
+-- chromium and webkit run the same spec concurrently against a single,
+-- platform-wide configuration table. `describe.configure({ mode: 'serial' })`
+-- orders tests within a project and does nothing across them, so both engines
+-- editing `resources_documentation_*` would race. chromium owns the
+-- Documentation card and webkit owns Tutorials (see admin.configuration.spec.ts).
+DELETE FROM centry.platform_config
+WHERE section = 'resources'
+  AND (key LIKE 'resources_documentation_%' OR key LIKE 'resources_tutorials_%');
 
 -- A permission that exists ONLY in the database, granted to the administration
 -- `viewer` role. The Roles matrix derives its rows from the recorded grants

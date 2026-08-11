@@ -599,7 +599,15 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				// segment ahead of a `{param}`, so these keep winning over
 				// `/system_info/{mode}` and `/plugin_config_values/{mode}/{plugin}`.
 				r.Get("/system_info/prompt_lib", adminHandler.SystemInfo)
-				r.Get("/plugin_config_values/prompt_lib/resources", adminHandler.ResourcesConfig)
+				// The Help Center's own read (unit A14). pylon exposes exactly
+				// ONE config section to non-administrators —
+				// `_PUBLIC_SECTIONS = {"resources"}` in
+				// legacy/plugins/admin/api/v2/plugin_config_values.py — and this
+				// route is restricted the same way, by being a route rather than
+				// a `{section}` parameter a caller could substitute. It now
+				// serves that section; it used to return chat and upload limits,
+				// which is why every Help Center card said "No links configured".
+				r.Get("/plugin_config_values/prompt_lib/resources", adminHandler.PromptLibResourcesValues)
 
 				r.With(requireRuntimePlugins).Get("/system_info/{mode}", adminHandler.SystemInfo)
 				// Before this gate any authenticated session could read the
@@ -634,8 +642,28 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.With(requireProjectsEdit).
 					Put("/project_suspend/{mode}/{projectID}", adminHandler.ProjectSuspend)
 				r.With(requireRuntimePlugins).Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
-				r.With(requireRuntimePlugins).Get("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValues)
-				r.With(requireRuntimePlugins).Put("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValuesSave)
+				// The admin Configuration page's read and write (unit A14).
+				// The `{mode}` pair they replace answered 200 for EVERY section:
+				// the GET with the schema's defaults for all of them at once
+				// (ignoring the segment), the PUT with an empty object and a
+				// success flag, without decoding its request body.
+				//
+				// `administration` is a STATIC segment, so chi's trie prefers it
+				// and a static segment binds no `{mode}` parameter — the trap
+				// #207's test caught. These handlers state their mode rather
+				// than sniffing it from the URL. Sections that additionally
+				// declare a `required_permission` are checked INSIDE the
+				// handler, because that permission depends on the section and
+				// route middleware cannot see it.
+				//
+				// pylon registers no handler for any other mode on this path
+				// except `prompt_lib`/resources above, so there is deliberately
+				// no `{mode}` fallback: another mode 404s rather than being
+				// answered with something plausible.
+				r.With(requireRuntimePlugins).
+					Get("/plugin_config_values/administration/{plugin}", adminHandler.AdministrationPluginConfigValues)
+				r.With(requireRuntimePlugins).
+					Put("/plugin_config_values/administration/{plugin}", adminHandler.AdministrationPluginConfigValuesSave)
 				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
 				// `/moderation_statuses/…` is NOT registered here. #209 gated the

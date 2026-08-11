@@ -214,6 +214,40 @@ CREATE INDEX IF NOT EXISTS ix_moderation_state_issue_type ON centry.moderation_s
 CREATE INDEX IF NOT EXISTS ix_moderation_state_entity_id ON centry.moderation_state (entity_id);
 
 -- =============================================================================
+-- PLATFORM CONFIGURATION (unit A14, admin Configuration page)
+-- =============================================================================
+--
+-- Global, admin-authored platform settings: one row per (section, key) of the
+-- schema `internal/api/v2/admin/config_schemas.go` publishes.
+--
+-- This table has no counterpart in the legacy deployment, and that is the point.
+-- pylon has no configuration table either: the admin Configuration page reads an
+-- IN-PROCESS dict of pylon heartbeats (`admin.remote_runtimes`, 15s announce /
+-- 60s freshness cut-off), and its save re-serialises a plugin's whole YAML and
+-- fires `bootstrap_runtime_update` onto the Arbiter bus fire-and-forget, where a
+-- bootstrap handler on the target pylon upserts it into that pylon's own
+-- `plugin_config` table (legacy/plugins/admin/api/v2/plugin_config_values.py:275-305,
+-- legacy/pylon/pylon/core/providers/internal/db_config.py:65-88).
+--
+-- That mechanism is Pylon plugin loading plus Arbiter transport, which AGENTS.md
+-- names as things the target architecture does NOT preserve — and "Go owns
+-- product data and migrations". So the settings this platform actually consumes
+-- are owned here, in a table, rather than announced over a bus.
+--
+-- `value` is JSONB rather than TEXT because the schema's field types include
+-- arrays and objects (a resource card's `links` is an array of {title,url}), and
+-- because a typed read is what lets the write validate against the declared type
+-- instead of round-tripping strings.
+CREATE TABLE IF NOT EXISTS centry.platform_config (
+    section VARCHAR(64) NOT NULL,
+    key VARCHAR(128) NOT NULL,
+    value JSONB NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_by VARCHAR(255),
+    PRIMARY KEY (section, key)
+);
+
+-- =============================================================================
 -- TENANT SCHEMA FUNCTION
 -- Creates all per-project tables in a given schema (e.g. "p_1")
 -- =============================================================================

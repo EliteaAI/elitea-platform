@@ -1,5 +1,81 @@
 package admin
 
+// Why most of these sections carry an `unavailable_reason` — unit A14, #200.
+//
+// This file describes what the admin Configuration page can offer. In pylon
+// those descriptions are assembled at request time from every plugin's
+// `admin_schema.json` as announced over the Arbiter bus, and each field's `path`
+// addresses a key inside that plugin's YAML config; saving one re-serialises the
+// YAML and ships it back to the pylon that owns it
+// (legacy/plugins/admin/api/v2/plugin_config_values.py — see the header of
+// config_values.go for the whole chain).
+//
+// None of that exists here, and AGENTS.md says it is not meant to: "Do not
+// preserve Pylon plugin loading … as target architecture." A field whose only
+// consumer is a Pylon plugin descriptor therefore has nowhere to go, and the
+// honest answer is to say so ON THE SECTION rather than to render a form.
+//
+// `unavailable_reason` is declared HERE, on the server, for the same reason the
+// permission is: it is a fact about the deployment, and a page that decided it
+// locally would drift from what the endpoints actually do. `config_values.go`
+// answers 501 with this exact string, and the ported page renders it.
+//
+// Removing a reason is how a section becomes live — and it is only correct to
+// remove one once something in this platform READS the values. `resources` is
+// the section that passes that test: apps/elitea-web's Help Center reads it back
+// through `GET /admin/plugin_config_values/prompt_lib/resources`.
+const (
+	// pylonPluginConfigUnavailable covers every section whose fields address a
+	// key inside a Pylon plugin's YAML config and are read by that plugin at
+	// load time — guardrails, MCP server definitions, tracing switches, the
+	// indexer worker's runtime flags, the auth provider.
+	pylonPluginConfigUnavailable = "these settings configure Pylon plugin runtimes: the reference page collects them " +
+		"from plugin heartbeats and saves them by shipping patched plugin YAML back over the Arbiter bus. This " +
+		"platform has no plugin descriptors to reconfigure and nothing here reads these values, so editing them " +
+		"would have no effect. Use the Pylon admin panel while the hybrid deployment is running."
+
+	// extraUIConfigUnavailable covers the `extra_ui_config.*` sections other
+	// than `resources`. These are not Pylon RUNTIME concerns — they are product
+	// settings that legacy delivered by injecting the whole of elitea_core's
+	// `extra_ui_config` into `window.elitea_ui_config`. They are unavailable for
+	// the narrower reason that no surface in this platform reads them yet, which
+	// is a gap to close rather than a boundary to respect.
+	extraUIConfigUnavailable = "nothing in this platform reads this setting yet. The legacy UI received it by " +
+		"injecting the plugin's extra_ui_config into the page; no equivalent consumer has been built here, so the " +
+		"control is withheld rather than shown saving into a void."
+
+	// maintenanceSplashUnavailable — pylon's maintenance mode is a gevent router
+	// hook installed on the bootstrap plugin's persisted state, serving a 503
+	// splash to anyone whose administration-mode roles do not include admin
+	// (legacy/plugins/bootstrap/tools/splash.py). Nothing in this service
+	// installs such a hook, and inventing one would be a new product feature.
+	maintenanceSplashUnavailable = "maintenance mode is a Pylon request hook that serves a 503 splash to non-admin " +
+		"users; this platform installs no such hook, so the switch would toggle a setting nothing enforces."
+
+	// advancedRuntimeUnavailable — the Advanced section is raw plugin YAML
+	// editing, per-pylon log tailing and plugin update/reload. All four of its
+	// endpoints are Pylon runtime introspection.
+	advancedRuntimeUnavailable = "the Advanced section edits raw plugin YAML, tails pylon logs and reloads plugins " +
+		"on live Pylon runtimes. Those runtimes are not part of this platform."
+
+	// governanceElsewhereUnavailable — the LLM-governance fields are NOT saved
+	// through this endpoint even in the reference: elitea-main has its own CRUD
+	// at `/admin/gateway/governance` writing `gateway.governance_config`. That
+	// surface is real, but nothing reads it — see internal/api/gateway/governance.go
+	// and the note in the PR: the gateway's GovernanceStore never queries the
+	// table, despite both the migration and this file previously claiming it did.
+	governanceElsewhereUnavailable = "LLM governance is authored through /admin/gateway/governance, not through this " +
+		"page. It is withheld here because the gateway does not yet read gateway.governance_config, so definitions " +
+		"saved through either surface are not enforced."
+
+	// serviceDescriptorsElsewhereUnavailable — a page of its own in unit A14,
+	// not yet ported. The reference embeds it here as a section AND ships it as
+	// a standalone page; duplicating an unported page inside this one would be
+	// two places to fix later.
+	serviceDescriptorsElsewhereUnavailable = "service descriptors are a page of their own in the admin port (issue " +
+		"#200) and are not editable from this section."
+)
+
 func configSections() []map[string]any {
 	return []map[string]any{
 		guardrailsSection(),
@@ -14,18 +90,40 @@ func configSections() []map[string]any {
 		dedicatedBannerSection(),
 		supportAssistantSection(),
 		voiceFeaturesSection(),
+		serviceDescriptorsSection(),
 		maintenanceSection(),
 		advancedSection(),
 	}
 }
 
+// serviceDescriptorsSection is declared HERE rather than appended by the page.
+//
+// The reference client injects `{id: "service_descriptors", title: …}` into the
+// section list itself, so the sidebar shows an entry the server never described.
+// Every other section — including its permission and, now, its availability — is
+// server-declared, and one that is not is one the page can get wrong on its own.
+func serviceDescriptorsSection() map[string]any {
+	return map[string]any{
+		"id":                  "service_descriptors",
+		"unavailable_reason":  serviceDescriptorsElsewhereUnavailable,
+		"title":               "Service Descriptors",
+		"description":         "Registered provider service descriptors.",
+		"order":               8,
+		"icon":                "settings_input_component",
+		"always_visible":      true,
+		"required_permission": "configuration.service_descriptors",
+		"fields":              []map[string]any{},
+	}
+}
+
 func guardrailsSection() map[string]any {
 	return map[string]any{
-		"id":          "guardrails",
-		"title":       "Guardrails",
-		"description": "Control platform-wide security policies, toolkit restrictions, and MCP exposure settings.",
-		"order":       1,
-		"icon":        "security",
+		"id":                 "guardrails",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Guardrails",
+		"description":        "Control platform-wide security policies, toolkit restrictions, and MCP exposure settings.",
+		"order":              1,
+		"icon":               "security",
 		"fields": []map[string]any{
 			{
 				"key":         "blocked_toolkits",
@@ -151,11 +249,12 @@ func guardrailsSection() map[string]any {
 
 func mcpServersSection() map[string]any {
 	return map[string]any{
-		"id":          "mcp_servers",
-		"title":       "MCP Servers",
-		"description": "Configure Model Context Protocol server definitions available to the indexer runtime.",
-		"order":       2,
-		"icon":        "dns",
+		"id":                 "mcp_servers",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "MCP Servers",
+		"description":        "Configure Model Context Protocol server definitions available to the indexer runtime.",
+		"order":              2,
+		"icon":               "dns",
 		"fields": []map[string]any{
 			{
 				"key":              "mcp_servers",
@@ -173,11 +272,12 @@ func mcpServersSection() map[string]any {
 
 func observabilitySection() map[string]any {
 	return map[string]any{
-		"id":          "observability",
-		"title":       "Observability",
-		"description": "Manage distributed tracing and audit trail settings across all pylons.",
-		"order":       3,
-		"icon":        "monitoring",
+		"id":                 "observability",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Observability",
+		"description":        "Manage distributed tracing and audit trail settings across all pylons.",
+		"order":              3,
+		"icon":               "monitoring",
 		"fields": []map[string]any{
 			{
 				"key":              "tracing_enabled",
@@ -215,11 +315,12 @@ func observabilitySection() map[string]any {
 
 func litellmSection() map[string]any {
 	return map[string]any{
-		"id":          "litellm",
-		"title":       "LiteLLM",
-		"description": "Configure the LiteLLM proxy — connection mode, credentials, and model access policies.",
-		"order":       4,
-		"icon":        "model_training",
+		"id":                 "litellm",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "LiteLLM",
+		"description":        "Configure the LiteLLM proxy — connection mode, credentials, and model access policies.",
+		"order":              4,
+		"icon":               "model_training",
 		"fields": []map[string]any{
 			{
 				"key":              "litellm_mode",
@@ -357,6 +458,7 @@ func litellmSection() map[string]any {
 func governanceSection() map[string]any {
 	return map[string]any{
 		"id":                  "governance",
+		"unavailable_reason":  governanceElsewhereUnavailable,
 		"title":               "LLM Governance",
 		"description":         "Author LLM-gateway governance: budgets, rate limits, credential billing policy, per-model/provider scopes, MCP allowlists, and CEL routing rules. Definitions are read by the gateway for enforcement.",
 		"order":               5,
@@ -549,11 +651,12 @@ func governanceSection() map[string]any {
 
 func runtimeSection() map[string]any {
 	return map[string]any{
-		"id":          "runtime",
-		"title":       "Runtime",
-		"description": "Configure indexer worker runtime behavior, task processing, and development settings.",
-		"order":       5,
-		"icon":        "settings",
+		"id":                 "runtime",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Runtime",
+		"description":        "Configure indexer worker runtime behavior, task processing, and development settings.",
+		"order":              5,
+		"icon":               "settings",
 		"fields": []map[string]any{
 			{
 				"key":              "ai_project_id",
@@ -655,22 +758,24 @@ func runtimeSection() map[string]any {
 
 func adminPanelSection() map[string]any {
 	return map[string]any{
-		"id":          "admin_panel",
-		"title":       "Admin Panel",
-		"description": "Manage admin panel plugin availability and reload capabilities.",
-		"order":       6,
-		"icon":        "admin_panel_settings",
-		"fields":      []map[string]any{},
+		"id":                 "admin_panel",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Admin Panel",
+		"description":        "Manage admin panel plugin availability and reload capabilities.",
+		"order":              6,
+		"icon":               "admin_panel_settings",
+		"fields":             []map[string]any{},
 	}
 }
 
 func authSection() map[string]any {
 	return map[string]any{
-		"id":          "auth",
-		"title":       "Authentication",
-		"description": "Configure the authentication provider and identity settings.",
-		"order":       7,
-		"icon":        "lock",
+		"id":                 "auth",
+		"unavailable_reason": pylonPluginConfigUnavailable,
+		"title":              "Authentication",
+		"description":        "Configure the authentication provider and identity settings.",
+		"order":              7,
+		"icon":               "lock",
 		"fields": []map[string]any{
 			{
 				"key":              "auth_provider",
@@ -842,12 +947,13 @@ func resourcesSection() map[string]any {
 
 func dedicatedBannerSection() map[string]any {
 	return map[string]any{
-		"id":             "dedicated_banner",
-		"title":          "Banner",
-		"description":    "Enable dedicated banner to communicate important notifications across the platform.",
-		"order":          89,
-		"icon":           "campaign",
-		"always_visible": true,
+		"id":                 "dedicated_banner",
+		"unavailable_reason": extraUIConfigUnavailable,
+		"title":              "Banner",
+		"description":        "Enable dedicated banner to communicate important notifications across the platform.",
+		"order":              89,
+		"icon":               "campaign",
+		"always_visible":     true,
 		"fields": []map[string]any{
 			{
 				"key":         "banner_enabled",
@@ -902,12 +1008,13 @@ func dedicatedBannerSection() map[string]any {
 
 func supportAssistantSection() map[string]any {
 	return map[string]any{
-		"id":             "support_assistant",
-		"title":          "Support Assistant",
-		"description":    "Enable the in-app support assistant widget for all users.",
-		"order":          89,
-		"icon":           "support_agent",
-		"always_visible": true,
+		"id":                 "support_assistant",
+		"unavailable_reason": extraUIConfigUnavailable,
+		"title":              "Support Assistant",
+		"description":        "Enable the in-app support assistant widget for all users.",
+		"order":              89,
+		"icon":               "support_agent",
+		"always_visible":     true,
 		"fields": []map[string]any{
 			{
 				"key":         "vite_elitea_assistant",
@@ -969,12 +1076,13 @@ func supportAssistantSection() map[string]any {
 
 func voiceFeaturesSection() map[string]any {
 	return map[string]any{
-		"id":             "voice_features",
-		"title":          "Voice Features",
-		"description":    "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
-		"order":          90,
-		"icon":           "record_voice_over",
-		"always_visible": true,
+		"id":                 "voice_features",
+		"unavailable_reason": extraUIConfigUnavailable,
+		"title":              "Voice Features",
+		"description":        "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
+		"order":              90,
+		"icon":               "record_voice_over",
+		"always_visible":     true,
 		"fields": []map[string]any{
 			{
 				"key":         "vite_voice_features_enabled",
@@ -1000,19 +1108,21 @@ func voiceFeaturesSection() map[string]any {
 
 func maintenanceSection() map[string]any {
 	return map[string]any{
-		"id":             "maintenance",
-		"title":          "Maintenance",
-		"description":    "Enable maintenance mode to show a splash screen to all non-admin users.",
-		"order":          91,
-		"icon":           "construction",
-		"always_visible": true,
-		"fields":         []map[string]any{},
+		"id":                 "maintenance",
+		"unavailable_reason": maintenanceSplashUnavailable,
+		"title":              "Maintenance",
+		"description":        "Enable maintenance mode to show a splash screen to all non-admin users.",
+		"order":              91,
+		"icon":               "construction",
+		"always_visible":     true,
+		"fields":             []map[string]any{},
 	}
 }
 
 func advancedSection() map[string]any {
 	return map[string]any{
 		"id":                  "advanced",
+		"unavailable_reason":  advancedRuntimeUnavailable,
 		"title":               "Advanced",
 		"description":         "View and edit raw plugin configurations for all connected pylons.",
 		"order":               100,
