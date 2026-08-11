@@ -2,6 +2,13 @@
 # Usage:
 #   1. Load dump: bash deploy/scripts/load-staging-dump.sh ~/tmp/stagin-dump/saas-stage2_*.sql.gz
 #   2. Start:     podman compose -f deploy/docker-compose.yml -f deploy/docker-compose.staging.yml up --build
+#   3. Provision a login for one of the dumped users against the local mock
+#      (issue #245 — this stack no longer talks to a remote OIDC provider,
+#      see the elitea-main OIDC_CLIENT_ID note below) — pick an email that
+#      exists in the loaded eliteadmstage2 dump:
+#        curl -X PUT http://localhost:9400/users/<staging-user-email> \
+#          -H 'Content-Type: application/json' -d '{"sub": "<staging-user-email>"}'
+#      Then log in and enter that same email in the mock's "Subject" field.
 services:
   elitea-main:
     environment:
@@ -11,7 +18,8 @@ services:
       SECRETS_MASTER_KEY: "vKSMVUaVhEdptzHFisRSSDED_0UcixrxbIvKtthpyrk="
       # Inherits the local oidc-mock service from docker-compose.yml (issue
       # #245) — the remote oidc-mock.technicaldomain.xyz host with a
-      # committed secret has been removed.
+      # committed secret has been removed. The local mock starts with no
+      # users provisioned; see the usage note above before logging in.
       OIDC_CLIENT_ID: "elitea-local"
       OIDC_CLIENT_SECRET: "elitea-local-secret"
       OIDC_REDIRECT_URI: "http://localhost/forward-auth/auth_oidc/callback"
