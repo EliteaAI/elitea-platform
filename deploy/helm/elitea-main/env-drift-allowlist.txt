@@ -69,7 +69,6 @@ AI_PROJECT_ID
 PUBLIC_PROJECT_ID
 SHARED_PROJECT_ID
 TRUSTED_PROXY_CIDRS
-AUTH_DEV_MODE
 SKIP_MIGRATIONS
 
 # --- Local/dev-only debug flags, never a production chart knob. Discovered

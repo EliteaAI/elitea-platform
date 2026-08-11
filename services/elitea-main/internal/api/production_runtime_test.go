@@ -57,7 +57,6 @@ func TestProductionRuntimeRoutesRejectIncompleteSecurityComposition(t *testing.T
 }
 
 func TestProductionRuntimeRoutesAcceptOnlyVerifiedForwardedPrincipal(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	handlerCalls := 0
 	principalCalls := 0
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -132,7 +131,6 @@ func TestProductionRuntimeRoutesAcceptOnlyVerifiedForwardedPrincipal(t *testing.
 }
 
 func TestProductionRuntimeRoutesRejectPrincipalValidationFailure(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	handlerCalls := 0
 	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { handlerCalls++ })
 	routes, err := NewProductionRuntimeRoutes(
@@ -157,6 +155,15 @@ func TestProductionRuntimeRoutesRejectPrincipalValidationFailure(t *testing.T) {
 	}
 }
 
+// TestProductionRuntimeRoutesRejectDevelopmentFallback pins that
+// AUTH_DEV_MODE is INERT, not merely unused. The bypass it once enabled is
+// deleted (ADR-0017, #260), but a deleted feature leaves no failing test
+// behind — so this keeps setting the variable and asserts the request is
+// still rejected. Reintroducing any env-var-driven principal injection into
+// middleware.Auth fails here.
+//
+// The router-level guard lives in cmd/elitea-main: AUTH_DEV_MODE=true is now
+// a fatal startup error. This is the middleware-level half.
 func TestProductionRuntimeRoutesRejectDevelopmentFallback(t *testing.T) {
 	t.Setenv("AUTH_DEV_MODE", "true")
 	handlerCalls := 0

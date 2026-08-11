@@ -5,14 +5,51 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	v2artifacts "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 )
+
+// testTokenValidator satisfies apimw.TokenValidator, returning a fixed
+// principal for any token. It replaces the removed AUTH_DEV_MODE bypass
+// (ADR-0017) as the way router tests obtain an authenticated identity: the
+// bypass injected a principal from an environment variable read inside
+// production middleware, so every test that used it was exercising a code
+// path no deployment runs. Injecting a validator through RouterConfig
+// exercises the real credential path instead — Auth() still parses the
+// header, still calls validatePrincipal, and still rejects requests that
+// present nothing.
+//
+// Pair it with testAuthHeader on each request. authenticatedTestUser is a
+// deliberately ordinary member principal: unlike the old dev user it claims
+// no roles, so a test that passes only because of ambient privilege fails.
+type testTokenValidator struct {
+	user auth.User
+}
+
+func (t testTokenValidator) ValidateToken(_ context.Context, _ string) (auth.User, error) {
+	return t.user, nil
+}
+
+var _ apimw.TokenValidator = testTokenValidator{}
+
+func authenticatedTestUser() auth.User {
+	return auth.User{ID: "1", UserID: "1", Email: "member@test.local", AuthType: "token"}
+}
+
+// testAuthHeader presents a credential that testTokenValidator accepts.
+// Requests without it are unauthenticated and must 401 — several tests below
+// depend on exactly that.
+func testAuthHeader(r *http.Request) *http.Request {
+	r.Header.Set("Authorization", "Bearer test-token")
+	return r
+}
 
 // fakePermissionResolver grants exactly the configured permissions without
 // touching a database. S11 gates every artifact route with RBAC

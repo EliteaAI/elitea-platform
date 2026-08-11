@@ -107,19 +107,6 @@ func setupArtifactSuite() (teardown func()) {
 		return noop
 	}
 
-	// devMode is read once, at api.NewRouter construction time below — see
-	// internal/api/middleware/auth.go's Auth(). Every request through this
-	// harness authenticates as the fixed dev principal; RBAC still runs for
-	// real (artifactPermissiveResolver grants everything unconditionally),
-	// so this exercises the real auth/RBAC/handler chain end to end, the
-	// same way internal/api/router_security_test.go's S11 tests do — S19 is
-	// about the artifact API's own contract, not re-proving RBAC
-	// enforcement, which S11 already covers exhaustively.
-	if err := os.Setenv("AUTH_DEV_MODE", "true"); err != nil {
-		fmt.Fprintf(os.Stderr, "artifact suite setup: set AUTH_DEV_MODE: %v\n", err)
-		return noop
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -137,8 +124,21 @@ func setupArtifactSuite() (teardown func()) {
 		return noop
 	}
 
+	// Every request through this harness authenticates with a real bearer
+	// credential validated by artifactContractValidator; RBAC still runs for
+	// real (artifactPermissiveResolver grants everything unconditionally), so
+	// this exercises the real auth/RBAC/handler chain end to end, the same way
+	// internal/api/router_security_test.go's S11 tests do — S19 is about the
+	// artifact API's own contract, not re-proving RBAC enforcement, which S11
+	// already covers exhaustively.
+	//
+	// This previously set AUTH_DEV_MODE=true via os.Setenv, mutating global
+	// process state from TestMain where t.Setenv cannot guard it. The bypass
+	// is gone (ADR-0017, #260); injecting a validator is both narrower and
+	// closer to what a deployment does.
 	router := api.NewRouter(api.RouterConfig{
 		Pool:                       pool,
+		AuthValidator:              artifactContractValidator{},
 		ObjectStore:                storage.Instrument(store, "s3"),
 		ArtifactPermissionResolver: artifactPermissiveResolver{},
 	})
@@ -285,6 +285,16 @@ func newArtifactContractStore(ctx context.Context) (storage.ObjectStore, error) 
 // — S19 is testing the artifact API's own contract (response shapes, status
 // codes, error envelope), not RBAC enforcement, which S11's router-level
 // tests already cover exhaustively for every one of these routes.
+// artifactContractValidator accepts the fixed bearer token this suite sends
+// (see artifactAuthToken) and returns a fixed principal, replacing the removed
+// AUTH_DEV_MODE bypass (ADR-0017). Requests still traverse the real Auth
+// middleware: header parsing, validation, and PrincipalValidator all run.
+type artifactContractValidator struct{}
+
+func (artifactContractValidator) ValidateToken(context.Context, string) (platformauth.User, error) {
+	return platformauth.User{ID: "1", UserID: "1", Email: "contract@test.local", AuthType: "token"}, nil
+}
+
 type artifactPermissiveResolver struct{}
 
 func (artifactPermissiveResolver) ResolvePermissions(context.Context, platformauth.User, string, string) (platformauth.PermissionResolution, error) {

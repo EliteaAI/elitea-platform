@@ -79,10 +79,30 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return err
 	}
-	devMode := os.Getenv("AUTH_DEV_MODE") == "true"
+	// The legacy-schema bootstrap is a developer-machine convenience: it runs
+	// the unversioned schema against an empty local database. It needs a
+	// "this is a developer machine" marker, not an authentication bypass, so
+	// it no longer cross-checks AUTH_DEV_MODE (removed — see ADR-0017). It is
+	// self-gating and fail-closed: absent an explicit opt-in, nothing runs.
 	bootstrapLegacySchema := os.Getenv("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA") == "true"
-	if bootstrapLegacySchema && !devMode {
-		return errors.New("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA requires AUTH_DEV_MODE=true")
+	if bootstrapLegacySchema {
+		// Production shared/tenant histories are owned by elitea-migrate. A
+		// deployment that has configured any real authentication mode is not a
+		// developer machine, and must never bootstrap the legacy schema.
+		for _, configured := range []string{"APPLICATION_SECRET_KEY", "OIDC_ISSUER_URL", "ELITEA_AUTH_CONFIG_FILE"} {
+			if os.Getenv(configured) != "" {
+				return fmt.Errorf("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA is a local-development flag and must not be set when %s is configured", configured)
+			}
+		}
+	}
+
+	// AUTH_DEV_MODE was an unauthenticated-admin bypass (ADR-0017). It is gone,
+	// so the variable is now inert — but an operator who still sets it to
+	// "true" believes authentication is disabled and may have deployed
+	// accordingly. Fail loudly rather than silently ignoring it. A lingering
+	// "false" is harmless and stays tolerated.
+	if os.Getenv("AUTH_DEV_MODE") == "true" {
+		return errors.New("AUTH_DEV_MODE=true is no longer supported: the development authentication bypass was removed (ADR-0017). Authenticate via OIDC or an API token and remove this variable")
 	}
 
 	// Database
