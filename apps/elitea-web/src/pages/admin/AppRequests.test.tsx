@@ -16,15 +16,24 @@
  *  - that a control this user may not use is not offered as though it worked.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
 import { AdminAppRequests } from './AppRequests';
+import { useAdminAppRequestsPage } from './useAdminAppRequestsPage';
 import { renderAdminRoute } from './__tests__/testRouter';
+
+/** Mirrors `./__tests__/testRouter`'s client, for the hook-only cases. */
+function createHookQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+}
 
 interface RecordedRequest {
   readonly method: string;
@@ -311,6 +320,36 @@ describe('AdminAppRequests — the decision', () => {
       status: 'rejected',
       rejection_comment: 'Not licensed for this tenant.',
     });
+
+    // The banner reports the decision that was actually taken. Reporting
+    // "approved" after a rejection would tell the operator the opposite of what
+    // the requester was just sent.
+    expect(await screen.findByTestId('admin-app-requests-saved')).toHaveTextContent(
+      'Request rejected',
+    );
+  });
+
+  it('does not send a rejection whose reason is only whitespace, even if the dialog let it through', async () => {
+    // The dialog blocks an empty reason too. This asserts the guard in the HOOK,
+    // which is the layer that builds the request — mutation testing showed the
+    // two guards masking each other, so each is pinned where it lives.
+    const client = createHookQueryClient();
+    const { result } = renderHook(() => useAdminAppRequestsPage(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.rows).toHaveLength(3));
+
+    act(() => result.current.onOpenReject?.(result.current.rows[0]!));
+    await waitFor(() => expect(result.current.rejecting).not.toBeNull());
+
+    act(() => result.current.onConfirmReject?.('   '));
+    await waitFor(() => expect(reads().length).toBeGreaterThan(0));
+    expect(writes()).toHaveLength(0);
+    // …and the dialog stays open on that request, rather than closing as though
+    // the decision had been taken.
+    expect(result.current.rejecting).not.toBeNull();
   });
 
   it('shows the server own refusal instead of a generic failure', async () => {

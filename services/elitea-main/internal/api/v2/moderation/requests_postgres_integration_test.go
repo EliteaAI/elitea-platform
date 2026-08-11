@@ -68,6 +68,11 @@ type requestListing struct {
 	Total int          `json:"total"`
 }
 
+// The wire value of `pending`, spelled out here rather than imported: the test
+// asserts what a CLIENT sends, and a constant shared with the handler would
+// move with it.
+const statusPendingLiteral = "pending"
+
 const (
 	queueURL    = "/admin/moderation_statuses/administration"
 	decisionURL = "/admin/moderation_status/administration"
@@ -580,6 +585,15 @@ func TestDecisionRefusesToReopenAndToInventStatuses(t *testing.T) {
 		if recorder := moderationDo(t, router, http.MethodPut, decisionURL, body); recorder.Code != http.StatusBadRequest {
 			t.Errorf("decision with status %v = %d, want 400", status, recorder.Code)
 		}
+	}
+
+	// `pending` is refused for its OWN reason, and says so. Folding it into the
+	// generic "status must be approved or rejected" would leave an operator who
+	// tried to reopen a request believing the value was merely misspelled.
+	recorder := moderationDo(t, router, http.MethodPut, decisionURL,
+		map[string]any{"id": decided.ID, "status": statusPendingLiteral})
+	if !strings.Contains(recorder.Body.String(), "cannot be returned to pending") {
+		t.Errorf("reopening answered %q, want the reopen-specific reason", recorder.Body.String())
 	}
 	if status, _, _ := requestSQL(t, pool, decided.ID); status != "approved" {
 		t.Fatalf("a refused decision moved the row to %q", status)
