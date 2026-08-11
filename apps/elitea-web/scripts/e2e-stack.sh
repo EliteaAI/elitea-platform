@@ -368,6 +368,15 @@ CROSS JOIN (VALUES
     ('configuration.secrets.secret.edit'),
     ('configuration.secrets.secret.create'),
     ('configuration.secrets.secret.delete'),
+    -- The project secrets routes are gated in-package on the permission each
+    -- pylon `ProjectAPI` method declares (internal/api/v2/secrets/handler.go).
+    -- `.unsecret` gates the two routes that return a secret VALUE in plaintext
+    -- — the mode-ful GET and the mode-less one elitea-sdk's `unsecret()` calls
+    -- — and `.hide` gates POST /secrets/hide/…, which the Secrets page's row
+    -- menu invokes. Neither was in this list, because until the gate landed
+    -- neither route checked anything; absent, they 403.
+    ('configuration.secrets.secret.unsecret'),
+    ('configuration.secrets.secret.hide'),
     -- mountArtifactRoutes (services/elitea-main/internal/api/router.go:255-262)
     -- gates EVERY artifact route — buckets included — on the four
     -- `configuration.artifacts.artifacts.*` strings. `edit` (PATCH: retention,

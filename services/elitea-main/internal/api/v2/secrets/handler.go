@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
@@ -41,17 +42,20 @@ import (
 type Handler struct {
 	pool      *pgxpool.Pool
 	masterKey []byte // nil when SECRETS_MASTER_KEY is unset
-	// permissionResolver authorises the `administration`-mode routes (admin.go).
-	// nil for the two programmatic constructors that never serve HTTP, which is
-	// safe: the gate fails closed on a nil resolver.
+	// permissionResolver authorises BOTH mode families: the `administration`
+	// routes (admin.go, central mode) and the project routes below (`default`
+	// mode, keyed on the `{projectID}` in the path). nil for the two
+	// programmatic constructors that never serve HTTP, which is safe: both
+	// gates fail closed on a nil resolver.
 	permissionResolver auth.PermissionResolver
 }
 
 // Option configures a Handler. Same shape as the other v2 packages'.
 type Option func(*Handler)
 
-// WithPermissionResolver supplies the resolver the `administration`-mode routes
-// are gated on. Without it every one of them answers 403.
+// WithPermissionResolver supplies the resolver EVERY route is gated on — the
+// `administration`-mode ones in admin.go and the project ones in Routes().
+// Without it every one of them answers 403.
 func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	return func(h *Handler) { h.permissionResolver = resolver }
 }
@@ -116,7 +120,8 @@ func (h *Handler) Routes() chi.Router {
 	// handlers over separate stores with separate bodies — see withModes.
 	//
 	// GET  /secrets/{mode}/{projectID}            – list secret names
-	r.Get("/secrets/{mode}/{projectID}", h.withModes(h.List,
+	r.Get("/secrets/{mode}/{projectID}", h.withModes(
+		h.projectGate(permSecretList, h.List),
 		h.adminGate(permSecretView, h.AdminList)))
 	// POST /secrets/{mode}/{projectID}            – create a new secret
 	//
@@ -127,9 +132,11 @@ func (h *Handler) Routes() chi.Router {
 	// administration mode), so it is a bulk-destructive operation with no
 	// caller and no test that could discriminate a correct implementation
 	// from a wrong one.  501 says so instead of guessing.
-	r.Post("/secrets/{mode}/{projectID}", h.withModes(h.Create, notImplementedBulkReplace))
+	r.Post("/secrets/{mode}/{projectID}", h.withModes(
+		h.projectGate(permSecretCreate, h.Create), notImplementedBulkReplace))
 	// GET  /secret/{mode}/{projectID}/{name}      – get a single secret (with value)
-	r.Get("/secret/{mode}/{projectID}/{name}", h.withModes(h.Get,
+	r.Get("/secret/{mode}/{projectID}/{name}", h.withModes(
+		h.projectGate(permSecretUnsecret, h.Get),
 		h.adminGate(permSecretView, h.AdminGet)))
 	// POST /secret/{mode}/{projectID}/{name}      – administration-mode create
 	//
@@ -138,13 +145,16 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/secret/{mode}/{projectID}/{name}", h.withModes(methodNotAllowed,
 		h.adminGate(permSecretCreate, h.AdminCreate)))
 	// PUT  /secret/{mode}/{projectID}/{name}      – rename / update a secret
-	r.Put("/secret/{mode}/{projectID}/{name}", h.withModes(h.Update,
+	r.Put("/secret/{mode}/{projectID}/{name}", h.withModes(
+		h.projectGate(permSecretEdit, h.Update),
 		h.adminGate(permSecretEdit, h.AdminUpdate)))
 	// DELETE /secret/{mode}/{projectID}/{name}    – delete a secret
-	r.Delete("/secret/{mode}/{projectID}/{name}", h.withModes(h.Delete,
+	r.Delete("/secret/{mode}/{projectID}/{name}", h.withModes(
+		h.projectGate(permSecretDelete, h.Delete),
 		h.adminGate(permSecretDelete, h.AdminDelete)))
 	// POST /hide/{mode}/{projectID}/{name}        – move secret to hidden_secrets
-	r.Post("/hide/{mode}/{projectID}/{name}", h.withModes(h.Hide,
+	r.Post("/hide/{mode}/{projectID}/{name}", h.withModes(
+		h.projectGate(permSecretHide, h.Hide),
 		h.adminGate(permSecretEdit, h.AdminHide)))
 
 	// The mode-LESS form of the show route, which pylon also serves
@@ -156,8 +166,68 @@ func (h *Handler) Routes() chi.Router {
 	// Only this one variant is registered: pylon serves the mode-less form
 	// of every route, but no consumer in the workspace calls any of the
 	// others, and a route with no caller is a route no test can discriminate.
-	r.Get("/secret/{projectID}/{name}", h.Get)
+	//
+	// It carries the SAME gate as the mode-ful GET, because in pylon it IS
+	// the mode-ful GET. `api_tools.with_modes` registers the mode-less URL
+	// against the same `APIBase`, and `proxy_method`'s signature is
+	// `def proxy_method(self, method, mode='default', **kwargs)` — so a
+	// request with no mode segment dispatches to `DEFAULT_MODE` →
+	// `ProjectAPI.get`, which declares
+	// `configuration.secrets.secret.unsecret` (secret.py:26). The runtime is
+	// therefore already passing this exact check against pylon in production;
+	// gating it here is parity, not a new restriction.
+	//
+	// The principal is not a permission-less service identity: both SDK
+	// clients send `Authorization: Bearer <auth_token>` of the invoking user
+	// (runtime/clients/client.py:92, sandbox_client.py:228), and
+	// legacyrbac.PostgresResolver resolves a token to its OWNING USER and
+	// then that user's project roles. The `X-SECRET` header those clients
+	// also send is not an auth credential — pylon compares it to the
+	// `secrets_header_value` secret purely to decide whether to suppress
+	// default secret keys (`ignore_default_secret_api`), and it grants
+	// nothing.
+	r.Get("/secret/{projectID}/{name}", h.projectGate(permSecretUnsecret, h.Get))
 	return r
+}
+
+// The permissions pylon's `ProjectAPI` methods declare that its `AdminAPI`
+// ones do not (legacy/plugins/secrets/api/v2/{secrets,secret,hide}.py). The
+// three the two families share — create, edit, delete — are declared once in
+// admin.go and reused here; the values are the same strings in both modes.
+const (
+	permSecretList     = "configuration.secrets.secret.list"
+	permSecretUnsecret = "configuration.secrets.secret.unsecret"
+	permSecretHide     = "configuration.secrets.secret.hide"
+)
+
+// projectGate wraps a project-mode handler in the central permission check,
+// resolved against the `{projectID}` in the path in `default` mode.
+//
+// It is applied here rather than in `router.go` because the mode that selects
+// this handler is a PATH SEGMENT resolved at request time: one chi route serves
+// both pylon modes, so route-level middleware could not gate one and not the
+// other.
+//
+// It is passed as the `project` branch of withModes rather than wrapped around
+// it, so each mode keeps its OWN gate: `administration` resolves centrally via
+// adminGate (it ignores the {projectID} entirely), and an unknown mode stays a
+// 404 rather than becoming a 403 that says nothing about why.
+//
+// Fail-closed by construction — RequireResolvedPermissionsForProject answers
+// 403 when the resolver is nil, so a Handler built without one (the
+// programmatic constructors in applications/ and conversations/, which never
+// serve HTTP) exposes nothing.
+func (h *Handler) projectGate(permission string, next http.HandlerFunc) http.HandlerFunc {
+	gated := apimw.RequireResolvedPermissionsForProject(
+		h.permissionResolver,
+		auth.PermissionModeDefault,
+		func(r *http.Request) (string, bool) {
+			projectID := chi.URLParam(r, "projectID")
+			return projectID, projectID != ""
+		},
+		permission,
+	)(next)
+	return gated.ServeHTTP
 }
 
 // withModes reproduces pylon's mode dispatch for the routes that carry a
