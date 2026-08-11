@@ -119,15 +119,6 @@ ORDER BY grant_row.permission`, roleName)
 	return permissions
 }
 
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
 // prepareReadGateFixture builds the shape of a database bootstrapped by the
 // PRE-0060 001_initial.sql: default-mode roles only, a dev bootstrap account at
 // id 1 holding the default `admin` role, and no administration mode at all.

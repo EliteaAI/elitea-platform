@@ -20,6 +20,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 // Handler serves the secrets API, backed by the same centry.secrets_key /
@@ -37,17 +39,33 @@ import (
 type Handler struct {
 	pool      *pgxpool.Pool
 	masterKey []byte // nil when SECRETS_MASTER_KEY is unset
+	// permissionResolver authorises the `administration`-mode routes (admin.go).
+	// nil for the two programmatic constructors that never serve HTTP, which is
+	// safe: the gate fails closed on a nil resolver.
+	permissionResolver auth.PermissionResolver
+}
+
+// Option configures a Handler. Same shape as the other v2 packages'.
+type Option func(*Handler)
+
+// WithPermissionResolver supplies the resolver the `administration`-mode routes
+// are gated on. Without it every one of them answers 403.
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(h *Handler) { h.permissionResolver = resolver }
 }
 
 // NewHandler constructs the secrets handler.  The pool is used for
 // centry.secrets_key / centry.secrets_data reads and writes.
-func NewHandler(pool *pgxpool.Pool) *Handler {
+func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	h := &Handler{pool: pool}
 	if mk := os.Getenv("SECRETS_MASTER_KEY"); mk != "" {
 		raw, err := fernetDecodeKey(mk)
 		if err == nil {
 			h.masterKey = raw
 		}
+	}
+	for _, opt := range opts {
+		opt(h)
 	}
 	return h
 }
@@ -65,8 +83,12 @@ const (
 	modeDefault = "default"
 	// modeAdministration is pylon's c.ADMINISTRATION_MODE: a DIFFERENT
 	// handler over the GLOBAL vault (a bare VaultClient(), project_id nil
-	// → row id "project-None"), with different request/response shapes.
-	// This Go handler implements the project handler only; see requireMode.
+	// → row id "admin"), with different request/response shapes.  Unit A14
+	// implements it, in admin.go — see that file's header for why it had to
+	// be a separate handler rather than a flag on this one, and where the
+	// "admin" row id is established.  (Earlier revisions of this comment
+	// said the row id was "project-None"; that is the HashiCorp engine's
+	// naming, not the database engine this deployment runs.)
 	modeAdministration = "administration"
 )
 
@@ -87,18 +109,41 @@ const (
 // all four; #151 restores them and moves the new client onto this shape.
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
+	// Each route serves BOTH pylon modes: the first handler is the project
+	// vault, the second the global vault (admin.go).  They are separate
+	// handlers over separate stores with separate bodies — see withModes.
+	//
 	// GET  /secrets/{mode}/{projectID}            – list secret names
-	r.Get("/secrets/{mode}/{projectID}", requireMode(h.List))
+	r.Get("/secrets/{mode}/{projectID}", h.withModes(h.List,
+		h.adminGate(permSecretView, h.AdminList)))
 	// POST /secrets/{mode}/{projectID}            – create a new secret
-	r.Post("/secrets/{mode}/{projectID}", requireMode(h.Create))
+	//
+	// The administration form of this ONE route is not implemented.  Pylon's
+	// `AdminAPI.post` takes `{"secrets": {…}}` and REPLACES the entire global
+	// vault in a single call; no client in this workspace calls it (admin_ui
+	// creates through /secret/…/{name}, and elitea-sdk and qa/ never touch
+	// administration mode), so it is a bulk-destructive operation with no
+	// caller and no test that could discriminate a correct implementation
+	// from a wrong one.  501 says so instead of guessing.
+	r.Post("/secrets/{mode}/{projectID}", h.withModes(h.Create, notImplementedBulkReplace))
 	// GET  /secret/{mode}/{projectID}/{name}      – get a single secret (with value)
-	r.Get("/secret/{mode}/{projectID}/{name}", requireMode(h.Get))
+	r.Get("/secret/{mode}/{projectID}/{name}", h.withModes(h.Get,
+		h.adminGate(permSecretView, h.AdminGet)))
+	// POST /secret/{mode}/{projectID}/{name}      – administration-mode create
+	//
+	// Project mode has no POST on this path (pylon's ProjectAPI defines only
+	// get/put/delete here), so it 405s rather than pretending.
+	r.Post("/secret/{mode}/{projectID}/{name}", h.withModes(methodNotAllowed,
+		h.adminGate(permSecretCreate, h.AdminCreate)))
 	// PUT  /secret/{mode}/{projectID}/{name}      – rename / update a secret
-	r.Put("/secret/{mode}/{projectID}/{name}", requireMode(h.Update))
+	r.Put("/secret/{mode}/{projectID}/{name}", h.withModes(h.Update,
+		h.adminGate(permSecretEdit, h.AdminUpdate)))
 	// DELETE /secret/{mode}/{projectID}/{name}    – delete a secret
-	r.Delete("/secret/{mode}/{projectID}/{name}", requireMode(h.Delete))
+	r.Delete("/secret/{mode}/{projectID}/{name}", h.withModes(h.Delete,
+		h.adminGate(permSecretDelete, h.AdminDelete)))
 	// POST /hide/{mode}/{projectID}/{name}        – move secret to hidden_secrets
-	r.Post("/hide/{mode}/{projectID}/{name}", requireMode(h.Hide))
+	r.Post("/hide/{mode}/{projectID}/{name}", h.withModes(h.Hide,
+		h.adminGate(permSecretEdit, h.AdminHide)))
 
 	// The mode-LESS form of the show route, which pylon also serves
 	// (with_modes registers `<project_id>/<secret>` alongside
@@ -113,34 +158,47 @@ func (h *Handler) Routes() chi.Router {
 	return r
 }
 
-// requireMode reproduces pylon's mode dispatch for the routes that carry a
+// withModes reproduces pylon's mode dispatch for the routes that carry a
 // {mode} segment.  Anything other than the two modes pylon defines is a 404,
 // exactly as APIBase.proxy_method's `abort(404)` on an unknown mode — which
 // is what makes the third convention the new client had invented
 // (`prompt_lib`, #151) a hard error rather than a silently-accepted alias.
 //
-// `administration` is deliberately 501, NOT served: pylon's AdminAPI reads
-// and writes the GLOBAL vault (VaultClient() with no project → row id
-// "project-None") with its own request/response shapes, while every method
-// on this Handler is the project handler keyed by dbKey(projectID).  Serving
-// admin_ui's /secrets/secret/administration/0/{name} from this handler would
-// answer with project 0's vault — the wrong store — and its PUT/DELETE would
-// WRITE it.  A 501 says "not implemented here" instead of quietly returning
-// and mutating the wrong secrets.
-func requireMode(next http.HandlerFunc) http.HandlerFunc {
+// The two branches are genuinely different handlers, not one handler with a
+// flag.  `project` is keyed by dbKey(projectID); `administration` addresses the
+// GLOBAL vault (row id "admin") with its own request and response bodies, and
+// IGNORES the {projectID} segment entirely — which is why admin_ui sends the
+// placeholder `0` there.  Routing `administration` into the project handler
+// would read and WRITE project 0's vault: the wrong store, silently.  That is
+// what the 501 this replaced was protecting against; unit A14 implements the
+// real second handler in admin.go instead.
+func (h *Handler) withModes(project, administration http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch chi.URLParam(r, "mode") {
 		case modeDefault:
-			next(w, r)
+			project(w, r)
 		case modeAdministration:
-			writeJSON(w, http.StatusNotImplemented, map[string]string{
-				"error": "administration mode is not implemented by elitea-main; " +
-					"it addresses the global vault, not a project vault",
-			})
+			administration(w, r)
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown mode"})
 		}
 	}
+}
+
+// notImplementedBulkReplace is the administration branch of
+// `POST /secrets/{mode}/{projectID}` — see the route comment for why it is not
+// built.
+func notImplementedBulkReplace(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"error": "bulk replacement of the global vault is not implemented; " +
+			"create secrets one at a time through POST /secret/administration/{projectID}/{name}",
+	})
+}
+
+// methodNotAllowed is the project branch of routes pylon defines for the
+// administration mode only.
+func methodNotAllowed(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed for this mode"})
 }
 
 // ─── response models ─────────────────────────────────────────────────────────

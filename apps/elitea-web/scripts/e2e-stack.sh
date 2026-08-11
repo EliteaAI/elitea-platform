@@ -157,38 +157,101 @@ WHERE u.email = 'e2e-admin@autotest.local'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
 -- ── administration-mode RBAC (unit A14) ──────────────────────────────────
--- The roles and their grants are NOT seeded here any more. When A14 wrote this
--- block, 001_initial.sql seeded `default`-mode roles only, so no persona held a
--- single administration-mode permission and every admin-panel WRITE answered
--- 403 for everyone — while the listing, then ungated, made the page LOOK fine.
--- Seeding it here fixed the stack and left every other deployment broken, which
--- is why A14 could not gate the READS.
+-- The ROLES are not created here any more. When A14 wrote this block,
+-- 001_initial.sql seeded `default`-mode roles only, so no persona held a single
+-- administration-mode permission and every admin-panel WRITE answered 403 for
+-- everyone — while the user listing, then ungated, made the page LOOK fine.
+-- Creating the roles here fixed this stack and left every other deployment
+-- broken, which is why A14 could not gate the READS.
 --
 -- That is fixed at the source now: 001_initial.sql seeds the four
 -- administration roles and their pylon-parity grants on a fresh database, and
 -- migrations/shared/0060_admin_central_rbac.sql back-fills databases that
--- predate it. Both run before this seed (see `up`), so re-stating them here
--- would only create a second, drifting copy of the grant table. The assertions
--- at the end of `seed` check what those migrations produced.
+-- predate it. Both run before this seed (see `up`), so the roles already exist
+-- by the time this file runs, and the assertions at the end of `seed` check
+-- what those migrations produced.
 --
--- What stays here is the part that is genuinely E2E-specific: which PERSONA
--- holds which role, and one extra grant.
+-- The grants below stay, and are deliberately a SUPERSET of what the migrations
+-- seed. The migrations seed the pylon-parity baseline for the routes the server
+-- gates; this list is what the JOURNEYS need the admin persona to hold, which
+-- includes permissions no migration grants to `admin` (the audit, secrets and
+-- project-member ones below) and one it grants only to `super_admin`. Every
+-- statement is ON CONFLICT DO NOTHING, so the overlap is inert.
 --
--- `admin.auth.users.super_admin` is deliberately added to the administration
--- `admin` role so the journey can exercise the role-assignment path. That is a
--- divergence from pylon and from the migrations, where the permission is
--- super_admin-only; the escalation guard it gates is covered by the Go
--- integration tests, which can revoke it.
+-- `admin.auth.users.super_admin` is the deliberate divergence: pylon and the
+-- migrations both make it super_admin-only, and it is granted to `admin` here
+-- so the journey can exercise the role-assignment path. The escalation guard it
+-- gates is covered by the Go integration tests, which can revoke it.
 --
 -- Note what none of this changes: `window.admin_ui_config.permissions` is
 -- hardcoded by adminui/handler.go and was always present. The rows below are
 -- what the SERVER resolves per request, and they are the only thing that
 -- authorises anything.
 INSERT INTO auth_core__role_permission (role_id, permission)
-SELECT r.id, 'admin.auth.users.super_admin'
+SELECT r.id, p.permission
 FROM auth_core__role r
+CROSS JOIN (VALUES
+    ('admin.auth.users'),
+    ('admin.auth.users.super_admin'),
+    -- Unit A14, Audit Trail: all four `/elitea_core/audit*` READS are gated on
+    -- this, matching the pylon originals. Unlike the user LISTING, the audit
+    -- listing is gated rather than open — an audit row names the user, the
+    -- project and the action taken, so the listing itself is the sensitive
+    -- part. Without this row the page renders with four 403s.
+    ('models.admin.audit_trail.view'),
+    -- Unit A14, Roles: the permission matrix. The READ is gated too — it is the
+    -- deployment's authorisation model, and which role holds which privilege is
+    -- itself sensitive — so without these two rows the page renders 403 and the
+    -- journey cannot tell that apart from an unwired route.
+    ('configuration.roles.permissions.view'),
+    ('configuration.roles.permissions.edit'),
+    -- Unit A14, Projects. The listing is gated for the same reason the audit
+    -- listing is: a project row names the project, its owner and its admins
+    -- across every tenant. `.edit` gates the suspend write.
+    ('projects.projects.projects.view'),
+    ('projects.projects.projects.edit'),
+    -- The admin Projects page's member dialog posts to
+    -- `/admin/users/administration/{projectID}`, whose administration-mode
+    -- routes resolve these two CENTRALLY — a global administrator is not a
+    -- member of the project they are acting on, so the default-mode grant
+    -- above cannot authorise them.
+    ('configuration.users.users.create'),
+    ('configuration.users.users.edit'),
+    -- Unit A14, Secrets: the GLOBAL vault. `.view` gates BOTH reads (the
+    -- listing and the single-value reveal), matching pylon's AdminAPI, and it
+    -- is a different grant from `.list` — the admin SPA's sidebar has always
+    -- gated the page on `.list` while the server checks `.view`, and on the
+    -- reference deployment the administration-mode `editor` role holds the
+    -- first and not the second. Both are granted here so journey 32 exercises
+    -- the working path; the refusal path is covered by the Go integration
+    -- tests, which can withhold either.
+    ('configuration.secrets.secret.view'),
+    ('configuration.secrets.secret.list'),
+    ('configuration.secrets.secret.create'),
+    ('configuration.secrets.secret.edit'),
+    ('configuration.secrets.secret.delete')
+) AS p(permission)
 WHERE r.name = 'admin' AND r.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- A permission that exists ONLY in the database, granted to the administration
+-- `viewer` role. The Roles matrix derives its rows from the recorded grants
+-- rather than from any compiled-in list, so this string appearing on the page
+-- is proof the matrix is the deployment's own — it is in no bundle, and the
+-- journey toggles it on `editor` to exercise the write end to end.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT r.id, 'e2e.roles.probe'
+FROM auth_core__role r
+WHERE r.name = 'viewer' AND r.mode = 'administration'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- …and it must NOT already be on `editor`: the journey asserts it is absent,
+-- grants it, re-reads, then revokes it again so the run is repeatable.
+DELETE FROM auth_core__role_permission grant_row
+USING auth_core__role r
+WHERE r.id = grant_row.role_id
+  AND r.name = 'editor' AND r.mode = 'administration'
+  AND grant_row.permission = 'e2e.roles.probe';
 
 -- Only the ADMIN persona gets it. The member persona deliberately does not, so
 -- the difference between the two is a real server-side authorisation
@@ -371,11 +434,19 @@ ON CONFLICT (elitea_title) DO UPDATE SET section = EXCLUDED.section, updated_at 
 --
 -- Stored as JSON STRINGS, not numbers, on purpose: the secrets API handler
 -- (internal/api/v2/secrets/handler.go) round-trips a vault blob through
--- `map[string]string`, and a JSON number would fail that unmarshal and make it
--- REPLACE the vault with an empty one. centrysecrets' Python-int contract
--- accepts either. (That handler only ever touches `project-<id>`, never
--- `admin`, so the limits are safe from J21 either way — but the two blobs are
--- written in one format on purpose.)
+-- `map[string]string`, and a JSON number would fail that unmarshal.
+-- centrysecrets' Python-int contract accepts either.
+--
+-- That format now matters MORE than when this was written. Unit A14 gave the
+-- `admin` row an HTTP surface of its own — `internal/api/v2/secrets/admin.go`,
+-- the global vault behind Admin > Secrets — so these five entries are rows on
+-- that page and journey 32 asserts they are. They are also why that handler
+-- refuses to write a vault it could not read rather than replacing it with an
+-- empty one: on THIS row, "replace with empty" would silently delete the
+-- deployment's shared secrets and, here, break J20f.
+--
+-- J21 (Settings > Secrets) is still unaffected: that page reads
+-- `project-1`, which stays empty.
 INSERT INTO centry.secrets_key (id, data) VALUES
     ('admin', '\x6f4b47696f36536c7071656f71617172724b32757237437873724f3074626133754c6d36753779397672383d'::bytea),
     ('project-1', '\x45424553457851564668635947526f62484230654879416849694d6b4a53596e4b436b714b7977744c69383d'::bytea)
@@ -385,6 +456,79 @@ INSERT INTO centry.secrets_data (id, data) VALUES
     ('admin', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f44795765516b54395f515053716d754d506d585f5855576e6d566257494b58314e4d596146712d62386d6f67337145556e76336642595252484135475a666278576974436943364e764b37616c4d4f365346505558364277714c4672714546357146314b424a384d35723667426843363361625648764c32344a6d75705a434e49546c4c53674635725357726e4f333169386b4d506f4e686a4839704444333146784374726c645f4779635f6132713356735446756562786a614b313831664152715065535f5a553034776578617a74426b7a4458427977456f306e4b367a7449625f527851654c655353327a4971594c6e435a6a494b794743786e645267694968436c776874493132424f73487059774942653755527444515a772d307671617a4538706e4c4e7a45464f4c37384d527459717454392d352d37596b6a6b4864673d3d'::bytea),
     ('project-1', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f447738384e6179597230503157334c364279534e5257346647764e5f6778596831726f472d386d646b77547a5155666a42735a785366694a62304f35726a4b2d455a707971362d5436704c7252674a4c6851395935376753595546446955383237486a36634473756a4b2d78'::bytea)
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
+
+-- ── admin projects fixture (unit A14) ────────────────────────────────────
+-- 001_initial.sql seeds ONE project ("Default Project"), which is not enough
+-- to tell a working listing from a broken one: with a single row, the tab
+-- counts, the personal/team split, the search filter and the sort are all
+-- indistinguishable from constants. These rows give journey 31 a set where
+-- each of those has a wrong answer that differs from the right one.
+--
+--   e2e-team-suspended   suspended, so the status chip has two values to
+--                        distinguish and the unsuspend path has a target
+--   e2e-team-active      two project admins besides the owner, so a listing
+--                        that JOINs rather than aggregates emits it twice
+--   project_user_90001   PERSONAL by pylon's `project_user_%` rule, so the
+--                        two tabs return different sets — a client-side tab
+--                        that filtered nothing would show it on both
+--
+-- Ids are in the 9xxxx range, above anything the stack creates, so the seed is
+-- re-runnable and never collides with a real row.
+INSERT INTO auth_core__user (id, email, name, suspended) VALUES
+    (90001, 'e2e-project-owner@autotest.local', 'E2E Project Owner', false),
+    (90002, 'e2e-project-admin@autotest.local', 'E2E Project Admin', false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO centry.project (id, name, owner_id, keycloak_groups, create_success, suspended) VALUES
+    (90001, 'e2e-team-active',    90001, '{}', true, false),
+    (90002, 'e2e-team-suspended', 90001, '{}', true, true),
+    (90003, 'project_user_90001', 90001, '{}', true, false)
+ON CONFLICT (id) DO UPDATE
+    SET name = EXCLUDED.name, owner_id = EXCLUDED.owner_id, suspended = EXCLUDED.suspended;
+
+INSERT INTO auth_core__project_role (project_id, name) VALUES
+    (90001, 'admin'), (90001, 'editor'), (90001, 'viewer')
+ON CONFLICT (project_id, name) DO NOTHING;
+
+-- Two admins on e2e-team-active. Both must appear in ONE row's Admins cell; a
+-- join-based lookup would instead emit the project twice.
+INSERT INTO auth_core__project_user_role (project_id, user_id, role_id)
+SELECT 90001, u.id, r.id
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 90001 AND r.name = 'admin'
+WHERE u.email IN ('e2e-project-admin@autotest.local', 'e2e-admin@autotest.local')
+ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
+
+-- ── audit trail fixture (unit A14) ───────────────────────────────────────
+-- `centry.audit_events` is written by the legacy tracing plugin, which the Go
+-- E2E stack does not run — so without these rows the Audit Trail page is
+-- correctly empty and journey 29 could only ever assert an empty state, which
+-- the pre-A14 STUB (an unconditional `{"items":[],"total":0}`) would also have
+-- passed. These rows are what make "the page reads the database" a claim with
+-- a failure mode.
+--
+-- Timestamps are relative to now() so they land inside the page's default
+-- "Today" window in any timezone the runner happens to be in.
+--
+-- One trace of three spans, and one single-span trace. The counts are chosen
+-- so the two views CANNOT agree by accident: 4 spans, 2 traces.
+DELETE FROM centry.audit_events WHERE trace_id IN ('e2e-trace-alpha', 'e2e-trace-beta');
+INSERT INTO centry.audit_events
+    (timestamp, user_id, user_email, project_id, event_type, action, http_method,
+     status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
+SELECT seeded.ts, actor.user_id, actor.user_email, proj.project_id, seeded.event_type,
+       seeded.action, seeded.http_method, seeded.status_code, seeded.duration_ms,
+       seeded.is_error, seeded.tool_name, seeded.trace_id, seeded.span_id, seeded.parent_span_id
+FROM (VALUES
+    (now() - interval '20 minutes', 'api',  'POST /chat/e2e',   'POST', 200::smallint, 25.0,    false, NULL,           'e2e-trace-alpha', 'e2ealpharoot', NULL),
+    (now() - interval '19 minutes', 'llm',  'completion/e2e',   NULL,   200::smallint, 2400.0,  false, NULL,           'e2e-trace-alpha', 'e2ealphac1',   'e2ealpharoot'),
+    (now() - interval '18 minutes', 'tool', 'search/e2e',       NULL,   500::smallint, 640.0,   true,  'e2e_toolkit',  'e2e-trace-alpha', 'e2ealphac2',   'e2ealpharoot'),
+    (now() - interval '10 minutes', 'api',  'GET /agents/e2e',  'GET',  200::smallint, 15.0,    false, NULL,           'e2e-trace-beta',  'e2ebetaroot',  NULL)
+) AS seeded(ts, event_type, action, http_method, status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
+CROSS JOIN LATERAL (
+    SELECT id AS user_id, email AS user_email FROM auth_core__user WHERE email = 'e2e-admin@autotest.local'
+) AS actor
+CROSS JOIN LATERAL (SELECT 1 AS project_id) AS proj;
 ENDSQL
 
     # Use the correct binary for exec: podman exec or docker exec.
@@ -473,14 +617,71 @@ ENDSQL
     # The negative half is what makes the difference a real authorisation
     # boundary. A migration that promoted "everyone who looks like an admin"
     # would hand it to the member persona and quietly delete the distinction the
-    # admin journeys rest on.
+    # admin journeys rest on — and now that the user LISTING is gated too, J29
+    # asserts exactly this refusal over HTTP.
     if [ "${MEMBER_PERMS:-0}" -ne 0 ]; then
       echo "ERROR: the member persona resolves 'admin.auth.users' in administration mode." >&2
       echo "  The two personas must differ in SERVER-SIDE authorisation, not just in" >&2
       echo "  what the UI renders. Something granted the member an administration role." >&2
       exit 1
     fi
-    echo "  ✓ administration RBAC verified: admin persona resolves admin.auth.users, member does not."
+
+    # Same again for the Roles matrix (unit A14). Its READ is gated, so without
+    # this grant the page is a 403 and the journey would be asserting against an
+    # authorisation failure rather than against the matrix.
+    ROLES_GRANT=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(DISTINCT rp.permission)
+      FROM auth_core__user u
+      JOIN auth_core__user_role ur ON ur.user_id = u.id
+      JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
+      JOIN auth_core__role_permission rp ON rp.role_id = r.id
+      WHERE u.email = 'e2e-admin@autotest.local'
+        AND rp.permission IN ('configuration.roles.permissions.view',
+                              'configuration.roles.permissions.edit');")
+    if [ "${ROLES_GRANT:-0}" -lt 2 ]; then
+      echo "ERROR: seed did not grant the admin persona the roles-matrix permissions." >&2
+      echo "  resolved: ${ROLES_GRANT:-0} of 2" >&2
+      exit 1
+    fi
+
+    echo "  ✓ administration RBAC verified: admin persona resolves admin.auth.users"
+    echo "    (member does not) and the roles-matrix view/edit pair."
+
+    # The admin PROJECTS surface (unit A14). Its listing is gated, as the user
+    # listing now is too, so a missing grant here is a 403 on the page itself
+    # rather than a write that quietly fails — but the failure mode is the same
+    # class, so it is asserted the same way: as the resolved permission, not as
+    # an inserted row.
+    PROJECT_PERMS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(DISTINCT rp.permission)
+      FROM auth_core__user u
+      JOIN auth_core__user_role ur ON ur.user_id = u.id
+      JOIN auth_core__role r ON r.id = ur.role_id AND r.mode = 'administration'
+      JOIN auth_core__role_permission rp ON rp.role_id = r.id
+      WHERE u.email = 'e2e-admin@autotest.local'
+        AND rp.permission IN (
+          'projects.projects.projects.view',
+          'projects.projects.projects.edit',
+          'configuration.users.users.create',
+          'configuration.users.users.edit'
+        );")
+    if [ "${PROJECT_PERMS:-0}" -lt 4 ]; then
+      echo "ERROR: seed did not grant the admin persona the four administration-mode" >&2
+      echo "  project permissions (got ${PROJECT_PERMS:-0} of 4)." >&2
+      echo "  Without them /admin/projects/administration answers 403 and the admin" >&2
+      echo "  Projects page renders its load error instead of the table." >&2
+      exit 1
+    fi
+
+    SEEDED_PROJECTS=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(*) FROM centry.project WHERE id IN (90001, 90002, 90003);")
+    if [ "${SEEDED_PROJECTS:-0}" -lt 3 ]; then
+      echo "ERROR: seed did not create the three admin-projects fixture rows (got ${SEEDED_PROJECTS:-0})." >&2
+      echo "  Journey 31 asserts the team/personal split and the suspended status against them;" >&2
+      echo "  with only 'Default Project' present it could assert neither." >&2
+      exit 1
+    fi
+    echo "  ✓ admin projects fixture verified: ${SEEDED_PROJECTS} project(s), ${PROJECT_PERMS}/4 permission(s)."
     echo "→ Seed complete."
     ;;
 

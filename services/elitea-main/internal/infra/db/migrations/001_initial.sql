@@ -97,6 +97,48 @@ CREATE TABLE IF NOT EXISTS centry.notifications (
 CREATE INDEX IF NOT EXISTS notifications_user_id_id_idx
     ON centry.notifications (user_id, id);
 
+-- Audit trail (unit A14). READ-ONLY from this service: the write path belongs
+-- to the legacy tracing plugin, whose SQLAlchemy model
+-- (legacy/plugins/tracing/models/audit_event.py) this mirrors column for column
+-- and index for index. A legacy-backed deployment already has the table and
+-- these IF NOT EXISTS statements are no-ops; a Go-only deployment gets it here,
+-- so `GET /elitea_core/audit*` reads an empty table rather than failing with
+-- "relation does not exist".
+CREATE TABLE IF NOT EXISTS centry.audit_events (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    user_id INTEGER,
+    user_email VARCHAR(256),
+    project_id INTEGER,
+    event_type VARCHAR(32) NOT NULL,
+    action VARCHAR(512) NOT NULL,
+    http_method VARCHAR(10),
+    http_route VARCHAR(512),
+    status_code SMALLINT,
+    duration_ms DOUBLE PRECISION,
+    is_error BOOLEAN NOT NULL DEFAULT FALSE,
+    entity_type VARCHAR(32),
+    entity_id INTEGER,
+    entity_name VARCHAR(256),
+    tool_name VARCHAR(256),
+    model_name VARCHAR(256),
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    llm_cost NUMERIC(18, 8),
+    token_source VARCHAR(16),
+    cost_source VARCHAR(64),
+    trace_id VARCHAR(32),
+    span_id VARCHAR(16),
+    parent_span_id VARCHAR(16)
+);
+
+CREATE INDEX IF NOT EXISTS ix_audit_events_timestamp ON centry.audit_events (timestamp);
+CREATE INDEX IF NOT EXISTS ix_audit_events_user_id ON centry.audit_events (user_id);
+CREATE INDEX IF NOT EXISTS ix_audit_events_project_id ON centry.audit_events (project_id);
+CREATE INDEX IF NOT EXISTS ix_audit_events_trace_id ON centry.audit_events (trace_id);
+CREATE INDEX IF NOT EXISTS ix_audit_events_entity ON centry.audit_events (entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS ix_audit_events_model_name ON centry.audit_events (model_name);
+
 -- =============================================================================
 -- TENANT SCHEMA FUNCTION
 -- Creates all per-project tables in a given schema (e.g. "p_1")

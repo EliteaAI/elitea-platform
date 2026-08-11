@@ -544,20 +544,21 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// `window.admin_ui_config.permissions` is PRESENTATION state and is
 			// never consulted here.
 			//
-			// Unit A14 gated the WRITES only and left the READS open, to avoid a
+			// Unit A14 gated the auth_users WRITES only and left that listing —
+			// and the whole plugin-config/runtime block — open, to avoid a
 			// behaviour change with blast radius outside that unit: no
 			// deployment bootstrapped by elitea-migrate had a single
 			// administration-mode role, so gating a read would have turned
 			// "the admin panel works" into "403 for everyone". That is fixed at
 			// the source — migrations/shared/0060_admin_central_rbac.sql seeds
-			// the administration/developer roles and their grants, and
+			// the administration roles and their grants, and
 			// internal/infra/db/migrations/001_initial.sql seeds them on a fresh
-			// database — so the reads are now gated to match pylon.
+			// database — so the remaining reads are gated to match pylon too.
 			//
 			// Read this as the parity table it is. `mode` in the URL does NOT
 			// select the permission mode: pylon reaches these handlers only
 			// through its `administration` AdminAPI, so the resolution mode is
-			// always `administration`, exactly as for the A14 writes.
+			// always `administration`.
 			central := func(permission string) func(http.Handler) http.Handler {
 				return apimw.RequireCentralPermissions(
 					permissionResolver, platformauth.PermissionModeAdministration,
@@ -569,12 +570,20 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// system_info.py, plugin_config_*.py, maintenance.py, runtime_*.py,
 			// tasks.py, active_tasks.py — all declare ["runtime.plugins"].
 			requireRuntimePlugins := central("runtime.plugins")
-			// projects.py
-			requireProjectsView := central("projects.projects.projects.view")
-			// permissions.py
-			requirePermissionsView := central("configuration.roles.permissions.view")
 			// moderation_statuses.py
 			requireModeration := central("admin.moderation")
+			// The admin PROJECTS surface. projects.py declares
+			// `projects.projects.projects.view` and project_suspend.py declares
+			// `projects.projects.projects.edit`.
+			//
+			// The listing is gated rather than open: a project row names the
+			// project, its owner and its admins across every tenant, so the
+			// listing itself is the sensitive part. The same argument applies
+			// verbatim to the admin USER listing, which was left open only
+			// because it predated the migration that makes any of this
+			// resolvable.
+			requireProjectsView := central("projects.projects.projects.view")
+			requireProjectsEdit := central("projects.projects.projects.edit")
 			r.Route("/admin", func(r chi.Router) {
 				// Admin panel endpoints (administration mode, no projectID)
 				//
@@ -595,8 +604,31 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.With(requireAdminUsers).Get("/auth_users/{mode}", adminHandler.AuthUsers)
 				r.With(requireAdminUsers).Post("/auth_users/{mode}", adminHandler.AuthUsersAction)
 				r.With(requireAdminUsers).Put("/user_suspend/{mode}/{userID}", adminHandler.UserSuspend)
-				r.With(requirePermissionsView).Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
+				// The admin Roles page. Before it, only the GET existed —
+				// ungated, ignoring {scope}, and listing only already-granted
+				// permissions. See internal/api/v2/admin/roles.go.
+				//
+				// Gated on the permissions the pylon originals declare
+				// (`configuration.roles.permissions.view` / `.edit`,
+				// legacy/plugins/admin/api/v2/permissions.py), resolved from
+				// auth_core__user_role per request. The read is gated too: this
+				// matrix is the deployment's authorisation model, and knowing
+				// which role holds which privilege is itself sensitive.
+				requireRolesView := central("configuration.roles.permissions.view")
+				requireRolesEdit := central("configuration.roles.permissions.edit")
+				r.With(requireRolesView).Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
+				r.With(requireRolesEdit).Put("/permissions/{scope}/{mode}", adminHandler.AdminPermissionsSave)
+				r.With(requireRolesEdit).Post("/permissions/{scope}/{mode}", adminHandler.AdminPermissionsSync)
 				r.With(requireProjectsView).Get("/projects/{mode}", adminHandler.Projects)
+				// `ProjectSuspend` existed in the admin package before this unit
+				// but was mounted on NO route — dead code with no caller. It is
+				// the only project WRITE this unit implements: create and delete
+				// are multi-system provisioning pipelines (tenant schema, object
+				// storage, vault, RabbitMQ, InfluxDB, a system user and its
+				// token — legacy/plugins/projects/utils/project_steps.py) and
+				// are rendered unavailable in the UI rather than guessed at here.
+				r.With(requireProjectsEdit).
+					Put("/project_suspend/{mode}/{projectID}", adminHandler.ProjectSuspend)
 				r.With(requireRuntimePlugins).Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
 				r.With(requireRuntimePlugins).Get("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValues)
 				r.With(requireRuntimePlugins).Put("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValuesSave)
@@ -637,6 +669,30 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 					permissionResolver, platformauth.PermissionModeDefault,
 					"configuration.users.users.delete",
 				)).Delete("/users/{mode}/{projectID}", coreHandler.UsersDelete)
+				// The same invite/edit-role writes in ADMINISTRATION mode — what
+				// the admin Projects page's "Manage project member" dialog calls
+				// (unit A14). Registered as STATIC segments so chi's trie prefers
+				// them over the `{mode}` routes above, leaving those untouched.
+				//
+				// They are separate registrations because the GATE differs, not
+				// the handler. The `{mode}` routes resolve
+				// `configuration.users.users.*` in DEFAULT mode, which
+				// `legacyrbac.PostgresResolver` answers purely from the caller's
+				// membership OF THAT PROJECT — so a global administrator who is
+				// not a member of the project scores zero permissions and is
+				// refused, and the admin panel's whole purpose is acting on
+				// projects one is not in. pylon gates the same handler on the
+				// same permission resolved in administration mode
+				// (legacy/plugins/admin/api/v2/users.py maps BOTH modes to the
+				// same body, and its `recommended_roles` names `administration`).
+				r.With(apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"configuration.users.users.create",
+				)).Post("/users/administration/{projectID}", coreHandler.UsersCreate)
+				r.With(apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"configuration.users.users.edit",
+				)).Put("/users/administration/{projectID}", coreHandler.UsersUpdate)
 				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
 				r.Get("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
 				r.Post("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
@@ -677,7 +733,15 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// admin_ui and qa/elitea-api-testing. #137 read it as a
 			// double-mount bug and moved the routes to the v2 root, which
 			// broke every consumer outside apps/elitea-web; #151 restores it.
-			r.Mount("/secrets", v2secrets.NewHandler(cfg.Pool).Routes())
+			// The resolver gates the `administration`-mode routes only — the
+			// GLOBAL vault behind the admin Secrets page (unit A14). Those
+			// gates live inside the package because the mode is a PATH
+			// SEGMENT: one chi route serves both modes, so route-level
+			// middleware here could not gate one and not the other.
+			r.Mount("/secrets", v2secrets.NewHandler(
+				cfg.Pool,
+				v2secrets.WithPermissionResolver(permissionResolver),
+			).Routes())
 
 			// === Notifications ===
 			r.Route("/notifications", func(r chi.Router) {
@@ -992,8 +1056,35 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Admin panel audit & service descriptors
 				r.Get("/admin/{mode}", coreHandler.ServiceDescriptors)
-				r.Get("/audit_traces/{mode}", coreHandler.AuditTraces)
-				r.Get("/audit_trace_heatmap/{mode}", coreHandler.AuditTraceHeatmap)
+
+				// The admin audit trail (unit A14). All four are READS; the
+				// surface has no writes. Two of them (`audit`, `audit_heatmap`)
+				// had no route at all before this unit, and the other two were
+				// stubs returning empty arrays.
+				//
+				// Gated on the permission the pylon originals declare
+				// (`models.admin.audit_trail.view`,
+				// legacy/plugins/elitea_core/api/v2/audit*.py), resolved from
+				// auth_core__user_role per request. Unlike the admin USER
+				// listing, these reads are gated rather than open: an audit row
+				// names the user, the project and the action taken, so the
+				// listing itself is the sensitive part.
+				requireAuditTrail := apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					"models.admin.audit_trail.view",
+				)
+				r.With(requireAuditTrail).Get("/audit/{mode}", coreHandler.AuditTrail)
+				r.With(requireAuditTrail).Get("/audit_heatmap/{mode}", coreHandler.AuditHeatmap)
+				r.With(requireAuditTrail).Get("/audit_traces/{mode}", coreHandler.AuditTraces)
+				r.With(requireAuditTrail).Get("/audit_trace_heatmap/{mode}", coreHandler.AuditTraceHeatmap)
+
+				// Per-user event counts for ONE project — the admin Projects
+				// page's activity drawer (unit A14). Same table and therefore
+				// the same gate as the four reads above; pylon's
+				// project_user_activity.py declares that same permission. It had
+				// no route and no handler at all before this unit.
+				r.With(requireAuditTrail).
+					Get("/project_user_activity/{mode}", coreHandler.ProjectUserActivity)
 			})
 
 			// === Social plugin ===

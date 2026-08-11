@@ -4,10 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"runtime"
-	"sort"
 	"strconv"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -77,122 +75,7 @@ func (h *Handler) ResourcesConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, config)
 }
 
-func (h *Handler) AdminPermissions(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	mode := chi.URLParam(r, "mode")
-
-	if h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
-		return
-	}
-
-	rows, err := h.pool.Query(ctx,
-		`SELECT r.id, r.name,
-		        COALESCE(array_agg(rp.permission ORDER BY rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}')
-		 FROM auth_core__role r
-		 LEFT JOIN auth_core__role_permission rp ON rp.role_id = r.id
-		 WHERE r.mode = $1
-		 GROUP BY r.id, r.name
-		 ORDER BY r.id`, mode)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
-		return
-	}
-	defer rows.Close()
-
-	// Build role → permission set mapping
-	type roleData struct {
-		name  string
-		perms map[string]bool
-	}
-	var roles []roleData
-	allPerms := make(map[string]bool)
-
-	for rows.Next() {
-		var id int
-		var name string
-		var permissions []string
-		if err := rows.Scan(&id, &name, &permissions); err != nil {
-			continue
-		}
-		permSet := make(map[string]bool, len(permissions))
-		for _, p := range permissions {
-			permSet[p] = true
-			allPerms[p] = true
-		}
-		roles = append(roles, roleData{name: name, perms: permSet})
-	}
-
-	// Invert: one row per permission with boolean flags per role
-	permNames := make([]string, 0, len(allPerms))
-	for p := range allPerms {
-		permNames = append(permNames, p)
-	}
-	sort.Strings(permNames)
-
-	items := make([]map[string]any, 0, len(permNames))
-	for _, perm := range permNames {
-		row := map[string]any{"name": perm}
-		for _, role := range roles {
-			row[role.name] = role.perms[perm]
-		}
-		items = append(items, row)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  items,
-		"total": len(items),
-	})
-}
-
-func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	limit, offset := paginationParams(r)
-
-	if h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
-		return
-	}
-
-	var total int
-	err := h.pool.QueryRow(ctx, `SELECT COUNT(*) FROM centry.project`).Scan(&total)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
-		return
-	}
-
-	rows, err := h.pool.Query(ctx,
-		`SELECT id, name, COALESCE(owner_id, 0), COALESCE(suspended, false)
-		 FROM centry.project
-		 ORDER BY id
-		 LIMIT $1 OFFSET $2`, limit, offset)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": total})
-		return
-	}
-	defer rows.Close()
-
-	items := make([]map[string]any, 0)
-	for rows.Next() {
-		var id, ownerID int
-		var name string
-		var suspended bool
-		if err := rows.Scan(&id, &name, &ownerID, &suspended); err != nil {
-			continue
-		}
-		items = append(items, map[string]any{
-			"id":        id,
-			"name":      name,
-			"owner_id":  ownerID,
-			"suspended": suspended,
-		})
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rows":  items,
-		"total": total,
-	})
-}
+// Projects and ProjectSuspend live in projects.go (unit A14).
 
 func (h *Handler) PluginConfigSchemas(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -274,25 +157,6 @@ func (h *Handler) ActiveTasks(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"lines": []any{},
 	})
-}
-
-func (h *Handler) ProjectSuspend(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	var body struct {
-		Suspended bool `json:"suspended"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
-
-	if h.pool != nil {
-		if _, err := h.pool.Exec(r.Context(), `UPDATE centry.project SET suspended = $1 WHERE id = $2`, body.Suspended, projectID); err != nil {
-			http.Error(w, `{"error":"failed to update project"}`, http.StatusInternalServerError)
-			return
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h *Handler) ModerationStatusSingle(w http.ResponseWriter, _ *http.Request) {

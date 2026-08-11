@@ -291,17 +291,50 @@ func TestUsersWriteVerbsPersistProjectMembership(t *testing.T) {
 		}
 	})
 
-	t.Run("administration mode is 501 and writes nothing", func(t *testing.T) {
+	// Administration mode used to answer 501 here, and this case used to assert
+	// it. That was a hole, not a policy: `/admin/users/{mode}/{projectID}`
+	// carries the project id in its own path, pylon's users.py maps BOTH modes
+	// to the same body, and the admin Projects page's member dialog is exactly
+	// this call — so it reached a Not Implemented (unit A14, #200). It writes
+	// for real now; what differs between the modes is the route-level GATE
+	// (router.go resolves `configuration.users.users.*` centrally for
+	// administration mode), not the query.
+	t.Run("administration mode writes the membership", func(t *testing.T) {
+		const invited = "e2e-admin-mode@autotest.local"
 		before := readMembers(t, router)
 		recorder := usersWriteDo(t, router, http.MethodPost,
 			fmt.Sprintf("/admin/users/administration/%d", usersWriteProjectID),
-			map[string]any{"emails": []string{"e2e-admin-mode@autotest.local"}, "roles": []string{"admin"}})
-		if recorder.Code != http.StatusNotImplemented {
-			t.Fatalf("administration-mode POST status = %d, want 501", recorder.Code)
+			map[string]any{"emails": []string{invited}, "roles": []string{"admin"}})
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("administration-mode POST status = %d, want 200 (body %s)",
+				recorder.Code, recorder.Body.String())
 		}
+
+		// RE-READ through the product's own GET.
 		after := readMembers(t, router)
-		if after.Total != before.Total {
-			t.Fatalf("administration-mode POST changed the membership (%d → %d)", before.Total, after.Total)
+		roles, found := memberRoles(after, invited)
+		if !found {
+			t.Fatalf("%s is not a member after an administration-mode invite", invited)
+		}
+		if len(roles) != 1 || roles[0] != "admin" {
+			t.Fatalf("%s holds %v after the invite, want [admin]", invited, roles)
+		}
+		if after.Total != before.Total+1 {
+			t.Fatalf("total = %d after one administration-mode invite, want %d", after.Total, before.Total+1)
+		}
+	})
+
+	// Neither mode may write project 0's membership — the original reason the
+	// administration branch was closed off. The project id is still required to
+	// be a concrete positive integer.
+	t.Run("administration mode still requires a real project id", func(t *testing.T) {
+		for _, badID := range []string{"0", "-1", "abc"} {
+			recorder := usersWriteDo(t, router, http.MethodPost,
+				"/admin/users/administration/"+badID,
+				map[string]any{"emails": []string{"e2e-nowhere@autotest.local"}, "roles": []string{"admin"}})
+			if recorder.Code != http.StatusBadRequest {
+				t.Errorf("administration-mode POST to project %q status = %d, want 400", badID, recorder.Code)
+			}
 		}
 	})
 }
