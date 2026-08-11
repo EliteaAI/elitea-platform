@@ -35,6 +35,7 @@ import {
   visibleAdminNavGroups,
 } from './adminNavItems';
 import { readPersistedAdminNavCollapsed, useAdminNavCollapsedStore } from './adminNavCollapsed';
+import { adminApiBaseUrl } from './adminUiConfig';
 import { createAdminRouter } from './router';
 
 installWebStorageShim();
@@ -575,6 +576,32 @@ describe('user footer', () => {
     (window as unknown as AdminUiConfigWindow).admin_ui_config = { permissions: ALL_PERMISSIONS };
     await mountAdmin();
     expect(within(screen.getByTestId('admin-nav-user-button')).getByText('Admin')).toBeInTheDocument();
+  });
+
+  /*
+   * `adminApiBaseUrl()` is pre-existing (unit A14) and this change only added a
+   * sibling to its module — but the mutation sweep showed its guard entirely
+   * unprotected, and it decides where EVERY admin request goes. An empty
+   * `vite_server_url` (which is what the Go handler injects for a session it
+   * did not recognise) must fall back to `/api/v2`, not be used as the base:
+   * `''` produces same-origin relative URLs that resolve against the current
+   * PAGE, so `/admin/app/users` would issue its reads against
+   * `/admin/app/admin/auth_users/...`. Four lines to close, so closed here
+   * rather than left as a note.
+   */
+  it('falls back to /api/v2 when the handler injected no API base', () => {
+    (window as unknown as AdminUiConfigWindow).admin_ui_config = { permissions: [] };
+    expect(adminApiBaseUrl()).toBe('/api/v2');
+
+    (window as unknown as { admin_ui_config?: { vite_server_url?: string } }).admin_ui_config = {
+      vite_server_url: '',
+    };
+    expect(adminApiBaseUrl()).toBe('/api/v2');
+
+    (window as unknown as { admin_ui_config?: { vite_server_url?: string } }).admin_ui_config = {
+      vite_server_url: 'https://api.example.test/v2',
+    };
+    expect(adminApiBaseUrl()).toBe('https://api.example.test/v2');
   });
 
   it('offers Logout behind the user menu', async () => {
