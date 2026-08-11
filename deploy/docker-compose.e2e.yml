@@ -1,3 +1,12 @@
+# SUPERSEDED (issue #245) — replaced by docker-compose.e2e-standalone.yml, a
+# complete self-contained stack that also fixes this file's broken
+# `OIDC_ISSUER_URL: http://oidc-mock:9400`: that compose-internal name is
+# unreachable from the host browser, so any browser-followed OIDC redirect
+# died on ERR_NAME_NOT_RESOLVED (see docker-compose.e2e-standalone.yml's
+# oidc-mock service comment). No workflow or script references this file
+# (checked .github/workflows/ and apps/elitea-web/scripts/) — it is kept only
+# for history. Do not build new stacks on it.
+#
 # E2E-only compose override (issue #60, unit V1).
 # Layer on top of deploy/docker-compose.yml — never edit docker-compose.yml itself:
 #   podman compose -f deploy/docker-compose.yml -f deploy/docker-compose.e2e.yml up -d --wait

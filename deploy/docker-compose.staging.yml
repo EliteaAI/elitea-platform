@@ -9,7 +9,9 @@ services:
       SKIP_MIGRATIONS: "true"
       APPLICATION_SECRET_KEY: "staging-secret-for-local-dev"
       SECRETS_MASTER_KEY: "vKSMVUaVhEdptzHFisRSSDED_0UcixrxbIvKtthpyrk="
-      OIDC_ISSUER_URL: "https://oidc-mock.technicaldomain.xyz"
+      # Inherits the local oidc-mock service from docker-compose.yml (issue
+      # #245) — the remote oidc-mock.technicaldomain.xyz host with a
+      # committed secret has been removed.
       OIDC_CLIENT_ID: "elitea-local"
       OIDC_CLIENT_SECRET: "elitea-local-secret"
       OIDC_REDIRECT_URI: "http://localhost/forward-auth/auth_oidc/callback"
