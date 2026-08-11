@@ -54,6 +54,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── Job 2: Build each image on its native runner ────────────────────────────
+  # NOTE (issue #244): elitea-worker-python has a Containerfile
+  # (services/elitea-worker-python/Containerfile) but deliberately has no bake
+  # target and no entry in this matrix. The worker plane it belongs to
+  # (worker_core / worker_client / indexer_worker / provider_worker) is marked
+  # `pending` in the workspace repos.yaml — the runtime transport contract
+  # (Redis Streams) and the Go/Python split aren't settled, so publishing an
+  # image now would ship something the runtime work will still reshape.
+  # Revisit once that plane's status moves off `pending`.
   build:
     name: Build ${{ matrix.image.name }} / ${{ matrix.platform.suffix }}
     needs: release
@@ -76,6 +84,12 @@ jobs:
           - name: elitea-ui
             context: .
             dockerfile: ./deploy/docker/Containerfile.elitea-ui
+          # New UI (spec §7.3, issue #244): mirrors the elitea-web bake target
+          # in docker-bake.hcl so the image bake produces actually reaches
+          # ghcr.io instead of only ever being built locally/in CI.
+          - name: elitea-web
+            context: .
+            dockerfile: ./apps/elitea-web/Containerfile
           - name: pylon-indexer
             context: ./services/pylon-indexer
             dockerfile: ./services/pylon-indexer/Containerfile
@@ -140,6 +154,7 @@ jobs:
           - name: elitea-main
           - name: elitea-scheduler
           - name: elitea-ui
+          - name: elitea-web
           - name: pylon-indexer
           - name: elitea-llm-gateway
 
@@ -181,6 +196,7 @@ jobs:
           - name: elitea-main
           - name: elitea-scheduler
           - name: elitea-ui
+          - name: elitea-web
           - name: pylon-indexer
           - name: elitea-llm-gateway
 
@@ -248,7 +264,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
-          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "pylon-indexer" "elitea-llm-gateway")
+          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway")
           SUFFIXES=("linux-amd64" "linux-arm64")
           ORG="eliteaai"
 

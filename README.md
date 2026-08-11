@@ -80,9 +80,12 @@ task ui:lint         # Lint EliteaUI
 task pylon:validate  # Validate pylon-indexer YAML configs
 
 task images          # Build all container images
-task images:go       # Build Go image only
-task images:ui       # Build UI image only
-task images:pylon    # Build pylon image only
+task images:go       # Build elitea-main image only
+task images:scheduler # Build elitea-scheduler image only
+task images:gateway  # Build elitea-llm-gateway image only
+task images:ui       # Build elitea-ui image only
+task images:web      # Build elitea-web image only
+task images:pylon    # Build pylon-indexer image only
 
 task helm:lint       # Lint all Helm charts
 task all             # Run all checks
