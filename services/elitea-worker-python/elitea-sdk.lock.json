@@ -476,18 +476,20 @@
   },
   "agent_current_capability_profile": {
     "schema_revision": "elitea.agent-current-runtime-capability-profile.v1",
-    "profile_sha256": "e09cc9c45f39e0c45c7ebda17a5dd0e6d8491219d9d26e04a8232e95f9da5a99",
+    "profile_sha256": "74ec719d10dcab8a3c3183ec83bfb5eea8961d242720cf25243f220291e7ae57",
     "python_requirements": [
       "elitea-sdk==0.9.8",
       "langchain-core==1.2.7",
       "langgraph==1.0.7",
       "langchain-mcp-adapters==0.1.14",
+      "mcp==1.27.1",
       "langgraph-checkpoint-postgres==2.0.21"
     ],
     "verified_distributions": {
       "elitea-sdk": "0.9.8",
       "langchain-core": "1.2.7",
       "langchain-mcp-adapters": "0.1.14",
+      "mcp": "1.27.1",
       "langgraph": "1.0.7",
       "langgraph-checkpoint-postgres": "2.0.21"
     },
