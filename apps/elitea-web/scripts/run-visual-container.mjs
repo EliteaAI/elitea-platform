@@ -23,6 +23,24 @@
  * The stack must already be up (`./scripts/e2e-stack.sh up && … seed`):
  * `E2E_REUSE_STACK=1` stops Playwright trying to start it from inside a
  * container that has no container runtime — see playwright.config.ts.
+ *
+ * Against a SECOND, parameterised stack:
+ *
+ *   E2E_PROJECT=elitea-e2e-b E2E_PORT=8083 E2E_PG_PORT=15433 \
+ *   E2E_REDIS_PORT=16380 E2E_OIDC_PORT=9401 ./scripts/e2e-stack.sh up && … seed
+ *
+ *   E2E_PORT=8083 E2E_OIDC_PORT=9401 PLAYWRIGHT_BASE_URL=http://localhost:8083 \
+ *   npm run e2e:visual
+ *
+ * `PLAYWRIGHT_BASE_URL` and `E2E_OIDC_PORT` are forwarded into the container
+ * when set, because nothing inside it can see the host's environment: without
+ * them playwright.config.ts falls back to `http://localhost:8082` and
+ * e2e/auth.setup.ts to OIDC port 9400, i.e. the run silently drives the DEFAULT
+ * stack no matter what the caller asked for. Everything the compose file and
+ * e2e-stack.sh went to the trouble of parameterising (#228) was unreachable
+ * from the one command that exists so nobody has to hand-roll a `podman run`.
+ * An UNSET variable is not forwarded at all, so CI and the ordinary local path
+ * keep exactly the defaults they had.
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -44,16 +62,37 @@ const image = `mcr.microsoft.com/playwright:v${pinned}-noble`;
 // only ship docker.
 const runtime = process.env['CONTAINER_RUNTIME'] ?? 'podman';
 
+// Only what the caller actually set. `-e NAME=value` for an unset variable
+// would export an empty string into the container, and an empty
+// PLAYWRIGHT_BASE_URL is NOT the same as an absent one: `?? 'http://localhost:8082'`
+// in playwright.config.ts only fires on undefined, so `''` would win and every
+// navigation would resolve against nothing.
+const forwardedEnv = ['PLAYWRIGHT_BASE_URL', 'E2E_OIDC_PORT'].flatMap((name) => {
+  const value = process.env[name];
+  return value === undefined || value === '' ? [] : ['-e', `${name}=${value}`];
+});
+
 const args = [
   'run', '--rm',
   // The stack runs on the host, so the test container must share its network.
   // A job container would NOT work: it does not share the runner's network
   // namespace, so BASE_URL=http://localhost:8082 would not reach the stack.
   '--network', 'host',
+  // The OIDC issuer is `http://oidc.localhost:<port>` (a compose network alias
+  // that resolves to loopback from outside — see
+  // deploy/docker-compose.e2e-standalone.yml), and the browser follows the
+  // redirect to it itself. `--network host` shares the host's network
+  // namespace but NOT its /etc/hosts: the runtime writes a fresh one, which has
+  // `localhost` and nothing else. Chromium happens to map `*.localhost` to
+  // loopback on its own, so this survived without the mapping; anything else
+  // resolving that name (a `curl` in a debug step, a non-Chromium engine, the
+  // test process itself) would not.
+  '--add-host', 'oidc.localhost:127.0.0.1',
   '-v', `${appRoot}:/work`,
   '-w', '/work',
   '-e', 'CI=1',
   '-e', 'E2E_REUSE_STACK=1',
+  ...forwardedEnv,
   image,
   'npx', 'playwright', 'test', '--project=visual',
   ...process.argv.slice(2),
