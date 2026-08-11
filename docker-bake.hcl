@@ -25,6 +25,10 @@ group "ui" {
 target "elitea-main" {
   context    = "."
   dockerfile = "services/elitea-main/Containerfile"
+  # Named explicitly rather than relying on "last stage wins": the Containerfile
+  # also defines `hybrid` and `e2e`, and which one ships must not depend on
+  # stage order.
+  target     = "final"
   tags       = ["${REGISTRY}/elitea-main:${TAG}"]
   cache-from = ["type=gha,scope=elitea-main"]
   cache-to   = ["type=gha,mode=max,scope=elitea-main"]
