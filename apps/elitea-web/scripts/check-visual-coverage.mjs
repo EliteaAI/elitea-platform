@@ -15,6 +15,19 @@
  * scaffolding is worse than no baseline: it makes the stub the official
  * reference and goes green forever after.
  *
+ * A REFUSAL IS NOT SCAFFOLDING (issue #229). Several admin screens render
+ * "unavailable, and here is why" and nothing else — Service Descriptors
+ * entirely, and every one of Configuration's twelve sections. Those ARE
+ * baselined, deliberately, and the distinction is not a loophole: scaffolding is
+ * unfinished UI whose eventual screen is meant to look different, so pinning it
+ * freezes the wrong thing; a server-declared refusal is the FINISHED screen, and
+ * pinning it is what makes the regression visible if someone later wires the
+ * endpoint to a stub that answers 200. Both pages render the SERVER's sentence
+ * rather than a copy they carry, which is why the baseline moves when the server
+ * changes its answer. Contrast `/help-center` in the EXEMPT map below: there the
+ * content is MISSING (nothing has been configured), not refused, so a baseline
+ * would pin an unconfigured tenant rather than a decision.
+ *
  * Run: node scripts/check-visual-coverage.mjs [--json]
  */
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
@@ -100,6 +113,29 @@ const EXEMPT = new Map([
   // resource links, so the cards still render "No links configured" and a
   // baseline would still make an unconfigured screen the official reference.
   // Seed a fixed set of links and the route becomes coverable.
+  // Issue #229. Every other admin route got a baseline in that change; this one
+  // is the single exception and the reason is determinism, not wiring — the page
+  // reads the database and renders it correctly.
+  //
+  // The obstacle is that EVERY visible value on this screen is a function of the
+  // wall clock at seed time, so a baseline taken against one stack cannot match
+  // a stack seeded at a different time of day — which is every other stack,
+  // including every CI run. Specifically: the page opens on a `Today` preset
+  // computed from the BROWSER's clock (auditFormat.ts's DEFAULT_PRESET) while
+  // the fixture is anchored on the DATABASE's `date_trunc('day', now())` — the
+  // residue of #214, whose midnight failure was fixed on the seed side without
+  // making the two clocks the same one; both DateRangeFields render today's
+  // date; the Time column is second-resolution local time; and the heatmap's
+  // column geometry and per-cell alpha are computed from where the four seeded
+  // rows fall inside the range (`cellAlpha` re-scales every cell against the
+  // grid's max, so nothing about that chart is stable).
+  //
+  // Masking is not a way out: what would have to be masked is the entire content
+  // area, which is the whole page. What WOULD unblock it is a fixture at a fixed
+  // absolute timestamp plus a deterministic range — i.e. driving the page to an
+  // explicit preset before the shot, which is a different screen from the one
+  // an operator lands on and should be decided rather than smuggled in here.
+  ['/admin/app/audit', 'not snapshotted — the route is wired and renders real seeded data (journey 29 covers it), but its default screen is entirely wall-clock-derived: a `Today` window from the browser clock over a fixture anchored on the database clock (#214 residue), second-resolution timestamps, and a heatmap whose bucket geometry and per-cell alpha depend on where the seeded rows fall in the range. A baseline could only ever match the stack that produced it. Unblocking it needs a fixed-timestamp fixture and an explicit date range, not a mask.'],
   ['/help-center', 'not snapshotted — needs seeded resource links, NOT a missing backend. `useResourcesConfig` reads GET /admin/plugin_config_values/prompt_lib/resources, which the admin port (#200) made serve real values; the section is authored on Admin › Features and journey 36g asserts the round trip. This stack configures none, so a baseline would still pin an unconfigured screen; seed a fixed set of links and it is coverable. Measured meanwhile, its stalled and loaded renders are byte-identical, so it will need only a mount guard, not a data landmark.'],
 ]);
 
