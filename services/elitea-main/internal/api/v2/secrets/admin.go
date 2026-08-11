@@ -51,12 +51,14 @@ package secrets
 //
 // ## Deliberate divergences from the pylon original
 //
-//  1. **An unreadable existing vault is never overwritten.** The project path's
-//     `readOrInitVault` falls back to writing a fresh empty vault whenever the
-//     read fails — including when the rows exist but fail to decrypt or
-//     unmarshal. On the global vault that is a platform-wide secret wipe
-//     disguised as a first write, so `adminVault` distinguishes "no rows" from
-//     "rows I could not open" and refuses the second.
+//  1. **An unreadable existing vault is never overwritten.** Pylon's vault
+//     client, and this handler's own project path until the guarantee was
+//     hoisted, fall back to writing a fresh empty vault whenever the read fails
+//     — including when the rows exist but fail to decrypt or unmarshal. That is
+//     a secret wipe disguised as a first write, platform-wide here and
+//     project-wide there. `readVaultByID` (handler.go) distinguishes "no rows"
+//     from "rows I could not open" and only the first may be written over; both
+//     vaults now go through it.
 //  2. **Create does not silently overwrite.** Pylon's admin POST assigns into
 //     the dict unconditionally, so creating a name that already exists destroys
 //     the current value with a 200 and no warning. This returns 400.
@@ -81,7 +83,6 @@ package secrets
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,7 +91,6 @@ import (
 	"sort"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 )
@@ -106,11 +106,6 @@ const (
 	permSecretEdit   = "configuration.secrets.secret.edit"
 	permSecretDelete = "configuration.secrets.secret.delete"
 )
-
-// errVaultAbsent means the vault rows do not exist yet — the only condition
-// under which a write is allowed to create them. Any OTHER read failure means
-// rows exist that could not be opened, and must never be overwritten.
-var errVaultAbsent = errors.New("secrets: global vault has not been initialised")
 
 // validSecretName mirrors `EngineBase._secret_pattern`: the character class
 // `{{secret.<name>}}` interpolation can actually resolve.
@@ -378,138 +373,31 @@ func sortByName(items []adminSecretListItem) {
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 }
 
-// newFernetKey returns 32 fresh random bytes — the raw form; `encryptKey`
-// renders them in centry's on-disk representation.
-func newFernetKey() ([]byte, error) {
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("generate fernet key: %w", err)
-	}
-	return key, nil
-}
-
 /* ── vault access ─────────────────────────────────────────────────────────── */
 
-// adminVault reads and decrypts the global vault.
-//
-// It returns errVaultAbsent ONLY when neither row exists. Every other failure —
-// a missing key row beside a present data row, a decrypt failure, a body that is
-// not `{"secrets":{…},"hidden_secrets":{…}}` — is returned as itself, so no
-// caller can mistake "I could not open this" for "there is nothing here" and
-// write over it.
+// The three functions below are the global vault's names for the shared
+// id-keyed layer in handler.go — `readVaultByID`, `vaultForWriteByID` and
+// `writeVaultByID`, called with `adminVaultKey`. They were this file's own
+// implementations until the project path needed the same guarantees; the
+// contract they carry is documented there, and it is now ONE contract rather
+// than two implementations of it that could drift apart.
+
+// adminVault reads and decrypts the global vault. It returns errVaultAbsent
+// ONLY when neither row exists; every other failure is returned as itself, so
+// no caller can mistake "I could not open this" for "there is nothing here"
+// and write over it.
 func (h *Handler) adminVault(ctx context.Context) (vaultData, error) {
-	var keyBytes []byte
-	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, adminVaultKey,
-	).Scan(&keyBytes)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return vaultData{}, errVaultAbsent
-	}
-	if err != nil {
-		return vaultData{}, fmt.Errorf("read global secrets_key: %w", err)
-	}
-
-	var dataBytes []byte
-	err = h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_data WHERE id = $1`, adminVaultKey,
-	).Scan(&dataBytes)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// A key with no data is a half-initialised vault, not an absent one.
-		// Treating it as absent would let the next write mint a SECOND key over
-		// the first, orphaning whatever data row arrives later.
-		return vaultData{}, errors.New("global vault has a key row but no data row")
-	}
-	if err != nil {
-		return vaultData{}, fmt.Errorf("read global secrets_data: %w", err)
-	}
-
-	fernetKey, err := h.decryptKey(keyBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt global vault key: %w", err)
-	}
-	plaintext, err := fernetDecrypt(fernetKey, dataBytes)
-	if err != nil {
-		return vaultData{}, fmt.Errorf("decrypt global vault data: %w", err)
-	}
-	var v vaultData
-	if err := json.Unmarshal(plaintext, &v); err != nil {
-		return vaultData{}, fmt.Errorf("unmarshal global vault data: %w", err)
-	}
-	if v.Secrets == nil {
-		v.Secrets = map[string]string{}
-	}
-	if v.HiddenSecrets == nil {
-		v.HiddenSecrets = map[string]string{}
-	}
-	return v, nil
+	return h.readVaultByID(ctx, adminVaultKey)
 }
 
 // adminVaultForWrite is adminVault with the one safe fallback: an ABSENT vault
 // becomes an empty one, ready to be written. An unreadable vault still fails.
 func (h *Handler) adminVaultForWrite(ctx context.Context) (vaultData, error) {
-	v, err := h.adminVault(ctx)
-	if errors.Is(err, errVaultAbsent) {
-		return vaultData{Secrets: map[string]string{}, HiddenSecrets: map[string]string{}}, nil
-	}
-	return v, err
+	return h.vaultForWriteByID(ctx, adminVaultKey)
 }
 
 // writeAdminVault encrypts and persists the global vault, generating its Fernet
 // key on first write.
-//
-// The key is stored in centry's on-disk form (the 44-byte base64 ENCODING of the
-// 32 key bytes) via `encryptKey`, not as the raw bytes. That distinction is
-// #196/#197: a raw-32-byte row cannot be opened by `centrysecrets.decodeFernetKey`,
-// which is the reader behind chat-config and Configurations — and the global
-// vault is exactly where those limits live, so writing the wrong form here would
-// break unrelated features across the whole deployment.
 func (h *Handler) writeAdminVault(ctx context.Context, v vaultData) error {
-	var storedKey []byte
-	err := h.pool.QueryRow(ctx,
-		`SELECT data FROM centry.secrets_key WHERE id = $1`, adminVaultKey,
-	).Scan(&storedKey)
-
-	var fernetKey []byte
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		fernetKey, err = newFernetKey()
-		if err != nil {
-			return err
-		}
-		encoded, err := h.encryptKey(fernetKey)
-		if err != nil {
-			return fmt.Errorf("encrypt global vault key: %w", err)
-		}
-		if _, err := h.pool.Exec(ctx,
-			`INSERT INTO centry.secrets_key (id, data) VALUES ($1, $2)
-			 ON CONFLICT (id) DO NOTHING`,
-			adminVaultKey, encoded,
-		); err != nil {
-			return fmt.Errorf("write global secrets_key: %w", err)
-		}
-	case err != nil:
-		return fmt.Errorf("read global secrets_key: %w", err)
-	default:
-		fernetKey, err = h.decryptKey(storedKey)
-		if err != nil {
-			return fmt.Errorf("decrypt global vault key: %w", err)
-		}
-	}
-
-	plaintext, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("marshal global vault data: %w", err)
-	}
-	ciphertext, err := fernetEncrypt(fernetKey, plaintext)
-	if err != nil {
-		return fmt.Errorf("encrypt global vault data: %w", err)
-	}
-	if _, err := h.pool.Exec(ctx,
-		`INSERT INTO centry.secrets_data (id, data) VALUES ($1, $2)
-		 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
-		adminVaultKey, ciphertext,
-	); err != nil {
-		return fmt.Errorf("write global secrets_data: %w", err)
-	}
-	return nil
+	return h.writeVaultByID(ctx, adminVaultKey, v)
 }
