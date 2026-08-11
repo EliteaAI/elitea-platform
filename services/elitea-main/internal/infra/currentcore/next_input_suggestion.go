@@ -124,7 +124,9 @@ func (resolver *NextInputSuggestionResolver) ResolveNextInputSuggestionPolicy(
 	if err != nil {
 		return nil, ErrNextInputSuggestionPolicyUnavailable
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxNextInputSuggestionPolicyBytes))
 		return nil, ErrNextInputSuggestionPolicyUnavailable
