@@ -129,6 +129,42 @@ adminTest('J28: suspending a user is written to the database and survives a relo
 });
 
 /*
+ * The listing is an authorisation boundary, not a UI-visibility one.
+ *
+ * `GET /admin/auth_users/{mode}` used to have no permission middleware at all:
+ * any authenticated session could read every row of `auth_core__user` — id,
+ * name, email, last_login, suspended, administration role — while its pylon
+ * original gates `get()` on `admin.auth.users`, the same permission it requires
+ * for `post()`. A14 gated only the writes, because at the time no deployment
+ * had an administration-mode role to hold and gating a read would have meant
+ * 403 for everyone; the migrations now seed those roles, so the read is gated.
+ *
+ * This runs as the MEMBER persona, which holds the default-mode `admin` role
+ * and no administration role — so it is exactly the case that used to be
+ * allowed. It asserts on the response rather than on the rendered page: an
+ * admin SPA that simply does not offer the member a Users link would satisfy a
+ * DOM assertion while the endpoint stayed wide open to anything that could
+ * issue the request.
+ */
+adminTest.describe('member persona', () => {
+  adminTest.use({ storageState: STORAGE_STATE.member });
+
+  adminTest('J29: a member without admin.auth.users cannot read the global user list', async ({ page }) => {
+    const response = await page.request.get(
+      `${BASE_URL}/api/v2/admin/auth_users/administration?limit=100&offset=0`,
+    );
+
+    expect(response.status(), 'the listing must be refused, not merely hidden').toBe(403);
+
+    // A 403 that still shipped the rows in its body would be the whole defect
+    // with a different status code on it.
+    const body = await response.text();
+    expect(body).not.toContain(SEEDED_ADMIN);
+    expect(body).not.toContain(SEEDED_MEMBER);
+  });
+});
+
+/*
  * NOT COVERED here — deliberately, and each covered elsewhere or tracked:
  *
  *  - the super_admin escalation guard (grant/revoke). It needs a persona

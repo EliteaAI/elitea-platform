@@ -515,6 +515,67 @@ INSERT INTO auth_core__role (id, name, mode) VALUES
     (3, 'viewer', 'default')
 ON CONFLICT (id) DO NOTHING;
 
+-- Administration-mode roles.
+--
+-- These used to be absent, and that absence was load-bearing in the wrong
+-- direction. `legacyrbac.PostgresResolver` resolves the `administration` and
+-- `developer` modes from auth_core__user_role/auth_core__role/…role_permission
+-- with the project id ignored, so with no administration-mode row anywhere
+-- EVERY central permission resolved to the empty set for EVERY user. Unit A14
+-- could therefore only gate the admin panel's WRITES: gating a READ would have
+-- turned "the admin panel works" into "403 for everyone" on a fresh database.
+-- The reads are gated now (internal/api/router.go), so the roles have to exist.
+--
+-- pylon's equivalent is auth_core/db/migrations/202202021633_core.py plus
+-- 202604161400_add_super_admin_role.py. `system` is omitted: it is not in the
+-- Go product's role vocabulary (users.go `adminRolePriority` is
+-- super_admin/admin/editor/viewer) and nothing assigns it.
+INSERT INTO auth_core__role (id, name, mode) VALUES
+    (4, 'super_admin', 'administration'),
+    (5, 'admin', 'administration'),
+    (6, 'editor', 'administration'),
+    (7, 'viewer', 'administration')
+ON CONFLICT (id) DO NOTHING;
+
+-- Administration-mode grants, transcribed from the `recommended_roles` each
+-- pylon handler declares in legacy/plugins/admin/api/v2/.
+--
+-- Two things about that transcription are easy to get wrong. First, a BARE list
+-- (`check_api(["runtime.plugins"])`) is not "no recommended roles" — it parses
+-- into the RecommendedRoles defaults, which are system/super_admin/admin True.
+-- Second, a dict that names only `{"admin": True, "viewer": False,
+-- "editor": False}` still leaves `super_admin` at its default True. So
+-- super_admin holds everything and admin holds everything except the
+-- super_admin escalation permission, which auth_users.py checks separately
+-- (admin/module.py registers it with admin explicitly False).
+--
+-- `editor` and `viewer` get nothing: every declaration sets them False.
+--
+-- Only the `administration` mode is seeded. pylon also registers these in
+-- `developer` and `default`, but no Go route resolves an admin-panel permission
+-- in either, and granting `admin.auth.users` to the DEFAULT-mode `admin` role
+-- would leak it into project-scoped resolution — projectPermissions() falls
+-- back to central default-mode grants by role name when a project has no
+-- per-project rows.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT role.id, grant_row.permission
+FROM auth_core__role AS role
+JOIN (VALUES
+    ('super_admin', 'admin.auth.users'),
+    ('super_admin', 'admin.auth.users.super_admin'),
+    ('super_admin', 'runtime.plugins'),
+    ('super_admin', 'projects.projects.projects.view'),
+    ('super_admin', 'configuration.roles.permissions.view'),
+    ('super_admin', 'admin.moderation'),
+    ('admin', 'admin.auth.users'),
+    ('admin', 'runtime.plugins'),
+    ('admin', 'projects.projects.projects.view'),
+    ('admin', 'configuration.roles.permissions.view'),
+    ('admin', 'admin.moderation')
+) AS grant_row(role_name, permission) ON grant_row.role_name = role.name
+WHERE role.mode = 'administration'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
 -- Default dev user
 INSERT INTO auth_core__user (id, email, name)
 VALUES (1, 'dev@elitea.ai', 'Dev User')
@@ -523,6 +584,16 @@ ON CONFLICT (id) DO NOTHING;
 -- Give dev user admin role
 INSERT INTO auth_core__user_role (user_id, role_id)
 VALUES (1, 1)
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- …and the administration-mode super_admin role, so a fresh database has one
+-- account that can actually reach the admin panel. Without this the roles above
+-- exist and nobody holds them, which is the same 403-for-everyone outcome by a
+-- different route.
+INSERT INTO auth_core__user_role (user_id, role_id)
+SELECT 1, role.id
+FROM auth_core__role AS role
+WHERE role.name = 'super_admin' AND role.mode = 'administration'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
 -- Default project

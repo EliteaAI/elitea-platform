@@ -537,43 +537,83 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 			// === Admin endpoints ===
 			adminHandler := admin.NewHandler(cfg.Pool, admin.WithPermissionResolver(permissionResolver))
-			// The admin panel's write surface (unit A14). Everything below is
-			// gated on the same pylon permission its Python counterpart declares
-			// (`admin.auth.users`, legacy/plugins/admin/api/v2/auth_users.py and
-			// user_suspend.py), resolved from the database in `administration`
-			// mode. The admin SPA's `window.admin_ui_config.permissions` is
-			// PRESENTATION state and is never consulted here.
-			requireAdminUsers := apimw.RequireCentralPermissions(
-				permissionResolver, platformauth.PermissionModeAdministration,
-				"admin.auth.users",
-			)
+			// The admin panel's surface. Every route below is gated on the same
+			// pylon permission its Python counterpart declares in
+			// legacy/plugins/admin/api/v2/, resolved from the database in
+			// `administration` mode. The admin SPA's
+			// `window.admin_ui_config.permissions` is PRESENTATION state and is
+			// never consulted here.
+			//
+			// Unit A14 gated the WRITES only and left the READS open, to avoid a
+			// behaviour change with blast radius outside that unit: no
+			// deployment bootstrapped by elitea-migrate had a single
+			// administration-mode role, so gating a read would have turned
+			// "the admin panel works" into "403 for everyone". That is fixed at
+			// the source — migrations/shared/0060_admin_central_rbac.sql seeds
+			// the administration/developer roles and their grants, and
+			// internal/infra/db/migrations/001_initial.sql seeds them on a fresh
+			// database — so the reads are now gated to match pylon.
+			//
+			// Read this as the parity table it is. `mode` in the URL does NOT
+			// select the permission mode: pylon reaches these handlers only
+			// through its `administration` AdminAPI, so the resolution mode is
+			// always `administration`, exactly as for the A14 writes.
+			central := func(permission string) func(http.Handler) http.Handler {
+				return apimw.RequireCentralPermissions(
+					permissionResolver, platformauth.PermissionModeAdministration,
+					permission,
+				)
+			}
+			// auth_users.py, user_suspend.py
+			requireAdminUsers := central("admin.auth.users")
+			// system_info.py, plugin_config_*.py, maintenance.py, runtime_*.py,
+			// tasks.py, active_tasks.py — all declare ["runtime.plugins"].
+			requireRuntimePlugins := central("runtime.plugins")
+			// projects.py
+			requireProjectsView := central("projects.projects.projects.view")
+			// permissions.py
+			requirePermissionsView := central("configuration.roles.permissions.view")
+			// moderation_statuses.py
+			requireModeration := central("admin.moderation")
 			r.Route("/admin", func(r chi.Router) {
 				// Admin panel endpoints (administration mode, no projectID)
+				//
+				// The two `prompt_lib` routes stay open ON PURPOSE. They are the
+				// help-center's version/resource lookup, reached in pylon through
+				// `PromptLibAPI`, whose `get()` carries NO check_api decorator at
+				// all (system_info.py, plugin_config_values.py) — unlike the
+				// `AdminAPI` siblings one line below. chi matches a static
+				// segment ahead of a `{param}`, so these keep winning over
+				// `/system_info/{mode}` and `/plugin_config_values/{mode}/{plugin}`.
 				r.Get("/system_info/prompt_lib", adminHandler.SystemInfo)
-				r.Get("/system_info/{mode}", adminHandler.SystemInfo)
 				r.Get("/plugin_config_values/prompt_lib/resources", adminHandler.ResourcesConfig)
-				r.Get("/auth_users/{mode}", adminHandler.AuthUsers)
+
+				r.With(requireRuntimePlugins).Get("/system_info/{mode}", adminHandler.SystemInfo)
+				// Before this gate any authenticated session could read the
+				// global user list — id, name, email, last_login, suspended and
+				// administration role for every row of auth_core__user.
+				r.With(requireAdminUsers).Get("/auth_users/{mode}", adminHandler.AuthUsers)
 				r.With(requireAdminUsers).Post("/auth_users/{mode}", adminHandler.AuthUsersAction)
 				r.With(requireAdminUsers).Put("/user_suspend/{mode}/{userID}", adminHandler.UserSuspend)
-				r.Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
-				r.Get("/projects/{mode}", adminHandler.Projects)
-				r.Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
-				r.Get("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValues)
-				r.Put("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValuesSave)
-				r.Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
-				r.Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
-				r.Get("/moderation_statuses/{mode}", adminHandler.ModerationStatuses)
-				r.Get("/maintenance/{mode}", adminHandler.Maintenance)
-				r.Put("/maintenance/{mode}", adminHandler.Maintenance)
-				r.Get("/runtime_remote/{mode}", adminHandler.RuntimeRemote)
-				r.Get("/runtime_remote_config/{mode}/{pluginID}", adminHandler.RuntimeRemoteConfig)
-				r.Post("/runtime_remote_config/{mode}/{pluginID}", adminHandler.RuntimeRemoteConfig)
-				r.Get("/runtime_plugin/{mode}/{pluginName}", adminHandler.RuntimePlugin)
-				r.Put("/runtime_plugin/{mode}/{pluginName}", adminHandler.RuntimePlugin)
-				r.Post("/runtime_pylons/{mode}", adminHandler.RuntimePylonLogs)
-				r.Get("/tasks/{mode}/", adminHandler.Tasks)
-				r.Get("/tasks/{mode}", adminHandler.Tasks)
-				r.Get("/active_tasks/{mode}", adminHandler.ActiveTasks)
+				r.With(requirePermissionsView).Get("/permissions/{scope}/{mode}", adminHandler.AdminPermissions)
+				r.With(requireProjectsView).Get("/projects/{mode}", adminHandler.Projects)
+				r.With(requireRuntimePlugins).Get("/plugin_config_schemas/{mode}", adminHandler.PluginConfigSchemas)
+				r.With(requireRuntimePlugins).Get("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValues)
+				r.With(requireRuntimePlugins).Put("/plugin_config_values/{mode}/{plugin}", adminHandler.PluginConfigValuesSave)
+				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
+				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
+				r.With(requireModeration).Get("/moderation_statuses/{mode}", adminHandler.ModerationStatuses)
+				r.With(requireRuntimePlugins).Get("/maintenance/{mode}", adminHandler.Maintenance)
+				r.With(requireRuntimePlugins).Put("/maintenance/{mode}", adminHandler.Maintenance)
+				r.With(requireRuntimePlugins).Get("/runtime_remote/{mode}", adminHandler.RuntimeRemote)
+				r.With(requireRuntimePlugins).Get("/runtime_remote_config/{mode}/{pluginID}", adminHandler.RuntimeRemoteConfig)
+				r.With(requireRuntimePlugins).Post("/runtime_remote_config/{mode}/{pluginID}", adminHandler.RuntimeRemoteConfig)
+				r.With(requireRuntimePlugins).Get("/runtime_plugin/{mode}/{pluginName}", adminHandler.RuntimePlugin)
+				r.With(requireRuntimePlugins).Put("/runtime_plugin/{mode}/{pluginName}", adminHandler.RuntimePlugin)
+				r.With(requireRuntimePlugins).Post("/runtime_pylons/{mode}", adminHandler.RuntimePylonLogs)
+				r.With(requireRuntimePlugins).Get("/tasks/{mode}/", adminHandler.Tasks)
+				r.With(requireRuntimePlugins).Get("/tasks/{mode}", adminHandler.Tasks)
+				r.With(requireRuntimePlugins).Get("/active_tasks/{mode}", adminHandler.ActiveTasks)
 
 				// Regular app admin endpoints (with projectID)
 				//
