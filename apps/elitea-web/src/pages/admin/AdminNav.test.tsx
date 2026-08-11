@@ -378,6 +378,20 @@ describe('collapsed state', () => {
     expect(within(toggle).getByTestId('ChevronRightIcon')).toBeInTheDocument();
   });
 
+  it('keeps every collapsed item named, since only an icon is left', async () => {
+    // Collapsed, the label is gone and the tooltip is the ONLY thing that says
+    // what the icon is — for a sighted user hovering and for a screen reader
+    // alike. Mutation testing found `title={collapsed ? item.label : ''}`
+    // unprotected: swapped, the tooltip appears when the label is already
+    // visible and vanishes when it is the only cue left.
+    await mountAdmin();
+    const nav = screen.getByTestId('admin-nav');
+    await userEvent.click(screen.getByTestId('admin-nav-collapse-toggle'));
+
+    expect(within(nav).queryByText('Schedules & Tasks')).toBeNull();
+    expect(within(nav).getByRole('link', { name: 'Schedules & Tasks' })).toBeInTheDocument();
+  });
+
   it('persists through localStorage, under its own key', async () => {
     await mountAdmin();
     await userEvent.click(screen.getByTestId('admin-nav-collapse-toggle'));
