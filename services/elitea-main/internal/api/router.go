@@ -613,7 +613,10 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// admin_ui and qa/elitea-api-testing. #137 read it as a
 			// double-mount bug and moved the routes to the v2 root, which
 			// broke every consumer outside apps/elitea-web; #151 restores it.
-			r.Mount("/secrets", v2secrets.NewHandler(cfg.Pool).Routes())
+			r.Mount("/secrets", v2secrets.NewHandler(
+				cfg.Pool,
+				v2secrets.WithPermissionResolver(permissionResolver),
+			).Routes())
 
 			// === Notifications ===
 			r.Route("/notifications", func(r chi.Router) {
