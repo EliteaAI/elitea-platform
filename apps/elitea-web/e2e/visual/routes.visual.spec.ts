@@ -539,19 +539,19 @@ test('@visual chat-empty-rail-collapsed', async ({ page }) => {
  *    FIXED set of conversations before the visual project runs would make the
  *    list deterministic and unblock all four shots.
  *
- *  - `/help-center` (2 shots). Its route IS wired and it renders the real page,
- *    so this change flips its `wiringStatus` — but it is EXEMPT from snapshots
- *    rather than covered. Every one of its five cards renders "No links
- *    configured" and the version bar is blank, because `useResourcesConfig`
- *    has no backend at all (issue #26 Key Decision #2, disclosed in the page's
- *    own module doc). A baseline would make a screen whose entire content is
- *    missing the official reference, which is the trap the `wired`-only rule
- *    exists to prevent. Note that this is a different situation from an EMPTY
- *    screen: `/artifacts`, `/skills/:tab` and the two list pages above render
- *    resolved, legitimately-empty data from working endpoints, and their empty
- *    states are real UI. Help Center's content cannot be configured at all yet.
- *    (Measured anyway, for when #26 lands: stalled and loaded screenshots are
- *    byte-identical, so it will not need a data landmark, only a guard.)
+ *  - `/help-center` (2 shots). Still EXEMPT, but no longer for the reason
+ *    written here before unit A14. `useResourcesConfig` now HAS a backend: the
+ *    admin Configuration port (#200) made
+ *    `GET /admin/plugin_config_values/prompt_lib/resources` serve the section
+ *    an administrator edits, and the hook reads it — which is what issue #26
+ *    was waiting for, and journey 34b asserts end to end. What remains is a
+ *    SEEDING question rather than a wiring one: this stack configures no
+ *    resource links, so the cards still render "No links configured" and a
+ *    baseline would still photograph an unconfigured screen. Seeding a fixed
+ *    set of links (as the conversation-list note above proposes for `/chat`)
+ *    is now all that stands between this route and two real shots.
+ *    (Measured before: stalled and loaded screenshots were byte-identical, so
+ *    it will not need a data landmark, only a guard.)
  *
  *  - `/onboarding` (2 shots). Left at `ready`, not re-classified. The route
  *    renders a real page, but what it renders ("Welcome to Elitea!" + a single
