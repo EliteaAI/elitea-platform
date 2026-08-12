@@ -46,6 +46,7 @@ func TestMainWiring(t *testing.T) {
 		{"llmproxy.WithOpsEventPublisher(", "budget.unbilled_stream is never published — a stream the gateway could not bill would be invisible to operators (issue #9)"},
 		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
 		{"makeReadyzHandler(", "the NATS circuit-breaker /readyz handler is never mounted — a pod with a dead budget-enforcement path stays in the load-balancer rotation"},
+		{`mux.HandleFunc("/healthz"`, "the liveness /healthz route is never mounted — issue #242's healthz/readyz split silently loses liveness, and the chart's livenessProbe would 404 every pod"},
 		{"drainForShutdown(", "in-flight billing + persist goroutines must be drained before pool.Close() or spend is dropped / a pool races"},
 		{"grace.StopStreamGrace(", "phase 1 of shutdown is missing — the stream grace would extend the pod's termination window (issue #9)"},
 		{"srv.ShutdownHTTP(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
@@ -61,7 +62,12 @@ func TestMainWiring(t *testing.T) {
 	}
 
 	// Collect every selector-call (x.Method(...)) and every bare call (f(...))
-	// across the non-test files of package main.
+	// across the non-test files of package main. A selector call whose first
+	// argument is a string literal (e.g. mux.HandleFunc("/healthz", ...)) is
+	// ALSO keyed by that literal, so two calls to the same method (mounting
+	// two different routes) don't collapse into one indistinguishable key —
+	// otherwise deleting the /healthz mount would be invisible as long as
+	// /readyz's mux.HandleFunc( call still existed.
 	calls := map[string]bool{}
 	for _, name := range goFiles {
 		if strings.HasSuffix(name, "_test.go") {
@@ -79,7 +85,13 @@ func TestMainWiring(t *testing.T) {
 			switch fn := ce.Fun.(type) {
 			case *ast.SelectorExpr: // x.Method
 				if id, ok := fn.X.(*ast.Ident); ok {
-					calls[id.Name+"."+fn.Sel.Name+"("] = true
+					base := id.Name + "." + fn.Sel.Name + "("
+					calls[base] = true
+					if len(ce.Args) > 0 {
+						if lit, ok := ce.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							calls[base+lit.Value] = true
+						}
+					}
 				}
 			case *ast.Ident: // bareFunc
 				calls[fn.Name+"("] = true

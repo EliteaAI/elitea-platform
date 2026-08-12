@@ -572,6 +572,7 @@ type healthStatus struct {
 }
 
 func writeHealthJSON(w http.ResponseWriter, code int, v healthStatus) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
