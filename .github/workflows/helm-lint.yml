@@ -59,10 +59,16 @@ jobs:
           - chart: elitea-main
             values: -f deploy/helm/elitea-main/values-staging.yaml
             # Non-default code paths that render nothing in the pass above.
-            toggles: --set migrations.enabled=false --set autoscaling.enabled=false --set podDisruptionBudget.enabled=false
+            # ingress.gatewayApi (HTTPRoute) is NOT toggled on here: the
+            # gateway.networking.k8s.io CRD schema isn't in CRDs-catalog at
+            # the pinned $CRD_SCHEMAS tag (only on its unpinned main), so
+            # kubeconform would fail on a missing schema. The standard
+            # Ingress path uses kubeconform's built-in kubernetes-version
+            # schema, no CRD needed.
+            toggles: --set migrations.enabled=false --set autoscaling.enabled=false --set podDisruptionBudget.enabled=false --set ingress.enabled=true --set-json 'ingress.hosts=["example.invalid"]'
           - chart: elitea-llm-gateway
             values: ""
-            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false
+            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set ingress.acknowledgeMTLSBypass=true --set-json 'ingress.hosts=["example.invalid"]'
           - chart: elitea-scheduler
             values: ""
             toggles: --set service.enabled=true --set probes.liveness.enabled=false --set probes.readiness.enabled=true
