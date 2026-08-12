@@ -19,20 +19,27 @@ SET is_streaming = FALSE,
             'thread_id', $1::text,
             'authorization_requests', $2::jsonb,
             'is_error', FALSE,
-            'error', ''
+            'error', '',
+            'invoked_skills', $3::jsonb
         ),
     updated_at = clock_timestamp()
-WHERE id = $3::bigint
+WHERE id = $4::bigint
 `
 
 type FinalizeCurrentAgentAuthorizationPauseParams struct {
 	ThreadID              string `db:"thread_id" json:"thread_id"`
 	AuthorizationRequests []byte `db:"authorization_requests" json:"authorization_requests"`
+	InvokedSkills         []byte `db:"invoked_skills" json:"invoked_skills"`
 	MessageGroupID        int64  `db:"message_group_id" json:"message_group_id"`
 }
 
 func (q *Queries) FinalizeCurrentAgentAuthorizationPause(ctx context.Context, arg FinalizeCurrentAgentAuthorizationPauseParams) (int64, error) {
-	result, err := q.db.Exec(ctx, finalizeCurrentAgentAuthorizationPause, arg.ThreadID, arg.AuthorizationRequests, arg.MessageGroupID)
+	result, err := q.db.Exec(ctx, finalizeCurrentAgentAuthorizationPause,
+		arg.ThreadID,
+		arg.AuthorizationRequests,
+		arg.InvokedSkills,
+		arg.MessageGroupID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -83,16 +90,18 @@ SET is_streaming = FALSE,
             'hitl_interrupt', $2::jsonb,
             'hitl_interrupts', $3::jsonb,
             'is_error', FALSE,
-            'error', ''
+            'error', '',
+            'invoked_skills', $4::jsonb
         ),
     updated_at = clock_timestamp()
-WHERE id = $4::bigint
+WHERE id = $5::bigint
 `
 
 type FinalizeCurrentAgentHITLPauseParams struct {
 	ThreadID       string `db:"thread_id" json:"thread_id"`
 	HitlInterrupt  []byte `db:"hitl_interrupt" json:"hitl_interrupt"`
 	HitlInterrupts []byte `db:"hitl_interrupts" json:"hitl_interrupts"`
+	InvokedSkills  []byte `db:"invoked_skills" json:"invoked_skills"`
 	MessageGroupID int64  `db:"message_group_id" json:"message_group_id"`
 }
 
@@ -101,12 +110,26 @@ func (q *Queries) FinalizeCurrentAgentHITLPause(ctx context.Context, arg Finaliz
 		arg.ThreadID,
 		arg.HitlInterrupt,
 		arg.HitlInterrupts,
+		arg.InvokedSkills,
 		arg.MessageGroupID,
 	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getCurrentAgentInvokedSkills = `-- name: GetCurrentAgentInvokedSkills :one
+SELECT COALESCE(meta -> 'invoked_skills', '[]'::jsonb)::text AS invoked_skills
+FROM chat_message_group
+WHERE id = $1::bigint
+`
+
+func (q *Queries) GetCurrentAgentInvokedSkills(ctx context.Context, messageGroupID int64) (string, error) {
+	row := q.db.QueryRow(ctx, getCurrentAgentInvokedSkills, messageGroupID)
+	var invoked_skills string
+	err := row.Scan(&invoked_skills)
+	return invoked_skills, err
 }
 
 const insertCurrentAdhocTurn = `-- name: InsertCurrentAdhocTurn :one
