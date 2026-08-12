@@ -37,10 +37,8 @@ import (
 // PublishedAgentsListPermission is the permission the pylon original declares.
 const PublishedAgentsListPermission = "runtime.admin.published_agents"
 
-// maxPublishedAgentsPageSize bounds `?page_size`. It is applied where the page
-// is requested AND again where the result slice is sized: the second clamp is
-// what keeps the allocation independent of the query string, rather than
-// dependent on a bound established in another function.
+// maxPublishedAgentsPageSize bounds `?page_size`, so a caller cannot ask for
+// the whole catalogue in one response.
 const maxPublishedAgentsPageSize = 100
 
 type publishedAgentVersion struct {
@@ -157,11 +155,13 @@ LIMIT $1 OFFSET $2`, schema, publishedPredicate, orderColumn), limit, offset)
 	}
 	defer rows.Close()
 
-	capacity := limit
-	if capacity < 0 || capacity > maxPublishedAgentsPageSize {
-		capacity = maxPublishedAgentsPageSize
-	}
-	agents := make([]publishedAgent, 0, capacity)
+	// No capacity hint. `limit` is bounded by maxPublishedAgentsPageSize before
+	// it ever gets here, but sizing the allocation from a value that originates
+	// in the query string is what CodeQL's uncontrolled-allocation-size rule
+	// objects to, and it does not accept the clamp as a barrier. The page is at
+	// most 100 rows, so pre-sizing buys nothing worth arguing with a scanner
+	// over. It stays non-nil so an empty page marshals as `[]`, not `null`.
+	agents := make([]publishedAgent, 0)
 	for rows.Next() {
 		var (
 			agent      publishedAgent
