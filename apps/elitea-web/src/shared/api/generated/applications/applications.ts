@@ -77,6 +77,7 @@ import type {
   ForkRequest,
   ForkResponse,
   GetApplicationIconsParams,
+  GetProjectQuotaParams,
   GetRecommendationsParams,
   GroupsListResponse,
   IconMetaRequest,
@@ -98,6 +99,9 @@ import type {
   ProjectContextUpdateRequest,
   ProjectGroupCreate,
   ProjectGroupsUpdate,
+  ProjectQuota,
+  ProjectQuotaUpdate,
+  ProjectStatistics,
   ProjectWithGroups,
   PublicApplicationDetail,
   PublicApplicationList,
@@ -110,6 +114,7 @@ import type {
   SaveApplicationNewVersionBody,
   SetAgentAttachmentStorageBody,
   SetDefaultVersionRequest,
+  SetProjectQuotaParams,
   TrendingAuthor,
   UnpublishRequest,
   UnpublishResponse,
@@ -9734,6 +9739,783 @@ export function usePutProjectGroups<
     projectGroupsUpdate,
     options,
   );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getProjectQuotaResponse200 = {
+  data: ProjectQuota | boolean;
+  status: 200;
+};
+
+export type getProjectQuotaResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type getProjectQuotaResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getProjectQuotaResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getProjectQuotaResponse404 = {
+  data: ErrorResponse;
+  status: 404;
+};
+
+export type getProjectQuotaResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type getProjectQuotaResponseSuccess = getProjectQuotaResponse200 & {
+  headers: Headers;
+};
+export type getProjectQuotaResponseError = (
+  | getProjectQuotaResponse400
+  | getProjectQuotaResponse401
+  | getProjectQuotaResponse403
+  | getProjectQuotaResponse404
+  | getProjectQuotaResponse500
+) & {
+  headers: Headers;
+};
+
+export type getProjectQuotaResponse =
+  getProjectQuotaResponseSuccess | getProjectQuotaResponseError;
+
+export const getGetProjectQuotaUrl = (
+  projectId: string,
+  params?: GetProjectQuotaParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/projects/quota/${projectId}?${stringifiedParams}`
+    : `/projects/quota/${projectId}`;
+};
+
+/**
+ * Without `quota`, answers the project's whole quota row. With it, answers
+ * the bare JSON boolean "is this project still under that ceiling?".
+ *
+ * `-1` is the quota tables' unlimited sentinel.
+ *
+ * The `quota` form also ROLLS THE WINDOW OVER when it is due: after 30
+ * days it advances `last_update_time` by one window and zeroes the
+ * per-window counters. That is a write on a read, and it is the reference's
+ * behaviour — it is the only thing that ever resets those counters, so
+ * without it a project that hit its ceiling would be denied forever.
+ * @summary A project's resource quota, or one quota check
+ */
+export const getProjectQuota = async (
+  projectId: string,
+  params?: GetProjectQuotaParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getProjectQuotaResponse> => {
+  return eliteaFetch<getProjectQuotaResponse>(
+    getGetProjectQuotaUrl(projectId, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetProjectQuotaQueryKey = (
+  projectId: string,
+  params?: GetProjectQuotaParams,
+) => {
+  return [`/projects/quota/${projectId}`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetProjectQuotaQueryOptions = <
+  TData = Awaited<ReturnType<typeof getProjectQuota>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  params?: GetProjectQuotaParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectQuota>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetProjectQuotaQueryKey(projectId, params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getProjectQuota>>> = ({
+    signal,
+  }) => getProjectQuota(projectId, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getProjectQuota>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetProjectQuotaQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getProjectQuota>>
+>;
+export type GetProjectQuotaQueryError =
+  N400Response | N401Response | N403Response | ErrorResponse | N500Response;
+
+export function useGetProjectQuota<
+  TData = Awaited<ReturnType<typeof getProjectQuota>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  params: undefined | GetProjectQuotaParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectQuota>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProjectQuota>>,
+          TError,
+          Awaited<ReturnType<typeof getProjectQuota>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetProjectQuota<
+  TData = Awaited<ReturnType<typeof getProjectQuota>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  params?: GetProjectQuotaParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectQuota>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProjectQuota>>,
+          TError,
+          Awaited<ReturnType<typeof getProjectQuota>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetProjectQuota<
+  TData = Awaited<ReturnType<typeof getProjectQuota>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  params?: GetProjectQuotaParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectQuota>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary A project's resource quota, or one quota check
+ */
+
+export function useGetProjectQuota<
+  TData = Awaited<ReturnType<typeof getProjectQuota>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  params?: GetProjectQuotaParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectQuota>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetProjectQuotaQueryOptions(
+    projectId,
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type setProjectQuotaResponse200 = {
+  data: ProjectQuota;
+  status: 200;
+};
+
+export type setProjectQuotaResponse400 = {
+  data: ErrorResponse;
+  status: 400;
+};
+
+export type setProjectQuotaResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type setProjectQuotaResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type setProjectQuotaResponse404 = {
+  data: ErrorResponse;
+  status: 404;
+};
+
+export type setProjectQuotaResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type setProjectQuotaResponseSuccess = setProjectQuotaResponse200 & {
+  headers: Headers;
+};
+export type setProjectQuotaResponseError = (
+  | setProjectQuotaResponse400
+  | setProjectQuotaResponse401
+  | setProjectQuotaResponse403
+  | setProjectQuotaResponse404
+  | setProjectQuotaResponse500
+) & {
+  headers: Headers;
+};
+
+export type setProjectQuotaResponse =
+  setProjectQuotaResponseSuccess | setProjectQuotaResponseError;
+
+export const getSetProjectQuotaUrl = (
+  projectId: string,
+  params: SetProjectQuotaParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/projects/quota/${projectId}?${stringifiedParams}`
+    : `/projects/quota/${projectId}`;
+};
+
+/**
+ * `usage_type` selects which triple of columns the body writes; the other
+ * triple is untouched. An omitted field CLEARS its column rather than
+ * leaving it alone, matching the reference's `update_*_limits` — the form
+ * always sends all three, and treating omission as "leave alone" would
+ * make a limit impossible to clear.
+ *
+ * The reference answers 500 for a missing `usage_type` (it calls `.lower()`
+ * on None) and a bodiless 200 for an unknown one; both are 400 here.
+ * @summary Update a project's VCU or storage limits
+ */
+export const setProjectQuota = async (
+  projectId: string,
+  projectQuotaUpdate: ProjectQuotaUpdate,
+  params: SetProjectQuotaParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<setProjectQuotaResponse> => {
+  return eliteaFetch<setProjectQuotaResponse>(
+    getSetProjectQuotaUrl(projectId, params),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(projectQuotaUpdate),
+    },
+  );
+};
+
+export const getSetProjectQuotaQueryKey = (
+  projectId: string,
+  projectQuotaUpdate?: ProjectQuotaUpdate,
+  params?: SetProjectQuotaParams,
+) => {
+  return [
+    "PUT",
+    `/projects/quota/${projectId}`,
+    ...(params ? [params] : []),
+    projectQuotaUpdate,
+  ] as const;
+};
+
+export const getSetProjectQuotaQueryOptions = <
+  TData = Awaited<ReturnType<typeof setProjectQuota>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectQuotaUpdate: ProjectQuotaUpdate,
+  params: SetProjectQuotaParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof setProjectQuota>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getSetProjectQuotaQueryKey(projectId, projectQuotaUpdate, params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof setProjectQuota>>> = ({
+    signal,
+  }) =>
+    setProjectQuota(projectId, projectQuotaUpdate, params, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof setProjectQuota>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type SetProjectQuotaQueryResult = NonNullable<
+  Awaited<ReturnType<typeof setProjectQuota>>
+>;
+export type SetProjectQuotaQueryError =
+  ErrorResponse | N401Response | N403Response | N500Response;
+
+export function useSetProjectQuota<
+  TData = Awaited<ReturnType<typeof setProjectQuota>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectQuotaUpdate: ProjectQuotaUpdate,
+  params: SetProjectQuotaParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof setProjectQuota>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof setProjectQuota>>,
+          TError,
+          Awaited<ReturnType<typeof setProjectQuota>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useSetProjectQuota<
+  TData = Awaited<ReturnType<typeof setProjectQuota>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectQuotaUpdate: ProjectQuotaUpdate,
+  params: SetProjectQuotaParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof setProjectQuota>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof setProjectQuota>>,
+          TError,
+          Awaited<ReturnType<typeof setProjectQuota>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useSetProjectQuota<
+  TData = Awaited<ReturnType<typeof setProjectQuota>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectQuotaUpdate: ProjectQuotaUpdate,
+  params: SetProjectQuotaParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof setProjectQuota>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Update a project's VCU or storage limits
+ */
+
+export function useSetProjectQuota<
+  TData = Awaited<ReturnType<typeof setProjectQuota>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectQuotaUpdate: ProjectQuotaUpdate,
+  params: SetProjectQuotaParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof setProjectQuota>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getSetProjectQuotaQueryOptions(
+    projectId,
+    projectQuotaUpdate,
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getProjectStatisticsResponse200 = {
+  data: ProjectStatistics;
+  status: 200;
+};
+
+export type getProjectStatisticsResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type getProjectStatisticsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getProjectStatisticsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getProjectStatisticsResponse404 = {
+  data: ErrorResponse;
+  status: 404;
+};
+
+export type getProjectStatisticsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type getProjectStatisticsResponseSuccess =
+  getProjectStatisticsResponse200 & {
+    headers: Headers;
+  };
+export type getProjectStatisticsResponseError = (
+  | getProjectStatisticsResponse400
+  | getProjectStatisticsResponse401
+  | getProjectStatisticsResponse403
+  | getProjectStatisticsResponse404
+  | getProjectStatisticsResponse500
+) & {
+  headers: Headers;
+};
+
+export type getProjectStatisticsResponse =
+  getProjectStatisticsResponseSuccess | getProjectStatisticsResponseError;
+
+export const getGetProjectStatisticsUrl = (projectId: string) => {
+  return `/projects/statistics/${projectId}`;
+};
+
+/**
+ * One `{current, quota}` pair per metric.
+ *
+ * `quota` is NULL where the quota table has no column for that metric.
+ * The reference indexes the quota row with every counter's name and raises
+ * KeyError on the first one that is missing, so this endpoint cannot run
+ * there at all; reporting null is the deliberate replacement.
+ *
+ * `tasks_count` is NOT reported. The reference resolves it through a
+ * `tasks_count` RPC that no plugin registers, and nothing in this platform
+ * counts tasks.
+ *
+ * `storage_space` is measured live from the artifact store, in BYTES on
+ * both sides. The reference reported megabytes on the current side and
+ * paired them with a gigabyte quota column that does not exist.
+ * @summary A project's usage counters against its quota
+ */
+export const getProjectStatistics = async (
+  projectId: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getProjectStatisticsResponse> => {
+  return eliteaFetch<getProjectStatisticsResponse>(
+    getGetProjectStatisticsUrl(projectId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetProjectStatisticsQueryKey = (projectId: string) => {
+  return [`/projects/statistics/${projectId}`] as const;
+};
+
+export const getGetProjectStatisticsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getProjectStatistics>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectStatistics>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetProjectStatisticsQueryKey(projectId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getProjectStatistics>>
+  > = ({ signal }) =>
+    getProjectStatistics(projectId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getProjectStatistics>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetProjectStatisticsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getProjectStatistics>>
+>;
+export type GetProjectStatisticsQueryError =
+  N400Response | N401Response | N403Response | ErrorResponse | N500Response;
+
+export function useGetProjectStatistics<
+  TData = Awaited<ReturnType<typeof getProjectStatistics>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectStatistics>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProjectStatistics>>,
+          TError,
+          Awaited<ReturnType<typeof getProjectStatistics>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetProjectStatistics<
+  TData = Awaited<ReturnType<typeof getProjectStatistics>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectStatistics>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getProjectStatistics>>,
+          TError,
+          Awaited<ReturnType<typeof getProjectStatistics>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetProjectStatistics<
+  TData = Awaited<ReturnType<typeof getProjectStatistics>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectStatistics>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary A project's usage counters against its quota
+ */
+
+export function useGetProjectStatistics<
+  TData = Awaited<ReturnType<typeof getProjectStatistics>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getProjectStatistics>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetProjectStatisticsQueryOptions(projectId, options);
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,

@@ -279,3 +279,62 @@ func TestGroupWritesAreGated(t *testing.T) {
 		})
 	}
 }
+
+// TestQuotaRoutesAreGated is the same fail-closed argument for the quota and
+// statistics routes (#246). The quota READ matters as much as the write: the
+// row names a project's ceilings, and the statistics read reports what it has
+// consumed.
+//
+// A Handler built without a resolver must REFUSE all three rather than run
+// ungated — including the reads, which is the part an "it's only a GET"
+// reading would get wrong.
+func TestQuotaRoutesAreGated(t *testing.T) {
+	router := setupProjectRouter(nil)
+	body := func() *bytes.Reader {
+		payload, err := json.Marshal(map[string]any{"vcu_hard_limit": 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bytes.NewReader(payload)
+	}
+
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/projects/quota/1"},
+		{http.MethodPut, "/projects/quota/1?usage_type=vcu"},
+		{http.MethodGet, "/projects/statistics/1"},
+	}
+
+	for _, route := range routes {
+		t.Run("unauthenticated "+route.method+" "+route.path, func(t *testing.T) {
+			request := httptest.NewRequest(route.method, route.path, body())
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d; body=%s",
+					recorder.Code, http.StatusUnauthorized, recorder.Body.String())
+			}
+		})
+
+		t.Run("no resolver "+route.method+" "+route.path, func(t *testing.T) {
+			request := withUser(
+				httptest.NewRequest(route.method, route.path, body()),
+				auth.User{ID: "7", UserID: "7"},
+			)
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body=%s",
+					recorder.Code, http.StatusForbidden, recorder.Body.String())
+			}
+		})
+	}
+}

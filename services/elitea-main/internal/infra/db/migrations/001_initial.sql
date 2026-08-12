@@ -35,6 +35,48 @@ CREATE TABLE IF NOT EXISTS centry.project_group_association (
     PRIMARY KEY (project_id, group_id)
 );
 
+-- Per-project resource ceilings and usage counters (issue #246).
+-- Column-for-column legacy/plugins/projects/models/{quota,statistics}.py, so a
+-- fresh database and a legacy dump present the same table to
+-- /api/v2/projects/{quota,statistics}. The same DDL lands on existing
+-- databases through migrations/shared/0062_budgets_quota_statistics.sql — see
+-- that file for why -1 is the "unlimited" sentinel and why the project_id
+-- uniqueness the reference model omits is added here.
+CREATE TABLE IF NOT EXISTS centry.project_quota (
+    id                        SERIAL PRIMARY KEY,
+    project_id                INTEGER NOT NULL,
+    data_retention_limit      INTEGER,
+    test_duration_limit       INTEGER DEFAULT -1,
+    cpu_limit                 INTEGER DEFAULT -1,
+    memory_limit              INTEGER DEFAULT -1,
+    last_update_time          TIMESTAMP DEFAULT (now() AT TIME ZONE 'utc'),
+    dast_scans                INTEGER DEFAULT -1,
+    sast_scans                INTEGER DEFAULT -1,
+    vcu_hard_limit            INTEGER,
+    vcu_soft_limit            INTEGER,
+    vcu_limit_total_block     BOOLEAN NOT NULL DEFAULT false,
+    storage_hard_limit        INTEGER,
+    storage_soft_limit        INTEGER,
+    storage_limit_total_block BOOLEAN NOT NULL DEFAULT false
+);
+CREATE UNIQUE INDEX IF NOT EXISTS project_quota_project_uniq
+    ON centry.project_quota (project_id);
+
+CREATE TABLE IF NOT EXISTS centry.statistic (
+    id                       SERIAL PRIMARY KEY,
+    project_id               INTEGER NOT NULL,
+    start_time               TIMESTAMP DEFAULT (now() AT TIME ZONE 'utc'),
+    vuh_used                 INTEGER DEFAULT 0,
+    performance_test_runs    INTEGER DEFAULT 0,
+    sast_scans               INTEGER DEFAULT 0,
+    dast_scans               INTEGER DEFAULT 0,
+    public_pool_workers      INTEGER DEFAULT 0,
+    ui_performance_test_runs INTEGER DEFAULT 0,
+    tasks_executions         INTEGER DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS statistic_project_uniq
+    ON centry.statistic (project_id);
+
 -- Social users (author profiles)
 CREATE TABLE IF NOT EXISTS centry.social_users (
     id SERIAL PRIMARY KEY,
@@ -772,9 +814,33 @@ JOIN (VALUES
     ('admin', 'modes.users'),
     ('admin', 'configuration.roles.user_project_permissions.view'),
     ('admin', 'configuration.roles.user_project_permissions.edit'),
-    ('admin', 'runtime.admin.published_agents')
+    ('admin', 'runtime.admin.published_agents'),
+    -- Issue 246, budgets. project_budget.py, project_budgets.py,
+    -- user_budget.py and user_budgets.py declare `{"admin": True,
+    -- "editor": False, "viewer": False}` in administration mode, which leaves
+    -- super_admin at its default True per the note above.
+    ('super_admin', 'models.admin.project_budgets.view'),
+    ('super_admin', 'models.admin.project_budgets.edit'),
+    ('admin', 'models.admin.project_budgets.view'),
+    ('admin', 'models.admin.project_budgets.edit')
 ) AS grant_row(role_name, permission) ON grant_row.role_name = role.name
 WHERE role.mode = 'administration'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Default-mode grants (issue 246).
+--
+-- The only ones in this file, and the exception the block above describes
+-- rather than a contradiction of it: `models.project_context.view` IS a
+-- project-scoped permission, declared `{"admin": True, "editor": True,
+-- "viewer": True}` in DEFAULT_MODE by project_budget.py, user_budget.py,
+-- user_budgets.py and usage.py. Granting it to the default-mode roles is what
+-- lets projectPermissions()' central fallback resolve it for a project with no
+-- per-project rows — which is every project on a fresh database. Without it
+-- the project-scoped budget and usage reads are 403 for every user.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT role.id, 'models.project_context.view'
+FROM auth_core__role AS role
+WHERE role.mode = 'default' AND role.name IN ('admin', 'editor', 'viewer')
 ON CONFLICT (role_id, permission) DO NOTHING;
 
 -- Default dev user

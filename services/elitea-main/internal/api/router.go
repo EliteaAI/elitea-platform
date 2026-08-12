@@ -31,6 +31,7 @@ import (
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
 	v2openapidocs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/openapidocs"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
+	v2budgets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/budgets"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
@@ -1355,6 +1356,61 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Post("/register_descriptor/{projectID}", coreHandler.RegisterDescriptor)
 				r.With(requireDescriptorRegister).
 					Delete("/register_descriptor/{projectID}", coreHandler.RegisterDescriptor)
+
+				// === Budgets and usage (issue #246) ===
+				//
+				// The port of legacy/plugins/elitea_core/api/v2/
+				// {project_budget,project_budgets,user_budget,user_budgets,
+				// usage}.py. The project-budget WRITE lands on
+				// gateway.project_budget, which the LLM gateway's failmode
+				// store reads on every call, so this is an enforcement path and
+				// not a second write-only config table (#218).
+				//
+				// `prompt_lib` and `administration` are STATIC segments, as
+				// they are throughout this file: the mode is not a value the
+				// caller chooses, it selects which handler and which gate
+				// runs. That matters more here than elsewhere — the
+				// project-scoped member read carries an ownership check the
+				// administration one deliberately does not, and a shared
+				// `{mode}` route would let any member skip it by asking for
+				// `administration`.
+				//
+				// Gates, transcribed from the pylon `check_api` declarations:
+				// the project-scoped reads resolve `models.project_context.view`
+				// against the project in DEFAULT mode; the administration reads
+				// and writes resolve `models.admin.project_budgets.view` /
+				// `.edit` centrally. The default-mode grant that makes the
+				// former resolvable at all is seeded by
+				// migrations/shared/0062_budgets_quota_statistics.sql — without
+				// it, a project-scoped gate is 403-for-everyone on a
+				// Go-bootstrapped database.
+				budgetsHandler := v2budgets.NewHandler(cfg.Pool)
+				requireBudgetsView := central(v2budgets.AdminViewPermission)
+				requireBudgetsEdit := central(v2budgets.AdminEditPermission)
+				requireProjectBudgetRead := apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					v2budgets.ProjectViewPermission,
+				)
+				r.With(requireProjectBudgetRead).
+					Get("/project_budget/prompt_lib/{projectID}/budget", budgetsHandler.GetProjectBudget)
+				r.With(requireBudgetsView).
+					Get("/project_budget/administration/{projectID}/budget", budgetsHandler.GetProjectBudget)
+				r.With(requireBudgetsEdit).
+					Put("/project_budget/administration/{projectID}/budget", budgetsHandler.PutProjectBudget)
+				r.With(requireBudgetsView).
+					Get("/project_budgets/administration", budgetsHandler.ListProjectBudgets)
+				r.With(requireProjectBudgetRead).
+					Get("/user_budget/prompt_lib/{projectID}/user_budget/{userID}", budgetsHandler.GetUserBudget)
+				r.With(requireBudgetsView).
+					Get("/user_budget/administration/{projectID}/user_budget/{userID}", budgetsHandler.GetUserBudgetAdmin)
+				r.With(requireBudgetsEdit).
+					Put("/user_budget/administration/{projectID}/user_budget/{userID}", budgetsHandler.PutUserBudget)
+				r.With(requireProjectBudgetRead).
+					Get("/user_budgets/prompt_lib/{projectID}", budgetsHandler.ListUserBudgets)
+				r.With(requireBudgetsView).
+					Get("/user_budgets/administration/{projectID}", budgetsHandler.ListUserBudgetsAdmin)
+				r.With(requireProjectBudgetRead).
+					Get("/usage/prompt_lib/{projectID}/usage", budgetsHandler.GetUsage)
 
 				// The admin audit trail (unit A14). All four are READS; the
 				// surface has no writes. Two of them (`audit`, `audit_heatmap`)

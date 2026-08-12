@@ -166,8 +166,16 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * internal/api/v2/eliteacore. `putProjectGroups` was already counted — that PR
  * reshapes it (it stopped echoing the request body) without adding an
  * operation. No UI ships with it, so MANIFEST_ENTRY_COUNT is unchanged.
+ * 129 -> 142 when issue #246 ported the budgets/quotas/usage domain: thirteen
+ * new spec operations (getProjectBudget, getProjectBudgetAdmin,
+ * setProjectBudget, listProjectBudgets, getMemberBudget, getMemberBudgetAdmin,
+ * setMemberBudget, listMemberBudgets, listMemberBudgetsAdmin, getProjectUsage,
+ * getProjectQuota, setProjectQuota, getProjectStatistics) landed in v2.yaml
+ * alongside internal/api/v2/budgets and internal/api/v2/projects/quota.go, and
+ * with them the spec's first `budgets` tag. No UI ships with it (#80 tracks the
+ * settings page), so MANIFEST_ENTRY_COUNT is unchanged.
  */
-const GENERATED_OPERATION_COUNT = 129;
+const GENERATED_OPERATION_COUNT = 142;
 const MANIFEST_ENTRY_COUNT = 179;
 
 describe('GREEN — the real, checked-in manifest', () => {

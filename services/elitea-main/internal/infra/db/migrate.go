@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -42,6 +43,33 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 	// Gateway migrations are idempotent and dump-guard-exempt (BF0.4).
 	return applyMigrationDir(ctx, pool, gatewayMigrations, "gateway_migrations")
+}
+
+// GatewayMigrationSQL returns every gateway migration concatenated in apply
+// order.
+//
+// It exists for integration tests that need the gateway budget tables:
+// applying the REAL migration means a schema change cannot pass a test against
+// a hand-copied DDL and then fail against production. Runtime code must call
+// RunMigrations instead — this returns SQL, it does not run it.
+func GatewayMigrationSQL() (string, error) {
+	entries, err := gatewayMigrations.ReadDir("gateway_migrations")
+	if err != nil {
+		return "", fmt.Errorf("migrate: read gateway_migrations: %w", err)
+	}
+	var builder strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := gatewayMigrations.ReadFile("gateway_migrations/" + entry.Name())
+		if err != nil {
+			return "", fmt.Errorf("migrate: read %s: %w", entry.Name(), err)
+		}
+		builder.Write(data)
+		builder.WriteString("\n")
+	}
+	return builder.String(), nil
 }
 
 // applyMigrationDir executes every *.sql file in dir (lexical order) from fsys.
