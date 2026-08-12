@@ -155,8 +155,11 @@ func (p *postgresCurrentAgentTraceProjector) projectAgentTraceDelta(
 		frame.Fence.Generation,
 		projectDatabaseID,
 	)
-	if err != nil || !bound {
+	if err != nil {
 		return err
+	}
+	if !bound {
+		return errors.New("current agent trace binding is unavailable")
 	}
 	if delta.streamID != binding.streamID || delta.messageID != binding.messageID ||
 		delta.executionGeneration != binding.executionGeneration ||
