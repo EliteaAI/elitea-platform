@@ -166,6 +166,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var productionAuth *api.ProductionAuthRoutes
 	var currentProjectList *v2projects.CurrentProjectListRoute
 	var currentSocialAuthors *socialapi.CurrentAuthorsRoute
+	var currentSocialAvatar *socialapi.CurrentAvatarRoute
 	var currentNotifications *notificationsapi.CurrentNotificationAPIRoute
 	var currentNotificationEvents *notificationsapi.CurrentNotificationEventsRoute
 	var formGraph *authcomposition.FormGraph
@@ -233,6 +234,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		)
 		if err != nil {
 			return fmt.Errorf("compose current Social authors route: %w", err)
+		}
+		socialAvatarRepository, repositoryErr := dbrepos.NewCurrentSocialAvatarRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose current Social avatar repository: %w", repositoryErr)
+		}
+		currentSocialAvatar, err = socialapi.NewCurrentAvatarRoute(
+			socialAvatarRepository,
+			objectStore,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Social avatar route: %w", err)
 		}
 		notificationRepository, repositoryErr := dbrepos.NewCurrentNotificationRepository(pool)
 		if repositoryErr != nil {
@@ -958,6 +976,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentPromptContextReads:     currentPromptContextReads,
 		CurrentProjectList:            currentProjectList,
 		CurrentSocialAuthors:          currentSocialAuthors,
+		CurrentSocialAvatar:           currentSocialAvatar,
 		CurrentConfigurationAvailable: currentConfigurationAvailable,
 		CurrentConfigurationRead:      currentConfigurationRead,
 		CurrentConfigurationTypes:     currentConfigurationTypes,

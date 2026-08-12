@@ -2760,6 +2760,18 @@ components:
         other body key is silently ignored. A missing name/description/avatar
         upserts as an empty string.
 
+    CurrentAvatarResponse:
+      type: object
+      required: [avatar]
+      properties:
+        avatar:
+          type: string
+          nullable: true
+      description: >
+        internal/api/v2/social/current_avatar.go. avatar is null when the
+        caller has never uploaded one; otherwise a /avatars/{project_id}/{filename}
+        URL.
+
     SocialAuthorSummary:
       type: object
       required: [id, name, email, avatar, description]
@@ -5990,6 +6002,63 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/SocialAuthorSummary'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /social/avatar/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getCurrentSocialAvatar
+      summary: Get the authenticated user's own avatar URL
+      description: |
+        internal/api/v2/social/current_avatar.go (CurrentAvatarRoute.get).
+        centry.social_users.avatar is per-user, not per-project; {project_id}
+        is used only to resolve project-scoped RBAC, matching every other
+        current_* social route.
+      tags: [social]
+      responses:
+        '200':
+          description: The caller's current avatar
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentAvatarResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: uploadCurrentSocialAvatar
+      summary: Upload/replace the authenticated user's own avatar
+      description: |
+        internal/api/v2/social/current_avatar.go (CurrentAvatarRoute.upload).
+        Multipart field is `file`; the object lands in the configured
+        ObjectStore under the reserved "avatars" bucket and is served back at
+        the returned /avatars/{project_id}/{filename} URL (public, unauthenticated,
+        the same posture as /icons/{project_id}/{filename}).
+      tags: [social]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Avatar stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentAvatarResponse'
+        '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }

@@ -28,6 +28,7 @@ import (
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
+	v2openapidocs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/openapidocs"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -138,6 +139,7 @@ type RouterConfig struct {
 	CurrentPromptContextReads     *v2promptcontextreads.CurrentRoutes
 	CurrentProjectList            *v2projects.CurrentProjectListRoute
 	CurrentSocialAuthors          *v2social.CurrentAuthorsRoute
+	CurrentSocialAvatar           *v2social.CurrentAvatarRoute
 	CurrentConfigurationAvailable http.Handler
 	CurrentConfigurationRead      http.Handler
 	CurrentConfigurationTypes     http.Handler
@@ -396,11 +398,22 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	// reason as the two routes above: a browser <img src="..."> carries no
 	// Authorization header.
 	r.Get("/icons/{projectID}/{filename}", v2core.DownloadIcon(cfg.ObjectStore))
+	// Social avatar: serves what CurrentSocialAvatar's upload handler writes,
+	// public/unauthenticated for the same reason as /icons above.
+	r.Get(v2social.CurrentAvatarDownloadPath, v2social.DownloadAvatar(cfg.ObjectStore))
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
 	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})
 	r.Get("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 	r.Head("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
+
+	// Served API docs (S251): the legacy shared plugin's openapi/swagger-ui
+	// routes had no Go counterpart at all — public/unauthenticated like the
+	// branding bootstrap above, since API documentation predates any session.
+	openapiDocsHandler := v2openapidocs.NewHandler()
+	r.Get("/api/openapi.yaml", openapiDocsHandler.Spec)
+	r.Get("/api/openapi.json", openapiDocsHandler.SpecJSON)
+	r.Get("/docs", openapiDocsHandler.UI)
 
 	// Admin UI SPA — serves the admin panel with server-side config injection
 	if cfg.AdminUI != nil {

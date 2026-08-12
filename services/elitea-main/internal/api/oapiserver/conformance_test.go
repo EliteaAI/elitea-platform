@@ -17,6 +17,7 @@ package oapiserver_test
 // subtest below and oapiserver.MissingFromSpec.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,17 +26,64 @@ import (
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/oapiserver"
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
+	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/oapiserver"
 )
+
+// inertAvatarStore/inertPrincipalValidator/inertPeerVerifier/inertPermissionResolver
+// satisfy NewCurrentAvatarRoute's dependency interfaces with no real behavior
+// — this route table walk never serves a request, matching every other stub
+// in buildFullSurfaceConfig.
+type inertAvatarStore struct{}
+
+func (inertAvatarStore) GetCurrentAvatar(context.Context, int64) (*string, error) { return nil, nil }
+func (inertAvatarStore) SetCurrentAvatar(context.Context, int64, string) error    { return nil }
+
+type inertPrincipalValidator struct{}
+
+func (inertPrincipalValidator) ValidatePrincipal(_ context.Context, principal auth.User) (auth.User, error) {
+	return principal, nil
+}
+
+type inertPeerVerifier struct{}
+
+func (inertPeerVerifier) VerifyForwardedIdentityPeer(*http.Request) error { return nil }
+
+type inertPermissionResolver struct{}
+
+func (inertPermissionResolver) ResolvePermissions(
+	context.Context, auth.User, string, string,
+) (auth.PermissionResolution, error) {
+	return auth.PermissionResolution{}, nil
+}
+
+func mustBuildInertAvatarRoute() *v2social.CurrentAvatarRoute {
+	route, err := v2social.NewCurrentAvatarRoute(
+		inertAvatarStore{},
+		nil,
+		apimw.AuthConfig{
+			PrincipalValidator:        inertPrincipalValidator{},
+			ForwardedIdentityVerifier: inertPeerVerifier{},
+		},
+		inertPermissionResolver{},
+	)
+	if err != nil {
+		panic(err)
+	}
+	return route
+}
 
 const (
 	// specPath is api/openapi/v2.yaml relative to this package directory.
@@ -81,6 +129,8 @@ func buildFullSurfaceConfig() api.RouterConfig {
 		WebhookRepo:   struct{ webhook.Repository }{},
 		EventSource:   struct{ v2events.EventSource }{},
 		LLMProxy:      http.NotFoundHandler(),
+
+		CurrentSocialAvatar: mustBuildInertAvatarRoute(),
 	}
 }
 
