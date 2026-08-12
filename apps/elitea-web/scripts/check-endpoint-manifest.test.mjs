@@ -144,8 +144,15 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * in v2.yaml alongside internal/api/v2/social/avatar.go. Neither is
  * in the endpoint manifest yet (it stays handwritten, not yet landed, same
  * as most P1 API-* items), so MANIFEST_ENTRY_COUNT is unchanged.
+ * 106 -> 117 when issue #249 added skill-level publishing: eleven new spec
+ * operations (publishSkill, unpublishSkill, validateSkillForPublish,
+ * listPublicSkills, getPublicSkill, getPublicSkillVersion, attachPublicSkill,
+ * listSkillCategories, exportSkillFork, exportSkillVersionFork,
+ * listAgentsWithSkill) landed in v2.yaml alongside
+ * internal/api/v2/skillpublish. None is in the endpoint manifest yet — that
+ * PR ships no UI — so MANIFEST_ENTRY_COUNT is again unchanged.
  */
-const GENERATED_OPERATION_COUNT = 106;
+const GENERATED_OPERATION_COUNT = 117;
 const MANIFEST_ENTRY_COUNT = 179;
 
 describe('GREEN — the real, checked-in manifest', () => {

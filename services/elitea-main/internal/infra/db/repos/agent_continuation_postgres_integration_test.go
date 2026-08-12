@@ -1435,14 +1435,10 @@ CREATE TABLE p_1.entity_tool_mapping (
     entity_version_id INTEGER NOT NULL, entity_type VARCHAR NOT NULL,
     selected_tools JSONB
 );
-CREATE TABLE p_1.skills (
-    id SERIAL PRIMARY KEY, name VARCHAR(128) NOT NULL, description VARCHAR(2304) NOT NULL
-);
-CREATE TABLE p_1.skill_versions (
-    id SERIAL PRIMARY KEY, skill_id INTEGER NOT NULL REFERENCES p_1.skills(id),
-    name VARCHAR(128) NOT NULL, instructions TEXT NOT NULL,
-    meta JSONB NOT NULL DEFAULT '{}'::jsonb
-);
+-- skills / skill_versions are created by applyPostgresIntegrationMigrations,
+-- which every caller of this seed runs first (#249 put them there so the
+-- tenant migration history has something to alter). Re-creating them here
+-- would be a duplicate relation.
 CREATE TABLE p_1.entity_skill_mapping (
     id SERIAL PRIMARY KEY, entity_version_id INTEGER NOT NULL,
     entity_type VARCHAR(50) NOT NULL, skill_id INTEGER NOT NULL REFERENCES p_1.skills(id),

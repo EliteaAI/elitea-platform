@@ -28,6 +28,23 @@ tasks:
           (cd "$mod" && go test -race -count=1 ./...)
         done
 
+  coverage:
+    desc: Run Go tests with a coverage profile per module (generated code excluded)
+    cmds:
+      # Same module iteration as `test`, plus the profile CI produces. The
+      # strip step drops generated files (oapi-codegen, sqlc) from the profile
+      # — they are compiled and instrumented like any package, and counting
+      # ~3.4k blocks nobody tests makes the number a function of the last
+      # regeneration rather than of the tests.
+      - |
+        root="$PWD"
+        for mod in $(go list -m -f '{{`{{.Dir}}`}}'); do
+          (
+            cd "$mod" && go test -count=1 -coverprofile=coverage.out ./...
+            [ -f coverage.out ] && "$root/scripts/coverage/strip-generated.sh" coverage.out
+          )
+        done
+
   lint:
     desc: Run golangci-lint on Go code
     dir: "{{.SERVICE}}"

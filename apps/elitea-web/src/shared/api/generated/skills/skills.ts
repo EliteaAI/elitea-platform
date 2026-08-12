@@ -53,13 +53,32 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  AttachPublicSkill200,
+  AttachPublicSkillBody,
+  ListAgentsWithSkill200,
+  ListPublicSkills200,
+  ListPublicSkillsParams,
+  ListSkillCategories200,
   ListSkillsParams,
   N400Response,
   N401Response,
   N403Response,
+  N404Response,
+  N409Response,
+  N500Response,
+  PublicSkillDetail,
+  PublishSkill200,
+  PublishSkill400,
+  PublishSkill403,
+  PublishSkillBody,
   Skill,
   SkillCreateRequest,
+  SkillForkPayload,
+  SkillValidationResult,
   SkillsList,
+  UnpublishSkill200,
+  UnpublishSkillBody,
+  ValidateSkillForPublishBody,
 } from "../model";
 
 import { eliteaFetch } from ".././mutator";
@@ -714,6 +733,2616 @@ export function useCreateSkill<
   const queryOptions = getCreateSkillQueryOptions(
     projectId,
     skillCreateRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type publishSkillResponse200 = {
+  data: PublishSkill200;
+  status: 200;
+};
+
+export type publishSkillResponse400 = {
+  data: PublishSkill400;
+  status: 400;
+};
+
+export type publishSkillResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type publishSkillResponse403 = {
+  data: PublishSkill403;
+  status: 403;
+};
+
+export type publishSkillResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type publishSkillResponse409 = {
+  data: N409Response;
+  status: 409;
+};
+
+export type publishSkillResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type publishSkillResponseSuccess = publishSkillResponse200 & {
+  headers: Headers;
+};
+export type publishSkillResponseError = (
+  | publishSkillResponse400
+  | publishSkillResponse401
+  | publishSkillResponse403
+  | publishSkillResponse404
+  | publishSkillResponse409
+  | publishSkillResponse500
+) & {
+  headers: Headers;
+};
+
+export type publishSkillResponse =
+  publishSkillResponseSuccess | publishSkillResponseError;
+
+export const getPublishSkillUrl = (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+) => {
+  return `/elitea_core/publish_skill/prompt_lib/${projectId}/${skillId}/${versionId}`;
+};
+
+/**
+ * Snapshots the version into a new source version named `version_name`
+ * and copies it into the public project as a twin skill's published
+ * version. Publishing from the public project itself publishes in place.
+ * Requires the version to pass pre-publish validation; call
+ * /publish_skill_validate first to receive a `validation_token` that
+ * skips re-validation.
+ * @summary Publish a skill version to the public skill catalog
+ */
+export const publishSkill = async (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  publishSkillBody: PublishSkillBody,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<publishSkillResponse> => {
+  return eliteaFetch<publishSkillResponse>(
+    getPublishSkillUrl(projectId, skillId, versionId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(publishSkillBody),
+    },
+  );
+};
+
+export const getPublishSkillQueryKey = (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  publishSkillBody?: PublishSkillBody,
+) => {
+  return [
+    "POST",
+    `/elitea_core/publish_skill/prompt_lib/${projectId}/${skillId}/${versionId}`,
+    publishSkillBody,
+  ] as const;
+};
+
+export const getPublishSkillQueryOptions = <
+  TData = Awaited<ReturnType<typeof publishSkill>>,
+  TError =
+    | PublishSkill400
+    | N401Response
+    | PublishSkill403
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  publishSkillBody: PublishSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof publishSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getPublishSkillQueryKey(projectId, skillId, versionId, publishSkillBody);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof publishSkill>>> = ({
+    signal,
+  }) =>
+    publishSkill(projectId, skillId, versionId, publishSkillBody, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      skillId !== null &&
+      skillId !== undefined &&
+      versionId !== null &&
+      versionId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof publishSkill>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type PublishSkillQueryResult = NonNullable<
+  Awaited<ReturnType<typeof publishSkill>>
+>;
+export type PublishSkillQueryError =
+  | PublishSkill400
+  | N401Response
+  | PublishSkill403
+  | N404Response
+  | N409Response
+  | N500Response;
+
+export function usePublishSkill<
+  TData = Awaited<ReturnType<typeof publishSkill>>,
+  TError =
+    | PublishSkill400
+    | N401Response
+    | PublishSkill403
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  publishSkillBody: PublishSkillBody,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof publishSkill>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof publishSkill>>,
+          TError,
+          Awaited<ReturnType<typeof publishSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function usePublishSkill<
+  TData = Awaited<ReturnType<typeof publishSkill>>,
+  TError =
+    | PublishSkill400
+    | N401Response
+    | PublishSkill403
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  publishSkillBody: PublishSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof publishSkill>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof publishSkill>>,
+          TError,
+          Awaited<ReturnType<typeof publishSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function usePublishSkill<
+  TData = Awaited<ReturnType<typeof publishSkill>>,
+  TError =
+    | PublishSkill400
+    | N401Response
+    | PublishSkill403
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  publishSkillBody: PublishSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof publishSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Publish a skill version to the public skill catalog
+ */
+
+export function usePublishSkill<
+  TData = Awaited<ReturnType<typeof publishSkill>>,
+  TError =
+    | PublishSkill400
+    | N401Response
+    | PublishSkill403
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  publishSkillBody: PublishSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof publishSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getPublishSkillQueryOptions(
+    projectId,
+    skillId,
+    versionId,
+    publishSkillBody,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type unpublishSkillResponse200 = {
+  data: UnpublishSkill200;
+  status: 200;
+};
+
+export type unpublishSkillResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type unpublishSkillResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type unpublishSkillResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type unpublishSkillResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type unpublishSkillResponse409 = {
+  data: N409Response;
+  status: 409;
+};
+
+export type unpublishSkillResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type unpublishSkillResponseSuccess = unpublishSkillResponse200 & {
+  headers: Headers;
+};
+export type unpublishSkillResponseError = (
+  | unpublishSkillResponse400
+  | unpublishSkillResponse401
+  | unpublishSkillResponse403
+  | unpublishSkillResponse404
+  | unpublishSkillResponse409
+  | unpublishSkillResponse500
+) & {
+  headers: Headers;
+};
+
+export type unpublishSkillResponse =
+  unpublishSkillResponseSuccess | unpublishSkillResponseError;
+
+export const getUnpublishSkillUrl = (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+) => {
+  return `/elitea_core/unpublish_skill/prompt_lib/${projectId}/${skillId}/${versionId}`;
+};
+
+/**
+ * Deletes the catalog copy and reverts the source version to draft. A
+ * twin skill left with no published versions is removed with it; an
+ * in-place original keeps its drafts.
+ * @summary Remove a published skill version from the public catalog
+ */
+export const unpublishSkill = async (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  unpublishSkillBody?: UnpublishSkillBody,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<unpublishSkillResponse> => {
+  return eliteaFetch<unpublishSkillResponse>(
+    getUnpublishSkillUrl(projectId, skillId, versionId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(unpublishSkillBody),
+    },
+  );
+};
+
+export const getUnpublishSkillQueryKey = (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  unpublishSkillBody?: UnpublishSkillBody,
+) => {
+  return [
+    "POST",
+    `/elitea_core/unpublish_skill/prompt_lib/${projectId}/${skillId}/${versionId}`,
+    unpublishSkillBody,
+  ] as const;
+};
+
+export const getUnpublishSkillQueryOptions = <
+  TData = Awaited<ReturnType<typeof unpublishSkill>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  unpublishSkillBody?: UnpublishSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof unpublishSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getUnpublishSkillQueryKey(
+      projectId,
+      skillId,
+      versionId,
+      unpublishSkillBody,
+    );
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof unpublishSkill>>> = ({
+    signal,
+  }) =>
+    unpublishSkill(projectId, skillId, versionId, unpublishSkillBody, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      skillId !== null &&
+      skillId !== undefined &&
+      versionId !== null &&
+      versionId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof unpublishSkill>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type UnpublishSkillQueryResult = NonNullable<
+  Awaited<ReturnType<typeof unpublishSkill>>
+>;
+export type UnpublishSkillQueryError =
+  | N400Response
+  | N401Response
+  | N403Response
+  | N404Response
+  | N409Response
+  | N500Response;
+
+export function useUnpublishSkill<
+  TData = Awaited<ReturnType<typeof unpublishSkill>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  unpublishSkillBody: undefined | UnpublishSkillBody,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof unpublishSkill>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof unpublishSkill>>,
+          TError,
+          Awaited<ReturnType<typeof unpublishSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUnpublishSkill<
+  TData = Awaited<ReturnType<typeof unpublishSkill>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  unpublishSkillBody?: UnpublishSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof unpublishSkill>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof unpublishSkill>>,
+          TError,
+          Awaited<ReturnType<typeof unpublishSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUnpublishSkill<
+  TData = Awaited<ReturnType<typeof unpublishSkill>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  unpublishSkillBody?: UnpublishSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof unpublishSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Remove a published skill version from the public catalog
+ */
+
+export function useUnpublishSkill<
+  TData = Awaited<ReturnType<typeof unpublishSkill>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | N409Response
+    | N500Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  unpublishSkillBody?: UnpublishSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof unpublishSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getUnpublishSkillQueryOptions(
+    projectId,
+    skillId,
+    versionId,
+    unpublishSkillBody,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type validateSkillForPublishResponse200 = {
+  data: SkillValidationResult;
+  status: 200;
+};
+
+export type validateSkillForPublishResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type validateSkillForPublishResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type validateSkillForPublishResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type validateSkillForPublishResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type validateSkillForPublishResponse422 = {
+  data: SkillValidationResult;
+  status: 422;
+};
+
+export type validateSkillForPublishResponseSuccess =
+  validateSkillForPublishResponse200 & {
+    headers: Headers;
+  };
+export type validateSkillForPublishResponseError = (
+  | validateSkillForPublishResponse400
+  | validateSkillForPublishResponse401
+  | validateSkillForPublishResponse403
+  | validateSkillForPublishResponse404
+  | validateSkillForPublishResponse422
+) & {
+  headers: Headers;
+};
+
+export type validateSkillForPublishResponse =
+  validateSkillForPublishResponseSuccess | validateSkillForPublishResponseError;
+
+export const getValidateSkillForPublishUrl = (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+) => {
+  return `/elitea_core/publish_skill_validate/prompt_lib/${projectId}/${skillId}/${versionId}`;
+};
+
+/**
+ * Runs the deterministic pre-publish checks. 200 on PASS/WARN (with a
+ * `validation_token`), 422 on FAIL. `ai_validation_available` is always
+ * false in this stack — the AI half of the reference's gate has no
+ * transport here (issues 126 and 194).
+ * @summary Validate a skill version before publishing
+ */
+export const validateSkillForPublish = async (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  validateSkillForPublishBody: ValidateSkillForPublishBody,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<validateSkillForPublishResponse> => {
+  return eliteaFetch<validateSkillForPublishResponse>(
+    getValidateSkillForPublishUrl(projectId, skillId, versionId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(validateSkillForPublishBody),
+    },
+  );
+};
+
+export const getValidateSkillForPublishQueryKey = (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  validateSkillForPublishBody?: ValidateSkillForPublishBody,
+) => {
+  return [
+    "POST",
+    `/elitea_core/publish_skill_validate/prompt_lib/${projectId}/${skillId}/${versionId}`,
+    validateSkillForPublishBody,
+  ] as const;
+};
+
+export const getValidateSkillForPublishQueryOptions = <
+  TData = Awaited<ReturnType<typeof validateSkillForPublish>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | SkillValidationResult,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  validateSkillForPublishBody: ValidateSkillForPublishBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof validateSkillForPublish>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getValidateSkillForPublishQueryKey(
+      projectId,
+      skillId,
+      versionId,
+      validateSkillForPublishBody,
+    );
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof validateSkillForPublish>>
+  > = ({ signal }) =>
+    validateSkillForPublish(
+      projectId,
+      skillId,
+      versionId,
+      validateSkillForPublishBody,
+      { signal, ...requestOptions },
+    );
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      skillId !== null &&
+      skillId !== undefined &&
+      versionId !== null &&
+      versionId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof validateSkillForPublish>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ValidateSkillForPublishQueryResult = NonNullable<
+  Awaited<ReturnType<typeof validateSkillForPublish>>
+>;
+export type ValidateSkillForPublishQueryError =
+  | N400Response
+  | N401Response
+  | N403Response
+  | N404Response
+  | SkillValidationResult;
+
+export function useValidateSkillForPublish<
+  TData = Awaited<ReturnType<typeof validateSkillForPublish>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | SkillValidationResult,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  validateSkillForPublishBody: ValidateSkillForPublishBody,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof validateSkillForPublish>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof validateSkillForPublish>>,
+          TError,
+          Awaited<ReturnType<typeof validateSkillForPublish>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useValidateSkillForPublish<
+  TData = Awaited<ReturnType<typeof validateSkillForPublish>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | SkillValidationResult,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  validateSkillForPublishBody: ValidateSkillForPublishBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof validateSkillForPublish>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof validateSkillForPublish>>,
+          TError,
+          Awaited<ReturnType<typeof validateSkillForPublish>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useValidateSkillForPublish<
+  TData = Awaited<ReturnType<typeof validateSkillForPublish>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | SkillValidationResult,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  validateSkillForPublishBody: ValidateSkillForPublishBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof validateSkillForPublish>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Validate a skill version before publishing
+ */
+
+export function useValidateSkillForPublish<
+  TData = Awaited<ReturnType<typeof validateSkillForPublish>>,
+  TError =
+    | N400Response
+    | N401Response
+    | N403Response
+    | N404Response
+    | SkillValidationResult,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  validateSkillForPublishBody: ValidateSkillForPublishBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof validateSkillForPublish>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getValidateSkillForPublishQueryOptions(
+    projectId,
+    skillId,
+    versionId,
+    validateSkillForPublishBody,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listPublicSkillsResponse200 = {
+  data: ListPublicSkills200;
+  status: 200;
+};
+
+export type listPublicSkillsResponseSuccess = listPublicSkillsResponse200 & {
+  headers: Headers;
+};
+export type listPublicSkillsResponse = listPublicSkillsResponseSuccess;
+
+export const getListPublicSkillsUrl = (params?: ListPublicSkillsParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/elitea_core/public_skills/prompt_lib?${stringifiedParams}`
+    : `/elitea_core/public_skills/prompt_lib`;
+};
+
+/**
+ * Reads the public project's schema; only skills with a published
+ * version appear. `my_liked` and the trend window are not implemented
+ * (they depend on the social like store).
+ * @summary List published skills in the public catalog
+ */
+export const listPublicSkills = async (
+  params?: ListPublicSkillsParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listPublicSkillsResponse> => {
+  return eliteaFetch<listPublicSkillsResponse>(getListPublicSkillsUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListPublicSkillsQueryKey = (
+  params?: ListPublicSkillsParams,
+) => {
+  return [
+    `/elitea_core/public_skills/prompt_lib`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getListPublicSkillsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listPublicSkills>>,
+  TError = unknown,
+>(
+  params?: ListPublicSkillsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listPublicSkills>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListPublicSkillsQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listPublicSkills>>
+  > = ({ signal }) => listPublicSkills(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listPublicSkills>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListPublicSkillsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listPublicSkills>>
+>;
+export type ListPublicSkillsQueryError = unknown;
+
+export function useListPublicSkills<
+  TData = Awaited<ReturnType<typeof listPublicSkills>>,
+  TError = unknown,
+>(
+  params: undefined | ListPublicSkillsParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listPublicSkills>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listPublicSkills>>,
+          TError,
+          Awaited<ReturnType<typeof listPublicSkills>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListPublicSkills<
+  TData = Awaited<ReturnType<typeof listPublicSkills>>,
+  TError = unknown,
+>(
+  params?: ListPublicSkillsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listPublicSkills>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listPublicSkills>>,
+          TError,
+          Awaited<ReturnType<typeof listPublicSkills>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListPublicSkills<
+  TData = Awaited<ReturnType<typeof listPublicSkills>>,
+  TError = unknown,
+>(
+  params?: ListPublicSkillsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listPublicSkills>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List published skills in the public catalog
+ */
+
+export function useListPublicSkills<
+  TData = Awaited<ReturnType<typeof listPublicSkills>>,
+  TError = unknown,
+>(
+  params?: ListPublicSkillsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listPublicSkills>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListPublicSkillsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getPublicSkillResponse200 = {
+  data: PublicSkillDetail;
+  status: 200;
+};
+
+export type getPublicSkillResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type getPublicSkillResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type getPublicSkillResponseSuccess = getPublicSkillResponse200 & {
+  headers: Headers;
+};
+export type getPublicSkillResponseError = (
+  getPublicSkillResponse400 | getPublicSkillResponse404
+) & {
+  headers: Headers;
+};
+
+export type getPublicSkillResponse =
+  getPublicSkillResponseSuccess | getPublicSkillResponseError;
+
+export const getGetPublicSkillUrl = (skillId: number) => {
+  return `/elitea_core/public_skill/prompt_lib/${skillId}`;
+};
+
+/**
+ * @summary Retrieve one public catalog skill and its newest published version
+ */
+export const getPublicSkill = async (
+  skillId: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getPublicSkillResponse> => {
+  return eliteaFetch<getPublicSkillResponse>(getGetPublicSkillUrl(skillId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetPublicSkillQueryKey = (skillId: number) => {
+  return [`/elitea_core/public_skill/prompt_lib/${skillId}`] as const;
+};
+
+export const getGetPublicSkillQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPublicSkill>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getPublicSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetPublicSkillQueryKey(skillId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getPublicSkill>>> = ({
+    signal,
+  }) => getPublicSkill(skillId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: skillId !== null && skillId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPublicSkill>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetPublicSkillQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPublicSkill>>
+>;
+export type GetPublicSkillQueryError = N400Response | N404Response;
+
+export function useGetPublicSkill<
+  TData = Awaited<ReturnType<typeof getPublicSkill>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getPublicSkill>>, TError, TData>
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getPublicSkill>>,
+          TError,
+          Awaited<ReturnType<typeof getPublicSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetPublicSkill<
+  TData = Awaited<ReturnType<typeof getPublicSkill>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getPublicSkill>>, TError, TData>
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getPublicSkill>>,
+          TError,
+          Awaited<ReturnType<typeof getPublicSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetPublicSkill<
+  TData = Awaited<ReturnType<typeof getPublicSkill>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getPublicSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Retrieve one public catalog skill and its newest published version
+ */
+
+export function useGetPublicSkill<
+  TData = Awaited<ReturnType<typeof getPublicSkill>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<Awaited<ReturnType<typeof getPublicSkill>>, TError, TData>
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetPublicSkillQueryOptions(skillId, options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getPublicSkillVersionResponse200 = {
+  data: PublicSkillDetail;
+  status: 200;
+};
+
+export type getPublicSkillVersionResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type getPublicSkillVersionResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type getPublicSkillVersionResponseSuccess =
+  getPublicSkillVersionResponse200 & {
+    headers: Headers;
+  };
+export type getPublicSkillVersionResponseError = (
+  getPublicSkillVersionResponse400 | getPublicSkillVersionResponse404
+) & {
+  headers: Headers;
+};
+
+export type getPublicSkillVersionResponse =
+  getPublicSkillVersionResponseSuccess | getPublicSkillVersionResponseError;
+
+export const getGetPublicSkillVersionUrl = (
+  skillId: number,
+  versionName: string,
+) => {
+  return `/elitea_core/public_skill/prompt_lib/${skillId}/${versionName}`;
+};
+
+/**
+ * @summary Retrieve one public catalog skill pinned to a published version name
+ */
+export const getPublicSkillVersion = async (
+  skillId: number,
+  versionName: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getPublicSkillVersionResponse> => {
+  return eliteaFetch<getPublicSkillVersionResponse>(
+    getGetPublicSkillVersionUrl(skillId, versionName),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetPublicSkillVersionQueryKey = (
+  skillId: number,
+  versionName: string,
+) => {
+  return [
+    `/elitea_core/public_skill/prompt_lib/${skillId}/${versionName}`,
+  ] as const;
+};
+
+export const getGetPublicSkillVersionQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPublicSkillVersion>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  versionName: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getPublicSkillVersion>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getGetPublicSkillVersionQueryKey(skillId, versionName);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getPublicSkillVersion>>
+  > = ({ signal }) =>
+    getPublicSkillVersion(skillId, versionName, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      skillId !== null &&
+      skillId !== undefined &&
+      versionName !== null &&
+      versionName !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPublicSkillVersion>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetPublicSkillVersionQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPublicSkillVersion>>
+>;
+export type GetPublicSkillVersionQueryError = N400Response | N404Response;
+
+export function useGetPublicSkillVersion<
+  TData = Awaited<ReturnType<typeof getPublicSkillVersion>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  versionName: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getPublicSkillVersion>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getPublicSkillVersion>>,
+          TError,
+          Awaited<ReturnType<typeof getPublicSkillVersion>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetPublicSkillVersion<
+  TData = Awaited<ReturnType<typeof getPublicSkillVersion>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  versionName: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getPublicSkillVersion>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getPublicSkillVersion>>,
+          TError,
+          Awaited<ReturnType<typeof getPublicSkillVersion>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetPublicSkillVersion<
+  TData = Awaited<ReturnType<typeof getPublicSkillVersion>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  versionName: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getPublicSkillVersion>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Retrieve one public catalog skill pinned to a published version name
+ */
+
+export function useGetPublicSkillVersion<
+  TData = Awaited<ReturnType<typeof getPublicSkillVersion>>,
+  TError = N400Response | N404Response,
+>(
+  skillId: number,
+  versionName: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getPublicSkillVersion>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetPublicSkillVersionQueryOptions(
+    skillId,
+    versionName,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type attachPublicSkillResponse200 = {
+  data: AttachPublicSkill200;
+  status: 200;
+};
+
+export type attachPublicSkillResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type attachPublicSkillResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type attachPublicSkillResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type attachPublicSkillResponseSuccess = attachPublicSkillResponse200 & {
+  headers: Headers;
+};
+export type attachPublicSkillResponseError = (
+  | attachPublicSkillResponse400
+  | attachPublicSkillResponse401
+  | attachPublicSkillResponse403
+) & {
+  headers: Headers;
+};
+
+export type attachPublicSkillResponse =
+  attachPublicSkillResponseSuccess | attachPublicSkillResponseError;
+
+export const getAttachPublicSkillUrl = (projectId: string) => {
+  return `/elitea_core/attach_public_skill/prompt_lib/${projectId}`;
+};
+
+/**
+ * Forks the published (skill, version) into this project once, reusing an
+ * existing local copy when one exists, then writes one
+ * entity_skill_mapping row per agent version. Partial success is carried
+ * per agent in `results`, not in the HTTP status.
+ * @summary Fork a published skill into a project and attach it to agent versions
+ */
+export const attachPublicSkill = async (
+  projectId: string,
+  attachPublicSkillBody: AttachPublicSkillBody,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<attachPublicSkillResponse> => {
+  return eliteaFetch<attachPublicSkillResponse>(
+    getAttachPublicSkillUrl(projectId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(attachPublicSkillBody),
+    },
+  );
+};
+
+export const getAttachPublicSkillQueryKey = (
+  projectId: string,
+  attachPublicSkillBody?: AttachPublicSkillBody,
+) => {
+  return [
+    "POST",
+    `/elitea_core/attach_public_skill/prompt_lib/${projectId}`,
+    attachPublicSkillBody,
+  ] as const;
+};
+
+export const getAttachPublicSkillQueryOptions = <
+  TData = Awaited<ReturnType<typeof attachPublicSkill>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  projectId: string,
+  attachPublicSkillBody: AttachPublicSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof attachPublicSkill>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getAttachPublicSkillQueryKey(projectId, attachPublicSkillBody);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof attachPublicSkill>>
+  > = ({ signal }) =>
+    attachPublicSkill(projectId, attachPublicSkillBody, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof attachPublicSkill>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type AttachPublicSkillQueryResult = NonNullable<
+  Awaited<ReturnType<typeof attachPublicSkill>>
+>;
+export type AttachPublicSkillQueryError =
+  N400Response | N401Response | N403Response;
+
+export function useAttachPublicSkill<
+  TData = Awaited<ReturnType<typeof attachPublicSkill>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  projectId: string,
+  attachPublicSkillBody: AttachPublicSkillBody,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof attachPublicSkill>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof attachPublicSkill>>,
+          TError,
+          Awaited<ReturnType<typeof attachPublicSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useAttachPublicSkill<
+  TData = Awaited<ReturnType<typeof attachPublicSkill>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  projectId: string,
+  attachPublicSkillBody: AttachPublicSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof attachPublicSkill>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof attachPublicSkill>>,
+          TError,
+          Awaited<ReturnType<typeof attachPublicSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useAttachPublicSkill<
+  TData = Awaited<ReturnType<typeof attachPublicSkill>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  projectId: string,
+  attachPublicSkillBody: AttachPublicSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof attachPublicSkill>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Fork a published skill into a project and attach it to agent versions
+ */
+
+export function useAttachPublicSkill<
+  TData = Awaited<ReturnType<typeof attachPublicSkill>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  projectId: string,
+  attachPublicSkillBody: AttachPublicSkillBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof attachPublicSkill>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getAttachPublicSkillQueryOptions(
+    projectId,
+    attachPublicSkillBody,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listSkillCategoriesResponse200 = {
+  data: ListSkillCategories200;
+  status: 200;
+};
+
+export type listSkillCategoriesResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type listSkillCategoriesResponseSuccess =
+  listSkillCategoriesResponse200 & {
+    headers: Headers;
+  };
+export type listSkillCategoriesResponseError =
+  listSkillCategoriesResponse400 & {
+    headers: Headers;
+  };
+
+export type listSkillCategoriesResponse =
+  listSkillCategoriesResponseSuccess | listSkillCategoriesResponseError;
+
+export const getListSkillCategoriesUrl = (projectId: string) => {
+  return `/elitea_core/skill_categories/prompt_lib/${projectId}`;
+};
+
+/**
+ * The nine predefined categories, "Other" last. Admin-added extras
+ * (the reference's `skill_publishing_guardrail.skill_categories`) are not
+ * served: this platform's admin config schema has no such field.
+ * @summary List the predefined skill categories available for publishing
+ */
+export const listSkillCategories = async (
+  projectId: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listSkillCategoriesResponse> => {
+  return eliteaFetch<listSkillCategoriesResponse>(
+    getListSkillCategoriesUrl(projectId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListSkillCategoriesQueryKey = (projectId: string) => {
+  return [`/elitea_core/skill_categories/prompt_lib/${projectId}`] as const;
+};
+
+export const getListSkillCategoriesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listSkillCategories>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSkillCategories>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListSkillCategoriesQueryKey(projectId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listSkillCategories>>
+  > = ({ signal }) =>
+    listSkillCategories(projectId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listSkillCategories>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListSkillCategoriesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listSkillCategories>>
+>;
+export type ListSkillCategoriesQueryError = N400Response;
+
+export function useListSkillCategories<
+  TData = Awaited<ReturnType<typeof listSkillCategories>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSkillCategories>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listSkillCategories>>,
+          TError,
+          Awaited<ReturnType<typeof listSkillCategories>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListSkillCategories<
+  TData = Awaited<ReturnType<typeof listSkillCategories>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSkillCategories>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listSkillCategories>>,
+          TError,
+          Awaited<ReturnType<typeof listSkillCategories>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListSkillCategories<
+  TData = Awaited<ReturnType<typeof listSkillCategories>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSkillCategories>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List the predefined skill categories available for publishing
+ */
+
+export function useListSkillCategories<
+  TData = Awaited<ReturnType<typeof listSkillCategories>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSkillCategories>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListSkillCategoriesQueryOptions(projectId, options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type exportSkillForkResponse200 = {
+  data: SkillForkPayload;
+  status: 200;
+};
+
+export type exportSkillForkResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type exportSkillForkResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type exportSkillForkResponseSuccess = exportSkillForkResponse200 & {
+  headers: Headers;
+};
+export type exportSkillForkResponseError = (
+  exportSkillForkResponse400 | exportSkillForkResponse404
+) & {
+  headers: Headers;
+};
+
+export type exportSkillForkResponse =
+  exportSkillForkResponseSuccess | exportSkillForkResponseError;
+
+export const getExportSkillForkUrl = (projectId: string, skillId: number) => {
+  return `/elitea_core/skill_export_fork/prompt_lib/${projectId}/${skillId}`;
+};
+
+/**
+ * Distinct from /skill_export, which downloads Markdown. The copied
+ * version is always emitted as the target's single 'base' version.
+ * @summary Build the JSON fork payload for a skill's default version
+ */
+export const exportSkillFork = async (
+  projectId: string,
+  skillId: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<exportSkillForkResponse> => {
+  return eliteaFetch<exportSkillForkResponse>(
+    getExportSkillForkUrl(projectId, skillId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getExportSkillForkQueryKey = (
+  projectId: string,
+  skillId: number,
+) => {
+  return [
+    `/elitea_core/skill_export_fork/prompt_lib/${projectId}/${skillId}`,
+  ] as const;
+};
+
+export const getExportSkillForkQueryOptions = <
+  TData = Awaited<ReturnType<typeof exportSkillFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillFork>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getExportSkillForkQueryKey(projectId, skillId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof exportSkillFork>>> = ({
+    signal,
+  }) => exportSkillFork(projectId, skillId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      skillId !== null &&
+      skillId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof exportSkillFork>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ExportSkillForkQueryResult = NonNullable<
+  Awaited<ReturnType<typeof exportSkillFork>>
+>;
+export type ExportSkillForkQueryError = N400Response | N404Response;
+
+export function useExportSkillFork<
+  TData = Awaited<ReturnType<typeof exportSkillFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillFork>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof exportSkillFork>>,
+          TError,
+          Awaited<ReturnType<typeof exportSkillFork>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useExportSkillFork<
+  TData = Awaited<ReturnType<typeof exportSkillFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillFork>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof exportSkillFork>>,
+          TError,
+          Awaited<ReturnType<typeof exportSkillFork>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useExportSkillFork<
+  TData = Awaited<ReturnType<typeof exportSkillFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillFork>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Build the JSON fork payload for a skill's default version
+ */
+
+export function useExportSkillFork<
+  TData = Awaited<ReturnType<typeof exportSkillFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillFork>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getExportSkillForkQueryOptions(
+    projectId,
+    skillId,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type exportSkillVersionForkResponse200 = {
+  data: SkillForkPayload;
+  status: 200;
+};
+
+export type exportSkillVersionForkResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type exportSkillVersionForkResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type exportSkillVersionForkResponseSuccess =
+  exportSkillVersionForkResponse200 & {
+    headers: Headers;
+  };
+export type exportSkillVersionForkResponseError = (
+  exportSkillVersionForkResponse400 | exportSkillVersionForkResponse404
+) & {
+  headers: Headers;
+};
+
+export type exportSkillVersionForkResponse =
+  exportSkillVersionForkResponseSuccess | exportSkillVersionForkResponseError;
+
+export const getExportSkillVersionForkUrl = (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+) => {
+  return `/elitea_core/skill_export_fork/prompt_lib/${projectId}/${skillId}/${versionId}`;
+};
+
+/**
+ * @summary Build the JSON fork payload for a specific skill version
+ */
+export const exportSkillVersionFork = async (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<exportSkillVersionForkResponse> => {
+  return eliteaFetch<exportSkillVersionForkResponse>(
+    getExportSkillVersionForkUrl(projectId, skillId, versionId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getExportSkillVersionForkQueryKey = (
+  projectId: string,
+  skillId: number,
+  versionId: number,
+) => {
+  return [
+    `/elitea_core/skill_export_fork/prompt_lib/${projectId}/${skillId}/${versionId}`,
+  ] as const;
+};
+
+export const getExportSkillVersionForkQueryOptions = <
+  TData = Awaited<ReturnType<typeof exportSkillVersionFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillVersionFork>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getExportSkillVersionForkQueryKey(projectId, skillId, versionId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof exportSkillVersionFork>>
+  > = ({ signal }) =>
+    exportSkillVersionFork(projectId, skillId, versionId, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      skillId !== null &&
+      skillId !== undefined &&
+      versionId !== null &&
+      versionId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof exportSkillVersionFork>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ExportSkillVersionForkQueryResult = NonNullable<
+  Awaited<ReturnType<typeof exportSkillVersionFork>>
+>;
+export type ExportSkillVersionForkQueryError = N400Response | N404Response;
+
+export function useExportSkillVersionFork<
+  TData = Awaited<ReturnType<typeof exportSkillVersionFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillVersionFork>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof exportSkillVersionFork>>,
+          TError,
+          Awaited<ReturnType<typeof exportSkillVersionFork>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useExportSkillVersionFork<
+  TData = Awaited<ReturnType<typeof exportSkillVersionFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillVersionFork>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof exportSkillVersionFork>>,
+          TError,
+          Awaited<ReturnType<typeof exportSkillVersionFork>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useExportSkillVersionFork<
+  TData = Awaited<ReturnType<typeof exportSkillVersionFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillVersionFork>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Build the JSON fork payload for a specific skill version
+ */
+
+export function useExportSkillVersionFork<
+  TData = Awaited<ReturnType<typeof exportSkillVersionFork>>,
+  TError = N400Response | N404Response,
+>(
+  projectId: string,
+  skillId: number,
+  versionId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof exportSkillVersionFork>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getExportSkillVersionForkQueryOptions(
+    projectId,
+    skillId,
+    versionId,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listAgentsWithSkillResponse200 = {
+  data: ListAgentsWithSkill200;
+  status: 200;
+};
+
+export type listAgentsWithSkillResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type listAgentsWithSkillResponseSuccess =
+  listAgentsWithSkillResponse200 & {
+    headers: Headers;
+  };
+export type listAgentsWithSkillResponseError =
+  listAgentsWithSkillResponse400 & {
+    headers: Headers;
+  };
+
+export type listAgentsWithSkillResponse =
+  listAgentsWithSkillResponseSuccess | listAgentsWithSkillResponseError;
+
+export const getListAgentsWithSkillUrl = (
+  projectId: string,
+  skillId: number,
+) => {
+  return `/elitea_core/agents_with_skill/prompt_lib/${projectId}/${skillId}`;
+};
+
+/**
+ * Reverse lookup through the fork lineage: every local copy of the public
+ * skill (`parent_project_id` + `parent_entity_id` in the version meta),
+ * then every agent version mapped to one.
+ * @summary List agent versions in this project that use a public skill
+ */
+export const listAgentsWithSkill = async (
+  projectId: string,
+  skillId: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listAgentsWithSkillResponse> => {
+  return eliteaFetch<listAgentsWithSkillResponse>(
+    getListAgentsWithSkillUrl(projectId, skillId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListAgentsWithSkillQueryKey = (
+  projectId: string,
+  skillId: number,
+) => {
+  return [
+    `/elitea_core/agents_with_skill/prompt_lib/${projectId}/${skillId}`,
+  ] as const;
+};
+
+export const getListAgentsWithSkillQueryOptions = <
+  TData = Awaited<ReturnType<typeof listAgentsWithSkill>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAgentsWithSkill>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getListAgentsWithSkillQueryKey(projectId, skillId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listAgentsWithSkill>>
+  > = ({ signal }) =>
+    listAgentsWithSkill(projectId, skillId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      skillId !== null &&
+      skillId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listAgentsWithSkill>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListAgentsWithSkillQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listAgentsWithSkill>>
+>;
+export type ListAgentsWithSkillQueryError = N400Response;
+
+export function useListAgentsWithSkill<
+  TData = Awaited<ReturnType<typeof listAgentsWithSkill>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  skillId: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAgentsWithSkill>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listAgentsWithSkill>>,
+          TError,
+          Awaited<ReturnType<typeof listAgentsWithSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListAgentsWithSkill<
+  TData = Awaited<ReturnType<typeof listAgentsWithSkill>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAgentsWithSkill>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listAgentsWithSkill>>,
+          TError,
+          Awaited<ReturnType<typeof listAgentsWithSkill>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListAgentsWithSkill<
+  TData = Awaited<ReturnType<typeof listAgentsWithSkill>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAgentsWithSkill>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List agent versions in this project that use a public skill
+ */
+
+export function useListAgentsWithSkill<
+  TData = Awaited<ReturnType<typeof listAgentsWithSkill>>,
+  TError = N400Response,
+>(
+  projectId: string,
+  skillId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAgentsWithSkill>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListAgentsWithSkillQueryOptions(
+    projectId,
+    skillId,
     options,
   );
 

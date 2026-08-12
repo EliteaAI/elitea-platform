@@ -333,8 +333,20 @@ BEGIN
             author_id INTEGER NOT NULL,
             created_at TIMESTAMP NOT NULL DEFAULT now(),
             uuid UUID UNIQUE DEFAULT gen_random_uuid(),
-            meta JSONB DEFAULT ''{}''::jsonb
+            meta JSONB DEFAULT ''{}''::jsonb,
+            shared_owner_id INTEGER,
+            shared_id INTEGER
         )', schema_name);
+
+    -- A published skill has exactly one twin in the public project, keyed by
+    -- (source project, source skill). The partial unique index is what makes a
+    -- concurrent first-publish race lose loudly instead of creating a second
+    -- catalog entry for the same source skill (mirrors pylon's
+    -- uq_skills_shared_owner, legacy/plugins/elitea_core/models/skill.py:39-42).
+    EXECUTE format('
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_shared_owner
+            ON %I.skills (shared_owner_id, shared_id)
+            WHERE shared_owner_id IS NOT NULL', schema_name);
 
     -- Skill versions
     EXECUTE format('
@@ -347,8 +359,13 @@ BEGIN
             created_at TIMESTAMP NOT NULL DEFAULT now(),
             uuid UUID UNIQUE DEFAULT gen_random_uuid(),
             meta JSONB DEFAULT ''{}''::jsonb,
+            status VARCHAR NOT NULL DEFAULT ''draft'',
             CONSTRAINT _skill_version_name_uc UNIQUE (skill_id, name)
         )', schema_name, schema_name);
+
+    EXECUTE format('
+        CREATE INDEX IF NOT EXISTS ix_skill_versions_status
+            ON %I.skill_versions (status)', schema_name);
 
     -- Skill version <-> Tag association
     EXECUTE format('
