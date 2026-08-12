@@ -28,6 +28,12 @@ package legacyrbac_test
 // is what it says it means to do. The behaviour change is real either way, so
 // it is pinned here rather than left to be discovered.
 //
+// Breaking that coupling is issue #276: the check should ask the membership
+// question directly, as the admission path for the same capability already
+// does, so a future default-mode grant cannot move it again. When that lands,
+// this file keeps its value — it pins the GRANT's blast radius, not that
+// branch's implementation.
+//
 // The three cases below are the whole blast radius, each verified against a
 // real PostgreSQL rather than argued from the query text.
 

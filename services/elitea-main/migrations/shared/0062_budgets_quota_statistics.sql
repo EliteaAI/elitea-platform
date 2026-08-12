@@ -162,7 +162,9 @@ ON CONFLICT (role_id, permission) DO NOTHING;
 --     a set SIZE rather than a named permission, and the coupling is worth
 --     replacing with an explicit membership check. Left alone here on purpose:
 --     that is a decision about execution-event authorization, not about
---     budgets.
+--     budgets. Tracked as issue #276, which also names the replacement — the
+--     admission path for that same capability already asks the membership
+--     question directly (AuthorizeRuntimeValidationProject).
 INSERT INTO public.auth_core__role_permission (role_id, permission)
 SELECT role.id, 'models.project_context.view'
 FROM public.auth_core__role AS role
