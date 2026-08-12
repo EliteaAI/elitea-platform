@@ -26,10 +26,10 @@ func TestArtifactStubRoutesReturn501WithTypedEnvelope(t *testing.T) {
 	// and take the newPrototypeCompatibilityRouter branch — production
 	// composition never sets any of these fields, so it never mounts these
 	// paths at all (by design; see newPrototypeCompatibilityRouter's doc
-	// comment). AUTH_DEV_MODE bypasses the Auth middleware in front of this
-	// route group (middleware/auth.go) — without it every request 401s
-	// before reaching notImplementedArtifact.
-	t.Setenv("AUTH_DEV_MODE", "true")
+	// comment). Requests carry a credential (testAuthHeader) that the
+	// injected testTokenValidator accepts — without one, the Auth middleware
+	// in front of this route group 401s every request before it reaches
+	// notImplementedArtifact.
 
 	cases := []struct {
 		method, path string
@@ -60,11 +60,12 @@ func TestArtifactStubRoutesReturn501WithTypedEnvelope(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			router := NewRouter(RouterConfig{
+				AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 				AppsRepo:                   struct{ applications.Repository }{},
 				ArtifactPermissionResolver: fakePermissionResolver{granted: []string{tc.perm}},
 			})
 
-			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req := testAuthHeader(httptest.NewRequest(tc.method, tc.path, nil))
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 
@@ -107,7 +108,6 @@ type noopObjectStore struct{ storage.ObjectStore }
 // TestArtifactStubRoutesReturn501WithTypedEnvelope's AppsRepo-only config
 // cannot exercise, because that config leaves cfg.Pool nil.
 func TestArtifactBucketRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
 	if err != nil {
@@ -116,9 +116,10 @@ func TestArtifactBucketRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
-		AppsRepo:    struct{ applications.Repository }{},
-		Pool:        pool,
-		ObjectStore: noopObjectStore{},
+		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		AppsRepo:      struct{ applications.Repository }{},
+		Pool:          pool,
+		ObjectStore:   noopObjectStore{},
 		// This test's 5 subtests span view/create/edit/delete (the full
 		// bucket-plane permission mapping), so grant all four up front —
 		// what this test is actually checking is "real handler wired, not
@@ -140,7 +141,7 @@ func TestArtifactBucketRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req := testAuthHeader(httptest.NewRequest(tc.method, tc.path, nil))
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 
@@ -166,7 +167,6 @@ func TestArtifactBucketRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 // side of the same guard: cfg.Pool alone is not enough to activate the real
 // handlers — newArtifactHandler requires both.
 func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
 	if err != nil {
@@ -175,8 +175,9 @@ func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
-		AppsRepo: struct{ applications.Repository }{},
-		Pool:     pool,
+		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		AppsRepo:      struct{ applications.Repository }{},
+		Pool:          pool,
 		// ObjectStore deliberately left nil.
 		//
 		// This subtest only issues a GET, so grant view — without a grant
@@ -187,7 +188,7 @@ func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
 		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/buckets/1", nil)
+	req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/buckets/1", nil))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -202,7 +203,6 @@ func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
 // guard, so this proves that guard flips for the object routes too, not
 // just the bucket ones S8 already covered.
 func TestArtifactObjectRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
 	if err != nil {
@@ -211,9 +211,10 @@ func TestArtifactObjectRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
-		AppsRepo:    struct{ applications.Repository }{},
-		Pool:        pool,
-		ObjectStore: noopObjectStore{},
+		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		AppsRepo:      struct{ applications.Repository }{},
+		Pool:          pool,
+		ObjectStore:   noopObjectStore{},
 		// This test's 6 subtests span view/create/delete (the object-plane
 		// permission mapping has no PATCH/edit route), so grant that union
 		// up front — the point of this test is "real handler wired, not
@@ -236,7 +237,7 @@ func TestArtifactObjectRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req := testAuthHeader(httptest.NewRequest(tc.method, tc.path, nil))
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 
@@ -275,7 +276,6 @@ func TestArtifactObjectRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 // other route in that table risks 400ing on InvalidArgument before ever
 // reaching the pool, which would prove nothing about this specific branch.
 func TestArtifactRouteReturnsInternalCodeWhenBackendFails(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
 	if err != nil {
@@ -284,13 +284,14 @@ func TestArtifactRouteReturnsInternalCodeWhenBackendFails(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
+		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 		AppsRepo:                   struct{ applications.Repository }{},
 		Pool:                       pool,
 		ObjectStore:                noopObjectStore{},
 		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/buckets/1", nil)
+	req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/buckets/1", nil))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 

@@ -34,7 +34,6 @@ import (
 // ahead of the requireBucket lookup that would otherwise hang or 500
 // against the unreachable pool.
 func TestObjectDownloadRejectsRawTraversalKey(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
 	if err != nil {
@@ -43,13 +42,14 @@ func TestObjectDownloadRejectsRawTraversalKey(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
+		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 		AppsRepo:                   struct{ applications.Repository }{},
 		Pool:                       pool,
 		ObjectStore:                noopObjectStore{},
 		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/objects/1/reports/../escape.txt", nil)
+	req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/objects/1/reports/../escape.txt", nil))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -78,6 +78,7 @@ func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *te
 
 	for _, token := range []string{"", "short", strings.Repeat("i", middleware.MinimumInternalAdminTokenBytes)} {
 		router := NewRouter(RouterConfig{
+			AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
 			Shadow:             comparator,
 			ShadowMetrics:      metrics,
 			CutoverTracker:     tracker,
@@ -85,6 +86,9 @@ func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *te
 		})
 		for _, target := range []string{"/internal/shadow/config", "/internal/cutover/"} {
 			for _, present := range []bool{false, true} {
+				// No testAuthHeader: these routes must be absent from the
+				// production mount regardless of who is asking, so the
+				// assertion must not depend on an authenticated principal.
 				req := httptest.NewRequest(http.MethodGet, target, nil)
 				if present {
 					req.Header.Set("Authorization", "Bearer "+token)
@@ -142,11 +146,14 @@ var allArtifactPermissions = []string{
 // unauthenticated, even though a real handler is wired and the resolver would
 // grant every permission — an auth bypass would show up here as a 2xx/501,
 // not a silent pass, because RBAC is never given the chance to run first.
+// A validator IS wired below, and the resolver grants everything, so a 401
+// here can only come from the absent credential — not from a missing
+// validator, which would make the assertion pass for the wrong reason.
+// Requests deliberately omit testAuthHeader.
 func TestArtifactRoutesRequireAuthentication(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
-
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
+		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            handler,
 		ArtifactPermissionResolver: fakePermissionResolver{granted: allArtifactPermissions},
@@ -170,10 +177,10 @@ func TestArtifactRoutesRequireAuthentication(t *testing.T) {
 // still-stubbed grant routes, which S11 gates unconditionally even though
 // S15 hasn't implemented their handlers yet.
 func TestArtifactRoutesRequirePermission(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
+		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            handler,
 		ArtifactPermissionResolver: fakePermissionResolver{granted: nil},
@@ -181,7 +188,7 @@ func TestArtifactRoutesRequirePermission(t *testing.T) {
 
 	for _, rp := range artifactRoutePermissions {
 		t.Run(rp.method+" "+rp.path, func(t *testing.T) {
-			req := httptest.NewRequest(rp.method, rp.path, nil)
+			req := testAuthHeader(httptest.NewRequest(rp.method, rp.path, nil))
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
 			if rec.Code != http.StatusForbidden {
@@ -258,12 +265,12 @@ var artifactSuccessCases = []artifactSuccessCase{
 // stub" — once the principal holds exactly the permission the S11 mapping
 // assigns it, exercised through the full auth/RBAC/handler chain.
 func TestArtifactRoutesSucceedWithExactRequiredPermission(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	for _, sc := range artifactSuccessCases {
 		t.Run(sc.desc, func(t *testing.T) {
 			handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 			router := NewRouter(RouterConfig{
+				AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 				AppsRepo:                   struct{ applications.Repository }{},
 				ArtifactHandler:            handler,
 				ArtifactPermissionResolver: fakePermissionResolver{granted: []string{sc.permission}},
@@ -274,7 +281,7 @@ func TestArtifactRoutesSucceedWithExactRequiredPermission(t *testing.T) {
 			if sc.newBody != nil {
 				body, contentType = sc.newBody(t)
 			}
-			req := httptest.NewRequest(sc.method, sc.path, body)
+			req := testAuthHeader(httptest.NewRequest(sc.method, sc.path, body))
 			if contentType != "" {
 				req.Header.Set("Content-Type", contentType)
 			}
@@ -300,16 +307,16 @@ func TestArtifactRoutesSucceedWithExactRequiredPermission(t *testing.T) {
 // syntactically valid UUID the fake handler chain accepts unconditionally —
 // returns 200, not 501, proving CommitTransferGrant is reachable too.
 func TestArtifactGrantRoutesResolveThroughRealHandlerWhenConfigured(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
+		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            handler,
 		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
 	})
 
-	createReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/reports", strings.NewReader(`{"method":"PUT","content_type":"image/png","max_bytes":1024}`))
+	createReq := testAuthHeader(httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/reports", strings.NewReader(`{"method":"PUT","content_type":"image/png","max_bytes":1024}`)))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, createReq)
@@ -329,7 +336,7 @@ func TestArtifactGrantRoutesResolveThroughRealHandlerWhenConfigured(t *testing.T
 		t.Fatal("expected a non-empty grant_id")
 	}
 
-	commitReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+created.GrantID+":commit", nil)
+	commitReq := testAuthHeader(httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+created.GrantID+":commit", nil))
 	commitRec := httptest.NewRecorder()
 	router.ServeHTTP(commitRec, commitReq)
 	if commitRec.Code == http.StatusNotImplemented {
@@ -356,17 +363,17 @@ func TestArtifactGrantRoutesResolveThroughRealHandlerWhenConfigured(t *testing.T
 // syntactically valid grant id resolves through requireOwnedMultipartGrant
 // without needing to create a real grant first.
 func TestArtifactMultipartRoutesResolveThroughRealHandlerWhenConfigured(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
+		AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 		AppsRepo:                   struct{ applications.Repository }{},
 		ArtifactHandler:            handler,
 		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
 	})
 	const grantID = "11111111-1111-4111-8111-111111111111"
 
-	partReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+"/parts/1", nil)
+	partReq := testAuthHeader(httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+"/parts/1", nil))
 	partRec := httptest.NewRecorder()
 	router.ServeHTTP(partRec, partReq)
 	if partRec.Code == http.StatusNotImplemented {
@@ -376,8 +383,8 @@ func TestArtifactMultipartRoutesResolveThroughRealHandlerWhenConfigured(t *testi
 		t.Fatalf("presign part: status = %d, want 200; body=%s", partRec.Code, partRec.Body.String())
 	}
 
-	completeReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+":completeMultipart",
-		strings.NewReader(`{"parts":[{"part_number":1,"etag":"x"}]}`))
+	completeReq := testAuthHeader(httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+":completeMultipart",
+		strings.NewReader(`{"parts":[{"part_number":1,"etag":"x"}]}`)))
 	completeReq.Header.Set("Content-Type", "application/json")
 	completeRec := httptest.NewRecorder()
 	router.ServeHTTP(completeRec, completeReq)
@@ -388,7 +395,7 @@ func TestArtifactMultipartRoutesResolveThroughRealHandlerWhenConfigured(t *testi
 		t.Fatalf("complete multipart: status = %d, want 200; body=%s", completeRec.Code, completeRec.Body.String())
 	}
 
-	abortReq := httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+":abortMultipart", nil)
+	abortReq := testAuthHeader(httptest.NewRequest(http.MethodPost, "/api/v2/artifacts/grants/1/"+grantID+":abortMultipart", nil))
 	abortRec := httptest.NewRecorder()
 	router.ServeHTTP(abortRec, abortReq)
 	if abortRec.Code == http.StatusNotImplemented {
@@ -412,7 +419,6 @@ func TestArtifactMultipartRoutesResolveThroughRealHandlerWhenConfigured(t *testi
 // creation, a materially different operation) is denied, while edit alone is
 // sufficient.
 func TestArtifactBucketPatchRequiresEditPermissionNotCreate(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	cases := []struct {
 		name       string
@@ -427,12 +433,13 @@ func TestArtifactBucketPatchRequiresEditPermissionNotCreate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 			router := NewRouter(RouterConfig{
+				AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 				AppsRepo:                   struct{ applications.Repository }{},
 				ArtifactHandler:            handler,
 				ArtifactPermissionResolver: fakePermissionResolver{granted: tc.granted},
 			})
 
-			req := httptest.NewRequest(http.MethodPatch, "/api/v2/artifacts/buckets/1/reports", strings.NewReader(`{"is_pinned":true}`))
+			req := testAuthHeader(httptest.NewRequest(http.MethodPatch, "/api/v2/artifacts/buckets/1/reports", strings.NewReader(`{"is_pinned":true}`)))
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
@@ -451,10 +458,10 @@ func TestArtifactBucketPatchRequiresEditPermissionNotCreate(t *testing.T) {
 // URL param threads into the RBAC check correctly — not just that
 // fakePermissionResolver's own forProject logic works in isolation.
 func TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	router := NewRouter(RouterConfig{
+		AuthValidator:   testTokenValidator{user: authenticatedTestUser()},
 		AppsRepo:        struct{ applications.Repository }{},
 		ArtifactHandler: handler,
 		ArtifactPermissionResolver: fakePermissionResolver{
@@ -463,7 +470,7 @@ func TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject(t *testing.
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/objects/8/reports", nil)
+	req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/objects/8/reports", nil))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -486,9 +493,11 @@ func TestArtifactRoutesGateIdenticallyThroughProductionRouter(t *testing.T) {
 	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
 	const path = "/api/v2/artifacts/buckets/1"
 
+	// No credential presented, though a validator is wired: the 401 is the
+	// absent credential, not an absent validator.
 	t.Run("401 unauthenticated", func(t *testing.T) {
-		t.Setenv("AUTH_DEV_MODE", "false")
 		router := NewRouter(RouterConfig{
+			AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 			ArtifactHandler:            handler,
 			ArtifactPermissionResolver: fakePermissionResolver{granted: allArtifactPermissions},
 		})
@@ -500,26 +509,26 @@ func TestArtifactRoutesGateIdenticallyThroughProductionRouter(t *testing.T) {
 	})
 
 	t.Run("403 wrong permission", func(t *testing.T) {
-		t.Setenv("AUTH_DEV_MODE", "true")
 		router := NewRouter(RouterConfig{
+			AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 			ArtifactHandler:            handler,
 			ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
 		})
 		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		router.ServeHTTP(rec, testAuthHeader(httptest.NewRequest(http.MethodGet, path, nil)))
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
 		}
 	})
 
 	t.Run("2xx right permission", func(t *testing.T) {
-		t.Setenv("AUTH_DEV_MODE", "true")
 		router := NewRouter(RouterConfig{
+			AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
 			ArtifactHandler:            handler,
 			ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
 		})
 		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		router.ServeHTTP(rec, testAuthHeader(httptest.NewRequest(http.MethodGet, path, nil)))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 		}

@@ -50,10 +50,22 @@ type AuthConfig struct {
 	TrustedProxyCIDRs []string
 }
 
+// Auth authenticates every request against exactly four credential sources:
+// forwarded identity, API key, bearer token, and session cookie. There is no
+// fifth source and no configuration that yields a principal without a
+// credential.
+//
+// In particular there is no environment-variable bypass. The former
+// AUTH_DEV_MODE flag injected an admin principal impersonating database user 1
+// for any request — including one carrying an Authorization header, since the
+// bypass ran before token validation — and skipped PrincipalValidator
+// entirely. Its two documented guards were both illusory: the "enforced at
+// startup in main.go" mutual exclusion never existed, and the
+// `cfg.SessionSecret == ""` conjunct was evaluated per AuthConfig, leaving it
+// open for the 16 of 21 configs in main.go that never set SessionSecret. See
+// ADR-0017. Development and CI authenticate through the mock OIDC provider;
+// tests inject a stub TokenValidator via RouterConfig.
 func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
-	// devMode and session auth are mutually exclusive (enforced at startup in main.go).
-	// devMode is ONLY allowed when APPLICATION_SECRET_KEY is unset.
-	devMode := os.Getenv("AUTH_DEV_MODE") == "true" && cfg.SessionSecret == ""
 	trustedCIDRs := configuredTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
 
 	return func(next http.Handler) http.Handler {
@@ -112,16 +124,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 						return
 					}
 				}
-				if devMode {
-					serveAuthenticated(next, w, r, devUser(), auth.AuthenticationSourceDevelopment)
-					return
-				}
 				writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated", "missing authorization header")
-				return
-			}
-
-			if devMode {
-				serveAuthenticated(next, w, r, devUser(), auth.AuthenticationSourceDevelopment)
 				return
 			}
 
@@ -356,16 +359,6 @@ func verifySessionCookie(token, secret string) (auth.User, bool) {
 func positiveSessionUserID(value string) (int64, bool) {
 	id, err := strconv.ParseInt(value, 10, 64)
 	return id, err == nil && id > 0
-}
-
-func devUser() auth.User {
-	return auth.User{
-		ID:       "1",
-		UserID:   "1",
-		Email:    "dev@elitea.ai",
-		AuthType: "dev",
-		Roles:    []string{"admin"},
-	}
 }
 
 func validateToken(ctx context.Context, cfg AuthConfig, token string) (auth.User, error) {

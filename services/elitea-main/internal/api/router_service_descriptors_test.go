@@ -29,8 +29,10 @@ import (
 // and still restore defect 1.
 func newServiceDescriptorTestRouter(t *testing.T) chi.Router {
 	t.Helper()
-	t.Setenv("AUTH_DEV_MODE", "true")
-	return NewRouter(RouterConfig{SkillsRepo: struct{ v2skills.Repository }{}})
+	return NewRouter(RouterConfig{
+		SkillsRepo:    struct{ v2skills.Repository }{},
+		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+	})
 }
 
 func TestRouterRegistersServiceDescriptorRoutesUnderAdministrationOnly(t *testing.T) {
@@ -61,7 +63,8 @@ func TestRouterRegistersServiceDescriptorRoutesUnderAdministrationOnly(t *testin
 // The caller must be AUTHENTICATED for this to discriminate. Without a session
 // the outer auth middleware answers 401 whether or not the route has its own
 // gate, so the first version of this test passed against a router with every
-// `.With(central(…))` removed. `AUTH_DEV_MODE=true` supplies a principal, and
+// `.With(central(…))` removed. An injected testTokenValidator plus
+// testAuthHeader supplies an authenticated principal, and
 // this router has no pool — so `legacyrbac` resolves no permissions and a gated
 // route answers 403 while an ungated one reaches the handler and answers its
 // unconditional 501. That is the whole discrimination:

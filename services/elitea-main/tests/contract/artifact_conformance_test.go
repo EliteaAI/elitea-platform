@@ -24,12 +24,20 @@ import (
 
 // --- request/response helpers -----------------------------------------
 
+// artifactAuthToken is the credential artifactContractValidator accepts. Only
+// requests addressed to the router carry it — presigned upload/download URLs
+// point at the object store, which is not behind Auth and would reject or
+// misinterpret an Authorization header (it conflicts with S3 SigV4 query
+// signing). Those call http.NewRequest directly, on purpose.
+const artifactAuthToken = "artifact-contract-token"
+
 func doArtifact(t *testing.T, srv string, method, path string, body io.Reader, contentType string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, srv+path, body)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
+	req.Header.Set("Authorization", "Bearer "+artifactAuthToken)
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -317,6 +325,7 @@ func TestArtifactObjectUploadDownloadHeadDeleteRangeRead(t *testing.T) {
 	}
 
 	rangeReq, _ := http.NewRequest(http.MethodGet, srv+fmt.Sprintf("/api/v2/artifacts/objects/%d/objects1/bigfile.bin", projectID), nil)
+	rangeReq.Header.Set("Authorization", "Bearer "+artifactAuthToken)
 	rangeReq.Header.Set("Range", "bytes=0-99")
 	rangeResp, err := http.DefaultClient.Do(rangeReq)
 	if err != nil {
