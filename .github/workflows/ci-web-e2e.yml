@@ -214,7 +214,25 @@ jobs:
           # Per-engine name: upload-artifact v7 rejects a duplicate name, so a
           # shared one would fail the second matrix leg to finish.
           name: playwright-report-${{ matrix.engine }}
-          path: apps/elitea-web/playwright-results/
+          # BOTH paths, and the second one is the point.
+          #
+          # `playwright-results/` is the raw output directory: per-test folders
+          # of `*-actual.png`, `*-diff.png`, videos and traces. Uploading only
+          # that is what this step used to do, and it left a reviewer with a
+          # heap of loose PNGs whose file names encode the test id and nothing
+          # else — enough to prove a failure happened, not enough to review it.
+          #
+          # `playwright-report/` is the HTML reporter's output (configured in
+          # playwright.config.ts, `['html', { open: 'never' }]`). It is written
+          # on every CI run and, until now, thrown away with the runner: it is
+          # the report that renders expected/actual/diff side by side with a
+          # slider, embeds the trace viewer, and links each attachment to the
+          # test that produced it. Costing nothing to keep and being the only
+          # artifact anyone can actually read, it is now kept.
+          path: |
+            apps/elitea-web/playwright-results/
+            apps/elitea-web/playwright-report/
+          if-no-files-found: warn
           retention-days: 14
       - name: Upload failed test video recordings
         if: failure()
@@ -311,13 +329,32 @@ jobs:
             mcr.microsoft.com/playwright:v1.62.0-noble \
             npx playwright test --grep @visual $update_arg
 
+      # A snapshot diff is unreviewable as prose: "183 pixels (ratio 0.01) are
+      # different" tells a reviewer that something moved, never what. The only
+      # way to decide whether a diff is a regression or an intended change is to
+      # look at the three images, so the run has to hand them over.
+      #
+      # Both paths, for the reason spelled out on the E2E job's copy of this
+      # step: `playwright-results/` holds the raw `-actual`/`-expected`/`-diff`
+      # PNGs, and `playwright-report/` is the HTML report that puts them
+      # side by side with a slider. The report was being generated and
+      # discarded.
+      #
+      # `warn`, not `ignore`: a visual job that fails while producing NO
+      # evidence at all is a different and more alarming failure than a
+      # snapshot diff — the stack never came up, or the container wrote
+      # nowhere — and silently uploading nothing is how that gets mistaken for
+      # the ordinary case. `warn` surfaces it in the log without failing the
+      # job a second time for the same reason.
       - name: Upload snapshot diffs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: visual-diffs
-          path: apps/elitea-web/playwright-results/
-          if-no-files-found: ignore
+          path: |
+            apps/elitea-web/playwright-results/
+            apps/elitea-web/playwright-report/
+          if-no-files-found: warn
           retention-days: 14
 
       # The ONLY sanctioned way to produce a baseline. A PNG rendered by a
