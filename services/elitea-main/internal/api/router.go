@@ -34,6 +34,7 @@ import (
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
+	v2skillpublish "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skillpublish"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
@@ -1055,6 +1056,26 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.Get("/public_applications/prompt_lib/", coreHandler.PublicApplications)
 				r.Get("/public_application/prompt_lib/{applicationID}", coreHandler.PublicApplications)
 				r.Get("/public_application/prompt_lib/{applicationID}/{versionName}", coreHandler.PublicApplications)
+
+				// Skill publishing (#249) — the skill-level counterpart of the
+				// application publish block above, plus the skills-parity
+				// extras that live in the same domain. Registered here rather
+				// than in the skills block because none of it goes through
+				// SkillsRepo: publishing is cross-schema SQL, the way
+				// application publishing is.
+				skillPublishHandler := v2skillpublish.NewHandler(cfg.Pool)
+				r.Post("/publish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Publish)
+				r.Post("/unpublish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Unpublish)
+				r.Post("/publish_skill_validate/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.PublishValidate)
+				r.Get("/public_skills/prompt_lib", skillPublishHandler.PublicSkills)
+				r.Get("/public_skills/prompt_lib/", skillPublishHandler.PublicSkills)
+				r.Get("/public_skill/prompt_lib/{skillID}", skillPublishHandler.PublicSkill)
+				r.Get("/public_skill/prompt_lib/{skillID}/{versionName}", skillPublishHandler.PublicSkill)
+				r.Post("/attach_public_skill/prompt_lib/{projectID}", skillPublishHandler.AttachPublicSkill)
+				r.Get("/skill_categories/prompt_lib/{projectID}", skillPublishHandler.SkillCategories)
+				r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}", skillPublishHandler.ExportFork)
+				r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.ExportFork)
+				r.Get("/agents_with_skill/prompt_lib/{projectID}/{skillID}", skillPublishHandler.AgentsWithSkill)
 
 				// Check version in use
 				r.Get("/check_version_in_use/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)

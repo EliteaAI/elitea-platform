@@ -2314,6 +2314,170 @@ components:
         (repos/skills.go Create/Update). type/config/is_default remain
         silently discarded, and the response Type is hardcoded "skill".
 
+    # ---- Skill publishing (#249) -----------------------------------------
+
+    SkillValidationIssue:
+      type: object
+      required: [field, issue, fix]
+      properties:
+        field: { type: string }
+        issue: { type: string }
+        fix: { type: string }
+
+    SkillValidationResult:
+      type: object
+      required: [status, critical_issues, warnings, recommendations, summary, counts, ai_validation_available]
+      properties:
+        status:
+          type: string
+          enum: [PASS, WARN, FAIL]
+        critical_issues:
+          type: array
+          items: { $ref: '#/components/schemas/SkillValidationIssue' }
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/SkillValidationIssue' }
+        recommendations:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              suggestion: { type: string }
+        summary: { type: string }
+        counts:
+          type: object
+          properties:
+            critical: { type: integer }
+            warnings: { type: integer }
+            suggestions: { type: integer }
+        ai_validation_available:
+          type: boolean
+          description: >-
+            Always false here: the reference's AI validation pass has no
+            transport in this service (#126/#194), so only the deterministic
+            checks ran.
+        validation_token:
+          type: string
+          description: >-
+            Present on PASS/WARN. Pins the skill's name, description and
+            instructions; editing any of them invalidates it and the publish
+            re-runs the gate.
+      description: >
+        internal/api/v2/skillpublish/validate.go (runDeterministicChecks).
+
+    PublicSkillVersion:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        tags:
+          type: array
+          items: { type: string }
+
+    PublicSkillListItem:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        owner_id: { type: integer }
+        created_at: { type: string, format: date-time }
+        meta:
+          type: object
+          nullable: true
+          additionalProperties: true
+        tags:
+          type: array
+          items: { type: string }
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/PublicSkillVersion' }
+        has_published_version: { type: boolean }
+
+    PublicSkillDetail:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        owner_id: { type: integer }
+        created_at: { type: string, format: date-time }
+        meta:
+          type: object
+          nullable: true
+          additionalProperties: true
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/PublicSkillVersion' }
+        version_details:
+          type: object
+          properties:
+            id: { type: integer }
+            name: { type: string }
+            instructions: { type: string }
+            status: { type: string }
+            author_id: { type: integer }
+            created_at: { type: string, format: date-time }
+            tags:
+              type: array
+              items: { type: string }
+            meta:
+              type: object
+              nullable: true
+              additionalProperties: true
+              description: >-
+                Presentation keys only — `source_*`, `parent_*` and
+                `published_by` are stripped before the catalog serves it.
+
+    SkillForkPayload:
+      type: object
+      properties:
+        skills:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              description: { type: string }
+              owner_id: { type: integer }
+              project_id: { type: integer }
+              user_id: { type: integer }
+              entity: { type: string }
+              created_at: { type: string, format: date-time }
+              import_uuid:
+                type: string
+                description: uuid5(OID, "skill_fork:{project}:{skill}:{name}") — stable across re-forks.
+              meta:
+                type: object
+                nullable: true
+                additionalProperties: true
+              versions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    name: { type: string }
+                    instructions: { type: string }
+                    author_id: { type: integer }
+                    meta:
+                      type: object
+                      nullable: true
+                      additionalProperties: true
+                    tags:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name: { type: string }
+                          data:
+                            type: object
+                            additionalProperties: true
+
     Tag:
       type: object
       required: [id, name, data]
@@ -5915,6 +6079,448 @@ paths:
   # (listPublicSkills/createPublicSkill) was spec-only drift — the router only
   # serves /skills/{mode}/{projectID} (3 segments; chi will not match a
   # 2-segment path to it) and the UI has no call site for the 2-segment shape.
+
+  # ==========================================================================
+  # SKILLS — publishing (#249)
+  # internal/api/v2/skillpublish, registered in internal/api/router.go beside
+  # the application publish block. The publish/unpublish/validate trio mirrors
+  # the application-level one; the catalog reads serve the PUBLIC project's
+  # schema (PUBLIC_PROJECT_ID, default 1) and expose published versions only.
+  # ==========================================================================
+  /elitea_core/publish_skill/prompt_lib/{project_id}/{skill_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: publishSkill
+      summary: Publish a skill version to the public skill catalog
+      description: |
+        Snapshots the version into a new source version named `version_name`
+        and copies it into the public project as a twin skill's published
+        version. Publishing from the public project itself publishes in place.
+        Requires the version to pass pre-publish validation; call
+        /publish_skill_validate first to receive a `validation_token` that
+        skips re-validation.
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version_name]
+              properties:
+                version_name:
+                  type: string
+                  pattern: '^[a-zA-Z0-9._-]{1,50}$'
+                validation_token:
+                  type: string
+                  description: Token issued by /publish_skill_validate for this exact content.
+                category:
+                  type: string
+                  description: One of /skill_categories; an omitted category falls back to "Other".
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  msg: { type: string }
+                  public_skill_id: { type: integer }
+                  public_version_id: { type: integer }
+                  version_name: { type: string }
+                  source_version_id: { type: integer }
+        '400':
+          description: |
+            Bad request. `error` is one of `invalid_category`,
+            `version_name_exists`, `version_name_conflict`, `limit_reached`, or
+            `validation_token_invalid` — the last carrying `validation_result`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: {}
+                  msg: { type: string }
+                  validation_result:
+                    $ref: '#/components/schemas/SkillValidationResult'
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: Publishing is blocked for this project by platform policy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  msg: { type: string }
+        '404': { $ref: '#/components/responses/404' }
+        '409': { $ref: '#/components/responses/409' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/unpublish_skill/prompt_lib/{project_id}/{skill_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: unpublishSkill
+      summary: Remove a published skill version from the public catalog
+      description: |
+        Deletes the catalog copy and reverts the source version to draft. A
+        twin skill left with no published versions is removed with it; an
+        in-place original keeps its drafts.
+      tags: [skills]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Unpublished
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  msg: { type: string }
+                  status: { type: string }
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '409': { $ref: '#/components/responses/409' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/publish_skill_validate/prompt_lib/{project_id}/{skill_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: validateSkillForPublish
+      summary: Validate a skill version before publishing
+      description: |
+        Runs the deterministic pre-publish checks. 200 on PASS/WARN (with a
+        `validation_token`), 422 on FAIL. `ai_validation_available` is always
+        false in this stack — the AI half of the reference's gate has no
+        transport here (#126/#194).
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version_name: { type: string }
+                category: { type: string }
+      responses:
+        '200':
+          description: Validation PASS or WARN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillValidationResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '422':
+          description: Validation FAIL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillValidationResult'
+
+  /elitea_core/public_skills/prompt_lib:
+    get:
+      operationId: listPublicSkills
+      summary: List published skills in the public catalog
+      description: |
+        Reads the public project's schema; only skills with a published
+        version appear. `my_liked` and the trend window are not implemented
+        (they depend on the social like store).
+      tags: [skills]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - name: query
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: tags
+          in: query
+          description: Comma-separated tag ids; a skill must carry ALL of them.
+          schema: { type: string }
+        - name: sort_by
+          in: query
+          schema: { type: string, enum: [created_at, name] }
+        - name: sort_order
+          in: query
+          schema: { type: string, enum: [asc, desc] }
+      responses:
+        '200':
+          description: Published skills
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PublicSkillListItem'
+
+  /elitea_core/public_skill/prompt_lib/{skill_id}:
+    parameters:
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getPublicSkill
+      summary: Retrieve one public catalog skill and its newest published version
+      tags: [skills]
+      responses:
+        '200':
+          description: Public skill detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSkillDetail'
+        '400': { $ref: '#/components/responses/400' }
+        '404': { $ref: '#/components/responses/404' }
+
+  /elitea_core/public_skill/prompt_lib/{skill_id}/{version_name}:
+    parameters:
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_name
+        in: path
+        required: true
+        schema: { type: string }
+
+    get:
+      operationId: getPublicSkillVersion
+      summary: Retrieve one public catalog skill pinned to a published version name
+      tags: [skills]
+      responses:
+        '200':
+          description: Public skill detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSkillDetail'
+        '400': { $ref: '#/components/responses/400' }
+        '404': { $ref: '#/components/responses/404' }
+
+  /elitea_core/attach_public_skill/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: attachPublicSkill
+      summary: Fork a published skill into a project and attach it to agent versions
+      description: |
+        Forks the published (skill, version) into this project once, reusing an
+        existing local copy when one exists, then writes one
+        entity_skill_mapping row per agent version. Partial success is carried
+        per agent in `results`, not in the HTTP status.
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_skill_id, public_version_id, agent_version_ids]
+              properties:
+                public_skill_id: { type: integer }
+                public_version_id: { type: integer }
+                agent_version_ids:
+                  type: array
+                  items: { type: integer }
+                entity_type:
+                  type: string
+                  enum: [agent]
+                  default: agent
+      responses:
+        '200':
+          description: Per-agent attach outcomes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        agent_version_id: { type: integer }
+                        ok: { type: boolean }
+                        http_status: { type: integer }
+                        error: { type: string }
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+
+  /elitea_core/skill_categories/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listSkillCategories
+      summary: List the predefined skill categories available for publishing
+      description: |
+        The nine predefined categories, "Other" last. Admin-added extras
+        (the reference's `skill_publishing_guardrail.skill_categories`) are not
+        served: this platform's admin config schema has no such field.
+      tags: [skills]
+      responses:
+        '200':
+          description: Skill categories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        is_default: { type: boolean }
+        '400': { $ref: '#/components/responses/400' }
+
+  /elitea_core/skill_export_fork/prompt_lib/{project_id}/{skill_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: exportSkillFork
+      summary: Build the JSON fork payload for a skill's default version
+      description: |
+        Distinct from /skill_export, which downloads Markdown. The copied
+        version is always emitted as the target's single 'base' version.
+      tags: [skills]
+      responses:
+        '200':
+          description: Fork payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillForkPayload'
+        '400': { $ref: '#/components/responses/400' }
+        '404': { $ref: '#/components/responses/404' }
+
+  /elitea_core/skill_export_fork/prompt_lib/{project_id}/{skill_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: exportSkillVersionFork
+      summary: Build the JSON fork payload for a specific skill version
+      tags: [skills]
+      responses:
+        '200':
+          description: Fork payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillForkPayload'
+        '400': { $ref: '#/components/responses/400' }
+        '404': { $ref: '#/components/responses/404' }
+
+  /elitea_core/agents_with_skill/prompt_lib/{project_id}/{skill_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: The PUBLIC catalog skill id, not a local one.
+
+    get:
+      operationId: listAgentsWithSkill
+      summary: List agent versions in this project that use a public skill
+      description: |
+        Reverse lookup through the fork lineage: every local copy of the public
+        skill (`parent_project_id` + `parent_entity_id` in the version meta),
+        then every agent version mapped to one.
+      tags: [skills]
+      responses:
+        '200':
+          description: Agent versions using the skill
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        application_id: { type: integer }
+                        name: { type: string }
+                        entity_version_id: { type: integer }
+                        icon_meta:
+                          type: object
+                          nullable: true
+                          additionalProperties: true
+        '400': { $ref: '#/components/responses/400' }
 
   # ==========================================================================
   # SOCIAL
