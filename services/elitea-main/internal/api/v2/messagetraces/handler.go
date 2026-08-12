@@ -342,12 +342,30 @@ func parseListQuery(r *http.Request) (listQuery, error) {
 		limit:           defaultLimit,
 		includeTotal:    strings.EqualFold(query.Get("include_total"), "true"),
 	}
-	if single, err := positiveInt(query.Get("message_group_id")); err == nil {
+	// A NARROWING filter that cannot be parsed is rejected, not dropped.
+	//
+	// The reference drops it — Flask's `type=int` yields None on a bad value and
+	// the query simply goes unfiltered — and this is a deliberate divergence
+	// from that. Dropping it fails OPEN: `?message_group_id=undefined`, the
+	// shape a client produces when it builds the id from an uninitialised
+	// variable, would silently return every step in the conversation instead of
+	// the one message's, and the caller would render pins for messages the user
+	// never expanded. The sibling detail read already 400s on exactly this
+	// input, so dropping it here also made one parameter mean two things.
+	//
+	// Absent is still absent: no parameter means no filter, which is the
+	// documented way to ask for the whole conversation.
+	if raw := query.Get("message_group_id"); raw != "" {
+		single, err := positiveInt(raw)
+		if err != nil {
+			return listQuery{}, errors.New("message_group_id must be a positive integer")
+		}
 		parsed.messageGroupID = &single
 	}
-	// An unparseable or out-of-range limit falls back to the default and an
-	// out-of-range offset to zero, as the reference's clamps do; only the
-	// closed-set filters reject.
+	// `limit` and `offset` keep the reference's clamping instead, and the
+	// difference is not inconsistency: a bad limit falls back to a NARROWER
+	// answer (the default page), while a bad filter would have widened one.
+	// Clamping cannot show a caller rows they did not ask for.
 	if limit, err := strconv.Atoi(query.Get("limit")); err == nil && limit > 0 {
 		parsed.limit = min(limit, maxLimit)
 	}

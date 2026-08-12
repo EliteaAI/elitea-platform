@@ -370,6 +370,37 @@ func TestTraceListingFiltersByGroupAndKind(t *testing.T) {
 	}
 }
 
+// A narrowing filter that cannot be parsed must not be dropped: dropping it
+// fails OPEN and hands back the whole conversation.
+//
+// `undefined` is the literal a client sends when it builds the id from an
+// uninitialised variable, and it is the case that makes this more than
+// pedantry — the caller believes it asked for one message's steps and renders
+// every pin in the conversation. An absent parameter still means "no filter".
+func TestTraceListingRejectsAMalformedGroupFilterRatherThanWidening(t *testing.T) {
+	_, router := newTracesEnvironment(t)
+
+	for _, raw := range []string{"undefined", "abc", "0", "-1", "1.5"} {
+		target := fmt.Sprintf("/message_traces/prompt_lib/%d/%d?message_group_id=%s",
+			traceProjectID, traceConversationID, raw)
+		recorder := tracesDo(t, router, target)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d for message_group_id=%s, want 400 — a dropped filter "+
+				"returns the whole conversation, which is the opposite of what was asked",
+				recorder.Code, raw)
+		}
+	}
+
+	// The absent case is untouched: no parameter is still the documented way to
+	// ask for every step in the conversation.
+	body := decodeTraces(t, tracesDo(t, router,
+		fmt.Sprintf("/message_traces/prompt_lib/%d/%d", traceProjectID, traceConversationID)),
+		http.StatusOK)
+	if got := stepIDs(t, body); len(got) != 3 {
+		t.Fatalf("rows = %v, want all three with no filter", got)
+	}
+}
+
 // A message group from ANOTHER conversation, named explicitly, still yields
 // nothing: the conversation join is the scope, and the group filter narrows
 // within it rather than reaching outside it.

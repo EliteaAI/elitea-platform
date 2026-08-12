@@ -51,11 +51,15 @@ package analytics
 // dollars twice. Every scope present is still reported, under `by_scope`, so
 // the narrower rows are visible without being summed into the headline.
 // TestCostBreakdownDoesNotDoubleCountNarrowerScopes is that rule.
+//
+// Every figure is a PostgreSQL NUMERIC aggregate over the whole window. The
+// per-row `periods` listing is capped (maxPeriodRows) and says so when it is
+// cut, but no total is ever computed from that array, so a capped response and
+// a complete one report the same money.
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -76,12 +80,29 @@ import (
 const ViewPermission = "models.monitoring.tracing.view"
 
 // Date-window bounds, transcribed from legacy/plugins/elitea_core/utils/
-// constants.py. The clamp is what stops an unbounded window from returning an
-// unbounded number of period rows.
+// constants.py.
 const (
 	defaultDateRangeDays = 7
 	maxDateRangeDays     = 366
 )
+
+// maxPeriodRows caps the `periods` array.
+//
+// The date clamp above bounds ONE axis of this response. The other — the
+// accumulator's (scope, scope_id) — is not the clamp's to bound: the table is
+// keyed by (scope, scope_id, period_start), and the day anything publishes
+// user-scope deltas a project with ten thousand members has ten thousand rows
+// per period, not one. Only project-scope rows exist today, so a year's window
+// is about a dozen rows; the cap is here so that stays true when it stops being
+// true, rather than turning one GET into a hundred-thousand-object response.
+//
+// The cap CANNOT silently change a number. The totals are computed by SQL
+// aggregate over every matching row (see scopeTotals) and never by summing the
+// array below, so a truncated response reports the same money as a complete
+// one. What truncation costs is per-row DETAIL, and the response says so with
+// `periods_truncated: true` rather than presenting a short list as the whole of
+// it — a silent cap reads as "this is everything".
+const maxPeriodRows = 500
 
 // budgetScopeProject is the accumulator scope the gateway bills against —
 // llmproxy/budget_gate.go's `budgetScopeProject`. Its scope_id is the numeric
@@ -136,10 +157,14 @@ type costPeriod struct {
 	PendingReconciliation bool `json:"pending_reconciliation"`
 }
 
-// scopeTotal is the per-scope roll-up.
+// scopeTotal is the per-scope roll-up, summed by PostgreSQL over every row in
+// the window — not over the (possibly truncated) `periods` array.
 type scopeTotal struct {
 	Scope     string      `json:"scope"`
 	TotalCost json.Number `json:"total_cost"`
+	// Rows is how many accumulator rows the sum covers, which is how a client
+	// can tell that a scope contributed more rows than the array shows.
+	Rows int64 `json:"rows"`
 }
 
 // Costs serves analytics_costs.py's prompt_lib GET.
@@ -151,8 +176,12 @@ func (h *CostsHandler) Costs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	from, to := h.dateWindow(r)
+	ctx := r.Context()
 
-	periods, err := h.periods(r.Context(), projectID, from, to)
+	// The money first, and from an aggregate: every figure this endpoint
+	// reports is summed over the whole window by PostgreSQL, so the row listing
+	// below cannot influence a total by being short.
+	totals, err := h.scopeTotals(ctx, projectID, from, to)
 	if err != nil {
 		// Not an empty breakdown: "no spend" and "the query failed" must not
 		// render as the same screen.
@@ -161,12 +190,23 @@ func (h *CostsHandler) Costs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	periods, truncated, err := h.periods(ctx, projectID, from, to)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError,
+			map[string]any{"error": "failed to query analytics costs"})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"kpis":      kpis(periods, from, to),
-		"periods":   periods,
-		"by_scope":  scopeTotals(periods),
-		"date_from": from,
-		"date_to":   to,
+		"kpis":     kpis(totals, from, to),
+		"periods":  periods,
+		"by_scope": totals,
+		// Stated rather than implied: with this false, `periods` is every row in
+		// the window; with it true, it is the first maxPeriodRows of them and
+		// the totals above still cover the rest.
+		"periods_truncated": truncated,
+		"date_from":         from,
+		"date_to":           to,
 	})
 }
 
@@ -210,30 +250,77 @@ func parseDate(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// periods reads every accumulator row for the project whose period OVERLAPS the
-// window.
+// windowPredicate is the row set both queries below read, written once so the
+// aggregate and the listing can never describe different rows.
 //
 // Overlap, not containment: an accumulator period is a whole billing month, so
 // a seven-day default window is inside one rather than around it, and asking
 // for rows contained in the window would answer "no spend" for every default
 // request. The bounds are half-open on both sides (period_start < to AND
 // period_end > from) so two adjacent periods cannot both match an instant.
-func (h *CostsHandler) periods(
-	ctx context.Context, projectID int64, from, to time.Time,
-) ([]costPeriod, error) {
-	const statement = `
-SELECT scope, scope_id, period_start, period_end,
-       accumulated_cost::text, last_updated,
-       (outage_mode AND NOT reconciled) AS pending_reconciliation
-FROM gateway.llm_budget_accumulators
+const windowPredicate = `
 WHERE project_id = $1
   AND period_start < $2
-  AND period_end > $3
-ORDER BY period_start ASC, scope ASC, scope_id ASC`
+  AND period_end > $3`
+
+// scopeTotals rolls the window up per scope, in PostgreSQL.
+//
+// The sum is an exact NUMERIC aggregate over EVERY matching row, which is what
+// lets the row listing be capped without any figure changing: truncation costs
+// per-row detail and nothing else. Its result is bounded by the number of
+// distinct scopes — a four-value vocabulary — not by the number of rows.
+func (h *CostsHandler) scopeTotals(
+	ctx context.Context, projectID int64, from, to time.Time,
+) ([]scopeTotal, error) {
+	const statement = `
+SELECT scope, sum(accumulated_cost)::text AS total_cost, count(*) AS rows
+FROM gateway.llm_budget_accumulators` + windowPredicate + `
+GROUP BY scope
+ORDER BY scope ASC`
 
 	rows, err := h.pool.Query(ctx, statement, projectID, to, from)
 	if err != nil {
 		return nil, err
+	}
+	defer rows.Close()
+
+	totals := []scopeTotal{}
+	for rows.Next() {
+		var total scopeTotal
+		var cost string
+		if err := rows.Scan(&total.Scope, &cost, &total.Rows); err != nil {
+			return nil, err
+		}
+		// The exact NUMERIC PostgreSQL produced, carried as a JSON number
+		// without a float64 round trip: 0.10 must not come back as
+		// 0.10000000000000001 on a money path.
+		total.TotalCost = json.Number(cost)
+		totals = append(totals, total)
+	}
+	return totals, rows.Err()
+}
+
+// periods lists the individual accumulator rows behind those totals, capped at
+// maxPeriodRows.
+//
+// It asks for one row more than the cap and reports the overflow rather than
+// hiding it, and it orders PROJECT-scope rows first so the rows backing the
+// headline figure are the ones that survive a truncation. Within each group the
+// order is chronological.
+func (h *CostsHandler) periods(
+	ctx context.Context, projectID int64, from, to time.Time,
+) (listed []costPeriod, truncated bool, err error) {
+	const statement = `
+SELECT scope, scope_id, period_start, period_end,
+       accumulated_cost::text, last_updated,
+       (outage_mode AND NOT reconciled) AS pending_reconciliation
+FROM gateway.llm_budget_accumulators` + windowPredicate + `
+ORDER BY (scope = 'project') DESC, period_start ASC, scope ASC, scope_id ASC
+LIMIT $4`
+
+	rows, err := h.pool.Query(ctx, statement, projectID, to, from, maxPeriodRows+1)
+	if err != nil {
+		return nil, false, err
 	}
 	defer rows.Close()
 
@@ -245,32 +332,39 @@ ORDER BY period_start ASC, scope ASC, scope_id ASC`
 			&period.Scope, &period.ScopeID, &period.PeriodStart, &period.PeriodEnd,
 			&cost, &period.LastUpdated, &period.PendingReconciliation,
 		); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		// The exact NUMERIC PostgreSQL produced, carried as a JSON number
-		// without a float64 round trip: 0.10 must not come back as
-		// 0.10000000000000001 on a money path.
 		period.TotalCost = json.Number(cost)
 		periods = append(periods, period)
 	}
-	return periods, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(periods) > maxPeriodRows {
+		return periods[:maxPeriodRows], true, nil
+	}
+	return periods, false, nil
 }
 
 // kpis is the headline: the project-scope total over the window, and enough
 // metadata for a client to tell "nothing was spent" from "nothing was
 // persisted".
-func kpis(periods []costPeriod, from, to time.Time) map[string]any {
-	total := newDecimalSum()
-	counted := 0
-	for _, period := range periods {
-		if period.Scope != budgetScopeProject {
+//
+// It reads the SQL aggregate, so it is unaffected by any capping of the row
+// listing, and it takes the PROJECT scope alone — a narrower scope is a subset
+// of the same spend, so adding it would count the same dollars twice.
+func kpis(totals []scopeTotal, from, to time.Time) map[string]any {
+	total := json.Number(zeroUSD)
+	var counted int64
+	for _, scope := range totals {
+		if scope.Scope != budgetScopeProject {
 			continue
 		}
-		total.add(period.TotalCost)
-		counted++
+		total = scope.TotalCost
+		counted = scope.Rows
 	}
 	return map[string]any{
-		"total_cost": total.value(),
+		"total_cost": total,
 		"currency":   currency,
 		"periods":    counted,
 		// False when the write-back path has persisted nothing for this project
@@ -282,103 +376,7 @@ func kpis(periods []costPeriod, from, to time.Time) map[string]any {
 	}
 }
 
-// scopeTotals rolls the window up per scope, in the order the scopes were read.
-func scopeTotals(periods []costPeriod) []scopeTotal {
-	order := []string{}
-	sums := map[string]*decimalSum{}
-	for _, period := range periods {
-		sum, seen := sums[period.Scope]
-		if !seen {
-			sum = newDecimalSum()
-			sums[period.Scope] = sum
-			order = append(order, period.Scope)
-		}
-		sum.add(period.TotalCost)
-	}
-	totals := make([]scopeTotal, 0, len(order))
-	for _, scope := range order {
-		totals = append(totals, scopeTotal{Scope: scope, TotalCost: sums[scope].value()})
-	}
-	return totals
-}
-
-/* ── exact addition ────────────────────────────────────────────────────── */
-
-// decimalSum adds NUMERIC-shaped decimal strings without going through
-// float64.
-//
-// The values come out of PostgreSQL as NUMERIC(20,8) text and go back onto the
-// wire as JSON numbers; parsing them into a float64 to add them would reintroduce
-// exactly the rounding the whole money path — nano-USD counters, NUMERIC
-// columns, in-SQL conversion — exists to avoid. Scaled int64 nano-USD is the
-// denomination the gateway already counts in, and the accumulator's eight
-// decimal places fit inside nine.
-type decimalSum struct {
-	nano int64
-}
-
-func newDecimalSum() *decimalSum { return &decimalSum{} }
-
-func (d *decimalSum) add(value json.Number) {
-	d.nano += nanoUSD(value.String())
-}
-
-// value renders the running total back as a fixed-point decimal string. It is
-// emitted with eight decimal places, matching the accumulator column, so a sum
-// and the row it came from are the same literal.
-func (d *decimalSum) value() json.Number {
-	negative := d.nano < 0
-	magnitude := d.nano
-	if negative {
-		magnitude = -magnitude
-	}
-	whole := magnitude / nanoPerUSD
-	fraction := (magnitude % nanoPerUSD) / 10 // nano → 8 decimal places
-	rendered := fmt.Sprintf("%d.%08d", whole, fraction)
-	if negative {
-		rendered = "-" + rendered
-	}
-	return json.Number(rendered)
-}
-
-const nanoPerUSD = 1000000000
-
-// nanoUSD parses a NUMERIC-shaped decimal into scaled nano-USD. A value the
-// database could not have produced parses as zero rather than panicking; every
-// caller here is reading a NUMERIC column.
-func nanoUSD(raw string) int64 {
-	negative := false
-	if len(raw) > 0 && (raw[0] == '-' || raw[0] == '+') {
-		negative = raw[0] == '-'
-		raw = raw[1:]
-	}
-	whole, fraction, _ := cutByte(raw, '.')
-	units, err := strconv.ParseInt(whole, 10, 64)
-	if err != nil && whole != "" {
-		return 0
-	}
-	// Pad or truncate the fraction to nine digits so "1.5" and "1.500000000"
-	// scale identically.
-	for len(fraction) < 9 {
-		fraction += "0"
-	}
-	fraction = fraction[:9]
-	fractional, err := strconv.ParseInt(fraction, 10, 64)
-	if err != nil {
-		return 0
-	}
-	total := units*nanoPerUSD + fractional
-	if negative {
-		return -total
-	}
-	return total
-}
-
-func cutByte(value string, separator byte) (before, after string, found bool) {
-	for index := 0; index < len(value); index++ {
-		if value[index] == separator {
-			return value[:index], value[index+1:], true
-		}
-	}
-	return value, "", false
-}
+// zeroUSD is what a project with no persisted row reports. It carries the
+// accumulator column's own scale so "no spend" and a real zero are the same
+// literal, and neither is a bare `0` a client has to special-case.
+const zeroUSD = "0.00000000"

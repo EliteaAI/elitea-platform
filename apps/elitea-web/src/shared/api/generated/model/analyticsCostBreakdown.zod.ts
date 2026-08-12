@@ -65,16 +65,28 @@ export const AnalyticsCostBreakdown = zod
     }),
     periods: zod
       .array(AnalyticsCostPeriod)
-      .describe("One entry per accumulator row overlapping the window."),
+      .describe(
+        "One entry per accumulator row overlapping the window, capped at 500 rows with PROJECT-scope rows ordered first so a truncation never drops the rows behind the headline figure. See periods_truncated.\n",
+      ),
     by_scope: zod
       .array(
         zod.object({
           scope: zod.string(),
           total_cost: zod.number(),
+          rows: zod
+            .int()
+            .describe(
+              "How many accumulator rows the sum covers, so a client can tell that a scope contributed more rows than `periods` lists.\n",
+            ),
         }),
       )
       .describe(
-        "Roll-up per accumulator scope. Present so a narrower scope is visible without being summed into total_cost.\n",
+        "Roll-up per accumulator scope, summed by PostgreSQL over EVERY row in the window — including rows the capped `periods` array omits. Present so a narrower scope is visible without being summed into total_cost.\n",
+      ),
+    periods_truncated: zod
+      .boolean()
+      .describe(
+        "True when `periods` was capped and lists only the first 500 rows. No total is affected: every figure in this response is a SQL aggregate over the whole window, so a truncated response reports the same money as a complete one — what is missing is per-row detail.\n",
       ),
     date_from: zod.iso.datetime({ offset: true }),
     date_to: zod.iso.datetime({ offset: true }),

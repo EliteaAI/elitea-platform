@@ -402,7 +402,9 @@ export const getGetAnalyticsCostsResponseMock = (
   ).map(() => ({
     scope: faker.string.alpha({ length: { min: 10, max: 20 } }),
     total_cost: faker.number.float({ fractionDigits: 2 }),
+    rows: faker.number.int(),
   })),
+  periods_truncated: faker.datatype.boolean(),
   date_from: faker.date.past().toISOString().slice(0, 19) + "Z",
   date_to: faker.date.past().toISOString().slice(0, 19) + "Z",
   ...overrideResponse,

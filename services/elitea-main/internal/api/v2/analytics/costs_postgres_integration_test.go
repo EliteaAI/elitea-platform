@@ -365,6 +365,80 @@ func TestCostBreakdownFlagsRowsTheRecoveryPathStillOwns(t *testing.T) {
 	}
 }
 
+/* ── the row cap cannot move a number ──────────────────────────────────── */
+
+// The `periods` array is capped so the (scope, scope_id) axis — which the date
+// clamp does not bound — cannot turn one GET into a hundred-thousand-object
+// response the day user-scope deltas start being published.
+//
+// The cap must cost DETAIL and nothing else: every figure is a SQL aggregate
+// over the whole window, so a truncated response reports the same money as a
+// complete one, and it says it was truncated rather than presenting a short
+// list as the whole of it.
+func TestCostBreakdownCapsTheRowListingWithoutChangingAnyTotal(t *testing.T) {
+	pool, router := newCostsEnvironment(t)
+
+	// 600 member-scope rows — over the 500 cap — plus the project row the
+	// headline is made of. Each member row is 0.01; the project row is 12.00.
+	plantDeltas(t, pool, "project", "31", costProjectID, augustStart(), augustEnd(),
+		12_000_000_000)
+	for member := range 600 {
+		plantDeltas(t, pool, "user", fmt.Sprintf("31:%d", member), costProjectID,
+			augustStart(), augustEnd(), 10_000_000)
+	}
+
+	body := decodeCosts(t, costsDo(t, router,
+		fmt.Sprintf("/analytics_costs/prompt_lib/%d", costProjectID)))
+
+	periods, ok := body["periods"].([]any)
+	if !ok || len(periods) != 500 {
+		t.Fatalf("periods holds %d rows, want the 500-row cap", len(periods))
+	}
+	if truncated, _ := body["periods_truncated"].(bool); !truncated {
+		t.Fatal("periods_truncated = false on a capped listing: a silent cap reads " +
+			"as 'this is everything'")
+	}
+
+	// THE assertion: the headline is unmoved by the truncation, because it is
+	// not computed from the array.
+	wantCostNumber(t, costKPIs(t, body), "total_cost", "12.00000000")
+
+	// And the per-scope roll-up still covers every dropped row: 600 × 0.01.
+	totals := map[string]string{}
+	rowCounts := map[string]string{}
+	for _, entry := range body["by_scope"].([]any) {
+		row := entry.(map[string]any)
+		totals[fmt.Sprint(row["scope"])] = fmt.Sprint(row["total_cost"])
+		rowCounts[fmt.Sprint(row["scope"])] = fmt.Sprint(row["rows"])
+	}
+	if totals["user"] != "6.00000000" || rowCounts["user"] != "600" {
+		t.Fatalf("by_scope[user] = %s over %s rows, want 6.00000000 over 600 — the "+
+			"aggregate must cover rows the listing dropped", totals["user"], rowCounts["user"])
+	}
+	if totals["project"] != "12.00000000" {
+		t.Fatalf("by_scope[project] = %s, want 12.00000000", totals["project"])
+	}
+
+	// The project row survives the cut: the listing orders project scope first
+	// precisely so a truncation never drops the rows behind the headline.
+	if scope := periods[0].(map[string]any)["scope"]; scope != "project" {
+		t.Fatalf("first row scope = %v, want project", scope)
+	}
+}
+
+// The flag is not stuck on: an ordinary response says it is complete.
+func TestCostBreakdownReportsAnUncappedListingAsComplete(t *testing.T) {
+	pool, router := newCostsEnvironment(t)
+	plantDeltas(t, pool, "project", "31", costProjectID, augustStart(), augustEnd(),
+		1_000_000_000)
+
+	body := decodeCosts(t, costsDo(t, router,
+		fmt.Sprintf("/analytics_costs/prompt_lib/%d", costProjectID)))
+	if truncated, _ := body["periods_truncated"].(bool); truncated {
+		t.Fatal("periods_truncated = true on a one-row listing")
+	}
+}
+
 /* ── the disclosure, machine-checked ───────────────────────────────────── */
 
 // TestCostBreakdownOmitsTheDimensionsNothingProduces is the version of this

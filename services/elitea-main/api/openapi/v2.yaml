@@ -453,7 +453,7 @@ components:
         per-agent, per-user and per-day views the pylon original carried are
         absent here because nothing in this architecture records those
         dimensions — see the operation description.
-      required: [kpis, periods, by_scope, date_from, date_to]
+      required: [kpis, periods, by_scope, periods_truncated, date_from, date_to]
       properties:
         kpis:
           type: object
@@ -481,20 +481,37 @@ components:
               type: integer
         periods:
           type: array
-          description: One entry per accumulator row overlapping the window.
+          description: >
+            One entry per accumulator row overlapping the window, capped at 500
+            rows with PROJECT-scope rows ordered first so a truncation never
+            drops the rows behind the headline figure. See periods_truncated.
           items:
             $ref: '#/components/schemas/AnalyticsCostPeriod'
         by_scope:
           type: array
           description: >
-            Roll-up per accumulator scope. Present so a narrower scope is
-            visible without being summed into total_cost.
+            Roll-up per accumulator scope, summed by PostgreSQL over EVERY row
+            in the window — including rows the capped `periods` array omits.
+            Present so a narrower scope is visible without being summed into
+            total_cost.
           items:
             type: object
-            required: [scope, total_cost]
+            required: [scope, total_cost, rows]
             properties:
               scope: { type: string }
               total_cost: { type: number }
+              rows:
+                type: integer
+                description: >
+                  How many accumulator rows the sum covers, so a client can tell
+                  that a scope contributed more rows than `periods` lists.
+        periods_truncated:
+          type: boolean
+          description: >
+            True when `periods` was capped and lists only the first 500 rows.
+            No total is affected: every figure in this response is a SQL
+            aggregate over the whole window, so a truncated response reports the
+            same money as a complete one — what is missing is per-row detail.
         date_from:
           type: string
           format: date-time
@@ -5166,7 +5183,11 @@ paths:
           in: query
           required: false
           schema: { type: integer }
-          description: Scope to a single message group.
+          description: >
+            Scope to a single message group. A value that is not a positive
+            integer is a 400 rather than an ignored filter — dropping it would
+            return the whole conversation to a caller that asked for one
+            message. Omit the parameter to ask for the whole conversation.
         - name: message_group_ids
           in: query
           required: false
@@ -5201,7 +5222,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/MessageTraceListing'
         '400':
-          description: An unsupported kind, or a malformed message-group id list.
+          description: >
+            An unsupported kind, a malformed message_group_id, or a malformed
+            message-group id list.
           content:
             application/json:
               schema:
