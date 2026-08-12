@@ -68,7 +68,7 @@ jobs:
             toggles: --set migrations.enabled=false --set autoscaling.enabled=false --set podDisruptionBudget.enabled=false --set ingress.enabled=true --set-json 'ingress.hosts=["example.invalid"]'
           - chart: elitea-llm-gateway
             values: ""
-            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set-json 'ingress.hosts=["example.invalid"]'
+            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set ingress.acknowledgeMTLSBypass=true --set-json 'ingress.hosts=["example.invalid"]'
           - chart: elitea-scheduler
             values: ""
             toggles: --set service.enabled=true --set probes.liveness.enabled=false --set probes.readiness.enabled=true

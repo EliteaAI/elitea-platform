@@ -76,6 +76,7 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "configMapName": { "type": "string" },
+            "key": { "type": "string" },
             "mountPath": { "type": "string" }
           }
         }

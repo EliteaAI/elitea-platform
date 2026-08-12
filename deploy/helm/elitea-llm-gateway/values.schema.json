@@ -63,6 +63,7 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
+        "acknowledgeMTLSBypass": { "type": "boolean" },
         "gatewayApi": { "type": "boolean" },
         "className": { "type": "string" },
         "annotations": { "type": "object" },

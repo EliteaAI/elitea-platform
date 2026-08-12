@@ -1,4 +1,7 @@
 {{- if .Values.ingress.enabled }}
+{{- if not .Values.ingress.acknowledgeMTLSBypass }}
+{{- fail "ingress.enabled=true routes external traffic straight to the mTLS-internal-only Service (templates/service.yaml — \"NEVER public\"). Set ingress.acknowledgeMTLSBypass=true only once your ingress/Gateway itself terminates and re-verifies mTLS equivalent to elitea-main." }}
+{{- end }}
 {{- if .Values.ingress.gatewayApi }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

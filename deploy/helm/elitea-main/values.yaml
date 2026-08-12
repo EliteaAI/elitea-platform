@@ -72,7 +72,11 @@ fileConfig:
   brandPack:
     enabled: false
     configMapName: ""
-    mountPath: /etc/elitea/brand-pack
+    # BRAND_PACK_PATH is one pack file per deployment (branding package doc,
+    # internal/api/v2/branding/pack.go's LoadPack does os.ReadFile) — mounted
+    # via subPath, like authConfig above, not a whole-ConfigMap directory.
+    key: brand-pack.json
+    mountPath: /etc/elitea/brand-pack.json
 
 resources:
   requests:
