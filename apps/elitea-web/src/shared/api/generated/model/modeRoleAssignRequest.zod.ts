@@ -41,17 +41,23 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
+export const ModeRoleAssignRequest = zod
   .object({
-    groups: zod
-      .array(zod.string())
+    user_id: zod
+      .union([zod.int(), zod.string()])
       .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
+        "A user id, or an email address to resolve one by — both spellings the reference accepts. A numeric string is read as an id.\n",
       ),
+    mode: zod
+      .string()
+      .describe(
+        "Any mode except `default`: default-mode roles are project membership and are written through \/admin\/users\/{mode}\/{project_id}.\n",
+      ),
+    role: zod.string(),
   })
-  .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
-  );
+  .describe("NOTE(W2): internal\/api\/v2\/admin\/modes.go:117-126.\n");
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type ModeRoleAssignRequest = zod.input<typeof ModeRoleAssignRequest>;
+export type ModeRoleAssignRequestOutput = zod.output<
+  typeof ModeRoleAssignRequest
+>;

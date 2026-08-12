@@ -1735,18 +1735,17 @@ components:
 
     ProjectGroupsUpdate:
       type: object
+      required: [groups]
       properties:
         groups:
           type: array
           items: { type: string }
-      additionalProperties: true
-      x-elitea-passthrough: >-
-        NOTE(W2): decoded into map[string]any; only `groups` is read and the
-        WHOLE body is echoed back as the 200 response
-        (internal/api/v2/projects/handler.go:136-180).
+          description: >
+            The project's WHOLE group set, by name. `no_group` is rejected.
       description: >
-        NOTE(W2): request AND response of putProjectGroups — the handler
-        echoes the parsed body verbatim (projects/handler.go:180).
+        NOTE(W2): request body of putProjectGroups
+        (internal/api/v2/projects/groups.go:186-188). It is no longer echoed
+        back: the response is the project, as the reference serializes it.
 
     ProjectContext:
       type: object
@@ -3267,6 +3266,311 @@ components:
             whose members collide with an existing one makes the Go generator
             rename both constant sets.
 
+    # ---- Admin & tenancy parity (issue 255) --------------------------------
+
+    ModeRoleAssignment:
+      type: object
+      required: [id, user_id, user_email, user_name, mode, role]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:52-59 — one central
+        (user, mode, role) assignment.
+      properties:
+        id:
+          type: string
+          description: >
+            Composite `<user_id>:<mode>:<role>`. There is no single row id
+            behind an assignment, so this triple IS the identifier, and it is
+            what the DELETE takes back apart.
+        user_id: { type: integer }
+        user_email: { type: string }
+        user_name: { type: string }
+        mode:
+          type: string
+          description: >
+            The pylon mode the role belongs to — `administration`, `developer`,
+            `default`, … Reported for every mode that has roles; only non-default
+            modes are writable here.
+        role: { type: string }
+
+    ModeRoleListing:
+      type: object
+      required: [total, rows]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:104-107.
+      properties:
+        total: { type: integer }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/ModeRoleAssignment' }
+
+    ModeRoleAssignRequest:
+      type: object
+      required: [user_id, mode, role]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:117-126.
+      properties:
+        user_id:
+          oneOf:
+            - type: integer
+            - type: string
+          description: >
+            A user id, or an email address to resolve one by — both spellings
+            the reference accepts. A numeric string is read as an id.
+        mode:
+          type: string
+          description: >
+            Any mode except `default`: default-mode roles are project
+            membership and are written through /admin/users/{mode}/{project_id}.
+        role: { type: string }
+
+    ModeRoleAssignResult:
+      type: object
+      required: [ok, id]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:222-225.
+      properties:
+        ok: { type: boolean }
+        id:
+          type: string
+          description: The composite id of the assignment that now exists.
+
+    ModeRoleRemoveResult:
+      type: object
+      required: [ok, removed]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:290.
+      properties:
+        ok: { type: boolean }
+        removed:
+          type: integer
+          description: Assignments deleted. Never 0 — an id that matched none is a 404.
+
+    GlobalUserInviteRequest:
+      type: object
+      required: [user_name, user_email]
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_invite.go:62-65. Distinct from
+        UserInviteRequest, which is the PROJECT invite (emails + roles).
+      properties:
+        user_name: { type: string }
+        user_email: { type: string }
+
+    GlobalUserInviteResult:
+      type: object
+      required: [ok, id, email, name, created, invitation_delivered, invitation_delivery]
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_invite.go:112-120.
+      properties:
+        ok: { type: boolean }
+        id:
+          type: integer
+          description: The platform user id, whether it was created now or already existed.
+        email:
+          type: string
+          description: The address, lower-cased and trimmed.
+        name: { type: string }
+        created:
+          type: boolean
+          description: >
+            False when the address already had an account. The existing
+            account is never renamed.
+        invitation_delivered:
+          type: boolean
+          description: >
+            Always false. Sending an invitation is an external
+            identity-provider call with no equivalent in this service, and a
+            bare `{"ok": true}` would be rendered as "invitation sent".
+        invitation_delivery:
+          type: string
+          description: Why nothing was delivered, in full.
+
+    UserProjectRoleMap:
+      type: object
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_project_permissions.go:99-110 —
+        role name → its sorted permission names, for the first personal project.
+      additionalProperties:
+        type: array
+        items: { type: string }
+
+    PermissionMatrixRow:
+      type: object
+      required: [name]
+      description: >
+        NOTE(W2): internal/api/v2/admin/roles.go:139-147 — one permission and
+        one boolean column per role.
+      properties:
+        name:
+          type: string
+          description: The permission name.
+      additionalProperties:
+        type: boolean
+
+    PermissionMatrix:
+      type: object
+      required: [total, rows]
+      description: >
+        NOTE(W2): internal/api/v2/admin/roles.go:148-152. `total` counts the
+        permission CATALOGUE; this endpoint is never paginated.
+      properties:
+        total: { type: integer }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/PermissionMatrixRow' }
+
+    UserProjectPermissionsUpdate:
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_project_permissions.go:373-420 —
+        both shapes the reference accepts: the role map, or the matrix rows the
+        GET returns with ?old_format.
+      oneOf:
+        - $ref: '#/components/schemas/UserProjectRoleMap'
+        - type: array
+          items: { $ref: '#/components/schemas/PermissionMatrixRow' }
+
+    UserProjectPermissionsResult:
+      type: object
+      required: [role_map, projects, roles_created, granted, revoked, roles_assigned]
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_project_permissions.go:180-187.
+        `role_map` is the reference's own response field; the counters are what
+        make a no-op distinguishable from a save.
+      properties:
+        role_map: { $ref: '#/components/schemas/UserProjectRoleMap' }
+        projects:
+          type: integer
+          description: How many projects the save was applied to.
+        roles_created: { type: integer }
+        granted: { type: integer }
+        revoked: { type: integer }
+        roles_assigned:
+          type: integer
+          description: Role assignments added to existing members by ?append_user_role.
+
+    ProjectGroup:
+      type: object
+      required: [id, name]
+      description: >
+        NOTE(W2): internal/api/v2/projects/handler.go — the Group struct.
+      properties:
+        id: { type: integer }
+        name: { type: string }
+
+    ProjectWithGroups:
+      type: object
+      required: [id, name, owner_id, plugins, keycloak_groups, create_success, suspended, groups]
+      description: >
+        NOTE(W2): internal/api/v2/projects/groups.go:295-330 — the body all
+        three group writes return, mirroring the reference's ProjectListModel,
+        so a client re-renders the group chips without re-fetching.
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        owner_id: { type: integer }
+        plugins:
+          type: array
+          items: { type: string }
+        keycloak_groups:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): internal/api/v2/projects/groups.go:310 — the column is
+            copied out as raw JSON and never interpreted by this service; its
+            shape belongs to the Keycloak integration.
+        create_success: { type: boolean }
+        suspended: { type: boolean }
+        groups:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectGroup' }
+
+    ProjectGroupCreate:
+      type: object
+      required: [name]
+      description: >
+        NOTE(W2): internal/api/v2/projects/groups.go:57-59. `no_group` is
+        rejected: it is the sentinel the listing uses for "no group at all".
+      properties:
+        name: { type: string }
+
+    PublishedAgentVersion:
+      type: object
+      required: [version_id, version_name, published_at, published_by]
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:40-45.
+      properties:
+        version_id: { type: integer }
+        version_name: { type: string }
+        published_at:
+          type: string
+          nullable: true
+          description: The version's creation timestamp, `YYYY-MM-DDTHH:MM:SS`.
+        published_by:
+          nullable: true
+          description: >
+            `meta.published_by` of the version, verbatim. Unconstrained because
+            it is whatever the publishing path stored there.
+          x-elitea-passthrough: >-
+            NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:44 —
+            copied straight out of the version's meta JSON.
+
+    PublishedAgentAdoption:
+      type: object
+      required: [conversation_count, project_count]
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:47-54.
+        Both counters are NULL when the agent's `meta.adoption` is absent —
+        nothing in this stack writes that key. The reference defaults them to
+        0, which renders as "nobody uses this" rather than "this platform does
+        not measure that".
+      properties:
+        conversation_count:
+          type: integer
+          nullable: true
+        project_count:
+          type: integer
+          nullable: true
+
+    PublishedAgent:
+      type: object
+      required:
+        [public_agent_id, name, description, author_project_id, published_versions,
+         total_published_versions, adoption, created_at]
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:56-65.
+      properties:
+        public_agent_id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        author_project_id:
+          type: integer
+          nullable: true
+          description: >
+            `applications.shared_owner_id` — the project the agent was published
+            FROM. Null for a row published without one.
+        published_versions:
+          type: array
+          items: { $ref: '#/components/schemas/PublishedAgentVersion' }
+        total_published_versions: { type: integer }
+        adoption: { $ref: '#/components/schemas/PublishedAgentAdoption' }
+        created_at:
+          type: string
+          nullable: true
+
+    PublishedAgentsListing:
+      type: object
+      required: [items, total, page, page_size]
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:110-115.
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PublishedAgent' }
+        total:
+          type: integer
+          description: Published agents in the public project, before paging.
+        page: { type: integer }
+        page_size: { type: integer }
+
     # ---- Author detail (eliteacore) ---------------------------------------
     AuthorDetail:
       type: object
@@ -3578,6 +3882,255 @@ paths:
   # ==========================================================================
   # ADMIN — roles
   # ==========================================================================
+  # ==========================================================================
+  # ADMIN & TENANCY PARITY (issue 255)
+  #
+  # `administration` is a STATIC segment on all three, not a {mode} parameter:
+  # each pylon original registers `mode_handlers = {'administration': AdminAPI}`
+  # and nothing else, so another mode has no handler to reach. A {mode} route
+  # would have to answer something plausible for a mode that does not exist.
+  # ==========================================================================
+  /admin/modes/administration:
+    get:
+      operationId: listUserModeRoles
+      summary: List every central role assignment, across all modes
+      description: |
+        Which user holds which CENTRAL role in which pylon mode — the registry
+        behind the admin console's Modes table. Each row carries the composite
+        `<user_id>:<mode>:<role>` id the DELETE below consumes.
+
+        The reference walks its runtime mode registry and asks for every
+        (user, mode) pair over RPC; this is one join over the assignment table,
+        so the modes reported are the modes that have roles.
+      tags: [admin]
+      responses:
+        '200':
+          description: Every central assignment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModeRoleListing'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    post:
+      operationId: assignUserModeRole
+      summary: Assign a user to a role in a mode
+      description: |
+        SINGLE-ROLE-PER-MODE: every assignment the user holds in that mode is
+        dropped before the new one is written, in one transaction — the rule
+        auth_core's assign_user_to_role enforces. A role the deployment does
+        not define in that mode is a 400 and leaves the user's current role
+        alone, rather than revoking it and granting nothing.
+
+        Granting or revoking `super_admin` additionally requires the caller to
+        hold `admin.auth.users.super_admin`: this endpoint writes the same
+        table /admin/auth_users does, so without the guard it would be a
+        second, unguarded route to the platform's highest role.
+
+        `default` mode is refused. Default-mode roles are project membership,
+        which has no meaning without a project id.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModeRoleAssignRequest'
+      responses:
+        '200':
+          description: The assignment now exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModeRoleAssignResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: >
+            The caller lacks `modes.users`, or is assigning/revoking
+            `super_admin` without `admin.auth.users.super_admin`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404': { $ref: '#/components/responses/404' }
+        '500': { $ref: '#/components/responses/500' }
+
+    delete:
+      operationId: removeUserModeRole
+      summary: Remove a user from a role in a mode
+      description: |
+        Takes the composite id the listing produces. The reference's handler is
+        a `# TODO` that answers `{"ok": true}` having deleted nothing; this one
+        deletes, and answers 404 when the triple names no assignment rather
+        than reporting a removal that did not happen.
+      tags: [admin]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+          description: '`<user_id>:<mode>:<role>`, as returned by the listing.'
+      responses:
+        '200':
+          description: The assignment was removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModeRoleRemoveResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such assignment — nothing was removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+  /admin/user_invite/administration:
+    post:
+      operationId: inviteUserGlobally
+      summary: Create a platform user record for an address
+      description: |
+        The platform-level counterpart of the project invite
+        (`POST /admin/users/{mode}/{project_id}`): it creates an
+        `auth_core__user` row for an address that has never logged in, with no
+        project and no role, so the console can then place them. The address is
+        resolved by email on first login.
+
+        NO INVITATION IS DELIVERED. The reference calls an external identity
+        service to create and mail an invitation token; that integration has no
+        equivalent here, so `invitation_delivered` is false and
+        `invitation_delivery` says why. Answering a bare `{"ok": true}` would
+        be rendered by a console as "invitation sent".
+
+        Inviting an address that already has an account is not an error and is
+        not a rename: `created` is false and the stored name is untouched.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlobalUserInviteRequest'
+      responses:
+        '200':
+          description: The platform user record exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalUserInviteResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /admin/user_project_permissions/administration:
+    get:
+      operationId: getUserProjectPermissions
+      summary: Read the permission matrix personal projects grant
+      description: |
+        The default every ordinary project gets, as opposed to the named scopes
+        `/admin/permissions/{scope}/{mode}` edits. Read from the FIRST personal
+        project (`project_user_<id>`); with no personal project at all the
+        answer is 400, as it is in the reference.
+
+        Default body is role → sorted permission names. `?old_format` returns
+        the matrix rows instead — one row per permission in the catalogue, one
+        boolean column per role — which is also the shape the PUT accepts back.
+
+        The grants reported are the project's OWN overrides, falling back to the
+        central `default` matrix only when it has none. The reference reports
+        the central matrix either way, so a project with overrides reads back
+        as something its members do not have.
+      tags: [admin]
+      parameters:
+        - name: old_format
+          in: query
+          schema: { type: boolean }
+          allowEmptyValue: true
+          description: Presence (not value) switches to the matrix-row shape.
+      responses:
+        '200':
+          description: >
+            The personal-project matrix. The schema shown is the DEFAULT body;
+            with `?old_format` the body is a PermissionMatrix instead — the two
+            are not modelled as a `oneOf` because the generated mock for a
+            map-shaped `oneOf` branch does not type-check.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProjectRoleMap'
+        '400':
+          description: This deployment has no personal projects.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: updateUserProjectPermissions
+      summary: Apply a permission matrix across every personal or team project
+      description: |
+        REPLACES each named role's permission set — the submitted set is the
+        whole set, so a permission left out is revoked — across every personal
+        project, or with `?team_projects` across every project that is neither
+        personal nor the public one.
+
+        Everything runs in ONE transaction. The reference walks projects on
+        autocommitting sessions and deletes a role's permissions before
+        re-inserting them, so an interruption leaves part of the estate on the
+        old matrix and can leave a role granting nothing at all.
+
+        An unknown role name is a 400 unless `?create_role_if_not_exist` asks
+        for it to be created; the reference silently skips it and reports
+        success. An unknown permission name is always a 400.
+      tags: [admin]
+      parameters:
+        - name: team_projects
+          in: query
+          schema: { type: boolean }
+          allowEmptyValue: true
+          description: >
+            Presence targets every SHARED project (excluding the public one)
+            instead of the personal ones.
+        - name: create_role_if_not_exist
+          in: query
+          schema: { type: boolean }
+          allowEmptyValue: true
+          description: Presence creates roles the target projects do not define.
+        - name: append_user_role
+          in: query
+          schema: { type: boolean }
+          allowEmptyValue: true
+          description: >
+            Presence also grants each named role to every existing member of the
+            target projects who does not already hold it. It only ever adds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProjectPermissionsUpdate'
+      responses:
+        '200':
+          description: What the save changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProjectPermissionsResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
   /admin/roles/default/{project_id}:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -4078,6 +4631,49 @@ paths:
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
+
+  /elitea_core/admin_published_agents/administration:
+    get:
+      operationId: listAdminPublishedAgents
+      summary: List the agents this deployment has published
+      description: |
+        The admin dashboard's published-agents view — not the catalogue the
+        product's Agents page reads. It reports every application in the PUBLIC
+        project that has at least one `published` version, with those versions,
+        who published each and when, newest first.
+
+        Draft versions are excluded from `published_versions`, and an
+        application with only drafts does not appear at all.
+
+        `adoption` is null-valued unless the agent's `meta.adoption` has been
+        written; see PublishedAgentAdoption for why it is not defaulted to
+        zeroes.
+      tags: [admin]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+          description: 1-based. A page past the end is an empty page.
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [created_at, name]
+            default: created_at
+          description: Always descending. Any other value falls back to created_at.
+      responses:
+        '200':
+          description: Published agents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishedAgentsListing'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
 
   /elitea_core/public_applications/prompt_lib:
     get:
@@ -5251,16 +5847,102 @@ paths:
                 $ref: '#/components/schemas/GroupsListResponse'
         '401': { $ref: '#/components/responses/401' }
 
+  /projects/group/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: addProjectGroup
+      summary: Create a group if needed and attach it to a project
+      description: |
+        Creates the `centry.project_group` row when the name is new and attaches
+        it to the project, in one transaction — so a rejected create cannot
+        leave a group row behind with nothing attached to it. An existing name
+        is REUSED rather than duplicated: the column is unique, and two projects
+        in the same group is the point.
+
+        `no_group` is rejected: it is the sentinel the listing uses for a
+        project with no group at all.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectGroupCreate'
+      responses:
+        '201':
+          description: The project, with its groups
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWithGroups'
+        '400':
+          description: Unvalidatable body, reserved name, or unknown project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /projects/group/prompt_lib/{project_id}/{group_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: group_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    delete:
+      operationId: removeProjectGroup
+      summary: Detach a group from a project
+      description: |
+        Removes the ASSOCIATION. The group row survives — it may be attached to
+        other projects, and it belongs to the deployment rather than to the
+        project detaching from it.
+
+        A group that is not attached to this project is a 404. The reference
+        answers 204, having swallowed the error its list removal raises, so
+        "detached" and "nothing happened" were indistinguishable.
+      tags: [applications]
+      responses:
+        '204':
+          description: Detached.
+        '400':
+          description: Unknown project or unknown group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: The group is not attached to this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
   /projects/groups/prompt_lib/{project_id}:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
 
     put:
       operationId: putProjectGroups
-      summary: Set group membership for a project
+      summary: Replace a project's group membership
       description: |
-        NOTE(W2): internal/api/v2/projects/handler.go:132-181 — the parsed
-        request body is echoed back verbatim as the 200 response.
+        REPLACES the project's groups with the named ones, creating any that do
+        not exist yet; a group left out of the list is detached. An empty list
+        detaches everything and deletes no group rows. Both statements run in
+        one transaction, so an interrupted save cannot leave the project with no
+        groups at all.
+
+        Until issue 255 this handler decoded the body and echoed it back as the
+        200 response without touching a table, so every group edit reported
+        success and changed nothing.
       tags: [applications]
       requestBody:
         required: true
@@ -5270,11 +5952,11 @@ paths:
               $ref: '#/components/schemas/ProjectGroupsUpdate'
       responses:
         '200':
-          description: Echo of the request body
+          description: The project, with its groups
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProjectGroupsUpdate'
+                $ref: '#/components/schemas/ProjectWithGroups'
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }

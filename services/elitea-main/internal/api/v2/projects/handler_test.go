@@ -221,27 +221,61 @@ func TestGetProjectRejectsUnusableNumericParametersBeforeQuery(t *testing.T) {
 	}
 }
 
-func TestPutProjectGroupsEchoesBody(t *testing.T) {
+// TestGroupWritesAreGated replaces TestPutProjectGroupsEchoesBody, which
+// asserted the defect: the PUT decoded its body and echoed it back as the
+// response without touching a table, and that test pinned the echo in place.
+//
+// The three group writes are gated on a permission resolver supplied through
+// WithPermissionResolver. A Handler built without one — which is what
+// setupProjectRouter builds — must REFUSE them rather than run ungated, and an
+// unauthenticated caller must never reach the handler at all.
+func TestGroupWritesAreGated(t *testing.T) {
 	router := setupProjectRouter(nil)
-	payload := map[string]any{"group_ids": []int{1, 2, 3}}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
+	body := func() *bytes.Reader {
+		payload, err := json.Marshal(map[string]any{"name": "alpha", "groups": []string{"alpha"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bytes.NewReader(payload)
 	}
-	request := httptest.NewRequest(http.MethodPut, "/projects/groups/prompt_lib/1", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	recorder := httptest.NewRecorder()
 
-	router.ServeHTTP(recorder, request)
+	writes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPut, "/projects/groups/prompt_lib/1"},
+		{http.MethodPost, "/projects/group/prompt_lib/1"},
+		{http.MethodDelete, "/projects/group/prompt_lib/1/2"},
+	}
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
-	}
-	var result map[string]any
-	if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := result["group_ids"]; !ok {
-		t.Fatalf("response = %v, want group_ids", result)
+	for _, write := range writes {
+		t.Run("unauthenticated "+write.method+" "+write.path, func(t *testing.T) {
+			request := httptest.NewRequest(write.method, write.path, body())
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d; body=%s",
+					recorder.Code, http.StatusUnauthorized, recorder.Body.String())
+			}
+		})
+
+		t.Run("no resolver "+write.method+" "+write.path, func(t *testing.T) {
+			request := withUser(
+				httptest.NewRequest(write.method, write.path, body()),
+				auth.User{ID: "7", UserID: "7"},
+			)
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body=%s",
+					recorder.Code, http.StatusForbidden, recorder.Body.String())
+			}
+		})
 	}
 }

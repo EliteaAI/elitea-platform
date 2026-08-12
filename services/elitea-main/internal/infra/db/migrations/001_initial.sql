@@ -748,13 +748,31 @@ JOIN (VALUES
     -- explaining why the page is empty — which is the whole point of the page.
     ('super_admin', 'runtime.airun.serviceproviders'),
     ('super_admin', 'provider_hub.descriptor.register'),
+    -- Issue 255, admin & tenancy parity. `modes.py`, `user_invite.py` and
+    -- `admin_published_agents.py` all declare BARE lists — system/super_admin/
+    -- admin True per the note above — and `user_project_permissions.py`
+    -- declares `{"admin": True, "viewer": False, "editor": False}` in
+    -- administration mode, which leaves super_admin at its default True. So all
+    -- four land on both roles.
+    --
+    -- These grants are not optional decoration: the routes are gated centrally,
+    -- and a permission nobody holds is 403-for-everyone, which is the outcome
+    -- this whole block exists to prevent.
+    ('super_admin', 'modes.users'),
+    ('super_admin', 'configuration.roles.user_project_permissions.view'),
+    ('super_admin', 'configuration.roles.user_project_permissions.edit'),
+    ('super_admin', 'runtime.admin.published_agents'),
     ('admin', 'admin.auth.users'),
     ('admin', 'runtime.plugins'),
     ('admin', 'projects.projects.projects.view'),
     ('admin', 'configuration.roles.permissions.view'),
     ('admin', 'admin.moderation'),
     ('admin', 'runtime.airun.serviceproviders'),
-    ('admin', 'provider_hub.descriptor.register')
+    ('admin', 'provider_hub.descriptor.register'),
+    ('admin', 'modes.users'),
+    ('admin', 'configuration.roles.user_project_permissions.view'),
+    ('admin', 'configuration.roles.user_project_permissions.edit'),
+    ('admin', 'runtime.admin.published_agents')
 ) AS grant_row(role_name, permission) ON grant_row.role_name = role.name
 WHERE role.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;

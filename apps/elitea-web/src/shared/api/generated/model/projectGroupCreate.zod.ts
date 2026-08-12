@@ -41,17 +41,13 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
+export const ProjectGroupCreate = zod
   .object({
-    groups: zod
-      .array(zod.string())
-      .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
-      ),
+    name: zod.string(),
   })
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    'NOTE(W2): internal\/api\/v2\/projects\/groups.go:57-59. `no_group` is rejected: it is the sentinel the listing uses for \"no group at all\".\n',
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type ProjectGroupCreate = zod.input<typeof ProjectGroupCreate>;
+export type ProjectGroupCreateOutput = zod.output<typeof ProjectGroupCreate>;

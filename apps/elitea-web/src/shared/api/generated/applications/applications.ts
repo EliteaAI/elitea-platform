@@ -70,6 +70,7 @@ import type {
   DefaultIcon,
   DeleteApplicationVersionParams,
   DocumentLoadersResponse,
+  ErrorResponse,
   ExportApplicationParams,
   ExportConverterRequest,
   ExportConverterResponse,
@@ -95,7 +96,9 @@ import type {
   Project,
   ProjectContext,
   ProjectContextUpdateRequest,
+  ProjectGroupCreate,
   ProjectGroupsUpdate,
+  ProjectWithGroups,
   PublicApplicationDetail,
   PublicApplicationList,
   PublishBadRequestResponse,
@@ -8998,8 +9001,504 @@ export function useListGroups<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
+export type addProjectGroupResponse201 = {
+  data: ProjectWithGroups;
+  status: 201;
+};
+
+export type addProjectGroupResponse400 = {
+  data: ErrorResponse;
+  status: 400;
+};
+
+export type addProjectGroupResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type addProjectGroupResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type addProjectGroupResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type addProjectGroupResponseSuccess = addProjectGroupResponse201 & {
+  headers: Headers;
+};
+export type addProjectGroupResponseError = (
+  | addProjectGroupResponse400
+  | addProjectGroupResponse401
+  | addProjectGroupResponse403
+  | addProjectGroupResponse500
+) & {
+  headers: Headers;
+};
+
+export type addProjectGroupResponse =
+  addProjectGroupResponseSuccess | addProjectGroupResponseError;
+
+export const getAddProjectGroupUrl = (projectId: string) => {
+  return `/projects/group/prompt_lib/${projectId}`;
+};
+
+/**
+ * Creates the `centry.project_group` row when the name is new and attaches
+ * it to the project, in one transaction — so a rejected create cannot
+ * leave a group row behind with nothing attached to it. An existing name
+ * is REUSED rather than duplicated: the column is unique, and two projects
+ * in the same group is the point.
+ *
+ * `no_group` is rejected: it is the sentinel the listing uses for a
+ * project with no group at all.
+ * @summary Create a group if needed and attach it to a project
+ */
+export const addProjectGroup = async (
+  projectId: string,
+  projectGroupCreate: ProjectGroupCreate,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<addProjectGroupResponse> => {
+  return eliteaFetch<addProjectGroupResponse>(
+    getAddProjectGroupUrl(projectId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(projectGroupCreate),
+    },
+  );
+};
+
+export const getAddProjectGroupQueryKey = (
+  projectId: string,
+  projectGroupCreate?: ProjectGroupCreate,
+) => {
+  return [
+    "POST",
+    `/projects/group/prompt_lib/${projectId}`,
+    projectGroupCreate,
+  ] as const;
+};
+
+export const getAddProjectGroupQueryOptions = <
+  TData = Awaited<ReturnType<typeof addProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectGroupCreate: ProjectGroupCreate,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof addProjectGroup>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getAddProjectGroupQueryKey(projectId, projectGroupCreate);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof addProjectGroup>>> = ({
+    signal,
+  }) =>
+    addProjectGroup(projectId, projectGroupCreate, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof addProjectGroup>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type AddProjectGroupQueryResult = NonNullable<
+  Awaited<ReturnType<typeof addProjectGroup>>
+>;
+export type AddProjectGroupQueryError =
+  ErrorResponse | N401Response | N403Response | N500Response;
+
+export function useAddProjectGroup<
+  TData = Awaited<ReturnType<typeof addProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectGroupCreate: ProjectGroupCreate,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof addProjectGroup>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof addProjectGroup>>,
+          TError,
+          Awaited<ReturnType<typeof addProjectGroup>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useAddProjectGroup<
+  TData = Awaited<ReturnType<typeof addProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectGroupCreate: ProjectGroupCreate,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof addProjectGroup>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof addProjectGroup>>,
+          TError,
+          Awaited<ReturnType<typeof addProjectGroup>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useAddProjectGroup<
+  TData = Awaited<ReturnType<typeof addProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectGroupCreate: ProjectGroupCreate,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof addProjectGroup>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Create a group if needed and attach it to a project
+ */
+
+export function useAddProjectGroup<
+  TData = Awaited<ReturnType<typeof addProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  projectGroupCreate: ProjectGroupCreate,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof addProjectGroup>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getAddProjectGroupQueryOptions(
+    projectId,
+    projectGroupCreate,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type removeProjectGroupResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type removeProjectGroupResponse400 = {
+  data: ErrorResponse;
+  status: 400;
+};
+
+export type removeProjectGroupResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type removeProjectGroupResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type removeProjectGroupResponse404 = {
+  data: ErrorResponse;
+  status: 404;
+};
+
+export type removeProjectGroupResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type removeProjectGroupResponseSuccess =
+  removeProjectGroupResponse204 & {
+    headers: Headers;
+  };
+export type removeProjectGroupResponseError = (
+  | removeProjectGroupResponse400
+  | removeProjectGroupResponse401
+  | removeProjectGroupResponse403
+  | removeProjectGroupResponse404
+  | removeProjectGroupResponse500
+) & {
+  headers: Headers;
+};
+
+export type removeProjectGroupResponse =
+  removeProjectGroupResponseSuccess | removeProjectGroupResponseError;
+
+export const getRemoveProjectGroupUrl = (
+  projectId: string,
+  groupId: number,
+) => {
+  return `/projects/group/prompt_lib/${projectId}/${groupId}`;
+};
+
+/**
+ * Removes the ASSOCIATION. The group row survives — it may be attached to
+ * other projects, and it belongs to the deployment rather than to the
+ * project detaching from it.
+ *
+ * A group that is not attached to this project is a 404. The reference
+ * answers 204, having swallowed the error its list removal raises, so
+ * "detached" and "nothing happened" were indistinguishable.
+ * @summary Detach a group from a project
+ */
+export const removeProjectGroup = async (
+  projectId: string,
+  groupId: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<removeProjectGroupResponse> => {
+  return eliteaFetch<removeProjectGroupResponse>(
+    getRemoveProjectGroupUrl(projectId, groupId),
+    {
+      ...options,
+      method: "DELETE",
+    },
+  );
+};
+
+export const getRemoveProjectGroupQueryKey = (
+  projectId: string,
+  groupId: number,
+) => {
+  return [
+    "DELETE",
+    `/projects/group/prompt_lib/${projectId}/${groupId}`,
+  ] as const;
+};
+
+export const getRemoveProjectGroupQueryOptions = <
+  TData = Awaited<ReturnType<typeof removeProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  groupId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeProjectGroup>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getRemoveProjectGroupQueryKey(projectId, groupId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof removeProjectGroup>>
+  > = ({ signal }) =>
+    removeProjectGroup(projectId, groupId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      groupId !== null &&
+      groupId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof removeProjectGroup>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type RemoveProjectGroupQueryResult = NonNullable<
+  Awaited<ReturnType<typeof removeProjectGroup>>
+>;
+export type RemoveProjectGroupQueryError =
+  ErrorResponse | N401Response | N403Response | N500Response;
+
+export function useRemoveProjectGroup<
+  TData = Awaited<ReturnType<typeof removeProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  groupId: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeProjectGroup>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof removeProjectGroup>>,
+          TError,
+          Awaited<ReturnType<typeof removeProjectGroup>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useRemoveProjectGroup<
+  TData = Awaited<ReturnType<typeof removeProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  groupId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeProjectGroup>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof removeProjectGroup>>,
+          TError,
+          Awaited<ReturnType<typeof removeProjectGroup>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useRemoveProjectGroup<
+  TData = Awaited<ReturnType<typeof removeProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  groupId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeProjectGroup>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Detach a group from a project
+ */
+
+export function useRemoveProjectGroup<
+  TData = Awaited<ReturnType<typeof removeProjectGroup>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  groupId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeProjectGroup>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getRemoveProjectGroupQueryOptions(
+    projectId,
+    groupId,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
 export type putProjectGroupsResponse200 = {
-  data: ProjectGroupsUpdate;
+  data: ProjectWithGroups;
   status: 200;
 };
 
@@ -9043,9 +9542,16 @@ export const getPutProjectGroupsUrl = (projectId: string) => {
 };
 
 /**
- * NOTE(W2): internal/api/v2/projects/handler.go:132-181 — the parsed
- * request body is echoed back verbatim as the 200 response.
- * @summary Set group membership for a project
+ * REPLACES the project's groups with the named ones, creating any that do
+ * not exist yet; a group left out of the list is detached. An empty list
+ * detaches everything and deletes no group rows. Both statements run in
+ * one transaction, so an interrupted save cannot leave the project with no
+ * groups at all.
+ *
+ * Until issue 255 this handler decoded the body and echoed it back as the
+ * 200 response without touching a table, so every group edit reported
+ * success and changed nothing.
+ * @summary Replace a project's group membership
  */
 export const putProjectGroups = async (
   projectId: string,
@@ -9200,7 +9706,7 @@ export function usePutProjectGroups<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Set group membership for a project
+ * @summary Replace a project's group membership
  */
 
 export function usePutProjectGroups<

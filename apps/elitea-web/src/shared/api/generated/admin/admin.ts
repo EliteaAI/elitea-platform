@@ -54,22 +54,37 @@ import type {
 
 import type {
   ErrorResponse,
+  GetUserProjectPermissionsParams,
+  GlobalUserInviteRequest,
+  GlobalUserInviteResult,
   IgnoredRequestBody,
+  ListAdminPublishedAgentsParams,
   MessageResponse,
+  ModeRoleAssignRequest,
+  ModeRoleAssignResult,
+  ModeRoleListing,
+  ModeRoleRemoveResult,
   ModerationStatusResponse,
   N400Response,
   N401Response,
   N403Response,
   N404Response,
+  N500Response,
   PlatformSettings,
+  PublishedAgentsListing,
+  RemoveUserModeRoleParams,
   Role,
   RoleListParams,
   SupportAssistantConfig,
+  UpdateUserProjectPermissionsParams,
   UserDeleteParams,
   UserInviteRequest,
   UserInviteResult,
   UserListParams,
   UserListResponse,
+  UserProjectPermissionsResult,
+  UserProjectPermissionsUpdate,
+  UserProjectRoleMap,
   UserRolesUpdateRequest,
 } from "../model";
 
@@ -937,6 +952,1432 @@ export function useUserDelete<
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
   const queryOptions = getUserDeleteQueryOptions(projectId, params, options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listUserModeRolesResponse200 = {
+  data: ModeRoleListing;
+  status: 200;
+};
+
+export type listUserModeRolesResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type listUserModeRolesResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type listUserModeRolesResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type listUserModeRolesResponseSuccess = listUserModeRolesResponse200 & {
+  headers: Headers;
+};
+export type listUserModeRolesResponseError = (
+  | listUserModeRolesResponse401
+  | listUserModeRolesResponse403
+  | listUserModeRolesResponse500
+) & {
+  headers: Headers;
+};
+
+export type listUserModeRolesResponse =
+  listUserModeRolesResponseSuccess | listUserModeRolesResponseError;
+
+export const getListUserModeRolesUrl = () => {
+  return `/admin/modes/administration`;
+};
+
+/**
+ * Which user holds which CENTRAL role in which pylon mode — the registry
+ * behind the admin console's Modes table. Each row carries the composite
+ * `<user_id>:<mode>:<role>` id the DELETE below consumes.
+ *
+ * The reference walks its runtime mode registry and asks for every
+ * (user, mode) pair over RPC; this is one join over the assignment table,
+ * so the modes reported are the modes that have roles.
+ * @summary List every central role assignment, across all modes
+ */
+export const listUserModeRoles = async (
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listUserModeRolesResponse> => {
+  return eliteaFetch<listUserModeRolesResponse>(getListUserModeRolesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListUserModeRolesQueryKey = () => {
+  return [`/admin/modes/administration`] as const;
+};
+
+export const getListUserModeRolesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listUserModeRoles>>,
+  TError = N401Response | N403Response | N500Response,
+>(options?: {
+  query?: Partial<
+    UseQueryOptions<
+      Awaited<ReturnType<typeof listUserModeRoles>>,
+      TError,
+      TData
+    >
+  >;
+  request?: SecondParameter<typeof eliteaFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListUserModeRolesQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listUserModeRoles>>
+  > = ({ signal }) => listUserModeRoles({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listUserModeRoles>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListUserModeRolesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listUserModeRoles>>
+>;
+export type ListUserModeRolesQueryError =
+  N401Response | N403Response | N500Response;
+
+export function useListUserModeRoles<
+  TData = Awaited<ReturnType<typeof listUserModeRoles>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listUserModeRoles>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listUserModeRoles>>,
+          TError,
+          Awaited<ReturnType<typeof listUserModeRoles>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListUserModeRoles<
+  TData = Awaited<ReturnType<typeof listUserModeRoles>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listUserModeRoles>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listUserModeRoles>>,
+          TError,
+          Awaited<ReturnType<typeof listUserModeRoles>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListUserModeRoles<
+  TData = Awaited<ReturnType<typeof listUserModeRoles>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listUserModeRoles>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List every central role assignment, across all modes
+ */
+
+export function useListUserModeRoles<
+  TData = Awaited<ReturnType<typeof listUserModeRoles>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listUserModeRoles>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListUserModeRolesQueryOptions(options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type assignUserModeRoleResponse200 = {
+  data: ModeRoleAssignResult;
+  status: 200;
+};
+
+export type assignUserModeRoleResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type assignUserModeRoleResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type assignUserModeRoleResponse403 = {
+  data: ErrorResponse;
+  status: 403;
+};
+
+export type assignUserModeRoleResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type assignUserModeRoleResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type assignUserModeRoleResponseSuccess =
+  assignUserModeRoleResponse200 & {
+    headers: Headers;
+  };
+export type assignUserModeRoleResponseError = (
+  | assignUserModeRoleResponse400
+  | assignUserModeRoleResponse401
+  | assignUserModeRoleResponse403
+  | assignUserModeRoleResponse404
+  | assignUserModeRoleResponse500
+) & {
+  headers: Headers;
+};
+
+export type assignUserModeRoleResponse =
+  assignUserModeRoleResponseSuccess | assignUserModeRoleResponseError;
+
+export const getAssignUserModeRoleUrl = () => {
+  return `/admin/modes/administration`;
+};
+
+/**
+ * SINGLE-ROLE-PER-MODE: every assignment the user holds in that mode is
+ * dropped before the new one is written, in one transaction — the rule
+ * auth_core's assign_user_to_role enforces. A role the deployment does
+ * not define in that mode is a 400 and leaves the user's current role
+ * alone, rather than revoking it and granting nothing.
+ *
+ * Granting or revoking `super_admin` additionally requires the caller to
+ * hold `admin.auth.users.super_admin`: this endpoint writes the same
+ * table /admin/auth_users does, so without the guard it would be a
+ * second, unguarded route to the platform's highest role.
+ *
+ * `default` mode is refused. Default-mode roles are project membership,
+ * which has no meaning without a project id.
+ * @summary Assign a user to a role in a mode
+ */
+export const assignUserModeRole = async (
+  modeRoleAssignRequest: ModeRoleAssignRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<assignUserModeRoleResponse> => {
+  return eliteaFetch<assignUserModeRoleResponse>(getAssignUserModeRoleUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(modeRoleAssignRequest),
+  });
+};
+
+export const getAssignUserModeRoleQueryKey = (
+  modeRoleAssignRequest?: ModeRoleAssignRequest,
+) => {
+  return [
+    "POST",
+    `/admin/modes/administration`,
+    modeRoleAssignRequest,
+  ] as const;
+};
+
+export const getAssignUserModeRoleQueryOptions = <
+  TData = Awaited<ReturnType<typeof assignUserModeRole>>,
+  TError =
+    N400Response | N401Response | ErrorResponse | N404Response | N500Response,
+>(
+  modeRoleAssignRequest: ModeRoleAssignRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof assignUserModeRole>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getAssignUserModeRoleQueryKey(modeRoleAssignRequest);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof assignUserModeRole>>
+  > = ({ signal }) =>
+    assignUserModeRole(modeRoleAssignRequest, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof assignUserModeRole>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type AssignUserModeRoleQueryResult = NonNullable<
+  Awaited<ReturnType<typeof assignUserModeRole>>
+>;
+export type AssignUserModeRoleQueryError =
+  N400Response | N401Response | ErrorResponse | N404Response | N500Response;
+
+export function useAssignUserModeRole<
+  TData = Awaited<ReturnType<typeof assignUserModeRole>>,
+  TError =
+    N400Response | N401Response | ErrorResponse | N404Response | N500Response,
+>(
+  modeRoleAssignRequest: ModeRoleAssignRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof assignUserModeRole>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof assignUserModeRole>>,
+          TError,
+          Awaited<ReturnType<typeof assignUserModeRole>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useAssignUserModeRole<
+  TData = Awaited<ReturnType<typeof assignUserModeRole>>,
+  TError =
+    N400Response | N401Response | ErrorResponse | N404Response | N500Response,
+>(
+  modeRoleAssignRequest: ModeRoleAssignRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof assignUserModeRole>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof assignUserModeRole>>,
+          TError,
+          Awaited<ReturnType<typeof assignUserModeRole>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useAssignUserModeRole<
+  TData = Awaited<ReturnType<typeof assignUserModeRole>>,
+  TError =
+    N400Response | N401Response | ErrorResponse | N404Response | N500Response,
+>(
+  modeRoleAssignRequest: ModeRoleAssignRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof assignUserModeRole>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Assign a user to a role in a mode
+ */
+
+export function useAssignUserModeRole<
+  TData = Awaited<ReturnType<typeof assignUserModeRole>>,
+  TError =
+    N400Response | N401Response | ErrorResponse | N404Response | N500Response,
+>(
+  modeRoleAssignRequest: ModeRoleAssignRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof assignUserModeRole>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getAssignUserModeRoleQueryOptions(
+    modeRoleAssignRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type removeUserModeRoleResponse200 = {
+  data: ModeRoleRemoveResult;
+  status: 200;
+};
+
+export type removeUserModeRoleResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type removeUserModeRoleResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type removeUserModeRoleResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type removeUserModeRoleResponse404 = {
+  data: ErrorResponse;
+  status: 404;
+};
+
+export type removeUserModeRoleResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type removeUserModeRoleResponseSuccess =
+  removeUserModeRoleResponse200 & {
+    headers: Headers;
+  };
+export type removeUserModeRoleResponseError = (
+  | removeUserModeRoleResponse400
+  | removeUserModeRoleResponse401
+  | removeUserModeRoleResponse403
+  | removeUserModeRoleResponse404
+  | removeUserModeRoleResponse500
+) & {
+  headers: Headers;
+};
+
+export type removeUserModeRoleResponse =
+  removeUserModeRoleResponseSuccess | removeUserModeRoleResponseError;
+
+export const getRemoveUserModeRoleUrl = (params: RemoveUserModeRoleParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/admin/modes/administration?${stringifiedParams}`
+    : `/admin/modes/administration`;
+};
+
+/**
+ * Takes the composite id the listing produces. The reference's handler is
+ * a `# TODO` that answers `{"ok": true}` having deleted nothing; this one
+ * deletes, and answers 404 when the triple names no assignment rather
+ * than reporting a removal that did not happen.
+ * @summary Remove a user from a role in a mode
+ */
+export const removeUserModeRole = async (
+  params: RemoveUserModeRoleParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<removeUserModeRoleResponse> => {
+  return eliteaFetch<removeUserModeRoleResponse>(
+    getRemoveUserModeRoleUrl(params),
+    {
+      ...options,
+      method: "DELETE",
+    },
+  );
+};
+
+export const getRemoveUserModeRoleQueryKey = (
+  params?: RemoveUserModeRoleParams,
+) => {
+  return [
+    "DELETE",
+    `/admin/modes/administration`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getRemoveUserModeRoleQueryOptions = <
+  TData = Awaited<ReturnType<typeof removeUserModeRole>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  params: RemoveUserModeRoleParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeUserModeRole>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getRemoveUserModeRoleQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof removeUserModeRole>>
+  > = ({ signal }) => removeUserModeRole(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof removeUserModeRole>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type RemoveUserModeRoleQueryResult = NonNullable<
+  Awaited<ReturnType<typeof removeUserModeRole>>
+>;
+export type RemoveUserModeRoleQueryError =
+  N400Response | N401Response | N403Response | ErrorResponse | N500Response;
+
+export function useRemoveUserModeRole<
+  TData = Awaited<ReturnType<typeof removeUserModeRole>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  params: RemoveUserModeRoleParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeUserModeRole>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof removeUserModeRole>>,
+          TError,
+          Awaited<ReturnType<typeof removeUserModeRole>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useRemoveUserModeRole<
+  TData = Awaited<ReturnType<typeof removeUserModeRole>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  params: RemoveUserModeRoleParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeUserModeRole>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof removeUserModeRole>>,
+          TError,
+          Awaited<ReturnType<typeof removeUserModeRole>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useRemoveUserModeRole<
+  TData = Awaited<ReturnType<typeof removeUserModeRole>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  params: RemoveUserModeRoleParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeUserModeRole>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Remove a user from a role in a mode
+ */
+
+export function useRemoveUserModeRole<
+  TData = Awaited<ReturnType<typeof removeUserModeRole>>,
+  TError =
+    N400Response | N401Response | N403Response | ErrorResponse | N500Response,
+>(
+  params: RemoveUserModeRoleParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof removeUserModeRole>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getRemoveUserModeRoleQueryOptions(params, options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type inviteUserGloballyResponse200 = {
+  data: GlobalUserInviteResult;
+  status: 200;
+};
+
+export type inviteUserGloballyResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type inviteUserGloballyResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type inviteUserGloballyResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type inviteUserGloballyResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type inviteUserGloballyResponseSuccess =
+  inviteUserGloballyResponse200 & {
+    headers: Headers;
+  };
+export type inviteUserGloballyResponseError = (
+  | inviteUserGloballyResponse400
+  | inviteUserGloballyResponse401
+  | inviteUserGloballyResponse403
+  | inviteUserGloballyResponse500
+) & {
+  headers: Headers;
+};
+
+export type inviteUserGloballyResponse =
+  inviteUserGloballyResponseSuccess | inviteUserGloballyResponseError;
+
+export const getInviteUserGloballyUrl = () => {
+  return `/admin/user_invite/administration`;
+};
+
+/**
+ * The platform-level counterpart of the project invite
+ * (`POST /admin/users/{mode}/{project_id}`): it creates an
+ * `auth_core__user` row for an address that has never logged in, with no
+ * project and no role, so the console can then place them. The address is
+ * resolved by email on first login.
+ *
+ * NO INVITATION IS DELIVERED. The reference calls an external identity
+ * service to create and mail an invitation token; that integration has no
+ * equivalent here, so `invitation_delivered` is false and
+ * `invitation_delivery` says why. Answering a bare `{"ok": true}` would
+ * be rendered by a console as "invitation sent".
+ *
+ * Inviting an address that already has an account is not an error and is
+ * not a rename: `created` is false and the stored name is untouched.
+ * @summary Create a platform user record for an address
+ */
+export const inviteUserGlobally = async (
+  globalUserInviteRequest: GlobalUserInviteRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<inviteUserGloballyResponse> => {
+  return eliteaFetch<inviteUserGloballyResponse>(getInviteUserGloballyUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(globalUserInviteRequest),
+  });
+};
+
+export const getInviteUserGloballyQueryKey = (
+  globalUserInviteRequest?: GlobalUserInviteRequest,
+) => {
+  return [
+    "POST",
+    `/admin/user_invite/administration`,
+    globalUserInviteRequest,
+  ] as const;
+};
+
+export const getInviteUserGloballyQueryOptions = <
+  TData = Awaited<ReturnType<typeof inviteUserGlobally>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  globalUserInviteRequest: GlobalUserInviteRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof inviteUserGlobally>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getInviteUserGloballyQueryKey(globalUserInviteRequest);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof inviteUserGlobally>>
+  > = ({ signal }) =>
+    inviteUserGlobally(globalUserInviteRequest, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof inviteUserGlobally>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type InviteUserGloballyQueryResult = NonNullable<
+  Awaited<ReturnType<typeof inviteUserGlobally>>
+>;
+export type InviteUserGloballyQueryError =
+  N400Response | N401Response | N403Response | N500Response;
+
+export function useInviteUserGlobally<
+  TData = Awaited<ReturnType<typeof inviteUserGlobally>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  globalUserInviteRequest: GlobalUserInviteRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof inviteUserGlobally>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof inviteUserGlobally>>,
+          TError,
+          Awaited<ReturnType<typeof inviteUserGlobally>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useInviteUserGlobally<
+  TData = Awaited<ReturnType<typeof inviteUserGlobally>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  globalUserInviteRequest: GlobalUserInviteRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof inviteUserGlobally>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof inviteUserGlobally>>,
+          TError,
+          Awaited<ReturnType<typeof inviteUserGlobally>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useInviteUserGlobally<
+  TData = Awaited<ReturnType<typeof inviteUserGlobally>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  globalUserInviteRequest: GlobalUserInviteRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof inviteUserGlobally>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Create a platform user record for an address
+ */
+
+export function useInviteUserGlobally<
+  TData = Awaited<ReturnType<typeof inviteUserGlobally>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  globalUserInviteRequest: GlobalUserInviteRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof inviteUserGlobally>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getInviteUserGloballyQueryOptions(
+    globalUserInviteRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getUserProjectPermissionsResponse200 = {
+  data: UserProjectRoleMap;
+  status: 200;
+};
+
+export type getUserProjectPermissionsResponse400 = {
+  data: ErrorResponse;
+  status: 400;
+};
+
+export type getUserProjectPermissionsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getUserProjectPermissionsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getUserProjectPermissionsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type getUserProjectPermissionsResponseSuccess =
+  getUserProjectPermissionsResponse200 & {
+    headers: Headers;
+  };
+export type getUserProjectPermissionsResponseError = (
+  | getUserProjectPermissionsResponse400
+  | getUserProjectPermissionsResponse401
+  | getUserProjectPermissionsResponse403
+  | getUserProjectPermissionsResponse500
+) & {
+  headers: Headers;
+};
+
+export type getUserProjectPermissionsResponse =
+  | getUserProjectPermissionsResponseSuccess
+  | getUserProjectPermissionsResponseError;
+
+export const getGetUserProjectPermissionsUrl = (
+  params?: GetUserProjectPermissionsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/admin/user_project_permissions/administration?${stringifiedParams}`
+    : `/admin/user_project_permissions/administration`;
+};
+
+/**
+ * The default every ordinary project gets, as opposed to the named scopes
+ * `/admin/permissions/{scope}/{mode}` edits. Read from the FIRST personal
+ * project (`project_user_<id>`); with no personal project at all the
+ * answer is 400, as it is in the reference.
+ *
+ * Default body is role → sorted permission names. `?old_format` returns
+ * the matrix rows instead — one row per permission in the catalogue, one
+ * boolean column per role — which is also the shape the PUT accepts back.
+ *
+ * The grants reported are the project's OWN overrides, falling back to the
+ * central `default` matrix only when it has none. The reference reports
+ * the central matrix either way, so a project with overrides reads back
+ * as something its members do not have.
+ * @summary Read the permission matrix personal projects grant
+ */
+export const getUserProjectPermissions = async (
+  params?: GetUserProjectPermissionsParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getUserProjectPermissionsResponse> => {
+  return eliteaFetch<getUserProjectPermissionsResponse>(
+    getGetUserProjectPermissionsUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetUserProjectPermissionsQueryKey = (
+  params?: GetUserProjectPermissionsParams,
+) => {
+  return [
+    `/admin/user_project_permissions/administration`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetUserProjectPermissionsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getUserProjectPermissions>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  params?: GetUserProjectPermissionsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetUserProjectPermissionsQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getUserProjectPermissions>>
+  > = ({ signal }) =>
+    getUserProjectPermissions(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getUserProjectPermissions>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetUserProjectPermissionsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getUserProjectPermissions>>
+>;
+export type GetUserProjectPermissionsQueryError =
+  ErrorResponse | N401Response | N403Response | N500Response;
+
+export function useGetUserProjectPermissions<
+  TData = Awaited<ReturnType<typeof getUserProjectPermissions>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  params: undefined | GetUserProjectPermissionsParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getUserProjectPermissions>>,
+          TError,
+          Awaited<ReturnType<typeof getUserProjectPermissions>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetUserProjectPermissions<
+  TData = Awaited<ReturnType<typeof getUserProjectPermissions>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  params?: GetUserProjectPermissionsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getUserProjectPermissions>>,
+          TError,
+          Awaited<ReturnType<typeof getUserProjectPermissions>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetUserProjectPermissions<
+  TData = Awaited<ReturnType<typeof getUserProjectPermissions>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  params?: GetUserProjectPermissionsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Read the permission matrix personal projects grant
+ */
+
+export function useGetUserProjectPermissions<
+  TData = Awaited<ReturnType<typeof getUserProjectPermissions>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  params?: GetUserProjectPermissionsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetUserProjectPermissionsQueryOptions(
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type updateUserProjectPermissionsResponse200 = {
+  data: UserProjectPermissionsResult;
+  status: 200;
+};
+
+export type updateUserProjectPermissionsResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type updateUserProjectPermissionsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type updateUserProjectPermissionsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type updateUserProjectPermissionsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type updateUserProjectPermissionsResponseSuccess =
+  updateUserProjectPermissionsResponse200 & {
+    headers: Headers;
+  };
+export type updateUserProjectPermissionsResponseError = (
+  | updateUserProjectPermissionsResponse400
+  | updateUserProjectPermissionsResponse401
+  | updateUserProjectPermissionsResponse403
+  | updateUserProjectPermissionsResponse500
+) & {
+  headers: Headers;
+};
+
+export type updateUserProjectPermissionsResponse =
+  | updateUserProjectPermissionsResponseSuccess
+  | updateUserProjectPermissionsResponseError;
+
+export const getUpdateUserProjectPermissionsUrl = (
+  params?: UpdateUserProjectPermissionsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/admin/user_project_permissions/administration?${stringifiedParams}`
+    : `/admin/user_project_permissions/administration`;
+};
+
+/**
+ * REPLACES each named role's permission set — the submitted set is the
+ * whole set, so a permission left out is revoked — across every personal
+ * project, or with `?team_projects` across every project that is neither
+ * personal nor the public one.
+ *
+ * Everything runs in ONE transaction. The reference walks projects on
+ * autocommitting sessions and deletes a role's permissions before
+ * re-inserting them, so an interruption leaves part of the estate on the
+ * old matrix and can leave a role granting nothing at all.
+ *
+ * An unknown role name is a 400 unless `?create_role_if_not_exist` asks
+ * for it to be created; the reference silently skips it and reports
+ * success. An unknown permission name is always a 400.
+ * @summary Apply a permission matrix across every personal or team project
+ */
+export const updateUserProjectPermissions = async (
+  userProjectPermissionsUpdate: UserProjectPermissionsUpdate,
+  params?: UpdateUserProjectPermissionsParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<updateUserProjectPermissionsResponse> => {
+  return eliteaFetch<updateUserProjectPermissionsResponse>(
+    getUpdateUserProjectPermissionsUrl(params),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(userProjectPermissionsUpdate),
+    },
+  );
+};
+
+export const getUpdateUserProjectPermissionsQueryKey = (
+  userProjectPermissionsUpdate?: UserProjectPermissionsUpdate,
+  params?: UpdateUserProjectPermissionsParams,
+) => {
+  return [
+    "PUT",
+    `/admin/user_project_permissions/administration`,
+    ...(params ? [params] : []),
+    userProjectPermissionsUpdate,
+  ] as const;
+};
+
+export const getUpdateUserProjectPermissionsQueryOptions = <
+  TData = Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  userProjectPermissionsUpdate: UserProjectPermissionsUpdate,
+  params?: UpdateUserProjectPermissionsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getUpdateUserProjectPermissionsQueryKey(
+      userProjectPermissionsUpdate,
+      params,
+    );
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof updateUserProjectPermissions>>
+  > = ({ signal }) =>
+    updateUserProjectPermissions(userProjectPermissionsUpdate, params, {
+      signal,
+      ...requestOptions,
+    });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type UpdateUserProjectPermissionsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof updateUserProjectPermissions>>
+>;
+export type UpdateUserProjectPermissionsQueryError =
+  N400Response | N401Response | N403Response | N500Response;
+
+export function useUpdateUserProjectPermissions<
+  TData = Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  userProjectPermissionsUpdate: UserProjectPermissionsUpdate,
+  params: undefined | UpdateUserProjectPermissionsParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+          TError,
+          Awaited<ReturnType<typeof updateUserProjectPermissions>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUpdateUserProjectPermissions<
+  TData = Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  userProjectPermissionsUpdate: UserProjectPermissionsUpdate,
+  params?: UpdateUserProjectPermissionsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+          TError,
+          Awaited<ReturnType<typeof updateUserProjectPermissions>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUpdateUserProjectPermissions<
+  TData = Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  userProjectPermissionsUpdate: UserProjectPermissionsUpdate,
+  params?: UpdateUserProjectPermissionsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Apply a permission matrix across every personal or team project
+ */
+
+export function useUpdateUserProjectPermissions<
+  TData = Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  userProjectPermissionsUpdate: UserProjectPermissionsUpdate,
+  params?: UpdateUserProjectPermissionsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof updateUserProjectPermissions>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getUpdateUserProjectPermissionsQueryOptions(
+    userProjectPermissionsUpdate,
+    params,
+    options,
+  );
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,
@@ -1984,6 +3425,241 @@ export function useGetSupportAssistantConfig<
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
   const queryOptions = getGetSupportAssistantConfigQueryOptions(options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listAdminPublishedAgentsResponse200 = {
+  data: PublishedAgentsListing;
+  status: 200;
+};
+
+export type listAdminPublishedAgentsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type listAdminPublishedAgentsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type listAdminPublishedAgentsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type listAdminPublishedAgentsResponseSuccess =
+  listAdminPublishedAgentsResponse200 & {
+    headers: Headers;
+  };
+export type listAdminPublishedAgentsResponseError = (
+  | listAdminPublishedAgentsResponse401
+  | listAdminPublishedAgentsResponse403
+  | listAdminPublishedAgentsResponse500
+) & {
+  headers: Headers;
+};
+
+export type listAdminPublishedAgentsResponse =
+  | listAdminPublishedAgentsResponseSuccess
+  | listAdminPublishedAgentsResponseError;
+
+export const getListAdminPublishedAgentsUrl = (
+  params?: ListAdminPublishedAgentsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/elitea_core/admin_published_agents/administration?${stringifiedParams}`
+    : `/elitea_core/admin_published_agents/administration`;
+};
+
+/**
+ * The admin dashboard's published-agents view — not the catalogue the
+ * product's Agents page reads. It reports every application in the PUBLIC
+ * project that has at least one `published` version, with those versions,
+ * who published each and when, newest first.
+ *
+ * Draft versions are excluded from `published_versions`, and an
+ * application with only drafts does not appear at all.
+ *
+ * `adoption` is null-valued unless the agent's `meta.adoption` has been
+ * written; see PublishedAgentAdoption for why it is not defaulted to
+ * zeroes.
+ * @summary List the agents this deployment has published
+ */
+export const listAdminPublishedAgents = async (
+  params?: ListAdminPublishedAgentsParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listAdminPublishedAgentsResponse> => {
+  return eliteaFetch<listAdminPublishedAgentsResponse>(
+    getListAdminPublishedAgentsUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListAdminPublishedAgentsQueryKey = (
+  params?: ListAdminPublishedAgentsParams,
+) => {
+  return [
+    `/elitea_core/admin_published_agents/administration`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getListAdminPublishedAgentsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  params?: ListAdminPublishedAgentsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListAdminPublishedAgentsQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listAdminPublishedAgents>>
+  > = ({ signal }) =>
+    listAdminPublishedAgents(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListAdminPublishedAgentsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listAdminPublishedAgents>>
+>;
+export type ListAdminPublishedAgentsQueryError =
+  N401Response | N403Response | N500Response;
+
+export function useListAdminPublishedAgents<
+  TData = Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  params: undefined | ListAdminPublishedAgentsParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+          TError,
+          Awaited<ReturnType<typeof listAdminPublishedAgents>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListAdminPublishedAgents<
+  TData = Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  params?: ListAdminPublishedAgentsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+          TError,
+          Awaited<ReturnType<typeof listAdminPublishedAgents>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListAdminPublishedAgents<
+  TData = Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  params?: ListAdminPublishedAgentsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List the agents this deployment has published
+ */
+
+export function useListAdminPublishedAgents<
+  TData = Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  params?: ListAdminPublishedAgentsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listAdminPublishedAgents>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListAdminPublishedAgentsQueryOptions(params, options);
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,

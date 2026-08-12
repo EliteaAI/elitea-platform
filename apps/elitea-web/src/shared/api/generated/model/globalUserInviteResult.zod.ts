@@ -41,17 +41,33 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
+export const GlobalUserInviteResult = zod
   .object({
-    groups: zod
-      .array(zod.string())
+    ok: zod.boolean(),
+    id: zod
+      .int()
       .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
+        "The platform user id, whether it was created now or already existed.",
       ),
+    email: zod.string().describe("The address, lower-cased and trimmed."),
+    name: zod.string(),
+    created: zod
+      .boolean()
+      .describe(
+        "False when the address already had an account. The existing account is never renamed.\n",
+      ),
+    invitation_delivered: zod
+      .boolean()
+      .describe(
+        'Always false. Sending an invitation is an external identity-provider call with no equivalent in this service, and a bare `{\"ok\": true}` would be rendered as \"invitation sent\".\n',
+      ),
+    invitation_delivery: zod
+      .string()
+      .describe("Why nothing was delivered, in full."),
   })
-  .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
-  );
+  .describe("NOTE(W2): internal\/api\/v2\/admin\/user_invite.go:112-120.\n");
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type GlobalUserInviteResult = zod.input<typeof GlobalUserInviteResult>;
+export type GlobalUserInviteResultOutput = zod.output<
+  typeof GlobalUserInviteResult
+>;

@@ -40,18 +40,28 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { PublishedAgentAdoption } from "./publishedAgentAdoption.zod";
+import { PublishedAgentVersion } from "./publishedAgentVersion.zod";
 
-export const ProjectGroupsUpdate = zod
+export const PublishedAgent = zod
   .object({
-    groups: zod
-      .array(zod.string())
+    public_agent_id: zod.int(),
+    name: zod.string(),
+    description: zod.string(),
+    author_project_id: zod
+      .int()
+      .nullable()
       .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
+        "`applications.shared_owner_id` — the project the agent was published FROM. Null for a row published without one.\n",
       ),
+    published_versions: zod.array(PublishedAgentVersion),
+    total_published_versions: zod.int(),
+    adoption: PublishedAgentAdoption,
+    created_at: zod.string().nullable(),
   })
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    "NOTE(W2): internal\/api\/v2\/eliteacore\/admin_published_agents.go:56-65.\n",
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type PublishedAgent = zod.input<typeof PublishedAgent>;
+export type PublishedAgentOutput = zod.output<typeof PublishedAgent>;

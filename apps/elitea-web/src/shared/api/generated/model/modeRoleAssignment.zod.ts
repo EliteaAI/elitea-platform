@@ -41,17 +41,26 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
+export const ModeRoleAssignment = zod
   .object({
-    groups: zod
-      .array(zod.string())
+    id: zod
+      .string()
       .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
+        "Composite `<user_id>:<mode>:<role>`. There is no single row id behind an assignment, so this triple IS the identifier, and it is what the DELETE takes back apart.\n",
       ),
+    user_id: zod.int(),
+    user_email: zod.string(),
+    user_name: zod.string(),
+    mode: zod
+      .string()
+      .describe(
+        "The pylon mode the role belongs to — `administration`, `developer`, `default`, … Reported for every mode that has roles; only non-default modes are writable here.\n",
+      ),
+    role: zod.string(),
   })
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    "NOTE(W2): internal\/api\/v2\/admin\/modes.go:52-59 — one central (user, mode, role) assignment.\n",
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type ModeRoleAssignment = zod.input<typeof ModeRoleAssignment>;
+export type ModeRoleAssignmentOutput = zod.output<typeof ModeRoleAssignment>;
