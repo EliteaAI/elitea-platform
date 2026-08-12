@@ -95,12 +95,21 @@ func (h *Handler) GroupCreate(w http.ResponseWriter, r *http.Request) {
 	// Reuse the group when the name already exists — pylon looks the name up
 	// before constructing one, and `centry.project_group.name` is UNIQUE, so
 	// creating unconditionally would fail the second project to ask for it.
+	//
+	// INSERT-then-SELECT rather than SELECT-then-INSERT: the latter leaves a
+	// window in which two concurrent creates of the same NEW name both see no
+	// row, both insert, and the loser gets a unique violation this handler can
+	// only report as a 500. `ON CONFLICT DO NOTHING` closes it — a concurrent
+	// uncommitted insert blocks until it commits, then returns no row and the
+	// re-select finds the committed one.
 	var groupID int
-	err = transaction.QueryRow(ctx,
-		`SELECT id FROM centry.project_group WHERE name = $1`, name).Scan(&groupID)
+	err = transaction.QueryRow(ctx, `
+INSERT INTO centry.project_group (name) VALUES ($1)
+ON CONFLICT (name) DO NOTHING
+RETURNING id`, name).Scan(&groupID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = transaction.QueryRow(ctx,
-			`INSERT INTO centry.project_group (name) VALUES ($1) RETURNING id`, name).Scan(&groupID)
+			`SELECT id FROM centry.project_group WHERE name = $1`, name).Scan(&groupID)
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal server error"})
@@ -138,7 +147,7 @@ func (h *Handler) GroupDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	groupID, err := strconv.Atoi(chi.URLParam(r, "groupID"))
+	groupID, err := strconv.ParseInt(chi.URLParam(r, "groupID"), 10, 32)
 	if err != nil || groupID <= 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid group id"})
 		return
@@ -234,13 +243,14 @@ func (h *Handler) PutProjectGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(names) > 0 {
+		// `ON CONFLICT` rather than `NOT EXISTS` for the same reason GroupCreate
+		// uses it: two concurrent saves naming the same new group would
+		// otherwise race the unique index and one would answer 500.
 		if _, err := transaction.Exec(ctx, `
 INSERT INTO centry.project_group (name)
 SELECT candidate
 FROM unnest($1::text[]) AS candidate
-WHERE NOT EXISTS (
-    SELECT 1 FROM centry.project_group WHERE name = candidate
-)`, names); err != nil {
+ON CONFLICT (name) DO NOTHING`, names); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal server error"})
 			return
 		}
@@ -283,24 +293,29 @@ WHERE grp.name = ANY($2::text[])
 
 // groupWriteContext performs the two checks every group write shares and writes
 // the failure response itself.
-func (h *Handler) groupWriteContext(w http.ResponseWriter, r *http.Request) (int, bool) {
+//
+// The id is parsed into int32 rather than int: `centry.project.id` is a
+// `serial`, so anything outside int32 names no project, and `writeProject`
+// carries the value into a field of that width. Parsing wide and narrowing
+// later would silently truncate — id 4294967297 would address project 1.
+func (h *Handler) groupWriteContext(w http.ResponseWriter, r *http.Request) (int32, bool) {
 	if h.pool == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "database unavailable"})
 		return 0, false
 	}
-	projectID, err := strconv.Atoi(chi.URLParam(r, "projectID"))
+	projectID, err := strconv.ParseInt(chi.URLParam(r, "projectID"), 10, 32)
 	if err != nil || projectID <= 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid project id"})
 		return 0, false
 	}
-	return projectID, true
+	return int32(projectID), true
 }
 
 // writeProject answers with the project and its groups — the body pylon's three
 // group writes all return, and the reason a client does not have to re-fetch.
-func (h *Handler) writeProject(w http.ResponseWriter, r *http.Request, projectID, status int) {
+func (h *Handler) writeProject(w http.ResponseWriter, r *http.Request, projectID int32, status int) {
 	ctx := r.Context()
-	project := Project{ID: int32(projectID), Groups: []Group{}, Plugins: []string{}}
+	project := Project{ID: projectID, Groups: []Group{}, Plugins: []string{}}
 	var keycloakGroups string
 	err := h.pool.QueryRow(ctx, `
 SELECT project.name, project.owner_id, COALESCE(project.plugins, '{}'),

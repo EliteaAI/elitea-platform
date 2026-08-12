@@ -263,6 +263,18 @@ func (h *Handler) ModesRemove(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"error": `id must be "<user_id>:<mode>:<role>"`})
 		return
 	}
+	// Symmetry with ModesAssign, which refuses `default` because those roles are
+	// project membership. Without this the listing offers a removal that cannot
+	// be undone through the same endpoint: a fresh database seeds user 1's
+	// default-mode admin role (001_initial.sql), it appears here as
+	// `1:default:admin`, and once removed only SQL can put it back.
+	if mode == auth.PermissionModeDefault {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "default-mode roles are project membership, not a central assignment; " +
+				"use DELETE /api/v2/admin/users/{mode}/{projectID}",
+		})
+		return
+	}
 
 	ctx := r.Context()
 	if mode == auth.PermissionModeAdministration && role == "super_admin" {

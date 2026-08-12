@@ -37,6 +37,12 @@ import (
 // PublishedAgentsListPermission is the permission the pylon original declares.
 const PublishedAgentsListPermission = "runtime.admin.published_agents"
 
+// maxPublishedAgentsPageSize bounds `?page_size`. It is applied where the page
+// is requested AND again where the result slice is sized: the second clamp is
+// what keeps the allocation independent of the query string, rather than
+// dependent on a bound established in another function.
+const maxPublishedAgentsPageSize = 100
+
 type publishedAgentVersion struct {
 	VersionID   int     `json:"version_id"`
 	VersionName string  `json:"version_name"`
@@ -72,8 +78,8 @@ func (h *Handler) AdminPublishedAgents(w http.ResponseWriter, r *http.Request) {
 
 	page := positiveQueryInt(r, "page", 1)
 	pageSize := positiveQueryInt(r, "page_size", 20)
-	if pageSize > 100 {
-		pageSize = 100
+	if pageSize > maxPublishedAgentsPageSize {
+		pageSize = maxPublishedAgentsPageSize
 	}
 	// `created_at` is the reference's default and its only alternative is
 	// `name`; anything else falls back rather than being interpolated.
@@ -151,7 +157,11 @@ LIMIT $1 OFFSET $2`, schema, publishedPredicate, orderColumn), limit, offset)
 	}
 	defer rows.Close()
 
-	agents := make([]publishedAgent, 0, limit)
+	capacity := limit
+	if capacity < 0 || capacity > maxPublishedAgentsPageSize {
+		capacity = maxPublishedAgentsPageSize
+	}
+	agents := make([]publishedAgent, 0, capacity)
 	for rows.Next() {
 		var (
 			agent      publishedAgent

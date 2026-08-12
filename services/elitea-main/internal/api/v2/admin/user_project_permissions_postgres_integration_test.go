@@ -60,6 +60,12 @@ func newUserProjectPermissionsEnvironment(t *testing.T) (*pgxpool.Pool, chi.Rout
 			SELECT role.project_id, role.id, 'models.alpha.view'
 			FROM public.auth_core__project_role role
 			WHERE role.project_id = %d AND role.name = 'editor'`, secondPersonalProjectID),
+		// The platform's own role holds something, so a save that touched it
+		// would be visible rather than a no-op that looks like success.
+		fmt.Sprintf(`INSERT INTO public.auth_core__project_role_permission (project_id, role_id, permission)
+			SELECT role.project_id, role.id, 'models.alpha.view'
+			FROM public.auth_core__project_role role
+			WHERE role.project_id = %d AND role.name = 'system'`, personalProjectID),
 		// One member of each personal project, for the append_user_role case.
 		`INSERT INTO public.auth_core__user (id, email, name) VALUES
 			(9001, 'upp-member@autotest.local', 'UPP Member')`,
@@ -234,7 +240,10 @@ func TestUserProjectPermissionsSaveRejectsUnknownNamesAndWritesNothing(t *testin
 	cases := map[string]any{
 		"unknown role":       map[string][]string{"wizard": {"models.alpha.view"}},
 		"unknown permission": map[string][]string{"admin": {"models.nonexistent.view"}},
-		"system role":        map[string][]string{"system": {"models.alpha.view"}},
+		// `system` is DROPPED rather than rejected, so a body naming only it
+		// carries no writable role at all. It is still a 400 that writes
+		// nothing — for the right reason now.
+		"only the system role": map[string][]string{"system": {"models.alpha.view"}},
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -333,5 +342,127 @@ func TestUserProjectPermissionsSaveTargetsTeamProjectsOnRequest(t *testing.T) {
 	}
 	if got := storedProjectGrants(t, pool, personalProjectID, "admin"); !equalStrings(got, personalBefore) {
 		t.Fatalf("personal project admin = %v after a team-projects save, want %v", got, personalBefore)
+	}
+}
+
+// TestUserProjectPermissionsRoundTripsItsOwnBody is the case the first
+// implementation could not pass: it rejected any submission naming the `system`
+// role, and its own GET emits one in BOTH shapes — every project pylon creates
+// has a system role (projects/utils/project_steps.py). So the permission editor
+// could load the matrix and never save it.
+func TestUserProjectPermissionsRoundTripsItsOwnBody(t *testing.T) {
+	pool, router := newUserProjectPermissionsEnvironment(t)
+
+	roleMap := readRoleMap(t, router)
+	if _, ok := roleMap["system"]; !ok {
+		t.Fatalf("the GET body carries no system role, so this test proves nothing: %v", roleMap)
+	}
+	recorder := adminDo(t, router, http.MethodPut,
+		"/admin/user_project_permissions/administration", roleMap)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT of the GET's own role map = %d, want 200 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+
+	matrixRecorder := adminDo(t, router, http.MethodGet,
+		"/admin/user_project_permissions/administration?old_format", nil)
+	var matrix permissionMatrixBody
+	decodeJSONBody(t, matrixRecorder.Body.Bytes(), &matrix)
+	if _, ok := matrix.row("models.gamma.delete"); !ok {
+		t.Fatal("the matrix is missing a row the fixture grants")
+	}
+	if recorder := adminDo(t, router, http.MethodPut,
+		"/admin/user_project_permissions/administration", matrix.Rows); recorder.Code != http.StatusOK {
+		t.Fatalf("PUT of the GET's own matrix = %d, want 200 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+
+	// Round-tripping is not a licence to write the platform's own role: the
+	// system grants are exactly as they were.
+	if got := storedProjectGrants(t, pool, personalProjectID, "system"); !equalStrings(
+		got, []string{"models.alpha.view"}) {
+		t.Fatalf("system grants = %v after two round trips, want them untouched", got)
+	}
+	// …and the roles that WERE submitted still hold what the body said.
+	if got := storedProjectGrants(t, pool, personalProjectID, "admin"); !equalStrings(
+		got, []string{"models.gamma.delete"}) {
+		t.Fatalf("admin grants = %v after a round trip, want [models.gamma.delete]", got)
+	}
+}
+
+// TestUserProjectPermissionsSaveRefusesARolePartOfTheEstateLacks pins the
+// per-(project, role) check. "Some project defines it" is not enough: the write
+// matches role rows per project, so a role present in one personal project and
+// absent from another produced a save that reached half the estate and reported
+// success for all of it.
+func TestUserProjectPermissionsSaveRefusesARolePartOfTheEstateLacks(t *testing.T) {
+	pool, router := newUserProjectPermissionsEnvironment(t)
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM public.auth_core__project_role WHERE project_id = $1 AND name = 'editor'`,
+		secondPersonalProjectID); err != nil {
+		t.Fatal(err)
+	}
+	before := storedProjectGrants(t, pool, personalProjectID, "editor")
+
+	recorder := adminDo(t, router, http.MethodPut,
+		"/admin/user_project_permissions/administration",
+		map[string][]string{"editor": {"models.alpha.view"}})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("PUT status = %d, want 400 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	if after := storedProjectGrants(t, pool, personalProjectID, "editor"); !equalStrings(after, before) {
+		t.Fatalf("editor grants moved from %v to %v on a refused save", before, after)
+	}
+
+	// …and `?create_role_if_not_exist` is the documented way through, so the
+	// refusal is a prompt rather than a dead end.
+	if allowed := adminDo(t, router, http.MethodPut,
+		"/admin/user_project_permissions/administration?create_role_if_not_exist",
+		map[string][]string{"editor": {"models.alpha.view"}}); allowed.Code != http.StatusOK {
+		t.Fatalf("PUT with ?create_role_if_not_exist = %d, want 200 (body %s)",
+			allowed.Code, allowed.Body.String())
+	}
+	for _, projectID := range []int{personalProjectID, secondPersonalProjectID} {
+		if got := storedProjectGrants(t, pool, projectID, "editor"); !equalStrings(
+			got, []string{"models.alpha.view"}) {
+			t.Fatalf("project %d editor = %v, want [models.alpha.view]", projectID, got)
+		}
+	}
+}
+
+// TestUserProjectPermissionsPartialMatrixRevokesOnlyItsOwnRows pins the
+// revocation bound. A client that submits a filtered or paged view of the
+// matrix must not silently revoke every permission it did not mention — the
+// same rule roles.go's diffGrants applies to the identically-shaped body.
+func TestUserProjectPermissionsPartialMatrixRevokesOnlyItsOwnRows(t *testing.T) {
+	pool, router := newUserProjectPermissionsEnvironment(t)
+
+	// The fixture's admin role holds models.gamma.delete, which the submitted
+	// row set does not mention.
+	recorder := adminDo(t, router, http.MethodPut,
+		"/admin/user_project_permissions/administration",
+		[]map[string]any{
+			{"name": "models.alpha.view", "admin": true},
+		})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	if got := storedProjectGrants(t, pool, personalProjectID, "admin"); !equalStrings(
+		got, []string{"models.alpha.view", "models.gamma.delete"}) {
+		t.Fatalf("admin = %v after a one-row matrix, want the new grant AND the unmentioned one", got)
+	}
+
+	// The ROLE-MAP shape keeps its replace-the-whole-set meaning: there the
+	// submitted list IS the role's permission set, which is what the reference's
+	// delete-then-insert means and what the estate-wide editor sends.
+	if replace := adminDo(t, router, http.MethodPut,
+		"/admin/user_project_permissions/administration",
+		map[string][]string{"admin": {"models.alpha.view"}}); replace.Code != http.StatusOK {
+		t.Fatalf("role-map PUT status = %d, want 200 (body %s)", replace.Code, replace.Body.String())
+	}
+	if got := storedProjectGrants(t, pool, personalProjectID, "admin"); !equalStrings(
+		got, []string{"models.alpha.view"}) {
+		t.Fatalf("admin = %v after a role-map save, want only the submitted set", got)
 	}
 }

@@ -28,11 +28,22 @@ package admin
 //     some on the old — and, because it DELETES a role's permissions before
 //     re-inserting, a project caught mid-write is left with a role that grants
 //     nothing. Everything here runs in ONE transaction.
-//   - an unknown ROLE name is silently skipped by the reference (its
+//   - a role name that some target project does not define is silently skipped
+//     FOR THAT PROJECT by the reference (its
 //     `session.query(Role).where(Role.name.in_(…))` simply matches nothing)
-//     unless `create_role_if_not_exist` is set, so a misspelled role reports a
-//     successful save that saved nothing. Here it is a 400 naming the role,
-//     unless `create_role_if_not_exist` asks for it to be created.
+//     unless `create_role_if_not_exist` is set, so a save that reached half the
+//     estate reports success. Here it is a 400 naming the role, unless
+//     `create_role_if_not_exist` asks for it to be created — and the check is
+//     per (project, role), not "does any project define it": a role present in
+//     one personal project and absent from another is exactly the case that
+//     produces a half-applied save.
+//
+//     `system` is the one role name that is neither written nor rejected. It is
+//     the platform's own role, it appears in every body this endpoint's own GET
+//     produces (every project pylon creates has one — projects/utils/
+//     project_steps.py assigns `role_name='system'` to its system user), and
+//     rejecting it made the GET → edit → PUT round trip impossible. roles.go
+//     drops it from the submission the same way.
 //   - the reference reads the role map through its admin RPC, which returns the
 //     CENTRAL default-mode grants filtered by project role name
 //     (admin/rpc/roles.py `get_permissions`) — i.e. it reports the central
@@ -137,14 +148,19 @@ func (h *Handler) UserProjectPermissionsSave(w http.ResponseWriter, r *http.Requ
 	_, createMissingRoles := query["create_role_if_not_exist"]
 	_, appendUserRole := query["append_user_role"]
 
-	roleMap, err := decodeRoleMap(r)
+	roleMap, submittedRows, err := decodeRoleMap(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	// `system` is dropped rather than rejected — see this file's header. It is
+	// in every body the GET above produces, so rejecting it made the endpoint's
+	// own output unsavable; and it is never written, so a caller cannot use
+	// this route to grant the platform's own role anything.
+	delete(roleMap, roleSystem)
 	if len(roleMap) == 0 {
 		writeJSON(w, http.StatusBadRequest,
-			map[string]any{"error": "the submitted matrix names no roles"})
+			map[string]any{"error": "the submitted matrix names no writable roles"})
 		return
 	}
 
@@ -157,14 +173,7 @@ func (h *Handler) UserProjectPermissionsSave(w http.ResponseWriter, r *http.Requ
 	for _, permission := range catalogue {
 		known[permission] = true
 	}
-	for role, permissions := range roleMap {
-		if role == roleSystem {
-			// `system` is the platform's own role. roles.go refuses to write it
-			// through the matrix; so does this.
-			writeJSON(w, http.StatusBadRequest,
-				map[string]any{"error": `the "system" role is not writable`})
-			return
-		}
+	for _, permissions := range roleMap {
 		for _, permission := range permissions {
 			if !known[permission] {
 				writeJSON(w, http.StatusBadRequest,
@@ -184,7 +193,8 @@ func (h *Handler) UserProjectPermissionsSave(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result, err := h.applyRoleMap(ctx, targets, roleMap, createMissingRoles, appendUserRole)
+	result, err := h.applyRoleMap(
+		ctx, targets, roleMap, submittedRows, createMissingRoles, appendUserRole)
 	if err != nil {
 		writeMatrixError(w, err)
 		return
@@ -211,10 +221,21 @@ type roleMapResult struct {
 
 // applyRoleMap writes the whole submission across every target project in ONE
 // transaction.
+//
+// `submittedRows` bounds REVOCATION to the permissions the body actually
+// carried, and is nil for the role-map body shape, which is unbounded by
+// definition (the map IS the role's whole permission set — that is what the
+// reference's delete-then-insert means). For the MATRIX shape it is the set of
+// permission names the rows named, so a client that submits a filtered or
+// paged view of the matrix cannot silently revoke every permission it did not
+// mention. roles.go's diffGrants scopes the identically-shaped body the same
+// way, and two adjacent endpoints disagreeing about that would be a trap for
+// any client code shared between them.
 func (h *Handler) applyRoleMap(
 	ctx context.Context,
 	projects []int,
 	roleMap map[string][]string,
+	submittedRows []string,
 	createMissingRoles bool,
 	appendUserRole bool,
 ) (roleMapResult, error) {
@@ -243,8 +264,9 @@ ON CONFLICT (project_id, name) DO NOTHING`, projects, roleNames)
 		}
 		result.rolesCreated = tag.RowsAffected()
 	} else {
-		// Without the flag, a role that exists in NO target project would be
-		// silently dropped. Report it instead.
+		// Without the flag, a role some target project does not define would be
+		// silently dropped FOR THAT PROJECT while the save reported success for
+		// the whole estate. Report it instead.
 		missing, err := missingRoleNames(ctx, transaction, projects, roleNames)
 		if err != nil {
 			return roleMapResult{}, err
@@ -253,7 +275,8 @@ ON CONFLICT (project_id, name) DO NOTHING`, projects, roleNames)
 			return roleMapResult{}, matrixError{
 				status: http.StatusBadRequest,
 				message: fmt.Sprintf(
-					"no target project defines the role(s) %v; pass ?create_role_if_not_exist to create them",
+					"not every target project defines the role(s) %v; "+
+						"pass ?create_role_if_not_exist to create them",
 					missing),
 			}
 		}
@@ -271,7 +294,9 @@ USING public.auth_core__project_role role
 WHERE role.id = override.role_id
   AND role.project_id = ANY($1::int[])
   AND role.name = $2
-  AND NOT (override.permission = ANY($3::text[]))`, projects, role, permissions)
+  AND NOT (override.permission = ANY($3::text[]))
+  AND ($4::text[] IS NULL OR override.permission = ANY($4::text[]))`,
+			projects, role, permissions, submittedRows)
 		if err != nil {
 			return roleMapResult{}, fmt.Errorf("revoke permissions for %s: %w", role, err)
 		}
@@ -323,16 +348,21 @@ ON CONFLICT (project_id, user_id, role_id) DO NOTHING`, projects, roleNames)
 	return result, nil
 }
 
+// missingRoleNames reports a role that is not defined by EVERY target project.
+// "Defined by at least one" is not enough: the write matches role rows per
+// project, so a role present in one personal project and absent from another
+// produces a save that reached half the estate and reported success.
 func missingRoleNames(
 	ctx context.Context, transaction pgx.Tx, projects []int, roleNames []string,
 ) ([]string, error) {
 	rows, err := transaction.Query(ctx, `
 SELECT candidate
 FROM unnest($2::text[]) AS candidate
-WHERE NOT EXISTS (
-    SELECT 1 FROM public.auth_core__project_role role
+WHERE (
+    SELECT COUNT(DISTINCT role.project_id)
+    FROM public.auth_core__project_role role
     WHERE role.project_id = ANY($1::int[]) AND role.name = candidate
-)
+) < cardinality($1::int[])
 ORDER BY 1`, projects, roleNames)
 	if err != nil {
 		return nil, fmt.Errorf("check project roles: %w", err)
@@ -399,10 +429,15 @@ func scanIDs(rows pgx.Rows) ([]int, error) {
 
 // decodeRoleMap accepts both shapes the reference accepts and normalises them
 // to role → permissions.
-func decodeRoleMap(r *http.Request) (map[string][]string, error) {
+//
+// The second return value is the set of permission names the body NAMED, and
+// it bounds revocation (see applyRoleMap). It is nil for the role-map shape,
+// where the submitted list is the role's whole permission set by definition,
+// and the submitted rows for the matrix shape, where it is not.
+func decodeRoleMap(r *http.Request) (map[string][]string, []string, error) {
 	var raw json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("invalid request body: expected a role map or an array of permission rows")
+		return nil, nil, fmt.Errorf("invalid request body: expected a role map or an array of permission rows")
 	}
 
 	var asMap map[string][]string
@@ -410,30 +445,32 @@ func decodeRoleMap(r *http.Request) (map[string][]string, error) {
 		normalized := make(map[string][]string, len(asMap))
 		for role, permissions := range asMap {
 			if role == "" {
-				return nil, fmt.Errorf("a role name is empty")
+				return nil, nil, fmt.Errorf("a role name is empty")
 			}
 			normalized[role] = dedupeSorted(permissions)
 		}
-		return normalized, nil
+		return normalized, nil, nil
 	}
 
 	var asRows []map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &asRows); err != nil {
-		return nil, fmt.Errorf("invalid request body: expected a role map or an array of permission rows")
+		return nil, nil, fmt.Errorf("invalid request body: expected a role map or an array of permission rows")
 	}
 	roleMap := map[string][]string{}
+	submitted := make([]string, 0, len(asRows))
 	for index, row := range asRows {
 		permission, err := rowPermissionName(row, index)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		submitted = append(submitted, permission)
 		for column, cell := range row {
 			if column == "name" {
 				continue
 			}
 			var enabled bool
 			if err := json.Unmarshal(cell, &enabled); err != nil {
-				return nil, fmt.Errorf("row %d: %q must be a boolean", index, column)
+				return nil, nil, fmt.Errorf("row %d: %q must be a boolean", index, column)
 			}
 			// Every role COLUMN is registered even when the cell is false, so a
 			// matrix that revokes a role's last permission still reaches the
@@ -450,7 +487,7 @@ func decodeRoleMap(r *http.Request) (map[string][]string, error) {
 	for role, permissions := range roleMap {
 		roleMap[role] = dedupeSorted(permissions)
 	}
-	return roleMap, nil
+	return roleMap, dedupeSorted(submitted), nil
 }
 
 func dedupeSorted(values []string) []string {

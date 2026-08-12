@@ -292,6 +292,35 @@ func TestModesRemoveActuallyRemoves(t *testing.T) {
 	}
 }
 
+// TestModesRemoveRefusesDefaultMode pins the symmetry with ModesAssign. The
+// listing reports central default-mode assignments (a fresh database seeds
+// user 1's, 001_initial.sql), and removing one through this endpoint could not
+// be undone through it — POST refuses `default` outright — so the row would be
+// gone from the only surface that showed it.
+func TestModesRemoveRefusesDefaultMode(t *testing.T) {
+	pool, router, _, memberID := newModesEnvironment(t, nil)
+
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO public.auth_core__user_role (user_id, role_id)
+SELECT $1, role.id FROM public.auth_core__role role
+WHERE role.mode = 'default' AND role.name = 'admin'`, memberID); err != nil {
+		t.Fatal(err)
+	}
+	if roles := storedModeRoles(t, pool, memberID, "default"); len(roles) != 1 {
+		t.Fatalf("fixture holds %v in default mode, want [admin]", roles)
+	}
+
+	recorder := adminDo(t, router, http.MethodDelete,
+		fmt.Sprintf("/admin/modes/administration?id=%d:default:admin", memberID), nil)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("DELETE of a default-mode assignment = %d, want 400 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	if roles := storedModeRoles(t, pool, memberID, "default"); len(roles) != 1 || roles[0] != "admin" {
+		t.Fatalf("default-mode roles = %v after a refused removal, want [admin]", roles)
+	}
+}
+
 func TestModesRemoveRejectsAMalformedID(t *testing.T) {
 	_, router, operatorID, _ := newModesEnvironment(t, nil)
 

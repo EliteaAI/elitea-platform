@@ -1945,6 +1945,8 @@ export const getGetUserProjectPermissionsUrl = (
  * Default body is role → sorted permission names. `?old_format` returns
  * the matrix rows instead — one row per permission in the catalogue, one
  * boolean column per role — which is also the shape the PUT accepts back.
+ * Either body can be PUT back unchanged; both include the `system` role,
+ * which the PUT ignores rather than rejects.
  *
  * The grants reported are the project's OWN overrides, falling back to the
  * central `default` matrix only when it has none. The reference reports
@@ -2193,9 +2195,19 @@ export const getUpdateUserProjectPermissionsUrl = (
  * re-inserting them, so an interruption leaves part of the estate on the
  * old matrix and can leave a role granting nothing at all.
  *
- * An unknown role name is a 400 unless `?create_role_if_not_exist` asks
- * for it to be created; the reference silently skips it and reports
- * success. An unknown permission name is always a 400.
+ * Revocation is bounded by the body's shape. The role map IS the role's
+ * whole permission set, so anything absent from it is revoked. The MATRIX
+ * shape revokes only within the permission rows it carries, so a filtered
+ * or paged view of the matrix cannot silently revoke what it never showed
+ * — the same rule the /admin/permissions PUT applies to the identical
+ * body.
+ *
+ * A role name that any target project does not define is a 400 unless
+ * `?create_role_if_not_exist` asks for it to be created; the reference
+ * silently skips it FOR THAT PROJECT and reports success for the whole
+ * estate. An unknown permission name is always a 400. The `system` role is
+ * neither written nor rejected: it appears in every body the GET produces,
+ * so rejecting it would make that body unsavable.
  * @summary Apply a permission matrix across every personal or team project
  */
 export const updateUserProjectPermissions = async (
