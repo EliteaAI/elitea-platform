@@ -35,7 +35,7 @@ package conversations
 // chat_messages_attachment row (schema c.POSTGRES_TENANT_SCHEMA, polymorphic
 // child of message_items) so a chat message can render its attachments
 // inline. That table is not in this service's current migration baseline
-// (internal/db/schema/current_agent_chat_baseline.sql has chat_conversations/
+// (internal/db/schema/agent_chat_baseline.sql has chat_conversations/
 // chat_message_items/chat_messages_text/chat_messages_context — no
 // chat_messages_attachment) — unlike centry.project/centry.notifications
 // (externally-owned tables this service references but never creates),

@@ -3,7 +3,7 @@
  * (issue #92, the socket.io → native SSE migration).
  *
  * The backend is retiring the socket.io fan-out surface by surface;
- * `services/elitea-main/internal/api/v2/notifications/current_events.go` is
+ * `services/elitea-main/internal/api/v2/notifications/events.go` is
  * the first one already live in Go (`GET /api/v2/notifications/events/
  * prompt_lib/{projectID}`, `text/event-stream`). In the E2E compose stack
  * `VITE_SOCKET_SERVER=""`, so socket.io is permanently dead there — a
@@ -47,7 +47,7 @@ type EventSourceHandlers = Readonly<Record<string, (event: MessageEvent) => void
  * `onError` matters more than it looks: per WHATWG, `EventSource`
  * reconnects only after a CLEAN stream end. An HTTP error status or a wrong
  * content type fails the connection PERMANENTLY, with no retry — and both
- * Go SSE routes answer with exactly those. `notifications/current_events.go`
+ * Go SSE routes answer with exactly those. `notifications/events.go`
  * returns 429 (`Retry-After: 2`) once its per-principal admission cap of 4
  * concurrent streams is saturated, 403 on authorize failure and 503 when the
  * reader is down; `executions/events.go` does the same. Without this

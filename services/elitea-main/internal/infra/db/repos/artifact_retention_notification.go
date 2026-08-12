@@ -21,7 +21,7 @@ type artifactRetentionNotificationQueries interface {
 // ArtifactRetentionNotificationRepository resolves a project's owning user
 // and writes the centry.notifications row the retention sweeper (S14) emits
 // when a bucket is within one day of expires_at. See
-// current_index_schedule_notification.go for the sibling pattern this
+// index_schedule_notification.go for the sibling pattern this
 // mirrors — same table, different event_type.
 type ArtifactRetentionNotificationRepository struct {
 	queries artifactRetentionNotificationQueries
@@ -83,7 +83,7 @@ func (r *ArtifactRetentionNotificationRepository) NotifyBucketExpiring(ctx conte
 }
 
 // artifactBucketExpiryNotificationUUID derives a deterministic UUID from
-// (bucketID, expiresAt), mirroring current_index_schedule_notification.go's
+// (bucketID, expiresAt), mirroring index_schedule_notification.go's
 // scheduleFailureUUID (same hash-to-UUIDv4 shape). Kept as its own small
 // copy rather than a shared export: the two have no other coupling, and the
 // notifications API only requires "looks like a UUIDv4," not a specific

@@ -221,7 +221,7 @@ export function useRegenerateMutation(): UseMutationResult<AgentExecutionStart, 
 
 /**
  * The three `execution_contract` values the Go agent-execution route admits
- * (`services/elitea-main/internal/api/v2/agentexecution/current_route.go`:
+ * (`services/elitea-main/internal/api/v2/agentexecution/route.go`:
  * `CurrentApplicationStartContract` / `CurrentAdhocStartContract` /
  * `CurrentRegenerationContract`). The route REQUIRES one — a POST without a
  * recognised contract is a 400 — which is what makes it safe for a caller to

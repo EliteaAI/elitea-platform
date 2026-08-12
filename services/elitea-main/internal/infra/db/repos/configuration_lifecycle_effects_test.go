@@ -259,7 +259,7 @@ func TestCurrentConfigurationLifecycleEffectsRejectsInvalidRequestsAndPreservesC
 }
 
 func TestCurrentConfigurationLifecycleEffectsSQLHasBoundsFencesAndAtomicGate(t *testing.T) {
-	sourceBytes, err := os.ReadFile("../../../db/queries/current_configuration_lifecycle_effects.sql")
+	sourceBytes, err := os.ReadFile("../../../db/queries/configuration_lifecycle_effects.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

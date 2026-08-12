@@ -210,7 +210,7 @@ func TestCurrentConfigurationLifecycleOutboxHidesDatabaseErrorsAndPreservesCance
 }
 
 func TestCurrentConfigurationLifecycleSQLContainsOrderingAndLeaseFences(t *testing.T) {
-	query, err := os.ReadFile("../../../db/queries/current_configuration_mutations.sql")
+	query, err := os.ReadFile("../../../db/queries/configuration_mutations.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

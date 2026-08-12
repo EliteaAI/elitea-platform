@@ -110,7 +110,7 @@ non-zero with no output and would otherwise pass trivially.
 - **Fail closed.** Unknown backend, missing credentials, failed authorization,
   and errored lookups all produce an error, never a permissive fallback.
 - **Do not touch** `internal/infra/storage/content_server.go`,
-  `postgres_content.go`, `postgres_secret_vault.go`, or any `current_*.go` file
+  `postgres_content.go`, `postgres_secret_vault.go`, or any existing Go file
   in `internal/infra/storage/`. Those serve execution input content and
   configuration state, not artifacts.
 - Follow `AGENTS.md`'s other guardrails. Its default of preserving public HTTP
@@ -1683,8 +1683,8 @@ alone.
 **Read first:** `internal/api/v2/artifacts/handler.go` (bucket create/retention
 update, S8) and the object-write path (S9); the S6-created
 `internal/infra/db/repos/artifact_{buckets,objects}.go`;
-`internal/runtimecomposition/current_index_schedule_due_work*.go` and
-`current_index_runtime.go` for the sweeper *shape*; **and
+`internal/runtimecomposition/index_schedule_due_work*.go` and
+`index_runtime.go` for the sweeper *shape*; **and
 `internal/runtimecomposition/composition.go`, specifically the
 `schedulingapp.Registry`/`newPublisherSet` chain around line 985** — this is
 where the pattern files' shape actually gets registered into the running
@@ -1701,7 +1701,7 @@ exercise all four:
    S9 upload path, same package). Neither edit touches
    `internal/runtimecomposition` at all.
 2. **The sweeper `Handler`.** Follow the shape in
-   `current_index_schedule_due_work*.go`/`current_index_runtime.go`: selects
+   `index_schedule_due_work*.go`/`index_runtime.go`: selects
    expired objects in bounded batches via S6's new `ListExpiredObjects`,
    deletes them through `ObjectStore.DeleteBatch`, and removes the metadata
    rows via `DeleteObjectRows` in the same transaction boundary as the delete
@@ -1720,10 +1720,10 @@ exercise all four:
    instead of the router.
 4. **The notification.** A real, wired notification mechanism already exists —
    don't invent a new one and don't just log. `internal/infra/db/repos/
-   current_index_schedule_notification.go`'s `InsertCurrentIndexScheduleNotification`
+   index_schedule_notification.go`'s `InsertCurrentIndexScheduleNotification`
    writes a row into `centry.notifications` (`uuid`, `is_seen`, `project_id`,
    `user_id`, `meta`, `event_type`), which `internal/api/v2/notifications/
-   current_events.go` already streams to the browser over the existing
+   events.go` already streams to the browser over the existing
    `notifications_notify` Socket.IO event — no new transport is needed, only a
    new writer following that file's construction pattern (a new sqlc query, a
    new `event_type` value, e.g. `'artifact_bucket_expiring'`). Emit one insert
@@ -1756,7 +1756,7 @@ exercise all four:
 - If the `user_id` open question above is resolved, a `centry.notifications`
   row with `event_type = 'artifact_bucket_expiring'` is inserted exactly once
   per bucket per expiry cycle, and is visible through the existing
-  `internal/api/v2/notifications/current_events.go` stream — not just that
+  `internal/api/v2/notifications/events.go` stream — not just that
   `MarkBucketNotified` was called, which a no-op stub can also satisfy. If the
   open question is left unresolved for a human owner, this criterion is
   dropped for this landing and the open question is recorded instead of
@@ -1802,7 +1802,7 @@ new sqlc query + `ArtifactBucketsRepository.GetBucketByID`) to resolve it.
 (`currentIndexScheduleDueWork`'s shape), not the simpler self-ticking
 `publisherRunner` pattern `execution_replay_retention.go` also uses in this
 codebase** — both are real, pre-existing patterns; the plan's explicit
-"Follow the shape in `current_index_schedule_due_work*.go`" instruction
+"Follow the shape in `index_schedule_due_work*.go`" instruction
 picks the former. It's registered into the **same** registry/scheduler
 instance the index-scheduling job already uses (a second `schedulingapp.Job`
 argument to the same `schedulingapp.NewRegistry` call), not an independent
@@ -2969,7 +2969,7 @@ Legacy also inserts a `chat_messages_attachment` row (schema
 `c.POSTGRES_TENANT_SCHEMA`, a polymorphic child of `message_items`) so a
 chat message renders its attachments inline. That table is absent from this
 service's current migration baseline
-(`internal/db/schema/current_agent_chat_baseline.sql` has
+(`internal/db/schema/agent_chat_baseline.sql` has
 `chat_conversations`/`chat_message_items`/`chat_messages_text`/
 `chat_messages_context` — no `chat_messages_attachment`) — and unlike
 `centry.project`/`centry.notifications` (externally-owned tables this
