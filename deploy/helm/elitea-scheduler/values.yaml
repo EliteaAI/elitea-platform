@@ -85,6 +85,12 @@ env:
   BUDGET_WRITEBACK_ACK_WAIT: "30s"
   BUDGET_WRITEBACK_MAX_DELIVER: "10"
 
+  # Tracing (issue #250): same OTLP collector endpoint and kill switch as
+  # deploy/helm/elitea-main's env map — see that chart's values.yaml for the
+  # full rationale. Read by libs/go/observability.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  OTEL_SDK_DISABLED: ""
+
 # Sensitive vars from Kubernetes Secrets (rendered as valueFrom.secretKeyRef),
 # never plaintext in the ConfigMap above — same shape as
 # deploy/helm/elitea-llm-gateway and deploy/helm/elitea-main.

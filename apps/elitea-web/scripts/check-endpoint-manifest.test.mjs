@@ -182,8 +182,15 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * trace-pin fetch is recorded as unported in
  * src/processes/chat/model/useLoadMoreMessages.ts — so MANIFEST_ENTRY_COUNT is
  * unchanged.
+ * 145 -> 151 when issue #250 added the tracing ingest surface: six new spec
+ * operations (collectTracesUngated, collectTraces, proxyOtlpTracesUngated,
+ * proxyOtlpTraces, getTracingStatusForProject, getTracingStatusAdmin) landed
+ * in v2.yaml alongside internal/api/v2/tracing, and with them the spec's
+ * first `tracing` tag. No UI ships with it (the routes exist for the OTel
+ * collector proxy and elitea-main's own span export, not for a settings
+ * page), so MANIFEST_ENTRY_COUNT is unchanged.
  */
-const GENERATED_OPERATION_COUNT = 145;
+const GENERATED_OPERATION_COUNT = 151;
 const MANIFEST_ENTRY_COUNT = 179;
 
 describe('GREEN — the real, checked-in manifest', () => {

@@ -13,7 +13,9 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	goredis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/budgetwriteback"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/config"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/health"
@@ -30,6 +32,23 @@ func main() {
 	defer cancel()
 
 	cfg := config.FromEnv()
+
+	// Observability (issue #250): same collector elitea-main's tracing ingest
+	// routes and the OTEL_EXPORTER_OTLP_ENDPOINT-configured collector service
+	// receive. Disabled deployments (OTEL_SDK_DISABLED=true) get a no-op
+	// provider with zero behavior change.
+	obsProvider, err := observability.New(ctx, observability.ConfigFromEnv("elitea-scheduler", ""))
+	if err != nil {
+		slog.Error("failed to initialize observability", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := obsProvider.Shutdown(shutdownCtx); err != nil {
+			slog.Error("failed to shut down observability", "err", err)
+		}
+	}()
 
 	// Database
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
@@ -61,7 +80,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:        cfg.HTTPAddr,
-		Handler:     mux,
+		Handler:     otelhttp.NewHandler(mux, "elitea-scheduler"),
 		ReadTimeout: 5 * time.Second,
 	}
 

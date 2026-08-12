@@ -71,8 +71,10 @@ group "pylon" {
 }
 
 target "elitea-scheduler" {
-  context    = "./services/elitea-scheduler"
-  dockerfile = "Containerfile"
+  # Repo root, not ./services/elitea-scheduler: the Containerfile COPYs
+  # libs/go/observability (issue #250's local replace target) from there.
+  context    = "."
+  dockerfile = "services/elitea-scheduler/Containerfile"
   tags       = ["${REGISTRY}/elitea-scheduler:${TAG}"]
   cache-from = ["type=gha,scope=elitea-scheduler"]
   cache-to   = ["type=gha,mode=max,scope=elitea-scheduler"]

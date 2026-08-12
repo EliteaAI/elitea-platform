@@ -1,0 +1,72 @@
+# otel-collector — receives OTLP traces from elitea-main, elitea-scheduler
+# (libs/go/observability) and elitea-main's tracing ingest proxy
+# (internal/api/v2/tracing). See Chart.yaml / deploy/otel-collector-config.yaml
+# for the debug/file-exporter scope boundary (issue #250): swap `config` below
+# for a real sink (otlp/otlphttp exporter to Tempo, a vendor backend, ...) when
+# an environment needs traces to outlive the pod.
+
+replicaCount: 1
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.114.0"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Service DNS name every other chart's OTEL_EXPORTER_OTLP_ENDPOINT should
+# point at: "http://<fullname>.<namespace>.svc.cluster.local:4318" or, within
+# the same namespace, simply "http://<fullname>:4318" (matches the compose
+# service name "otel-collector" the dev stack's env vars use).
+service:
+  type: ClusterIP
+  grpcPort: 4317
+  httpPort: 4318
+
+# The collector's own config (mounted at /etc/otel-collector-config.yaml).
+# Identical in shape to deploy/otel-collector-config.yaml so the compose and
+# Helm paths stay in sync; kept as an inline string here (rather than a
+# `.Files.Get` reference to that file) because Helm charts must be
+# self-contained artifacts independent of the monorepo layout they happen to
+# ship from.
+config: |
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  processors:
+    batch: {}
+
+  exporters:
+    # debug only — see deploy/otel-collector-config.yaml for why the file
+    # exporter was dropped (it needs its target file to pre-exist, and this
+    # distroless image has no shell to create one from).
+    debug:
+      verbosity: detailed
+
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [batch]
+        exporters: [debug]
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

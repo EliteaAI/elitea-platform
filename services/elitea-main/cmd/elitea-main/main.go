@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
@@ -120,6 +121,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return err
 	}
+
+	// Observability (issue #250): exports elitea-main's own request spans to
+	// the same OTLP collector internal/api/v2/tracing proxies UI/worker
+	// traces to, so the ingest pipeline is self-verifying — every request
+	// this process serves produces a span an operator can see land in the
+	// collector, with no separate "did tracing actually work" check needed.
+	obsProvider, err := observability.New(ctx, observability.ConfigFromEnv("elitea-main", ""))
+	if err != nil {
+		return fmt.Errorf("initialize observability: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := obsProvider.Shutdown(shutdownCtx); runErr == nil && err != nil {
+			runErr = fmt.Errorf("shut down observability: %w", err)
+		}
+	}()
 
 	// Database
 	dbDSN := envOr("DATABASE_URL", "postgres://localhost:5432/elitea?sslmode=disable")
@@ -1034,6 +1052,16 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// mounted after the deletion either. The chat-dispatch migration it was a
 	// placeholder for is #93; the web client's own socket.io still points at
 	// pylon and is unaffected.
+	// NOT wrapped in otelhttp here: internal/api/router.go already installs
+	// apimw.OtelMiddleware (r.Use at router.go:396) as chi middleware, which
+	// creates a span per request via otel.Tracer("elitea-main") — the same
+	// global tracer provider observability.New (above) installs. otelhttp
+	// would duplicate that instrumentation AND break it: otelhttp's response
+	// writer wrapper has no Unwrap(), unlike apimw's own statusRecorder
+	// (middleware/otel.go), so http.ResponseController.SetWriteDeadline
+	// (used by the SSE writers in internal/api/v2/executions/events.go and
+	// internal/api/v2/notifications/events.go, and by artifact upload/
+	// download deadlines) would stop reaching the real ResponseWriter.
 	srv := newHTTPServer(publicAddress, r)
 
 	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)

@@ -251,7 +251,9 @@ tasks:
   images:scheduler:
     desc: Build elitea-scheduler image
     cmds:
-      - podman build -t ghcr.io/eliteaai/elitea-scheduler:dev -f services/elitea-scheduler/Containerfile services/elitea-scheduler
+      # Repo root, not services/elitea-scheduler: the Containerfile COPYs
+      # libs/go/observability (issue #250's local replace target) from there.
+      - podman build -t ghcr.io/eliteaai/elitea-scheduler:dev -f services/elitea-scheduler/Containerfile .
 
   images:gateway:
     desc: Build elitea-llm-gateway image
