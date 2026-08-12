@@ -837,6 +837,12 @@ ON CONFLICT (role_id, permission) DO NOTHING;
 -- lets projectPermissions()' central fallback resolve it for a project with no
 -- per-project rows — which is every project on a fresh database. Without it
 -- the project-scoped budget and usage reads are 403 for every user.
+--
+-- It also makes a project member's permission set NON-EMPTY for the first time
+-- on a fresh database, which two things outside the budgets surface react to.
+-- migrations/shared/0062_budgets_quota_statistics.sql documents both, and
+-- internal/infra/legacyrbac/default_mode_grant_postgres_integration_test.go
+-- pins the whole blast radius.
 INSERT INTO auth_core__role_permission (role_id, permission)
 SELECT role.id, 'models.project_context.view'
 FROM auth_core__role AS role

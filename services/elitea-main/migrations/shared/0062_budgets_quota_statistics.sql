@@ -125,7 +125,44 @@ ON CONFLICT (role_id, permission) DO NOTHING;
 -- DEFAULT_MODE for their project-scoped reads, so all three project roles hold
 -- it. This is a project-scoped permission being granted to project-scoped
 -- roles; it is not the "central admin permission leaking into project
--- resolution" that 001_initial.sql warns about.
+-- resolution" that 001_initial.sql warns about. It is also parity, not
+-- invention: the pylon database grants exactly this permission to default-mode
+-- admin, editor, viewer, super_admin and system.
+--
+-- WHAT ELSE THIS CHANGES, because it is more than the budgets routes.
+--
+-- This is the FIRST default-mode role_permission row in this codebase, so it is
+-- the first time a project member on a Go-bootstrapped database resolves to a
+-- NON-EMPTY permission set instead of an empty one. Verified against a real
+-- PostgreSQL, and pinned by
+-- internal/infra/legacyrbac/default_mode_grant_postgres_integration_test.go:
+--
+--   * a project MEMBER goes from [] to [models.project_context.view];
+--   * a NON-MEMBER still resolves to [] — the central fallback is joined
+--     through the caller's assigned project roles, so it cannot reach anyone
+--     outside the project;
+--   * a project that carries its OWN per-project grants — every pylon-backed
+--     database and every legacy dump — suppresses the fallback entirely, so
+--     this grant is INERT there and cannot change what an existing deployment's
+--     members can do.
+--
+-- Two consequences outside the budgets surface, both confined to
+-- Go-bootstrapped databases and to members of the project in question:
+--
+--  1. `GET /api/v2/elitea_core/project_info/{mode}/{project_id}/project-info`
+--     is gated on this same permission and is therefore 403-for-everyone today.
+--     It starts working for members. That is the state it was written to have.
+--  2. internal/runtimecomposition/public_authorizer.go's
+--     ConfigurationValidationCapability branch admits on
+--     `len(resolution.Permissions) != 0` as a stand-in for "is a project
+--     member" — its own comment says so, pending a decision about persisting
+--     the originating permission. It refuses every caller today because every
+--     caller resolves to []; it will admit project members. That is what the
+--     branch says it means to do, but it is a behaviour change reached through
+--     a set SIZE rather than a named permission, and the coupling is worth
+--     replacing with an explicit membership check. Left alone here on purpose:
+--     that is a decision about execution-event authorization, not about
+--     budgets.
 INSERT INTO public.auth_core__role_permission (role_id, permission)
 SELECT role.id, 'models.project_context.view'
 FROM public.auth_core__role AS role
