@@ -87,6 +87,10 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 		r.Method(http.MethodGet, v2social.CurrentAuthorsPath, cfg.CurrentSocialAuthors)
 		r.Method(http.MethodGet, v2social.CurrentAuthorsDefaultPath, cfg.CurrentSocialAuthors)
 	}
+	if cfg.CurrentSocialAvatar != nil {
+		r.Method(http.MethodGet, v2social.CurrentAvatarPath, cfg.CurrentSocialAvatar)
+		r.Method(http.MethodPut, v2social.CurrentAvatarPath, cfg.CurrentSocialAvatar)
+	}
 	if cfg.CurrentProjectInfo != nil {
 		r.Method(http.MethodGet, projectinfoapi.CurrentProjectInfoPath, cfg.CurrentProjectInfo)
 	}

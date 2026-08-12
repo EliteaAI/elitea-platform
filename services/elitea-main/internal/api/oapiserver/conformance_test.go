@@ -25,16 +25,18 @@ import (
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/oapiserver"
 	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
+	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/oapiserver"
 )
 
 const (
@@ -81,6 +83,13 @@ func buildFullSurfaceConfig() api.RouterConfig {
 		WebhookRepo:   struct{ webhook.Repository }{},
 		EventSource:   struct{ v2events.EventSource }{},
 		LLMProxy:      http.NotFoundHandler(),
+
+		// CurrentAvatarRoute has no interface-typed dependency this stub
+		// scheme can zero-value: a bare &v2social.CurrentAvatarRoute{} still
+		// satisfies the != nil check that gates route registration in
+		// production_router.go, and this test only chi.Walks the router — it
+		// never serves a request through the stub.
+		CurrentSocialAvatar: &v2social.CurrentAvatarRoute{},
 	}
 }
 

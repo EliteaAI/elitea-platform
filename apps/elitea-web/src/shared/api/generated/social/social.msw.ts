@@ -46,6 +46,7 @@ import type { RequestHandlerOptions } from "msw";
 
 import type {
   CreateFeedbackResponse,
+  CurrentAvatarResponse,
   FeedbackListResponse,
   OkResponse,
   SocialAuthorProfile,
@@ -84,6 +85,26 @@ export const getListSocialAuthorsResponseMock = (): SocialAuthorSummary[] =>
     avatar: faker.string.alpha({ length: { min: 10, max: 20 } }),
     description: faker.string.alpha({ length: { min: 10, max: 20 } }),
   }));
+
+export const getGetCurrentSocialAvatarResponseMock = (
+  overrideResponse: Partial<Extract<CurrentAvatarResponse, object>> = {},
+): CurrentAvatarResponse => ({
+  avatar: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getUploadCurrentSocialAvatarResponseMock = (
+  overrideResponse: Partial<Extract<CurrentAvatarResponse, object>> = {},
+): CurrentAvatarResponse => ({
+  avatar: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    null,
+  ]),
+  ...overrideResponse,
+});
 
 export const getGetSocialTrendingAuthorsResponseMock =
   (): SocialTrendingAuthor[] =>
@@ -220,6 +241,58 @@ export const getListSocialAuthorsMockHandler = (
             ? await overrideResponse(info)
             : overrideResponse
           : getListSocialAuthorsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetCurrentSocialAvatarMockHandler = (
+  overrideResponse?:
+    | CurrentAvatarResponse
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<CurrentAvatarResponse> | CurrentAvatarResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/social/avatar/:projectId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetCurrentSocialAvatarResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadCurrentSocialAvatarMockHandler = (
+  overrideResponse?:
+    | CurrentAvatarResponse
+    | ((
+        info: Parameters<Parameters<typeof http.put>[1]>[0],
+      ) => Promise<CurrentAvatarResponse> | CurrentAvatarResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put(
+    "*/social/avatar/:projectId",
+    async (info: Parameters<Parameters<typeof http.put>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadCurrentSocialAvatarResponseMock(),
         { status: 200 },
       );
     },
@@ -464,6 +537,8 @@ export const getSocialMock = () => [
   getGetCurrentAuthorMockHandler(),
   getUpdateCurrentAuthorMockHandler(),
   getListSocialAuthorsMockHandler(),
+  getGetCurrentSocialAvatarMockHandler(),
+  getUploadCurrentSocialAvatarMockHandler(),
   getGetSocialTrendingAuthorsMockHandler(),
   getLikeApplicationMockHandler(),
   getUnlikeApplicationMockHandler(),
