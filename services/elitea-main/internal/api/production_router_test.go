@@ -1032,7 +1032,7 @@ func TestProductionRouterMountsCurrentModelAndExternalIndexMetaPaths(t *testing.
 		"/api/v2/elitea_core/index_meta/prompt_lib/7/9",
 	} {
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(http.MethodGet, target, nil)))
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
 		}
@@ -1370,7 +1370,7 @@ func TestProductionRouterMountsOnlyCurrentConfigurationReadMethods(t *testing.T)
 		"/api/v2/configurations/configuration/7/11",
 	} {
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(http.MethodGet, target, nil)))
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
 		}
@@ -1520,7 +1520,7 @@ func TestProductionRouterMountsCurrentAvailableAliasesAsGetOnly(t *testing.T) {
 		"/api/v2/configurations/available/7?section=credentials",
 	} {
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(http.MethodGet, target, nil)))
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
 		}
@@ -1918,23 +1918,22 @@ func TestProductionRouterPreservesRawSocketPeer(t *testing.T) {
 	}
 }
 
+// TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted pins that
+// none of these source-only prototype paths is reachable on the production
+// mount.
+//
+// Requests are AUTHENTICATED on purpose. An unauthenticated request would 401
+// at the mounted-but-unrouted prefixes (e.g. /api/v2/artifacts/…) before chi
+// ever consults the inner routing table, so a 404 assertion would pass without
+// proving anything about which routes exist. Presenting a valid credential
+// makes 404 mean "no such route" rather than "no such caller".
+//
+// This test previously set AUTH_DEV_MODE=true and claimed "even explicit
+// development identity cannot make a prototype route appear". That claim held
+// only because of a dead NewRouter branch (#243); against the router every
+// deployment actually runs it was never true. The bypass is gone (ADR-0017,
+// #260) and the assertion is now made honestly.
 func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T) {
-	// #243 removed NewRouter's dead "reviewed production router" branch,
-	// which this test used to reach (via a bare RouterConfig{}-shaped
-	// composition with AUTH_DEV_MODE=true) because that branch never wired
-	// most of these paths at all. cmd/elitea-main/main.go's actual
-	// composition always takes the other branch — the one this test now
-	// exercises via newCompleteProductionRouter — so most of the paths
-	// below were already live in every real deployment before #243 too;
-	// this test's original "even dev mode can't reach them" premise was
-	// never true for production, only for the unreachable dead branch.
-	//
-	// The handful that genuinely remain unmounted here do so for reasons
-	// unrelated to prototypeCompatibilityRequested: no Socket.IO server was
-	// ever wired (see the NOTE(#126) block in router.go), AdminUI is nil in
-	// this config, and the icon file genuinely doesn't exist on disk. Those
-	// are still worth pinning.
-	t.Setenv("AUTH_DEV_MODE", "true")
 	router := newCompleteProductionRouter("")
 
 	for _, target := range []string{
@@ -1944,7 +1943,7 @@ func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T
 	} {
 		t.Run(target, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+			router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(http.MethodGet, target, nil)))
 			if recorder.Code != http.StatusNotFound {
 				t.Fatalf("GET %s status = %d, want %d", target, recorder.Code, http.StatusNotFound)
 			}
@@ -1962,7 +1961,6 @@ func TestProductionAuthCandidatesRejectEveryForgedCredentialShape(t *testing.T) 
 	// them look unmounted; that was an artifact of the dead branch, not a
 	// real production guarantee. What actually protects these routes is
 	// authentication: no forged credential shape gets past it.
-	t.Setenv("AUTH_DEV_MODE", "false")
 	router := newCompleteProductionRouter("0123456789abcdef0123456789abcdef")
 	routes := []struct {
 		method string
@@ -2012,7 +2010,6 @@ func TestProductionBrowserAuthSurfaceNeverSucceedsWithoutCredentials(t *testing.
 	// the login/logout endpoints are the real browser session flow, not a
 	// leftover prototype surface. What actually matters: no request without
 	// valid credentials gets a bare success.
-	t.Setenv("AUTH_DEV_MODE", "false")
 	router := newCompleteProductionRouter("0123456789abcdef0123456789abcdef")
 	routes := []struct {
 		method string
@@ -2084,6 +2081,7 @@ func newCompleteProductionRouter(sessionSecret string) chi.Router {
 	// see newUnreachableRedisClient for why a nil client isn't safe here.
 	unreachableRedis := newUnreachableRedisClient()
 	return NewRouter(RouterConfig{
+		AuthValidator:  testTokenValidator{user: authenticatedTestUser()},
 		SessionHandler: v2auth.NewSessionHandler(nil, sessionSecret),
 		OIDCHandler:    &v2auth.OIDCHandler{},
 		SessionSecret:  sessionSecret,

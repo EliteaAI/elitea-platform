@@ -28,7 +28,6 @@ func (spy *currentIndexMetaDeleteRBACSpy) Delete(
 }
 
 func TestCurrentIndexMetaDeleteRoutePostgresPermissionMatrix(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 	resolver := legacyrbac.NewPostgresResolver(pool)

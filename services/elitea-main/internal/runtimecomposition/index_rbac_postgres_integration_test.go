@@ -150,7 +150,6 @@ type indexRBACSpies struct {
 }
 
 func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 
@@ -337,7 +336,6 @@ func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
 }
 
 func TestIndexEventsPostgresAuthorizeBeforeCursorAndBindEveryTenantDimension(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 
@@ -385,7 +383,6 @@ func TestIndexEventsPostgresAuthorizeBeforeCursorAndBindEveryTenantDimension(t *
 }
 
 func TestIndexStopPostgresBindsDurableTransitionToExactTenantAndTarget(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 
@@ -501,7 +498,6 @@ func TestIndexStopPostgresBindsDurableTransitionToExactTenantAndTarget(t *testin
 }
 
 func TestIndexAdditionalContractsResolveLegacyRolesAndRejectUnauthenticatedScheduleSearch(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 	resolver := legacyrbac.NewPostgresResolver(pool)

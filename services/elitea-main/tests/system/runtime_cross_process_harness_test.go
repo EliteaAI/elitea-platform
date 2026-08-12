@@ -570,7 +570,6 @@ func runtimeMainEnvironment(databaseURL string, legacyRedisPort, controlRedisPor
 		"SKIP_MIGRATIONS=1",
 		fmt.Sprintf("REDIS_URL=127.0.0.1:%d", legacyRedisPort),
 		"APPLICATION_SECRET_KEY=" + publicSecret,
-		"AUTH_DEV_MODE=false",
 		"ELITEA_AUTH_CONFIG_FILE=" + authConfigPath,
 		"ELITEA_RUNTIME_ENABLED=true",
 		fmt.Sprintf("ELITEA_HTTP_ADDRESS=127.0.0.1:%d", publicPort),

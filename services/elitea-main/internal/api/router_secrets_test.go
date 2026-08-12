@@ -84,7 +84,7 @@ func serveResponse(t *testing.T, router chi.Router, method, path string) *httpte
 				recorder.Code = http.StatusInternalServerError
 			}
 		}()
-		router.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+		router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(method, path, nil)))
 	}()
 	return recorder
 }
@@ -96,8 +96,10 @@ func serveStatus(t *testing.T, router chi.Router, method, path string) int {
 
 func newSecretsTestRouter(t *testing.T) chi.Router {
 	t.Helper()
-	t.Setenv("AUTH_DEV_MODE", "true")
-	return NewRouter(RouterConfig{SkillsRepo: struct{ v2skills.Repository }{}})
+	return NewRouter(RouterConfig{
+		SkillsRepo:    struct{ v2skills.Repository }{},
+		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+	})
 }
 
 // TestRouterServesSecretsUnderThePluginPrefix pins #151: the six routes sit
