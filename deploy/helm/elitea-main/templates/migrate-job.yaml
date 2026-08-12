@@ -1,0 +1,79 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "elitea-main.fullname" . }}-migrate
+  labels:
+    {{- include "elitea-main.labels" . | nindent 4 }}
+  annotations:
+    # Ordering guarantee: pre-install/pre-upgrade hooks are applied and
+    # AWAITED before Helm touches any of the release's normal manifests,
+    # including this chart's Deployment (see helm.sh/hook docs — hooks run
+    # outside the normal apply order, and Helm blocks the release until the
+    # hook Job reaches Complete). New/updated pods therefore never roll
+    # against a schema they don't expect; if the migration fails, this Job
+    # returns non-zero, Helm aborts the release, and the Deployment is never
+    # touched — the previous generation of pods keeps serving.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    # Same policy as deploy/helm/nats-bootstrap's hook Job, for the same
+    # reason: delete the PREVIOUS run right before the next one is created
+    # (keeps the Job name reusable release-over-release, since a Job's pod
+    # template is immutable), but leave a FAILED Job in place — don't delete
+    # on failure — so `kubectl describe job` / `kubectl logs` on THIS
+    # release's failed attempt still work after the release aborts. It only
+    # gets cleaned up by the next successful install/upgrade attempt.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  # Bounded so a wedged migration (e.g. DB unreachable, a long lock held by
+  # another migration attempt) does not hang the whole release indefinitely.
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        # Deliberately NOT elitea-main.selectorLabels: templates/service.yaml
+        # selects on exactly {app.kubernetes.io/name: <name>, .../instance},
+        # the same two keys selectorLabels sets — a migrate pod carrying them
+        # unchanged would be picked up as a live Service endpoint even though
+        # this container never listens on port 8080. The "-migrate" suffix on
+        # `name` keeps this pod out of that selector while it runs.
+        app.kubernetes.io/name: {{ include "elitea-main.name" . }}-migrate
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "elitea-main.serviceAccountName" . }}
+      restartPolicy: Never
+      containers:
+        - name: elitea-migrate
+          # Same image/tag as the Deployment by default (services/elitea-main's
+          # single Containerfile builds both /elitea-main and /elitea-migrate
+          # into one image) — override via migrations.image.* only for the rare
+          # case of pinning the migration step independently.
+          image: "{{ .Values.migrations.image.repository | default .Values.image.repository }}:{{ .Values.migrations.image.tag | default .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/elitea-migrate"]
+          args:
+            {{- toYaml .Values.migrations.args | nindent 12 }}
+          # Same values as templates/deployment.yaml's elitea-main container
+          # (DATABASE_URL etc., S17-style plaintext today), but rendered
+          # directly from .Values.env rather than via configMapRef: this Job
+          # is a pre-install/pre-upgrade hook, which Helm runs BEFORE any of
+          # the release's normal manifests — including templates/configmap.yaml
+          # — exist. envFrom-ing that ConfigMap here would leave the pod stuck
+          # in CreateContainerConfigError on every fresh `helm install`.
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range $name, $ref := .Values.secrets }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+                  optional: {{ $ref.optional | default false }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+{{- end }}

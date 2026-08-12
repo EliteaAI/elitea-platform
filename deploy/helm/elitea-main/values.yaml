@@ -160,6 +160,39 @@ secrets:
     key: llm-gateway-ca-file
     optional: true
 
+# Kubernetes execution path for the versioned migration corpus
+# (services/elitea-main/migrations/{shared,tenant}, applied by the separate
+# cmd/elitea-migrate binary already built into this chart's image) — distinct
+# from the dev-only boot bootstrap (bootstrapLegacySchema /
+# ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA in cmd/elitea-main, which this does NOT
+# touch or replace). Runs as a pre-install/pre-upgrade Helm hook Job so it
+# completes — or the release aborts — before any Deployment pods roll; see
+# templates/migrate-job.yaml for the full ordering-guarantee explanation.
+migrations:
+  enabled: true
+  # -all-tenants mirrors deploy/centry-hybrid/pov-compose.yml's elitea-migrate
+  # invocation: apply the shared history, then the tenant history for every
+  # existing legacy project. Both cmd/elitea-migrate flags are idempotent —
+  # already-applied migration files are skipped — so re-running on every
+  # upgrade is safe.
+  args:
+    - -all-tenants
+  image:
+    # Empty means "use .Values.image.repository/.tag" (the Deployment's own
+    # image) — the normal case, since cmd/elitea-migrate ships in that same
+    # image. Only set these to pin the migration step to a different tag.
+    repository: ""
+    tag: ""
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
 probes:
   startup:
     path: /startupz
