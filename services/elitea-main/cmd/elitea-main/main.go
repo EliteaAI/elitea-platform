@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
@@ -120,6 +122,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return err
 	}
+
+	// Observability (issue #250): exports elitea-main's own request spans to
+	// the same OTLP collector internal/api/v2/tracing proxies UI/worker
+	// traces to, so the ingest pipeline is self-verifying — every request
+	// this process serves produces a span an operator can see land in the
+	// collector, with no separate "did tracing actually work" check needed.
+	obsProvider, err := observability.New(ctx, observability.ConfigFromEnv("elitea-main", ""))
+	if err != nil {
+		return fmt.Errorf("initialize observability: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := obsProvider.Shutdown(shutdownCtx); runErr == nil && err != nil {
+			runErr = fmt.Errorf("shut down observability: %w", err)
+		}
+	}()
 
 	// Database
 	dbDSN := envOr("DATABASE_URL", "postgres://localhost:5432/elitea?sslmode=disable")
@@ -1034,7 +1053,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// mounted after the deletion either. The chat-dispatch migration it was a
 	// placeholder for is #93; the web client's own socket.io still points at
 	// pylon and is unaffected.
-	srv := newHTTPServer(publicAddress, r)
+	// otelhttp wraps every request in a span named by route pattern, exported
+	// through the TracerProvider observability.New installed above. A no-op
+	// TracerProvider (observability disabled) makes this a harmless pass-through.
+	instrumentedRouter := otelhttp.NewHandler(r, "elitea-main")
+	srv := newHTTPServer(publicAddress, instrumentedRouter)
 
 	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)
 	var runtimeLifecycleRoot runtimeLifecycle

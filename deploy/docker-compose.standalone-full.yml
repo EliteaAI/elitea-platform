@@ -221,6 +221,17 @@ services:
 
   # ── Application services ────────────────────────────────────────────────────
 
+  # OTEL collector (issue #250) — see deploy/otel-collector-config.yaml for
+  # the debug/file-exporter scope-boundary rationale.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "${STANDALONE_OTEL_GRPC_PORT:-14317}:4317" # OTLP gRPC
+      - "${STANDALONE_OTEL_HTTP_PORT:-14318}:4318" # OTLP HTTP
+
   elitea-main:
     image: ghcr.io/eliteaai/elitea-main:standalone
     # `build:` present so compose builds the tag from this commit instead of
@@ -263,6 +274,10 @@ services:
       LLM_GATEWAY_CLIENT_CERT: /run/certs/client.crt
       LLM_GATEWAY_CLIENT_KEY: /run/certs/client.key
       LLM_GATEWAY_CA_FILE: /run/certs/ca.crt
+      # Tracing ingest (issue #250): elitea-main's own OTLP span export
+      # (libs/go/observability) and internal/api/v2/tracing's otlp proxy
+      # target both point at the collector above.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
     volumes:
       - ./certs:/run/certs:ro
     depends_on:
@@ -275,6 +290,8 @@ services:
       rustfs-bucket-init:
         condition: service_completed_successfully
       elitea-llm-gateway:
+        condition: service_started
+      otel-collector:
         condition: service_started
     healthcheck:
       test: ["CMD", "/elitea-main", "-healthcheck"]

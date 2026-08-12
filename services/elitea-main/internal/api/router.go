@@ -42,6 +42,7 @@ import (
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
+	v2tracing "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tracing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	platformauth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
@@ -52,6 +53,8 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // AuthDeps preserves the current-main grouped dependency contract while the
@@ -1497,6 +1500,25 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 
 			// === Social plugin ===
 			r.Mount("/social", v2social.NewHandler(cfg.Pool).Routes())
+
+			// === Tracing plugin (issue #250) ===
+			//
+			// Port of legacy/plugins/tracing/api/v2/{collect,otlp,status}.py —
+			// see internal/api/v2/tracing's package doc for the option-(a)
+			// architecture decision and the "runtime.plugins" admin-status gate
+			// (reusing the permission system_info.py/plugin_config_*.py/
+			// maintenance.py/runtime_*.py already declare, rather than seeding
+			// legacy's unseeded "models.admin.tracing.view" fresh).
+			requireTracingAdminStatus := apimw.RequireCentralPermissions(
+				permissionResolver, platformauth.PermissionModeAdministration,
+				"runtime.plugins",
+			)
+			tracingHandler := v2tracing.NewHandler(
+				cfg.Pool,
+				v2tracing.ConfigFromEnv("elitea-main"),
+				func() trace.Tracer { return otel.Tracer("elitea-main/tracing") },
+			)
+			r.Mount("/tracing", tracingHandler.Routes(requireTracingAdminStatus))
 
 			// Artifacts are mounted by mountArtifactRoutes below, outside
 			// this /api/v2 group — see S11: the shadow middleware wrapping

@@ -2,11 +2,15 @@ module github.com/EliteaAI/elitea-platform/services/elitea-scheduler
 
 go 1.25.0
 
+replace github.com/EliteaAI/elitea-platform/libs/go/observability => ../../libs/go/observability
+
 require (
+	github.com/EliteaAI/elitea-platform/libs/go/observability v0.0.0
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/nats-io/nats.go v1.52.0
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/robfig/cron/v3 v3.0.1
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
 )
 
 require (

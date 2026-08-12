@@ -125,6 +125,20 @@ services:
       MAX_RETRIES: "3"
       AWS_DEFAULT_REGION: eu-north-1
 
+  # OTEL collector (issue #250): receives OTLP spans from elitea-main and
+  # elitea-scheduler's own instrumentation (libs/go/observability) and from
+  # elitea-main's tracing ingest routes (internal/api/v2/tracing), which
+  # proxy browser/worker collect/otlp traffic here. debug exporter only —
+  # see otel-collector-config.yaml for the scope-boundary rationale.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+
   elitea-main:
     build:
       context: ..
@@ -145,6 +159,10 @@ services:
       OIDC_CLIENT_ID: "elitea-dev-client"
       OIDC_CLIENT_SECRET: "elitea-dev-secret"
       OIDC_REDIRECT_URI: "http://localhost:8080/forward-auth/auth_oidc/callback"
+      # Tracing ingest (issue #250): both elitea-main's own OTLP span export
+      # (libs/go/observability) and internal/api/v2/tracing's otlp proxy
+      # target point at the collector below.
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
     depends_on:
       postgres:
         condition: service_healthy
@@ -152,6 +170,8 @@ services:
         condition: service_healthy
       oidc-mock:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     healthcheck:
       test: ["CMD", "/elitea-main", "-healthcheck"]
       interval: 10s
@@ -217,11 +237,14 @@ services:
       RPC_CHANNEL: "elitea_rpc"
       RPC_HMAC_KEY: ""
       HTTP_ADDR: ":8081"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     # No container healthcheck: the image is distroless (no shell/wget/curl) and the
     # binary has no -healthcheck flag. Liveness is via /healthz on :8081 — use a k8s
     # httpGet probe in production (see deploy/helm).

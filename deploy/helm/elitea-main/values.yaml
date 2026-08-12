@@ -162,6 +162,20 @@ env:
   # URL of the elitea-llm-gateway service. Empty disables GatewayProxy.
   LLM_GATEWAY_URL: ""
 
+  # --- Tracing / observability (issue #250) -----------------------------------
+  # OTLP/HTTP collector base URL. Read by both libs/go/observability (elitea-main's
+  # own span export) and internal/api/v2/tracing's otlp proxy target — one var
+  # controls both paths. Empty defers to the OTLP exporter's own env handling
+  # (effectively localhost, i.e. no-op in a cluster) and to tracing's own
+  # "http://otel-collector:4318" default, which only resolves if a service by
+  # that name exists in this namespace (see the otel-collector chart/values).
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  # Standard OTel SDK kill switch (https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/).
+  # Set to "true" to disable span export and make the tracing ingest routes
+  # answer "disabled" instead of forwarding — e.g. an environment with no
+  # collector deployed at all.
+  OTEL_SDK_DISABLED: ""
+
 # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
 # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
 # above — mirrors deploy/helm/elitea-llm-gateway's values.yaml `secrets:`
