@@ -153,6 +153,24 @@ type CentryProjectGroupAssociation struct {
 	GroupID   *int32 `db:"group_id" json:"group_id"`
 }
 
+type CentryProjectQuotum struct {
+	ID                     int32            `db:"id" json:"id"`
+	ProjectID              int32            `db:"project_id" json:"project_id"`
+	DataRetentionLimit     *int32           `db:"data_retention_limit" json:"data_retention_limit"`
+	TestDurationLimit      *int32           `db:"test_duration_limit" json:"test_duration_limit"`
+	CpuLimit               *int32           `db:"cpu_limit" json:"cpu_limit"`
+	MemoryLimit            *int32           `db:"memory_limit" json:"memory_limit"`
+	LastUpdateTime         pgtype.Timestamp `db:"last_update_time" json:"last_update_time"`
+	DastScans              *int32           `db:"dast_scans" json:"dast_scans"`
+	SastScans              *int32           `db:"sast_scans" json:"sast_scans"`
+	VcuHardLimit           *int32           `db:"vcu_hard_limit" json:"vcu_hard_limit"`
+	VcuSoftLimit           *int32           `db:"vcu_soft_limit" json:"vcu_soft_limit"`
+	VcuLimitTotalBlock     bool             `db:"vcu_limit_total_block" json:"vcu_limit_total_block"`
+	StorageHardLimit       *int32           `db:"storage_hard_limit" json:"storage_hard_limit"`
+	StorageSoftLimit       *int32           `db:"storage_soft_limit" json:"storage_soft_limit"`
+	StorageLimitTotalBlock bool             `db:"storage_limit_total_block" json:"storage_limit_total_block"`
+}
+
 type CentrySocialPin struct {
 	ID        int32            `db:"id" json:"id"`
 	Entity    string           `db:"entity" json:"entity"`
@@ -172,6 +190,19 @@ type CentrySocialUser struct {
 	Personalization          []byte  `db:"personalization" json:"personalization"`
 	DefaultContextManagement []byte  `db:"default_context_management" json:"default_context_management"`
 	DefaultSummarization     []byte  `db:"default_summarization" json:"default_summarization"`
+}
+
+type CentryStatistic struct {
+	ID                    int32            `db:"id" json:"id"`
+	ProjectID             int32            `db:"project_id" json:"project_id"`
+	StartTime             pgtype.Timestamp `db:"start_time" json:"start_time"`
+	VuhUsed               *int32           `db:"vuh_used" json:"vuh_used"`
+	PerformanceTestRuns   *int32           `db:"performance_test_runs" json:"performance_test_runs"`
+	SastScans             *int32           `db:"sast_scans" json:"sast_scans"`
+	DastScans             *int32           `db:"dast_scans" json:"dast_scans"`
+	PublicPoolWorkers     *int32           `db:"public_pool_workers" json:"public_pool_workers"`
+	UiPerformanceTestRuns *int32           `db:"ui_performance_test_runs" json:"ui_performance_test_runs"`
+	TasksExecutions       *int32           `db:"tasks_executions" json:"tasks_executions"`
 }
 
 type ChatConversation struct {

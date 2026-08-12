@@ -60,6 +60,8 @@ tags:
     description: Bucket and artifact (file) storage
   - name: auth
     description: Permissions
+  - name: budgets
+    description: Project and per-member LLM spend limits, and usage reporting
   - name: chat
     description: Conversational / webchat endpoints
   - name: configurations
@@ -174,6 +176,351 @@ components:
     # below is field-level, sourced from the Go handler that marshals it.
 
     # ---- Error responses ---------------------------------------------------
+    BudgetPeriodWindow:
+      type: object
+      description: |
+        The calendar month a budget accrues over. Derived exactly as the LLM
+        gateway derives it (first instant of the current month, UTC) — the
+        accumulator's key includes the period start, so a period computed any
+        other way would look up a row that does not exist and report zero spend
+        against a real limit.
+      required: [period, period_start, period_end, resets_at]
+      properties:
+        period:
+          type: string
+          description: The period tag, YYYYMM.
+          example: "202608"
+        period_start:
+          type: string
+          description: First day of the period, YYYY-MM-DD.
+          example: "2026-08-01"
+        period_end:
+          type: string
+          description: Last day of the period, YYYY-MM-DD.
+          example: "2026-08-31"
+        resets_at:
+          type: string
+          format: date-time
+          description: When the accumulator rolls over to a new period row.
+
+    BudgetState:
+      description: |
+        The five COST fields — monthly_limit, effective_limit, spend, remaining
+        and currency — are deliberately NOT in `required`. Both project-scoped
+        reads (`getProjectBudget`, `getProjectUsage`) REMOVE them for a caller
+        whose `can_see_amounts` is false, so requiring them would make a
+        correct redacted response fail its own schema. Everything that is not a
+        cost figure — the percentage, the threshold, the period — is required,
+        because redaction never removes those.
+      allOf:
+        - $ref: '#/components/schemas/BudgetPeriodWindow'
+        - type: object
+          required:
+            - limit_source
+            - enabled
+            - warning_pct
+            - percent_used
+            - spend_available
+          properties:
+            can_see_amounts:
+              type: boolean
+              description: |
+                Present on the project-scoped reads only. False means the five
+                cost fields were removed from this payload; percentages, the
+                warning threshold and the period remain.
+
+            monthly_limit:
+              type: number
+              nullable: true
+              description: The AUTHORED ceiling in USD. Null means none was set.
+            effective_limit:
+              type: number
+              nullable: true
+              description: |
+                The ENFORCED ceiling. Null when the scope is unlimited — which
+                includes a scope that has a monthly_limit but is disabled.
+            limit_source:
+              type: string
+              enum: [explicit, unlimited]
+              description: |
+                Where the enforced limit came from. The reference had a third
+                value, `default`, for a platform-wide fallback; this platform
+                has none.
+            currency:
+              type: string
+              enum: [USD]
+              description: |
+                Always USD. The gateway compares limits against a nano-USD
+                counter and nothing converts, so the write path rejects any
+                other value rather than storing a label enforcement ignores.
+            enabled:
+              type: boolean
+              description: |
+                False marks the scope deliberately exempt: it stays unlimited
+                whatever monthly_limit says. Stored separately from the
+                enforcement flag so `enabled with no ceiling yet` and
+                `deliberately exempt` do not read back as the same thing.
+            warning_pct:
+              type: integer
+              description: Percent-of-limit at which this scope warns.
+            spend:
+              type: number
+              description: USD accrued this period. Zero when nothing is recorded.
+            remaining:
+              type: number
+              nullable: true
+              description: Null when the scope is unlimited. Never negative.
+            percent_used:
+              type: number
+              nullable: true
+              description: Null when the scope is unlimited or the limit is zero.
+            spend_available:
+              type: boolean
+              description: |
+                Whether an accumulator row exists for this period at all, which
+                is what separates "nothing billed yet" from "no usage data".
+
+    ProjectBudget:
+      allOf:
+        - type: object
+          required: [project_id, budget_period]
+          properties:
+            project_id:
+              type: integer
+            budget_period:
+              type: string
+              enum: [monthly]
+              description: |
+                Reported, not settable. The gateway derives the period from the
+                calendar month unconditionally, so any other value would be one
+                nothing honours.
+        - $ref: '#/components/schemas/BudgetState'
+
+    MemberBudget:
+      allOf:
+        - type: object
+          required: [project_id, user_id, enforced]
+          properties:
+            project_id:
+              type: integer
+            user_id:
+              type: integer
+            enforced:
+              type: boolean
+              description: |
+                FALSE for as long as the gateway admits and bills by project
+                scope alone. A per-member limit is stored and read back
+                faithfully, but nothing blocks a call on it — render it as
+                authored-but-inactive rather than as a live ceiling.
+        - $ref: '#/components/schemas/BudgetState'
+
+    BudgetWrite:
+      type: object
+      description: The write payload shared by the project and member budget PUTs.
+      properties:
+        monthly_limit:
+          type: number
+          nullable: true
+          minimum: 0
+          description: Ceiling in USD. Null, or absent, means no ceiling.
+        enabled:
+          type: boolean
+          default: true
+          description: |
+            False marks the scope deliberately exempt, so it stays unlimited
+            whatever monthly_limit says.
+        currency:
+          type: string
+          enum: [USD]
+          default: USD
+          description: Anything other than USD is rejected with a 400.
+        soft_alert_pct:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: |
+            Percent-of-limit at which this scope warns. Omitted leaves the
+            stored threshold untouched.
+
+    ProjectBudgetRow:
+      allOf:
+        - type: object
+          required: [project_id, name, display_name, owner_name, owner_email, is_personal]
+          properties:
+            project_id:
+              type: integer
+            name:
+              type: string
+            display_name:
+              type: string
+              description: |
+                The owner's identity for a personal project, the project name
+                otherwise — `project_user_<n>` is not a name anyone searches for.
+            owner_name:
+              type: string
+            owner_email:
+              type: string
+            is_personal:
+              type: boolean
+        - $ref: '#/components/schemas/BudgetState'
+
+    ProjectBudgetListing:
+      type: object
+      required: [rows, total, counts]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectBudgetRow'
+        total:
+          type: integer
+          description: The FILTERED total, which is what the pagination describes.
+        counts:
+          type: object
+          description: |
+            Unfiltered per-type counts, for the tab labels. Deliberately not
+            narrowed by the filters: a tab whose count moved with the search box
+            would be reporting how many rows the other tab currently shows.
+          additionalProperties:
+            type: integer
+
+    MemberBudgetRow:
+      allOf:
+        - type: object
+          required: [project_id, user_id, name, email, roles, enforced]
+          properties:
+            project_id:
+              type: integer
+            user_id:
+              type: integer
+            name:
+              type: string
+            email:
+              type: string
+            roles:
+              type: array
+              items:
+                type: string
+            enforced:
+              type: boolean
+              description: See MemberBudget.enforced — always false today.
+        - $ref: '#/components/schemas/BudgetState'
+
+    MemberBudgetListing:
+      type: object
+      required: [rows, total, warning_pct]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemberBudgetRow'
+        total:
+          type: integer
+        warning_pct:
+          type: integer
+          description: |
+            The PROJECT's threshold, which labels the table. Each row carries
+            its own.
+
+    UsageReport:
+      allOf:
+        - type: object
+          required: [project_id, user_id, scope]
+          properties:
+            project_id:
+              type: integer
+            user_id:
+              type: integer
+              nullable: true
+              description: Null for scope=project.
+            scope:
+              type: string
+              enum: [project, user]
+            enforced:
+              type: boolean
+              description: Present for scope=user only. See MemberBudget.enforced.
+            budget_period:
+              type: string
+              enum: [monthly]
+              description: Present for scope=project only.
+        - $ref: '#/components/schemas/BudgetState'
+
+    ProjectQuota:
+      type: object
+      description: |
+        centry.project_quota. `-1` is the unlimited sentinel; a null column was
+        never configured. The vcu_* and storage_* triples are the only ones the
+        PUT writes.
+      required: [id, project_id]
+      properties:
+        id: { type: integer }
+        project_id: { type: integer }
+        data_retention_limit: { type: integer, nullable: true }
+        test_duration_limit: { type: integer, nullable: true }
+        cpu_limit: { type: integer, nullable: true }
+        memory_limit: { type: integer, nullable: true }
+        last_update_time:
+          type: string
+          nullable: true
+          description: Start of the current 30-day quota window, UTC.
+        dast_scans: { type: integer, nullable: true }
+        sast_scans: { type: integer, nullable: true }
+        vcu_hard_limit: { type: integer, nullable: true }
+        vcu_soft_limit: { type: integer, nullable: true }
+        vcu_limit_total_block: { type: boolean }
+        storage_hard_limit:
+          type: integer
+          nullable: true
+          description: Gigabytes.
+        storage_soft_limit:
+          type: integer
+          nullable: true
+          description: Gigabytes.
+        storage_limit_total_block: { type: boolean }
+
+    ProjectQuotaUpdate:
+      type: object
+      description: |
+        Only the triple matching `usage_type` is read. An omitted field CLEARS
+        its column.
+      properties:
+        vcu_hard_limit: { type: integer, nullable: true }
+        vcu_soft_limit: { type: integer, nullable: true }
+        vcu_limit_total_block: { type: boolean, default: false }
+        storage_hard_limit: { type: integer, nullable: true }
+        storage_soft_limit: { type: integer, nullable: true }
+        storage_limit_total_block: { type: boolean, default: false }
+
+    StatisticEntry:
+      type: object
+      required: [current, quota]
+      properties:
+        current:
+          type: integer
+          format: int64
+        quota:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Null where the quota table has no column for this metric, or where
+            it holds the -1 unlimited sentinel.
+
+    ProjectStatistics:
+      type: object
+      description: |
+        One entry per metric. `storage_space` is in BYTES on both sides;
+        `data_retention_limit` reports a current of 0, as the reference does,
+        because nothing measures retention — only configures it.
+      properties:
+        performance_test_runs: { $ref: '#/components/schemas/StatisticEntry' }
+        ui_performance_test_runs: { $ref: '#/components/schemas/StatisticEntry' }
+        sast_scans: { $ref: '#/components/schemas/StatisticEntry' }
+        dast_scans: { $ref: '#/components/schemas/StatisticEntry' }
+        tasks_executions: { $ref: '#/components/schemas/StatisticEntry' }
+        storage_space: { $ref: '#/components/schemas/StatisticEntry' }
+        data_retention_limit: { $ref: '#/components/schemas/StatisticEntry' }
+
     ErrorResponse:
       type: object
       required: [error]
@@ -5803,6 +6150,372 @@ paths:
                 $ref: '#/components/schemas/AgentCategoriesResponse'
         '401': { $ref: '#/components/responses/401' }
 
+  # ---------------------------------------------------------------------------
+  # BUDGETS & USAGE (issue #246)
+  #
+  # Ported from legacy/plugins/elitea_core/api/v2/{project_budget,
+  # project_budgets,user_budget,user_budgets,usage}.py. The `prompt_lib` and
+  # `administration` segments are LITERAL, not a `{mode}` placeholder: the mode
+  # selects which handler and which permission gate runs, and the per-member
+  # read differs between the two by more than its gate.
+  # ---------------------------------------------------------------------------
+  /elitea_core/project_budget/prompt_lib/{project_id}/budget:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectBudget
+      summary: A project's own monthly budget and current-period spend
+      description: |
+        The limit an operator authored, the spend accrued against it this
+        calendar month, and the derived remaining/percent figures.
+
+        `limit_source` says where the enforced limit came from: `explicit` when
+        one is set and enabled for this project, `unlimited` otherwise. The
+        reference had a third value, `default`, for a platform-wide fallback
+        limit; this platform has none — gateway.project_budget is the only
+        limit there is.
+
+        `spend_available` distinguishes "no calls billed yet this period" from
+        "no usage data": the accrued figure comes from the budget write-back
+        consumer, and its absence is a fact about the pipeline, not about the
+        project.
+
+        Token counts and the per-model / per-day breakdown the reference served
+        from LiteLLM are ABSENT, not zero: the write-back path persists one
+        accumulated USD figure per scope and period, and zero-filling them
+        would read as "this project made no calls".
+
+        Available to project members. A member who is neither a project admin nor
+        the owner of a personal project receives the same payload with
+        `monthly_limit`, `effective_limit`, `spend`, `remaining` and `currency`
+        REMOVED and `can_see_amounts: false` — the same rule `getProjectUsage`
+        applies, because the two serve the same figures behind the same gate and
+        redacting only one of them would leave the other as a way around it.
+
+        The administration-mode twin below serves platform administrators
+        regardless of membership and never redacts.
+      tags: [budgets]
+      responses:
+        '200':
+          description: Budget state and current-period spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudget'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/project_budget/administration/{project_id}/budget:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectBudgetAdmin
+      summary: Any project's budget and current-period spend (admin)
+      description: |
+        The same payload as the project-scoped read, for a platform
+        administrator who is not a member of the project.
+      tags: [budgets]
+      responses:
+        '200':
+          description: Budget state and current-period spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudget'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: setProjectBudget
+      summary: Set a project's monthly budget (admin)
+      description: |
+        Creates or replaces the project's limit. The write lands on the row the
+        LLM gateway reads on every call, so it takes effect on the next call
+        rather than at the next period.
+
+        The response is the resulting state, which can differ from what was
+        sent: a null `monthly_limit` or `enabled: false` leaves the project
+        unlimited, so `effective_limit` and `limit_source` are the fields worth
+        reading back.
+
+        `currency` other than `USD` is rejected rather than stored. Nothing in
+        the money path converts, so an accepted label would sit on a limit the
+        gateway still enforces in dollars.
+      tags: [budgets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetWrite'
+      responses:
+        '200':
+          description: Budget state after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudget'
+        '400':
+          description: Negative or non-numeric limit, unsupported currency, or out-of-range threshold.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/project_budgets/administration:
+    get:
+      operationId: listProjectBudgets
+      summary: Every project's budget and current-period spend (admin)
+      description: |
+        Backs Admin → Budgets. `counts` labels the team/personal tabs and is
+        computed over ALL projects; `total` describes the filtered set the rows
+        come from.
+
+        Only `name` and `id` are orderable. Limit, spend and utilisation are
+        per-row derivations, so ordering by them would sort the page that was
+        already fetched rather than the table; an unsupported `sort_by` falls
+        back to `name`.
+
+        A personal project is reported with its owner's identity as
+        `display_name`, since `project_user_<n>` is not a name anyone searches
+        for.
+      tags: [budgets]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 20 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+        - name: search
+          in: query
+          required: false
+          schema: { type: string }
+          description: Matches project name, project id, or the owner's name or email.
+        - name: project_type
+          in: query
+          required: false
+          schema: { type: string, enum: [team, personal] }
+        - name: sort_by
+          in: query
+          required: false
+          schema: { type: string, enum: [name, id], default: name }
+        - name: sort_order
+          in: query
+          required: false
+          schema: { type: string, enum: [asc, desc], default: asc }
+      responses:
+        '200':
+          description: One page of project budgets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudgetListing'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/user_budget/prompt_lib/{project_id}/user_budget/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getMemberBudget
+      summary: One member's budget within a project
+      description: |
+        A member may read only their OWN row; asking for another member's
+        returns 403 unless the caller is an admin of the project.
+
+        `enforced` is FALSE, and that is a statement about the platform, not
+        this project: the gateway's admission check is project-scoped only, so
+        a per-member limit is an authored intention that nothing currently
+        blocks a call on. Render it as authored-but-inactive.
+      tags: [budgets]
+      responses:
+        '200':
+          description: The member's budget state and current-period spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudget'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: The caller asked for another member's budget and is not a project admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/user_budget/administration/{project_id}/user_budget/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getMemberBudgetAdmin
+      summary: Any member's budget within any project (admin)
+      tags: [budgets]
+      responses:
+        '200':
+          description: The member's budget state and current-period spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudget'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: setMemberBudget
+      summary: Set one member's budget within a project (admin)
+      description: |
+        Caps a single member's share without changing the project's own limit.
+
+        NOT ENFORCED: see `enforced` on the response. The row is stored and read
+        back faithfully, but nothing in the gateway blocks a call on it today.
+      tags: [budgets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetWrite'
+      responses:
+        '200':
+          description: The member's budget state after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudget'
+        '400':
+          description: Negative or non-numeric limit, unsupported currency, or out-of-range threshold.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/user_budgets/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listMemberBudgets
+      summary: Per-member budgets and spend for a project
+      description: |
+        Backs the Members section of Settings → Usage.
+
+        Restricted to admins OF THIS PROJECT: an ordinary member may see their
+        own usage and not their colleagues', so the whole table is admin-only
+        and other members receive 403.
+      tags: [budgets]
+      responses:
+        '200':
+          description: One row per project member, plus the project's warning threshold
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudgetListing'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: The caller is not an admin of this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/user_budgets/administration/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listMemberBudgetsAdmin
+      summary: Per-member budgets and spend for any project (admin)
+      tags: [budgets]
+      responses:
+        '200':
+          description: One row per project member, plus the project's warning threshold
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudgetListing'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/usage/prompt_lib/{project_id}/usage:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectUsage
+      summary: Current-period usage against the applicable budget
+      description: |
+        Backs Settings → Usage. The period is the current calendar month and is
+        reported back in `period_start`, `period_end` and `resets_at`, so no
+        date range is accepted.
+
+        `scope=project` reports the whole project; `scope=user` reports only the
+        calling member's own budget within it — which is NOT enforced (see
+        `enforced`) and reports no spend of its own, because the billing path
+        accrues by project.
+
+        A member who may not see platform cost figures receives the same payload
+        with `monthly_limit`, `effective_limit`, `spend`, `remaining` and
+        `currency` REMOVED and `can_see_amounts: false`; percentages, the
+        warning threshold and the period are still present, so the usage bar
+        still renders. Project admins, and the owner of a personal project, see
+        the amounts.
+      tags: [budgets]
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          schema: { type: string, enum: [project, user], default: project }
+      responses:
+        '200':
+          description: Usage and budget state for the requested scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageReport'
+        '400':
+          description: scope was neither 'project' nor 'user'.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
   # NOTE(#126): generateAgentDraft (POST
   # /elitea_core/generate_application_draft/prompt_lib/{project_id}) was
   # removed along with the sibling generate_project_context_draft and
@@ -5972,6 +6685,149 @@ paths:
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  # ---------------------------------------------------------------------------
+  # PROJECT QUOTA & STATISTICS (issue #246)
+  #
+  # legacy/plugins/projects/api/v2/{quota,statistics}.py. Neither carries a
+  # `{mode}` segment — both are plain flask_restful Resources with
+  # `url_params = ['<int:project_id>']`.
+  # ---------------------------------------------------------------------------
+  /projects/quota/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectQuota
+      summary: A project's resource quota, or one quota check
+      description: |
+        Without `quota`, answers the project's whole quota row. With it, answers
+        the bare JSON boolean "is this project still under that ceiling?".
+
+        `-1` is the quota tables' unlimited sentinel.
+
+        The `quota` form also ROLLS THE WINDOW OVER when it is due: after 30
+        days it advances `last_update_time` by one window and zeroes the
+        per-window counters. That is a write on a read, and it is the reference's
+        behaviour — it is the only thing that ever resets those counters, so
+        without it a project that hit its ceiling would be denied forever.
+      tags: [applications]
+      parameters:
+        - name: quota
+          in: query
+          required: false
+          schema: { type: string, enum: [dast_scans, sast_scans] }
+          description: |
+            Check one ceiling instead of returning the row. Only metrics that
+            exist in BOTH the quota table and the counter table are checkable;
+            the reference raises KeyError on anything else.
+      responses:
+        '200':
+          description: The quota row, or the bare boolean result of one check
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ProjectQuota'
+                  - type: boolean
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such project, or the project has no quota row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: setProjectQuota
+      summary: Update a project's VCU or storage limits
+      description: |
+        `usage_type` selects which triple of columns the body writes; the other
+        triple is untouched. An omitted field CLEARS its column rather than
+        leaving it alone, matching the reference's `update_*_limits` — the form
+        always sends all three, and treating omission as "leave alone" would
+        make a limit impossible to clear.
+
+        The reference answers 500 for a missing `usage_type` (it calls `.lower()`
+        on None) and a bodiless 200 for an unknown one; both are 400 here.
+      tags: [applications]
+      parameters:
+        - name: usage_type
+          in: query
+          required: true
+          schema: { type: string, enum: [vcu, storage] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectQuotaUpdate'
+      responses:
+        '200':
+          description: The quota row after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectQuota'
+        '400':
+          description: Missing or unknown usage_type, or an unvalidatable body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: The project has no quota row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+  /projects/statistics/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectStatistics
+      summary: A project's usage counters against its quota
+      description: |
+        One `{current, quota}` pair per metric.
+
+        `quota` is NULL where the quota table has no column for that metric.
+        The reference indexes the quota row with every counter's name and raises
+        KeyError on the first one that is missing, so this endpoint cannot run
+        there at all; reporting null is the deliberate replacement.
+
+        `tasks_count` is NOT reported. The reference resolves it through a
+        `tasks_count` RPC that no plugin registers, and nothing in this platform
+        counts tasks.
+
+        `storage_space` is measured live from the artifact store, in BYTES on
+        both sides. The reference reported megabytes on the current side and
+        paired them with a gigabyte quota column that does not exist.
+      tags: [applications]
+      responses:
+        '200':
+          description: Counters and their ceilings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectStatistics'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500': { $ref: '#/components/responses/500' }
 
   # APPLICATIONS — project context

@@ -82,6 +82,17 @@ func (h *Handler) Routes() chi.Router {
 		Post("/group/prompt_lib/{projectID}", h.GroupCreate)
 	r.With(h.requireProjectPermission("projects.projects.group.delete")).
 		Delete("/group/prompt_lib/{projectID}/{groupID}", h.GroupDelete)
+	// Quota and statistics (issue #246, quota.go). Gated on the permissions
+	// quota.py and statistics.py declare — `projects.projects.project.view` for
+	// the two reads and `…project.edit` for the write — resolved in DEFAULT
+	// mode against the project in the path. Neither pylon module carries a
+	// `{mode}` segment, so neither does the route.
+	r.With(h.requireProjectPermission("projects.projects.project.view")).
+		Get("/quota/{projectID}", h.GetQuota)
+	r.With(h.requireProjectPermission("projects.projects.project.edit")).
+		Put("/quota/{projectID}", h.PutQuota)
+	r.With(h.requireProjectPermission("projects.projects.project.view")).
+		Get("/statistics/{projectID}", h.GetStatistics)
 	return r
 }
 
