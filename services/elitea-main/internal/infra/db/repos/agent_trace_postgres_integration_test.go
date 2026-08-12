@@ -82,7 +82,8 @@ WHERE message_group.uuid::text = $1
 		clientGeneration,
 		fmt.Sprintf(`{
   "tool_calls":{"tool-run":{"tool_name":"child-agent","tool_run_id":"tool-run","run_id":"tool-run","tool_inputs":{"task":"inspect"},"tool_output":"done","finish_reason":"stop","metadata":{"parent_agent_name":"orchestrator","parent_agent_call_id":"outer-call","parent_agent_path":[{"name":"orchestrator","call_id":"outer-call"}]},"timestamp_start":%q,"timestamp_finish":%q}},
-  "thinking_steps":[{"tool_run_id":"thinking-run","parent_agent_name":"child-agent","parent_agent_call_id":"outer-call","parent_agent_path":[{"name":"orchestrator","call_id":"outer-call"},{"name":"child-agent","call_id":"child-call","sibling_ordinal":1}],"type":"AIMessageChunk","text":"reasoning","thinking":"private reasoning","timestamp_start":%q,"timestamp_finish":%q,"message":{"response_metadata":{"model_name":"model-1","tool_name":"Thinking step"}}}]
+  "thinking_steps":[{"tool_run_id":"thinking-run","parent_agent_name":"child-agent","parent_agent_call_id":"outer-call","parent_agent_path":[{"name":"orchestrator","call_id":"outer-call"},{"name":"child-agent","call_id":"child-call","sibling_ordinal":1}],"type":"AIMessageChunk","text":"reasoning","thinking":"private reasoning","timestamp_start":%q,"timestamp_finish":%q,"message":{"response_metadata":{"model_name":"model-1","tool_name":"Thinking step"}}}],
+  "invoked_skills":[{"skill_id":51,"name":"Repository review","icon_meta":{"name":"search"},"instructions":"worker only"}]
 }`,
 			base.Format(time.RFC3339Nano),
 			completedAt.Format(time.RFC3339Nano),
@@ -127,6 +128,29 @@ WHERE message_group.uuid::text = $1`, responseID).Scan(
 		t.Fatalf("current agent trace projection changed: first=%d tool=%d rows=%d output=%q parent=%q call=%q thinking=%q model=%q attrs=%s",
 			firstID, toolID, rowCount, output, parentName, parentCallID,
 			thinking, modelName, attrs)
+	}
+	var invokedSkills string
+	if err := pool.QueryRow(t.Context(), `
+SELECT message_group.meta -> 'invoked_skills'
+FROM p_1.chat_message_group AS message_group
+WHERE message_group.uuid::text = $1`, responseID).Scan(&invokedSkills); err != nil {
+		t.Fatal(err)
+	}
+	if invokedSkills != `[{"name": "Repository review", "skill_id": 51, "icon_meta": {"name": "search"}}]` {
+		t.Fatalf("persisted invoked skills = %s", invokedSkills)
+	}
+
+	// The execution's admitted project fence prevents the same valid frame from
+	// being projected into another tenant schema.
+	err = store.WithinTx(
+		t.Context(),
+		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite},
+		func(tx sqlExecutor) error {
+			return projector.projectAgentTraceDelta(t.Context(), tx, 2, completed)
+		},
+	)
+	if err == nil {
+		t.Fatal("current agent invoked skills crossed the project fence")
 	}
 
 	// An immutable runtime binding cannot be redirected by forged browser JSON.

@@ -1215,6 +1215,11 @@ RETURNING id;
 INSERT INTO chat_messages_text (id, content)
 VALUES (sqlc.arg(item_id)::bigint, sqlc.arg(content)::text);
 
+-- name: GetCurrentAgentInvokedSkills :one
+SELECT COALESCE(meta -> 'invoked_skills', '[]'::jsonb)::text AS invoked_skills
+FROM chat_message_group
+WHERE id = sqlc.arg(message_group_id)::bigint;
+
 -- name: FinalizeCurrentAgentFullMessage :execrows
 UPDATE chat_message_group
 SET is_streaming = FALSE,
@@ -1238,7 +1243,8 @@ SET is_streaming = FALSE,
             'hitl_interrupt', sqlc.arg(hitl_interrupt)::jsonb,
             'hitl_interrupts', sqlc.arg(hitl_interrupts)::jsonb,
             'is_error', FALSE,
-            'error', ''
+            'error', '',
+            'invoked_skills', sqlc.arg(invoked_skills)::jsonb
         ),
     updated_at = clock_timestamp()
 WHERE id = sqlc.arg(message_group_id)::bigint;
@@ -1251,7 +1257,8 @@ SET is_streaming = FALSE,
             'thread_id', sqlc.arg(thread_id)::text,
             'authorization_requests', sqlc.arg(authorization_requests)::jsonb,
             'is_error', FALSE,
-            'error', ''
+            'error', '',
+            'invoked_skills', sqlc.arg(invoked_skills)::jsonb
         ),
     updated_at = clock_timestamp()
 WHERE id = sqlc.arg(message_group_id)::bigint;

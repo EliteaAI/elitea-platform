@@ -90,6 +90,7 @@ type currentAgentTraceDelta struct {
 	sioEvent            string
 	toolCalls           []currentAgentToolCall
 	thinkingSteps       []map[string]any
+	invokedSkills       json.RawMessage
 }
 
 type currentAgentToolCall struct {
@@ -180,6 +181,17 @@ func (p *postgresCurrentAgentTraceProjector) projectAgentTraceDelta(
 	if err != nil {
 		return err
 	}
+	if len(delta.invokedSkills) > 0 {
+		if err := persistCurrentAgentTraceInvokedSkills(
+			ctx,
+			tx,
+			schema,
+			messageGroupID,
+			delta.invokedSkills,
+		); err != nil {
+			return err
+		}
+	}
 	existing, err := loadCurrentAgentTraceRows(ctx, tx, schema, messageGroupID)
 	if err != nil {
 		return err
@@ -260,6 +272,7 @@ func decodeCurrentAgentTraceDelta(
 	var metadata struct {
 		ToolCalls     json.RawMessage   `json:"tool_calls"`
 		ThinkingSteps []json.RawMessage `json:"thinking_steps"`
+		InvokedSkills json.RawMessage   `json:"invoked_skills"`
 	}
 	if err := json.Unmarshal(event.ResponseMetadata, &metadata); err != nil {
 		return currentAgentTraceDelta{}, false, errors.New("decode current agent trace metadata")
@@ -276,6 +289,13 @@ func decodeCurrentAgentTraceDelta(
 		}
 		thinkingSteps = append(thinkingSteps, step)
 	}
+	var invokedSkills json.RawMessage
+	if len(bytes.TrimSpace(metadata.InvokedSkills)) > 0 {
+		invokedSkills, err = mergeCurrentAgentInvokedSkills(nil, metadata.InvokedSkills)
+		if err != nil {
+			return currentAgentTraceDelta{}, false, err
+		}
+	}
 	return currentAgentTraceDelta{
 		streamID:            event.StreamID,
 		messageID:           event.MessageID,
@@ -283,6 +303,7 @@ func decodeCurrentAgentTraceDelta(
 		sioEvent:            event.SIOEvent,
 		toolCalls:           toolCalls,
 		thinkingSteps:       thinkingSteps,
+		invokedSkills:       invokedSkills,
 	}, true, nil
 }
 
