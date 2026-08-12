@@ -54,10 +54,13 @@ import type {
 
 import type {
   AnalyticsAgentsList,
+  AnalyticsCostBreakdown,
   AnalyticsDetailEnvelope,
   AnalyticsToolsList,
   AnalyticsUsersList,
+  ErrorResponse,
   GetAnalyticsAgentDetailParams,
+  GetAnalyticsCostsParams,
   GetAnalyticsToolDetailParams,
   GetAnalyticsUserDetailParams,
   GetProjectAnalyticsParams,
@@ -66,6 +69,7 @@ import type {
   ListAnalyticsUsersParams,
   N401Response,
   N403Response,
+  N500Response,
   ProjectAnalytics,
 } from "../model";
 
@@ -1731,6 +1735,272 @@ export function useGetAnalyticsAgentDetail<
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
   const queryOptions = getGetAnalyticsAgentDetailQueryOptions(
+    projectId,
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getAnalyticsCostsResponse200 = {
+  data: AnalyticsCostBreakdown;
+  status: 200;
+};
+
+export type getAnalyticsCostsResponse400 = {
+  data: ErrorResponse;
+  status: 400;
+};
+
+export type getAnalyticsCostsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getAnalyticsCostsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getAnalyticsCostsResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type getAnalyticsCostsResponseSuccess = getAnalyticsCostsResponse200 & {
+  headers: Headers;
+};
+export type getAnalyticsCostsResponseError = (
+  | getAnalyticsCostsResponse400
+  | getAnalyticsCostsResponse401
+  | getAnalyticsCostsResponse403
+  | getAnalyticsCostsResponse500
+) & {
+  headers: Headers;
+};
+
+export type getAnalyticsCostsResponse =
+  getAnalyticsCostsResponseSuccess | getAnalyticsCostsResponseError;
+
+export const getGetAnalyticsCostsUrl = (
+  projectId: string,
+  params?: GetAnalyticsCostsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/elitea_core/analytics_costs/prompt_lib/${projectId}?${stringifiedParams}`
+    : `/elitea_core/analytics_costs/prompt_lib/${projectId}`;
+};
+
+/**
+ * Reads gateway.llm_budget_accumulators — the rows elitea-scheduler's
+ * budgetwriteback consumer folds the gateway's GATEWAY_BUDGET_DELTAS
+ * stream into. That is the platform's single accounting path, and the
+ * same rows the usage and project-budget reads report, so the three
+ * cannot disagree about money.
+ *
+ * `total_cost` sums PROJECT-scope rows only. A narrower scope (a
+ * user-scope row for the same project) is a subset of the project's
+ * spend, so summing every row would count the same dollars twice; every
+ * scope present is still reported under `by_scope`.
+ *
+ * WHAT IS ABSENT, and deliberately not zero-filled: by_model, by_agent,
+ * by_user, a daily trend, token counts, a call count and an average cost
+ * per call. A budget delta carries only {event_id, scope, scope_id,
+ * project_id, org_id, period_start, period_end, delta_nano_usd}, so no
+ * producer records those dimensions; an empty array would read as "this
+ * project called no models", which is false. The pylon original answered
+ * them from a per-call audit-event ledger that no longer exists.
+ *
+ * Amounts are exact decimals produced by PostgreSQL NUMERIC and are never
+ * round-tripped through a float.
+ * @summary LLM cost breakdown for a project
+ */
+export const getAnalyticsCosts = async (
+  projectId: string,
+  params?: GetAnalyticsCostsParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getAnalyticsCostsResponse> => {
+  return eliteaFetch<getAnalyticsCostsResponse>(
+    getGetAnalyticsCostsUrl(projectId, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetAnalyticsCostsQueryKey = (
+  projectId: string,
+  params?: GetAnalyticsCostsParams,
+) => {
+  return [
+    `/elitea_core/analytics_costs/prompt_lib/${projectId}`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetAnalyticsCostsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAnalyticsCosts>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  params?: GetAnalyticsCostsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAnalyticsCosts>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetAnalyticsCostsQueryKey(projectId, params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getAnalyticsCosts>>
+  > = ({ signal }) =>
+    getAnalyticsCosts(projectId, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAnalyticsCosts>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetAnalyticsCostsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAnalyticsCosts>>
+>;
+export type GetAnalyticsCostsQueryError =
+  ErrorResponse | N401Response | N403Response | N500Response;
+
+export function useGetAnalyticsCosts<
+  TData = Awaited<ReturnType<typeof getAnalyticsCosts>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  params: undefined | GetAnalyticsCostsParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAnalyticsCosts>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getAnalyticsCosts>>,
+          TError,
+          Awaited<ReturnType<typeof getAnalyticsCosts>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetAnalyticsCosts<
+  TData = Awaited<ReturnType<typeof getAnalyticsCosts>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  params?: GetAnalyticsCostsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAnalyticsCosts>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getAnalyticsCosts>>,
+          TError,
+          Awaited<ReturnType<typeof getAnalyticsCosts>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetAnalyticsCosts<
+  TData = Awaited<ReturnType<typeof getAnalyticsCosts>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  params?: GetAnalyticsCostsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAnalyticsCosts>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary LLM cost breakdown for a project
+ */
+
+export function useGetAnalyticsCosts<
+  TData = Awaited<ReturnType<typeof getAnalyticsCosts>>,
+  TError = ErrorResponse | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  params?: GetAnalyticsCostsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getAnalyticsCosts>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetAnalyticsCostsQueryOptions(
     projectId,
     params,
     options,

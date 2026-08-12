@@ -46,6 +46,7 @@ import type { RequestHandlerOptions } from "msw";
 
 import type {
   AnalyticsAgentsList,
+  AnalyticsCostBreakdown,
   AnalyticsDetailEnvelope,
   AnalyticsToolsList,
   AnalyticsUsersList,
@@ -373,6 +374,40 @@ export const getGetAnalyticsAgentDetailResponseMock = ():
     { ...getGetAnalyticsAgentDetailResponseAnalyticsAgentsListMock() },
   ]);
 
+export const getGetAnalyticsCostsResponseMock = (
+  overrideResponse: Partial<Extract<AnalyticsCostBreakdown, object>> = {},
+): AnalyticsCostBreakdown => ({
+  kpis: {
+    total_cost: faker.number.float({ fractionDigits: 2 }),
+    currency: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    periods: faker.number.int(),
+    spend_available: faker.datatype.boolean(),
+    window_days: faker.number.int(),
+  },
+  periods: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    scope: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    scope_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    period_start: faker.date.past().toISOString().slice(0, 19) + "Z",
+    period_end: faker.date.past().toISOString().slice(0, 19) + "Z",
+    total_cost: faker.number.float({ fractionDigits: 2 }),
+    last_updated: faker.date.past().toISOString().slice(0, 19) + "Z",
+    pending_reconciliation: faker.datatype.boolean(),
+  })),
+  by_scope: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    scope: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    total_cost: faker.number.float({ fractionDigits: 2 }),
+  })),
+  date_from: faker.date.past().toISOString().slice(0, 19) + "Z",
+  date_to: faker.date.past().toISOString().slice(0, 19) + "Z",
+  ...overrideResponse,
+});
+
 export const getGetProjectAnalyticsMockHandler = (
   overrideResponse?:
     | ProjectAnalytics
@@ -566,6 +601,32 @@ export const getGetAnalyticsAgentDetailMockHandler = (
     options,
   );
 };
+
+export const getGetAnalyticsCostsMockHandler = (
+  overrideResponse?:
+    | AnalyticsCostBreakdown
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<AnalyticsCostBreakdown> | AnalyticsCostBreakdown),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/analytics_costs/prompt_lib/:projectId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAnalyticsCostsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
 export const getAnalyticsMock = () => [
   getGetProjectAnalyticsMockHandler(),
   getListAnalyticsUsersMockHandler(),
@@ -574,4 +635,5 @@ export const getAnalyticsMock = () => [
   getGetAnalyticsToolDetailMockHandler(),
   getListAnalyticsAgentsMockHandler(),
   getGetAnalyticsAgentDetailMockHandler(),
+  getGetAnalyticsCostsMockHandler(),
 ];

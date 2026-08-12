@@ -445,6 +445,162 @@ components:
               description: Present for scope=project only.
         - $ref: '#/components/schemas/BudgetState'
 
+    AnalyticsCostBreakdown:
+      type: object
+      description: |
+        The cost view over gateway.llm_budget_accumulators. Its shape is the
+        accumulator's own: money per (scope, scope_id, period). The per-model,
+        per-agent, per-user and per-day views the pylon original carried are
+        absent here because nothing in this architecture records those
+        dimensions — see the operation description.
+      required: [kpis, periods, by_scope, date_from, date_to]
+      properties:
+        kpis:
+          type: object
+          required: [total_cost, currency, periods, spend_available, window_days]
+          properties:
+            total_cost:
+              type: number
+              description: >
+                Sum of PROJECT-scope rows over the window, as an exact decimal.
+                Narrower scopes are excluded so the same spend is not counted
+                twice.
+            currency:
+              type: string
+              description: Always USD; the money path converts nowhere.
+            periods:
+              type: integer
+              description: How many project-scope accumulator rows were summed.
+            spend_available:
+              type: boolean
+              description: >
+                False when the write-back path has persisted nothing for this
+                project in this window, so "no spend yet" stays distinguishable
+                from "no data".
+            window_days:
+              type: integer
+        periods:
+          type: array
+          description: One entry per accumulator row overlapping the window.
+          items:
+            $ref: '#/components/schemas/AnalyticsCostPeriod'
+        by_scope:
+          type: array
+          description: >
+            Roll-up per accumulator scope. Present so a narrower scope is
+            visible without being summed into total_cost.
+          items:
+            type: object
+            required: [scope, total_cost]
+            properties:
+              scope: { type: string }
+              total_cost: { type: number }
+        date_from:
+          type: string
+          format: date-time
+        date_to:
+          type: string
+          format: date-time
+
+    AnalyticsCostPeriod:
+      type: object
+      description: One gateway.llm_budget_accumulators row.
+      required:
+        [scope, scope_id, period_start, period_end, total_cost, last_updated,
+         pending_reconciliation]
+      properties:
+        scope:
+          type: string
+          description: >
+            The accumulator scope the gateway billed against. `project` is the
+            only one its admission path writes today.
+        scope_id:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        total_cost:
+          type: number
+          description: Accrued spend for this row, an exact decimal.
+        last_updated:
+          type: string
+          format: date-time
+        pending_reconciliation:
+          type: boolean
+          description: >
+            True while the gateway's recovery goroutine still owns the row
+            (outage_mode and not reconciled). The figure is the last durable
+            one and not necessarily the current one.
+
+    MessageTraceListing:
+      type: object
+      required: [total, rows]
+      properties:
+        total:
+          type: integer
+          nullable: true
+          description: Null unless include_total=true was requested.
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageTraceStep'
+
+    MessageTraceStep:
+      type: object
+      description: >
+        The light projection of a chat_message_trace_step row: what a resting
+        chip draws, plus what orders it.
+      required: [id, message_group_id, kind, is_error]
+      properties:
+        id: { type: integer, format: int64 }
+        message_group_id: { type: integer, format: int64 }
+        kind:
+          type: string
+          description: '`tool_call` or `thinking_step`.'
+        tool_name: { type: string, nullable: true }
+        parent_agent_name: { type: string, nullable: true }
+        parent_agent_call_id: { type: string, nullable: true }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        is_error: { type: boolean }
+        step_type: { type: string, nullable: true }
+        model_name: { type: string, nullable: true }
+        finish_reason: { type: string, nullable: true }
+        attrs:
+          type: object
+          nullable: true
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): DB jsonb column `chat_message_trace_step.attrs` is
+            re-emitted verbatim as raw JSON
+            (internal/api/v2/messagetraces/handler.go:246). It is the bounded
+            display sidecar the runtime writes per step type — chip icon,
+            display name, toolkit type — and has no fixed key set across step
+            kinds; the writer is
+            internal/infra/db/repos/agent_trace.go:1108-1116.
+
+    MessageTraceStepDetail:
+      allOf:
+        - $ref: '#/components/schemas/MessageTraceStep'
+        - type: object
+          description: The heavy fields, fetched one step at a time.
+          properties:
+            tool_inputs:
+              nullable: true
+              x-elitea-passthrough: >-
+                NOTE(W2): DB jsonb column
+                `chat_message_trace_step.tool_inputs` is re-emitted verbatim as
+                raw JSON (internal/api/v2/messagetraces/handler.go:296). Its
+                shape is the invoked tool's own argument object, so it is
+                untyped by construction; the writer is
+                internal/infra/db/repos/agent_trace.go:1108-1116.
+            tool_output: { type: string, nullable: true }
+            text: { type: string, nullable: true }
+            thinking: { type: string, nullable: true }
+
     ProjectQuota:
       type: object
       description: |
@@ -4924,6 +5080,181 @@ paths:
                   - $ref: '#/components/schemas/AnalyticsAgentsList'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
+
+  /elitea_core/analytics_costs/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: getAnalyticsCosts
+      summary: LLM cost breakdown for a project
+      description: |
+        Reads gateway.llm_budget_accumulators — the rows elitea-scheduler's
+        budgetwriteback consumer folds the gateway's GATEWAY_BUDGET_DELTAS
+        stream into. That is the platform's single accounting path, and the
+        same rows the usage and project-budget reads report, so the three
+        cannot disagree about money.
+
+        `total_cost` sums PROJECT-scope rows only. A narrower scope (a
+        user-scope row for the same project) is a subset of the project's
+        spend, so summing every row would count the same dollars twice; every
+        scope present is still reported under `by_scope`.
+
+        WHAT IS ABSENT, and deliberately not zero-filled: by_model, by_agent,
+        by_user, a daily trend, token counts, a call count and an average cost
+        per call. A budget delta carries only {event_id, scope, scope_id,
+        project_id, org_id, period_start, period_end, delta_nano_usd}, so no
+        producer records those dimensions; an empty array would read as "this
+        project called no models", which is false. The pylon original answered
+        them from a per-call audit-event ledger that no longer exists.
+
+        Amounts are exact decimals produced by PostgreSQL NUMERIC and are never
+        round-tripped through a float.
+      tags: [analytics]
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          description: >
+            Cost breakdown over the requested window. Accumulator periods
+            OVERLAPPING the window are included, because a period is a whole
+            billing month and the default seven-day window sits inside one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsCostBreakdown'
+        '400':
+          description: The project id was not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  # ==========================================================================
+  # CHAT — execution-step traces
+  # ==========================================================================
+  /elitea_core/message_traces/prompt_lib/{project_id}/{conversation_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: listMessageTraces
+      summary: Trace steps for a conversation — the pin strip under each answer
+      description: |
+        The LIGHT projection: labels, ordering and the bounded `attrs` display
+        sidecar. The heavy fields (tool_inputs, tool_output, text, thinking)
+        are detail-only and are fetched one step at a time through
+        getMessageTrace, so rendering a conversation's chips never detoasts
+        them.
+
+        Rows are ordered by (started_at, id) with null timestamps last. Blank
+        thinking steps — transition markers the runtime emits with an action
+        but no text — are excluded, because the client draws a pin for every
+        row it receives.
+
+        `total` is null unless include_total=true, so "not counted" stays
+        distinguishable from "counted zero".
+      tags: [chat]
+      parameters:
+        - name: message_group_id
+          in: query
+          required: false
+          schema: { type: integer }
+          description: Scope to a single message group.
+        - name: message_group_ids
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            Comma-separated loaded message-group ids, at most 200. Duplicates
+            are collapsed; a non-integer member is a 400.
+        - name: kind
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            Filter by step kind. Allowed values are `tool_call` and
+            `thinking_step`; anything else is a 400 rather than an empty page.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 2000, maximum: 2000 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+        - name: include_total
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Trace steps for the conversation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageTraceListing'
+        '400':
+          description: An unsupported kind, or a malformed message-group id list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/message_trace/prompt_lib/{project_id}/{step_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: step_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: getMessageTrace
+      summary: One trace step in full, fetched on pin expand
+      description: |
+        The light projection plus the heavy fields.
+
+        `message_group_id` is REQUIRED and is matched together with the step
+        id: it is what confines a numeric step id to the message the caller is
+        reading, so a step from elsewhere is a 404 rather than a body.
+      tags: [chat]
+      parameters:
+        - name: message_group_id
+          in: query
+          required: true
+          schema: { type: integer }
+          description: The owning message group, from the trace-list row.
+      responses:
+        '200':
+          description: The full trace step.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageTraceStepDetail'
+        '400':
+          description: message_group_id was missing or not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such step within that message group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
 
   # ==========================================================================
   # APPLICATIONS — list / create
