@@ -539,6 +539,33 @@ def test_sdk_adapter_preserves_constructor_split_without_forwarding_authority() 
     assert len(client.application_executor.calls[0][0]["messages"]) == 2
 
 
+def test_sdk_adapter_preserves_saved_mcp_configuration_at_each_current_constructor() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    mcp = {
+        "id": 52,
+        "type": "mcp",
+        "name": "documentation-mcp",
+        "toolkit_name": "documentation-mcp",
+        "settings": {
+            "url": "https://mcp.example.invalid/events",
+            "selected_tools": ["search_docs"],
+        },
+        "meta": {"mcp": True},
+    }
+
+    application_payload = _request().payload
+    application_payload.application["version_details"]["tools"] = [mcp]
+    assert adapter.execute_application(application_payload) == {"mode": "application"}
+
+    adhoc_payload = _request(application=False).payload
+    object.__setattr__(adhoc_payload, "tools", [mcp])
+    assert adapter.execute_adhoc(adhoc_payload) == {"mode": "adhoc"}
+
+    assert client.application_calls[0]["version_details"]["tools"] == [mcp]
+    assert client.adhoc_calls[0]["tools"] == [mcp]
+
+
 def test_sdk_adapter_passes_current_runtime_skills_only_through_configurable() -> None:
     client = _Client()
     payload = _request().payload

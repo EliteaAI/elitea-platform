@@ -196,8 +196,7 @@ WITH resolved AS MATERIALIZED (
                 invalid_toolkit_participant.entity_meta ->> 'project_id'
                     IS DISTINCT FROM ($4::integer)::text
                 OR invalid_toolkit.id IS NULL
-                OR invalid_toolkit.type IN ('application', 'mcp')
-                OR invalid_toolkit.meta ->> 'mcp' = 'true'
+                OR invalid_toolkit.type = 'application'
             )
       )
       AND NOT EXISTS (
@@ -937,8 +936,7 @@ WHERE conversation.uuid = $5::uuid
             invalid_toolkit_participant.entity_meta ->> 'project_id'
                 IS DISTINCT FROM ($3::integer)::text
             OR invalid_toolkit.id IS NULL
-            OR invalid_toolkit.type IN ('application', 'mcp')
-            OR invalid_toolkit.meta ->> 'mcp' = 'true'
+            OR invalid_toolkit.type = 'application'
         )
   )
   AND NOT EXISTS (
