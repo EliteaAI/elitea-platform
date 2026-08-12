@@ -827,7 +827,7 @@ JOIN (VALUES
 WHERE role.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;
 
--- Default-mode grants (issue 246).
+-- Default-mode grants (issues 246 and 253).
 --
 -- The only ones in this file, and the exception the block above describes
 -- rather than a contradiction of it: `models.project_context.view` IS a
@@ -846,6 +846,24 @@ ON CONFLICT (role_id, permission) DO NOTHING;
 INSERT INTO auth_core__role_permission (role_id, permission)
 SELECT role.id, 'models.project_context.view'
 FROM auth_core__role AS role
+WHERE role.mode = 'default' AND role.name IN ('admin', 'editor', 'viewer')
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Issue 253: the cost breakdown and the two chat trace reads. Same DEFAULT_MODE
+-- `{"admin": True, "editor": True, "viewer": True}` declaration, transcribed
+-- from analytics_costs.py, message_traces.py and message_trace.py; the same DDL
+-- lands on existing databases through
+-- migrations/shared/0063_trace_and_cost_read_permissions.sql, which carries the
+-- blast-radius note. None of the three strings is read anywhere else in this
+-- service, so the surface they open is exactly those three routes.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT role.id, grant_row.permission
+FROM auth_core__role AS role
+CROSS JOIN (VALUES
+    ('models.monitoring.tracing.view'),
+    ('models.chat.messages.list'),
+    ('models.chat.messages.details')
+) AS grant_row(permission)
 WHERE role.mode = 'default' AND role.name IN ('admin', 'editor', 'viewer')
 ON CONFLICT (role_id, permission) DO NOTHING;
 

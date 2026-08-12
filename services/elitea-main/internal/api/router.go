@@ -28,6 +28,7 @@ import (
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	v2mcp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/mcp"
+	v2messagetraces "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/messagetraces"
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
 	v2openapidocs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/openapidocs"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
@@ -1215,6 +1216,58 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					r.Get("/analytics_users/prompt_lib/{projectID}", analyticsHandler.Users)
 					r.Get("/analytics_user_detail/prompt_lib/{projectID}", analyticsHandler.Users)
 				}
+
+				// The eighth analytics endpoint (issue 253), and the only one
+				// of the eight that reads a real table: the LLM cost
+				// breakdown, straight from gateway.llm_budget_accumulators —
+				// the rows elitea-scheduler's budgetwriteback consumer folds
+				// the gateway's GATEWAY_BUDGET_DELTAS into. Same source as
+				// /usage and /project_budget (#246), so the three cannot
+				// report different money.
+				//
+				// Registered OUTSIDE the cfg.AnalyticsRepo block above, and
+				// behind no nil gate of its own: it does not use that
+				// repository, and hanging a route off a dependency it does not
+				// need is how six paths ended up registered in no deployment at
+				// all (#126). It takes cfg.Pool the way the budgets routes do.
+				//
+				// Gated, unlike its seven neighbours, on the permission
+				// analytics_costs.py itself declares. The neighbours answer
+				// with counts and zero-filled stubs; this one answers with
+				// spend. The default-mode grant that makes the gate resolvable
+				// on a Go-bootstrapped database is seeded by
+				// migrations/shared/0063_trace_and_cost_read_permissions.sql.
+				costsHandler := v2analytics.NewCostsHandler(cfg.Pool)
+				r.With(apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					v2analytics.ViewPermission,
+				)).Get("/analytics_costs/prompt_lib/{projectID}", costsHandler.Costs)
+
+				// Chat execution-step traces (issue 253) — the pin strip under
+				// an agent's answer, and the step behind one pin.
+				//
+				// The producer is this service's own agent-execution trace
+				// projection (internal/infra/db/repos/agent_trace.go writes
+				// <tenant>.chat_message_trace_step on every frame), so these
+				// are reads over a live table rather than an API waiting for a
+				// schema. The old web app already called
+				// `message_traces/prompt_lib/{projectId}/{conversationId}` —
+				// see apps/elitea-web/src/processes/chat/model/
+				// useLoadMoreMessages.ts, which records the fetch as a
+				// not-yet-ported feature — so the paths and parameters are the
+				// ones a client already speaks.
+				//
+				// Gated on the two permissions the pylon handlers declare,
+				// resolved against the project in DEFAULT mode.
+				traceHandler := v2messagetraces.NewHandler(cfg.Pool)
+				r.With(apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					v2messagetraces.ListPermission,
+				)).Get("/message_traces/prompt_lib/{projectID}/{conversationID}", traceHandler.List)
+				r.With(apimw.RequireResolvedPermissions(
+					permissionResolver, platformauth.PermissionModeDefault,
+					v2messagetraces.DetailPermission,
+				)).Get("/message_trace/prompt_lib/{projectID}/{stepID}", traceHandler.Get)
 
 				// Icons
 				r.Get("/default_icons/prompt_lib/{projectID}", coreHandler.DefaultIcons)
