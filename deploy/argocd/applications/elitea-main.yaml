@@ -1,0 +1,48 @@
+# ArgoCD Application: elitea-main (Go API service). Sync-wave 1 — after NATS
+# (-2), the JetStream bootstrap (-1) and the gateway (0), because elitea-main
+# proxies /llm to the gateway.
+#
+# MIGRATIONS run inside this Application, not as a separate wave: the chart
+# ships them as a pre-install/pre-upgrade Helm hook Job
+# (deploy/helm/elitea-main/templates/migrate-job.yaml), and Helm blocks the
+# release until that Job reaches Complete. So the issue's "migrations →
+# backend" ordering is enforced *within* this wave; a failed migration aborts
+# the release and the previous pods keep serving.
+#
+# BEFORE FIRST SYNC, in the `elitea` namespace:
+#   - PostgreSQL and Redis must already exist (no chart here provisions them)
+#   - kubectl create secret generic elitea-main-llm-gateway-secrets \
+#       --from-literal=gateway-identity-secret=…
+#     The chart marks GATEWAY_IDENTITY_SECRET `optional: false` (issue #11) —
+#     without it pods stay in CreateContainerConfigError. Use the SAME value as
+#     the gateway's elitea-llm-gateway-secrets/identity-secret.
+#   - env.DATABASE_URL must be set; the chart default is empty. Supply it via a
+#     values file in git or the helm.parameters block below.
+#
+# CROSS-NAMESPACE: the gateway runs in `elitea-gateway`, this runs in `elitea`.
+# LLM_GATEWAY_URL must therefore be an FQDN, e.g.
+# https://elitea-llm-gateway-svc.elitea-gateway.svc.cluster.local:8083
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elitea-main
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/eliteaai/elitea-platform
+    targetRevision: main
+    path: deploy/helm/elitea-main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elitea
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

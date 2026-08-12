@@ -1,0 +1,151 @@
+# pylon-indexer — the retained Pylon runtime that hosts the indexing plugins.
+# Not a target-architecture service: it exists until the index path is fully
+# replatformed (deploy/INDEX_V2_CUTOVER.md). Packaged so a Kubernetes install
+# has the same topology as deploy/docker-compose.yml, nothing more.
+#
+# Single replica. The indexing plugins were never designed for horizontal
+# scale-out here and coordinate through Redis/Postgres state that this chart
+# does not model; run one.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/eliteaai/pylon-indexer
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Recreate: two generations would both bootstrap plugins into, and index
+# through, the same Redis/Postgres state.
+strategy:
+  type: Recreate
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+terminationGracePeriodSeconds: 60
+
+# Env contract mirrors deploy/docker-compose.yml's pylon-indexer service. The
+# non-secret half lives here and is rendered into the ConfigMap; passwords and
+# HMAC/master keys are in `secrets:` below.
+env:
+  NAME: "pylon-indexer"
+  NAME_PREFIX: "elitea"
+  ELITEA_RELEASE: "main"
+
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  REDIS_SSL: "false"
+
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "elitea"
+  POSTGRES_DB: "elitea"
+
+# Sensitive vars from Kubernetes Secrets — same shape as the other charts here.
+#
+# All four are `optional: true` because Pylon starts without them; that is a
+# DOWNGRADE, not a pass. An absent HMAC key means the corresponding message
+# path runs unsigned, and an absent POSTGRES_PASSWORD means the connection is
+# attempted with an empty password. Provision the Secret deliberately:
+#
+#   kubectl create secret generic pylon-indexer-secrets -n elitea \
+#     --from-literal=postgres-password=… --from-literal=redis-password=… \
+#     --from-literal=indexer-hmac-key=… --from-literal=event-hmac-key=… \
+#     --from-literal=rpc-hmac-key=… --from-literal=litellm-master-key=…
+#
+# RPC_HMAC_KEY must hold the SAME value as deploy/helm/elitea-scheduler's
+# `secrets.RPC_HMAC_KEY` — the scheduler signs the RPC payloads this runtime
+# verifies, so a one-sided key makes every scheduled RPC fail verification.
+secrets:
+  POSTGRES_PASSWORD:
+    secretName: pylon-indexer-secrets
+    key: postgres-password
+    optional: true
+  REDIS_PASSWORD:
+    secretName: pylon-indexer-secrets
+    key: redis-password
+    optional: true
+  INDEXER_HMAC_KEY:
+    secretName: pylon-indexer-secrets
+    key: indexer-hmac-key
+    optional: true
+  EVENT_HMAC_KEY:
+    secretName: pylon-indexer-secrets
+    key: event-hmac-key
+    optional: true
+  RPC_HMAC_KEY:
+    secretName: pylon-indexer-secrets
+    key: rpc-hmac-key
+    optional: true
+  LITELLM_MASTER_KEY:
+    secretName: pylon-indexer-secrets
+    key: litellm-master-key
+    optional: true
+
+# /data/cache — the model/artefact cache. In compose this volume is pre-seeded
+# by the `model-cache-init` service; THERE IS NO EQUIVALENT PRE-SEED IN THIS
+# CHART, so a fresh pod downloads what it needs on first use and needs egress
+# to do it. With `enabled: false` the cache is an emptyDir and that download
+# repeats on every pod replacement; enable the PVC to keep it across restarts.
+persistence:
+  enabled: false
+  mountPath: /data/cache
+  size: 10Gi
+  accessMode: ReadWriteOnce
+  # Empty ⇒ the cluster default StorageClass.
+  storageClassName: ""
+  # Bounds the emptyDir when persistence is disabled, so a runaway cache
+  # evicts this pod rather than filling the node's disk.
+  emptyDirSizeLimit: 5Gi
+
+probes:
+  # Pylon loads its plugins from git at startup (see services/pylon-indexer/
+  # Containerfile), which is slow and network-dependent — hence a startupProbe
+  # with a long budget guarding liveness. The compose healthcheck's 60s
+  # start-period is the same acknowledgement.
+  startup:
+    enabled: true
+    path: /healthz
+    periodSeconds: 10
+    # 10s × 60 = up to 10 minutes to finish bootstrapping before the pod is
+    # declared failed.
+    failureThreshold: 60
+  # CAVEAT: /healthz is implemented inside the upstream `ghcr.io/eliteaai/pylon`
+  # base image, not in this repository, so whether it touches Postgres/Redis
+  # cannot be verified here. This chart uses it for liveness because
+  # deploy/docker-compose.yml's HEALTHCHECK already does — but if it turns out
+  # to be dependency-coupled the way elitea-scheduler's is, a database blip
+  # will restart this pod. Set `liveness.enabled: false` to fall back to
+  # readiness-only if you observe that.
+  liveness:
+    enabled: true
+    path: /healthz
+    periodSeconds: 30
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    path: /healthz
+    periodSeconds: 10
+    failureThreshold: 3
+
+# No HorizontalPodAutoscaler template, deliberately: see replicaCount above —
+# this runtime is not horizontally scalable as packaged, so an HPA would be a
+# control that cannot safely act.
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

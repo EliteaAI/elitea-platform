@@ -1,0 +1,21 @@
+{{- if .Values.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pylon-indexer.fullname" . }}-cache
+  labels:
+    {{- include "pylon-indexer.labels" . | nindent 4 }}
+  annotations:
+    # Survive `helm uninstall`: re-downloading the model cache is expensive and
+    # a deliberate `kubectl delete pvc` is the right way to discard it.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+  {{- if .Values.persistence.storageClassName }}
+  storageClassName: {{ .Values.persistence.storageClassName }}
+  {{- end }}
+{{- end }}
