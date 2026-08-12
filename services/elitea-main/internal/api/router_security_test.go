@@ -71,12 +71,16 @@ func TestObjectDownloadRejectsRawTraversalKey(t *testing.T) {
 	}
 }
 
-func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *testing.T) {
+func TestInternalAdminRoutesGateOnInternalAdminTokenStrengthAndValue(t *testing.T) {
 	comparator := shadow.NewComparator(shadow.Config{Timeout: time.Second})
 	metrics := shadow.NewMetrics(10)
-	tracker := cutover.NewTracker(nil)
+	// See newUnreachableRedisClient (production_router_test.go): a nil
+	// redis.UniversalClient makes Tracker.List/Get panic the instant a
+	// request reaches the handler.
+	tracker := cutover.NewTracker(newUnreachableRedisClient())
+	strongToken := strings.Repeat("i", middleware.MinimumInternalAdminTokenBytes)
 
-	for _, token := range []string{"", "short", strings.Repeat("i", middleware.MinimumInternalAdminTokenBytes)} {
+	for _, token := range []string{"", "short", strongToken} {
 		router := NewRouter(RouterConfig{
 			AuthValidator:      testTokenValidator{user: authenticatedTestUser()},
 			Shadow:             comparator,
@@ -84,6 +88,7 @@ func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *te
 			CutoverTracker:     tracker,
 			InternalAdminToken: token,
 		})
+		strong := token == strongToken
 		for _, target := range []string{"/internal/shadow/config", "/internal/cutover/"} {
 			for _, present := range []bool{false, true} {
 				// No testAuthHeader: these routes must be absent from the
@@ -95,8 +100,29 @@ func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *te
 				}
 				rec := httptest.NewRecorder()
 				router.ServeHTTP(rec, req)
-				if rec.Code != http.StatusNotFound {
-					t.Fatalf("token length %d present=%t target %q status = %d, want %d", len(token), present, target, rec.Code, http.StatusNotFound)
+
+				switch {
+				case !strong:
+					// Below RequireInternalAdminToken's minimum length, the
+					// route group is never mounted at all (router.go), for
+					// every credential shape.
+					if rec.Code != http.StatusNotFound {
+						t.Fatalf("token length %d present=%t target %q status = %d, want %d", len(token), present, target, rec.Code, http.StatusNotFound)
+					}
+				case !present:
+					// A strong-enough token DOES mount the route (#243: this
+					// used to be masked by the dead "reviewed production
+					// router" branch, which never wired Shadow/Cutover at
+					// all) — but it still requires the exact bearer token.
+					if rec.Code != http.StatusUnauthorized {
+						t.Fatalf("token length %d present=%t target %q status = %d, want %d", len(token), present, target, rec.Code, http.StatusUnauthorized)
+					}
+				default:
+					// The correct token reaches the real handler — neither
+					// unmounted (404) nor rejected (401).
+					if rec.Code == http.StatusNotFound || rec.Code == http.StatusUnauthorized {
+						t.Fatalf("token length %d present=%t target %q status = %d, want a real handler response", len(token), present, target, rec.Code)
+					}
 				}
 			}
 		}
@@ -478,59 +504,3 @@ func TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject(t *testing.
 	}
 }
 
-// TestArtifactRoutesGateIdenticallyThroughProductionRouter proves the
-// auth/RBAC gating above isn't specific to the prototype-compatibility
-// router. Every other test in this file builds its RouterConfig with
-// AppsRepo set, which trips prototypeCompatibilityRequested and always
-// dispatches to newPrototypeCompatibilityRouter — none of them ever
-// exercises production_router.go's own NewRouter branch, even though it
-// calls the identical mountArtifactRoutes with independently constructed
-// ArtifactDeps. This constructs a RouterConfig with none of
-// prototypeCompatibilityRequested's trigger fields set, so NewRouter takes
-// the production branch, and checks the same three outcomes (401
-// unauthenticated, 403 wrong permission, 2xx right permission) there too.
-func TestArtifactRoutesGateIdenticallyThroughProductionRouter(t *testing.T) {
-	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
-	const path = "/api/v2/artifacts/buckets/1"
-
-	// No credential presented, though a validator is wired: the 401 is the
-	// absent credential, not an absent validator.
-	t.Run("401 unauthenticated", func(t *testing.T) {
-		router := NewRouter(RouterConfig{
-			AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
-			ArtifactHandler:            handler,
-			ArtifactPermissionResolver: fakePermissionResolver{granted: allArtifactPermissions},
-		})
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-		}
-	})
-
-	t.Run("403 wrong permission", func(t *testing.T) {
-		router := NewRouter(RouterConfig{
-			AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
-			ArtifactHandler:            handler,
-			ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
-		})
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, testAuthHeader(httptest.NewRequest(http.MethodGet, path, nil)))
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
-		}
-	})
-
-	t.Run("2xx right permission", func(t *testing.T) {
-		router := NewRouter(RouterConfig{
-			AuthValidator:              testTokenValidator{user: authenticatedTestUser()},
-			ArtifactHandler:            handler,
-			ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
-		})
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, testAuthHeader(httptest.NewRequest(http.MethodGet, path, nil)))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
-		}
-	})
-}

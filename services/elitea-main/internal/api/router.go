@@ -119,7 +119,7 @@ type RouterConfig struct {
 	AdminUI         *adminui.Config
 	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
 	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
-	// DELETE cascade, but only inside newPrototypeCompatibilityRouter — it is
+	// DELETE cascade, but only inside newProductionRouter — it is
 	// not on any production request path until S11 mounts the new artifact
 	// routes there.
 	ObjectStore      storage.ObjectStore
@@ -159,8 +159,7 @@ type RouterConfig struct {
 	LLMProjectResolver            apimw.PersonalProjectResolver
 	// GatewayProxy is the mTLS streaming reverse proxy to elitea-llm-gateway-svc
 	// (BF0.9c). When non-nil, it is mounted at /llm with Auth+Project middleware
-	// in the production router. Unlike LLMProxy, setting this does NOT trigger
-	// prototype compatibility mode.
+	// in the production router.
 	GatewayProxy           http.Handler
 	GatewayProjectResolver apimw.PersonalProjectResolver
 }
@@ -245,14 +244,13 @@ type ArtifactDeps struct {
 
 // mountArtifactRoutes registers all 16 artifact routes (13 from S7, plus
 // S16's 3 native-multipart continuation routes) on r, wrapped in
-// deps.Authenticate and per-route RBAC (S11). It is called from both
-// newPrototypeCompatibilityRouter and production_router.go's NewRouter so
-// the oapiserver conformance suite — which walks the prototype router only —
-// and production see an identical route shape. Deliberately NOT nested
-// inside the shadow-wrapped /api/v2 group in the prototype router: the
-// shadow middleware buffers the entire response into a bytes.Buffer and has
-// no Unwrap method, which would defeat ResponseController deadlines and
-// buffer every downloaded object in memory (S12).
+// deps.Authenticate and per-route RBAC (S11). Called once, from
+// newProductionRouter, so the oapiserver conformance suite and production
+// see an identical route shape. Deliberately NOT nested inside the
+// shadow-wrapped /api/v2 group: the shadow middleware buffers the entire
+// response into a bytes.Buffer and has no Unwrap method, which would defeat
+// ResponseController deadlines and buffer every downloaded object in memory
+// (S12).
 func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 	view := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionView)
 	create := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionCreate)
@@ -310,10 +308,13 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 	})
 }
 
-// newPrototypeCompatibilityRouter preserves the broad prototype registration
-// map for parity work. Production composition deliberately does not call it:
-// most of these routes have not yet been assigned an exact legacy route policy.
-func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
+// newProductionRouter is the single route composition NewRouter builds. It
+// carries the broad legacy-parity registration map alongside
+// mountReviewedProductionRoutes (called at the end, below) because that is
+// what cmd/elitea-main/main.go's composition root has always assembled: most
+// of the routes registered here have not been assigned an exact legacy route
+// policy, but real deployments need them anyway (#243).
+func newProductionRouter(cfg RouterConfig) chi.Router {
 	if cfg.AuthClient == nil {
 		cfg.AuthClient = cfg.Auth.Client
 	}
@@ -1101,8 +1102,26 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 				r.Get("/project_icon/prompt_lib/{projectID}", coreHandler.ListProjectIcons)
 				r.Post("/project_icon/prompt_lib/{projectID}", coreHandler.CreateProjectIcon)
 				r.Delete("/project_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteProjectIcon)
-				r.Get("/project_context/prompt_lib/{projectID}/project-context", coreHandler.ProjectContext)
-				r.Put("/project_context/prompt_lib/{projectID}/project-context", coreHandler.UpdateProjectContext)
+				// Registered unconditionally: this is the ONLY registration
+				// source for project-context GET/PUT in the router every real
+				// deployment reaches (CURRENT_PARITY_EVIDENCE.md,
+				// internal/api/v2/promptcontextreads — "the compatibility
+				// router mounts the chat-config path only... the production
+				// router mounts both", and #243 made this the only router
+				// left). CurrentPromptContextReads' own project-context
+				// handler is a real, RBAC-scoped, parity-verified
+				// implementation, but wiring it here too would double-register
+				// the same method+path (chi panics on that) — see
+				// mountReviewedProductionRoutes (production_router.go), which
+				// deliberately does not mount it for the same reason.
+				//
+				// The relative suffix is derived from
+				// v2promptcontextreads.CurrentProjectContextPath (the "/api/v2/elitea_core"
+				// prefix comes from this route's enclosing r.Route groups)
+				// rather than a second hardcoded literal, purely so the two
+				// files can't drift on what path they're both talking about.
+				r.Get(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.ProjectContext)
+				r.Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
 
 				// Platform settings
 				r.Get("/platform_settings/prompt_lib/{projectID}", coreHandler.PlatformSettings)
@@ -1236,12 +1255,12 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	// (LLM_GATEWAY_URL); LLMProxy is the older LiteLLM facade, reachable only
 	// under ELITEA_CONFIGURATIONS_ENABLED, which no deployment sets.
 	//
-	// The gateway arm must be mounted HERE and not only in production_router.go:
-	// prototypeCompatibilityRequested is true whenever AppsRepo/auth/etc. is
-	// assigned — i.e. in every real deployment — so NewRouter always returns this
-	// router and a gateway mounted only over there is unreachable. GatewayProxy
-	// is deliberately absent from the prototype-gate field list, so wiring it
-	// does not itself force this router.
+	// The gateway arm is mounted HERE, not in production_router.go's
+	// mountReviewedProductionRoutes: NewRouter always builds this router
+	// (#243 deleted the only other build path, which was unreachable in
+	// every real deployment), so mounting it in exactly one place is what
+	// matters now — mountReviewedProductionRoutes explicitly defers to this
+	// registration rather than mounting /llm itself.
 	//
 	// Gateway wins when both are composed: it is the migration target, and
 	// serving the superseded facade in preference to it would be a silent
@@ -1281,7 +1300,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	// The broad prototype compatibility handler above already owns the current
 	// project-context GET. Keep that single live registration while adding the
 	// reviewed routes it does not provide, including chat config and agent SSE.
-	mountReviewedProductionRoutes(r, cfg, false)
+	mountReviewedProductionRoutes(r, cfg)
 
 	return r
 }

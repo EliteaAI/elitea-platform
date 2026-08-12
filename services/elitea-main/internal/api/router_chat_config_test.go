@@ -12,10 +12,10 @@ import (
 // `apps/elitea-web/src/features/artifacts/api/chatConfigApi.ts` calls on every
 // artifacts page load. Its only registration used to be the prototype
 // eliteacore handler behind the never-assigned `ChatService` gate, so it
-// answered 404 in every deployment — and mounting the current implementation
-// in production_router.go alone would not have changed that, because NewRouter
-// never reaches the production router once any prototype field is set, which
-// main.go always does (#194, same class as #152).
+// answered 404 in every deployment — and it had to be mounted by
+// mountReviewedProductionRoutes (production_router.go), the single
+// registration source newProductionRouter calls (#243), for it to be reached
+// by the router main.go actually builds (#194, same class as #152).
 //
 // Asserted structurally (chi.Walk) rather than by driving a request: the defect
 // is "this pattern is not registered", and a request would additionally have to
@@ -29,8 +29,6 @@ func TestPrototypeRouterRegistersChatConfigWhenPromptContextReadsAreWired(t *tes
 		projectContext = "/api/v2/elitea_core/project_context/prompt_lib/{projectID}/project-context"
 	)
 
-	// LLMProxy is one of prototypeCompatibilityRequested's triggers, and the
-	// cheapest one to satisfy — it forces the same router main.go builds.
 	prototypeTrigger := http.NotFoundHandler()
 
 	wired := routePatterns(t, NewRouter(RouterConfig{

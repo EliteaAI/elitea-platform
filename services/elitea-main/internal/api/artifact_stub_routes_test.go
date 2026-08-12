@@ -22,14 +22,13 @@ import (
 // route it resolves to actually behaves like the stub, end to end through
 // the real mounted router.
 func TestArtifactStubRoutesReturn501WithTypedEnvelope(t *testing.T) {
-	// AppsRepo alone is enough to satisfy prototypeCompatibilityRequested
-	// and take the newPrototypeCompatibilityRouter branch — production
-	// composition never sets any of these fields, so it never mounts these
-	// paths at all (by design; see newPrototypeCompatibilityRouter's doc
-	// comment). Requests carry a credential (testAuthHeader) that the
-	// injected testTokenValidator accepts — without one, the Auth middleware
-	// in front of this route group 401s every request before it reaches
-	// notImplementedArtifact.
+	// AppsRepo is one of the fields cmd/elitea-main/main.go always sets, so
+	// this exercises the same newProductionRouter build path production
+	// uses (see NewRouter's doc comment, #243). Requests carry a credential
+	// (testAuthHeader) that the injected testTokenValidator accepts —
+	// without one, the Auth middleware in front of this route group 401s
+	// every request before it reaches notImplementedArtifact (AUTH_DEV_MODE
+	// no longer exists as a bypass, #260/#261).
 
 	cases := []struct {
 		method, path string
