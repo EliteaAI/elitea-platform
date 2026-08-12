@@ -16,6 +16,13 @@ http:
     #
     # Explicit priority because traefik ranks by rule length and PathPrefix(`/app`)
     # would otherwise be able to win.
+    #
+    # This CARVES A HOLE in the SPA's own namespace: `/app/<numeric>/<rest>` is
+    # its project-switch deep link (apps/elitea-web/src/routes/$projectId.$.tsx),
+    # so a first segment of exactly `mcp` no longer reaches the app. Nothing
+    # collides today (`mcps`, `mcp-auth-callback`), and
+    # apps/elitea-web/src/routes/__tests__/mcpPathReservation.test.ts fails if a
+    # route ever claims it — narrow this rule before deleting that test.
     mcp:
       rule: "PathRegexp(`^/app/[0-9]+/mcp(/.*)?$`)"
       priority: 100

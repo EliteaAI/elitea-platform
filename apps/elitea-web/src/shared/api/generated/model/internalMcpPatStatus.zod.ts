@@ -46,7 +46,7 @@ export const InternalMcpPatStatus = zod
     internal: zod
       .boolean()
       .describe(
-        "True when the toolkit type is an internal Elitea MCP endpoint, i.e. the project holds a toolkit of that type whose settings URL carries the unresolved `\/app\/{project_id}\/mcp\/` template.\n",
+        "True when the toolkit type is an internal Elitea MCP endpoint, i.e. the project holds a toolkit of that type whose settings URL points at `\/app\/<project id>\/mcp\/...` on this platform, with the project id either templated or resolved.\n",
       ),
     state: zod
       .string()

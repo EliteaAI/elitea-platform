@@ -29,16 +29,36 @@ package mcp
 // toolkit rows: a toolkit type only exists here because `elitea_tools` holds
 // rows of that type (that is also how `ListCurrentToolkitTypes` enumerates
 // types at all). So a type is internal when the project has at least one
-// toolkit of that type whose settings URL carries the template.
+// toolkit of that type whose settings URL points at this platform's own MCP
+// endpoint.
 //
-// The template — `/app/{project_id}/mcp/`, with the literal marker unresolved —
-// is pylon's narrower `_INTERNAL_MCP_TEMPLATE_RE`, not the broader
-// `_INTERNAL_MCP_ENDPOINT_RE` that also accepts a resolved integer id. That is
-// deliberate in pylon and preserved here: PAT injection fires only for the
-// unresolved template, so a URL already carrying a concrete project id is never
-// re-stamped with the caller's token and cannot borrow another user's identity.
-// A status endpoint that answered "internal" for the resolved form would be
-// promising a gate that the dispatch path does not apply.
+// # Both URL forms count, and why the narrow one alone would be dead code
+//
+// pylon has TWO patterns for this. `_INTERNAL_MCP_ENDPOINT_RE` recognises the
+// endpoint shape with EITHER the unresolved `{project_id}` marker or a concrete
+// integer; the narrower `_INTERNAL_MCP_TEMPLATE_RE` matches only the marker.
+// pylon uses the narrow one to decide where to INJECT a PAT — deliberately, so
+// a URL already carrying a concrete project id is never re-stamped with the
+// caller's token — and the broad one to RECOGNISE an internal toolkit, with the
+// comment that dedup "must recognize a manually-added toolkit even when its URL
+// is already resolved to an integer".
+//
+// This endpoint asks the recognition question, so it uses the broad pattern.
+// Matching only the template here would have made the whole `internal: true`
+// branch unreachable in a Go-only deployment: the only producer of a persisted
+// `{project_id}` URL is pylon's prebuilt-config machinery
+// (`get_mcp_prebuilt_config` / `resolve_mcp_prebuilt_settings`, fed by an
+// indexer_worker event), which was not ported and has no counterpart here — so
+// every caller would have been told `{"internal": false, "state": "VALID"}`
+// whatever their token state, which is precisely the silence this endpoint
+// exists to break. A toolkit a user creates by hand against
+// `…/app/7/mcp/elitea_core/applications` is internal by every reading that
+// matters to the caller: it is this platform's endpoint, and it will not work
+// without a live token.
+//
+// The narrow/broad split still holds where it belongs — nothing here injects a
+// token, and reporting a PAT requirement is not the same as promising to stamp
+// one.
 //
 // A type that is not internal answers `{"internal": false, "state": "VALID"}` —
 // pylon's answer, and the right one: there is no PAT requirement to report on,
@@ -64,9 +84,12 @@ const (
 	patStateMissing = "MISSING"
 )
 
-// internalMCPTemplate is pylon's `_INTERNAL_MCP_TEMPLATE_RE`
-// (`legacy/plugins/elitea_core/utils/internal_tools.py:508`).
-var internalMCPTemplate = regexp.MustCompile(`/app/\{project_id\}/mcp/`)
+// internalMCPEndpoint is pylon's `_INTERNAL_MCP_ENDPOINT_RE`
+// (`legacy/plugins/elitea_core/utils/internal_tools.py:502`): the internal MCP
+// endpoint shape with the project id either left as the `{project_id}` marker
+// or already resolved to an integer. See this file's header for why the
+// narrower template-only pattern is not the one to use here.
+var internalMCPEndpoint = regexp.MustCompile(`/app/(?:\{project_id\}|\d+)/mcp/`)
 
 // InternalMCPPATStatus serves the endpoint described in this file's header.
 func (h *Handler) InternalMCPPATStatus(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +158,7 @@ func (h *Handler) typeIsInternalMCP(ctx context.Context, schema, toolkitType str
 		if err := rows.Scan(&url); err != nil {
 			return false, err
 		}
-		if internalMCPTemplate.MatchString(url) {
+		if internalMCPEndpoint.MatchString(url) {
 			return true, nil
 		}
 	}

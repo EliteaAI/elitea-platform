@@ -1697,11 +1697,13 @@ export const getGetInternalMcpPatStatusUrl = (
  * toolkit UI say so first.
  *
  * A type is internal when it begins `mcp_` AND the project holds at least
- * one toolkit of that type whose settings URL carries the unresolved
- * `/app/{project_id}/mcp/` template. The resolved form (a concrete
- * integer project id) is deliberately NOT internal, because token
- * injection fires only for the template — reporting it as internal would
- * promise a gate the dispatch path does not apply.
+ * one toolkit of that type whose settings URL points at this platform's
+ * own MCP endpoint — `/app/<project id>/mcp/...`, with the project id
+ * either left as the `{project_id}` marker or already resolved to an
+ * integer. Both forms count: the marker is written only by the reference
+ * implementation's prebuilt-config machinery, which has no counterpart
+ * here, so matching it alone would leave this endpoint unable to report
+ * anything but VALID.
  *
  * `state` is reported only about the CALLER's own tokens and is one of
  * VALID (at least one unexpired token; a token with no expiry never
