@@ -228,8 +228,10 @@ services:
 
   elitea-scheduler:
     build:
-      context: ../services/elitea-scheduler
-      dockerfile: Containerfile
+      # Repo root, not services/elitea-scheduler: the Containerfile COPYs
+      # libs/go/observability (issue #250's local replace target) from there.
+      context: ..
+      dockerfile: services/elitea-scheduler/Containerfile
     image: ghcr.io/eliteaai/elitea-scheduler:dev
     environment:
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"

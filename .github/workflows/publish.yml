@@ -79,7 +79,10 @@ jobs:
             # stage can never silently change what is released.
             target: final
           - name: elitea-scheduler
-            context: ./services/elitea-scheduler
+            # Repo root, not ./services/elitea-scheduler: the Containerfile
+            # COPYs libs/go/observability (issue #250's local replace target)
+            # from there.
+            context: .
             dockerfile: ./services/elitea-scheduler/Containerfile
           - name: elitea-ui
             context: .
