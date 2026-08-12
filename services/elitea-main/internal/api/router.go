@@ -27,6 +27,7 @@ import (
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
 	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	v2mcp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/mcp"
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
 	v2openapidocs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/openapidocs"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
@@ -311,6 +312,41 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 	})
 }
 
+// mountMCPServerRoutes registers the MCP server endpoints (issue 252 P2/P3) —
+// the streamable-HTTP surface external MCP clients speak to.
+//
+//	GET|POST /app/{projectID}/mcp
+//	GET|POST /app/{projectID}/mcp/{category}
+//	GET|POST /app/{projectID}/mcp/{entity}/{entityVersionID}
+//
+// Mounted on its own Auth-wrapped subrouter for the same reason the artifact
+// routes are: these paths live outside /api/v2 (pylon serves them from the app
+// blueprint, and the internal-toolkit URLs written into existing projects
+// hardcode `/app/{project_id}/mcp/...`), so they cannot inherit the /api/v2
+// group's middleware, and they must not inherit shadow's response buffering.
+//
+// RequireProjectAccess is unconditional here. The endpoint reads one tenant's
+// agents and toolkits by name, and authentication alone would let any
+// authenticated PAT holder enumerate the tool inventory of a project they have
+// nothing to do with. There is no client to regress, because these routes are
+// new in this change — the same argument the skill-publishing block makes above.
+//
+// The two path variants are registered separately rather than as one wildcard
+// because chi will not match a bare `/app/{projectID}/mcp` against a `/*`
+// pattern; the handler reads the tail with chi.URLParam(r, "*"), which is empty
+// for the first pair.
+func mountMCPServerRoutes(r chi.Router, pool *pgxpool.Pool, authenticate func(http.Handler) http.Handler) {
+	handler := v2mcp.NewHandler(pool)
+	r.Group(func(r chi.Router) {
+		r.Use(authenticate)
+		r.Use(apimw.RequireProjectAccess(pool))
+		r.Get("/app/{projectID}/mcp", handler.Endpoint)
+		r.Post("/app/{projectID}/mcp", handler.Endpoint)
+		r.Get("/app/{projectID}/mcp/*", handler.Endpoint)
+		r.Post("/app/{projectID}/mcp/*", handler.Endpoint)
+	})
+}
+
 // newProductionRouter is the single route composition NewRouter builds. It
 // carries the broad legacy-parity registration map alongside
 // mountReviewedProductionRoutes (called at the end, below) because that is
@@ -453,18 +489,23 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	if artifactHandler == nil {
 		artifactHandler, _ = newArtifactHandler(cfg)
 	}
-	mountArtifactRoutes(r, ArtifactDeps{
-		Handler: artifactHandler,
-		Authenticate: apimw.Auth(apimw.AuthConfig{
-			Client:                    cfg.AuthClient,
-			Validator:                 cfg.AuthValidator,
-			PrincipalValidator:        cfg.PrincipalValidator,
-			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
-			SessionSecret:             cfg.SessionSecret,
-			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
-		}),
-		Resolver: artifactResolver,
+	authenticate := apimw.Auth(apimw.AuthConfig{
+		Client:                    cfg.AuthClient,
+		Validator:                 cfg.AuthValidator,
+		PrincipalValidator:        cfg.PrincipalValidator,
+		ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
+		SessionSecret:             cfg.SessionSecret,
+		TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 	})
+	mountArtifactRoutes(r, ArtifactDeps{
+		Handler:      artifactHandler,
+		Authenticate: authenticate,
+		Resolver:     artifactResolver,
+	})
+
+	// The MCP server (issue 252). Outside the /api/v2 group for the reasons in
+	// mountMCPServerRoutes.
+	mountMCPServerRoutes(r, cfg.Pool, authenticate)
 
 	r.Group(func(r chi.Router) {
 		r.Use(apimw.Auth(apimw.AuthConfig{
@@ -1194,6 +1235,32 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.Post("/mcp_oauth_proxy/{projectID}", coreHandler.MCPOAuthProxy)
 				r.Post("/mcp_dcr_proxy/{projectID}", coreHandler.MCPDCRProxy)
 				r.Post("/mcp_sync_tools/prompt_lib/{projectID}", coreHandler.MCPSyncTools)
+
+				// The MCP REST surface (issue 252 P1). All three carry
+				// RequireProjectAccess: each names a project in its path and
+				// then reads that project's toolkit rows or the caller's own
+				// tokens, and authentication alone would let any signed-in user
+				// aim them at a project they have nothing to do with. New
+				// routes, so there is no client to regress — the same reasoning
+				// the skill-publishing block above states.
+				//
+				// The modes are pylon's, not a guess: tools_list/tools_call
+				// register `c.DEFAULT_MODE` only, internal_mcp_pat_status
+				// registers `prompt_lib` only. A mode pylon does not serve on a
+				// path 404s here rather than being answered with something
+				// plausible.
+				//
+				// tools_list and tools_call answer 501 with a stated reason —
+				// see internal/api/v2/mcp/registry.go. They are registered
+				// rather than left off so the refusal is explicit and pinned by
+				// a test: a 404 leaves the next person free to wire a stub up.
+				mcpHandler := v2mcp.NewHandler(cfg.Pool)
+				r.Group(func(r chi.Router) {
+					r.Use(apimw.RequireProjectAccess(cfg.Pool))
+					r.Get("/tools_list/default/{projectID}", mcpHandler.ToolsList)
+					r.Post("/tools_call/default/{projectID}", mcpHandler.ToolsCall)
+					r.Get("/internal_mcp_pat_status/prompt_lib/{projectID}/{toolkitType}", mcpHandler.InternalMCPPATStatus)
+				})
 
 				// Import wizard
 				r.Post("/import_wizard/prompt_lib/{projectID}", coreHandler.ExportImportPost)

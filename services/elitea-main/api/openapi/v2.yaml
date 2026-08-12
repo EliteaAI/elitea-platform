@@ -3212,6 +3212,60 @@ components:
         returned as a safe 500 error rather than an indistinguishable empty
         successful listing.
 
+    # ---- MCP (issue 252) ---------------------------------------------------
+
+    McpToolCallRequest:
+      type: object
+      required: [server, tool_call_id, params]
+      description: >
+        NOTE(W2): the body pylon's `McpToolCallPostBody` accepts
+        (legacy/plugins/elitea_core/models/mcp.py). Documented for completeness;
+        internal/api/v2/mcp/registry.go:96 does not read it, because the
+        endpoint refuses unconditionally and a 400 for a malformed body would
+        imply a well-formed one would be dispatched.
+      properties:
+        server:
+          type: string
+          description: Name of the registered MCP server to dispatch to.
+        tool_call_id: { type: string }
+        tool_timeout_sec: { type: integer }
+        params:
+          type: object
+          additionalProperties: true
+          description: Arguments forwarded verbatim to the tool.
+          x-elitea-passthrough: >-
+            NOTE(W2): genuinely open. These are the arguments of a tool defined
+            by whichever MCP server the calling client registered, so their
+            shape is not knowable to this service at all — pylon forwards the
+            dict unchanged down the socket. The endpoint does not read the body
+            (internal/api/v2/mcp/registry.go:96).
+
+    InternalMcpPatStatus:
+      type: object
+      required: [internal, state]
+      description: >
+        NOTE(W2): internal/api/v2/mcp/patstatus.go:74 — the exact two-field
+        object both branches write.
+      properties:
+        internal:
+          type: boolean
+          description: >
+            True when the toolkit type is an internal Elitea MCP endpoint, i.e.
+            the project holds a toolkit of that type whose settings URL carries
+            the unresolved `/app/{project_id}/mcp/` template.
+        state:
+          type: string
+          description: >
+            One of VALID, EXPIRED or MISSING, about the CALLER's own personal
+            access tokens. VALID when at least one token has not expired (a
+            token with no expiry never expires); EXPIRED when tokens exist and
+            all have passed their expiry; MISSING when the caller has none. A
+            non-internal type always reports VALID, because there is no token
+            requirement to report on. Not modelled as an enum: the value is
+            produced by three constants in patstatus.go:58-62, and an enum
+            whose members collide with an existing one makes the Go generator
+            rename both constant sets.
+
     # ---- Author detail (eliteacore) ---------------------------------------
     AuthorDetail:
       type: object
@@ -7141,6 +7195,155 @@ paths:
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }
+
+  # ==========================================================================
+  # MCP (issue 252)
+  #
+  # Three REST endpoints. The MCP PROTOCOL endpoints this change also adds —
+  # GET|POST /app/{project_id}/mcp and its category/resource variants — are
+  # deliberately NOT in this document: they carry JSON-RPC 2.0 envelopes whose
+  # request and response shapes are selected by a `method` string, so a
+  # generated typed client for them would be one operation returning a union of
+  # every MCP result. The protocol they speak is the Model Context Protocol
+  # specification, and internal/api/v2/mcp/server.go is the implementation note.
+  #
+  # `mode` is pylon's dispatch key, not decoration: tools_list and tools_call
+  # register `default` only and internal_mcp_pat_status registers `prompt_lib`
+  # only, so those are the literal segments here rather than a {mode} parameter.
+  # ==========================================================================
+  /elitea_core/tools_list/default/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listRegisteredMcpServers
+      summary: List MCP servers registered into the project by an MCP client
+      description: |
+        Always answers 501 with a stated reason. This endpoint does NOT list
+        this platform's own tools — that is the MCP server at
+        /app/{project_id}/mcp. It reports the MCP servers an Elitea MCP CLIENT
+        has registered INTO the project, which the reference implementation
+        keeps in an in-process dict populated over socket.io and keyed by the
+        client's socket id. There is no table behind that dict, and this
+        service runs no socket.io server, so there is nothing to list.
+
+        An empty array is deliberately not returned: it would assert that no
+        client is connected, which this service has no way to know. See
+        internal/api/v2/mcp/registry.go for the full reason string, which is
+        also what the response body carries.
+      tags: [toolkits]
+      responses:
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: |
+            MCP exposure is switched off for this deployment
+            (centry.platform_config mcp_configuration.mcp_enabled), or the
+            caller has no role in the project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: Not implemented, with the reason in `error`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /elitea_core/tools_call/default/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: callRegisteredMcpServerTool
+      summary: Invoke a tool on an MCP server registered into the project
+      description: |
+        Always answers 501 with a stated reason — the same reason
+        /elitea_core/tools_list gives, because it is the same absent registry.
+        Dispatch in the reference implementation is a blocking socket.io call
+        back down the websocket the client registered on.
+
+        The request body is documented because it is what the reference
+        accepts, but it is not read: a 400 for a malformed body would imply
+        that a well-formed one would be dispatched somewhere, and none is.
+      tags: [toolkits]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpToolCallRequest'
+      responses:
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: |
+            MCP exposure is switched off for this deployment, or the caller has
+            no role in the project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: Not implemented, with the reason in `error`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /elitea_core/internal_mcp_pat_status/prompt_lib/{project_id}/{toolkit_type}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: toolkit_type
+        in: path
+        required: true
+        schema: { type: string }
+        description: |
+          Toolkit TYPE, not a toolkit id. Only types beginning `mcp_` can be
+          internal.
+
+    get:
+      operationId: getInternalMcpPatStatus
+      summary: Report the caller's personal-access-token state for an internal MCP toolkit
+      description: |
+        NOTE(W2): internal/api/v2/mcp/patstatus.go:74 (InternalMCPPATStatus).
+
+        An INTERNAL Elitea MCP toolkit points back at this platform's own MCP
+        endpoint and authenticates with the executing user's personal access
+        token, which is injected at dispatch time and never stored. Without a
+        live token the toolkit fails inside an agent run, as an authentication
+        error against a URL the user never typed; this endpoint lets the
+        toolkit UI say so first.
+
+        A type is internal when it begins `mcp_` AND the project holds at least
+        one toolkit of that type whose settings URL carries the unresolved
+        `/app/{project_id}/mcp/` template. The resolved form (a concrete
+        integer project id) is deliberately NOT internal, because token
+        injection fires only for the template — reporting it as internal would
+        promise a gate the dispatch path does not apply.
+
+        `state` is reported only about the CALLER's own tokens and is one of
+        VALID (at least one unexpired token; a token with no expiry never
+        expires), EXPIRED (tokens exist, all past their expiry) or MISSING (no
+        tokens). A non-internal type answers `{"internal": false, "state":
+        "VALID"}` — there is no token requirement to report on. The token value
+        is never returned and is never read.
+      tags: [toolkits]
+      responses:
+        '200':
+          description: Token state for this toolkit type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalMcpPatStatus'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '503':
+          description: The toolkit or token lookup could not be performed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==========================================================================
   # SECRETS (issue 151)
