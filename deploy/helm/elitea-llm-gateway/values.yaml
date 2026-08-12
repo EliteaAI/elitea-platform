@@ -279,11 +279,13 @@ mtls:
 
 probes:
   liveness:
+    # Process liveness only (no dependency calls) — issue #242: a NATS blip
+    # must not restart the pod, only /readyz should pull it out of rotation.
     path: /healthz
     periodSeconds: 10
     failureThreshold: 3
   readiness:
-    path: /healthz
+    path: /readyz
     periodSeconds: 5
     failureThreshold: 2
 
