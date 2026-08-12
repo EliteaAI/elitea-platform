@@ -192,7 +192,7 @@ func newCurrentArtifactsConfigurationPostgresPool(t *testing.T) *pgxpool.Pool {
 
 	testConfig := adminConfig.Copy()
 	testConfig.ConnConfig.Database = databaseName
-	testConfig.MaxConns = 8
+	testConfig.MaxConns = 12
 	pool, err := pgxpool.NewWithConfig(ctx, testConfig)
 	if err != nil {
 		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)")
@@ -204,6 +204,20 @@ func newCurrentArtifactsConfigurationPostgresPool(t *testing.T) *pgxpool.Pool {
 		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)")
 		adminPool.Close()
 		t.Fatalf("ping isolated PostgreSQL integration database: %v", err)
+	}
+
+	var serverVersion int
+	if err := pool.QueryRow(ctx, "SELECT current_setting('server_version_num')::integer").Scan(&serverVersion); err != nil {
+		pool.Close()
+		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)")
+		adminPool.Close()
+		t.Fatalf("read PostgreSQL server version: %v", err)
+	}
+	if serverVersion < 160000 || serverVersion >= 190000 {
+		pool.Close()
+		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)")
+		adminPool.Close()
+		t.Fatalf("service-integration gate requires PostgreSQL 16 through 18, got server_version_num=%d", serverVersion)
 	}
 
 	t.Cleanup(func() {

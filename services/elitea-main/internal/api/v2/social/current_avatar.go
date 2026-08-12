@@ -123,11 +123,21 @@ func (h *currentAvatarHandler) upload(w http.ResponseWriter, r *http.Request) {
 		writeCurrentAvatarError(w, http.StatusInternalServerError, "avatar storage is not configured")
 		return
 	}
+	if !validAvatarPathSegment(projectID) {
+		writeCurrentAvatarError(w, http.StatusBadRequest, "invalid project")
+		return
+	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, MaxCurrentAvatarUploadBytes)
 	if err := r.ParseMultipartForm(MaxCurrentAvatarUploadBytes); err != nil {
 		writeCurrentAvatarError(w, http.StatusBadRequest, "invalid multipart request")
 		return
 	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		writeCurrentAvatarError(w, http.StatusBadRequest, "file is required")
@@ -135,19 +145,15 @@ func (h *currentAvatarHandler) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = file.Close() }()
 
-	if !validAvatarPathSegment(projectID) {
-		writeCurrentAvatarError(w, http.StatusBadRequest, "invalid project")
-		return
-	}
-
-	filename := generateAvatarID() + safeAvatarExtension(header.Filename)
+	extension := safeAvatarExtension(header.Filename)
+	filename := generateAvatarID() + extension
 	ref, err := storage.NewObjectRef(projectID, avatarBucket, filename)
 	if err != nil {
 		writeCurrentAvatarError(w, http.StatusBadRequest, "invalid project")
 		return
 	}
 
-	contentType := mime.TypeByExtension(safeAvatarExtension(header.Filename))
+	contentType := mime.TypeByExtension(extension)
 	if _, err := h.objectStore.Put(r.Context(), ref, file, storage.PutOptions{
 		ContentType: contentType, ContentLength: -1,
 	}); err != nil {
@@ -157,6 +163,9 @@ func (h *currentAvatarHandler) upload(w http.ResponseWriter, r *http.Request) {
 
 	url := "/avatars/" + projectID + "/" + filename
 	if err := h.store.SetCurrentAvatar(r.Context(), userID, url); err != nil {
+		// The object already landed in storage; without this delete it would
+		// be orphaned (never referenced by any row, never cleaned up).
+		_ = h.objectStore.Delete(r.Context(), ref)
 		writeCurrentAvatarError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}

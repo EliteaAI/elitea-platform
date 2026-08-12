@@ -72,6 +72,7 @@ func TestCurrentAvatarProductionHTTPPostgresParityAndNegativeSecurity(t *testing
 	}
 	router := platformapi.NewRouter(platformapi.RouterConfig{
 		CurrentSocialAvatar: route,
+		ObjectStore:         objectStore,
 	})
 
 	t.Run("upload lands the object in storage and fetch round-trips it", func(t *testing.T) {
@@ -114,6 +115,18 @@ func TestCurrentAvatarProductionHTTPPostgresParityAndNegativeSecurity(t *testing
 		want := fmt.Sprintf(`{"avatar":%q}`+"\n", url)
 		if fetchResponse.Code != http.StatusOK || fetchResponse.Body.String() != want {
 			t.Fatalf("fetch status=%d body=%q want=%q", fetchResponse.Code, fetchResponse.Body.String(), want)
+		}
+
+		// The download route is what a browser <img src> actually hits — an
+		// HTTP GET through it, not just a direct ObjectStore.Get call above.
+		downloadRequest := httptest.NewRequest(http.MethodGet, url, nil)
+		downloadResponse := httptest.NewRecorder()
+		router.ServeHTTP(downloadResponse, downloadRequest)
+		if downloadResponse.Code != http.StatusOK || downloadResponse.Body.String() != "fake-png-bytes" {
+			t.Fatalf("download status=%d body=%q", downloadResponse.Code, downloadResponse.Body.String())
+		}
+		if contentType := downloadResponse.Header().Get("Content-Type"); contentType != "image/png" {
+			t.Fatalf("download content-type=%q", contentType)
 		}
 	})
 

@@ -66,10 +66,13 @@ func (h *Handler) UI(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(docsPageHTML))
 }
 
-// convertYAMLMapKeys rewrites map[interface{}]interface{} (what yaml.v3
-// decodes untyped maps into) to map[string]interface{} so encoding/json can
-// marshal it — json.Marshal rejects the former with an unsupported-type
-// error.
+// convertYAMLMapKeys rewrites map[interface{}]interface{} to
+// map[string]interface{} so encoding/json can marshal it (json.Marshal
+// rejects the former with an unsupported-type error). Verified this is not
+// dead code: a trivial YAML doc decodes straight to map[string]interface{}
+// under yaml.v3, but the real api/openapi/v2.yaml does not — some part of
+// the actual spec still produces map[interface{}]interface{} nodes, and
+// removing this caused SpecJSON to 500 against the real embedded spec.
 func convertYAMLMapKeys(value any) any {
 	switch v := value.(type) {
 	case map[string]any:
