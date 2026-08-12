@@ -442,6 +442,26 @@ class _AuthorizationPauseCallback:
         }
 
 
+class _ConstructorAuthorizationCallback:
+    def __init__(self) -> None:
+        self.errors: list[Exception] = []
+
+    def capture_constructor_authorization(self, error):
+        self.errors.append(error)
+        if error.__class__.__name__ != "McpAuthorizationRequired":
+            return None
+        return {
+            "thread_id": "thread-1",
+            "error": "Toolkit authorization is required.",
+            "paused": True,
+            "pause_type": "mcp_auth",
+        }
+
+
+class McpAuthorizationRequired(RuntimeError):
+    pass
+
+
 class _Client:
     def __init__(self) -> None:
         self.application_executor = _Executor({"mode": "application"})
@@ -460,6 +480,25 @@ class _Client:
 
     def predict_agent(self, **kwargs):
         self.adhoc_calls.append(kwargs)
+        return self.adhoc_executor
+
+
+class _ConstructorFailureClient(_Client):
+    def __init__(self, error: Exception, *, application: bool) -> None:
+        super().__init__()
+        self.error = error
+        self.fail_application = application
+
+    def application(self, **kwargs):
+        self.application_calls.append(kwargs)
+        if self.fail_application:
+            raise self.error
+        return self.application_executor
+
+    def predict_agent(self, **kwargs):
+        self.adhoc_calls.append(kwargs)
+        if not self.fail_application:
+            raise self.error
         return self.adhoc_executor
 
 
@@ -709,6 +748,47 @@ def test_sdk_adapter_prefers_callback_authorization_pause_over_graph_result() ->
         "pause_type": "mcp_auth",
     }
     assert len(client.adhoc_executor.calls) == 1
+
+
+@pytest.mark.parametrize("application", [True, False])
+def test_sdk_adapter_captures_constructor_authorization_before_invoke(
+    application: bool,
+) -> None:
+    error = McpAuthorizationRequired("SharePoint authorization is required.")
+    client = _ConstructorFailureClient(error, application=application)
+    callback = _ConstructorAuthorizationCallback()
+    adapter = _adapter(client)
+    adapter._callbacks = [callback]  # type: ignore[attr-defined]
+
+    payload = _request(application=application).payload
+    result = (
+        adapter.execute_application(payload)
+        if application
+        else adapter.execute_adhoc(payload)
+    )
+
+    assert result == {
+        "thread_id": "thread-1",
+        "error": "Toolkit authorization is required.",
+        "paused": True,
+        "pause_type": "mcp_auth",
+    }
+    assert callback.errors == [error]
+    assert client.application_executor.calls == []
+    assert client.adhoc_executor.calls == []
+
+
+def test_sdk_adapter_does_not_hide_an_unrelated_constructor_failure() -> None:
+    error = RuntimeError("constructor failed")
+    client = _ConstructorFailureClient(error, application=True)
+    callback = _ConstructorAuthorizationCallback()
+    adapter = _adapter(client)
+    adapter._callbacks = [callback]  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="constructor failed"):
+        adapter.execute_application(_request().payload)
+
+    assert callback.errors == [error]
 
 
 def test_sdk_adapter_delegates_pipeline_yaml_through_the_existing_application_api() -> None:

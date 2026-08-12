@@ -358,22 +358,28 @@ class EliteaSdkAgentAdapter:
             application = payload.application
             version_details = deepcopy(application.get("version_details") or {})
             llm_kwargs = _llm_kwargs(payload.llm)
-            executor = self._client.application(
-                application_id=application.get("id"),
-                application_version_id=application.get("version_id"),
-                tools=deepcopy(payload.tools) or None,
-                memory=memory,
-                application_variables=deepcopy(application.get("variables")),
-                version_details=version_details or None,
-                mcp_tokens=deepcopy(payload.mcp_tokens),
-                conversation_id=payload.conversation_id,
-                ignored_mcp_servers=list(payload.ignored_mcp_servers),
-                user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
-                exception_handling_enabled=bool(payload.exception_handling_enabled),
-                context_settings=deepcopy(payload.context_settings),
-                auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
-                openai_compatible=bool(llm_kwargs.get("openai_compatible", False)),
-            )
+            try:
+                executor = self._client.application(
+                    application_id=application.get("id"),
+                    application_version_id=application.get("version_id"),
+                    tools=deepcopy(payload.tools) or None,
+                    memory=memory,
+                    application_variables=deepcopy(application.get("variables")),
+                    version_details=version_details or None,
+                    mcp_tokens=deepcopy(payload.mcp_tokens),
+                    conversation_id=payload.conversation_id,
+                    ignored_mcp_servers=list(payload.ignored_mcp_servers),
+                    user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
+                    exception_handling_enabled=bool(payload.exception_handling_enabled),
+                    context_settings=deepcopy(payload.context_settings),
+                    auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
+                    openai_compatible=bool(llm_kwargs.get("openai_compatible", False)),
+                )
+            except Exception as error:
+                paused = _capture_constructor_authorization(error, self._callbacks)
+                if paused is None:
+                    raise
+                return paused
             return _invoke_initial_agent(
                 executor,
                 payload,
@@ -397,27 +403,33 @@ class EliteaSdkAgentAdapter:
                     "openai_compatible": llm_kwargs.get("openai_compatible", False),
                 },
             )
-            executor = self._client.predict_agent(
-                llm=llm,
-                instructions=payload.application.get(
-                    "instructions", "You are a helpful assistant."
-                ),
-                tools=deepcopy(payload.tools),
-                chat_history=deepcopy(payload.chat_history),
-                memory=memory,
-                debug_mode=True if payload.debug_mode is None else payload.debug_mode,
-                mcp_tokens=deepcopy(payload.mcp_tokens),
-                conversation_id=payload.conversation_id,
-                ignored_mcp_servers=list(payload.ignored_mcp_servers),
-                persona=payload.persona,
-                lazy_tools_mode="lazy_tools_mode" in payload.internal_tools,
-                internal_tools=list(payload.internal_tools),
-                exception_handling_enabled=bool(payload.exception_handling_enabled),
-                context_settings=deepcopy(payload.context_settings),
-                step_limit=payload.steps_limit,
-                auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
-                user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
-            )
+            try:
+                executor = self._client.predict_agent(
+                    llm=llm,
+                    instructions=payload.application.get(
+                        "instructions", "You are a helpful assistant."
+                    ),
+                    tools=deepcopy(payload.tools),
+                    chat_history=deepcopy(payload.chat_history),
+                    memory=memory,
+                    debug_mode=True if payload.debug_mode is None else payload.debug_mode,
+                    mcp_tokens=deepcopy(payload.mcp_tokens),
+                    conversation_id=payload.conversation_id,
+                    ignored_mcp_servers=list(payload.ignored_mcp_servers),
+                    persona=payload.persona,
+                    lazy_tools_mode="lazy_tools_mode" in payload.internal_tools,
+                    internal_tools=list(payload.internal_tools),
+                    exception_handling_enabled=bool(payload.exception_handling_enabled),
+                    context_settings=deepcopy(payload.context_settings),
+                    step_limit=payload.steps_limit,
+                    auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
+                    user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
+                )
+            except Exception as error:
+                paused = _capture_constructor_authorization(error, self._callbacks)
+                if paused is None:
+                    raise
+                return paused
             return _invoke_initial_agent(
                 executor,
                 payload,
@@ -489,6 +501,27 @@ class EliteaSdkAgentAdapter:
             project_id=self._project_id,
         ) as memory:
             yield memory
+
+
+def _capture_constructor_authorization(
+    error: Exception,
+    callbacks: list[Any],
+) -> dict[str, Any] | None:
+    """Delegate constructor-time authorization to the current event callback.
+
+    The SDK exception is intentionally not imported here: the admitted SDK can
+    be reloaded independently, while the callback already owns the compatible
+    class-name check and durable pause projection.
+    """
+
+    for callback in callbacks:
+        capture = getattr(callback, "capture_constructor_authorization", None)
+        if not callable(capture):
+            continue
+        paused = capture(error)
+        if paused is not None:
+            return paused
+    return None
 
 
 def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:

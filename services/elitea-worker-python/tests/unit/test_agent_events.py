@@ -24,11 +24,11 @@ from elitea_worker.protocol.codec import (
 from elitea_worker.protocol.node_event import encode_current_node_event_json
 
 
-def _callback():
+def _callback(*, execution_id="execution-1"):
     events = []
     callback = CurrentAgentNodeEventCallback(
         CurrentAgentNodeEventContext(
-            execution_id="execution-1",
+            execution_id=execution_id,
             stream_id="conversation-1",
             message_id="message-1",
             execution_generation="generation-1",
@@ -522,6 +522,47 @@ def test_saved_mcp_authorization_pause_remains_at_the_root_scope() -> None:
     assert "parent_agent_path" not in authorization
     assert "child_thread_id" not in authorization
     assert "checkpoint_ns" not in authorization
+
+
+def test_constructor_authorization_uses_stable_execution_scoped_identity() -> None:
+    class McpAuthorizationRequired(RuntimeError):
+        server_url = "https://tenant.example.test/sites/team"
+        resource_metadata_url = "https://login.example.test/discovery"
+        resource_metadata = {
+            "resource_name": "SharePoint",
+            "provided_settings": {"mcp_client_secret": "must-not-cross-output"},
+        }
+        authorization_servers = ["https://login.example.test"]
+        tool_name = "mcp_authorize_sharepoint"
+        toolkit_name = "SharePoint"
+        toolkit_type = "sharepoint"
+
+    error = McpAuthorizationRequired("SharePoint authorization is required.")
+    callback, events = _callback()
+
+    assert callback.capture_constructor_authorization(error) == {
+        "thread_id": "thread-1",
+        "error": "SharePoint authorization is required.",
+        "paused": True,
+        "pause_type": "mcp_auth",
+    }
+    event = _json(events[0])
+    request_id = event["response_metadata"]["tool_run_id"]
+    assert event["type"] == "mcp_authorization_required"
+    assert request_id.startswith("mcp-auth-")
+    assert event["response_metadata"]["tool_name"] == "mcp_authorize_sharepoint"
+    assert event["response_metadata"]["toolkit_name"] == "SharePoint"
+    assert event["response_metadata"]["toolkit_type"] == "sharepoint"
+    assert "parent_agent_name" not in event["response_metadata"]
+    assert "provided_settings" not in event["response_metadata"]["resource_metadata"]
+
+    repeated, repeated_events = _callback()
+    repeated.capture_constructor_authorization(error)
+    assert _json(repeated_events[0])["response_metadata"]["tool_run_id"] == request_id
+
+    other, other_events = _callback(execution_id="execution-2")
+    other.capture_constructor_authorization(error)
+    assert _json(other_events[0])["response_metadata"]["tool_run_id"] != request_id
 
 
 def test_delegated_authorization_terminal_requires_callback_identity() -> None:

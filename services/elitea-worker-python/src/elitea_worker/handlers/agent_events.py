@@ -8,6 +8,7 @@ table and forwards the live events over SSE.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -218,6 +219,45 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             "paused": True,
             "pause_type": "mcp_auth",
         }
+
+    def capture_constructor_authorization(
+        self,
+        error: BaseException,
+    ) -> dict[str, Any] | None:
+        """Capture direct Pipeline authorization raised before tool callbacks.
+
+        Direct Pipeline MCP/Toolkit nodes are materialized while the SDK builds
+        the graph, so LangChain has no tool run to identify the authorization
+        request. Derive a stable, execution-scoped identity from the public
+        toolkit boundary and feed it through the same durable pause/event path
+        used by ordinary tool-time authorization.
+        """
+
+        if not _is_mcp_authorization_required(error):
+            return None
+        identity = "\x1f".join(
+            (
+                self._context.execution_id,
+                _bounded_text(getattr(error, "server_url", None), "server"),
+                _bounded_text(getattr(error, "toolkit_name", None), "toolkit"),
+                _bounded_text(getattr(error, "toolkit_type", None), "mcp"),
+                _bounded_text(getattr(error, "tool_name", None), "authorize"),
+            )
+        )
+        run_id = f"mcp-auth-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32]}"
+        callback_name = (
+            getattr(error, "tool_name", None)
+            or getattr(error, "toolkit_name", None)
+            or "mcp_authorization"
+        )
+        self._guard(
+            self._pause_for_authorization,
+            run_id,
+            error,
+            None,
+            callback_name,
+        )
+        return self.authorization_pause_result()
 
     def emit_terminal(
         self,
