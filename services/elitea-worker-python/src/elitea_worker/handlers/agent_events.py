@@ -9,6 +9,7 @@ table and forwards the live events over SSE.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -56,6 +57,10 @@ _CUSTOM_EVENTS: dict[str, tuple[str, frozenset[str]]] = {
 }
 _MAX_TRACE_TEXT_BYTES = 128 * 1024
 _MAX_AUTHORIZATION_REQUESTS = 16
+_LOADED_SKILL_PREFIX_RE = re.compile(r'^Skill "([^"]+)" is now active')
+_LOAD_SKILL_ALREADY_ACTIVE_RE = re.compile(
+    r'^Skill "([^"]+)" is already (?:loaded|active)'
+)
 _CUSTOM_STATE_TRANSCRIPT_FIELDS = ("messages", "chat_history")
 _AUTHORIZATION_PRIVATE_KEYS = frozenset(
     {
@@ -150,6 +155,46 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         self._last_thinking: dict[str, str] = {}
         self._authorization_requests: dict[str, dict[str, Any]] = {}
         self._authorization_pause_message: str | None = None
+        self._applied_skills: list[dict[str, Any]] = []
+        self._skills_by_name: dict[str, dict[str, Any]] = {}
+
+    def configure_skills(
+        self,
+        *,
+        applied_skills: list[Any] | None,
+        attached_skills: list[Any] | None,
+    ) -> None:
+        """Install the current turn-scoped skill projection.
+
+        The callback owns only compact UI/persistence metadata. Instruction
+        bodies continue to cross exclusively through the SDK configurable
+        channel and are never copied into partial or terminal browser events.
+        """
+
+        applied: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in applied_skills or []:
+            if not isinstance(raw, dict):
+                continue
+            name = raw.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            key = name.strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            applied.append(_compact_skill(raw, name=name))
+        registry: dict[str, dict[str, Any]] = {}
+        for raw in attached_skills or []:
+            if not isinstance(raw, dict):
+                continue
+            name = raw.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            registry.setdefault(name.strip().lower(), dict(raw))
+        with self._lock:
+            self._applied_skills = applied
+            self._skills_by_name = registry
 
     def emit_agent_start(self, *, invoked_skills: list[Any] | None = None) -> None:
         self._emit("agent_start", response_metadata={"invoked_skills": invoked_skills or []})
@@ -257,7 +302,9 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             response_metadata={
                 "project_id": self._context.project_id,
                 "chat_project_id": self._context.chat_project_id,
-                "application_details": _json_value(payload.application),
+                "application_details": _public_application_details(
+                    payload.application
+                ),
                 "thread_id": thread_id,
                 "llm_start_timestamp": None,
                 "additional_response_meta": {},
@@ -270,7 +317,7 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
                 "hitl_resume": payload.hitl_resume,
                 "parallel_reconcile": bool(payload.parallel_reconcile),
                 "context_info": _json_value(result.get("context_info")),
-                "invoked_skills": _json_value(payload.invoked_skills),
+                "invoked_skills": self._applied_skills_snapshot(),
             },
         )
 
@@ -379,6 +426,19 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             "tool_output": None,
             "error": None,
         }
+        if tool_name == "load_skill":
+            requested = inputs.get("skill") if isinstance(inputs, dict) else None
+            if isinstance(requested, str) and requested.strip():
+                with self._lock:
+                    registered = dict(
+                        self._skills_by_name.get(requested.strip().lower(), {})
+                    )
+                loaded_name = registered.get("name") or requested.strip()
+                tool_meta["loaded_skill"] = loaded_name
+                icon_meta = registered.get("icon_meta")
+                if icon_meta:
+                    entry["metadata"]["icon_meta"] = _json_value(icon_meta)
+                    tool_meta["icon_meta"] = _json_value(icon_meta)
         with self._lock:
             self._tools[selected] = entry
         self._emit("agent_tool_start", response_metadata=entry)
@@ -494,7 +554,11 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             entry = dict(previous)
             entry["timestamp_finish"] = _now()
             entry["finish_reason"] = "error" if failed else "stop"
-            entry["tool_output"] = None if failed else _trace_text(value)
+            public_output = None if failed else _trace_text(value)
+            if not failed and entry.get("tool_name") == "load_skill":
+                self._record_loaded_skill_locked(public_output or "")
+                public_output = _public_load_skill_output(public_output)
+            entry["tool_output"] = public_output
             entry["error"] = _trace_text(value) if failed else None
             self._tools[selected] = entry
         self._emit(
@@ -656,10 +720,6 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         fields so consumers can distinguish a bounded projection.
         """
 
-        if len(self._event_json(event_type, response_metadata=payload)) <= (
-            MAX_CURRENT_NODE_EVENT_JSON_BYTES
-        ):
-            return payload
         state = payload.get("state")
         if not isinstance(state, dict):
             return payload
@@ -695,8 +755,29 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
                 "thinking_steps": thinking_steps or [],
                 "tool_calls": tool_calls or {},
                 "additional_response_meta": {},
+                "invoked_skills": self._applied_skills_snapshot(),
             },
         )
+
+    def _record_loaded_skill_locked(self, output: str) -> None:
+        match = _LOADED_SKILL_PREFIX_RE.match(output) or (
+            _LOAD_SKILL_ALREADY_ACTIVE_RE.match(output)
+        )
+        if match is None:
+            return
+        name = match.group(1)
+        key = name.strip().lower()
+        if any(
+            (skill.get("name") or "").strip().lower() == key
+            for skill in self._applied_skills
+        ):
+            return
+        registered = self._skills_by_name.get(key, {})
+        self._applied_skills.append(_compact_skill(registered, name=name))
+
+    def _applied_skills_snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(skill) for skill in self._applied_skills]
 
     def _emit(
         self,
@@ -992,6 +1073,56 @@ def _trace_text(value: Any) -> str | None:
         encoded = encoded[:_MAX_TRACE_TEXT_BYTES]
         value = encoded.decode("utf-8", errors="ignore")
     return value
+
+
+def _compact_skill(raw: dict[str, Any], *, name: str) -> dict[str, Any]:
+    """Return the current UI/persistence skill identity without its body."""
+
+    return {
+        "skill_id": _json_value(raw.get("skill_id")),
+        "name": name,
+        "icon_meta": _json_value(raw.get("icon_meta")),
+    }
+
+
+def _public_load_skill_output(output: str | None) -> str | None:
+    """Keep browser trace status while withholding the instruction body."""
+
+    if output is None:
+        return None
+    match = _LOADED_SKILL_PREFIX_RE.match(output) or (
+        _LOAD_SKILL_ALREADY_ACTIVE_RE.match(output)
+    )
+    if match is None:
+        return "The requested skill is active."
+    return f'Skill "{match.group(1)}" is active.'
+
+
+def _public_application_details(application: Any) -> Any:
+    """Project application metadata without attached skill instructions."""
+
+    projected = _json_value(application)
+    if not isinstance(projected, dict):
+        return projected
+    version_details = projected.get("version_details")
+    if not isinstance(version_details, dict):
+        return projected
+    skills = version_details.get("skills")
+    if not isinstance(skills, list):
+        return projected
+    public_skills = []
+    for raw in skills:
+        if not isinstance(raw, dict):
+            public_skills.append(raw)
+            continue
+        skill = dict(raw)
+        skill.pop("instructions", None)
+        public_skills.append(skill)
+    public_version = dict(version_details)
+    public_version["skills"] = public_skills
+    public_application = dict(projected)
+    public_application["version_details"] = public_version
+    return public_application
 
 
 def _json_value(value: Any, *, depth: int = 0) -> Any:

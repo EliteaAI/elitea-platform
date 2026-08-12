@@ -113,3 +113,41 @@ CREATE TABLE entity_tool_mapping (
     CONSTRAINT entity_tool_mapping_version_tool_type_unique
         UNIQUE (entity_version_id, tool_id, entity_type)
 );
+
+-- Existing current-schema Skills projections used only to keep direct
+-- application admission type-checked. These declarations are SQLC compiler
+-- inputs, not migrations; the tenant schema lifecycle remains their owner.
+CREATE TABLE skills (
+    id serial PRIMARY KEY,
+    name varchar(128) NOT NULL,
+    description varchar(2304) NOT NULL,
+    owner_id integer NOT NULL,
+    author_id integer NOT NULL,
+    created_at timestamp NOT NULL DEFAULT now(),
+    uuid uuid UNIQUE DEFAULT gen_random_uuid(),
+    meta jsonb DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE skill_versions (
+    id serial PRIMARY KEY,
+    skill_id integer NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    name varchar(128) NOT NULL DEFAULT 'base',
+    instructions text NOT NULL,
+    author_id integer NOT NULL,
+    created_at timestamp NOT NULL DEFAULT now(),
+    uuid uuid UNIQUE DEFAULT gen_random_uuid(),
+    meta jsonb DEFAULT '{}'::jsonb,
+    CONSTRAINT skill_version_name_unique UNIQUE (skill_id, name)
+);
+
+CREATE TABLE entity_skill_mapping (
+    id serial PRIMARY KEY,
+    entity_version_id integer NOT NULL,
+    entity_type varchar(50) NOT NULL,
+    skill_id integer NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    skill_version_id integer REFERENCES skill_versions(id),
+    created_at timestamp NOT NULL DEFAULT now(),
+    updated_at timestamp,
+    CONSTRAINT entity_skill_mapping_unique
+        UNIQUE (entity_version_id, skill_id, entity_type)
+);

@@ -107,6 +107,30 @@ SELECT conversation.id AS conversation_id,
                  AND application_tool_mapping.entity_id = application_version.application_id
                  AND application_tool_mapping.entity_type = 'agent'
            ), '[]'::jsonb),
+           'skills', COALESCE((
+               SELECT jsonb_agg(
+                   jsonb_build_object(
+                       'skill_id', skill_mapping.skill_id,
+                       'skill_version_id', skill_mapping.skill_version_id,
+                       'name', skill.name,
+                       'description', skill.description,
+                       'version_name', COALESCE(skill_version.name, 'unknown'),
+                       'icon_meta', CASE
+                           WHEN skill_version.id IS NULL THEN 'null'::jsonb
+                           ELSE COALESCE(skill_version.meta -> 'icon_meta', 'null'::jsonb)
+                       END,
+                       'instructions', COALESCE(skill_version.instructions, '')
+                   )
+                   ORDER BY skill_mapping.id
+               )
+               FROM entity_skill_mapping AS skill_mapping
+               JOIN skills AS skill
+                 ON skill.id = skill_mapping.skill_id
+               LEFT JOIN skill_versions AS skill_version
+                 ON skill_version.id = skill_mapping.skill_version_id
+               WHERE skill_mapping.entity_version_id = application_version.id
+                 AND skill_mapping.entity_type = 'agent'
+           ), '[]'::jsonb),
            'tags', '[]'::jsonb,
            'variables', '[]'::jsonb
        )::text AS application_version_details_json

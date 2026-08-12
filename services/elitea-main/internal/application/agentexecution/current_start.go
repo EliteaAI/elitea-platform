@@ -235,7 +235,11 @@ func currentApplicationInput(
 	target CurrentApplicationTarget,
 	nextInputSuggestion json.RawMessage,
 ) (*runtimev1.AgentExecutionInputV1, error) {
-	userInput, err := json.Marshal(request.UserInput)
+	skills, err := projectCurrentApplicationSkills(request.UserInput, target.VersionDetails)
+	if err != nil {
+		return nil, err
+	}
+	userInput, err := json.Marshal(skills.userInput)
 	if err != nil {
 		return nil, ErrInvalidCurrentAgentStart
 	}
@@ -243,12 +247,12 @@ func currentApplicationInput(
 		"id":              target.ApplicationID,
 		"version_id":      target.ApplicationVersionID,
 		"variables":       json.RawMessage(target.Variables),
-		"version_details": json.RawMessage(target.VersionDetails),
+		"version_details": json.RawMessage(skills.versionDetails),
 	})
 	if err != nil {
 		return nil, ErrInvalidCurrentAgentStart
 	}
-	llm, err := currentApplicationRuntimeLLM(target.VersionDetails)
+	llm, err := currentApplicationRuntimeLLM(skills.versionDetails)
 	if err != nil {
 		return nil, err
 	}
@@ -267,8 +271,8 @@ func currentApplicationInput(
 		UserDeclinedMcpServers: []byte(`[]`), HitlDecisions: []byte(`[]`),
 		ExecutionGeneration: &executionGeneration, Meta: []byte(`{}`),
 		ConversationId: &conversationID, ContextSettings: []byte(`{}`),
-		InvokedSkills: []byte(`[]`), AppliedSkills: []byte(`[]`),
-		AttachedSkills: []byte(`[]`), InputAttachments: []byte(`[]`),
+		InvokedSkills: skills.invoked, AppliedSkills: skills.applied,
+		AttachedSkills: skills.attached, InputAttachments: []byte(`[]`),
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion: bytes.Clone(nextInputSuggestion),
 	}, nil
