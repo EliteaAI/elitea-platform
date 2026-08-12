@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
@@ -40,5 +41,27 @@ func TestRequireProjectAccess(t *testing.T) {
 				t.Fatalf("status = %d, want %d", res.Code, tc.want)
 			}
 		})
+	}
+}
+
+// TestRequireProjectAccess_NilPool guards against a nil *pgxpool.Pool being
+// boxed into the projectAccessQuerier interface, which would produce a
+// non-nil interface value and panic inside pgxpool's Acquire instead of
+// returning the intended 503.
+func TestRequireProjectAccess_NilPool(t *testing.T) {
+	var nilPool *pgxpool.Pool
+
+	r := chi.NewRouter()
+	r.With(RequireProjectAccess(nilPool)).Get("/projects/{projectID}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/projects/12", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "7"}))
+	res := httptest.NewRecorder()
+
+	r.ServeHTTP(res, req)
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusServiceUnavailable)
 	}
 }
