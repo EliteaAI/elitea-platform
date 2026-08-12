@@ -65,6 +65,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -178,10 +179,37 @@ func (h *CostsHandler) Costs(w http.ResponseWriter, r *http.Request) {
 	from, to := h.dateWindow(r)
 	ctx := r.Context()
 
+	// ONE snapshot for both reads.
+	//
+	// The totals and the row listing are two statements over a table the
+	// write-back consumer commits into continuously — that tier is designed to
+	// be seconds-fresh. Under READ COMMITTED each statement takes its own
+	// snapshot even inside a transaction, so without this the two could see
+	// different databases: `by_scope[...].rows` could say 2 while `periods`
+	// holds 1 row and `periods_truncated` is false, which is precisely the
+	// completeness signal those two fields exist to give. REPEATABLE READ
+	// pins both statements to one snapshot, so the listing is always a subset
+	// of exactly the rows the totals were summed from.
+	//
+	// Read-only and rolled back rather than committed: nothing here writes, and
+	// a read-only REPEATABLE READ transaction cannot raise a serialization
+	// failure (only SERIALIZABLE does), so this adds a snapshot guarantee and
+	// no retry path.
+	tx, err := h.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError,
+			map[string]any{"error": "failed to query analytics costs"})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	// The money first, and from an aggregate: every figure this endpoint
 	// reports is summed over the whole window by PostgreSQL, so the row listing
 	// below cannot influence a total by being short.
-	totals, err := h.scopeTotals(ctx, projectID, from, to)
+	totals, err := scopeTotals(ctx, tx, projectID, from, to)
 	if err != nil {
 		// Not an empty breakdown: "no spend" and "the query failed" must not
 		// render as the same screen.
@@ -190,7 +218,7 @@ func (h *CostsHandler) Costs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	periods, truncated, err := h.periods(ctx, projectID, from, to)
+	periods, truncated, err := periods(ctx, tx, projectID, from, to)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError,
 			map[string]any{"error": "failed to query analytics costs"})
@@ -263,14 +291,21 @@ WHERE project_id = $1
   AND period_start < $2
   AND period_end > $3`
 
+// querier is the read seam both queries take, so they run on whatever the
+// caller pins them to — today the one REPEATABLE READ transaction Costs opens,
+// which is what makes the listing a subset of the rows the totals cover.
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // scopeTotals rolls the window up per scope, in PostgreSQL.
 //
 // The sum is an exact NUMERIC aggregate over EVERY matching row, which is what
 // lets the row listing be capped without any figure changing: truncation costs
 // per-row detail and nothing else. Its result is bounded by the number of
 // distinct scopes — a four-value vocabulary — not by the number of rows.
-func (h *CostsHandler) scopeTotals(
-	ctx context.Context, projectID int64, from, to time.Time,
+func scopeTotals(
+	ctx context.Context, db querier, projectID int64, from, to time.Time,
 ) ([]scopeTotal, error) {
 	const statement = `
 SELECT scope, sum(accumulated_cost)::text AS total_cost, count(*) AS rows
@@ -278,7 +313,7 @@ FROM gateway.llm_budget_accumulators` + windowPredicate + `
 GROUP BY scope
 ORDER BY scope ASC`
 
-	rows, err := h.pool.Query(ctx, statement, projectID, to, from)
+	rows, err := db.Query(ctx, statement, projectID, to, from)
 	if err != nil {
 		return nil, err
 	}
@@ -307,8 +342,8 @@ ORDER BY scope ASC`
 // hiding it, and it orders PROJECT-scope rows first so the rows backing the
 // headline figure are the ones that survive a truncation. Within each group the
 // order is chronological.
-func (h *CostsHandler) periods(
-	ctx context.Context, projectID int64, from, to time.Time,
+func periods(
+	ctx context.Context, db querier, projectID int64, from, to time.Time,
 ) (listed []costPeriod, truncated bool, err error) {
 	const statement = `
 SELECT scope, scope_id, period_start, period_end,
@@ -318,7 +353,7 @@ FROM gateway.llm_budget_accumulators` + windowPredicate + `
 ORDER BY (scope = 'project') DESC, period_start ASC, scope ASC, scope_id ASC
 LIMIT $4`
 
-	rows, err := h.pool.Query(ctx, statement, projectID, to, from, maxPeriodRows+1)
+	rows, err := db.Query(ctx, statement, projectID, to, from, maxPeriodRows+1)
 	if err != nil {
 		return nil, false, err
 	}

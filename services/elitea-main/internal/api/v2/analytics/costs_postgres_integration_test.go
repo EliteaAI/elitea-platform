@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -436,6 +437,39 @@ func TestCostBreakdownReportsAnUncappedListingAsComplete(t *testing.T) {
 		fmt.Sprintf("/analytics_costs/prompt_lib/%d", costProjectID)))
 	if truncated, _ := body["periods_truncated"].(bool); truncated {
 		t.Fatal("periods_truncated = true on a one-row listing")
+	}
+}
+
+/* ── the access path both queries need ─────────────────────────────────── */
+
+// Both of this endpoint's queries filter on project_id, which is not the
+// leading column of any index this table shipped with — the primary key, the
+// (scope, scope_id, period_start) unique constraint and the partial outage
+// index all lead with something else. Without 004 they are sequential scans of
+// a table that only grows, repeated on every dashboard load.
+//
+// The schema here is the REAL gateway migration set, so this fails if 004 is
+// dropped, renamed away or has its columns reordered.
+func TestCostBreakdownHasAnIndexForItsProjectFilter(t *testing.T) {
+	pool, _ := newCostsEnvironment(t)
+
+	var columns string
+	err := pool.QueryRow(context.Background(), `
+SELECT pg_get_indexdef(index.indexrelid)
+FROM pg_index AS index
+JOIN pg_class AS table_class ON table_class.oid = index.indrelid
+JOIN pg_namespace AS schema ON schema.oid = table_class.relnamespace
+WHERE schema.nspname = 'gateway'
+  AND table_class.relname = 'llm_budget_accumulators'
+  AND pg_get_indexdef(index.indexrelid) LIKE '%(project_id%'`).Scan(&columns)
+	if err != nil {
+		t.Fatalf("no index leads with project_id on gateway.llm_budget_accumulators — "+
+			"both cost queries fall back to a sequential scan (%v)", err)
+	}
+	// period_start second is what turns the window filter into a range scan
+	// rather than a recheck over every period the project has ever had.
+	if !strings.Contains(columns, "period_start") {
+		t.Fatalf("index is %q, want project_id followed by period_start", columns)
 	}
 }
 
