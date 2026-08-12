@@ -65,7 +65,7 @@ import type {
   OkResponse,
   Project,
   ProjectContext,
-  ProjectGroupsUpdate,
+  ProjectWithGroups,
   PublicApplicationDetail,
   PublicApplicationList,
   PublishSuccessResponse,
@@ -3434,16 +3434,49 @@ export const getListGroupsResponseMock = (
   ...overrideResponse,
 });
 
+export const getAddProjectGroupResponseMock = (
+  overrideResponse: Partial<Extract<ProjectWithGroups, object>> = {},
+): ProjectWithGroups => ({
+  id: faker.number.int(),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  owner_id: faker.number.int(),
+  plugins: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  keycloak_groups: {},
+  create_success: faker.datatype.boolean(),
+  suspended: faker.datatype.boolean(),
+  groups: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.number.int(),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  ...overrideResponse,
+});
+
 export const getPutProjectGroupsResponseMock = (
-  overrideResponse: Partial<Extract<ProjectGroupsUpdate, object>> = {},
-): ProjectGroupsUpdate => ({
-  groups: faker.helpers.arrayElement([
-    Array.from(
-      { length: faker.number.int({ min: 1, max: 10 }) },
-      (_, i) => i + 1,
-    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
-    undefined,
-  ]),
+  overrideResponse: Partial<Extract<ProjectWithGroups, object>> = {},
+): ProjectWithGroups => ({
+  id: faker.number.int(),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  owner_id: faker.number.int(),
+  plugins: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  keycloak_groups: {},
+  create_success: faker.datatype.boolean(),
+  suspended: faker.datatype.boolean(),
+  groups: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.number.int(),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
   ...overrideResponse,
 });
 
@@ -4417,12 +4450,60 @@ export const getListGroupsMockHandler = (
   );
 };
 
+export const getAddProjectGroupMockHandler = (
+  overrideResponse?:
+    | ProjectWithGroups
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<ProjectWithGroups> | ProjectWithGroups),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/projects/group/prompt_lib/:projectId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getAddProjectGroupResponseMock(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveProjectGroupMockHandler = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<Parameters<typeof http.delete>[1]>[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete(
+    "*/projects/group/prompt_lib/:projectId/:groupId",
+    async (info: Parameters<Parameters<typeof http.delete>[1]>[0]) => {
+      await delay(0);
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
 export const getPutProjectGroupsMockHandler = (
   overrideResponse?:
-    | ProjectGroupsUpdate
+    | ProjectWithGroups
     | ((
         info: Parameters<Parameters<typeof http.put>[1]>[0],
-      ) => Promise<ProjectGroupsUpdate> | ProjectGroupsUpdate),
+      ) => Promise<ProjectWithGroups> | ProjectWithGroups),
   options?: RequestHandlerOptions,
 ) => {
   return http.put(
@@ -4532,6 +4613,8 @@ export const getApplicationsMock = () => [
   getGetAgentCategoriesMockHandler(),
   getListProjectsMockHandler(),
   getListGroupsMockHandler(),
+  getAddProjectGroupMockHandler(),
+  getRemoveProjectGroupMockHandler(),
   getPutProjectGroupsMockHandler(),
   getGetProjectContextMockHandler(),
   getUpdateProjectContextMockHandler(),

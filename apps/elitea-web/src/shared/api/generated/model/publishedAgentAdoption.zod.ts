@@ -41,17 +41,16 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
+export const PublishedAgentAdoption = zod
   .object({
-    groups: zod
-      .array(zod.string())
-      .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
-      ),
+    conversation_count: zod.int().nullable(),
+    project_count: zod.int().nullable(),
   })
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    'NOTE(W2): internal\/api\/v2\/eliteacore\/admin_published_agents.go:47-54. Both counters are NULL when the agent\'s `meta.adoption` is absent — nothing in this stack writes that key. The reference defaults them to 0, which renders as \"nobody uses this\" rather than \"this platform does not measure that\".\n',
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type PublishedAgentAdoption = zod.input<typeof PublishedAgentAdoption>;
+export type PublishedAgentAdoptionOutput = zod.output<
+  typeof PublishedAgentAdoption
+>;

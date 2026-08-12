@@ -40,18 +40,28 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { UserProjectRoleMap } from "./userProjectRoleMap.zod";
 
-export const ProjectGroupsUpdate = zod
+export const UserProjectPermissionsResult = zod
   .object({
-    groups: zod
-      .array(zod.string())
+    role_map: UserProjectRoleMap,
+    projects: zod.int().describe("How many projects the save was applied to."),
+    roles_created: zod.int(),
+    granted: zod.int(),
+    revoked: zod.int(),
+    roles_assigned: zod
+      .int()
       .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
+        "Role assignments added to existing members by ?append_user_role.",
       ),
   })
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    "NOTE(W2): internal\/api\/v2\/admin\/user_project_permissions.go:180-187. `role_map` is the reference's own response field; the counters are what make a no-op distinguishable from a save.\n",
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type UserProjectPermissionsResult = zod.input<
+  typeof UserProjectPermissionsResult
+>;
+export type UserProjectPermissionsResultOutput = zod.output<
+  typeof UserProjectPermissionsResult
+>;

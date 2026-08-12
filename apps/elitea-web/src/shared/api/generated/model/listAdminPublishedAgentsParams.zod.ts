@@ -41,17 +41,25 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
-  .object({
-    groups: zod
-      .array(zod.string())
-      .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
-      ),
-  })
-  .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
-  );
+export const listAdminPublishedAgentsParamsPageDefault = 1;
+export const listAdminPublishedAgentsParamsPageSizeDefault = 20;
+export const listAdminPublishedAgentsParamsPageSizeMax = 100;
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export const listAdminPublishedAgentsParamsSortDefault = `created_at`;
+export const ListAdminPublishedAgentsParams = zod.object({
+  page: zod.int().default(listAdminPublishedAgentsParamsPageDefault),
+  page_size: zod
+    .int()
+    .max(listAdminPublishedAgentsParamsPageSizeMax)
+    .default(listAdminPublishedAgentsParamsPageSizeDefault),
+  sort: zod
+    .enum(["created_at", "name"])
+    .default(listAdminPublishedAgentsParamsSortDefault),
+});
+
+export type ListAdminPublishedAgentsParams = zod.input<
+  typeof ListAdminPublishedAgentsParams
+>;
+export type ListAdminPublishedAgentsParamsOutput = zod.output<
+  typeof ListAdminPublishedAgentsParams
+>;

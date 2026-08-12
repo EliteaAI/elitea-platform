@@ -41,17 +41,18 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
+export const ModeRoleRemoveResult = zod
   .object({
-    groups: zod
-      .array(zod.string())
+    ok: zod.boolean(),
+    removed: zod
+      .int()
       .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
+        "Assignments deleted. Never 0 — an id that matched none is a 404.",
       ),
   })
-  .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
-  );
+  .describe("NOTE(W2): internal\/api\/v2\/admin\/modes.go:290.\n");
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type ModeRoleRemoveResult = zod.input<typeof ModeRoleRemoveResult>;
+export type ModeRoleRemoveResultOutput = zod.output<
+  typeof ModeRoleRemoveResult
+>;

@@ -40,18 +40,14 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { ModeRoleAssignment } from "./modeRoleAssignment.zod";
 
-export const ProjectGroupsUpdate = zod
+export const ModeRoleListing = zod
   .object({
-    groups: zod
-      .array(zod.string())
-      .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
-      ),
+    total: zod.int(),
+    rows: zod.array(ModeRoleAssignment),
   })
-  .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
-  );
+  .describe("NOTE(W2): internal\/api\/v2\/admin\/modes.go:104-107.\n");
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type ModeRoleListing = zod.input<typeof ModeRoleListing>;
+export type ModeRoleListingOutput = zod.output<typeof ModeRoleListing>;

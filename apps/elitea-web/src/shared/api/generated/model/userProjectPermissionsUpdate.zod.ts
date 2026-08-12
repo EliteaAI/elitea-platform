@@ -40,18 +40,18 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { PermissionMatrixRow } from "./permissionMatrixRow.zod";
+import { UserProjectRoleMap } from "./userProjectRoleMap.zod";
 
-export const ProjectGroupsUpdate = zod
-  .object({
-    groups: zod
-      .array(zod.string())
-      .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
-      ),
-  })
+export const UserProjectPermissionsUpdate = zod
+  .union([UserProjectRoleMap, zod.array(PermissionMatrixRow)])
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    "NOTE(W2): internal\/api\/v2\/admin\/user_project_permissions.go:373-420 — both shapes the reference accepts: the role map, or the matrix rows the GET returns with ?old_format.\n",
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type UserProjectPermissionsUpdate = zod.input<
+  typeof UserProjectPermissionsUpdate
+>;
+export type UserProjectPermissionsUpdateOutput = zod.output<
+  typeof UserProjectPermissionsUpdate
+>;

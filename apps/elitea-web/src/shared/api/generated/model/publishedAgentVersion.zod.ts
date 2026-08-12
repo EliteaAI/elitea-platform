@@ -41,17 +41,26 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
+export const PublishedAgentVersion = zod
   .object({
-    groups: zod
-      .array(zod.string())
+    version_id: zod.int(),
+    version_name: zod.string(),
+    published_at: zod
+      .string()
+      .nullable()
+      .describe("The version's creation timestamp, `YYYY-MM-DDTHH:MM:SS`."),
+    published_by: zod
+      .unknown()
+      .nullable()
       .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
+        "`meta.published_by` of the version, verbatim. Unconstrained because it is whatever the publishing path stored there.\n",
       ),
   })
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    "NOTE(W2): internal\/api\/v2\/eliteacore\/admin_published_agents.go:40-45.\n",
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type PublishedAgentVersion = zod.input<typeof PublishedAgentVersion>;
+export type PublishedAgentVersionOutput = zod.output<
+  typeof PublishedAgentVersion
+>;

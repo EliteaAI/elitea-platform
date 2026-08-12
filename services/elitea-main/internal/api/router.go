@@ -545,7 +545,15 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			).Routes())
 
 			// === Projects endpoints ===
-			r.Mount("/projects", v2projects.NewHandler(cfg.Pool).Routes())
+			//
+			// The resolver is passed into the handler rather than wrapped around
+			// the mount: the three group WRITES are gated per route inside
+			// `Routes()`, because chi cannot carry a per-route gate across a
+			// Mount boundary and the project LIST must stay open to any member.
+			r.Mount("/projects", v2projects.NewHandler(
+				cfg.Pool,
+				v2projects.WithPermissionResolver(permissionResolver),
+			).Routes())
 
 			// === Admin endpoints ===
 			adminHandler := admin.NewHandler(cfg.Pool, admin.WithPermissionResolver(permissionResolver))
@@ -627,6 +635,33 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.With(requireAdminUsers).Get("/auth_users/{mode}", adminHandler.AuthUsers)
 				r.With(requireAdminUsers).Post("/auth_users/{mode}", adminHandler.AuthUsersAction)
 				r.With(requireAdminUsers).Put("/user_suspend/{mode}/{userID}", adminHandler.UserSuspend)
+				// The MODES registry and the GLOBAL invite (#255). Both are
+				// pylon `AdminAPI`-only surfaces — `mode_handlers` names
+				// `administration` and nothing else — so the segment is STATIC
+				// and another mode 404s rather than reaching a handler that
+				// would have to guess what it meant. Both declare
+				// `["modes.users"]` in their check_api decorators.
+				//
+				// `/modes/administration` writes auth_core__user_role, the same
+				// table `/auth_users` set_admin_role writes, so it carries the
+				// same super_admin escalation guard — otherwise it would be a
+				// second, unguarded route to the platform's highest role.
+				requireModeUsers := central("modes.users")
+				r.With(requireModeUsers).Get("/modes/administration", adminHandler.Modes)
+				r.With(requireModeUsers).Post("/modes/administration", adminHandler.ModesAssign)
+				r.With(requireModeUsers).Delete("/modes/administration", adminHandler.ModesRemove)
+				r.With(requireModeUsers).Post("/user_invite/administration", adminHandler.UserInvite)
+				// The personal/team project permission editor (#255) — the
+				// matrix every ORDINARY project gets, as opposed to the named
+				// scopes `/permissions/{scope}/{mode}` edits. Gated on the
+				// permissions user_project_permissions.py declares, resolved
+				// centrally: it writes across every personal (or every shared)
+				// project at once, and the operator doing that is a member of
+				// none of them.
+				r.With(central(admin.UserProjectPermissionsViewPermission)).
+					Get("/user_project_permissions/administration", adminHandler.UserProjectPermissions)
+				r.With(central(admin.UserProjectPermissionsEditPermission)).
+					Put("/user_project_permissions/administration", adminHandler.UserProjectPermissionsSave)
 				// The admin Roles page. Before it, only the GET existed —
 				// ungated, ignoring {scope}, and listing only already-granted
 				// permissions. See internal/api/v2/admin/roles.go.
@@ -1302,6 +1337,19 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// is itself information about it.
 				r.With(central(v2core.ServiceDescriptorListPermission)).
 					Get("/admin/administration", coreHandler.ServiceDescriptors)
+				// The admin dashboard's published-agents adoption listing
+				// (#255), registered next to the other `/…/administration`
+				// admin routes. `administration` is the only mode pylon's
+				// admin_published_agents.py registers, so it is a STATIC
+				// segment here too. Gated on the permission that file declares,
+				// resolved in administration mode: the listing names every
+				// agent this deployment has published and who published it.
+				//
+				// A handler by this name already existed in the eliteacore
+				// package and was mounted on NO route — see the note where it
+				// used to be, in handler.go.
+				r.With(central(v2core.PublishedAgentsListPermission)).
+					Get("/admin_published_agents/administration", coreHandler.AdminPublishedAgents)
 				requireDescriptorRegister := central(v2core.ServiceDescriptorRegisterPermission)
 				r.With(requireDescriptorRegister).
 					Post("/register_descriptor/{projectID}", coreHandler.RegisterDescriptor)

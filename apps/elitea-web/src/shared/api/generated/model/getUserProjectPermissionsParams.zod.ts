@@ -41,17 +41,13 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
-  .object({
-    groups: zod
-      .array(zod.string())
-      .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
-      ),
-  })
-  .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
-  );
+export const GetUserProjectPermissionsParams = zod.object({
+  old_format: zod.boolean().optional(),
+});
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type GetUserProjectPermissionsParams = zod.input<
+  typeof GetUserProjectPermissionsParams
+>;
+export type GetUserProjectPermissionsParamsOutput = zod.output<
+  typeof GetUserProjectPermissionsParams
+>;

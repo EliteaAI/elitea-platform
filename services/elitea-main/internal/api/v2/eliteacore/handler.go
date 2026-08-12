@@ -1569,101 +1569,13 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) AdminPublishedAgents(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	schemaRows, err := h.pool.Query(ctx, `SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
-		return
-	}
-	defer schemaRows.Close()
-
-	var schemas []string
-	for schemaRows.Next() {
-		var s string
-		if schemaRows.Scan(&s) != nil {
-			continue
-		}
-		schemas = append(schemas, s)
-	}
-
-	// Group published versions by application
-	type pubVersion struct {
-		versionID   string
-		versionName string
-		status      string
-	}
-	type agentEntry struct {
-		appID       string
-		name        string
-		description string
-		projectID   string
-		versions    []pubVersion
-	}
-	agentMap := map[string]*agentEntry{} // key: "projectID:appID"
-	var orderedKeys []string
-
-	for _, s := range schemas {
-		projectID := strings.TrimPrefix(s, "p_")
-		q := fmt.Sprintf(`
-			SELECT a.id, a.name, COALESCE(a.description,''), av.id, av.name, av.status
-			FROM %q.application_versions av
-			JOIN %q.applications a ON a.id = av.application_id
-			WHERE av.status = 'published'
-			ORDER BY av.id DESC`, s, s)
-		rows, err := h.pool.Query(ctx, q)
-		if err != nil {
-			continue
-		}
-		for rows.Next() {
-			var aID, vID int
-			var aName, aDesc, vName, vStatus string
-			if rows.Scan(&aID, &aName, &aDesc, &vID, &vName, &vStatus) == nil {
-				key := projectID + ":" + strconv.Itoa(aID)
-				if _, exists := agentMap[key]; !exists {
-					agentMap[key] = &agentEntry{
-						appID:       strconv.Itoa(aID),
-						name:        aName,
-						description: aDesc,
-						projectID:   projectID,
-					}
-					orderedKeys = append(orderedKeys, key)
-				}
-				agentMap[key].versions = append(agentMap[key].versions, pubVersion{
-					versionID:   strconv.Itoa(vID),
-					versionName: vName,
-					status:      vStatus,
-				})
-			}
-		}
-		rows.Close()
-	}
-
-	items := make([]map[string]any, 0, len(orderedKeys))
-	for _, key := range orderedKeys {
-		e := agentMap[key]
-		pvs := make([]map[string]any, len(e.versions))
-		for i, v := range e.versions {
-			pvs[i] = map[string]any{
-				"version_id":   v.versionID,
-				"version_name": v.versionName,
-				"status":       v.status,
-			}
-		}
-		items = append(items, map[string]any{
-			"public_agent_id": e.appID,
-			"name":            e.name,
-			"description":     e.description,
-			"project_id":      e.projectID,
-			"published_versions": pvs,
-			"adoption": map[string]any{
-				"conversation_count": 0,
-				"project_count":      0,
-			},
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
-}
+// `AdminPublishedAgents` used to sit here: dead code with no caller — no route
+// in internal/api/router.go referenced it — that walked EVERY `p_%` schema in
+// information_schema, swallowed any query error into an empty page, reported
+// `adoption` as two hardcoded zeroes and returned no pagination at all. The
+// real listing is internal/api/v2/eliteacore/admin_published_agents.go, which
+// reads the public project the way the pylon original does and is registered on
+// `GET /elitea_core/admin_published_agents/administration`.
 
 func (h *Handler) TrendingAuthors(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, []any{})

@@ -40,18 +40,22 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { ProjectGroup } from "./projectGroup.zod";
 
-export const ProjectGroupsUpdate = zod
+export const ProjectWithGroups = zod
   .object({
-    groups: zod
-      .array(zod.string())
-      .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
-      ),
+    id: zod.int(),
+    name: zod.string(),
+    owner_id: zod.int(),
+    plugins: zod.array(zod.string()),
+    keycloak_groups: zod.record(zod.string(), zod.unknown()),
+    create_success: zod.boolean(),
+    suspended: zod.boolean(),
+    groups: zod.array(ProjectGroup),
   })
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    "NOTE(W2): internal\/api\/v2\/projects\/groups.go:295-330 — the body all three group writes return, mirroring the reference's ProjectListModel, so a client re-renders the group chips without re-fetching.\n",
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type ProjectWithGroups = zod.input<typeof ProjectWithGroups>;
+export type ProjectWithGroupsOutput = zod.output<typeof ProjectWithGroups>;

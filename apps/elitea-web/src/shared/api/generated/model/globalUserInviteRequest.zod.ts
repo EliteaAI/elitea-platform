@@ -41,17 +41,16 @@
  */
 import { z as zod } from "zod";
 
-export const ProjectGroupsUpdate = zod
+export const GlobalUserInviteRequest = zod
   .object({
-    groups: zod
-      .array(zod.string())
-      .describe(
-        "The project's WHOLE group set, by name. `no_group` is rejected.\n",
-      ),
+    user_name: zod.string(),
+    user_email: zod.string(),
   })
   .describe(
-    "NOTE(W2): request body of putProjectGroups (internal\/api\/v2\/projects\/groups.go:186-188). It is no longer echoed back: the response is the project, as the reference serializes it.\n",
+    "NOTE(W2): internal\/api\/v2\/admin\/user_invite.go:62-65. Distinct from UserInviteRequest, which is the PROJECT invite (emails + roles).\n",
   );
 
-export type ProjectGroupsUpdate = zod.input<typeof ProjectGroupsUpdate>;
-export type ProjectGroupsUpdateOutput = zod.output<typeof ProjectGroupsUpdate>;
+export type GlobalUserInviteRequest = zod.input<typeof GlobalUserInviteRequest>;
+export type GlobalUserInviteRequestOutput = zod.output<
+  typeof GlobalUserInviteRequest
+>;
