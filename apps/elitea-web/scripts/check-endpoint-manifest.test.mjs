@@ -151,8 +151,15 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * listAgentsWithSkill) landed in v2.yaml alongside
  * internal/api/v2/skillpublish. None is in the endpoint manifest yet — that
  * PR ships no UI — so MANIFEST_ENTRY_COUNT is again unchanged.
+ * 117 -> 120 when issue #252 added the MCP surface: three new spec operations
+ * (listRegisteredMcpServers, callRegisteredMcpServerTool,
+ * getInternalMcpPatStatus) landed in v2.yaml alongside
+ * internal/api/v2/mcp. The MCP protocol endpoints that change also adds
+ * (/app/{project_id}/mcp and its variants) are JSON-RPC and deliberately not
+ * in v2.yaml, so they do not count. No UI ships with it, so
+ * MANIFEST_ENTRY_COUNT is unchanged.
  */
-const GENERATED_OPERATION_COUNT = 117;
+const GENERATED_OPERATION_COUNT = 120;
 const MANIFEST_ENTRY_COUNT = 179;
 
 describe('GREEN — the real, checked-in manifest', () => {
