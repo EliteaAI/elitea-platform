@@ -473,7 +473,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 // column was written empty and the row belonged to none of the sections the
 // AI-Configuration page queries (#131). The registry entry for the type is
 // the authority (open_ai → ai_credentials), matching what the current
-// mutation service does (application/configurations/current_mutation.go).
+// mutation service does (application/configurations/mutation.go).
 // An explicit body value still wins, and an unknown type still stores "".
 func (h *Handler) sectionFor(configType, requested string) string {
 	if requested != "" {

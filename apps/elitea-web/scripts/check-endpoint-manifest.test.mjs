@@ -141,7 +141,7 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * issues those exact requests.
  * 104 -> 106 when issue #251 added the social-avatar routes: two new spec
  * operations (`getCurrentSocialAvatar`, `uploadCurrentSocialAvatar`) landed
- * in v2.yaml alongside internal/api/v2/social/current_avatar.go. Neither is
+ * in v2.yaml alongside internal/api/v2/social/avatar.go. Neither is
  * in the endpoint manifest yet (it stays handwritten, not yet landed, same
  * as most P1 API-* items), so MANIFEST_ENTRY_COUNT is unchanged.
  */

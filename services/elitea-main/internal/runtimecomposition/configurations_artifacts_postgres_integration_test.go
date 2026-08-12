@@ -296,7 +296,7 @@ CREATE TABLE centry.secrets_data (
 		t.Fatalf("prepare current project vault schema: %v", err)
 	}
 	// Fixture key/token pair copied from
-	// internal/infra/db/repos/current_secret_vault_test.go (test-only fernet
+	// internal/infra/db/repos/secret_vault_test.go (test-only fernet
 	// material, not a real secret) — this package can't import that
 	// unexported constant across the package boundary.
 	const projectKey = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8="

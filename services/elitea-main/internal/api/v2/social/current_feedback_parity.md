@@ -70,7 +70,7 @@ untrusted inputs accepted by Pydantic v1 coercion:
 
 ## Verification
 
-`current_feedback_test.go` provides unit/component coverage for:
+`feedback_test.go` provides unit/component coverage for:
 
 - both project-scoped paths and method rejection;
 - exact RBAC mode and permission;
@@ -79,7 +79,7 @@ untrusted inputs accepted by Pydantic v1 coercion:
 - bounded parsing, strict validation, exact success/error envelopes;
 - storage failure and incomplete composition.
 
-`current_feedback_postgres_integration_test.go` crosses the in-process HTTP,
+`feedback_postgres_integration_test.go` crosses the in-process HTTP,
 principal validation, current PostgreSQL RBAC resolver, and real PostgreSQL
 storage boundaries. It proves:
 
