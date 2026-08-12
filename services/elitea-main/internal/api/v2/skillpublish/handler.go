@@ -59,6 +59,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -146,7 +147,11 @@ func actingUserID(ctx context.Context, fallback int) int {
 	if !ok {
 		return fallback
 	}
-	if id, ok := user.OwningUserID(); ok {
+	// The author columns these ids land in are INTEGER, so anything outside
+	// int32 is not a user id this schema can hold — and converting it to `int`
+	// unchecked would truncate it into one that belongs to somebody else on a
+	// 32-bit build. Out of range falls back rather than mis-attributing.
+	if id, ok := user.OwningUserID(); ok && id <= math.MaxInt32 {
 		return int(id)
 	}
 	return fallback

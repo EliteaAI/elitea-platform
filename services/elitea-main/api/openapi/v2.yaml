@@ -2316,6 +2316,18 @@ components:
 
     # ---- Skill publishing (#249) -----------------------------------------
 
+    SkillFieldError:
+      type: object
+      description: >
+        One pydantic-style field error, as the version_name guards emit them
+        (internal/api/v2/skillpublish/publish.go:66-80).
+      properties:
+        loc:
+          type: array
+          items: { type: string }
+        msg: { type: string }
+        type: { type: string }
+
     SkillValidationIssue:
       type: object
       required: [field, issue, fix]
@@ -2330,7 +2342,7 @@ components:
       properties:
         status:
           type: string
-          enum: [PASS, WARN, FAIL]
+          description: PASS, WARN or FAIL.
         critical_issues:
           type: array
           items: { $ref: '#/components/schemas/SkillValidationIssue' }
@@ -2389,6 +2401,13 @@ components:
           type: object
           nullable: true
           additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the skills.meta jsonb column, echoed verbatim
+            (internal/api/v2/skillpublish/public.go:141-145). Publishing writes
+            one key into it, default_version_id
+            (internal/api/v2/skillpublish/publish.go:208-215); everything else
+            is whatever a project or an import put there, so there is no
+            server-side shape to declare.
         tags:
           type: array
           items: { type: string }
@@ -2409,6 +2428,10 @@ components:
           type: object
           nullable: true
           additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the skills.meta jsonb column, echoed verbatim
+            (internal/api/v2/skillpublish/public.go:281-289) — same
+            free-form column as PublicSkillListItem.meta.
         versions:
           type: array
           items: { $ref: '#/components/schemas/PublicSkillVersion' }
@@ -2431,6 +2454,12 @@ components:
               description: >-
                 Presentation keys only — `source_*`, `parent_*` and
                 `published_by` are stripped before the catalog serves it.
+              x-elitea-passthrough: >-
+                NOTE(W2): the skill_versions.meta jsonb column with the lineage
+                keys removed
+                (internal/api/v2/skillpublish/public.go:257-263). What survives
+                is per-version presentation data this service never writes and
+                cannot type.
 
     SkillForkPayload:
       type: object
@@ -2455,6 +2484,10 @@ components:
                 type: object
                 nullable: true
                 additionalProperties: true
+                x-elitea-passthrough: >-
+                  NOTE(W2): the source skills.meta jsonb, copied into the fork
+                  payload unread
+                  (internal/api/v2/skillpublish/export_fork.go:47-77).
               versions:
                 type: array
                 items:
@@ -2468,6 +2501,10 @@ components:
                       type: object
                       nullable: true
                       additionalProperties: true
+                      x-elitea-passthrough: >-
+                        NOTE(W2): the source skill_versions.meta jsonb, copied
+                        into the fork payload unread
+                        (internal/api/v2/skillpublish/export_fork.go:88-93).
                     tags:
                       type: array
                       items:
@@ -2477,6 +2514,11 @@ components:
                           data:
                             type: object
                             additionalProperties: true
+                            x-elitea-passthrough: >-
+                              NOTE(W2): tags.data is an untyped jsonb
+                              round-trip on this platform (see Tag.data); the
+                              fork payload emits it as the empty object
+                              (internal/api/v2/skillpublish/export_fork.go:68-71).
 
     Tag:
       type: object
@@ -6150,7 +6192,16 @@ paths:
               schema:
                 type: object
                 properties:
-                  error: {}
+                  error:
+                    oneOf:
+                      - type: string
+                      - type: array
+                        items:
+                          $ref: '#/components/schemas/SkillFieldError'
+                    description: >-
+                      A refusal code, or the pydantic-style field-error list
+                      the version_name checks emit
+                      (internal/api/v2/skillpublish/publish.go:66-80).
                   msg: { type: string }
                   validation_result:
                     $ref: '#/components/schemas/SkillValidationResult'
@@ -6285,10 +6336,12 @@ paths:
           schema: { type: string }
         - name: sort_by
           in: query
-          schema: { type: string, enum: [created_at, name] }
+          description: created_at (default) or name.
+          schema: { type: string }
         - name: sort_order
           in: query
-          schema: { type: string, enum: [asc, desc] }
+          description: asc or desc (default).
+          schema: { type: string }
       responses:
         '200':
           description: Published skills
@@ -6377,8 +6430,11 @@ paths:
                   items: { type: integer }
                 entity_type:
                   type: string
-                  enum: [agent]
                   default: agent
+                  description: >-
+                    Only "agent" is accepted; pylon's SkillEntityTypes enum has
+                    no other member
+                    (internal/api/v2/skillpublish/attach.go:66-72).
       responses:
         '200':
           description: Per-agent attach outcomes
@@ -6520,6 +6576,12 @@ paths:
                           type: object
                           nullable: true
                           additionalProperties: true
+                          x-elitea-passthrough: >-
+                            NOTE(W2): applications.meta->'icon_meta', forwarded
+                            as stored
+                            (internal/api/v2/skillpublish/attach.go:281-287) —
+                            the icon payload's shape is owned by the writer, not
+                            by this route.
         '400': { $ref: '#/components/responses/400' }
 
   # ==========================================================================
