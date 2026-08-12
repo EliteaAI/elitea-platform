@@ -45,7 +45,8 @@ func TestMainWiring(t *testing.T) {
 		{"shutdownSequence(", "the shutdown sequence is never invoked — stream grace, HTTP drain, billing drain and NATS close would not run in the one order that loses no spend (issue #9)"},
 		{"llmproxy.WithOpsEventPublisher(", "budget.unbilled_stream is never published — a stream the gateway could not bill would be invisible to operators (issue #9)"},
 		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
-		{"makeHealthzHandler(", "the NATS circuit-breaker /healthz handler is never mounted — a pod with a dead budget-enforcement path stays in the load-balancer rotation"},
+		{"makeReadyzHandler(", "the NATS circuit-breaker /readyz handler is never mounted — a pod with a dead budget-enforcement path stays in the load-balancer rotation"},
+		{`mux.HandleFunc("/healthz"`, "the liveness /healthz route is never mounted — issue #242's healthz/readyz split silently loses liveness, and the chart's livenessProbe would 404 every pod"},
 		{"drainForShutdown(", "in-flight billing + persist goroutines must be drained before pool.Close() or spend is dropped / a pool races"},
 		{"grace.StopStreamGrace(", "phase 1 of shutdown is missing — the stream grace would extend the pod's termination window (issue #9)"},
 		{"srv.ShutdownHTTP(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
@@ -61,7 +62,12 @@ func TestMainWiring(t *testing.T) {
 	}
 
 	// Collect every selector-call (x.Method(...)) and every bare call (f(...))
-	// across the non-test files of package main.
+	// across the non-test files of package main. A selector call whose first
+	// argument is a string literal (e.g. mux.HandleFunc("/healthz", ...)) is
+	// ALSO keyed by that literal, so two calls to the same method (mounting
+	// two different routes) don't collapse into one indistinguishable key —
+	// otherwise deleting the /healthz mount would be invisible as long as
+	// /readyz's mux.HandleFunc( call still existed.
 	calls := map[string]bool{}
 	for _, name := range goFiles {
 		if strings.HasSuffix(name, "_test.go") {
@@ -79,7 +85,13 @@ func TestMainWiring(t *testing.T) {
 			switch fn := ce.Fun.(type) {
 			case *ast.SelectorExpr: // x.Method
 				if id, ok := fn.X.(*ast.Ident); ok {
-					calls[id.Name+"."+fn.Sel.Name+"("] = true
+					base := id.Name + "." + fn.Sel.Name + "("
+					calls[base] = true
+					if len(ce.Args) > 0 {
+						if lit, ok := ce.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							calls[base+lit.Value] = true
+						}
+					}
 				}
 			case *ast.Ident: // bareFunc
 				calls[fn.Name+"("] = true
@@ -144,7 +156,35 @@ func TestDrainForShutdown_NilGovStore(t *testing.T) {
 	}
 }
 
-// --- /healthz response contract tests ----------------------------------------
+// --- /healthz liveness contract tests -----------------------------------------
+//
+// /healthz must always be 200 while the process is alive: no dependency
+// calls, no NATS ping, nothing that a NATS blip could fail (issue #242 — the
+// chart used to point both liveness and readiness at the NATS-checked
+// endpoint, so a blip got the pod restarted instead of just drained from
+// Service endpoints).
+
+func TestHealthz_AlwaysReturns200(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+
+	livenessHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not valid JSON: %s", rec.Body.String())
+	}
+	if body["status"] != "ok" {
+		t.Errorf("status = %q, want %q", body["status"], "ok")
+	}
+}
+
+// --- /readyz response contract tests --------------------------------------
+//
+// This is the dependency-checked probe that used to be mounted at /healthz.
 
 type fakePinger struct {
 	err error
@@ -152,10 +192,10 @@ type fakePinger struct {
 
 func (f *fakePinger) Ping(_ context.Context) error { return f.err }
 
-func TestHealthz_PingFailureReturns503(t *testing.T) {
-	h := makeHealthzHandler(&fakePinger{err: errors.New("breaker open")})
+func TestReadyz_PingFailureReturns503(t *testing.T) {
+	h := makeReadyzHandler(&fakePinger{err: errors.New("breaker open")})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
 	h.ServeHTTP(rec, req)
 
@@ -165,34 +205,50 @@ func TestHealthz_PingFailureReturns503(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
-	var body map[string]string
+	var body struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body is not valid JSON: %s", rec.Body.String())
 	}
-	if body["error"] != "nats unavailable" {
-		t.Errorf("error = %q, want %q", body["error"], "nats unavailable")
+	if body.Status != "not_ready" {
+		t.Errorf("status = %q, want %q", body.Status, "not_ready")
+	}
+	if body.Checks["nats"] != "unavailable" {
+		t.Errorf("checks[nats] = %q, want %q", body.Checks["nats"], "unavailable")
 	}
 }
 
-func TestHealthz_PingOKReturns200(t *testing.T) {
-	h := makeHealthzHandler(&fakePinger{err: nil})
+func TestReadyz_PingOKReturns200(t *testing.T) {
+	h := makeReadyzHandler(&fakePinger{err: nil})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if body := rec.Body.String(); body != "ok" {
-		t.Errorf("body = %q, want %q", body, "ok")
+	var body struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not valid JSON: %s", rec.Body.String())
+	}
+	if body.Status != "ready" {
+		t.Errorf("status = %q, want %q", body.Status, "ready")
+	}
+	if body.Checks["nats"] != "ok" {
+		t.Errorf("checks[nats] = %q, want %q", body.Checks["nats"], "ok")
 	}
 }
 
-func TestHealthz_NilPingerReturns200(t *testing.T) {
-	h := makeHealthzHandler(nil)
+func TestReadyz_NilPingerReturns200(t *testing.T) {
+	h := makeReadyzHandler(nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
 	h.ServeHTTP(rec, req)
 
@@ -201,22 +257,23 @@ func TestHealthz_NilPingerReturns200(t *testing.T) {
 	}
 }
 
-// TestHealthz_TypedNilGovStoreReturns200 is the regression guard for the panic
-// that TestHealthz_NilPingerReturns200 could not see. That test passes an
+// TestReadyz_TypedNilGovStoreReturns200 is the regression guard for the panic
+// that TestReadyz_NilPingerReturns200 could not see. That test passes an
 // UNTYPED nil, so the handler's `p != nil` guard short-circuits and Ping is
 // never called. The disabled-enforcement path passes a typed nil
 // *GovernanceStore instead (GATEWAY_NATS_URL unset), which lives in a NON-nil
 // interface — the guard fell through and Ping dereferenced a nil receiver, so
-// every /healthz request panicked. Measured against the standalone compose
-// stack, where /healthz returned an empty reply.
+// every /readyz request panicked. Measured against the standalone compose
+// stack, where /healthz (the pre-split, NATS-checked route) returned an empty
+// reply.
 //
 // This mirrors TestDrainForShutdown_NilGovStore, which already covers the same
 // typed-nil hazard on the drain path.
-func TestHealthz_TypedNilGovStoreReturns200(t *testing.T) {
+func TestReadyz_TypedNilGovStoreReturns200(t *testing.T) {
 	var nilStore *governance.GovernanceStore // typed nil, as the disabled path passes
-	h := makeHealthzHandler(nilStore)
+	h := makeReadyzHandler(nilStore)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
 	h.ServeHTTP(rec, req) // panicked before the fix
 

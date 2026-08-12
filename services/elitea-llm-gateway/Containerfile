@@ -34,8 +34,9 @@ RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL --no-progress /
 FROM gcr.io/distroless/static-debian12:nonroot AS final
 COPY --from=builder /out/elitea-llm-gateway /elitea-llm-gateway
 # distroless contains no shell, wget, or curl, so a CMD/CMD-SHELL HEALTHCHECK
-# cannot be used. Kubernetes MUST configure an httpGet liveness/readiness probe
-# against :8083/healthz instead of relying on Docker's HEALTHCHECK.
+# cannot be used. Kubernetes MUST configure httpGet probes against :8083/healthz
+# (liveness) and :8083/readyz (readiness) instead of relying on Docker's
+# HEALTHCHECK.
 HEALTHCHECK NONE
 EXPOSE 8083
 ENTRYPOINT ["/elitea-llm-gateway"]

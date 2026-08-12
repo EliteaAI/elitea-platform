@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"expvar"
 	"fmt"
 	"log/slog"
@@ -57,10 +58,12 @@ func main() {
 	defer cancel()
 
 	// Base mux, passed to the server as its http.Handler; the /llm chi router
-	// is mounted below once the embedded bifrost client is available. The
-	// /healthz route itself is registered further down, once govStore exists,
-	// so it can probe the NATS circuit breaker.
+	// is mounted below once the embedded bifrost client is available. /healthz
+	// (process liveness, no dependency calls) is mounted immediately below;
+	// /readyz is registered further down, once govStore exists, so it can
+	// probe the NATS circuit breaker.
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", livenessHandler)
 
 	// Open the Postgres pool BEFORE the server: it backs the vault-backed
 	// Account (BFF.6), the governance/failmode store (FIX #0), and the
@@ -181,21 +184,23 @@ func main() {
 	}
 
 	// The NATS circuit-breaker state is invisible to Kubernetes readiness
-	// probes unless /healthz surfaces it: without this, a pod whose
+	// probes unless /readyz surfaces it: without this, a pod whose
 	// budget-enforcement path is dead (breaker open/half-open) stays in the
-	// load-balancer rotation. govStore is nil when enforcement is disabled, in
-	// which case the route reports healthy unconditionally.
+	// load-balancer rotation. /healthz (liveness) stays unconditional so a
+	// NATS blip does not get the pod restarted — only removed from Service
+	// endpoints — see issue #242. govStore is nil when enforcement is
+	// disabled, in which case the route reports ready unconditionally.
 	//
 	// Passing govStore straight into the pinger parameter puts a typed nil
-	// *GovernanceStore into a non-nil interface, so makeHealthzHandler's
+	// *GovernanceStore into a non-nil interface, so makeReadyzHandler's
 	// `p != nil` guard stays true and this dispatches to Ping. That used to
-	// panic — every /healthz request, whenever GATEWAY_NATS_URL was unset
+	// panic — every /readyz request, whenever GATEWAY_NATS_URL was unset
 	// (the standard local/dev posture AND the pre-NATS window in a cluster) —
 	// but Ping itself is now nil-receiver safe (see GovernanceStore.Ping),
 	// which is the one guard this needs: any future caller that boxes a typed
 	// nil *GovernanceStore into an interface is covered too, not just this
 	// call site. Measured against the standalone compose stack.
-	mux.HandleFunc("/healthz", makeHealthzHandler(govStore))
+	mux.HandleFunc("/readyz", makeReadyzHandler(govStore))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert
@@ -558,17 +563,48 @@ type pinger interface {
 	Ping(context.Context) error
 }
 
-func makeHealthzHandler(p pinger) http.HandlerFunc {
+// healthStatus mirrors elitea-main's health.Status shape
+// (internal/api/health/handler.go) so both services' probes look the same to
+// an operator reading a JSON body.
+type healthStatus struct {
+	Status string            `json:"status"`
+	Checks map[string]string `json:"checks,omitempty"`
+}
+
+func writeHealthJSON(w http.ResponseWriter, code int, v healthStatus) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// livenessHandler answers /healthz: process-liveness only, no dependency
+// calls, always 200 while the server loop is alive. A NATS blip must not
+// fail this — that is what /readyz is for (issue #242).
+func livenessHandler(w http.ResponseWriter, _ *http.Request) {
+	writeHealthJSON(w, http.StatusOK, healthStatus{Status: "ok"})
+}
+
+// makeReadyzHandler answers /readyz: the dependency-checked probe. p is the
+// NATS circuit breaker (govStore); a nil p means budget enforcement is
+// disabled, so readiness is unconditional. This is the handler that used to
+// be mounted at /healthz.
+func makeReadyzHandler(p pinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if p != nil {
-			if err := p.Ping(r.Context()); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = w.Write([]byte(`{"error":"nats unavailable"}`))
-				return
-			}
+		if p == nil {
+			writeHealthJSON(w, http.StatusOK, healthStatus{Status: "ready"})
+			return
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		if err := p.Ping(r.Context()); err != nil {
+			writeHealthJSON(w, http.StatusServiceUnavailable, healthStatus{
+				Status: "not_ready",
+				Checks: map[string]string{"nats": "unavailable"},
+			})
+			return
+		}
+		writeHealthJSON(w, http.StatusOK, healthStatus{
+			Status: "ready",
+			Checks: map[string]string{"nats": "ok"},
+		})
 	}
 }

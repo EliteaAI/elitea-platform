@@ -369,7 +369,7 @@ func (g *GovernanceStore) TryAlertCooldown(ctx context.Context, scope, scopeID s
 
 // Ping reports whether the GovernanceStore's NATS dependency is reachable. It
 // returns nil when the circuit breaker is closed (healthy) and ErrUnavailable
-// when the breaker is open or half-open. Callers (e.g. /healthz probes) use this
+// when the breaker is open or half-open. Callers (e.g. /readyz probes) use this
 // to include budget-enforcement health in readiness checks.
 // A nil receiver means enforcement is disabled, which is a healthy state, not a
 // fault — defence in depth for callers that convert a typed nil into an
