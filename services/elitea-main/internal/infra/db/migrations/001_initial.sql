@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS centry.secrets_data (
 -- way (#152): THREE Go call sites already query this table and none of them
 -- could ever have worked against a database this file bootstrapped —
 --   internal/api/v2/eliteacore/handler.go:393        (the list endpoint)
---   internal/db/sqlcgen/current_notification_events.sql.go  (HighWater + ListAfter,
+--   internal/db/sqlcgen/notification_events.sql.go  (HighWater + ListAfter,
 --                                                    behind the notification SSE stream)
 -- The list endpoint hid it: it runs the query under `if err == nil` and returns
 -- 200 with an empty array on ANY failure, so a missing table is indistinguishable

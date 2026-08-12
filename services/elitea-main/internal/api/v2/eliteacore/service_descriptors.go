@@ -48,7 +48,7 @@ package eliteacore
 //    migration that would create one, no repository, and no code path that
 //    registers, health-checks or looks up a provider. The single mention of the
 //    subsystem in the whole Go tree is a constant asserting its absence:
-//    `internal/application/configurations/current_available.go` pins the dynamic
+//    `internal/application/configurations/available.go` pins the dynamic
 //    source `provider_hub_configurations` to `current_source_returns_empty`.
 //
 // 2. There would be NOTHING TO SERVE EVEN WITH THE TABLE. Two of the four

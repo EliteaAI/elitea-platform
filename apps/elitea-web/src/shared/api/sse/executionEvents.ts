@@ -78,7 +78,7 @@ export function parseExecutionEventData(event: MessageEvent): ExecutionEventData
  *
  * The agent-execution start endpoint returns an ABSOLUTE PATH it builds
  * itself (`"/api/v2/executions/" + projectID + "/" + executionID +
- * "/events"`, `internal/api/v2/agentexecution/current_route.go`) — never a
+ * "/events"`, `internal/api/v2/agentexecution/route.go`) — never a
  * full URL. When `vite_server_url` is a same-origin prefix (the compose and
  * dev deployments, where it is literally `/api/v2`) that path is already
  * correct and must NOT be prefixed again. When `vite_server_url` names a

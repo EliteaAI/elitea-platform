@@ -4,7 +4,7 @@
  * subscription `widgets/sidebar/ui/NotificationButton.tsx` used to carry.
  *
  * Server contract (`services/elitea-main/internal/api/v2/notifications/
- * current_events.go`):
+ * events.go`):
  *   GET {vite_server_url}/notifications/events/prompt_lib/{projectId}
  *   - `notifications_ready` — the stream's opening cursor handshake, and
  *     also what the server sends INSTEAD of a notification whose metadata
@@ -62,7 +62,7 @@ export function useNotificationsSSE(projectId: string | undefined, onNotify: () 
        * clean end, never after an HTTP status. The Go route answers 429
        * (`Retry-After: 2`) once its per-principal cap of 4 concurrent
        * streams is saturated — `newCurrentNotificationAdmission(64, 4)` in
-       * `current_events.go` — plus 403 on authorize failure and 503 when
+       * `events.go` — plus 403 on authorize failure and 503 when
        * the reader is down. Without this the badge would silently stop
        * updating live with nothing in the console to explain it.
        *

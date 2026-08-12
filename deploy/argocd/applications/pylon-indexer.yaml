@@ -1,0 +1,36 @@
+# ArgoCD Application: pylon-indexer (retained Pylon runtime for the indexing
+# plugins). Sync-wave 2 — same wave as elitea-scheduler: both are backend
+# workers that need the migrated schema from wave 1 but not each other.
+#
+# This is legacy-by-design and stays until the index path is replatformed
+# (deploy/INDEX_V2_CUTOVER.md). Two chart-level caveats that matter at sync
+# time (full list in deploy/helm/pylon-indexer/README.md):
+#   - the model cache has NO pre-seed here (compose's model-cache-init has no
+#     Kubernetes equivalent), so a fresh pod downloads on first use and needs
+#     egress; set persistence.enabled=true to keep it across replacements;
+#   - RPC_HMAC_KEY in pylon-indexer-secrets must match elitea-scheduler's, or
+#     every scheduled RPC fails verification.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pylon-indexer
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/eliteaai/elitea-platform
+    targetRevision: main
+    path: deploy/helm/pylon-indexer
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elitea
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

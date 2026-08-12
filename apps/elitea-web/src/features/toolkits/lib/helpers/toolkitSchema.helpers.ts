@@ -91,7 +91,7 @@ function selectPropertyKeys(
   // (`toolkitSchemaUtils.js:43-45`: `properties[key].toolkit_types` /
   // `.agent_tags` / `.pipeline_tags`, plain JS truthiness) and the Go
   // backend's own `currentToolkitSchemaTruthy` categorization helper
-  // (`current_toolkit_settings.go:355`/`:845`). A property carrying an
+  // (`toolkit_settings.go:355`/`:845`). A property carrying an
   // explicit falsy marker (`toolkit_types: null`/`0`/`''`/`false`) must NOT
   // be classified as a toolkit/agent/pipeline reference field (R2
   // regression guard) — `!== undefined` would wrongly treat that falsy

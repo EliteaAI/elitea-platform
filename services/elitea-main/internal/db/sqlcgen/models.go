@@ -661,6 +661,16 @@ type EliteaTool struct {
 	Meta          []byte           `db:"meta" json:"meta"`
 }
 
+type EntitySkillMapping struct {
+	ID              int32            `db:"id" json:"id"`
+	EntityVersionID int32            `db:"entity_version_id" json:"entity_version_id"`
+	EntityType      string           `db:"entity_type" json:"entity_type"`
+	SkillID         int32            `db:"skill_id" json:"skill_id"`
+	SkillVersionID  *int32           `db:"skill_version_id" json:"skill_version_id"`
+	CreatedAt       pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt       pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+}
+
 type EntityToolMapping struct {
 	ID              int32            `db:"id" json:"id"`
 	ToolID          int32            `db:"tool_id" json:"tool_id"`
@@ -670,4 +680,26 @@ type EntityToolMapping struct {
 	CreatedAt       pgtype.Timestamp `db:"created_at" json:"created_at"`
 	UpdatedAt       pgtype.Timestamp `db:"updated_at" json:"updated_at"`
 	SelectedTools   []byte           `db:"selected_tools" json:"selected_tools"`
+}
+
+type Skill struct {
+	ID          int32            `db:"id" json:"id"`
+	Name        string           `db:"name" json:"name"`
+	Description string           `db:"description" json:"description"`
+	OwnerID     int32            `db:"owner_id" json:"owner_id"`
+	AuthorID    int32            `db:"author_id" json:"author_id"`
+	CreatedAt   pgtype.Timestamp `db:"created_at" json:"created_at"`
+	Uuid        pgtype.UUID      `db:"uuid" json:"uuid"`
+	Meta        []byte           `db:"meta" json:"meta"`
+}
+
+type SkillVersion struct {
+	ID           int32            `db:"id" json:"id"`
+	SkillID      int32            `db:"skill_id" json:"skill_id"`
+	Name         string           `db:"name" json:"name"`
+	Instructions string           `db:"instructions" json:"instructions"`
+	AuthorID     int32            `db:"author_id" json:"author_id"`
+	CreatedAt    pgtype.Timestamp `db:"created_at" json:"created_at"`
+	Uuid         pgtype.UUID      `db:"uuid" json:"uuid"`
+	Meta         []byte           `db:"meta" json:"meta"`
 }

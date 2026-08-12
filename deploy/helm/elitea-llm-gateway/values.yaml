@@ -9,6 +9,22 @@ image:
 
 # §9.5: gateway memory must be >=1Gi — provider streaming buffers plus the
 # bifrost object pools inflate the process well beyond the edge's footprint.
+# Legacy-parity hardening (issue #241): the shipped image is distroless
+# nonroot already, so runAsNonRoot/readOnlyRootFilesystem cost nothing — no
+# application-level temp-file writes were found (grepped for os.CreateTemp/
+# os.TempDir/os.Create). templates/deployment.yaml adds a writable /tmp
+# emptyDir regardless.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
 resources:
   requests:
     cpu: 250m
@@ -292,6 +308,42 @@ probes:
 serviceAccount:
   create: true
   name: ""
+
+# OFF by default: this chart's own scale-1 profile (replicaCount: 1 above)
+# means minAvailable: 1 against a single replica would block every voluntary
+# eviction (kubectl drain, node scale-down) forever. HA operators who raise
+# replicaCount should turn this on.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# Opt-in external reachability (issue #241; legacy parity), OFF by default.
+# CAUTION: the gateway is mTLS-internal by design (service.yaml — "NEVER
+# public", §9.1); enabling this exposes /llm outside the mTLS-only path the
+# rest of this chart assumes. Only turn it on if your ingress
+# controller/Gateway itself terminates and re-verifies mTLS equivalent to
+# what elitea-main does today — templates/ingress.yaml refuses to render
+# (helm `fail`) unless acknowledgeMTLSBypass is also set to true, so that
+# confirmation can't be skipped by accident. Set ingress.gatewayApi: true to
+# render an HTTPRoute instead of a networking.k8s.io/v1 Ingress; the two are
+# mutually exclusive.
+ingress:
+  enabled: false
+  acknowledgeMTLSBypass: false
+  gatewayApi: false
+  className: ""
+  annotations: {}
+  path: /
+  pathType: Prefix
+  hosts: []
+  tls: []
+    # - secretName: elitea-llm-gateway-tls
+    #   hosts:
+    #     - gateway.dev.elitea.ai
+  gateway:
+    name: ""
+    namespace: ""
+    sectionName: ""
 
 nodeSelector: {}
 tolerations: []

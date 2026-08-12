@@ -730,7 +730,7 @@ export const getGetCurrentSocialAvatarUrl = (projectId: string) => {
 };
 
 /**
- * internal/api/v2/social/current_avatar.go (CurrentAvatarRoute.get).
+ * internal/api/v2/social/avatar.go (CurrentAvatarRoute.get).
  * centry.social_users.avatar is per-user, not per-project; {project_id}
  * is used only to resolve project-scoped RBAC, matching every other
  * current_* social route.
@@ -953,7 +953,7 @@ export const getUploadCurrentSocialAvatarUrl = (projectId: string) => {
 };
 
 /**
- * internal/api/v2/social/current_avatar.go (CurrentAvatarRoute.upload).
+ * internal/api/v2/social/avatar.go (CurrentAvatarRoute.upload).
  * Multipart field is `file`; the object lands in the configured
  * ObjectStore under the reserved "avatars" bucket and is served back at
  * the returned /avatars/{project_id}/{filename} URL (public, unauthenticated,
