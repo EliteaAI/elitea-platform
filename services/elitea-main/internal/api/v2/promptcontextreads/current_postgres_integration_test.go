@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	platformapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
@@ -70,9 +69,17 @@ func TestCurrentPromptContextReadsPostgresHTTPRBACAndTenantIsolation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(platformapi.NewRouter(platformapi.RouterConfig{
-		CurrentPromptContextReads: routes,
-	}))
+	// routes (CurrentRoutes) is exercised directly, not through
+	// platformapi.NewRouter: its own ServeHTTP already mounts both the
+	// chat-config and project-context GETs against its own auth/RBAC — see
+	// CURRENT_PARITY_EVIDENCE.md. The router every real deployment reaches
+	// mounts CurrentPromptContextReads' chat-config GET only; project-context
+	// stays on the production router's own coreHandler.ProjectContext (a
+	// different, prototype-stub implementation with a different default).
+	// Routing this test through platformapi.NewRouter would test that
+	// unrelated handler's behavior under the project-context path, not
+	// CurrentPromptContextReads' own contract this test is actually about.
+	server := httptest.NewServer(routes)
 	defer server.Close()
 
 	for _, test := range []struct {

@@ -60,16 +60,19 @@ func NewRouter(cfg RouterConfig) chi.Router {
 // reviewed. Hybrid deployments add broad parity repositories, but those
 // additions must never remove or replace these admitted routes.
 //
-// promptcontextreadsapi.CurrentProjectContextPath is one of two registration
-// sources for the same path — mutually exclusive with newProductionRouter's
-// broader coreHandler.ProjectContext registration (router.go), which only
-// registers it when cfg.CurrentPromptContextReads is nil. When
-// CurrentPromptContextReads is composed, it must be the one to serve this
-// path: it carries its own ForwardedIdentityVerifier/PrincipalValidator and
-// RBAC, independent of this router's own AuthClient/Pool, and coreHandler's
-// version does not honor that contract — see internal/api/v2/promptcontextreads'
-// own postgres integration test, which caught the gap when this registration
-// was briefly deleted as apparently-redundant (#243 follow-up).
+// It does not register promptcontextreadsapi.CurrentProjectContextPath:
+// per internal/api/v2/promptcontextreads/CURRENT_PARITY_EVIDENCE.md, the
+// router every real deployment reaches ("the compatibility router") has
+// always mounted the chat-config path only, deferring project-context to
+// newProductionRouter's own coreHandler.ProjectContext (router.go) even
+// when CurrentPromptContextReads is composed — CurrentPromptContextReads'
+// own project-context handler is real and RBAC-scoped, but was never wired
+// to this exact HTTP path outside the dead branch #243 removed. Registering
+// it here too would double-register the same method+path (chi panics on
+// that) and would change real production's project-context default (its
+// parity-verified default is enabled:true; coreHandler's prototype-stub
+// default is enabled:false) — a behavior change caught by a visual
+// regression test, not something this cleanup is meant to do.
 func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	if cfg.ProductionAuth != nil {
 		r.Mount(browserauth.BasePath, cfg.ProductionAuth.browser)
@@ -95,7 +98,6 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	}
 	if cfg.CurrentPromptContextReads != nil {
 		r.Method(http.MethodGet, promptcontextreadsapi.CurrentChatConfigPath, cfg.CurrentPromptContextReads)
-		r.Method(http.MethodGet, promptcontextreadsapi.CurrentProjectContextPath, cfg.CurrentPromptContextReads)
 	}
 	if cfg.CurrentConfigurationAvailable != nil {
 		r.Method(http.MethodGet, configurationapi.CurrentAvailablePath, cfg.CurrentConfigurationAvailable)

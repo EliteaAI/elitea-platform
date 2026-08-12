@@ -183,13 +183,16 @@ func TestProductionRouterMountsOnlyCurrentPromptContextGETs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// mountReviewedProductionRoutes registers the chat-config GET and the
-	// project-context GET for CurrentPromptContextReads — but NOT PUT/DELETE
-	// on project-context, which newProductionRouter's broader
-	// coreHandler.UpdateProjectContext (router.go) still owns whenever
-	// CurrentPromptContextReads is nil; when it's composed, that broad
-	// registration steps aside (see mountReviewedProductionRoutes' doc
-	// comment: the two are mutually exclusive, not layered).
+	// mountReviewedProductionRoutes registers only the chat-config GET for
+	// CurrentPromptContextReads. The current project-context GET/PUT is owned
+	// unconditionally by newProductionRouter's broad coreHandler.ProjectContext
+	// registration at the same literal path
+	// (promptcontextreadsapi.CurrentProjectContextPath) even when
+	// CurrentPromptContextReads is composed — see
+	// internal/api/v2/promptcontextreads/CURRENT_PARITY_EVIDENCE.md and
+	// mountReviewedProductionRoutes' doc comment — so asserting its behavior
+	// belongs with the broad router's own tests, not this reviewed-surface
+	// unit test.
 	router := reviewedRoutesRouter(RouterConfig{CurrentPromptContextReads: routes})
 	for _, test := range []struct {
 		method string
@@ -197,9 +200,6 @@ func TestProductionRouterMountsOnlyCurrentPromptContextGETs(t *testing.T) {
 		want   int
 	}{
 		{http.MethodGet, "/api/v2/elitea_core/chat_config/prompt_lib/7", http.StatusOK},
-		{http.MethodGet, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusOK},
-		{http.MethodPut, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusMethodNotAllowed},
-		{http.MethodDelete, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusMethodNotAllowed},
 		{http.MethodGet, "/api/v2/elitea_core/chat_config/default/7", http.StatusNotFound},
 	} {
 		request := httptest.NewRequest(test.method, test.path, nil)
@@ -216,7 +216,6 @@ func TestProductionRouterMountsOnlyCurrentPromptContextGETs(t *testing.T) {
 	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	for _, path := range []string{
 		"/api/v2/elitea_core/chat_config/prompt_lib/7",
-		"/api/v2/elitea_core/project_context/prompt_lib/7/project-context",
 	} {
 		response := httptest.NewRecorder()
 		uncomposed.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))

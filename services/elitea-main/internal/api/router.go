@@ -1102,26 +1102,26 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.Get("/project_icon/prompt_lib/{projectID}", coreHandler.ListProjectIcons)
 				r.Post("/project_icon/prompt_lib/{projectID}", coreHandler.CreateProjectIcon)
 				r.Delete("/project_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteProjectIcon)
-				// Only the fallback registration when CurrentPromptContextReads
-				// isn't composed: when it is, its own project-context handler
-				// (mountReviewedProductionRoutes, production_router.go) carries
-				// its own ForwardedIdentityVerifier/PrincipalValidator and RBAC,
-				// scoped independently of this router's own AuthClient/Pool —
-				// registering both for the same path would either panic (chi
-				// disallows registering the same method+path twice) or silently
-				// route real requests through whichever has no auth configured,
-				// as internal/api/v2/promptcontextreads' own integration test
-				// caught when both were briefly registered unconditionally.
+				// Registered unconditionally: this is the ONLY registration
+				// source for project-context GET/PUT in the router every real
+				// deployment reaches (CURRENT_PARITY_EVIDENCE.md,
+				// internal/api/v2/promptcontextreads — "the compatibility
+				// router mounts the chat-config path only... the production
+				// router mounts both", and #243 made this the only router
+				// left). CurrentPromptContextReads' own project-context
+				// handler is a real, RBAC-scoped, parity-verified
+				// implementation, but wiring it here too would double-register
+				// the same method+path (chi panics on that) — see
+				// mountReviewedProductionRoutes (production_router.go), which
+				// deliberately does not mount it for the same reason.
+				//
 				// The relative suffix is derived from
 				// v2promptcontextreads.CurrentProjectContextPath (the "/api/v2/elitea_core"
 				// prefix comes from this route's enclosing r.Route groups)
-				// rather than a second hardcoded literal, so this registration
-				// and mountReviewedProductionRoutes' mirror-image guard can't
-				// silently drift apart.
-				if cfg.CurrentPromptContextReads == nil {
-					r.Get(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.ProjectContext)
-					r.Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
-				}
+				// rather than a second hardcoded literal, purely so the two
+				// files can't drift on what path they're both talking about.
+				r.Get(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.ProjectContext)
+				r.Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
 
 				// Platform settings
 				r.Get("/platform_settings/prompt_lib/{projectID}", coreHandler.PlatformSettings)
