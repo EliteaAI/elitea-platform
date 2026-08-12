@@ -1,0 +1,6 @@
+apiVersion: v2
+name: elitea-web
+description: elitea-web SPA served by nginx (static frontend, runtime-injected config.js)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

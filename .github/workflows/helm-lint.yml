@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - "deploy/helm/**"
+      - "deploy/argocd/**"
       - ".github/workflows/helm-lint.yml"
   push:
     branches:
       - main
     paths:
       - "deploy/helm/**"
+      - "deploy/argocd/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,6 +20,14 @@ concurrency:
 # Minimal token scope — these jobs only read the checked-out repo.
 permissions:
   contents: read
+
+env:
+  KUBECONFORM_VERSION: v0.6.7
+  # CRD schemas (argoproj.io Application, cert-manager Certificate) come from
+  # the datreeio catalog. PINNED to a release tag, not `main`: an unpinned
+  # third-party branch is a hard dependency of every deploy PR, so a rename
+  # upstream would redden CI with no change in this repo. Bump deliberately.
+  CRD_SCHEMAS: "https://raw.githubusercontent.com/datreeio/CRDs-catalog/v0.0.12/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
 jobs:
   lint:
@@ -39,33 +49,168 @@ jobs:
             helm lint "$dir"
           done
 
-      - name: Template dry-run (elitea-main)
-        run: |
-          helm template test-release deploy/helm/elitea-main/ --debug > /dev/null
-          helm template test-release deploy/helm/elitea-main/ \
-            -f deploy/helm/elitea-main/values-staging.yaml \
-            --debug > /dev/null
+  template:
+    name: Helm Template (${{ matrix.chart }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chart: elitea-main
+            values: -f deploy/helm/elitea-main/values-staging.yaml
+            # Non-default code paths that render nothing in the pass above.
+            # ingress.gatewayApi (HTTPRoute) is NOT toggled on here: the
+            # gateway.networking.k8s.io CRD schema isn't in CRDs-catalog at
+            # the pinned $CRD_SCHEMAS tag (only on its unpinned main), so
+            # kubeconform would fail on a missing schema. The standard
+            # Ingress path uses kubeconform's built-in kubernetes-version
+            # schema, no CRD needed.
+            toggles: --set migrations.enabled=false --set autoscaling.enabled=false --set podDisruptionBudget.enabled=false --set ingress.enabled=true --set-json 'ingress.hosts=["example.invalid"]'
+          - chart: elitea-llm-gateway
+            values: ""
+            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set-json 'ingress.hosts=["example.invalid"]'
+          - chart: elitea-scheduler
+            values: ""
+            toggles: --set service.enabled=true --set probes.liveness.enabled=false --set probes.readiness.enabled=true
+          - chart: elitea-web
+            values: ""
+            toggles: --set autoscaling.enabled=true --set podDisruptionBudget.enabled=false --set preStop.enabled=false
+          - chart: pylon-indexer
+            values: ""
+            toggles: --set persistence.enabled=true --set probes.startup.enabled=false --set probes.liveness.enabled=false
+          # nats/ and nats-bootstrap/ are excluded on purpose: nats vendors an
+          # upstream subchart, so templating it needs `helm dependency build`
+          # and network access to the upstream repo. `helm lint` above still
+          # covers them.
+    steps:
+      - uses: actions/checkout@v7
 
-      - name: Template dry-run (elitea-llm-gateway)
-        run: |
-          helm template test-release deploy/helm/elitea-llm-gateway/ --debug > /dev/null
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.16.0
 
-      - name: Ingress/HTTPRoute render check (issue #241)
-        # helm template --debug already fails on invalid Go-template output or
-        # malformed YAML; full `kubectl apply --dry-run=client` schema
-        # validation against gateway.networking.k8s.io/v1 needs a live
-        # apiserver for discovery (confirmed locally against k3s — CI has no
-        # cluster to talk to), so that check is a manual/local verification
-        # step, not wired into this job.
+      - name: Install kubeconform
         run: |
-          for chart in elitea-main elitea-llm-gateway; do
-            for gw in false true; do
-              echo "Rendering $chart ingress (gatewayApi=$gw)..."
-              helm template test-release "deploy/helm/$chart/" \
-                --set ingress.enabled=true \
-                --set ingress.gatewayApi="$gw" \
-                --set ingress.gateway.name=example-gateway \
-                --set "ingress.hosts[0]=example.invalid" \
-                --debug > /dev/null
-            done
+          curl -sSL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: helm template (default values)
+        run: |
+          helm template ci-release "deploy/helm/${{ matrix.chart }}" \
+            ${{ matrix.values }} --debug > "/tmp/${{ matrix.chart }}.yaml"
+
+      # `helm template` only proves the chart RENDERS. kubeconform proves the
+      # rendered objects are valid Kubernetes against the real API schemas.
+      #
+      # Why not `kubectl apply --dry-run=client`, which issue #240 names? That
+      # command still needs API discovery from a live cluster to resolve
+      # kind -> resource; on a runner with no cluster it fails with
+      # "couldn't get current server API group list", so it would gate nothing
+      # (or, worse, be neutered with a flag until it gated nothing). kubeconform
+      # is the offline equivalent and is strictly stronger: -strict rejects
+      # fields the schema does not define, which client dry-run does not.
+      - name: kubeconform (default values)
+        run: |
+          kubeconform -strict -summary -verbose \
+            -kubernetes-version 1.30.0 \
+            -schema-location default \
+            -schema-location "$CRD_SCHEMAS" \
+            "/tmp/${{ matrix.chart }}.yaml"
+
+      # Toggled-off/on paths (HPA, PVC, optional Services and probes, hook Jobs)
+      # render zero objects in the default pass, so a break in them is invisible
+      # there.
+      - name: helm template + kubeconform (non-default toggles)
+        run: |
+          helm template ci-release "deploy/helm/${{ matrix.chart }}" \
+            ${{ matrix.values }} ${{ matrix.toggles }} > "/tmp/${{ matrix.chart }}-toggles.yaml"
+          kubeconform -strict -summary -verbose \
+            -kubernetes-version 1.30.0 \
+            -schema-location default \
+            -schema-location "$CRD_SCHEMAS" \
+            "/tmp/${{ matrix.chart }}-toggles.yaml"
+
+  argocd:
+    name: ArgoCD Applications
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      # Validated against the REAL argoproj.io Application CRD schema (from the
+      # CRDs-catalog), with -strict — so a misspelled spec field fails here
+      # instead of silently doing nothing in the cluster. See the note in the
+      # template job for why this replaces `kubectl apply --dry-run=client`.
+      - name: Validate every Application against the Argo CD CRD schema
+        run: |
+          kubeconform -strict -summary -verbose \
+            -schema-location default \
+            -schema-location "$CRD_SCHEMAS" \
+            deploy/argocd/app-of-apps.yaml deploy/argocd/applications/*.yaml
+
+      # Schema validity is not the failure mode that actually bites. These are:
+      # a child that the app-of-apps root will never render, and a source.path
+      # that points at a chart which does not exist — both of which produce a
+      # perfectly valid manifest and a service that is simply never deployed.
+      - name: Structural checks on the app-of-apps layout
+        run: |
+          fail=0
+
+          # 1. Only the root may sit directly in deploy/argocd/; anything else
+          #    there is invisible to the root (it renders applications/ only).
+          for f in deploy/argocd/*.yaml; do
+            if [ "$f" != "deploy/argocd/app-of-apps.yaml" ]; then
+              echo "::error file=$f::stray manifest — children belong in deploy/argocd/applications/"
+              fail=1
+            fi
           done
+
+          # 2. Every manifest in applications/ must BE an Application: the root
+          #    includes "*.yaml" indiscriminately and would apply anything else
+          #    straight into the argocd namespace.
+          for f in deploy/argocd/applications/*.yaml; do
+            kind=$(grep -m1 '^kind:' "$f" | awk '{print $2}')
+            if [ "$kind" != "Application" ]; then
+              echo "::error file=$f::kind is '$kind', expected 'Application'"
+              fail=1
+            fi
+          done
+
+          # 3. Every in-repo source.path must exist and, for a chart path,
+          #    contain a Chart.yaml. A typo here syncs nothing, forever.
+          for f in deploy/argocd/app-of-apps.yaml deploy/argocd/applications/*.yaml; do
+            path=$(grep -m1 '^    path:' "$f" | awk '{print $2}')
+            if [ -z "$path" ]; then
+              echo "::error file=$f::no spec.source.path"
+              fail=1
+              continue
+            fi
+            if [ ! -d "$path" ]; then
+              echo "::error file=$f::spec.source.path '$path' does not exist in this repo"
+              fail=1
+            elif case "$path" in deploy/helm/*) true ;; *) false ;; esac && [ ! -f "$path/Chart.yaml" ]; then
+              echo "::error file=$f::spec.source.path '$path' has no Chart.yaml"
+              fail=1
+            fi
+          done
+
+          # 4. Every child must carry a sync-wave. The default is 0, which
+          #    would silently co-schedule a new service with the gateway
+          #    instead of after the migrations it depends on.
+          for f in deploy/argocd/applications/*.yaml; do
+            if ! grep -q 'argocd.argoproj.io/sync-wave:' "$f"; then
+              echo "::error file=$f::no argocd.argoproj.io/sync-wave annotation"
+              fail=1
+            fi
+          done
+
+          exit $fail
