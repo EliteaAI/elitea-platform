@@ -44,13 +44,19 @@ import { BudgetPeriodWindow } from "./budgetPeriodWindow.zod";
 
 export const BudgetState = BudgetPeriodWindow.and(
   zod.object({
+    can_see_amounts: zod
+      .boolean()
+      .optional()
+      .describe(
+        "Present on the project-scoped reads only. False means the five\ncost fields were removed from this payload; percentages, the\nwarning threshold and the period remain.\n",
+      ),
     monthly_limit: zod
       .number()
-      .nullable()
+      .nullish()
       .describe("The AUTHORED ceiling in USD. Null means none was set."),
     effective_limit: zod
       .number()
-      .nullable()
+      .nullish()
       .describe(
         "The ENFORCED ceiling. Null when the scope is unlimited — which\nincludes a scope that has a monthly_limit but is disabled.\n",
       ),
@@ -61,6 +67,7 @@ export const BudgetState = BudgetPeriodWindow.and(
       ),
     currency: zod
       .enum(["USD"])
+      .optional()
       .describe(
         "Always USD. The gateway compares limits against a nano-USD\ncounter and nothing converts, so the write path rejects any\nother value rather than storing a label enforcement ignores.\n",
       ),
@@ -74,10 +81,11 @@ export const BudgetState = BudgetPeriodWindow.and(
       .describe("Percent-of-limit at which this scope warns."),
     spend: zod
       .number()
+      .optional()
       .describe("USD accrued this period. Zero when nothing is recorded."),
     remaining: zod
       .number()
-      .nullable()
+      .nullish()
       .describe("Null when the scope is unlimited. Never negative."),
     percent_used: zod
       .number()
@@ -89,6 +97,8 @@ export const BudgetState = BudgetPeriodWindow.and(
         'Whether an accumulator row exists for this period at all, which\nis what separates \"nothing billed yet\" from \"no usage data\".\n',
       ),
   }),
+).describe(
+  "The five COST fields — monthly_limit, effective_limit, spend, remaining\nand currency — are deliberately NOT in `required`. Both project-scoped\nreads (`getProjectBudget`, `getProjectUsage`) REMOVE them for a caller\nwhose `can_see_amounts` is false, so requiring them would make a\ncorrect redacted response fail its own schema. Everything that is not a\ncost figure — the percentage, the threshold, the period — is required,\nbecause redaction never removes those.\n",
 );
 
 export type BudgetState = zod.input<typeof BudgetState>;

@@ -728,6 +728,92 @@ func TestUsageRejectsAnUnknownScope(t *testing.T) {
 	requireStatus(t, recorder, http.StatusBadRequest)
 }
 
+// The prompt_lib project-budget read redacts on the same rule /usage does.
+// Until it did, a member refused the amounts on /usage could read the identical
+// figures off this endpoint — same gate, same numbers — and the redaction was
+// decorative.
+func TestProjectBudgetReadRedactsForAMemberWhoIsNotAnAdmin(t *testing.T) {
+	pool, router := newBudgetsEnvironment(t)
+
+	budgetsDo(t, router, http.MethodPut,
+		fmt.Sprintf("/project_budget/administration/%d/budget", budgetProjectID), budgetAdminUser,
+		map[string]any{"monthly_limit": 100, "enabled": true})
+	plantAccumulator(t, pool, "project", fmt.Sprint(budgetProjectID), budgetProjectID,
+		periodStart(), periodEnd(), "40.00")
+
+	redacted := budgetsDo(t, router, http.MethodGet,
+		fmt.Sprintf("/project_budget/prompt_lib/%d/budget", budgetProjectID), budgetMemberUser, nil)
+	requireStatus(t, redacted, http.StatusOK)
+	body := decodeMap(t, redacted)
+	wantBool(t, body, "can_see_amounts", false)
+	for _, field := range []string{"spend", "monthly_limit", "effective_limit", "remaining", "currency"} {
+		wantAbsent(t, body, field)
+	}
+	wantNumber(t, body, "percent_used", "40.00")
+
+	// The administration route is a different handler and does not redact: a
+	// platform administrator is entitled to the figures.
+	admin := budgetsDo(t, router, http.MethodGet,
+		fmt.Sprintf("/project_budget/administration/%d/budget", budgetProjectID), budgetMemberUser, nil)
+	requireStatus(t, admin, http.StatusOK)
+	wantNumber(t, decodeMap(t, admin), "spend", "40.00000000")
+}
+
+// A ceiling the gateway is not applying must not be reported as enforced. The
+// two columns can disagree only on a row this API did not write, so the row is
+// planted directly — with `is_unlimited = true` and a real hard_limit_usd, the
+// shape 003's backfill exists to avoid creating.
+func TestProjectBudgetReportsNoEffectiveLimitWhenTheGatewayTreatsItAsUnlimited(t *testing.T) {
+	pool, router := newBudgetsEnvironment(t)
+
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO gateway.project_budget (project_id, hard_limit_usd, is_unlimited, enabled, soft_alert_pct)
+VALUES ($1, 100.00, true, true, 80)`, budgetProjectID); err != nil {
+		t.Fatalf("plant divergent budget row: %v", err)
+	}
+
+	recorder := budgetsDo(t, router, http.MethodGet,
+		fmt.Sprintf("/project_budget/administration/%d/budget", budgetProjectID), budgetAdminUser, nil)
+	requireStatus(t, recorder, http.StatusOK)
+	body := decodeMap(t, recorder)
+
+	// The authored number is still shown...
+	wantNumber(t, body, "monthly_limit", "100.00")
+	wantBool(t, body, "enabled", true)
+	// ...but nothing claims it is being enforced, because is_unlimited says it
+	// is not, and is_unlimited is what the gateway reads.
+	wantNull(t, body, "effective_limit")
+	wantNull(t, body, "remaining")
+	wantNull(t, body, "percent_used")
+	wantString(t, body, "limit_source", "unlimited")
+
+	// Same answer from the listing, which derives it independently.
+	listing := budgetsDo(t, router, http.MethodGet, "/project_budgets/administration", budgetAdminUser, nil)
+	requireStatus(t, listing, http.StatusOK)
+	rows, _ := decodeMap(t, listing)["rows"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if fmt.Sprint(row["project_id"]) == fmt.Sprint(budgetProjectID) {
+			wantNull(t, row, "effective_limit")
+			wantString(t, row, "limit_source", "unlimited")
+		}
+	}
+}
+
+// `?limit=` is also the capacity the result slice is preallocated with, so it
+// has to be bounded before it reaches make().
+func TestListProjectBudgetsClampsThePageSize(t *testing.T) {
+	_, router := newBudgetsEnvironment(t)
+
+	recorder := budgetsDo(t, router, http.MethodGet,
+		"/project_budgets/administration?limit=100000000", budgetAdminUser, nil)
+	requireStatus(t, recorder, http.StatusOK)
+	rows, _ := decodeMap(t, recorder)["rows"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want the 2 seeded projects", len(rows))
+	}
+}
+
 func TestUsageRedactsAmountsForAMemberWhoIsNotAnAdmin(t *testing.T) {
 	pool, router := newBudgetsEnvironment(t)
 

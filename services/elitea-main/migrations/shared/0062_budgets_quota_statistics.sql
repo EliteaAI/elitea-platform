@@ -54,11 +54,17 @@ CREATE TABLE IF NOT EXISTS centry.project_quota (
     storage_limit_total_block BOOLEAN NOT NULL DEFAULT false
 );
 
--- The reference model has no unique constraint and its readers all take
--- `.first()`, so two rows for one project would make the quota a coin flip.
--- A UNIQUE INDEX rather than a table constraint so this stays applicable to a
--- dump-loaded table that already has rows.
-CREATE UNIQUE INDEX IF NOT EXISTS project_quota_project_uniq
+-- A plain index, NOT a unique one, and that is the whole point of this comment.
+--
+-- The reference model declares no unique constraint and every reader takes
+-- `.first()`, so two rows for one project are schema-legal there and a
+-- dump-loaded table may contain them. `CREATE UNIQUE INDEX` against inherited
+-- rows would then fail with a unique violation and abort this whole migration —
+-- the grants below included — on exactly the deployments it is written for, and
+-- only on those with the duplicate, so no amount of local testing would find
+-- it. Uniqueness is not ours to assert retroactively over data we did not
+-- write; the readers keep the reference's take-the-first-row semantics.
+CREATE INDEX IF NOT EXISTS project_quota_project_idx
     ON centry.project_quota (project_id);
 
 -- ---------------------------------------------------------------------------
@@ -81,7 +87,8 @@ CREATE TABLE IF NOT EXISTS centry.statistic (
     tasks_executions         INTEGER DEFAULT 0
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS statistic_project_uniq
+-- Plain, for the reason given above project_quota_project_idx.
+CREATE INDEX IF NOT EXISTS statistic_project_idx
     ON centry.statistic (project_id);
 
 -- ---------------------------------------------------------------------------

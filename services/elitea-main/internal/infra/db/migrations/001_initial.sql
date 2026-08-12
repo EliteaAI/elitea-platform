@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS centry.project_group_association (
 -- /api/v2/projects/{quota,statistics}. The same DDL lands on existing
 -- databases through migrations/shared/0062_budgets_quota_statistics.sql — see
 -- that file for why -1 is the "unlimited" sentinel and why the project_id
--- uniqueness the reference model omits is added here.
+-- index is deliberately NOT unique.
 CREATE TABLE IF NOT EXISTS centry.project_quota (
     id                        SERIAL PRIMARY KEY,
     project_id                INTEGER NOT NULL,
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS centry.project_quota (
     storage_soft_limit        INTEGER,
     storage_limit_total_block BOOLEAN NOT NULL DEFAULT false
 );
-CREATE UNIQUE INDEX IF NOT EXISTS project_quota_project_uniq
+CREATE INDEX IF NOT EXISTS project_quota_project_idx
     ON centry.project_quota (project_id);
 
 CREATE TABLE IF NOT EXISTS centry.statistic (
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS centry.statistic (
     ui_performance_test_runs INTEGER DEFAULT 0,
     tasks_executions         INTEGER DEFAULT 0
 );
-CREATE UNIQUE INDEX IF NOT EXISTS statistic_project_uniq
+CREATE INDEX IF NOT EXISTS statistic_project_idx
     ON centry.statistic (project_id);
 
 -- Social users (author profiles)

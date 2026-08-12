@@ -62,17 +62,28 @@ type projectBudgetState struct {
 //
 // Arguments: $1 scope_id, $2 scope, $3 period_start, $4 default warning pct,
 // then whatever the caller's limit-table join binds from $5 on.
+//
+// `enforced` is read from the limit join's `is_unlimited`, NOT from `enabled`.
+// For gateway.project_budget those are two different columns and only the first
+// one governs: it is what the gateway's failmode snapshot reads. `enabled` is
+// the AUTHORED flag, and a row this API did not write can have the two
+// disagree — a pre-existing row with `is_unlimited = true` and a non-null
+// hard_limit_usd is backfilled to `enabled = true` by 003, and deriving from
+// `enabled` would then report an enforced ceiling that admits every call. Both
+// limit joins project an `is_unlimited`, so this select reads what is enforced
+// and reports `enabled` alongside it without conflating them.
 const budgetStateSelect = `
 SELECT
     limits.hard_limit_usd::text                                  AS monthly_limit,
     COALESCE(limits.enabled, false)                              AS enabled,
+    (NOT COALESCE(limits.is_unlimited, true))                    AS enforced,
     COALESCE(limits.soft_alert_pct, $4::smallint)                AS warning_pct,
     COALESCE(accrued.accumulated_cost, 0)::text                  AS spend,
     (accrued.accumulated_cost IS NOT NULL)                       AS spend_available,
-    CASE WHEN COALESCE(limits.enabled, false) AND limits.hard_limit_usd IS NOT NULL
+    CASE WHEN NOT COALESCE(limits.is_unlimited, true) AND limits.hard_limit_usd IS NOT NULL
          THEN GREATEST(0, limits.hard_limit_usd - COALESCE(accrued.accumulated_cost, 0))::text
     END                                                          AS remaining,
-    CASE WHEN COALESCE(limits.enabled, false) AND limits.hard_limit_usd > 0
+    CASE WHEN NOT COALESCE(limits.is_unlimited, true) AND limits.hard_limit_usd > 0
          THEN round(COALESCE(accrued.accumulated_cost, 0) / limits.hard_limit_usd * 100, 2)::text
     END                                                          AS percent_used`
 
@@ -85,6 +96,7 @@ func (h *Handler) readBudgetState(
 	var (
 		monthlyLimit   *string
 		enabled        bool
+		enforced       bool
 		warningPct     int
 		spend          string
 		spendAvailable bool
@@ -99,7 +111,7 @@ LEFT JOIN gateway.llm_budget_accumulators AS accrued
       AND accrued.period_start = $3::timestamptz`
 	args := append([]any{scopeID, scope, period.start, DefaultWarningPct}, joinArgs...)
 	err := h.pool.QueryRow(ctx, query, args...).Scan(
-		&monthlyLimit, &enabled, &warningPct, &spend, &spendAvailable, &remaining, &percentUsed,
+		&monthlyLimit, &enabled, &enforced, &warningPct, &spend, &spendAvailable, &remaining, &percentUsed,
 	)
 	if err != nil {
 		return budgetState{}, fmt.Errorf("budgets: read %s budget state: %w", scope, err)
@@ -119,10 +131,12 @@ LEFT JOIN gateway.llm_budget_accumulators AS accrued
 		PeriodEnd:      period.lastDay(),
 		ResetsAt:       period.resetsAt(),
 	}
-	// The enforced limit, which is not the stored one: a disabled scope keeps
-	// the number an operator typed but is not held to it.
+	// The enforced limit, which is not the stored one: a scope the gateway
+	// treats as unlimited keeps the number an operator typed but is not held
+	// to it. `enforced` comes from is_unlimited, so this cannot claim a ceiling
+	// the gateway is not applying.
 	state.LimitSource = limitSourceUnlimited
-	if enabled && monthlyLimit != nil {
+	if enforced && monthlyLimit != nil {
 		state.EffectiveLimit = state.MonthlyLimit
 		state.LimitSource = limitSourceExplicit
 	}
@@ -142,8 +156,14 @@ LEFT JOIN gateway.llm_budget_accumulators AS accrued
 const DefaultWarningPct = 80
 
 // projectLimitJoin and userLimitJoin (user_budgets.go) are the two fixed
-// limit-table joins readBudgetState selects between.
-const projectLimitJoin = `LEFT JOIN gateway.project_budget AS limits ON limits.project_id = $5::integer`
+// limit-table joins readBudgetState selects between. Both MUST expose
+// hard_limit_usd, enabled, soft_alert_pct and is_unlimited — the last is what
+// budgetStateSelect reads to decide whether a ceiling is enforced, and for the
+// project table it is a real column rather than a derivation.
+const projectLimitJoin = `LEFT JOIN (
+    SELECT project_id, hard_limit_usd, enabled, soft_alert_pct, is_unlimited
+    FROM gateway.project_budget
+) AS limits ON limits.project_id = $5::integer`
 
 // userBudgetScopeID is the accumulator scope_id a per-member figure would be
 // keyed by. Nothing publishes it today (see budgetScopeUser); the shape is
@@ -155,11 +175,51 @@ func userBudgetScopeID(projectID, userID int64) string {
 
 /* ── GET the project's own budget ──────────────────────────────────────── */
 
-// GetProjectBudget serves both modes of project_budget.py's GET. The two differ
-// only in their gate, which router.go applies: prompt_lib resolves
-// `models.project_context.view` against the project, administration resolves
-// `models.admin.project_budgets.view` centrally.
+// GetProjectBudget serves the PROJECT-SCOPED (prompt_lib) read, gated on
+// `models.project_context.view` against the project in the path.
+//
+// It applies the same amount redaction /usage does, and for the same reason:
+// the two endpoints serve the SAME spend and limit figures behind the SAME
+// gate, so a member refused the amounts on one could simply read them off the
+// other. The reference redacts on /usage only, which makes the control
+// decorative the moment both endpoints exist; the divergence is deliberate.
 func (h *Handler) GetProjectBudget(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathID(r, "projectID")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "project id must be a positive integer")
+		return
+	}
+	caller, authenticated := callerID(r)
+	if !authenticated {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	ctx := r.Context()
+	state, err := h.projectBudget(ctx, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read project budget")
+		return
+	}
+	payload, err := structToMap(state)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read project budget")
+		return
+	}
+	visible, err := h.canSeeAmounts(ctx, projectID, caller)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project role")
+		return
+	}
+	applyAmountVisibility(payload, visible)
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// GetProjectBudgetAdmin serves the administration-mode read, gated centrally on
+// `models.admin.project_budgets.view`. A platform administrator is entitled to
+// the cost figures by definition, so it does not redact and carries no
+// can_see_amounts field.
+func (h *Handler) GetProjectBudgetAdmin(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := pathID(r, "projectID")
 	if !ok {
 		writeError(w, http.StatusBadRequest, "project id must be a positive integer")
@@ -354,13 +414,14 @@ SELECT p.id,
        COALESCE(owner.email, '')                                     AS owner_email,
        limits.hard_limit_usd::text                                   AS monthly_limit,
        COALESCE(limits.enabled, false)                               AS enabled,
+       (NOT COALESCE(limits.is_unlimited, true))                     AS enforced,
        COALESCE(limits.soft_alert_pct, $1::smallint)                 AS warning_pct,
        COALESCE(accrued.accumulated_cost, 0)::text                   AS spend,
        (accrued.accumulated_cost IS NOT NULL)                        AS spend_available,
-       CASE WHEN COALESCE(limits.enabled, false) AND limits.hard_limit_usd IS NOT NULL
+       CASE WHEN NOT COALESCE(limits.is_unlimited, true) AND limits.hard_limit_usd IS NOT NULL
             THEN GREATEST(0, limits.hard_limit_usd - COALESCE(accrued.accumulated_cost, 0))::text
        END                                                           AS remaining,
-       CASE WHEN COALESCE(limits.enabled, false) AND limits.hard_limit_usd > 0
+       CASE WHEN NOT COALESCE(limits.is_unlimited, true) AND limits.hard_limit_usd > 0
             THEN round(COALESCE(accrued.accumulated_cost, 0) / limits.hard_limit_usd * 100, 2)::text
        END                                                           AS percent_used
 FROM centry.project p
@@ -374,7 +435,7 @@ LEFT JOIN gateway.llm_budget_accumulators accrued
 // ListProjectBudgets serves project_budgets.py's administration-mode listing.
 func (h *Handler) ListProjectBudgets(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	limit := positiveQueryInt(query.Get("limit"), 20)
+	limit := pageSize(query.Get("limit"), 20)
 	offset := positiveQueryInt(query.Get("offset"), 0)
 
 	listing, err := h.listProjectBudgets(r.Context(), projectBudgetListParams{
@@ -459,6 +520,7 @@ LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder, args...)
 			row            projectBudgetRow
 			monthlyLimit   *string
 			enabled        bool
+			enforced       bool
 			warningPct     int
 			spend          string
 			spendAvailable bool
@@ -467,7 +529,7 @@ LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder, args...)
 		)
 		if err := rows.Scan(
 			&row.ProjectID, &row.Name, &row.IsPersonal, &row.OwnerName, &row.OwnerEmail,
-			&monthlyLimit, &enabled, &warningPct, &spend, &spendAvailable, &remaining, &percentUsed,
+			&monthlyLimit, &enabled, &enforced, &warningPct, &spend, &spendAvailable, &remaining, &percentUsed,
 		); err != nil {
 			return nil, fmt.Errorf("budgets: scan project budget row: %w", err)
 		}
@@ -486,7 +548,7 @@ LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder, args...)
 			ResetsAt:       period.resetsAt(),
 			LimitSource:    limitSourceUnlimited,
 		}
-		if enabled && monthlyLimit != nil {
+		if enforced && monthlyLimit != nil {
 			row.EffectiveLimit = row.MonthlyLimit
 			row.LimitSource = limitSourceExplicit
 		}
@@ -557,6 +619,25 @@ func projectBudgetFilters(params projectBudgetListParams, firstPlaceholder int) 
 		return "", args
 	}
 	return " WHERE " + strings.Join(conditions, " AND "), args
+}
+
+// maxPageSize bounds `?limit=`, matching the cap the admin project listing this
+// query was modelled on already applies (internal/api/v2/admin/handler.go).
+//
+// It is not politeness: `limit` is also the capacity the result slice is
+// preallocated with, so an unbounded value is an unbounded allocation made
+// BEFORE a single row is read — `?limit=100000000` reserves tens of gigabytes
+// on a deployment with three projects.
+const maxPageSize = 100
+
+// pageSize clamps a caller-supplied page size into [0, maxPageSize], falling
+// back for anything unparseable or negative.
+func pageSize(raw string, fallback int) int {
+	value := positiveQueryInt(raw, fallback)
+	if value > maxPageSize {
+		return maxPageSize
+	}
+	return value
 }
 
 func positiveQueryInt(raw string, fallback int) int {

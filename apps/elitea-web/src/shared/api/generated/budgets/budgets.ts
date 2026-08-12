@@ -154,8 +154,15 @@ export const getGetProjectBudgetUrl = (projectId: string) => {
  * accumulated USD figure per scope and period, and zero-filling them
  * would read as "this project made no calls".
  *
- * Available to project members; the administration-mode twin below serves
- * platform administrators regardless of membership.
+ * Available to project members. A member who is neither a project admin nor
+ * the owner of a personal project receives the same payload with
+ * `monthly_limit`, `effective_limit`, `spend`, `remaining` and `currency`
+ * REMOVED and `can_see_amounts: false` — the same rule `getProjectUsage`
+ * applies, because the two serve the same figures behind the same gate and
+ * redacting only one of them would leave the other as a way around it.
+ *
+ * The administration-mode twin below serves platform administrators
+ * regardless of membership and never redacts.
  * @summary A project's own monthly budget and current-period spend
  */
 export const getProjectBudget = async (

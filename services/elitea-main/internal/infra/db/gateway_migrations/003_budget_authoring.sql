@@ -36,8 +36,37 @@ CREATE SCHEMA IF NOT EXISTS gateway;
 -- what the operator typed. Deriving `enabled` from `is_unlimited` would make
 -- the first case read back as the second, so the form would show a value
 -- nobody entered.
-ALTER TABLE gateway.project_budget
-    ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true;
+-- The column is added AND back-filled in one guarded block, and the guard is
+-- load-bearing twice over.
+--
+-- A bare `ADD COLUMN ... DEFAULT true` stamps `enabled = true` on every row that
+-- already exists, including a row with `is_unlimited = true` and a non-null
+-- hard_limit_usd — an operator who set a ceiling and then marked the project
+-- exempt. The API would then read that row as an enforced explicit limit while
+-- the gateway, reading is_unlimited, admits every call: a ceiling on the screen
+-- that stops nothing. `enabled = NOT is_unlimited` is the only backfill that
+-- cannot invent that state.
+--
+-- The backfill must run ONLY when the column is created, which is why this is a
+-- DO block and not an unconditional UPDATE. Re-running it on a later migration
+-- pass would overwrite authored values: a project saved as
+-- `enabled = true, monthly_limit = NULL` is legitimately is_unlimited, and the
+-- UPDATE would silently rewrite it to `enabled = false` — "deliberately exempt",
+-- which is not what anybody chose.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'gateway'
+          AND table_name = 'project_budget'
+          AND column_name = 'enabled'
+    ) THEN
+        ALTER TABLE gateway.project_budget
+            ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT true;
+        UPDATE gateway.project_budget SET enabled = NOT is_unlimited;
+    END IF;
+END
+$$;
 
 -- ---------------------------------------------------------------------------
 -- user_budget — per-member monthly limit within a project

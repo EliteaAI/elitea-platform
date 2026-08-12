@@ -204,21 +204,31 @@ components:
           description: When the accumulator rolls over to a new period row.
 
     BudgetState:
+      description: |
+        The five COST fields — monthly_limit, effective_limit, spend, remaining
+        and currency — are deliberately NOT in `required`. Both project-scoped
+        reads (`getProjectBudget`, `getProjectUsage`) REMOVE them for a caller
+        whose `can_see_amounts` is false, so requiring them would make a
+        correct redacted response fail its own schema. Everything that is not a
+        cost figure — the percentage, the threshold, the period — is required,
+        because redaction never removes those.
       allOf:
         - $ref: '#/components/schemas/BudgetPeriodWindow'
         - type: object
           required:
-            - monthly_limit
-            - effective_limit
             - limit_source
-            - currency
             - enabled
             - warning_pct
-            - spend
-            - remaining
             - percent_used
             - spend_available
           properties:
+            can_see_amounts:
+              type: boolean
+              description: |
+                Present on the project-scoped reads only. False means the five
+                cost fields were removed from this payload; percentages, the
+                warning threshold and the period remain.
+
             monthly_limit:
               type: number
               nullable: true
@@ -415,7 +425,7 @@ components:
     UsageReport:
       allOf:
         - type: object
-          required: [project_id, user_id, scope, can_see_amounts]
+          required: [project_id, user_id, scope]
           properties:
             project_id:
               type: integer
@@ -426,12 +436,6 @@ components:
             scope:
               type: string
               enum: [project, user]
-            can_see_amounts:
-              type: boolean
-              description: |
-                False means the cost fields — monthly_limit, effective_limit,
-                spend, remaining, currency — were REMOVED from this payload.
-                Percentages, the warning threshold and the period remain.
             enforced:
               type: boolean
               description: Present for scope=user only. See MemberBudget.enforced.
@@ -6182,8 +6186,15 @@ paths:
         accumulated USD figure per scope and period, and zero-filling them
         would read as "this project made no calls".
 
-        Available to project members; the administration-mode twin below serves
-        platform administrators regardless of membership.
+        Available to project members. A member who is neither a project admin nor
+        the owner of a personal project receives the same payload with
+        `monthly_limit`, `effective_limit`, `spend`, `remaining` and `currency`
+        REMOVED and `can_see_amounts: false` — the same rule `getProjectUsage`
+        applies, because the two serve the same figures behind the same gate and
+        redacting only one of them would leave the other as a way around it.
+
+        The administration-mode twin below serves platform administrators
+        regardless of membership and never redacts.
       tags: [budgets]
       responses:
         '200':

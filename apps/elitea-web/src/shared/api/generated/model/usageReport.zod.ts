@@ -47,11 +47,6 @@ export const UsageReport = zod
     project_id: zod.int(),
     user_id: zod.int().nullable().describe("Null for scope=project."),
     scope: zod.enum(["project", "user"]),
-    can_see_amounts: zod
-      .boolean()
-      .describe(
-        "False means the cost fields — monthly_limit, effective_limit,\nspend, remaining, currency — were REMOVED from this payload.\nPercentages, the warning threshold and the period remain.\n",
-      ),
     enforced: zod
       .boolean()
       .optional()

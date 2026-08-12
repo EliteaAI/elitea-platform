@@ -140,7 +140,7 @@ func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/project_budget/prompt_lib/{projectID}/budget", h.GetProjectBudget)
-	r.Get("/project_budget/administration/{projectID}/budget", h.GetProjectBudget)
+	r.Get("/project_budget/administration/{projectID}/budget", h.GetProjectBudgetAdmin)
 	r.Put("/project_budget/administration/{projectID}/budget", h.PutProjectBudget)
 	r.Get("/project_budgets/administration", h.ListProjectBudgets)
 	r.Get("/user_budget/prompt_lib/{projectID}/user_budget/{userID}", h.GetUserBudget)
@@ -288,24 +288,31 @@ func writeError(w http.ResponseWriter, code int, message string) {
 	writeJSON(w, code, map[string]any{"error": message})
 }
 
-// structToMap re-reads a response struct as a mutable map so the usage endpoint
-// can REMOVE fields for a caller who may not see cost figures.
+// structToMap re-reads a response struct as a mutable map so the redacting
+// endpoints can REMOVE fields for a caller who may not see cost figures.
 //
 // It round-trips through the struct's own JSON tags rather than reflecting over
 // field names, so the redacted payload and the unredacted one are guaranteed to
 // be spelled the same way. UseNumber keeps every money value as the exact
 // decimal PostgreSQL produced — decoding into float64 here would undo the whole
 // reason these fields are json.Number.
-func structToMap(value any) map[string]any {
+//
+// The error is RETURNED, not swallowed into an empty map. A json.Number holding
+// something PostgreSQL can produce but JSON cannot express — NUMERIC admits
+// 'NaN', and 'Infinity' on PG14+ — fails Marshal, and an empty map would then
+// be served as a 200 whose body had silently lost every budget field. Every
+// other write path in this package reports that failure as a 500; so does this
+// one now.
+func structToMap(value any) (map[string]any, error) {
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return map[string]any{}
+		return nil, fmt.Errorf("budgets: encode payload: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.UseNumber()
 	payload := map[string]any{}
 	if err := decoder.Decode(&payload); err != nil {
-		return map[string]any{}
+		return nil, fmt.Errorf("budgets: decode payload: %w", err)
 	}
-	return payload
+	return payload, nil
 }

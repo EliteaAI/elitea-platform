@@ -1394,7 +1394,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.With(requireProjectBudgetRead).
 					Get("/project_budget/prompt_lib/{projectID}/budget", budgetsHandler.GetProjectBudget)
 				r.With(requireBudgetsView).
-					Get("/project_budget/administration/{projectID}/budget", budgetsHandler.GetProjectBudget)
+					Get("/project_budget/administration/{projectID}/budget", budgetsHandler.GetProjectBudgetAdmin)
 				r.With(requireBudgetsEdit).
 					Put("/project_budget/administration/{projectID}/budget", budgetsHandler.PutProjectBudget)
 				r.With(requireBudgetsView).

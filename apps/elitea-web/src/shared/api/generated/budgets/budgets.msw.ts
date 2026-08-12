@@ -65,25 +65,44 @@ export const getGetProjectBudgetResponseMock = (): ProjectBudget => ({
       resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     },
     ...{
+      can_see_amounts: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
       monthly_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       effective_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       limit_source: faker.helpers.arrayElement([
         "explicit",
         "unlimited",
       ] as const),
-      currency: faker.helpers.arrayElement(["USD"] as const),
+      currency: faker.helpers.arrayElement([
+        faker.helpers.arrayElement(["USD"] as const),
+        undefined,
+      ]),
       enabled: faker.datatype.boolean(),
       warning_pct: faker.number.int(),
-      spend: faker.number.float({ fractionDigits: 2 }),
-      remaining: faker.helpers.arrayElement([
+      spend: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
-        null,
+        undefined,
+      ]),
+      remaining: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       percent_used: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
@@ -107,25 +126,44 @@ export const getGetProjectBudgetAdminResponseMock = (): ProjectBudget => ({
       resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     },
     ...{
+      can_see_amounts: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
       monthly_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       effective_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       limit_source: faker.helpers.arrayElement([
         "explicit",
         "unlimited",
       ] as const),
-      currency: faker.helpers.arrayElement(["USD"] as const),
+      currency: faker.helpers.arrayElement([
+        faker.helpers.arrayElement(["USD"] as const),
+        undefined,
+      ]),
       enabled: faker.datatype.boolean(),
       warning_pct: faker.number.int(),
-      spend: faker.number.float({ fractionDigits: 2 }),
-      remaining: faker.helpers.arrayElement([
+      spend: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
-        null,
+        undefined,
+      ]),
+      remaining: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       percent_used: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
@@ -149,25 +187,44 @@ export const getSetProjectBudgetResponseMock = (): ProjectBudget => ({
       resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     },
     ...{
+      can_see_amounts: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
       monthly_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       effective_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       limit_source: faker.helpers.arrayElement([
         "explicit",
         "unlimited",
       ] as const),
-      currency: faker.helpers.arrayElement(["USD"] as const),
+      currency: faker.helpers.arrayElement([
+        faker.helpers.arrayElement(["USD"] as const),
+        undefined,
+      ]),
       enabled: faker.datatype.boolean(),
       warning_pct: faker.number.int(),
-      spend: faker.number.float({ fractionDigits: 2 }),
-      remaining: faker.helpers.arrayElement([
+      spend: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
-        null,
+        undefined,
+      ]),
+      remaining: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       percent_used: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
@@ -201,25 +258,44 @@ export const getListProjectBudgetsResponseMock = (
         resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
       },
       ...{
+        can_see_amounts: faker.helpers.arrayElement([
+          faker.datatype.boolean(),
+          undefined,
+        ]),
         monthly_limit: faker.helpers.arrayElement([
-          faker.number.float({ fractionDigits: 2 }),
-          null,
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         effective_limit: faker.helpers.arrayElement([
-          faker.number.float({ fractionDigits: 2 }),
-          null,
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         limit_source: faker.helpers.arrayElement([
           "explicit",
           "unlimited",
         ] as const),
-        currency: faker.helpers.arrayElement(["USD"] as const),
+        currency: faker.helpers.arrayElement([
+          faker.helpers.arrayElement(["USD"] as const),
+          undefined,
+        ]),
         enabled: faker.datatype.boolean(),
         warning_pct: faker.number.int(),
-        spend: faker.number.float({ fractionDigits: 2 }),
-        remaining: faker.helpers.arrayElement([
+        spend: faker.helpers.arrayElement([
           faker.number.float({ fractionDigits: 2 }),
-          null,
+          undefined,
+        ]),
+        remaining: faker.helpers.arrayElement([
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         percent_used: faker.helpers.arrayElement([
           faker.number.float({ fractionDigits: 2 }),
@@ -250,25 +326,44 @@ export const getGetMemberBudgetResponseMock = (): MemberBudget => ({
       resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     },
     ...{
+      can_see_amounts: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
       monthly_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       effective_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       limit_source: faker.helpers.arrayElement([
         "explicit",
         "unlimited",
       ] as const),
-      currency: faker.helpers.arrayElement(["USD"] as const),
+      currency: faker.helpers.arrayElement([
+        faker.helpers.arrayElement(["USD"] as const),
+        undefined,
+      ]),
       enabled: faker.datatype.boolean(),
       warning_pct: faker.number.int(),
-      spend: faker.number.float({ fractionDigits: 2 }),
-      remaining: faker.helpers.arrayElement([
+      spend: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
-        null,
+        undefined,
+      ]),
+      remaining: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       percent_used: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
@@ -293,25 +388,44 @@ export const getGetMemberBudgetAdminResponseMock = (): MemberBudget => ({
       resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     },
     ...{
+      can_see_amounts: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
       monthly_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       effective_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       limit_source: faker.helpers.arrayElement([
         "explicit",
         "unlimited",
       ] as const),
-      currency: faker.helpers.arrayElement(["USD"] as const),
+      currency: faker.helpers.arrayElement([
+        faker.helpers.arrayElement(["USD"] as const),
+        undefined,
+      ]),
       enabled: faker.datatype.boolean(),
       warning_pct: faker.number.int(),
-      spend: faker.number.float({ fractionDigits: 2 }),
-      remaining: faker.helpers.arrayElement([
+      spend: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
-        null,
+        undefined,
+      ]),
+      remaining: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       percent_used: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
@@ -336,25 +450,44 @@ export const getSetMemberBudgetResponseMock = (): MemberBudget => ({
       resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     },
     ...{
+      can_see_amounts: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
       monthly_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       effective_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       limit_source: faker.helpers.arrayElement([
         "explicit",
         "unlimited",
       ] as const),
-      currency: faker.helpers.arrayElement(["USD"] as const),
+      currency: faker.helpers.arrayElement([
+        faker.helpers.arrayElement(["USD"] as const),
+        undefined,
+      ]),
       enabled: faker.datatype.boolean(),
       warning_pct: faker.number.int(),
-      spend: faker.number.float({ fractionDigits: 2 }),
-      remaining: faker.helpers.arrayElement([
+      spend: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
-        null,
+        undefined,
+      ]),
+      remaining: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       percent_used: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
@@ -391,25 +524,44 @@ export const getListMemberBudgetsResponseMock = (
         resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
       },
       ...{
+        can_see_amounts: faker.helpers.arrayElement([
+          faker.datatype.boolean(),
+          undefined,
+        ]),
         monthly_limit: faker.helpers.arrayElement([
-          faker.number.float({ fractionDigits: 2 }),
-          null,
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         effective_limit: faker.helpers.arrayElement([
-          faker.number.float({ fractionDigits: 2 }),
-          null,
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         limit_source: faker.helpers.arrayElement([
           "explicit",
           "unlimited",
         ] as const),
-        currency: faker.helpers.arrayElement(["USD"] as const),
+        currency: faker.helpers.arrayElement([
+          faker.helpers.arrayElement(["USD"] as const),
+          undefined,
+        ]),
         enabled: faker.datatype.boolean(),
         warning_pct: faker.number.int(),
-        spend: faker.number.float({ fractionDigits: 2 }),
-        remaining: faker.helpers.arrayElement([
+        spend: faker.helpers.arrayElement([
           faker.number.float({ fractionDigits: 2 }),
-          null,
+          undefined,
+        ]),
+        remaining: faker.helpers.arrayElement([
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         percent_used: faker.helpers.arrayElement([
           faker.number.float({ fractionDigits: 2 }),
@@ -450,25 +602,44 @@ export const getListMemberBudgetsAdminResponseMock = (
         resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
       },
       ...{
+        can_see_amounts: faker.helpers.arrayElement([
+          faker.datatype.boolean(),
+          undefined,
+        ]),
         monthly_limit: faker.helpers.arrayElement([
-          faker.number.float({ fractionDigits: 2 }),
-          null,
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         effective_limit: faker.helpers.arrayElement([
-          faker.number.float({ fractionDigits: 2 }),
-          null,
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         limit_source: faker.helpers.arrayElement([
           "explicit",
           "unlimited",
         ] as const),
-        currency: faker.helpers.arrayElement(["USD"] as const),
+        currency: faker.helpers.arrayElement([
+          faker.helpers.arrayElement(["USD"] as const),
+          undefined,
+        ]),
         enabled: faker.datatype.boolean(),
         warning_pct: faker.number.int(),
-        spend: faker.number.float({ fractionDigits: 2 }),
-        remaining: faker.helpers.arrayElement([
+        spend: faker.helpers.arrayElement([
           faker.number.float({ fractionDigits: 2 }),
-          null,
+          undefined,
+        ]),
+        remaining: faker.helpers.arrayElement([
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
         ]),
         percent_used: faker.helpers.arrayElement([
           faker.number.float({ fractionDigits: 2 }),
@@ -488,7 +659,6 @@ export const getGetProjectUsageResponseMock = (): UsageReport => ({
     project_id: faker.number.int(),
     user_id: faker.helpers.arrayElement([faker.number.int(), null]),
     scope: faker.helpers.arrayElement(["project", "user"] as const),
-    can_see_amounts: faker.datatype.boolean(),
     enforced: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
     budget_period: faker.helpers.arrayElement([
       faker.helpers.arrayElement(["monthly"] as const),
@@ -503,25 +673,44 @@ export const getGetProjectUsageResponseMock = (): UsageReport => ({
       resets_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     },
     ...{
+      can_see_amounts: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
       monthly_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       effective_limit: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        null,
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       limit_source: faker.helpers.arrayElement([
         "explicit",
         "unlimited",
       ] as const),
-      currency: faker.helpers.arrayElement(["USD"] as const),
+      currency: faker.helpers.arrayElement([
+        faker.helpers.arrayElement(["USD"] as const),
+        undefined,
+      ]),
       enabled: faker.datatype.boolean(),
       warning_pct: faker.number.int(),
-      spend: faker.number.float({ fractionDigits: 2 }),
-      remaining: faker.helpers.arrayElement([
+      spend: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),
-        null,
+        undefined,
+      ]),
+      remaining: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          null,
+        ]),
+        undefined,
       ]),
       percent_used: faker.helpers.arrayElement([
         faker.number.float({ fractionDigits: 2 }),

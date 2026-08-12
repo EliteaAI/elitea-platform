@@ -34,9 +34,17 @@ import (
 )
 
 // userLimitJoin is readBudgetState's per-member limit table. $5/$6 are the
-// project and user ids; see projectLimitJoin for the project counterpart.
-const userLimitJoin = `LEFT JOIN gateway.user_budget AS limits
-       ON limits.project_id = $5::integer AND limits.user_id = $6::integer`
+// project and user ids; see projectLimitJoin for the project counterpart and
+// for why both joins must expose `is_unlimited`.
+//
+// gateway.user_budget has no is_unlimited column — there is no gateway-side
+// enforcement flag to store, because nothing enforces these rows — so it is
+// derived here with the same rule the project upsert applies.
+const userLimitJoin = `LEFT JOIN (
+    SELECT project_id, user_id, hard_limit_usd, enabled, soft_alert_pct,
+           (hard_limit_usd IS NULL OR NOT enabled) AS is_unlimited
+    FROM gateway.user_budget
+) AS limits ON limits.project_id = $5::integer AND limits.user_id = $6::integer`
 
 // userBudgetState is one member's budget within a project.
 type userBudgetState struct {
@@ -214,35 +222,47 @@ func (h *Handler) PutUserBudget(w http.ResponseWriter, r *http.Request) {
 // assignments, with each project's own service account excluded — the
 // `filter_system_user=True` the reference passes.
 //
-// The roles aggregate is a FILTERed array_agg inside the row, not a JOIN that
+// The roles aggregate is a GROUP BY inside a sub-select, not a JOIN that
 // multiplies the member out once per role. A plain join here is what made the
 // pre-A14 admin user listing report a two-role user twice while its separate
 // COUNT disagreed.
+//
+// It is driven FROM the assignment table, not from auth_core__user: the member
+// set is `assignment.project_id = $1`, so the planner starts from that index and
+// touches only this project's members. Selecting from every user and filtering
+// membership per row scales with the deployment's user count instead — ~15k
+// rows scanned to return five, on the dump this was measured against.
 const userBudgetPageSQL = `
+WITH members AS (
+    SELECT assignment.user_id,
+           array_agg(DISTINCT project_role.name) AS names
+    FROM public.auth_core__project_user_role AS assignment
+    JOIN public.auth_core__project_role AS project_role
+      ON project_role.id = assignment.role_id
+     AND project_role.project_id = assignment.project_id
+    WHERE assignment.project_id = $1
+    GROUP BY assignment.user_id
+)
 SELECT member.id,
        COALESCE(member.name, '')                                     AS name,
        COALESCE(member.email, '')                                    AS email,
-       COALESCE(roles.names, '{}')                                   AS roles,
+       members.names                                                 AS roles,
        limits.hard_limit_usd::text                                   AS monthly_limit,
        COALESCE(limits.enabled, false)                               AS enabled,
        COALESCE(limits.soft_alert_pct, $2::smallint)                 AS warning_pct,
        COALESCE(accrued.accumulated_cost, 0)::text                   AS spend,
        (accrued.accumulated_cost IS NOT NULL)                        AS spend_available,
-       CASE WHEN COALESCE(limits.enabled, false) AND limits.hard_limit_usd IS NOT NULL
+       -- Enforcement, derived exactly as userLimitJoin derives it, so the
+       -- listing and the single-member read cannot disagree about whether a
+       -- ceiling applies. gateway.user_budget has no is_unlimited column.
+       CASE WHEN limits.enabled AND limits.hard_limit_usd IS NOT NULL
             THEN GREATEST(0, limits.hard_limit_usd - COALESCE(accrued.accumulated_cost, 0))::text
        END                                                           AS remaining,
-       CASE WHEN COALESCE(limits.enabled, false) AND limits.hard_limit_usd > 0
+       CASE WHEN limits.enabled AND limits.hard_limit_usd > 0
             THEN round(COALESCE(accrued.accumulated_cost, 0) / limits.hard_limit_usd * 100, 2)::text
        END                                                           AS percent_used
-FROM public.auth_core__user member
-JOIN LATERAL (
-    SELECT array_agg(DISTINCT project_role.name) AS names
-    FROM public.auth_core__project_user_role AS assignment
-    JOIN public.auth_core__project_role AS project_role
-      ON project_role.id = assignment.role_id
-     AND project_role.project_id = assignment.project_id
-    WHERE assignment.project_id = $1 AND assignment.user_id = member.id
-) AS roles ON roles.names IS NOT NULL
+FROM members
+JOIN public.auth_core__user member ON member.id = members.user_id
 LEFT JOIN gateway.user_budget limits
        ON limits.project_id = $1 AND limits.user_id = member.id
 LEFT JOIN gateway.llm_budget_accumulators accrued

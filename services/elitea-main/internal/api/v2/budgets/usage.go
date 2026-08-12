@@ -30,6 +30,7 @@ package budgets
 // renders as "no calls were made" — see the package doc.
 
 import (
+	"context"
 	"net/http"
 )
 
@@ -67,32 +68,47 @@ func (h *Handler) GetUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	personal, err := h.isPersonalProject(ctx, projectID, caller)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read usage")
-		return
-	}
-
 	payload, err := h.usagePayload(w, r, projectID, caller, scope)
 	if err != nil {
 		return
 	}
 
-	// A personal project's spend is the owner's own, and it is where
-	// token-based integrations land, so amounts are always visible there.
-	visible := personal
-	if !visible {
-		visible, err = h.isProjectAdmin(ctx, projectID, caller)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to resolve project role")
-			return
-		}
+	visible, err := h.canSeeAmounts(ctx, projectID, caller)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project role")
+		return
 	}
+	applyAmountVisibility(payload, visible)
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// canSeeAmounts decides whether this caller may see platform cost figures for
+// this project: project admins may, and so does the owner of a personal
+// project, whose spend is their own and where token-based integrations land.
+//
+// It is shared with the project-scoped budget read rather than living in this
+// file, because the two endpoints serve the SAME numbers behind the SAME gate.
+// While only /usage redacted, a member refused the amounts here could read them
+// straight off /project_budget/prompt_lib/{id}/budget and the control was
+// decorative.
+func (h *Handler) canSeeAmounts(ctx context.Context, projectID, userID int64) (bool, error) {
+	personal, err := h.isPersonalProject(ctx, projectID, userID)
+	if err != nil {
+		return false, err
+	}
+	if personal {
+		return true, nil
+	}
+	return h.isProjectAdmin(ctx, projectID, userID)
+}
+
+// applyAmountVisibility stamps can_see_amounts and strips the cost fields when
+// it is false.
+func applyAmountVisibility(payload map[string]any, visible bool) {
 	payload["can_see_amounts"] = visible
 	if !visible {
 		redactAmounts(payload)
 	}
-	writeJSON(w, http.StatusOK, payload)
 }
 
 // usagePayload assembles the scope's budget state as a mutable map, so
@@ -111,7 +127,11 @@ func (h *Handler) usagePayload(
 			writeError(w, http.StatusInternalServerError, "failed to read usage")
 			return nil, err
 		}
-		payload := structToMap(state)
+		payload, err := structToMap(state)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read usage")
+			return nil, err
+		}
 		payload["scope"] = usageScopeUser
 		return payload, nil
 	}
@@ -121,7 +141,11 @@ func (h *Handler) usagePayload(
 		writeError(w, http.StatusInternalServerError, "failed to read usage")
 		return nil, err
 	}
-	payload := structToMap(state)
+	payload, err := structToMap(state)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read usage")
+		return nil, err
+	}
 	payload["scope"] = usageScopeProject
 	// The project scope has no user of its own; the reference reports null
 	// rather than omitting the key, so a client can key off one shape.
