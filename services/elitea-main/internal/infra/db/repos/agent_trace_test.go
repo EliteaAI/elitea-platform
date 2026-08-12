@@ -18,7 +18,8 @@ func TestDecodeCurrentAgentTraceDeltaPreservesCurrentPartialMessageContract(t *t
       "run-a":{"tool_name":"first","tool_run_id":"run-a"},
       "run-b":{"tool_name":"second","tool_run_id":"run-b"}
     },
-    "thinking_steps":[{"tool_run_id":"think-1","text":"reasoning"}]
+    "thinking_steps":[{"tool_run_id":"think-1","text":"reasoning"}],
+    "invoked_skills":[{"skill_id":7,"name":"Release notes","icon_meta":{"name":"book"},"instructions":"worker only"}]
   }
 }`)
 
@@ -35,6 +36,9 @@ func TestDecodeCurrentAgentTraceDeltaPreservesCurrentPartialMessageContract(t *t
 	if len(delta.toolCalls) != 2 || delta.toolCalls[0].key != "run-a" ||
 		delta.toolCalls[1].key != "run-b" || len(delta.thinkingSteps) != 1 {
 		t.Fatalf("current ordered deltas changed: %#v", delta)
+	}
+	if string(delta.invokedSkills) != `[{"skill_id":7,"name":"Release notes","icon_meta":{"name":"book"}}]` {
+		t.Fatalf("compact invoked skills changed: %s", delta.invokedSkills)
 	}
 }
 

@@ -779,6 +779,17 @@ func TestPostgresCurrentRegenerationResolvesOwnershipAndAtomicallyReusesResponse
 	}
 	completePostgresCurrentApplicationTurn(t, tx, response, "discarded answer")
 	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET meta = jsonb_set(
+    COALESCE(meta, '{}'::jsonb),
+    '{invoked_skills}',
+    '[{"skill_id": 91, "name": "Discarded skill", "icon_meta": null}]'::jsonb,
+    TRUE
+)
+WHERE uuid = $1`, response); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `
 INSERT INTO chat_message_trace_step (
     id, message_group_id, kind, run_id, is_error, has_visible_content
 )
@@ -830,24 +841,25 @@ WHERE uuid = $1`, response); err != nil {
 		t.Fatalf("reset=%+v", reset)
 	}
 	var isStreaming bool
-	var taskID, storedGeneration string
+	var taskID, storedGeneration, invokedSkills string
 	var items, traces int
 	if err := tx.QueryRow(t.Context(), `
 SELECT response.is_streaming,
        response.task_id,
        response.meta ->> 'execution_generation',
+       COALESCE(response.meta -> 'invoked_skills', '[]'::jsonb)::text,
        (SELECT count(*) FROM chat_message_items WHERE message_group_id = response.id),
        (SELECT count(*) FROM chat_message_trace_step WHERE message_group_id = response.id)
 FROM chat_message_group AS response
 WHERE response.uuid = $1`, response).Scan(
-		&isStreaming, &taskID, &storedGeneration, &items, &traces,
+		&isStreaming, &taskID, &storedGeneration, &invokedSkills, &items, &traces,
 	); err != nil {
 		t.Fatal(err)
 	}
 	if !isStreaming || taskID != "execution-regenerated" || storedGeneration != generation ||
-		items != 0 || traces != 0 {
-		t.Fatalf("streaming=%v task=%q generation=%q items=%d traces=%d",
-			isStreaming, taskID, storedGeneration, items, traces)
+		invokedSkills != "[]" || items != 0 || traces != 0 {
+		t.Fatalf("streaming=%v task=%q generation=%q skills=%s items=%d traces=%d",
+			isStreaming, taskID, storedGeneration, invokedSkills, items, traces)
 	}
 }
 

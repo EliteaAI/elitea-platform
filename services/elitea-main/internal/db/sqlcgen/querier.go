@@ -117,6 +117,7 @@ type Querier interface {
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
+	GetCurrentAgentInvokedSkills(ctx context.Context, messageGroupID int64) (string, error)
 	GetCurrentAgentTraceBinding(ctx context.Context, arg GetCurrentAgentTraceBindingParams) (GetCurrentAgentTraceBindingRow, error)
 	GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error)
 	GetCurrentConfigurationRenameToolkit(ctx context.Context, arg GetCurrentConfigurationRenameToolkitParams) (GetCurrentConfigurationRenameToolkitRow, error)
