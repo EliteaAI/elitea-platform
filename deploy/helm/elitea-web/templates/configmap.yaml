@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "elitea-web.fullname" . }}-config
+  labels:
+    {{- include "elitea-web.labels" . | nindent 4 }}
+data:
+  # Whole .Values.env map (same reasoning as deploy/helm/elitea-main). Note that
+  # only the five keys docker-entrypoint.sh reads reach the browser; extra keys
+  # set here are present in the container but never emitted into config.js.
+  {{- range $key, $value := .Values.env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

@@ -86,7 +86,7 @@ func newArtifactRetentionPostgresPool(t *testing.T) *pgxpool.Pool {
 // itself never creates: centry.project (id, owner_id, create_success,
 // suspended — see internal/application/artifactbootstrap's S13 integration
 // test for the create_success/suspended half of this) and
-// centry.notifications (see internal/db/schema/current_notifications_baseline.sql,
+// centry.notifications (see internal/db/schema/notifications_baseline.sql,
 // which documents that table as owned by the platform schema lifecycle,
 // not a runtime migration).
 func applyArtifactRetentionSharedMigrations(t *testing.T, pool *pgxpool.Pool) {

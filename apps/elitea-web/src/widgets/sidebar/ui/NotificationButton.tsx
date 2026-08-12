@@ -63,7 +63,7 @@ import { BUTTON_VARIANTS, BaseBtn } from '@/shared/ui/BaseBtn';
  * `features/notifications`'s `useNotificationsSSE` subscribes to the Go
  * route `GET {vite_server_url}/notifications/events/prompt_lib/
  * {projectId}` instead (`services/elitea-main/internal/api/v2/
- * notifications/current_events.go`). Socket.io is permanently dead in the
+ * notifications/events.go`). Socket.io is permanently dead in the
  * E2E compose stack (`VITE_SOCKET_SERVER=""`), so the socket path could
  * never fire there at all. One behavioural difference, deliberate: the
  * socket subscription was unconditional, while the SSE stream is scoped to

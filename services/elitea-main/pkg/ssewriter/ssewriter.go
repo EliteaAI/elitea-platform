@@ -29,7 +29,7 @@ type Writer struct {
 // implements Unwrap() precisely so this would work. The observable was a 500
 // "streaming not supported" on /api/v2/events/prompt_lib/{projectID} the moment
 // that route was first mounted (#152). ResponseController follows Unwrap;
-// notifications/current_events.go already streams this way.
+// notifications/events.go already streams this way.
 func New(w http.ResponseWriter) (*Writer, error) {
 	if w == nil || !supportsFlush(w) {
 		return nil, fmt.Errorf("ssewriter: streaming not supported")

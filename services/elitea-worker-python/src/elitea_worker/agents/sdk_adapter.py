@@ -498,9 +498,6 @@ def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
     authorization_resume = _is_authorization_resume(payload)
     if (
         payload.checkpoint_id
-        or payload.invoked_skills
-        or payload.applied_skills
-        or payload.attached_skills
         or payload.input_attachments
         or payload.parallel_reconcile is not None
         or payload.parallel_terminal_errors
@@ -648,6 +645,8 @@ def _invoke_initial_agent(
     messages.append(HumanMessage(content=deepcopy(user_message_content)))
     configurable: dict[str, Any] = {
         "thread_id": payload.thread_id or payload.conversation_id,
+        "invoked_skills": deepcopy(payload.invoked_skills),
+        "attached_skills": deepcopy(payload.attached_skills),
     }
     invoke_config: dict[str, Any] = {"configurable": configurable}
     if callbacks:

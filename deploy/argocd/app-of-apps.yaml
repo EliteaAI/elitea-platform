@@ -1,0 +1,50 @@
+# app-of-apps root (issue #240). This is the ONLY object you apply by hand:
+#
+#   kubectl apply -f deploy/argocd/app-of-apps.yaml
+#
+# It renders every Application under deploy/argocd/applications/ and syncs them
+# in sync-wave order. `kubectl apply -f deploy/argocd/` reaches only this file
+# (kubectl does not recurse into subdirectories without -R), which is the
+# intended behaviour — the children come from here, not from a second apply.
+#
+# Deliberately NOT in applications/: a root that enumerated itself would manage
+# its own lifecycle, so a mistake in the root could prune the root.
+#
+# COMPOSITION DECISION: this replaces the never-built umbrella Helm chart that
+# was scaffolded at deploy/helm/elitea-platform/ (an empty .gitkeep, removed in
+# the same change). One composition mechanism, not two — see deploy/README.md.
+#
+# EXTERNAL PREREQUISITES this root does NOT install: PostgreSQL and Redis.
+# No chart in deploy/helm provisions them, so the wave-1 elitea-main migration
+# hook will fail against a cluster where they do not already exist and where
+# each Application's values have not been pointed at them.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elitea-platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/eliteaai/elitea-platform
+    targetRevision: main
+    path: deploy/argocd/applications
+    directory:
+      # Flat directory of Application manifests; no nesting to descend into.
+      recurse: false
+      include: "*.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    # Applications are cluster-scoped objects living in argocd's namespace —
+    # NOT where the workloads land. Each child sets its own workload namespace.
+    namespace: argocd
+  syncPolicy:
+    automated:
+      # prune: deleting a child manifest from git deletes that Application, and
+      # its resources-finalizer cascades to the workloads it manages. That is
+      # the point of GitOps here, but it means removing a file from
+      # applications/ is a production deletion — review those diffs as such.
+      prune: true
+      selfHeal: true

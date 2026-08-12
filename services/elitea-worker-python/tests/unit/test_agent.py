@@ -521,7 +521,9 @@ def test_sdk_adapter_preserves_constructor_split_without_forwarding_authority() 
     assert client.application_calls[0]["tools"] is None
     assert client.application_executor.calls[0][1]["recursion_limit"] == 17
     assert client.application_executor.calls[0][1]["configurable"] == {
-        "thread_id": "thread-1"
+        "thread_id": "thread-1",
+        "invoked_skills": [],
+        "attached_skills": [],
     }
     assert client.application_executor.calls[0][1]["callbacks"] == [
         "current-callback"
@@ -535,6 +537,45 @@ def test_sdk_adapter_preserves_constructor_split_without_forwarding_authority() 
         {"role": "user", "content": "earlier"}
     ]
     assert len(client.application_executor.calls[0][0]["messages"]) == 2
+
+
+def test_sdk_adapter_passes_current_runtime_skills_only_through_configurable() -> None:
+    client = _Client()
+    payload = _request().payload
+    invoked = [
+        {
+            "skill_id": 7,
+            "skill_version_id": 8,
+            "name": "Review",
+            "version_name": "base",
+            "icon_meta": {"icon": "review"},
+            "instructions": "Review carefully.",
+        }
+    ]
+    attached = [
+        {
+            "skill_id": 9,
+            "name": "Deploy",
+            "description": "Deployment rules",
+            "icon_meta": {"icon": "deploy"},
+            "instructions": "Deploy safely.",
+        }
+    ]
+    object.__setattr__(payload, "invoked_skills", invoked)
+    object.__setattr__(payload, "applied_skills", [{"skill_id": 7, "name": "Review"}])
+    object.__setattr__(payload, "attached_skills", attached)
+
+    assert _adapter(client).execute_application(payload) == {"mode": "application"}
+
+    configurable = client.application_executor.calls[0][1]["configurable"]
+    assert configurable == {
+        "thread_id": "thread-1",
+        "invoked_skills": invoked,
+        "attached_skills": attached,
+    }
+    assert client.application_calls[0]["version_details"] == {
+        "meta": {"step_limit": 17}
+    }
 
 
 def test_sdk_adapter_generates_one_current_next_input_suggestion() -> None:
@@ -892,6 +933,8 @@ def test_sdk_adapter_resumes_declined_toolkit_authorization_from_paused_checkpoi
     assert invoke_config["configurable"] == {
         "thread_id": "thread-1",
         "checkpoint_id": "checkpoint-auth-1",
+        "invoked_skills": [],
+        "attached_skills": [],
     }
     assert invoke_config["should_continue"] is True
 

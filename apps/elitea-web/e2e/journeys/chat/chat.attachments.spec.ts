@@ -399,7 +399,7 @@ test('J26.1: the notification SSE stream is mounted, and a dropped connection is
           if (source.readyState === EventSource.CLOSED) finish(false);
         });
         // The opening handshake of services/elitea-main/internal/api/v2/
-        // notifications/current_events.go. Receiving it proves a real stream
+        // notifications/events.go. Receiving it proves a real stream
         // from elitea-main, not a 404 the client tolerates in silence.
         source.addEventListener('notifications_ready', () => finish(true));
         setTimeout(() => finish(false), budgetMs);

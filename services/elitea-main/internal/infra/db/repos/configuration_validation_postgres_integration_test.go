@@ -778,13 +778,17 @@ CREATE TABLE p_1.application_versions (
 );
 -- The skills pair is part of the "minimum legacy project schema" because the
 -- tenant history now alters it (tenant/0122_skill_publishing.sql, #249), the
--- same way application_versions above is here for 0121.
+-- same way application_versions above is here for 0121. It is defined HERE and
+-- nowhere else in this package: seedCurrentAgentContinuationSchema (#268) used
+-- to declare its own copy, and two CREATE TABLEs for one table is a duplicate-
+-- relation error for every test that runs both. The author/owner columns carry
+-- fixture defaults so the terser inserts in that seed still work.
 CREATE TABLE p_1.skills (
     id SERIAL PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
     description VARCHAR(2304) NOT NULL,
-    owner_id INTEGER NOT NULL,
-    author_id INTEGER NOT NULL,
+    owner_id INTEGER NOT NULL DEFAULT 1,
+    author_id INTEGER NOT NULL DEFAULT 1,
     meta JSONB DEFAULT '{}'::jsonb
 );
 CREATE TABLE p_1.skill_versions (
@@ -792,7 +796,7 @@ CREATE TABLE p_1.skill_versions (
     skill_id INTEGER NOT NULL REFERENCES p_1.skills(id) ON DELETE CASCADE,
     name VARCHAR(128) NOT NULL DEFAULT 'base',
     instructions TEXT NOT NULL,
-    author_id INTEGER NOT NULL,
+    author_id INTEGER NOT NULL DEFAULT 1,
     meta JSONB DEFAULT '{}'::jsonb
 );
 CREATE TABLE p_1.configuration (

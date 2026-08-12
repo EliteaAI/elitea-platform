@@ -2974,7 +2974,7 @@ components:
           type: string
           nullable: true
       description: >
-        internal/api/v2/social/current_avatar.go. avatar is null when the
+        internal/api/v2/social/avatar.go. avatar is null when the
         caller has never uploaded one; otherwise a /avatars/{project_id}/{filename}
         URL.
 
@@ -6682,7 +6682,7 @@ paths:
       operationId: getCurrentSocialAvatar
       summary: Get the authenticated user's own avatar URL
       description: |
-        internal/api/v2/social/current_avatar.go (CurrentAvatarRoute.get).
+        internal/api/v2/social/avatar.go (CurrentAvatarRoute.get).
         centry.social_users.avatar is per-user, not per-project; {project_id}
         is used only to resolve project-scoped RBAC, matching every other
         current_* social route.
@@ -6702,7 +6702,7 @@ paths:
       operationId: uploadCurrentSocialAvatar
       summary: Upload/replace the authenticated user's own avatar
       description: |
-        internal/api/v2/social/current_avatar.go (CurrentAvatarRoute.upload).
+        internal/api/v2/social/avatar.go (CurrentAvatarRoute.upload).
         Multipart field is `file`; the object lands in the configured
         ObjectStore under the reserved "avatars" bucket and is served back at
         the returned /avatars/{project_id}/{filename} URL (public, unauthenticated,

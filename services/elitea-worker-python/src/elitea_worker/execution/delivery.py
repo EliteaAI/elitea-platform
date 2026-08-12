@@ -2243,6 +2243,10 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
             ),
             progress.publish_from_sdk,
         )
+        callback.configure_skills(
+            applied_skills=payload.applied_skills,
+            attached_skills=payload.attached_skills,
+        )
         adapter = EliteaSdkAgentAdapter.from_context(
             resolved_input.client_context,
             callbacks=[callback],

@@ -571,6 +571,29 @@ def test_large_transition_omits_only_duplicate_transcript_state() -> None:
     assert len(encode_current_node_event_json(events[0])) <= 60 * 1024
 
 
+def test_small_transition_also_omits_duplicate_transcript_state() -> None:
+    callback, events = _callback()
+
+    callback.on_custom_event(
+        "on_transitional_edge",
+        {
+            "next_step": "agent",
+            "state": {
+                "messages": ["private skill instructions"],
+                "chat_history": "private skill instructions",
+                "business_state": {"preserved": True},
+            },
+        },
+        run_id="transition-small",
+    )
+
+    event = _json(events[0])
+    assert event["response_metadata"]["state"] == {
+        "business_state": {"preserved": True}
+    }
+    assert "private skill instructions" not in str(event)
+
+
 def test_agent_event_frame_uses_durable_execution_fence_and_sequence() -> None:
     callback, events = _callback()
     callback.emit_agent_start(invoked_skills=[{"name": "review"}])
@@ -633,3 +656,119 @@ def test_agent_event_frame_uses_durable_execution_fence_and_sequence() -> None:
         command=command,
         receipt=receipt,
     ) is False
+
+
+def test_load_skill_projects_cumulative_compact_applied_skills() -> None:
+    callback, events = _callback()
+    callback.configure_skills(
+        applied_skills=[
+            {"skill_id": 1, "name": "Review", "icon_meta": {"icon": "review"}}
+        ],
+        attached_skills=[
+            {
+                "skill_id": 2,
+                "name": "Deploy",
+                "description": "Deployment rules",
+                "icon_meta": {"icon": "deploy"},
+                "instructions": "must not enter browser events",
+            }
+        ],
+    )
+
+    callback.on_tool_start(
+        {"name": "load_skill", "metadata": {"display_name": "Skills"}},
+        "ignored",
+        run_id="load-deploy",
+        metadata={"toolkit_name": "skills"},
+        inputs={"skill": "deploy"},
+    )
+    callback.on_tool_end(
+        'Skill "Deploy" is now active\n\nmust not enter browser events',
+        run_id="load-deploy",
+    )
+    callback.emit_terminal(
+        {"response": "done", "thread_id": "thread-1"},
+        _request_payload(),
+    )
+
+    decoded = [_json(event) for event in events]
+    start = next(event for event in decoded if event["type"] == "agent_tool_start")
+    assert start["response_metadata"]["tool_meta"]["loaded_skill"] == "Deploy"
+    assert start["response_metadata"]["tool_meta"]["icon_meta"] == {
+        "icon": "deploy"
+    }
+    expected = [
+        {"skill_id": 1, "name": "Review", "icon_meta": {"icon": "review"}},
+        {"skill_id": 2, "name": "Deploy", "icon_meta": {"icon": "deploy"}},
+    ]
+    partial = [event for event in decoded if event["type"] == "partial_message"][-1]
+    terminal = decoded[-1]
+    assert partial["response_metadata"]["invoked_skills"] == expected
+    assert terminal["type"] == "full_message"
+    assert terminal["response_metadata"]["invoked_skills"] == expected
+    assert "must not enter browser events" not in str(
+        partial["response_metadata"]["invoked_skills"]
+    )
+    assert "must not enter browser events" not in str(
+        terminal["response_metadata"]["invoked_skills"]
+    )
+    assert decoded[2]["response_metadata"]["tool_output"] == (
+        'Skill "Deploy" is active.'
+    )
+    assert "must not enter browser events" not in str(decoded)
+
+
+def test_terminal_application_details_omit_skill_instruction_bodies() -> None:
+    callback, events = _callback()
+    payload = _request_payload()
+    payload.application = {
+        "id": 11,
+        "version_id": 22,
+        "version_details": {
+            "skills": [
+                {
+                    "skill_id": 2,
+                    "name": "Deploy",
+                    "description": "Deployment rules",
+                    "instructions": "must not enter browser events",
+                }
+            ]
+        },
+    }
+
+    callback.emit_terminal(
+        {"response": "done", "thread_id": "thread-1"},
+        payload,
+    )
+
+    event = _json(events[-1])
+    skill = event["response_metadata"]["application_details"][
+        "version_details"
+    ]["skills"][0]
+    assert skill["name"] == "Deploy"
+    assert skill["description"] == "Deployment rules"
+    assert "instructions" not in skill
+    assert "must not enter browser events" not in str(event)
+
+
+def test_load_skill_already_active_is_deduplicated() -> None:
+    callback, events = _callback()
+    callback.configure_skills(
+        applied_skills=[{"skill_id": 2, "name": "Deploy", "icon_meta": None}],
+        attached_skills=[{"skill_id": 2, "name": "Deploy", "icon_meta": None}],
+    )
+    callback.on_tool_start(
+        {"name": "load_skill"},
+        "ignored",
+        run_id="load-deploy",
+        inputs={"skill": "Deploy"},
+    )
+    callback.on_tool_end(
+        'Skill "Deploy" is already active for this conversation.',
+        run_id="load-deploy",
+    )
+
+    partial = [_json(event) for event in events if event.type == "partial_message"][-1]
+    assert partial["response_metadata"]["invoked_skills"] == [
+        {"skill_id": 2, "name": "Deploy", "icon_meta": None}
+    ]
