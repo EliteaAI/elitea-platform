@@ -32,7 +32,14 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "elitea-main.selectorLabels" . | nindent 8 }}
+        # Deliberately NOT elitea-main.selectorLabels: templates/service.yaml
+        # selects on exactly {app.kubernetes.io/name: <name>, .../instance},
+        # the same two keys selectorLabels sets — a migrate pod carrying them
+        # unchanged would be picked up as a live Service endpoint even though
+        # this container never listens on port 8080. The "-migrate" suffix on
+        # `name` keeps this pod out of that selector while it runs.
+        app.kubernetes.io/name: {{ include "elitea-main.name" . }}-migrate
+        app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       serviceAccountName: {{ include "elitea-main.serviceAccountName" . }}
       restartPolicy: Never
@@ -47,16 +54,18 @@ spec:
           command: ["/elitea-migrate"]
           args:
             {{- toYaml .Values.migrations.args | nindent 12 }}
-          # Identical env sourcing to templates/deployment.yaml's elitea-main
-          # container: DATABASE_URL comes from the same ConfigMap (S17-style
-          # plaintext today; the moment it becomes a Secret entry in
-          # .Values.secrets, this Job picks it up automatically via the same
-          # secretKeyRef range below, no separate wiring to maintain).
-          envFrom:
-            - configMapRef:
-                name: {{ include "elitea-main.fullname" . }}-config
-          {{- if .Values.secrets }}
+          # Same values as templates/deployment.yaml's elitea-main container
+          # (DATABASE_URL etc., S17-style plaintext today), but rendered
+          # directly from .Values.env rather than via configMapRef: this Job
+          # is a pre-install/pre-upgrade hook, which Helm runs BEFORE any of
+          # the release's normal manifests — including templates/configmap.yaml
+          # — exist. envFrom-ing that ConfigMap here would leave the pod stuck
+          # in CreateContainerConfigError on every fresh `helm install`.
           env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
             {{- range $name, $ref := .Values.secrets }}
             - name: {{ $name }}
               valueFrom:
@@ -65,7 +74,6 @@ spec:
                   key: {{ $ref.key }}
                   optional: {{ $ref.optional | default false }}
             {{- end }}
-          {{- end }}
           resources:
             {{- toYaml .Values.migrations.resources | nindent 12 }}
 {{- end }}
