@@ -1,5 +1,7 @@
-# PROTOTYPE VALUES ONLY. This chart does not yet define TLS ingress,
-# NetworkPolicy, split database principals, or production secret delivery.
+# PROTOTYPE VALUES ONLY. This chart does not yet define NetworkPolicy,
+# split database principals, or production secret delivery. An opt-in
+# Ingress/HTTPRoute exists (ingress.enabled) but ships with no TLS secret
+# or hostname configured — see ingress.tls / ingress.hosts below.
 replicaCount: 2
 
 image:
@@ -10,6 +12,67 @@ image:
 service:
   type: ClusterIP
   port: 8080
+
+# Legacy-parity hardening (issue #241): the shipped image is already a
+# distroless nonroot build, so runAsNonRoot/readOnlyRootFilesystem cost
+# nothing here — no application-level temp-file writes were found (grepped
+# for os.CreateTemp/os.TempDir); the container still gets a writable /tmp
+# emptyDir (templates/deployment.yaml) for anything the Go runtime itself
+# wants there.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Opt-in external reachability (issue #241; legacy parity with
+# legacy/deploy/charts/charts/pylon's templates/httproute.yaml). Both the
+# standard Ingress and the Gateway API HTTPRoute path are OFF by default —
+# this chart cannot know your ingress controller / Gateway, hostnames, or
+# TLS secret names. Set ingress.gatewayApi: true to render an HTTPRoute
+# instead of a networking.k8s.io/v1 Ingress; the two are mutually exclusive.
+ingress:
+  enabled: false
+  gatewayApi: false
+  className: ""
+  annotations: {}
+  path: /
+  pathType: Prefix
+  hosts: []
+  # TLS termination for the standard Ingress path only — ignored when
+  # gatewayApi: true (HTTPRoute TLS termination is the Gateway's own concern).
+  tls: []
+    # - secretName: elitea-main-tls
+    #   hosts:
+    #     - dev.elitea.ai
+  # Only consulted when gatewayApi: true — the pre-existing Gateway this
+  # HTTPRoute attaches to (not created by this chart).
+  gateway:
+    name: ""
+    namespace: ""
+    sectionName: ""
+
+# Optional file-based config mounts (issue #241), OFF by default. The chart
+# does not build these ConfigMaps for you — point configMapName at a
+# ConfigMap you provision out-of-band (kubectl create configmap / kustomize /
+# a GitOps overlay) and the chart wires the volume + volumeMount + env var
+# pointing at the mounted path. See internal/api/router.go (BRAND_PACK_PATH)
+# and cmd/elitea-main/main.go:1119 (ELITEA_AUTH_CONFIG_FILE).
+fileConfig:
+  authConfig:
+    enabled: false
+    configMapName: ""
+    key: auth-config.json
+    mountPath: /etc/elitea/auth-config.json
+  brandPack:
+    enabled: false
+    configMapName: ""
+    mountPath: /etc/elitea/brand-pack
 
 resources:
   requests:

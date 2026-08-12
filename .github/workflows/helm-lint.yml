@@ -41,6 +41,31 @@ jobs:
 
       - name: Template dry-run (elitea-main)
         run: |
+          helm template test-release deploy/helm/elitea-main/ --debug > /dev/null
           helm template test-release deploy/helm/elitea-main/ \
             -f deploy/helm/elitea-main/values-staging.yaml \
             --debug > /dev/null
+
+      - name: Template dry-run (elitea-llm-gateway)
+        run: |
+          helm template test-release deploy/helm/elitea-llm-gateway/ --debug > /dev/null
+
+      - name: Ingress/HTTPRoute render check (issue #241)
+        # helm template --debug already fails on invalid Go-template output or
+        # malformed YAML; full `kubectl apply --dry-run=client` schema
+        # validation against gateway.networking.k8s.io/v1 needs a live
+        # apiserver for discovery (confirmed locally against k3s — CI has no
+        # cluster to talk to), so that check is a manual/local verification
+        # step, not wired into this job.
+        run: |
+          for chart in elitea-main elitea-llm-gateway; do
+            for gw in false true; do
+              echo "Rendering $chart ingress (gatewayApi=$gw)..."
+              helm template test-release "deploy/helm/$chart/" \
+                --set ingress.enabled=true \
+                --set ingress.gatewayApi="$gw" \
+                --set ingress.gateway.name=example-gateway \
+                --set "ingress.hosts[0]=example.invalid" \
+                --debug > /dev/null
+            done
+          done
