@@ -139,8 +139,13 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * operation, its route and its callers are all gone); the other four flipped
  * to `source: handwritten` rather than disappearing, because the app still
  * issues those exact requests.
+ * 104 -> 106 when issue #251 added the social-avatar routes: two new spec
+ * operations (`getCurrentSocialAvatar`, `uploadCurrentSocialAvatar`) landed
+ * in v2.yaml alongside internal/api/v2/social/current_avatar.go. Neither is
+ * in the endpoint manifest yet (it stays handwritten, not yet landed, same
+ * as most P1 API-* items), so MANIFEST_ENTRY_COUNT is unchanged.
  */
-const GENERATED_OPERATION_COUNT = 104;
+const GENERATED_OPERATION_COUNT = 106;
 const MANIFEST_ENTRY_COUNT = 179;
 
 describe('GREEN — the real, checked-in manifest', () => {
