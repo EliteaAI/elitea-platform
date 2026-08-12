@@ -1085,11 +1085,14 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// separately, not a reason to ship new delete-capable surface
 				// with the same hole.
 				//
-				// The env escape hatch mirrors the toolkit block above, for
-				// deployments whose auth_core project-role tables are not yet
-				// populated: it can be turned off without a code change, and is
-				// on by default.
-				skillPublishRoutes := func(r chi.Router) {
+				// Unconditional, unlike the toolkit block's flagged rollout:
+				// that flag exists because the check was retrofitted onto
+				// routes with live clients, and turning it on could break one.
+				// These routes are new in the same change as the middleware, so
+				// there is no client to regress and no rollout to stage — a
+				// switch here would only be a way to run them unprotected.
+				r.Group(func(r chi.Router) {
+					r.Use(apimw.RequireProjectAccess(cfg.Pool))
 					r.Post("/publish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Publish)
 					r.Post("/unpublish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Unpublish)
 					r.Post("/publish_skill_validate/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.PublishValidate)
@@ -1098,15 +1101,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}", skillPublishHandler.ExportFork)
 					r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.ExportFork)
 					r.Get("/agents_with_skill/prompt_lib/{projectID}/{skillID}", skillPublishHandler.AgentsWithSkill)
-				}
-				if os.Getenv("FEATURE_FLAG_SKILL_PUBLISH_PROJECT_ACCESS") != "false" {
-					r.Group(func(r chi.Router) {
-						r.Use(apimw.RequireProjectAccess(cfg.Pool))
-						skillPublishRoutes(r)
-					})
-				} else {
-					r.Group(skillPublishRoutes)
-				}
+				})
 
 				// Check version in use
 				r.Get("/check_version_in_use/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)

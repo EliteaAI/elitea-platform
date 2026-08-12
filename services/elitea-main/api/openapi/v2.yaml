@@ -2367,8 +2367,8 @@ components:
           type: boolean
           description: >-
             Always false here: the reference's AI validation pass has no
-            transport in this service (#126/#194), so only the deterministic
-            checks ran.
+            transport in this service (issues 126 and 194), so only the
+            deterministic checks ran.
         validation_token:
           type: string
           description: >-
@@ -6283,7 +6283,7 @@ paths:
         Runs the deterministic pre-publish checks. 200 on PASS/WARN (with a
         `validation_token`), 422 on FAIL. `ai_validation_available` is always
         false in this stack — the AI half of the reference's gate has no
-        transport here (#126/#194).
+        transport here (issues 126 and 194).
       tags: [skills]
       requestBody:
         required: true

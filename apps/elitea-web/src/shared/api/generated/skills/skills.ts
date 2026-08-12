@@ -1397,7 +1397,7 @@ export const getValidateSkillForPublishUrl = (
  * Runs the deterministic pre-publish checks. 200 on PASS/WARN (with a
  * `validation_token`), 422 on FAIL. `ai_validation_available` is always
  * false in this stack — the AI half of the reference's gate has no
- * transport here (#126/#194).
+ * transport here (issues 126 and 194).
  * @summary Validate a skill version before publishing
  */
 export const validateSkillForPublish = async (

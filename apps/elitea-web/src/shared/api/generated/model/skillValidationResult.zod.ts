@@ -62,7 +62,7 @@ export const SkillValidationResult = zod
     ai_validation_available: zod
       .boolean()
       .describe(
-        "Always false here: the reference's AI validation pass has no transport in this service (#126\/#194), so only the deterministic checks ran.",
+        "Always false here: the reference's AI validation pass has no transport in this service (issues 126 and 194), so only the deterministic checks ran.",
       ),
     validation_token: zod
       .string()
