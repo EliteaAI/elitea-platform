@@ -51,6 +51,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
@@ -72,13 +73,16 @@ type Config struct {
 	ServiceName           string
 }
 
-// ConfigFromEnv reads the same OTEL_SDK_DISABLED / OTEL_EXPORTER_OTLP_ENDPOINT
-// variables libs/go/observability.ConfigFromEnv reads, so a single pair of
-// env vars controls both elitea-main's own span export and this ingest
-// surface's target collector.
+// ConfigFromEnv derives Enabled from observability.ConfigFromEnv (the exact
+// function elitea-main's own span export uses) rather than re-reading
+// OTEL_SDK_DISABLED independently, so the two can never disagree about
+// whether tracing is on. CollectorHTTPEndpoint reads OTEL_EXPORTER_OTLP_ENDPOINT
+// directly because it needs its own default ("http://otel-collector:4318")
+// distinct from observability.Config.OTLPEndpoint's empty-means-defer-to-the-
+// exporter's-own-env-handling default.
 func ConfigFromEnv(serviceName string) Config {
 	return Config{
-		Enabled:               os.Getenv("OTEL_SDK_DISABLED") != "true",
+		Enabled:               observability.ConfigFromEnv(serviceName, "").Enabled,
 		CollectorHTTPEndpoint: envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318"),
 		ServiceName:           serviceName,
 	}
@@ -173,6 +177,22 @@ type spanData struct {
 	DurationMs *float64       `json:"duration_ms"`
 }
 
+// MaxCollectBodyBytes bounds the collect request body the same way
+// social/avatar.go and social/feedback.go bound theirs — without it, a single
+// authenticated (this route needs no project membership, only
+// authentication — see requireAuthenticatedUser) request could decode an
+// unbounded JSON body and turn its size directly into a synchronous span
+// creation loop.
+const MaxCollectBodyBytes = 1 << 20 // 1 MiB
+
+// MaxCollectTraces and MaxCollectSpansPerTrace cap the fan-out of a single
+// decoded request, independent of raw body size (a small body can still
+// encode a very large traces/spans array).
+const (
+	MaxCollectTraces        = 500
+	MaxCollectSpansPerTrace = 1000
+)
+
 // Collect accepts a batch of UI/worker-reported spans and re-emits them as
 // real OTel spans through the process TracerProvider — the Go equivalent of
 // legacy collect.py's `tracer.start_as_current_span` loop.
@@ -182,10 +202,23 @@ func (h *Handler) Collect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, MaxCollectBodyBytes)
+
 	var body collectRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "No data provided", "received": 0})
 		return
+	}
+
+	if len(body.Traces) > MaxCollectTraces {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "too many traces in one request", "received": 0})
+		return
+	}
+	for _, tb := range body.Traces {
+		if len(tb.Spans) > MaxCollectSpansPerTrace {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "too many spans in one trace", "received": 0})
+			return
+		}
 	}
 
 	projectID := chi.URLParam(r, "projectID")
@@ -195,22 +228,23 @@ func (h *Handler) Collect(w http.ResponseWriter, r *http.Request) {
 
 	spansCreated := 0
 	for _, tb := range body.Traces {
-		effectiveProjectID := projectID
-		if effectiveProjectID == "" {
-			if v, ok := tb.Metadata["project_id"]; ok {
-				effectiveProjectID = fmt.Sprintf("%v", v)
-			}
-		}
-
+		// projectID comes ONLY from the URL — apimw.RequireProjectAccess has
+		// verified the caller belongs to it. tb.Metadata["project_id"] is
+		// client-supplied and unverified: trusting it here would let any
+		// authenticated caller on the no-project-id route
+		// (POST /tracing/collect/prompt_lib) attribute fabricated spans to a
+		// project it has no membership in. An empty project.id attribute is
+		// the honest answer when the caller resolved no verified project,
+		// not a reason to fall back to an unverified claim.
 		attrs := []attribute.KeyValue{
 			attribute.String("trace.source", "ui"),
 			attribute.String("trace.id", tb.TraceID),
-			attribute.String("project.id", effectiveProjectID),
+			attribute.String("project.id", projectID),
 			attribute.String("user.id", user.ID),
 		}
 		attrs = append(attrs, metadataAttrs(tb.Metadata)...)
 
-		_, parentSpan := tracer.Start(ctx, "ui:"+tb.Name, trace.WithAttributes(attrs...))
+		parentCtx, parentSpan := tracer.Start(ctx, "ui:"+tb.Name, trace.WithAttributes(attrs...))
 		spansCreated++
 
 		for _, sd := range tb.Spans {
@@ -220,7 +254,11 @@ func (h *Handler) Collect(w http.ResponseWriter, r *http.Request) {
 			}
 			childAttrs = append(childAttrs, metadataAttrs(sd.Metadata)...)
 
-			_, childSpan := tracer.Start(ctx, sd.Name, trace.WithAttributes(childAttrs...))
+			// parentCtx, not ctx: this is what makes the child span a CHILD
+			// of parentSpan in the exported trace, rather than a sibling
+			// parented to whatever span was already active on the request
+			// (e.g. apimw.OtelMiddleware's own per-request span).
+			_, childSpan := tracer.Start(parentCtx, sd.Name, trace.WithAttributes(childAttrs...))
 			spansCreated++
 			if errMsg, ok := sd.Metadata["error"]; ok && errMsg != nil && errMsg != "" {
 				childSpan.SetStatus(codes.Error, fmt.Sprintf("%v", errMsg))

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
@@ -1053,11 +1052,17 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// mounted after the deletion either. The chat-dispatch migration it was a
 	// placeholder for is #93; the web client's own socket.io still points at
 	// pylon and is unaffected.
-	// otelhttp wraps every request in a span named by route pattern, exported
-	// through the TracerProvider observability.New installed above. A no-op
-	// TracerProvider (observability disabled) makes this a harmless pass-through.
-	instrumentedRouter := otelhttp.NewHandler(r, "elitea-main")
-	srv := newHTTPServer(publicAddress, instrumentedRouter)
+	// NOT wrapped in otelhttp here: internal/api/router.go already installs
+	// apimw.OtelMiddleware (r.Use at router.go:396) as chi middleware, which
+	// creates a span per request via otel.Tracer("elitea-main") — the same
+	// global tracer provider observability.New (above) installs. otelhttp
+	// would duplicate that instrumentation AND break it: otelhttp's response
+	// writer wrapper has no Unwrap(), unlike apimw's own statusRecorder
+	// (middleware/otel.go), so http.ResponseController.SetWriteDeadline
+	// (used by the SSE writers in internal/api/v2/executions/events.go and
+	// internal/api/v2/notifications/events.go, and by artifact upload/
+	// download deadlines) would stop reaching the real ResponseWriter.
+	srv := newHTTPServer(publicAddress, r)
 
 	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)
 	var runtimeLifecycleRoot runtimeLifecycle

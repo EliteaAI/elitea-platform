@@ -18,7 +18,6 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // Config holds observability configuration.
@@ -104,21 +103,4 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return p.tp.Shutdown(ctx)
-}
-
-// Tracer returns a tracer for this service. Safe to call on a disabled
-// Provider (nil TracerProvider): it falls back to the global tracer, which is
-// the SDK no-op unless something else installed a real one.
-func (p *Provider) Tracer() trace.Tracer {
-	if p == nil || p.tp == nil {
-		return otel.Tracer(serviceNameOr(p, "elitea"))
-	}
-	return p.tp.Tracer(p.cfg.ServiceName)
-}
-
-func serviceNameOr(p *Provider, fallback string) string {
-	if p != nil && p.cfg.ServiceName != "" {
-		return p.cfg.ServiceName
-	}
-	return fallback
 }

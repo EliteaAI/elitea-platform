@@ -101,6 +101,113 @@ func TestCollect_CreatesRealSpans(t *testing.T) {
 	if !names["ui:page_load"] || !names["render"] {
 		t.Fatalf("unexpected span names: %v", names)
 	}
+
+	// Proves the child span is actually parented to the trace's parent span
+	// in the exported trace — not merely that both were created. A handler
+	// that starts every span off the same background context (discarding the
+	// context Start() returns) would still pass the count/name assertions
+	// above while producing two unrelated root-ish spans.
+	var parent, child tracetest.SpanStub
+	for _, s := range spans {
+		switch s.Name {
+		case "ui:page_load":
+			parent = s
+		case "render":
+			child = s
+		}
+	}
+	if child.Parent.SpanID() != parent.SpanContext.SpanID() {
+		t.Fatalf("expected child span %q to be parented to %q (span id %s), got parent span id %s",
+			child.Name, parent.Name, parent.SpanContext.SpanID(), child.Parent.SpanID())
+	}
+	if child.SpanContext.TraceID() != parent.SpanContext.TraceID() {
+		t.Fatalf("expected child span to share the parent's trace id")
+	}
+}
+
+// TestCollect_NoProjectRoute_IgnoresClientSuppliedProjectID proves the
+// no-project-id route does NOT trust a client-supplied metadata.project_id
+// for span attribution — apimw.RequireProjectAccess only runs on the
+// {projectID} URL variant, so honoring a body-supplied project_id here would
+// let any authenticated caller (regardless of project membership) attribute
+// fabricated spans to a project it has no access to.
+func TestCollect_NoProjectRoute_IgnoresClientSuppliedProjectID(t *testing.T) {
+	h, exporter := newHandler(t, true)
+	r := h.Routes(allowAll)
+
+	body := `{"traces":[{"trace_id":"t1","name":"spoofed","metadata":{"project_id":"999-not-my-project"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/collect/prompt_lib", strings.NewReader(body))
+	req = withUser(req, "1")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 exported span, got %d", len(spans))
+	}
+	for _, attr := range spans[0].Attributes {
+		if attr.Key == "project.id" && attr.Value.AsString() != "" {
+			t.Fatalf("expected empty project.id (unverified), got %q from client-supplied metadata", attr.Value.AsString())
+		}
+	}
+}
+
+// TestCollect_TooManyTracesRejected proves the request is capped before the
+// span-creation loop runs — not just that a huge body eventually succeeds.
+func TestCollect_TooManyTracesRejected(t *testing.T) {
+	h, exporter := newHandler(t, true)
+	r := h.Routes(allowAll)
+
+	var b strings.Builder
+	b.WriteString(`{"traces":[`)
+	for i := 0; i <= tracing.MaxCollectTraces; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"name":"x"}`)
+	}
+	b.WriteString(`]}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/collect/prompt_lib", strings.NewReader(b.String()))
+	req = withUser(req, "1")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a request over MaxCollectTraces, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(exporter.GetSpans()) != 0 {
+		t.Fatalf("expected no spans created for a rejected request, got %d", len(exporter.GetSpans()))
+	}
+}
+
+// TestCollect_OversizedBodyRejected proves the MaxBytesReader cap is wired:
+// a body larger than MaxCollectBodyBytes must fail to decode rather than be
+// accepted and processed.
+func TestCollect_OversizedBodyRejected(t *testing.T) {
+	h, exporter := newHandler(t, true)
+	r := h.Routes(allowAll)
+
+	// One trace whose metadata value alone exceeds the cap; valid JSON, so a
+	// missing MaxBytesReader would let it decode successfully.
+	oversized := strings.Repeat("a", tracing.MaxCollectBodyBytes+1)
+	body := `{"traces":[{"name":"x","metadata":{"pad":"` + oversized + `"}}]}`
+
+	req := httptest.NewRequest(http.MethodPost, "/collect/prompt_lib", strings.NewReader(body))
+	req = withUser(req, "1")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a body over MaxCollectBodyBytes, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(exporter.GetSpans()) != 0 {
+		t.Fatalf("expected no spans created for a rejected request, got %d", len(exporter.GetSpans()))
+	}
 }
 
 func TestCollect_DisabledReturns503AndCreatesNoSpans(t *testing.T) {
