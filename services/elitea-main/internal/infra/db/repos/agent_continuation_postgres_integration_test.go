@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -656,6 +657,113 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("overlapping ad-hoc turn error=%v", err)
+	}
+}
+
+func TestPostgresCurrentAdhocTurnAdmitsSameProjectMCPToolkit(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+INSERT INTO elitea_tools (id, type, name, description, settings, author_id, meta)
+VALUES (
+    52, 'mcp', 'documentation-mcp', 'Saved external MCP server',
+    '{"url":"https://mcp.example.invalid/events","selected_tools":["search_docs"]}'::jsonb,
+    11, '{"mcp":true}'::jsonb
+);
+INSERT INTO chat_participants (id, uuid, entity_name, entity_meta, meta)
+VALUES (
+    25, 'd0000000-0000-4000-8000-000000000032', 'toolkit',
+    '{"id":52,"project_id":1}'::jsonb, '{"name":"documentation-mcp","mcp":true}'::json
+);
+INSERT INTO chat_participant_mapping (conversation_id, participant_id, entity_settings)
+VALUES (2, 25, '{}'::jsonb);`); err != nil {
+		t.Fatal(err)
+	}
+
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000032")
+	questionID := mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000039")
+	resolved, err := queries.ResolveCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+			QuestionID: questionID, ConversationUuid: conversationID,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve direct MCP toolkit: %v", err)
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal([]byte(resolved.ToolsJson), &tools); err != nil {
+		t.Fatalf("decode direct MCP toolkit: %v", err)
+	}
+	var mcpTool map[string]any
+	for _, tool := range tools {
+		if tool["id"] == float64(52) {
+			mcpTool = tool
+			break
+		}
+	}
+	meta, validMeta := mcpTool["meta"].(map[string]any)
+	if len(tools) != 3 || mcpTool["type"] != "mcp" ||
+		mcpTool["toolkit_name"] != "documentation-mcp" || mcpTool["project_id"] != float64(1) ||
+		!validMeta || meta["mcp"] != true {
+		t.Fatalf("direct MCP tools=%s", resolved.ToolsJson)
+	}
+	settings, ok := mcpTool["settings"].(map[string]any)
+	if !ok || settings["url"] != "https://mcp.example.invalid/events" ||
+		!reflect.DeepEqual(settings["selected_tools"], []any{"search_docs"}) {
+		t.Fatalf("direct MCP settings=%#v", mcpTool["settings"])
+	}
+
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_participants
+SET entity_meta = jsonb_set(entity_meta, '{project_id}', '2'::jsonb)
+WHERE id = 25`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = queries.ResolveCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+			QuestionID:       mustCurrentPGUUID(t, "50000000-0000-4000-8000-000000000039"),
+			ConversationUuid: conversationID,
+		},
+	)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("cross-project MCP resolve error=%v", err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_participants
+SET entity_meta = jsonb_set(entity_meta, '{project_id}', '1'::jsonb)
+WHERE id = 25`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID: questionID, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "30000000-0000-4000-8000-000000000039"),
+			UserInput:           "use the saved MCP toolkit",
+			ResponseMessageID:   mustCurrentPGUUID(t, "40000000-0000-4000-8000-000000000039"),
+			ExecutionGeneration: "20000000-0000-4000-8000-000000000039",
+			ExecutionID:         "execution-adhoc-mcp",
+		},
+	); err != nil {
+		t.Fatalf("insert direct MCP turn: %v", err)
 	}
 }
 

@@ -479,8 +479,7 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
             invalid_toolkit_participant.entity_meta ->> 'project_id'
                 IS DISTINCT FROM (sqlc.arg(project_id)::integer)::text
             OR invalid_toolkit.id IS NULL
-            OR invalid_toolkit.type IN ('application', 'mcp')
-            OR invalid_toolkit.meta ->> 'mcp' = 'true'
+            OR invalid_toolkit.type = 'application'
         )
   )
   AND NOT EXISTS (
@@ -1327,8 +1326,7 @@ WITH resolved AS MATERIALIZED (
                 invalid_toolkit_participant.entity_meta ->> 'project_id'
                     IS DISTINCT FROM (sqlc.arg(project_id)::integer)::text
                 OR invalid_toolkit.id IS NULL
-                OR invalid_toolkit.type IN ('application', 'mcp')
-                OR invalid_toolkit.meta ->> 'mcp' = 'true'
+                OR invalid_toolkit.type = 'application'
             )
       )
       AND NOT EXISTS (

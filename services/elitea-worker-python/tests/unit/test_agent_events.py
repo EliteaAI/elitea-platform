@@ -472,6 +472,58 @@ def test_sdk_authorization_tool_error_becomes_an_exact_pause() -> None:
     assert "provided_settings" not in authorization["authorization_requests"][0]["resource_metadata"]
 
 
+def test_saved_mcp_authorization_pause_remains_at_the_root_scope() -> None:
+    callback, events = _callback()
+
+    class McpAuthorizationRequired(RuntimeError):
+        server_url = "https://mcp.example.test/events"
+        resource_metadata_url = "https://login.example.test/discovery"
+        resource_metadata = {"resource_name": "Documentation MCP"}
+        authorization_servers = ["https://login.example.test"]
+        tool_name = "search_docs"
+
+    callback.on_tool_start(
+        {
+            "name": "mcp_authorize_documentation",
+            "metadata": {
+                "display_name": "Documentation MCP",
+                "toolkit_name": "documentation-mcp",
+                "toolkit_type": "mcp",
+            },
+        },
+        "ignored",
+        run_id="root-mcp-auth-call",
+        metadata={},
+        inputs={},
+    )
+    callback.on_tool_error(
+        McpAuthorizationRequired("Documentation MCP authorization is required."),
+        run_id="root-mcp-auth-call",
+    )
+
+    terminal = callback.emit_terminal(
+        callback.authorization_pause_result(),
+        _request_payload(),
+    )
+    decoded = [_json(event) for event in events]
+    assert [event["type"] for event in decoded] == [
+        "agent_tool_start",
+        "partial_message",
+        "mcp_authorization_required",
+        "mcp_authorization_required",
+    ]
+    authorization = _json(terminal)["response_metadata"]
+    assert authorization["tool_run_id"] == "root-mcp-auth-call"
+    assert authorization["tool_name"] == "search_docs"
+    assert authorization["toolkit_name"] == "documentation-mcp"
+    assert authorization["toolkit_type"] == "mcp"
+    assert "parent_agent_name" not in authorization
+    assert "parent_agent_call_id" not in authorization
+    assert "parent_agent_path" not in authorization
+    assert "child_thread_id" not in authorization
+    assert "checkpoint_ns" not in authorization
+
+
 def test_delegated_authorization_terminal_requires_callback_identity() -> None:
     callback, _ = _callback()
 

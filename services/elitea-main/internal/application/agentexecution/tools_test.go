@@ -133,6 +133,59 @@ func TestCurrentApplicationToolSnapshotFreezesGenericToolkitReferences(t *testin
 	}
 }
 
+func TestCurrentApplicationToolSnapshotFreezesSavedMCPReferenceWithoutSpecialCase(t *testing.T) {
+	settings := &currentAgentSettingsResolverStub{result: map[string]any{
+		"url":            "https://mcp.example.invalid/events",
+		"selected_tools": []any{"search_docs"},
+	}}
+	names := &currentAgentNameResolverStub{result: "documentation-mcp"}
+	service, err := NewCurrentApplicationToolSnapshotService(
+		settings,
+		names,
+		currentAgentModelCatalogForTest(false),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.FreezeCurrentApplicationVersion(
+		context.Background(),
+		CurrentApplicationVersionFreezeRequest{
+			ProjectID: 7, ActorUserID: 11,
+			VersionDetails: json.RawMessage(`{
+  "llm_settings":{"model_name":"model"},
+  "tools":[{
+    "id":52,
+    "type":"mcp",
+    "name":"documentation-mcp",
+    "description":"Saved external MCP server",
+    "author_id":11,
+    "settings":{"url":"https://mcp.example.invalid/events","selected_tools":["search_docs"]},
+    "meta":{"mcp":true},
+    "is_pinned":false
+  }]
+}`),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := decodeCurrentApplicationVersion(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := version["tools"].([]any)[0].(map[string]any)
+	toolID, validToolID := positiveCurrentAgentJSONInteger(tool["id"])
+	if !validToolID || toolID != 52 || tool["type"] != "mcp" ||
+		tool["toolkit_name"] != "documentation-mcp" ||
+		!reflect.DeepEqual(tool["settings"], settings.result) ||
+		len(settings.requests) != 1 || settings.requests[0].ToolkitType != "mcp" ||
+		len(names.requests) != 1 || names.requests[0].ToolkitType != "mcp" {
+		t.Fatalf("tool=%#v settings=%+v names=%+v", tool, settings.requests, names.requests)
+	}
+}
+
 func TestCurrentApplicationToolSnapshotPreservesSameProjectLeafApplicationReference(t *testing.T) {
 	settings := &currentAgentSettingsResolverStub{}
 	names := &currentAgentNameResolverStub{}
