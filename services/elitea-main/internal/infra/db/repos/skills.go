@@ -285,6 +285,25 @@ func upsertBaseSkillVersion(ctx context.Context, tx pgx.Tx, schema, skillID, ins
 
 func (r *SkillsRepo) Delete(ctx context.Context, projectID, skillID string) error {
 	s := schema(projectID)
+
+	// Guard: a skill with a published version cannot be deleted (#249).
+	//
+	// The cascade below would take the source rows with it while the copy in
+	// the public catalog survived — and unpublishing is keyed off the source
+	// skill, so the author would be left with an entry they can see in the
+	// catalog and no longer have any way to retract. Same guard, same reason
+	// and same wording as applications
+	// (internal/api/v2/applications/handler.go:669-681).
+	var publishedCount int
+	if err := r.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COUNT(*) FROM %q.skill_versions WHERE skill_id = $1 AND status = 'published'`, s),
+		skillID).Scan(&publishedCount); err != nil {
+		return fmt.Errorf("skills: delete: check published versions: %w", err)
+	}
+	if publishedCount > 0 {
+		return apierr.BadRequest("Unpublish first. Cannot delete skill with published versions.")
+	}
+
 	// skill_versions and skill_version_tag_association both cascade on
 	// delete (001_initial.sql), so no manual child cleanup is needed here
 	// (unlike applications.go, whose equivalent tables lack ON DELETE CASCADE).

@@ -1064,18 +1064,49 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// SkillsRepo: publishing is cross-schema SQL, the way
 				// application publishing is.
 				skillPublishHandler := v2skillpublish.NewHandler(cfg.Pool)
-				r.Post("/publish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Publish)
-				r.Post("/unpublish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Unpublish)
-				r.Post("/publish_skill_validate/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.PublishValidate)
+
+				// The catalog reads are project-independent: they serve the
+				// public project's schema and take no {projectID}, so there is
+				// no membership to check.
 				r.Get("/public_skills/prompt_lib", skillPublishHandler.PublicSkills)
 				r.Get("/public_skills/prompt_lib/", skillPublishHandler.PublicSkills)
 				r.Get("/public_skill/prompt_lib/{skillID}", skillPublishHandler.PublicSkill)
 				r.Get("/public_skill/prompt_lib/{skillID}/{versionName}", skillPublishHandler.PublicSkill)
-				r.Post("/attach_public_skill/prompt_lib/{projectID}", skillPublishHandler.AttachPublicSkill)
-				r.Get("/skill_categories/prompt_lib/{projectID}", skillPublishHandler.SkillCategories)
-				r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}", skillPublishHandler.ExportFork)
-				r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.ExportFork)
-				r.Get("/agents_with_skill/prompt_lib/{projectID}/{skillID}", skillPublishHandler.AgentsWithSkill)
+
+				// Everything project-scoped goes behind RequireProjectAccess.
+				//
+				// These routes take {projectID} from the path and then read and
+				// write THAT project's schema — unpublish deletes a catalog row
+				// and reverts a source version, attach creates a skill and maps
+				// it onto that project's agents. Authentication alone would let
+				// any signed-in user aim them at a project they have nothing to
+				// do with. The neighbouring application publish routes predate
+				// this middleware and do not carry it; that is a gap to close
+				// separately, not a reason to ship new delete-capable surface
+				// with the same hole.
+				//
+				// The env escape hatch mirrors the toolkit block above, for
+				// deployments whose auth_core project-role tables are not yet
+				// populated: it can be turned off without a code change, and is
+				// on by default.
+				skillPublishRoutes := func(r chi.Router) {
+					r.Post("/publish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Publish)
+					r.Post("/unpublish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Unpublish)
+					r.Post("/publish_skill_validate/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.PublishValidate)
+					r.Post("/attach_public_skill/prompt_lib/{projectID}", skillPublishHandler.AttachPublicSkill)
+					r.Get("/skill_categories/prompt_lib/{projectID}", skillPublishHandler.SkillCategories)
+					r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}", skillPublishHandler.ExportFork)
+					r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.ExportFork)
+					r.Get("/agents_with_skill/prompt_lib/{projectID}/{skillID}", skillPublishHandler.AgentsWithSkill)
+				}
+				if os.Getenv("FEATURE_FLAG_SKILL_PUBLISH_PROJECT_ACCESS") != "false" {
+					r.Group(func(r chi.Router) {
+						r.Use(apimw.RequireProjectAccess(cfg.Pool))
+						skillPublishRoutes(r)
+					})
+				} else {
+					r.Group(skillPublishRoutes)
+				}
 
 				// Check version in use
 				r.Get("/check_version_in_use/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)

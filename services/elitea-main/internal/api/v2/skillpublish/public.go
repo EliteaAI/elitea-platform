@@ -146,9 +146,18 @@ func (h *Handler) PublicSkills(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
+	skillIDs := make([]int, 0, len(collected))
+	for _, item := range collected {
+		skillIDs = append(skillIDs, item.id)
+	}
+	versionsBySkill := h.publishedVersionsFor(ctx, schema, skillIDs)
+
 	items := make([]map[string]any, 0, len(collected))
 	for _, item := range collected {
-		versions := h.publishedVersions(ctx, schema, item.id)
+		versions := versionsBySkill[item.id]
+		if versions == nil {
+			versions = []publicVersion{}
+		}
 		tagNames := map[string]bool{}
 		var tags []string
 		for _, version := range versions {
@@ -192,31 +201,79 @@ func parseIDList(raw string) []int {
 }
 
 func (h *Handler) publishedVersions(ctx context.Context, schema string, skillID int) []publicVersion {
-	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT id, name, status, created_at FROM %q.skill_versions
-		WHERE skill_id = $1 AND status = 'published'
-		ORDER BY created_at DESC, id DESC`, schema), skillID)
-	if err != nil {
+	versions := h.publishedVersionsFor(ctx, schema, []int{skillID})[skillID]
+	if versions == nil {
 		return []publicVersion{}
 	}
+	return versions
+}
+
+// publishedVersionsFor resolves the published versions, with their tags, for a
+// whole page of skills in two queries.
+//
+// Per-skill lookups would make a listing O(rows × versions) round trips — a
+// 100-row page of 3-version skills is ~400 sequential queries for one browse
+// of the catalog, which is the listing's hottest path.
+func (h *Handler) publishedVersionsFor(ctx context.Context, schema string, skillIDs []int) map[int][]publicVersion {
+	result := make(map[int][]publicVersion, len(skillIDs))
+	if len(skillIDs) == 0 {
+		return result
+	}
+
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT skill_id, id, name, status, created_at FROM %q.skill_versions
+		WHERE skill_id = ANY($1) AND status = 'published'
+		ORDER BY skill_id, created_at DESC, id DESC`, schema), skillIDs)
+	if err != nil {
+		return result
+	}
 	defer rows.Close()
-	versions := []publicVersion{}
+
+	byVersionID := make(map[int]*publicVersion)
+	var versionIDs []int
 	for rows.Next() {
+		var skillID int
 		var version publicVersion
-		if rows.Scan(&version.ID, &version.Name, &version.Status, &version.CreatedAt) != nil {
+		if rows.Scan(&skillID, &version.ID, &version.Name, &version.Status, &version.CreatedAt) != nil {
 			continue
 		}
-		versions = append(versions, version)
+		version.Tags = []string{}
+		result[skillID] = append(result[skillID], version)
+		versionIDs = append(versionIDs, version.ID)
 	}
 	rows.Close()
-	for index := range versions {
-		tags := h.readVersionTags(ctx, schema, versions[index].ID)
-		if tags == nil {
-			tags = []string{}
-		}
-		versions[index].Tags = tags
+	if len(versionIDs) == 0 {
+		return result
 	}
-	return versions
+	// Index the slice entries AFTER every append: appends reallocate, so a
+	// pointer taken during the loop above could address a stale backing array.
+	for skillID := range result {
+		for index := range result[skillID] {
+			byVersionID[result[skillID][index].ID] = &result[skillID][index]
+		}
+	}
+
+	tagRows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT a.version_id, t.name
+		FROM %q.skill_version_tag_association a
+		JOIN %q.tags t ON t.id = a.tag_id
+		WHERE a.version_id = ANY($1)
+		ORDER BY a.version_id, t.name`, schema, schema), versionIDs)
+	if err != nil {
+		return result
+	}
+	defer tagRows.Close()
+	for tagRows.Next() {
+		var versionID int
+		var name string
+		if tagRows.Scan(&versionID, &name) != nil {
+			continue
+		}
+		if version, ok := byVersionID[versionID]; ok {
+			version.Tags = append(version.Tags, name)
+		}
+	}
+	return result
 }
 
 // PublicSkill serves one catalog skill, optionally pinned to a version name.

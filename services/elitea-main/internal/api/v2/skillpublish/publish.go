@@ -280,9 +280,15 @@ func (h *Handler) userPublish(ctx context.Context, w http.ResponseWriter, projec
 	// (1) The source snapshot. The version the user is editing is left alone;
 	// the published content is a NEW source version carrying the requested
 	// name, so a later edit of the draft cannot change what the catalog serves.
+	//
+	// It keeps the SOURCE tags verbatim. The category is catalog taxonomy —
+	// stamping it here too would put "Other" in the author's own project tag
+	// list, which is not something they chose. The reference draws the same
+	// line: it clones the version first and applies the category to the
+	// published snapshot afterwards.
 	snapshotTags := applyCategoryToTags(row.Tags, body.Category)
 	sourceVersionID, err := insertVersion(ctx, tx, schema, row.SkillID, body.VersionName, row.Instructions,
-		userID, "published", map[string]any{"published_by": userID}, snapshotTags)
+		userID, "published", map[string]any{"published_by": userID}, row.Tags)
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -427,7 +433,17 @@ func deletePublicVersion(ctx context.Context, tx queryExecer, schema string, pub
 	err := tx.QueryRow(ctx, fmt.Sprintf(
 		`SELECT skill_id, status, COALESCE(meta::text, '{}') FROM %q.skill_versions WHERE id = $1`, schema),
 		publicVersionID).Scan(&skillID, &status, &metaText)
-	if err != nil || status != "published" {
+	// A missing row and a failed query are different answers. Reporting a
+	// database fault as "not published" tells the caller their published skill
+	// is not published — a wrong, actionable-looking answer they would act on
+	// instead of retrying.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return deletePublicVersionResult{NotPublished: true}, nil
+	}
+	if err != nil {
+		return deletePublicVersionResult{}, err
+	}
+	if status != "published" {
 		return deletePublicVersionResult{NotPublished: true}, nil
 	}
 	var meta map[string]any
@@ -467,7 +483,10 @@ func deletePublicVersion(ctx context.Context, tx queryExecer, schema string, pub
 		return result, nil
 	}
 
-	if fmt.Sprint(skillMeta["default_version_id"]) == strconv.Itoa(publicVersionID) {
+	// metaInt, not fmt.Sprint: the value arrives from jsonb as a float64, and
+	// %v formats those with %g — an id of 1000000 prints as "1e+06" and would
+	// never match, leaving the default pointed at the row just deleted.
+	if metaInt(skillMeta, "default_version_id") == publicVersionID {
 		// Repoint at the newest surviving version, of any status; skills have
 		// no implicit 'base' fallback, so leaving the key dangling would make
 		// the skill resolve no version at all.

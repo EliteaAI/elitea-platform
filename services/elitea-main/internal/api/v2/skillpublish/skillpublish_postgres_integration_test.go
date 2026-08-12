@@ -245,6 +245,16 @@ func TestPublishLandsInThePublicCatalog(t *testing.T) {
 	if !contains(tags, "Development") || !contains(tags, "review") {
 		t.Errorf("public version tags = %v, want the source tag plus the Development category", tags)
 	}
+	// The source snapshot keeps the author's own tags. The category is catalog
+	// taxonomy, and stamping it here would put marketplace vocabulary into a
+	// private project's tag picker.
+	sourceTags := versionTags(t, pool, userSchema, sourceVersionID)
+	if contains(sourceTags, "Development") {
+		t.Errorf("source snapshot tags = %v; the category tag must not be written into the author's project", sourceTags)
+	}
+	if !contains(sourceTags, "review") {
+		t.Errorf("source snapshot tags = %v, want the original tag preserved", sourceTags)
+	}
 
 	// And it is served.
 	listing := decode(t, do(t, router, http.MethodGet, "/elitea_core/public_skills/prompt_lib", nil))
@@ -666,6 +676,39 @@ func TestAttachForksTheSkillAndWritesTheMapping(t *testing.T) {
 	}
 	if first["icon_meta"] == nil {
 		t.Error("agents_with_skill dropped icon_meta, which the picker renders")
+	}
+}
+
+// TestAttachRefusesAnUnpublishedPublicVersion — the catalog is the only thing
+// attach may copy from. A draft in the public project is an admin's work in
+// progress, and forking it would hand its instructions to any caller who can
+// guess the ids.
+func TestAttachRefusesAnUnpublishedPublicVersion(t *testing.T) {
+	pool := newSkillPublishPool(t)
+	router := newRouter(skillpublish.NewHandler(pool))
+
+	draftSkill, draftVersion := seedSkill(t, pool, publicSchema, "unreleased", goodDescription, goodInstructions, []string{"secret"})
+	agentVersion := seedAgent(t, pool, userSchema, "alpha")
+
+	recorder := do(t, router, http.MethodPost, "/elitea_core/attach_public_skill/prompt_lib/"+userProject,
+		map[string]any{
+			"public_skill_id":   draftSkill,
+			"public_version_id": draftVersion,
+			"agent_version_ids": []int{agentVersion},
+		})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("attach status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	results, _ := decode(t, recorder)["results"].([]any)
+	entry, _ := results[0].(map[string]any)
+	if ok, _ := entry["ok"].(bool); ok {
+		t.Errorf("attach succeeded against an unpublished public version: %v", entry)
+	}
+	if count := countRows(t, pool, `SELECT COUNT(*) FROM p_2.skills`); count != 0 {
+		t.Errorf("forked skills in the caller's project = %d, want 0 — draft content was copied out", count)
+	}
+	if count := countRows(t, pool, `SELECT COUNT(*) FROM p_2.entity_skill_mapping`); count != 0 {
+		t.Errorf("mapping rows = %d, want 0", count)
 	}
 }
 

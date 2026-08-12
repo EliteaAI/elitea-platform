@@ -170,8 +170,14 @@ func (h *Handler) resolveOrForkLocalSkill(ctx context.Context, schema, publicSch
 		return skillID, versionID, true
 	}
 
+	// PUBLISHED only. The public project also holds drafts — an admin's
+	// in-place work in progress — and forking copies the instructions verbatim
+	// into a project the caller can read. Without this filter, guessing a
+	// (skill, version) pair is enough to pull unpublished content out of the
+	// public project, which is exactly what every other read in this package
+	// filters against.
 	source, found := h.readSkillVersion(ctx, publicSchema, strconv.Itoa(body.PublicSkillID), strconv.Itoa(body.PublicVersionID))
-	if !found {
+	if !found || source.Status != "published" {
 		return 0, 0, false
 	}
 
