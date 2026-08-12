@@ -43,3 +43,6 @@ node_modules/.vite/
 
 # Local standalone-stack mTLS material (deploy/scripts/gen-gateway-certs.sh)
 deploy/certs/
+
+# Go coverage profiles (task coverage / ci-go.yml write one per module)
+coverage.out
