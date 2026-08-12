@@ -4,7 +4,8 @@ go 1.26.4
 
 require (
 	github.com/go-chi/chi/v5 v5.1.0
-	github.com/jackc/pgx/v5 v5.7.1
+	github.com/google/uuid v1.6.0
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/maximhq/bifrost/core v1.7.3
 	github.com/nats-io/nats.go v1.52.0
 	github.com/sony/gobreaker/v2 v2.4.0
@@ -45,7 +46,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
