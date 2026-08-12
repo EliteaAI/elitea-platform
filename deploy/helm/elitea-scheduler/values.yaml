@@ -125,8 +125,17 @@ probes:
     enabled: true
     periodSeconds: 20
     failureThreshold: 3
+  # OFF by default, on purpose, and the reason is the sync waves rather than
+  # the probe itself. With service.enabled=false nothing routes to this pod, so
+  # readiness gates no traffic — but it still gates Deployment availability. A
+  # Postgres outage AFTER boot (an outage at boot exits the process instead)
+  # would flip /healthz to 503, take the pod NotReady, hold this wave-2
+  # Application at Progressing/Degraded, and block the wave-3 elitea-web sync —
+  # a frontend release stopped by a database blip in a worker nothing calls.
+  # Turn this on together with service.enabled, where the probe earns its
+  # keep by controlling endpoints.
   readiness:
-    enabled: true
+    enabled: false
     path: /healthz
     periodSeconds: 10
     failureThreshold: 3

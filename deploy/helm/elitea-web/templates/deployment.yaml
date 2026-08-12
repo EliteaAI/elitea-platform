@@ -44,6 +44,16 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "elitea-web.fullname" . }}-config
+          {{- if .Values.preStop.enabled }}
+          lifecycle:
+            preStop:
+              # Runs BEFORE SIGTERM: lets endpoints deregister, then stops
+              # nginx gracefully (SIGTERM alone is nginx's FAST shutdown and
+              # aborts in-flight requests). See values.yaml.
+              exec:
+                command:
+                  {{- toYaml .Values.preStop.command | nindent 18 }}
+          {{- end }}
           livenessProbe:
             httpGet:
               # /app/index.html, not "/": spa.conf has no `location /`, so the

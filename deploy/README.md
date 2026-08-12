@@ -59,6 +59,23 @@ Stated plainly, because the gap between compose and Helm is where deploys break:
   rest live in `elitea`. Short names do not resolve across namespaces, so
   `LLM_GATEWAY_URL` and `GATEWAY_NATS_URL` must be FQDNs
   (`…​.elitea-gateway.svc.cluster.local`).
+- **Cross-namespace *Secrets*, which DNS advice does not solve.** The gateway
+  chart's cert-manager `Certificate` for the edge issues Secret
+  `elitea-main-gateway-client-tls` **into the gateway's own namespace**
+  (`elitea-gateway`), and its comment says elitea-main mounts it. Secrets are
+  namespace-scoped, so elitea-main running in `elitea` **cannot read it**. To
+  wire the elitea-main → gateway mTLS hop you must do one of:
+  1. install elitea-main into `elitea-gateway` (override the Application's
+     `destination.namespace`), or
+  2. replicate the Secret into `elitea` (reflector/kubed, external-secrets, or
+     a second `Certificate` in `elitea` from the same `elitea-internal-ca`
+     ClusterIssuer — the issuer is cluster-scoped, so this works), or
+  3. leave the hop on plain HTTP inside the cluster and accept it.
+  Note this hop is **not** wired end-to-end today regardless of namespace:
+  elitea-main reads `LLM_GATEWAY_CLIENT_CERT` as a *file path*
+  (`cmd/elitea-main/main.go:876` → `llmproxy.Config.ClientCertFile`), while its
+  chart injects that variable as Secret *contents* via `secretKeyRef` and
+  mounts no volume. Fixing that is elitea-main chart work, out of scope here.
 - **No secrets.** Every chart sources sensitive values from Kubernetes Secrets
   that must be provisioned out-of-band. `elitea-main`'s and the gateway's
   `GATEWAY_IDENTITY_SECRET` are `optional: false` — pods do not start without
@@ -68,8 +85,26 @@ Stated plainly, because the gap between compose and Helm is where deploys break:
 
 ## CI
 
-`.github/workflows/helm-lint.yml` lints every chart under `deploy/helm/`,
-`helm template`s each one (with its values files where they exist), and
-`kubectl apply --dry-run=client`s every ArgoCD Application. A new chart is
-picked up by the lint loop automatically but must be added to the template
-matrix.
+`.github/workflows/helm-lint.yml` has three jobs:
+
+1. **Helm Lint** — `helm lint` over every chart under `deploy/helm/`. New
+   charts are picked up automatically.
+2. **Helm Template (per chart)** — `helm template` with the chart's values
+   files, *and* a second pass with its non-default toggles (HPA, PVC, optional
+   Services and probes, hook Jobs render zero objects otherwise, so a break in
+   them would be invisible). Both passes are validated with `kubeconform
+   -strict`. A new chart must be **added to this matrix** by hand.
+3. **ArgoCD Applications** — `kubeconform -strict` against the real
+   `argoproj.io` Application CRD schema, plus structural checks that no schema
+   can make: a stray manifest directly in `deploy/argocd/` that the root never
+   renders, a `spec.source.path` pointing at a chart that does not exist, a
+   non-Application manifest in `applications/`, and a child with no sync-wave.
+
+Validation is `kubeconform`, **not** `kubectl apply --dry-run=client`, even
+though the latter is what issue #240 asked for: that command needs API
+discovery from a live cluster (`couldn't get current server API group list`)
+and fails on a runner with no cluster, so it would gate nothing. kubeconform is
+the offline equivalent and is strictly stronger — `-strict` rejects fields the
+schema does not define, which client dry-run does not. Its CRD schema source is
+pinned to a catalog release tag (`CRD_SCHEMAS` in the workflow), so CI does not
+depend on a third-party branch.

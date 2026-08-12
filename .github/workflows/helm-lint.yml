@@ -23,6 +23,11 @@ permissions:
 
 env:
   KUBECONFORM_VERSION: v0.6.7
+  # CRD schemas (argoproj.io Application, cert-manager Certificate) come from
+  # the datreeio catalog. PINNED to a release tag, not `main`: an unpinned
+  # third-party branch is a hard dependency of every deploy PR, so a rename
+  # upstream would redden CI with no change in this repo. Bump deliberately.
+  CRD_SCHEMAS: "https://raw.githubusercontent.com/datreeio/CRDs-catalog/v0.0.12/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
 jobs:
   lint:
@@ -60,10 +65,10 @@ jobs:
             toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false
           - chart: elitea-scheduler
             values: ""
-            toggles: --set service.enabled=true --set probes.liveness.enabled=false --set probes.readiness.enabled=false
+            toggles: --set service.enabled=true --set probes.liveness.enabled=false --set probes.readiness.enabled=true
           - chart: elitea-web
             values: ""
-            toggles: --set autoscaling.enabled=true --set podDisruptionBudget.enabled=false
+            toggles: --set autoscaling.enabled=true --set podDisruptionBudget.enabled=false --set preStop.enabled=false
           - chart: pylon-indexer
             values: ""
             toggles: --set persistence.enabled=true --set probes.startup.enabled=false --set probes.liveness.enabled=false
@@ -106,7 +111,7 @@ jobs:
           kubeconform -strict -summary -verbose \
             -kubernetes-version 1.30.0 \
             -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -schema-location "$CRD_SCHEMAS" \
             "/tmp/${{ matrix.chart }}.yaml"
 
       # Toggled-off/on paths (HPA, PVC, optional Services and probes, hook Jobs)
@@ -119,7 +124,7 @@ jobs:
           kubeconform -strict -summary -verbose \
             -kubernetes-version 1.30.0 \
             -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -schema-location "$CRD_SCHEMAS" \
             "/tmp/${{ matrix.chart }}-toggles.yaml"
 
   argocd:
@@ -143,7 +148,7 @@ jobs:
         run: |
           kubeconform -strict -summary -verbose \
             -schema-location default \
-            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -schema-location "$CRD_SCHEMAS" \
             deploy/argocd/app-of-apps.yaml deploy/argocd/applications/*.yaml
 
       # Schema validity is not the failure mode that actually bites. These are:
