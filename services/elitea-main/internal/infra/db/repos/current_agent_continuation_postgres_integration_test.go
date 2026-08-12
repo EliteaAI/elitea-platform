@@ -44,6 +44,33 @@ func TestPostgresCurrentApplicationTurnAllowsASecondMessageOnTheSameConversation
 	if firstTarget.ApplicationID != 31 || firstTarget.ApplicationVersionID != 41 {
 		t.Fatalf("first target=%+v", firstTarget)
 	}
+	var versionDetails struct {
+		Skills []struct {
+			SkillID        int32          `json:"skill_id"`
+			SkillVersionID int32          `json:"skill_version_id"`
+			Name           string         `json:"name"`
+			VersionName    string         `json:"version_name"`
+			Description    string         `json:"description"`
+			IconMeta       map[string]any `json:"icon_meta"`
+			Instructions   string         `json:"instructions"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(
+		[]byte(firstTarget.ApplicationVersionDetailsJson),
+		&versionDetails,
+	); err != nil {
+		t.Fatalf("decode application version details: %v", err)
+	}
+	if len(versionDetails.Skills) != 1 ||
+		versionDetails.Skills[0].SkillID != 61 ||
+		versionDetails.Skills[0].SkillVersionID != 71 ||
+		versionDetails.Skills[0].Name != "release-proof" ||
+		versionDetails.Skills[0].VersionName != "base" ||
+		versionDetails.Skills[0].Description != "Release proof skill" ||
+		versionDetails.Skills[0].Instructions != "Return RELEASE-PROOF" ||
+		versionDetails.Skills[0].IconMeta["icon"] != "proof" {
+		t.Fatalf("application skills=%s", firstTarget.ApplicationVersionDetailsJson)
+	}
 	if firstTarget.ChatHistoryJson != "[]" {
 		t.Fatalf("first chat history=%s", firstTarget.ChatHistoryJson)
 	}
@@ -1396,6 +1423,19 @@ CREATE TABLE p_1.entity_tool_mapping (
     entity_version_id INTEGER NOT NULL, entity_type VARCHAR NOT NULL,
     selected_tools JSONB
 );
+CREATE TABLE p_1.skills (
+    id SERIAL PRIMARY KEY, name VARCHAR(128) NOT NULL, description VARCHAR(2304) NOT NULL
+);
+CREATE TABLE p_1.skill_versions (
+    id SERIAL PRIMARY KEY, skill_id INTEGER NOT NULL REFERENCES p_1.skills(id),
+    name VARCHAR(128) NOT NULL, instructions TEXT NOT NULL,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE TABLE p_1.entity_skill_mapping (
+    id SERIAL PRIMARY KEY, entity_version_id INTEGER NOT NULL,
+    entity_type VARCHAR(50) NOT NULL, skill_id INTEGER NOT NULL REFERENCES p_1.skills(id),
+    skill_version_id INTEGER REFERENCES p_1.skill_versions(id)
+);
 CREATE TABLE p_1.chat_conversations (
     id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE, name VARCHAR NOT NULL,
     is_private BOOLEAN NOT NULL DEFAULT TRUE, author_id INTEGER NOT NULL,
@@ -1475,6 +1515,14 @@ INSERT INTO p_1.elitea_tools (
     51, 'aha', 'product', 'Aha product access',
     '{"selected_tools":["list_products"]}'::jsonb, 11, '{}'::jsonb
 );
+INSERT INTO p_1.skills (id, name, description) VALUES
+    (61, 'release-proof', 'Release proof skill');
+INSERT INTO p_1.skill_versions (id, skill_id, name, instructions, meta) VALUES
+    (71, 61, 'base', 'Return RELEASE-PROOF', '{"icon_meta":{"icon":"proof"}}'::jsonb);
+INSERT INTO p_1.entity_skill_mapping (
+    id, entity_version_id, entity_type, skill_id, skill_version_id
+) VALUES
+    (81, 41, 'agent', 61, 71);
 INSERT INTO p_1.chat_conversations (
     id, uuid, name, author_id, source, instructions, meta
 ) VALUES (
