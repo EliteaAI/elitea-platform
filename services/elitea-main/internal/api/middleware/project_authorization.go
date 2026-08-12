@@ -22,14 +22,41 @@ type projectAccessQuerier interface {
 // belong to the authenticated user. Authentication establishes identity; this
 // middleware establishes tenant scope before a handler may select p_<id> data.
 func RequireProjectAccess(pool *pgxpool.Pool) func(http.Handler) http.Handler {
+	if pool == nil {
+		return unavailableProjectAccess
+	}
 	return requireProjectAccess(pool)
+}
+
+// unavailableProjectAccess fails closed with 503 when no pool is configured.
+// A nil *pgxpool.Pool boxed into the projectAccessQuerier interface would
+// otherwise compare non-nil, bypassing the nil guard inside
+// requireProjectAccess and panicking on the subsequent QueryRow call.
+func unavailableProjectAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := authenticatedUser(r); !ok {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, `{"error":"project authorization unavailable"}`, http.StatusServiceUnavailable)
+	})
+}
+
+// authenticatedUser returns the request's authenticated user, or false if
+// the request carries no valid identity.
+func authenticatedUser(r *http.Request) (auth.User, bool) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok || user.ID == "" {
+		return auth.User{}, false
+	}
+	return user, true
 }
 
 func requireProjectAccess(pool projectAccessQuerier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user, ok := auth.UserFromContext(r.Context())
-			if !ok || user.ID == "" {
+			user, ok := authenticatedUser(r)
+			if !ok {
 				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}
