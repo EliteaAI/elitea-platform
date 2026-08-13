@@ -15,7 +15,8 @@ use tonic::transport::Channel;
 use tonic::{Request, Streaming};
 
 use crate::protocol::elitea::runtime::v1::{
-    ExecutionOutcomeV1, ExecutionOutputAckV1, ExecutionOutputFrameV1, RuntimeErrorCodeV1,
+    DigestAlgorithmV1, ExecutionFenceV1, ExecutionIdentityV1, ExecutionOutcomeV1,
+    ExecutionOutputAckV1, ExecutionOutputFrameV1, RuntimeErrorCodeV1, SettlementProposalV1,
     execution_output_frame_v1, execution_output_service_client::ExecutionOutputServiceClient,
 };
 use crate::protocol::output::MAX_OUTPUT_FRAME_BYTES;
@@ -712,6 +713,25 @@ pub struct OutputGrpcSession {
     task: Option<JoinHandle<()>>,
 }
 
+/// Proof that Main durably acknowledged one exact terminal frame.
+///
+/// The type has no public constructor, accessors, `Clone`, or `Debug`. It can
+/// only be produced by [`OutputGrpcSession::send_terminal`] after the bound ACK
+/// is applied and is consumed by the semantic settlement operation.
+pub struct DurablyAckedTerminal {
+    identity: ExecutionIdentityV1,
+    fence: ExecutionFenceV1,
+    proposal: SettlementProposalV1,
+}
+
+impl DurablyAckedTerminal {
+    pub(crate) fn into_settlement_parts(
+        self,
+    ) -> (ExecutionIdentityV1, ExecutionFenceV1, SettlementProposalV1) {
+        (self.identity, self.fence, self.proposal)
+    }
+}
+
 impl OutputGrpcSession {
     /// Open the bounded stream, validate bootstrap credit, and replay the
     /// encrypted spool before returning admission to the caller.
@@ -746,6 +766,15 @@ impl OutputGrpcSession {
     /// Returns a typed protocol, spool, or transport error. A failure never
     /// deletes an unacknowledged frame.
     pub async fn send(&mut self, frame: ExecutionOutputFrameV1) -> Result<u64, OutputGrpcError> {
+        if frame.terminal {
+            return Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+                "terminal output requires the settlement-authority send path",
+            )));
+        }
+        self.send_frame(frame).await
+    }
+
+    async fn send_frame(&mut self, frame: ExecutionOutputFrameV1) -> Result<u64, OutputGrpcError> {
         if frame.encoded_len() > self.max_frame_bytes {
             return Err(OutputGrpcError::Protocol(
                 OutputSessionError::ResourceExhausted(
@@ -769,6 +798,42 @@ impl OutputGrpcSession {
         result
             .await
             .map_err(|_| OutputGrpcError::Unavailable("the output session task is unavailable"))?
+    }
+
+    /// Persist and publish one terminal frame, returning settlement authority
+    /// only after Main's bound durable ACK retires the local spool entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed protocol error for a nonterminal/incomplete frame, or
+    /// the same spool/transport failures as [`Self::send`].
+    pub async fn send_terminal(
+        &mut self,
+        frame: ExecutionOutputFrameV1,
+    ) -> Result<DurablyAckedTerminal, OutputGrpcError> {
+        validate_terminal_settlement_binding(&frame)?;
+        let identity = frame.identity.clone().ok_or(OutputGrpcError::Protocol(
+            OutputSessionError::InvalidInput(
+                "the terminal output identity is missing before settlement",
+            ),
+        ))?;
+        let fence = frame.fence.clone().ok_or(OutputGrpcError::Protocol(
+            OutputSessionError::InvalidInput(
+                "the terminal output fence is missing before settlement",
+            ),
+        ))?;
+        let proposal = frame
+            .settlement_proposal
+            .clone()
+            .ok_or(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+                "the terminal settlement proposal is missing",
+            )))?;
+        self.send_frame(frame).await?;
+        Ok(DurablyAckedTerminal {
+            identity,
+            fence,
+            proposal,
+        })
     }
 
     /// Return the highest sequence whose bound Main ACK was durably applied to
@@ -879,6 +944,44 @@ fn valid_metadata_value(value: &str) -> bool {
         && !value.as_bytes().contains(&b'\n')
 }
 
+fn validate_terminal_settlement_binding(
+    frame: &ExecutionOutputFrameV1,
+) -> Result<(), OutputGrpcError> {
+    let identity = frame.identity.as_ref().ok_or(OutputGrpcError::Protocol(
+        OutputSessionError::InvalidInput(
+            "the terminal output identity is missing before settlement",
+        ),
+    ))?;
+    let proposal = frame
+        .settlement_proposal
+        .as_ref()
+        .ok_or(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+            "the terminal settlement proposal is missing",
+        )))?;
+    let valid_outcome = ExecutionOutcomeV1::try_from(proposal.requested_outcome)
+        .is_ok_and(|outcome| !matches!(outcome, ExecutionOutcomeV1::Unspecified));
+    let valid_digest = frame.payload_digest.as_ref().is_some_and(|value| {
+        value.algorithm == DigestAlgorithmV1::Sha256 as i32
+            && value.value.len() == 32
+            && value.value.iter().any(|byte| *byte != 0)
+    });
+    if !frame.terminal
+        || !valid_outcome
+        || !valid_digest
+        || proposal.proposal_id != format!("{}:settlement", identity.command_id)
+        || proposal.terminal_logical_output_id != frame.logical_output_id
+        || proposal.terminal_event_id != frame.event_id
+        || proposal.terminal_sequence != frame.sequence
+        || proposal.terminal_payload_digest != frame.payload_digest
+        || proposal.prepare_idempotency_key != format!("{}:prepare-settlement", identity.command_id)
+    {
+        return Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+            "the terminal settlement binding is malformed",
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum RecoveryKind {
     Cancelled,
@@ -964,10 +1067,17 @@ mod tests {
     use std::sync::Mutex;
 
     use prost::Message;
+    use ring::digest;
     use tokio::sync::Notify;
+    use tonic::{Response, Status};
 
+    use crate::protocol::control::AgentControlClient;
     use crate::protocol::elitea::runtime::v1::{
-        DesiredExecutionStateV1, ExecutionFenceV1, ExecutionIdentityV1, RuntimeErrorV1,
+        AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1, BeginExecutionRequestV1,
+        BeginExecutionResponseV1, ClaimCommandRequestV1, ClaimCommandResponseV1,
+        DesiredExecutionStateV1, DigestV1, ExecutionFenceV1, ExecutionIdentityV1,
+        ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1, PrepareSettlementRequestV1,
+        PrepareSettlementResponseV1, RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorV1,
         SettlementProposalV1,
     };
     use crate::spool::{
@@ -986,6 +1096,10 @@ mod tests {
         acknowledgements: mpsc::Receiver<ExecutionOutputAckV1>,
         writes: Arc<Mutex<Vec<ExecutionOutputFrameV1>>>,
         wrote: Arc<Notify>,
+    }
+
+    struct SettlementRpc {
+        request: Arc<Mutex<Option<PrepareSettlementRequestV1>>>,
     }
 
     #[async_trait]
@@ -1019,6 +1133,56 @@ mod tests {
 
         async fn close(&mut self) -> Result<(), OutputGrpcError> {
             Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl crate::transport::ControlRpc for SettlementRpc {
+        async fn claim_command(
+            &self,
+            _request: Request<ClaimCommandRequestV1>,
+        ) -> Result<Response<ClaimCommandResponseV1>, Status> {
+            Err(Status::unimplemented("test-only"))
+        }
+
+        async fn begin_execution(
+            &self,
+            _request: Request<BeginExecutionRequestV1>,
+        ) -> Result<Response<BeginExecutionResponseV1>, Status> {
+            Err(Status::unimplemented("test-only"))
+        }
+
+        async fn authorize_invocation(
+            &self,
+            _request: Request<AuthorizeInvocationRequestV1>,
+        ) -> Result<Response<AuthorizeInvocationResponseV1>, Status> {
+            Err(Status::unimplemented("test-only"))
+        }
+
+        async fn renew_lease(
+            &self,
+            _request: Request<RenewLeaseRequestV1>,
+        ) -> Result<Response<RenewLeaseResponseV1>, Status> {
+            Err(Status::unimplemented("test-only"))
+        }
+
+        async fn observe_desired_state(
+            &self,
+            _request: Request<ObserveDesiredStateRequestV1>,
+        ) -> Result<Response<ObserveDesiredStateResponseV1>, Status> {
+            Err(Status::unimplemented("test-only"))
+        }
+
+        async fn prepare_settlement(
+            &self,
+            request: Request<PrepareSettlementRequestV1>,
+        ) -> Result<Response<PrepareSettlementResponseV1>, Status> {
+            *self.request.lock().expect("settlement request") = Some(request.into_inner());
+            Ok(Response::new(PrepareSettlementResponseV1 {
+                settlement_receipt_id: "settlement-receipt-1".to_owned(),
+                outcome: ExecutionOutcomeV1::Succeeded as i32,
+                rejection: None,
+            }))
         }
     }
 
@@ -1521,6 +1685,87 @@ mod tests {
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].payload, current.encode_to_vec());
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn only_a_bound_terminal_ack_can_mint_and_settle_retirement_authority() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let mut terminal = frame(1, true);
+        terminal.payload_digest = Some(DigestV1 {
+            algorithm: DigestAlgorithmV1::Sha256 as i32,
+            value: vec![b'p'; 32],
+        });
+        terminal.settlement_proposal = Some(SettlementProposalV1 {
+            proposal_id: "command-1:settlement".to_owned(),
+            requested_outcome: ExecutionOutcomeV1::Succeeded as i32,
+            terminal_logical_output_id: terminal.logical_output_id.clone(),
+            terminal_event_id: terminal.event_id.clone(),
+            terminal_sequence: terminal.sequence,
+            terminal_payload_digest: terminal.payload_digest.clone(),
+            prepare_idempotency_key: "command-1:prepare-settlement".to_owned(),
+        });
+        let io = FakeStream {
+            acknowledgements: VecDeque::from([
+                Ok(Some(bootstrap())),
+                Ok(Some(bound_ack(&terminal))),
+            ]),
+            writes: Vec::new(),
+            closed: false,
+        };
+        let settings = config();
+        let inner = OutputSession::open(io, spool(&temp.path().join("root")), settings.clone())
+            .await
+            .expect("output session");
+        let mut output = spawn_output_actor(inner, settings.max_frame_bytes);
+        assert!(matches!(
+            output.send_terminal(frame(1, false)).await,
+            Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+                _
+            )))
+        ));
+        let acknowledged = output
+            .send_terminal(terminal.clone())
+            .await
+            .expect("durably acknowledged terminal");
+
+        let captured = Arc::new(Mutex::new(None));
+        let control = AgentControlClient::new(
+            SettlementRpc {
+                request: Arc::clone(&captured),
+            },
+            crate::transport::ControlGrpcConfig {
+                deadline: Duration::from_secs(1),
+                workload_session_id: "session-1".to_owned(),
+                producer_id: "worker-1".to_owned(),
+            },
+        )
+        .expect("semantic control");
+        let receipt = control
+            .prepare_agent_settlement(acknowledged)
+            .await
+            .expect("settled terminal");
+        assert_eq!(receipt.receipt_id(), "settlement-receipt-1");
+        assert_eq!(receipt.outcome(), ExecutionOutcomeV1::Succeeded);
+
+        let request = captured
+            .lock()
+            .expect("settlement request")
+            .clone()
+            .expect("captured settlement");
+        assert_eq!(request.identity, terminal.identity);
+        assert_eq!(request.fence, terminal.fence);
+        assert_eq!(request.proposal, terminal.settlement_proposal);
+        assert_eq!(request.idempotency_key, "command-1:prepare-settlement");
+        let proposal_bytes = request.proposal.as_ref().expect("proposal").encode_to_vec();
+        let expected = digest::digest(&digest::SHA256, &proposal_bytes);
+        assert_eq!(
+            request
+                .proposal_digest
+                .as_ref()
+                .expect("proposal digest")
+                .value,
+            expected.as_ref()
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
