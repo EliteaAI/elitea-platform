@@ -135,7 +135,7 @@ describe('applyChatStreamFrame', () => {
     // The reference check is the assertion that matters: an unported frame must
     // be inert, never a partial write, and must not re-render the list.
     const before: readonly ChatMessage[] = [pendingAssistant()];
-    const after = applyChatStreamFrame(before, frame(SocketMessageType.AgentHitlInterrupt), CONTEXT);
+    const after = applyChatStreamFrame(before, frame(SocketMessageType.SwarmChildMessage), CONTEXT);
 
     expect(after).toBe(before);
   });
@@ -519,6 +519,300 @@ describe('thinking steps', () => {
     it('still stops the spinner when there are no steps at all', () => {
       const next = applyChatStreamFrame([pendingAssistant()], frame(SocketMessageType.AgentLlmEnd), CONTEXT);
       expect(next[0]?.isLoading).toBe(false);
+    });
+  });
+});
+
+describe('applyChatStreamFrame — interrupts', () => {
+  function interruptsOf(history: readonly ChatMessage[]): readonly Record<string, unknown>[] {
+    return (history[0]?.hitlInterrupts ?? []) as readonly Record<string, unknown>[];
+  }
+
+  describe('agent_hitl_interrupt', () => {
+    it('stops the turn on a plain single pause and leaves the bubble text alone', () => {
+      const history = applyChatStreamFrame(
+        [{ ...pendingAssistant(), content: 'partial answer' }],
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: {
+            node_name: 'approve_delete',
+            thread_id: 'thread-1',
+            hitl_interrupt: { tool_name: 'delete_file', tool_call_id: 'call-1', action_label: 'Delete report.pdf' },
+          },
+        }),
+        CONTEXT,
+      );
+
+      expect(history[0]?.isStreaming).toBe(false);
+      expect(history[0]?.isLoading).toBe(false);
+      // Overwriting content would leave a "requires approval" line in the
+      // bubble after the user resumes and the real answer streams in.
+      expect(history[0]?.content).toBe('partial answer');
+      expect(history[0]?.threadId).toBe('thread-1');
+    });
+
+    it('leaves hitlInterrupts UNSET for a single pause so resume stays sequential', () => {
+      // The consumer reads the array's mere presence as "parallel" and switches
+      // to the hitl_decisions resume shape; populating it here would misroute a
+      // pause the backend expects to answer with a single hitl_action.
+      const history = applyChatStreamFrame(
+        [pendingAssistant()],
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: { hitl_interrupt: { tool_name: 'delete_file' } },
+        }),
+        CONTEXT,
+      );
+
+      expect(history[0]?.hitlInterrupts).toBeUndefined();
+      expect(history[0]?.hitlInterrupt).toMatchObject({ tool_name: 'delete_file', resume_strategy: 'single' });
+    });
+
+    it('assembles a single pause from BOTH the top-level and nested fields', () => {
+      // Reading only one of the two loses either the routing fields or the tool
+      // detail the approval card renders.
+      const history = applyChatStreamFrame(
+        [pendingAssistant()],
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: {
+            node_name: 'guard',
+            available_actions: ['approve'],
+            edit_state_key: 'draft',
+            interrupt_id: 'top-level-id',
+            hitl_interrupt: { tool_name: 'send_email', guardrail_type: 'sensitive_tool', tool_call_id: 'call-9' },
+          },
+        }),
+        CONTEXT,
+      );
+
+      expect(history[0]?.hitlInterrupt).toMatchObject({
+        node_name: 'guard',
+        available_actions: ['approve'],
+        edit_state_key: 'draft',
+        interrupt_id: 'top-level-id',
+        tool_name: 'send_email',
+        guardrail_type: 'sensitive_tool',
+        tool_call_id: 'call-9',
+      });
+    });
+
+    it('KEEPS streaming for a fan-out child and accumulates its siblings', () => {
+      // Siblings are still running. Flipping isStreaming off collapses the live
+      // thinking view and hides every sub-agent that has not rendered a card of
+      // its own — including ones that finished without pausing.
+      const childFrame = (name: string, thread: string, call: string) =>
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: {
+            metadata: { parent_agent_name: name, child_thread_id: thread },
+            hitl_interrupt: { tool_call_id: call },
+          },
+        });
+
+      let history = applyChatStreamFrame([{ ...pendingAssistant(), isStreaming: false }], childFrame('planner', 't-a', 'c-a'), CONTEXT);
+      history = applyChatStreamFrame(history, childFrame('planner', 't-b', 'c-b'), CONTEXT);
+
+      // Re-armed even though the parent's park-by-return had already stopped it.
+      expect(history[0]?.isStreaming).toBe(true);
+      expect(history[0]?.isRegenerating).toBe(false);
+      expect(interruptsOf(history)).toHaveLength(2);
+      expect(interruptsOf(history).map((entry) => entry['thread_id'])).toEqual(['t-a', 't-b']);
+    });
+
+    it('does not park the message on whichever child paused last', () => {
+      // A child resumes on its OWN thread, carried per entry. Writing it to
+      // msg.threadId would misroute the parent's resume.
+      const history = applyChatStreamFrame(
+        [{ ...pendingAssistant(), threadId: 'parent-thread' }],
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: {
+            metadata: { parent_agent_name: 'planner', child_thread_id: 'child-thread', thread_id: 'child-thread' },
+            hitl_interrupt: { tool_call_id: 'c-1' },
+          },
+        }),
+        CONTEXT,
+      );
+
+      expect(history[0]?.threadId).toBe('parent-thread');
+      expect(interruptsOf(history)[0]?.['thread_id']).toBe('child-thread');
+    });
+
+    it('keeps streaming for an in-process parallel aggregate and populates the array', () => {
+      // N paused sub-agents in ONE frame, each labelled with its parent but
+      // with no child thread — so it is not the fan-out shape, yet the run is
+      // just as much still active.
+      const history = applyChatStreamFrame(
+        [pendingAssistant()],
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: {
+            hitl_interrupts: [
+              { parent_agent_name: 'researcher', tool_call_id: 'c-1' },
+              { parent_agent_name: 'writer', tool_call_id: 'c-2' },
+            ],
+          },
+        }),
+        CONTEXT,
+      );
+
+      expect(history[0]?.isStreaming).toBe(true);
+      expect(interruptsOf(history).map((entry) => entry['tool_call_id'])).toEqual(['c-1', 'c-2']);
+      // The singular field tracks the first still-pending entry.
+      expect(history[0]?.hitlInterrupt).toMatchObject({ tool_call_id: 'c-1' });
+    });
+
+    it('stops the turn for a backend aggregate whose entries name no parent', () => {
+      // Same array shape, but nothing is running behind it — this must behave
+      // like a plain pause, which is why the check is on parent_agent_name
+      // rather than on the array's presence.
+      const history = applyChatStreamFrame(
+        [pendingAssistant()],
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: { hitl_interrupts: [{ tool_call_id: 'c-1' }] },
+        }),
+        CONTEXT,
+      );
+
+      expect(history[0]?.isStreaming).toBe(false);
+      expect(interruptsOf(history)).toHaveLength(1);
+    });
+
+    it('produces entries the resume path can route by tool_call_id', () => {
+      // The contract deriveHitlChildThreadId reads: match on tool_call_id, then
+      // take thread_id / child_thread_id.
+      const history = applyChatStreamFrame(
+        [pendingAssistant()],
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: {
+            metadata: { parent_agent_name: 'planner', child_thread_id: 'child-7' },
+            hitl_interrupt: { tool_call_id: 'call-7' },
+          },
+        }),
+        CONTEXT,
+      );
+
+      const entry = interruptsOf(history).find((item) => item['tool_call_id'] === 'call-7');
+      expect(entry?.['thread_id']).toBe('child-7');
+      expect(entry?.['child_thread_id']).toBe('child-7');
+    });
+  });
+
+  describe('agent_requires_confirmation', () => {
+    it('keeps the bubble streaming in mono chat and releases it otherwise', () => {
+      const confirmation = frame(SocketMessageType.AgentRequiresConfirmation, { content: 'Show more' });
+
+      const mono = applyChatStreamFrame([pendingAssistant()], confirmation, { ...CONTEXT, isMonoChatting: true });
+      const multi = applyChatStreamFrame([pendingAssistant()], confirmation, { ...CONTEXT, isMonoChatting: false });
+
+      expect(mono[0]?.isStreaming).toBe(true);
+      expect(multi[0]?.isStreaming).toBe(false);
+      expect(mono[0]?.isLoading).toBe(false);
+    });
+
+    it('labels the button from the frame and falls back to Continue', () => {
+      const withLabel = applyChatStreamFrame(
+        [pendingAssistant()],
+        frame(SocketMessageType.AgentRequiresConfirmation, { content: 'Show more' }),
+        CONTEXT,
+      );
+      const without = applyChatStreamFrame(
+        [pendingAssistant()],
+        frame(SocketMessageType.AgentRequiresConfirmation),
+        CONTEXT,
+      );
+
+      expect(withLabel[0]?.requiresConfirmation?.buttonText).toBe('Show more');
+      expect(without[0]?.requiresConfirmation?.buttonText).toBe('Continue');
+      expect(without[0]?.requiresConfirmation?.message).toContain('Token limit reached');
+    });
+
+    it('keeps the thread the earlier frames of this message established', () => {
+      // Blanking it would strand the continue request with nowhere to resume.
+      const history = applyChatStreamFrame(
+        [{ ...pendingAssistant(), threadId: 'thread-earlier' }],
+        frame(SocketMessageType.AgentRequiresConfirmation),
+        CONTEXT,
+      );
+
+      expect(history[0]?.threadId).toBe('thread-earlier');
+    });
+  });
+
+  describe('mcp_authorization_required', () => {
+    const authFrame = (metadata: Record<string, unknown>) =>
+      frame(SocketMessageType.McpAuthorizationRequired, {
+        content: 'Authorization required.',
+        response_metadata: { tool_run_id: 'mcp-1', tool_name: 'Jira MCP', server_url: 'https://mcp.example', ...metadata },
+      });
+
+    function outputs(history: readonly ChatMessage[]): Record<string, unknown> {
+      return (((history[0]?.toolActions ?? [])[0] as ToolAction | undefined)?.['toolOutputs'] ?? {}) as Record<
+        string,
+        unknown
+      >;
+    }
+
+    it('asks for action when the server advertised an authorization server', () => {
+      const history = applyChatStreamFrame(
+        [pendingAssistant()],
+        authFrame({ authorization_servers: ['https://auth.example'] }),
+        CONTEXT,
+      );
+      const action = (history[0]?.toolActions ?? [])[0] as ToolAction;
+
+      expect(action.status).toBe('action_required');
+      expect(action['content']).toContain('Authorization servers: https://auth.example');
+      // Nothing is in flight: the user has to act.
+      expect(history[0]?.isStreaming).toBe(false);
+      expect(history[0]?.isLoading).toBe(false);
+    });
+
+    it('errors instead when the server advertised none', () => {
+      // There is no authorization to start, so an action_required card would be
+      // a button that cannot do anything.
+      const history = applyChatStreamFrame([pendingAssistant()], authFrame({ status: 403 }), CONTEXT);
+      const action = (history[0]?.toolActions ?? [])[0] as ToolAction;
+
+      expect(action.status).toBe('error');
+      expect(action['content']).toContain('403: Authorization error in "Jira MCP" toolkit.');
+    });
+
+    it('stores the token under the key the backend will look it up by', () => {
+      // A wrong key stores a token the toolkit never finds, so the user is
+      // asked to authorize again on every single call.
+      const prebuilt = applyChatStreamFrame(
+        [pendingAssistant()],
+        authFrame({ authorization_servers: ['https://auth.example'], toolkit_type: 'mcp_github' }),
+        CONTEXT,
+      );
+      expect(outputs(prebuilt)['server_url']).toBe('mcp_github');
+
+      const composite = applyChatStreamFrame(
+        [pendingAssistant()],
+        authFrame({
+          resource_metadata: { authorization_servers: ['https://auth.example'], configuration_uuid: 'cfg-1' },
+        }),
+        CONTEXT,
+      );
+      expect(outputs(composite)['server_url']).toBe('cfg-1:https://auth.example');
+
+      const sharepoint = applyChatStreamFrame(
+        [pendingAssistant()],
+        authFrame({ resource_metadata: { authorization_servers: ['https://auth.example'], resource_name: 'SharePoint' } }),
+        CONTEXT,
+      );
+      expect(outputs(sharepoint)['server_url']).toBe('https://auth.example');
+
+      const plain = applyChatStreamFrame(
+        [pendingAssistant()],
+        authFrame({ authorization_servers: ['https://auth.example'], toolkit_type: 'mcp' }),
+        CONTEXT,
+      );
+      expect(outputs(plain)['server_url']).toBe('https://mcp.example');
+    });
+
+    it('updates the existing card on a repeat rather than stacking a second one', () => {
+      let history = applyChatStreamFrame([pendingAssistant()], authFrame({ status: 403 }), CONTEXT);
+      history = applyChatStreamFrame(history, authFrame({ authorization_servers: ['https://auth.example'] }), CONTEXT);
+
+      expect(history[0]?.toolActions).toHaveLength(1);
+      expect(((history[0]?.toolActions ?? [])[0] as ToolAction).status).toBe('action_required');
     });
   });
 });

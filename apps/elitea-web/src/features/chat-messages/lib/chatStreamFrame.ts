@@ -88,6 +88,9 @@ export const HANDLED_STREAM_TYPES: ReadonlySet<string> = new Set<string>([
   SocketMessageType.AgentToolError,
   SocketMessageType.AgentThinkingStep,
   SocketMessageType.AgentThinkingStepUpdate,
+  SocketMessageType.AgentHitlInterrupt,
+  SocketMessageType.AgentRequiresConfirmation,
+  SocketMessageType.McpAuthorizationRequired,
 ]);
 
 /**
@@ -120,6 +123,32 @@ interface StreamResponseMetadata {
   readonly timestamp_finish?: string | number | undefined;
   readonly thread_id?: string | undefined;
   readonly metadata?: { readonly thread_id?: string | undefined; readonly [key: string]: unknown } | undefined;
+
+  // --- interrupts -----------------------------------------------------------
+  /** N paused sub-agents in one frame; its mere presence selects parallel resume. */
+  readonly hitl_interrupts?: readonly Record<string, unknown>[] | undefined;
+  /** The nested single-pause detail, alongside the legacy top-level fields. */
+  readonly hitl_interrupt?: Record<string, unknown> | undefined;
+  readonly node_name?: string | undefined;
+  readonly available_actions?: readonly string[] | undefined;
+  readonly routes?: Record<string, unknown> | undefined;
+  readonly edit_state_key?: string | undefined;
+  readonly interrupt_id?: string | undefined;
+  readonly resume_strategy?: string | undefined;
+
+  // --- MCP authorization ----------------------------------------------------
+  readonly resource_metadata_url?: string | undefined;
+  readonly resource_metadata?:
+    | {
+        readonly authorization_servers?: readonly string[] | undefined;
+        readonly resource_name?: string | undefined;
+        readonly configuration_uuid?: string | undefined;
+      }
+    | undefined;
+  readonly authorization_servers?: readonly string[] | undefined;
+  readonly server_url?: string | undefined;
+  readonly status?: number | undefined;
+
   readonly [key: string]: unknown;
 }
 

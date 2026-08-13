@@ -1,7 +1,8 @@
 /**
  * lib/chatStreamReducer.ts — the chat streaming reducer (issue #93, Surface B).
  *
- * PORT STATUS — slices 1-2 (core streaming, then the tool lifecycle). The baseline reducer is
+ * PORT STATUS — slices 1-4 (core streaming, the tool lifecycle, thinking steps,
+ * then interrupts). The baseline reducer is
  * `EliteaUI/src/components/Chat/hooks.js:391-1581`: 1,191 lines, 34 switch
  * cases. This module ports the 14 that carry a plain agent turn from "sent" to
  * "answered", which is the sequence a live stack actually emits:
@@ -16,8 +17,6 @@
  *   graph nodes       agent_on_function_tool_node, agent_on_tool_node and the
  *                     three agent_on_*_edge frames (progress chips, not tool
  *                     lifecycle)
- *   interrupts        agent_hitl_interrupt, agent_requires_confirmation,
- *                     mcp_authorization_required
  *   swarm             swarm_child_message, agent_swarm_agent_start,
  *                     agent_swarm_agent_response, agent_swarm_handoff
  *   summaries         chat_predict_summary_started/finished
@@ -44,6 +43,7 @@ import { ROLES } from '@/shared/lib/enums';
 import { TOOL_ACTION_TYPES, ToolActionStatus } from '@/shared/lib/chat';
 
 import { normalizeExecutionHierarchy } from './executionHierarchy';
+import { mergeHitlInterrupts, normalizeHitlInterrupt, type NormalizedHitlInterrupt } from './hitlInterrupts';
 
 import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
 
@@ -60,6 +60,16 @@ export interface ChatStreamContext {
   readonly avatar?: string | undefined;
   /** Injectable clock so tests do not depend on wall time. */
   readonly now?: () => string;
+  /**
+   * Whether the surface is in single-agent ("mono") chat.
+   *
+   * The baseline reads `isMonoChattingRef.current` when a turn stops on the
+   * token limit: in mono chat the message keeps streaming (the continue button
+   * resumes the same bubble), while in a multi-participant conversation it must
+   * stop so the next participant can take the floor. A pure reducer has no
+   * refs, so the caller supplies it.
+   */
+  readonly isMonoChatting?: boolean | undefined;
 }
 
 function nowIso(context: ChatStreamContext): string {
@@ -265,6 +275,67 @@ function isEmptyTransition(updated: ToolAction): boolean {
   const content = updated['content'];
   const hasText = typeof content === 'string' && content.trim().length > 0;
   return !hasText && !updated.parent_agent_name;
+}
+
+/**
+ * The key the backend will look this toolkit's OAuth token up under.
+ *
+ * This is NOT cosmetic and NOT always the server URL: the backend resolves
+ * tokens from `kwargs['tokens']` by a key that differs per toolkit family, so
+ * getting it wrong stores a token the toolkit will never find and the user is
+ * asked to authorize again on every call.
+ *
+ *   pre-built MCP (`mcp_*`)   the toolkit type — the backend matches by
+ *                             server/toolkit name, not by OAuth server URL
+ *   delegated OAuth with a    `{configuration_uuid}:{oauth endpoint}`, the
+ *   configuration uuid        SDK's primary composite lookup
+ *   SharePoint / OpenAPI      the discovery endpoint
+ *   regular MCP               the MCP server URL, which IS its OAuth endpoint
+ */
+function mcpTokenStorageKey(frame: ChatStreamFrame, serverUrl: string): string {
+  const responseMetadata = frame.response_metadata;
+  const resource = responseMetadata?.resource_metadata;
+  const authServers = resource?.authorization_servers ?? responseMetadata?.authorization_servers;
+  const oauthEndpoint = authServers?.[0];
+  const configUuid = resource?.configuration_uuid;
+  const toolkitType = responseMetadata?.toolkit_type;
+
+  if (typeof toolkitType === 'string' && toolkitType.startsWith('mcp_') && toolkitType !== 'mcp') return toolkitType;
+  if (configUuid && oauthEndpoint) return `${configUuid}:${oauthEndpoint}`;
+  if (resource?.resource_name === 'SharePoint' || resource?.resource_name === 'OpenAPI') {
+    return oauthEndpoint ?? serverUrl;
+  }
+  return serverUrl;
+}
+
+/**
+ * The one raw interrupt a single pause implies.
+ *
+ * A single pause does not send `hitl_interrupts`; its detail is split between
+ * legacy top-level metadata and the nested `hitl_interrupt`, and reading only
+ * one of the two loses either the routing fields or the tool detail the card
+ * renders.
+ */
+function singlePauseRaw(frame: ChatStreamFrame): Record<string, unknown> {
+  const responseMetadata = frame.response_metadata;
+  const nested = responseMetadata?.hitl_interrupt ?? {};
+  return {
+    message: responseMetadata?.message,
+    node_name: responseMetadata?.node_name,
+    available_actions: responseMetadata?.available_actions,
+    routes: responseMetadata?.routes,
+    edit_state_key: responseMetadata?.edit_state_key,
+    guardrail_type: nested['guardrail_type'],
+    tool_name: nested['tool_name'],
+    toolkit_name: nested['toolkit_name'],
+    toolkit_type: nested['toolkit_type'],
+    action_label: nested['action_label'],
+    tool_args: nested['tool_args'],
+    policy_message: nested['policy_message'],
+    interrupt_id: nested['interrupt_id'] ?? responseMetadata?.interrupt_id,
+    tool_call_id: nested['tool_call_id'],
+    resume_strategy: nested['resume_strategy'] ?? responseMetadata?.resume_strategy,
+  };
 }
 
 /**
@@ -610,6 +681,179 @@ export function applyChatStreamFrame(
             toolMeta: { ...action.toolMeta, ...metadata, ...hierarchy },
           };
         }),
+      });
+    }
+
+    // An MCP toolkit answered 401. This is a tool action, not a message: the
+    // authorization card renders as a timeline entry so the rest of the turn's
+    // work stays visible behind it.
+    case SocketMessageType.McpAuthorizationRequired: {
+      if (index === -1) return history;
+      const current = history[index];
+      if (!current) return history;
+      const responseMetadata = frame.response_metadata;
+      const runId = responseMetadata?.tool_run_id ?? crypto.randomUUID();
+      const toolName = responseMetadata?.tool_name ?? 'MCP toolkit';
+      const serverUrl = responseMetadata?.server_url ?? 'MCP server';
+      const statusCode = responseMetadata?.status ?? 401;
+      const authServers = responseMetadata?.resource_metadata?.authorization_servers ?? responseMetadata?.authorization_servers;
+      const hasAuthServers = Boolean(authServers && authServers.length > 0);
+
+      const draft: Record<string, unknown> = {
+        name: toolName,
+        id: runId,
+        status: hasAuthServers ? ToolActionStatus.actionRequired : ToolActionStatus.error,
+        toolInputs: undefined,
+        toolOutputs: hasAuthServers
+          ? {
+              resource_metadata_url: responseMetadata?.resource_metadata_url ?? null,
+              authorization_servers: authServers,
+              server_url: mcpTokenStorageKey(frame, serverUrl),
+            }
+          : undefined,
+        toolMeta: responseMetadata,
+        created_at: frame.created_at,
+        ended_at: frame.created_at,
+        type: TOOL_ACTION_TYPES.Toolkit,
+        markdown: false,
+        renderHtml: false,
+        content: hasAuthServers
+          ? // `authServers` is non-empty on this branch by construction.
+            `${convertJsonToString(frame.content ?? 'Authorization required.', true)}${
+              responseMetadata?.resource_metadata_url
+                ? `\n\nResource metadata: ${responseMetadata.resource_metadata_url}`
+                : `\n\nAuthorization servers: ${(authServers ?? []).join(', ')}`
+            }`
+          : `${statusCode}: Authorization error in "${toolName}" toolkit.\n\n` +
+            `The MCP server at ${serverUrl} requires OAuth authorization, but the server ` +
+            `did not provide the authorization server configuration. ` +
+            `Please contact the server administrator or check the toolkit configuration.`,
+      };
+
+      const actions = (current.toolActions ?? []) as readonly ToolAction[];
+      const exists = actions.some((action) => action.id === runId);
+      const next = exists
+        ? actions.map((action) => (action.id === runId ? ({ ...action, ...draft } as ToolAction) : action))
+        : [...actions, draft as unknown as ToolAction];
+
+      // The user has to act, so nothing is in flight any more.
+      return replaceAt(history, index, {
+        toolActions: next,
+        isLoading: false,
+        isStreaming: false,
+        isRegenerating: false,
+      });
+    }
+
+    // The model stopped on its token limit rather than on an answer. The turn
+    // is not finished — `requiresConfirmation` is what renders the continue
+    // button that resumes it.
+    case SocketMessageType.AgentRequiresConfirmation: {
+      if (index === -1) return history;
+      const current = history[index];
+      if (!current) return history;
+      const threadId = threadIdOf(frame);
+      const buttonText = typeof frame.content === 'string' && frame.content ? frame.content : 'Continue';
+
+      return replaceAt(history, index, {
+        isLoading: false,
+        // Mono chat keeps the same bubble streaming across the continue; a
+        // multi-participant conversation must release the floor.
+        isStreaming: Boolean(context.isMonoChatting),
+        isRegenerating: false,
+        // Only when the frame supplies one: the thread was already set by the
+        // response or tool frames of THIS message, and blanking it would strand
+        // the continue request with nowhere to resume.
+        ...(threadId !== undefined ? { threadId } : {}),
+        requiresConfirmation: {
+          message: "Token limit reached mid-response. Press 'Continue' to see more.",
+          buttonText,
+        },
+      });
+    }
+
+    // Execution paused for a human decision. Three shapes, and which one it is
+    // decides both the streaming state and how the entries accumulate.
+    case SocketMessageType.AgentHitlInterrupt: {
+      if (index === -1) return history;
+      const current = history[index];
+      if (!current) return history;
+      const responseMetadata = frame.response_metadata;
+      const hitlMeta = (responseMetadata?.metadata ?? {}) as Record<string, unknown>;
+      const childThreadId = typeof hitlMeta['child_thread_id'] === 'string' ? hitlMeta['child_thread_id'] : '';
+
+      // Fan-out child: the indexer stamped the child's own thread and its
+      // parent's name into event metadata. One child of many pauses while its
+      // siblings keep running.
+      const isFanoutChild = Boolean(hitlMeta['parent_agent_name'] && childThreadId);
+
+      const rawInterrupts = Array.isArray(responseMetadata?.hitl_interrupts) ? responseMetadata.hitl_interrupts : [];
+      // In-process parallel aggregate: N paused sub-agents in ONE frame, each
+      // labelled with its parent but with no child thread of its own.
+      const isParallelAggregate =
+        !isFanoutChild && rawInterrupts.some((raw) => Boolean(raw?.['parent_agent_name']));
+
+      // Only a plain single pause ends the run's activity. Both parallel shapes
+      // keep `isStreaming` true, and that is load-bearing rather than cosmetic:
+      // flipping it off collapses the live thinking view into its history
+      // accordion, hiding every sibling that has not independently rendered an
+      // approval card — including ones that finished without pausing.
+      const streamingState =
+        isFanoutChild || isParallelAggregate
+          ? { isStreaming: true, isLoading: false, isRegenerating: false }
+          : { isStreaming: false, isLoading: false, isRegenerating: false };
+
+      const fallbackMessage =
+        (typeof responseMetadata?.message === 'string' ? responseMetadata.message : '') || current.content;
+      const build = (raw: Record<string, unknown>): NormalizedHitlInterrupt =>
+        normalizeHitlInterrupt(
+          { ...raw, message: raw['message'] ?? fallbackMessage },
+          { ...hitlMeta, child_thread_id: childThreadId, thread_id: childThreadId },
+        );
+
+      const incoming: readonly NormalizedHitlInterrupt[] =
+        rawInterrupts.length > 0
+          ? rawInterrupts.map(build)
+          : // Single pause: the detail is split between legacy top-level fields
+            // and the nested `hitl_interrupt`, so one entry is synthesised from
+            // both rather than from either alone.
+            [build(singlePauseRaw(frame))];
+
+      const existing = (current.hitlInterrupts ?? []) as readonly NormalizedHitlInterrupt[];
+      let hitlInterrupts: readonly NormalizedHitlInterrupt[] | undefined;
+      if (isFanoutChild) {
+        // Children announce one frame at a time, so these ACCUMULATE; merging by
+        // identity is what stops a re-announcement duplicating a pending card.
+        hitlInterrupts = mergeHitlInterrupts(existing, incoming);
+      } else if (rawInterrupts.length > 0) {
+        hitlInterrupts = incoming;
+      } else {
+        // Left UNSET deliberately: the consumer detects "parallel" from the mere
+        // presence of the array, so populating it for a single pause would route
+        // resume through the parallel `hitl_decisions` shape instead of the
+        // sequential one the backend expects. The renderer falls back to
+        // `[hitlInterrupt]`.
+        hitlInterrupts = undefined;
+      }
+
+      const threadId =
+        current.threadId ??
+        (typeof hitlMeta['thread_id'] === 'string' ? hitlMeta['thread_id'] : undefined) ??
+        responseMetadata?.thread_id;
+
+      // Content is deliberately NOT overwritten with the interrupt text: the
+      // pause renders from the card, and a written-in "requires approval" line
+      // would linger in the bubble after the user resumes.
+      return replaceAt(history, index, {
+        ...streamingState,
+        hitlInterrupts,
+        // Kept populated for consumers that read the singular field, and it is
+        // the SOLE carrier on the single-pause path above. The merged head is
+        // preferred so it tracks the first still-pending child.
+        hitlInterrupt: hitlInterrupts?.[0] ?? incoming[0],
+        // A fan-out child resumes on its own thread, carried per entry — parking
+        // the whole message on whichever child paused last would misroute it.
+        ...(!isFanoutChild && threadId !== undefined ? { threadId } : {}),
       });
     }
 

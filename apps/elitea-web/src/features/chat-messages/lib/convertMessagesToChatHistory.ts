@@ -69,12 +69,25 @@ export interface ChatMessage {
   readonly exception?: unknown;
   readonly isStreaming?: boolean | undefined;
   readonly isLoading?: boolean | undefined;
+  /**
+   * Set alongside `isStreaming`/`isLoading` by the stream reducer's interrupt
+   * slice. A pause has to CLEAR it: `isMessageInFlight` treats it as in-flight,
+   * so a message that paused mid-regenerate would keep the composer disabled
+   * and suppress the live thinking view that hosts the approval card.
+   */
+  readonly isRegenerating?: boolean | undefined;
   readonly questionId?: string | undefined;
   readonly replyToId?: string | undefined;
   readonly references?: readonly unknown[] | undefined;
   readonly isSummarized?: boolean | undefined;
   readonly hitlInterrupt?: unknown;
   readonly hitlInterrupts?: readonly unknown[] | undefined;
+  /**
+   * The continue-button prompt shown when a turn stopped on the model's token
+   * limit rather than on a completed answer. `ApplicationAnswer` reads it to
+   * decide whether to render `ChatContinue`.
+   */
+  readonly requiresConfirmation?: { readonly message: string; readonly buttonText: string } | undefined;
   readonly threadId?: string | undefined;
   readonly taskId?: string | undefined;
   readonly originalId?: string | number | undefined;
