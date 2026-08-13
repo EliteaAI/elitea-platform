@@ -169,10 +169,11 @@ describe('applyChatStreamFrame', () => {
 describe('the ported boundary is explicit', () => {
   it('every handled type is reduced, and every unhandled one is inert', () => {
     // The fixture satisfies EVERY handled case's preconditions — an
-    // already-started tool action for the end/error cases, and a processing
-    // summary for chat_predict_summary_finished, which closes by type rather
-    // than by run id — so a "handled type changed nothing" failure means the
-    // case is genuinely unreachable rather than under-supplied by the test.
+    // already-started tool action for the end/error cases, a processing summary
+    // for chat_predict_summary_finished (which closes by type rather than by
+    // run id), and a `uuid` for chat_user_message (whose id is uuid, not
+    // message_id) — so a "handled type changed nothing" failure means the case
+    // is genuinely unreachable rather than under-supplied by the test.
     const before: readonly ChatMessage[] = [
       {
         ...pendingAssistant(),
@@ -186,7 +187,7 @@ describe('the ported boundary is explicit', () => {
     for (const type of Object.values(SocketMessageType)) {
       const next = applyChatStreamFrame(
         before,
-        frame(type, { content: 'x', references: [], response_metadata: { tool_run_id: 'run-x' } }),
+        frame(type, { content: 'x', references: [], uuid: 'echo-uuid', response_metadata: { tool_run_id: 'run-x' } }),
         CONTEXT,
       );
       if (HANDLED_STREAM_TYPES.has(type)) {
@@ -1107,5 +1108,95 @@ describe('applyChatStreamFrame — summaries', () => {
     history = applyChatStreamFrame(history, frame(SocketMessageType.ChatPredictSummaryFinished), CONTEXT);
 
     expect(actions(history).map((action) => action.status)).toEqual(['processing', 'complete']);
+  });
+});
+
+describe('applyChatStreamFrame — chat_user_message', () => {
+  const USER_UUID = 'question-uuid-1';
+  const PARTICIPANTS = [
+    { id: 'p-author', meta: { user_name: 'Alice', user_avatar: 'alice.png' } },
+    { id: 'p-agent', meta: { user_name: 'Support Agent' } },
+  ];
+  const ECHO_CONTEXT: ChatStreamContext = { ...CONTEXT, participants: PARTICIPANTS };
+
+  const echo = (extra: Record<string, unknown> = {}) => ({
+    type: SocketMessageType.ChatUserMessage,
+    uuid: USER_UUID,
+    author_participant_id: 'p-author',
+    sent_to_id: 'p-agent',
+    content: 'what is the status?',
+    created_at: '2026-08-13 09:30:00',
+    ...extra,
+  });
+
+  it('appends a user message attributed to its author', () => {
+    const history = applyChatStreamFrame([], echo(), ECHO_CONTEXT);
+
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      id: USER_UUID,
+      role: 'user',
+      name: 'Alice',
+      avatar: 'alice.png',
+      content: 'what is the status?',
+      userId: 'p-author',
+      participantId: 'p-agent',
+      sentTo: PARTICIPANTS[1],
+    });
+  });
+
+  it('keys off uuid, not message_id', () => {
+    // message_id on this frame does not name the user message; resolving by it
+    // would attach the question to the assistant turn instead.
+    const history = applyChatStreamFrame([pendingAssistant()], echo({ message_id: MESSAGE_ID }), ECHO_CONTEXT);
+
+    expect(history).toHaveLength(2);
+    expect(history[1]?.id).toBe(USER_UUID);
+    expect(history[0]?.role).toBe('assistant');
+  });
+
+  it('does NOT render the same question twice when the echo repeats', () => {
+    // The baseline appends unconditionally, while its own
+    // addMessageToChatHistory guards the assistant path against exactly this.
+    // Reproducing the omission would show the user their own message twice.
+    let history = applyChatStreamFrame([], echo(), ECHO_CONTEXT);
+    history = applyChatStreamFrame(history, echo({ content: 'edited question' }), ECHO_CONTEXT);
+
+    expect(history).toHaveLength(1);
+    expect(history[0]?.content).toBe('edited question');
+  });
+
+  it('normalises the timestamp to the ISO string the persisted path produces', () => {
+    // Not the baseline's epoch-ms number: a live question and a replayed one
+    // must not render their time in two different formats.
+    const history = applyChatStreamFrame([], echo(), ECHO_CONTEXT);
+    expect(history[0]?.createdAt).toBe('2026-08-13T09:30:00Z');
+  });
+
+  it('falls back to the injected clock when the frame has no timestamp', () => {
+    const history = applyChatStreamFrame([], echo({ created_at: undefined }), ECHO_CONTEXT);
+    expect(history[0]?.createdAt).toBe('2026-08-13T00:00:00.000Z');
+  });
+
+  it('survives an unknown author and an empty roster', () => {
+    const unknownAuthor = applyChatStreamFrame([], echo({ author_participant_id: 'ghost' }), ECHO_CONTEXT);
+    expect(unknownAuthor[0]?.name).toBe('');
+    expect(unknownAuthor[0]?.sentTo).toBe(PARTICIPANTS[1]);
+
+    const noRoster = applyChatStreamFrame([], echo(), CONTEXT);
+    expect(noRoster).toHaveLength(1);
+    expect(noRoster[0]?.name).toBe('');
+    expect(noRoster[0]?.sentTo).toBeUndefined();
+  });
+
+  it('carries the message items through', () => {
+    const items = [{ id: 2 }, { id: 1 }] as unknown as ChatMessage['messageItems'];
+    const history = applyChatStreamFrame([], echo({ message_items: items }), ECHO_CONTEXT);
+    expect(history[0]?.messageItems).toBe(items);
+  });
+
+  it('ignores an echo that identifies no message', () => {
+    const before: readonly ChatMessage[] = [pendingAssistant()];
+    expect(applyChatStreamFrame(before, echo({ uuid: undefined }), ECHO_CONTEXT)).toBe(before);
   });
 });

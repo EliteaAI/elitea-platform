@@ -1,20 +1,15 @@
 /**
  * lib/chatStreamReducer.ts — the chat streaming reducer (issue #93, Surface B).
  *
- * PORT STATUS — slices 1-7 (core streaming, the tool lifecycle, thinking steps,
- * interrupts, graph events, swarm, then summaries). The baseline reducer is
+ * PORT STATUS — COMPLETE. The baseline reducer is
  * `EliteaUI/src/components/Chat/hooks.js:391-1581`: 1,191 lines, 34 switch
- * cases. This module ports the 14 that carry a plain agent turn from "sent" to
- * "answered", which is the sequence a live stack actually emits:
+ * cases. Every one of them is now accounted for, across seven slices: core
+ * streaming, the tool lifecycle, thinking steps, interrupts, graph events,
+ * swarm, and summaries. The sequence a live stack actually emits is:
  *
  *   agent_start → agent_on_transitional_edge → agent_llm_start
  *     → agent_llm_chunk* → agent_llm_end → agent_response
  *     → partial_message → full_message → pipeline_finish
- *
- * NOT YET PORTED, each its own slice, and each currently a no-op that leaves
- * state untouched rather than a silent content drop:
- *
- *   echo              chat_user_message
  *
  * STATE-INERT BY DESIGN, which is a different thing from unported: the
  * `agent_on_*` graph frames drive the pipeline flow editor's node highlighting
@@ -51,6 +46,7 @@ import { normalizeExecutionHierarchy } from './executionHierarchy';
 import { mergeHitlInterrupts, normalizeHitlInterrupt, type NormalizedHitlInterrupt } from './hitlInterrupts';
 
 import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
+import type { MessageParticipantWire } from '@/entities/message/lib/wire';
 
 import type { ChatMessage } from './convertMessagesToChatHistory';
 import { SocketMessageType, type ChatStreamFrame, type ThinkingStep } from './chatStreamFrame';
@@ -75,6 +71,15 @@ export interface ChatStreamContext {
    * refs, so the caller supplies it.
    */
   readonly isMonoChatting?: boolean | undefined;
+  /**
+   * The conversation's participants, for `chat_user_message` to attribute an
+   * echoed question to its author.
+   *
+   * The baseline reads `participantsRef.current`. A pure reducer has no refs,
+   * and this is the only case that needs the roster — every other frame either
+   * carries its own identity or falls back to `context.name`.
+   */
+  readonly participants?: readonly MessageParticipantWire[] | undefined;
 }
 
 function nowIso(context: ChatStreamContext): string {
@@ -1052,6 +1057,52 @@ export function applyChatStreamFrame(
             : action,
         ),
       });
+    }
+
+    // The conversation echoing a USER question back over the stream — the one
+    // frame in the vocabulary that produces a user message rather than
+    // advancing the assistant's.
+    //
+    // Its id is `uuid`, NOT `message_id`, so `index` is meaningless here.
+    case SocketMessageType.ChatUserMessage: {
+      const id = frame.uuid;
+      if (!id) return history;
+      const participants = context.participants ?? [];
+      const author = participants.find((participant) => participant.id === frame.author_participant_id);
+      const sentTo = participants.find((participant) => participant.id === frame.sent_to_id);
+      const createdAt = frame.created_at;
+
+      const question: ChatMessage = {
+        id,
+        role: ROLES.User,
+        // The baseline's LIVE resolution, which is barer than the persisted
+        // path's `getMessageAuthorName` (email / "User <id>" / "User No Longer
+        // Available" fallbacks). Reproduced rather than upgraded, for the same
+        // reason as the swarm-child shape: the two paths render the same
+        // conversation side by side.
+        name: author?.meta?.user_name ?? '',
+        avatar: author?.meta?.user_avatar ?? '',
+        content: typeof frame.content === 'string' ? frame.content : convertJsonToString(frame.content ?? ''),
+        // An ISO string, as `ChatMessage.createdAt` is typed and the persisted
+        // builder produces — the baseline's epoch-ms number would render as a
+        // different timestamp format for a live question than for a replayed one.
+        createdAt: typeof createdAt === 'string' ? convertTime(createdAt) : nowIso(context),
+        ...(frame.message_items !== undefined ? { messageItems: frame.message_items } : {}),
+        ...(frame.author_participant_id !== undefined ? { userId: String(frame.author_participant_id) } : {}),
+        ...(frame.sent_to_id !== undefined ? { participantId: String(frame.sent_to_id) } : {}),
+        ...(sentTo !== undefined ? { sentTo } : {}),
+      };
+
+      // DEVIATION: the baseline appends unconditionally. Its own
+      // `addMessageToChatHistory` guards the assistant path against exactly
+      // this ("Guard against duplicate insertion", hooks.js:206-216) because
+      // racing frames re-insert a message already in state; the user echo is
+      // the un-guarded outlier, and an echo of a question already on screen
+      // would render the user's own message twice. The same guard is applied
+      // here rather than reproducing the omission.
+      const existing = history.findIndex((message) => message.id === id);
+      if (existing !== -1) return replaceAt(history, existing, question);
+      return [...history, question];
     }
 
     // The raw swarm lifecycle. State-inert on purpose, and NOT forwarded

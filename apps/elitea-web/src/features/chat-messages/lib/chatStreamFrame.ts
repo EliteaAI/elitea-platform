@@ -21,6 +21,8 @@
  * "unknown frame", which is how a half-migrated surface drops output silently.
  */
 
+import type { MessageItemWire } from '@/entities/message/lib/wire';
+
 /** Every `type` the chat stream can carry. Ported verbatim from the baseline. */
 export const SocketMessageType = {
   AgentStart: 'agent_start',
@@ -61,8 +63,7 @@ export const SocketMessageType = {
 
 /**
  * The types that CHANGE MESSAGE STATE. Everything else in `SocketMessageType`
- * is either a later slice (swarm, summaries, `chat_user_message`) or state-inert
- * by design — see the reducer's module doc for the running list.
+ * is state-inert by design — see the reducer's module doc.
  *
  * The `agent_on_*` graph frames are absent for the second reason, not the
  * first: they carry the flow editor's node highlighting and touch no message
@@ -98,6 +99,7 @@ export const HANDLED_STREAM_TYPES: ReadonlySet<string> = new Set<string>([
   SocketMessageType.SwarmChildMessage,
   SocketMessageType.ChatPredictSummaryStarted,
   SocketMessageType.ChatPredictSummaryFinished,
+  SocketMessageType.ChatUserMessage,
 ]);
 
 /**
@@ -212,6 +214,15 @@ export interface ChatStreamFrame {
   readonly parent_message_id?: string | undefined;
   readonly agent_name?: string | undefined;
   readonly task_id?: string | undefined;
+  /**
+   * The user-echo fields, matching the declared socket schema
+   * (`shared/api/socket/messages.ts:354-366`). `uuid` — not `message_id` — is
+   * the id of the user message this frame describes.
+   */
+  readonly uuid?: string | undefined;
+  readonly author_participant_id?: string | number | undefined;
+  readonly sent_to_id?: string | number | undefined;
+  readonly message_items?: readonly MessageItemWire[] | undefined;
   /**
    * The summary frames' own envelope. `chat_predict_summary_started` carries
    * its run id and model under `payload`, NOT under `response_metadata` like
