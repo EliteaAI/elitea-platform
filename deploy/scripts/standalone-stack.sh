@@ -289,6 +289,23 @@ VALUES
 ON CONFLICT (elitea_title) DO UPDATE
     SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
         label = EXCLUDED.label, status_ok = true, updated_at = NOW();
+
+-- The row the MODEL PICKER reads. `useListModelsQuery` calls
+-- /configurations/configurations/{project}?section=models, which is a THIRD
+-- section again — distinct from the `ai_credentials` the gateway resolves and
+-- the `llm`/`llm_model` row GET /llm/v1/models synthesises its list from.
+-- Without it the picker is empty, nothing can be selected, and the send is
+-- rejected 400 for a missing model while every backend row is present and
+-- correct (#292).
+INSERT INTO :"schema".configuration
+    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (:pid, :'model' || '-picker', :'model', :'provider', 'models',
+     jsonb_build_object('model', :'model', 'api_key', :'apikey', 'api_base', :'apibase'),
+     '{}', false, true, 'user', NOW(), NOW())
+ON CONFLICT (elitea_title) DO UPDATE
+    SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
+        label = EXCLUDED.label, status_ok = true, updated_at = NOW();
 SQL
     done
     echo "→ Seeded. Model alias: $MODEL"

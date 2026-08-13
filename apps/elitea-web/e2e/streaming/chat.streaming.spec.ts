@@ -28,19 +28,19 @@
  * reducer. That is the whole point of running the journey here.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * CURRENTLY EXPECTED TO FAIL — #292
+ * CURRENTLY EXPECTED TO FAIL — #293
  * ─────────────────────────────────────────────────────────────────────────────
- * #291 (the start route rejecting a browser session) is fixed, and the journey
- * now reaches the request BODY: the chat page has no selected model to send, so
- * the turn is rejected 400, and with a model supplied by hand the conversation
- * has no participants and the version freezer answers 422. Both are chat-surface
- * gaps, filed as #292.
+ * #291 (start route rejecting a session) and #292's two gaps (no model wired
+ * into the turn, no participants on the conversation) are fixed. The journey
+ * now stops one step earlier than the send: the model picker cannot populate,
+ * because `GET /configurations/configurations/{project}` answers 500 for every
+ * project — silently, with no server-side log line (#293). Nothing had reached
+ * that route before: it was composed without a session credential AND the seed
+ * never granted its (plural) permission, so fixing both is what exposed it.
  *
  * `test.fail()` rather than a skip or a weakened assertion, deliberately:
  * Playwright FAILS an expected-failure test that unexpectedly passes, so this
- * marker announces the day #292 is fixed instead of quietly continuing to pass.
- * #284's scope boundary asks for exactly this — file the product bug, mark the
- * step, do not paper over it.
+ * marker announces the day #293 is fixed instead of quietly continuing to pass.
  *
  * The wire contract asserted below is the one the backend actually emits, NOT
  * the `chat.stream.chunk`/`chat.stream.done` pair #284's body names: every frame
@@ -65,6 +65,9 @@ const CONVERSATIONS_RE = /\/elitea_core\/conversations\/prompt_lib\/(\d+)$/;
 const START_RE = /\/elitea_core\/messages\/prompt_lib\/(\d+)\/[0-9a-f-]+/;
 const EVENTS_RE = /\/executions\/(\d+)\/[^/]+\/events/;
 
+/** The model `seed-llm` seeds into every personal project. */
+const MODEL_NAME = 'E2E-MOCK-MODEL';
+
 /** `ChatBox` names the conversation after the question, truncated to 50 chars. */
 const MAX_NAME = 50;
 
@@ -78,16 +81,15 @@ function uniquePrompt(): string {
 }
 
 test('the chat loop works end to end: send, stream, persist, reload', async ({ page }) => {
-  // Expected to fail until #292 lands — see the module header. Remove this line
-  // with that fix; leaving it makes the suite fail once a turn completes, which
-  // is the point.
-  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #292: the chat page sends no model and the conversation has no participants');
-
   // A whole agent turn — conversation create, admission, dispatch to the
   // worker, a model call and the stream back — does not fit Playwright's 30s
   // default. The individual waits below are each bounded well under this, so a
   // real hang still fails on the specific step rather than on the clock.
   test.setTimeout(180_000);
+
+  // Expected to fail until #293 lands — see the module header. Remove this line
+  // with that fix; leaving it makes the suite fail once a turn completes.
+  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #293: the model catalogue route 500s, so no model can be selected');
 
   const prompt = uniquePrompt();
 
@@ -103,6 +105,16 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
 
   await page.goto(BASE_URL + '/app/chat');
   await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 30_000 });
+
+  // Pick the seeded model, as #284 asks. It is not decoration: an ad-hoc turn
+  // resolves against a `dummy` participant carrying the model, and the start
+  // route reads `llm_settings.model_name`. With nothing selected the send is
+  // rejected 400 before it reaches the worker.
+  await page.getByTestId('model-selector-button').click();
+  const modelOption = page.getByRole('menuitem').filter({ hasText: MODEL_NAME }).first();
+  await expect(modelOption, `the seeded model ${MODEL_NAME} must be offered`).toBeVisible({ timeout: 20_000 });
+  await modelOption.click();
+  await expect(page.getByTestId('model-selector-name')).toContainText(MODEL_NAME, { timeout: 10_000 });
 
   const input = page.getByTestId('chat-message-input');
   await expect(input).toBeEditable({ timeout: 15_000 });

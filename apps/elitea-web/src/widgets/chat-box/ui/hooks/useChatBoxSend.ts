@@ -18,6 +18,7 @@ import { useCallback } from 'react';
 
 import { useChatStreamTransport, type ChatMessage, type ChatStreamContext } from '@/features/chat-messages';
 import { conversationApi } from '@/entities/conversation';
+import { useAddParticipantMutation } from '@/entities/participant';
 // Deep, still-legal import: `UploadedAttachment` is deliberately not on the
 // entities barrel (its 20 slots are exactly spent — see that file's own note
 // naming this exact path).
@@ -71,6 +72,32 @@ function buildStartBody(params: {
   };
 }
 
+/**
+ * The two participants an ad-hoc (plain model) turn resolves against.
+ *
+ * `ResolveCurrentAdhocTurn` joins on BOTH an `entity_name='user'` participant
+ * whose `entity_meta.id` is the actor AND an `entity_name='dummy'` one carrying
+ * the model — missing either resolves to no rows and the route answers
+ * `422 unsupported_agent_execution`, which names neither (#292, and the same
+ * opacity #288 is about). The backend smoke creates exactly this pair before
+ * every turn it drives; the UI created neither, so a conversation opened from
+ * the chat page could never run.
+ *
+ * NOTE the id: participants are addressed by the conversation's NUMERIC id
+ * while the start route takes its UUID. Passing the wrong one is a bare 500.
+ */
+function adhocParticipants(input: {
+  readonly userId: string | undefined;
+  readonly modelName: string;
+  readonly llmSettings: Readonly<Record<string, unknown>> | undefined;
+}): { readonly entity_name: string; readonly entity_meta?: Record<string, unknown>; readonly entity_settings?: Record<string, unknown> }[] {
+  const llmSettings = { ...input.llmSettings, model_name: input.modelName, stream: true };
+  return [
+    ...(input.userId !== undefined ? [{ entity_name: 'user', entity_meta: { id: Number(input.userId) } }] : []),
+    { entity_name: 'dummy', entity_meta: { name: input.modelName }, entity_settings: { llm_settings: llmSettings } },
+  ];
+}
+
 /** @public Params for `useChatBoxSend`. */
 export interface UseChatBoxSendParams {
   readonly deps: SendDeps;
@@ -87,6 +114,8 @@ export interface UseChatBoxSendParams {
   readonly projectIdString: string | undefined;
   /** An agent-app conversation takes a different execution contract from an ad-hoc/test one. */
   readonly isAgentsPage?: boolean | undefined;
+  /** The signed-in user, for the ad-hoc turn's `user` participant. */
+  readonly userId?: string | undefined;
   readonly activeParticipant?: unknown;
   readonly participants?: readonly unknown[] | undefined;
   readonly userName?: string | undefined;
@@ -160,15 +189,35 @@ export function useChatBoxSend(params: UseChatBoxSendParams): UseChatBoxSendResu
   );
 
   const { deps } = params;
+  const { mutateAsync: addParticipants } = useAddParticipantMutation();
   const createConversationForSend = useCallback(
     async (question: string) => {
       const created = await deps.createConversation({
         name: question.slice(0, 50) || t('widgets.chatBox.defaultConversationName', 'New Chat'),
         isPrivate: true,
       });
-      return created ? pickIdAndUuid(created) : undefined;
+      if (!created) return undefined;
+
+      // A plain model chat has to carry its own participants; an agent
+      // conversation already has the agent as one, so this is scoped to the
+      // ad-hoc path and to a chat that actually has a model to name.
+      const modelName = params.model?.name;
+      if (!isAgentsPage && modelName && created.id !== undefined && projectId !== undefined) {
+        try {
+          await addParticipants({
+            projectId,
+            conversationId: String(created.id),
+            participants: adhocParticipants({ userId: params.userId, modelName, llmSettings: params.llmSettings }),
+          });
+        } catch (error) {
+          // Not fatal to the send: the turn will fail its own admission with a
+          // message, which is more useful than swallowing the question here.
+          console.warn('[useChatBoxSend] could not add ad-hoc participants:', error);
+        }
+      }
+      return pickIdAndUuid(created);
     },
-    [deps],
+    [deps, isAgentsPage, projectId, params.model, params.userId, params.llmSettings, addParticipants],
   );
 
   const uploadAttachmentsForSend = useCallback(

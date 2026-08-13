@@ -176,7 +176,7 @@ const ChatBoxInner = memo(function ChatBox({
     deps: { createConversation: lifecycle.createConversation, uploadAttachments: data.attachments.upload.uploadAttachments },
     setChatHistory: data.setChatHistory, projectId, projectIdString, isAgentsPage,
     activeParticipant, participants: conversationParticipants, userName, userAvatar,
-    llmSettings, model: data.selectedModel,
+    llmSettings, model: data.selectedModel, userId,
   });
 
   // Action handlers — real socket protocol (chat_predict / chat_continue_predict),

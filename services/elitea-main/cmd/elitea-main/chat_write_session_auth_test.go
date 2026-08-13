@@ -37,6 +37,17 @@ func TestChatWriteRoutesAcceptABrowserSession(t *testing.T) {
 			"with a session cookie and nothing else (#291)")
 	}
 
+	// The configuration reads the chat page makes on every load — the model
+	// catalogue among them — share one `currentAuth`. Without a session the
+	// model picker rendered EMPTY, so no model could be chosen and the turn was
+	// then rejected for not naming one (#292): a chat that cannot run, with
+	// every configuration row present and correct.
+	shared := authConfigVariable(t, file, "currentAuth")
+	if !authConfigHasField(shared, "SessionSecret") {
+		t.Fatal("the shared configuration AuthConfig has no SessionSecret: the " +
+			"model picker cannot read its own catalogue in a browser (#292)")
+	}
+
 	// The peer verifier must survive alongside it. Accepting a session is
 	// additive; dropping forwarded identity would break the worker and the
 	// forward-auth edge, which are the callers that work today.
@@ -46,6 +57,31 @@ func TestChatWriteRoutesAcceptABrowserSession(t *testing.T) {
 				"authenticate with it", field)
 		}
 	}
+}
+
+// authConfigVariable finds `name := apimw.AuthConfig{...}`.
+func authConfigVariable(t *testing.T, file *ast.File, name string) *ast.CompositeLit {
+	t.Helper()
+	var found *ast.CompositeLit
+	ast.Inspect(file, func(node ast.Node) bool {
+		assign, ok := node.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+			return true
+		}
+		identifier, ok := assign.Lhs[0].(*ast.Ident)
+		if !ok || identifier.Name != name {
+			return true
+		}
+		if literal, ok := assign.Rhs[0].(*ast.CompositeLit); ok && selectorName(literal.Type) == "AuthConfig" {
+			found = literal
+			return false
+		}
+		return true
+	})
+	if found == nil {
+		t.Fatalf("no apimw.AuthConfig assigned to %s in main.go", name)
+	}
+	return found
 }
 
 // authConfigForCall finds `apimw.AuthConfig{...}` passed to the named function.

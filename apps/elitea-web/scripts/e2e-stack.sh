@@ -592,7 +592,11 @@ CROSS JOIN (VALUES
     ('models.chat.conversation.details'),
     ('models.chat.messages.create'),
     ('models.chat.folders.get'),
-    ('configurations.configuration.list'),
+    -- `configurations.configurationS.list` — the plural is the route's, not a
+    -- typo: handler.go:102 requires it for the model catalogue the picker
+    -- reads. The singular form below is a DIFFERENT permission (one config's
+    -- details), and granting only that leaves the picker empty behind a 403.
+    ('configurations.configurations.list'),
     ('configurations.configuration.details')
 ) AS p(permission)
 WHERE u.email = 'e2e-chat@autotest.local'

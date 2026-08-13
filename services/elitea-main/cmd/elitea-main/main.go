@@ -521,6 +521,17 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			Validator:                 formGraph,
 			PrincipalValidator:        principalValidator,
 			ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			// The browser's only credential (#292), same reasoning as the
+			// agent-start route above. These are the configuration reads the
+			// UI makes on every chat page — the model catalogue among them —
+			// and without a session they answered 401 to the product's own
+			// model picker, which then rendered empty. A user could not choose
+			// a model, so the turn was rejected for not naming one: a chat that
+			// cannot run, with every configuration row present and correct.
+			//
+			// Reads only widen to a session; each route still resolves
+			// permissions through currentPermissions below.
+			SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
 		}
 		currentPermissions := legacyrbac.NewPostgresResolver(pool)
 		currentConfigurationAvailable, err = configurationapi.NewCurrentAvailableRoute(
