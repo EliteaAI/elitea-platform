@@ -117,12 +117,30 @@ async function performOidcLogin(
   // storage origin. The SPA may still be redirecting after the OIDC callback —
   // navigate to /app/ to stabilize, then write storage.
   await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
-  await page.evaluate(() => {
-    localStorage.setItem('el.project.id', '1');
-    localStorage.setItem('el.project.name', 'Default Project');
-    sessionStorage.setItem('el.project.id', '1');
-    sessionStorage.setItem('el.project.name', 'Default Project');
-  });
+
+  // The project written here must be the one the APP would settle on, not a
+  // constant: `AppShell` also resolves `/social/author → personal_project_id`,
+  // and when the two disagree the selected project depends on which resolves
+  // first. A persona that owns a personal project (the #284 chat driver) then
+  // lands in project 1 on some runs and its own project on others — measured,
+  // and it surfaces three layers away as a 403 on a chat route rather than as
+  // a project-selection problem.
+  const author = await page.request.get(BASE_URL + '/api/v2/social/author/');
+  const personalProjectId = author.ok()
+    ? ((await author.json()) as { personal_project_id?: string }).personal_project_id
+    : undefined;
+  const projectId = personalProjectId ?? '1';
+  const projectName = projectId === '1' ? 'Default Project' : `project_user_${projectId}`;
+
+  await page.evaluate(
+    ([id, name]) => {
+      localStorage.setItem('el.project.id', id);
+      localStorage.setItem('el.project.name', name);
+      sessionStorage.setItem('el.project.id', id);
+      sessionStorage.setItem('el.project.name', name);
+    },
+    [projectId, projectName] as const,
+  );
 
   // Save the authenticated state (cookies + localStorage).
   await page.context().storageState({ path: storageStatePath });

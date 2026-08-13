@@ -806,6 +806,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 					Validator:                 formGraph,
 					PrincipalValidator:        principalValidator,
 					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					// The browser's only credential (#291). This handler serves
+					// START, REGENERATE and CONTINUE (production_router.go),
+					// i.e. every write path a chat conversation has, and the UI
+					// authenticates with a session cookie and nothing else — no
+					// bearer, no forwarded identity. Without this the product's
+					// own chat cannot start a turn while every server-side hop
+					// can, the same shape #93 found on the events stream, which
+					// this is the other half of: the UI could read a stream it
+					// was not allowed to open.
+					//
+					// It does not widen what a caller may DO. The route still
+					// resolves permissions through legacyrbac below, so
+					// membership and `models.chat.messages.create` are checked
+					// exactly as before; this only lets a session prove who it
+					// is. A deployment reached solely through a forward-auth
+					// edge is unaffected — it simply never presents a cookie.
+					SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
 				},
 				legacyrbac.NewPostgresResolver(pool),
 			)

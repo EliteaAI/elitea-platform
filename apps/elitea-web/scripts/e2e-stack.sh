@@ -599,10 +599,16 @@ WHERE u.email = 'e2e-chat@autotest.local'
 ON CONFLICT (project_id, role_id, permission) DO NOTHING;
 
 -- social_users rows (needed for personal_project_id resolution).
+--
+-- The chat driver is in this list and must stay in it: `/social/author` reads
+-- these rows to answer `personal_project_id`, and WITHOUT one it falls back to
+-- project 1. The app then opens the chat in a project the driver holds no chat
+-- permission in and the turn 403s — measured, and indistinguishable from a
+-- broken start route until you look at which project the request names.
 INSERT INTO centry.social_users (user_id, title)
 SELECT u.id, u.name
 FROM auth_core__user u
-WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local')
+WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local', 'e2e-chat@autotest.local')
 ON CONFLICT (user_id) DO NOTHING;
 
 -- p_1.configuration: one mock model config so the personal-token create button is

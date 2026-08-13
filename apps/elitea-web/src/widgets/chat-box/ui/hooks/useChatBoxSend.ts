@@ -33,9 +33,55 @@ interface SendDeps {
   readonly uploadAttachments: (input: UploadAttachmentsParams) => Promise<UploadAttachmentsOutcome>;
 }
 
+/**
+ * The agent-execution start body.
+ *
+ * The REST contract is NOT the socket payload: `chat_predict` carries a flat
+ * `question`, while the route reads `payload.user_input`, its own
+ * `interaction_uuid`, and `llm_settings` — and answers a flat
+ * `400 Invalid agent execution request` when any of that is missing, naming
+ * nothing. `question_id` and `interaction_uuid` must both be REAL uuids: the
+ * repository parses them before querying and rejects the turn identically for
+ * a malformed one as for an absent one.
+ */
+function buildStartBody(params: {
+  readonly conversationUuid: string;
+  readonly projectId: string | undefined;
+  readonly payload: Record<string, unknown>;
+  readonly llmSettings: Readonly<Record<string, unknown>> | undefined;
+  readonly modelName: string | undefined;
+}): Record<string, unknown> {
+  const { payload } = params;
+  const question = typeof payload['question'] === 'string' ? payload['question'] : '';
+  const participantId = payload['participant_id'];
+  return {
+    project_id: params.projectId,
+    conversation_uuid: params.conversationUuid,
+    // 0 is the ad-hoc "no specific participant" value the backend smoke uses;
+    // a missing key is rejected rather than defaulted.
+    participant_id: participantId ?? 0,
+    question_id: payload['question_id'],
+    interaction_uuid: crypto.randomUUID(),
+    payload: { user_input: question, ...(payload['attachments'] ? { attachments: payload['attachments'] } : {}) },
+    llm_settings: {
+      ...params.llmSettings,
+      ...(params.modelName !== undefined ? { model_name: params.modelName } : {}),
+      stream: true,
+    },
+  };
+}
+
 /** @public Params for `useChatBoxSend`. */
 export interface UseChatBoxSendParams {
   readonly deps: SendDeps;
+  /** Model settings the composer resolved; forwarded as the turn's `llm_settings`. */
+  readonly llmSettings?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * The selected model. Passed as the object rather than a pre-read name so the
+   * optional chain lives here — reading it at the ChatBox call site pushed that
+   * component over its complexity budget.
+   */
+  readonly model?: { readonly name?: string | undefined } | null | undefined;
   readonly setChatHistory: (updater: (prev: readonly ChatMessage[]) => readonly ChatMessage[]) => void;
   readonly projectId: string | number | undefined;
   readonly projectIdString: string | undefined;
@@ -101,10 +147,16 @@ export function useChatBoxSend(params: UseChatBoxSendParams): UseChatBoxSendResu
         projectId,
         conversationUuid,
         contract: isAgentsPage ? conversationApi.contracts.application : conversationApi.contracts.adhoc,
-        body: { ...payload, conversation_uuid: conversationUuid, project_id: projectIdString },
+        body: buildStartBody({
+          conversationUuid,
+          projectId: projectIdString,
+          payload,
+          llmSettings: params.llmSettings,
+          modelName: params.model?.name,
+        }),
       });
     },
-    [start, projectId, projectIdString, isAgentsPage],
+    [start, projectId, projectIdString, isAgentsPage, params.llmSettings, params.model],
   );
 
   const { deps } = params;

@@ -28,20 +28,19 @@
  * reducer. That is the whole point of running the journey here.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * CURRENTLY EXPECTED TO FAIL — #291
+ * CURRENTLY EXPECTED TO FAIL — #292
  * ─────────────────────────────────────────────────────────────────────────────
- * The agent-execution START route rejects a browser session with 401
- * "missing authorization header", while every other /api/v2 call this page
- * makes on the same cookie succeeds: its AuthConfig
- * (`cmd/elitea-main/main.go:802-810`) carries no session credential, unlike the
- * events route that 9526061f fixed. So the UI can read a stream it is not
- * allowed to open, and the journey stops at the first backend hop.
+ * #291 (the start route rejecting a browser session) is fixed, and the journey
+ * now reaches the request BODY: the chat page has no selected model to send, so
+ * the turn is rejected 400, and with a model supplied by hand the conversation
+ * has no participants and the version freezer answers 422. Both are chat-surface
+ * gaps, filed as #292.
  *
  * `test.fail()` rather than a skip or a weakened assertion, deliberately:
  * Playwright FAILS an expected-failure test that unexpectedly passes, so this
- * marker is a tripwire that announces the day #291 is fixed instead of quietly
- * continuing to pass. #284's scope boundary asks for exactly this — file the
- * product bug, mark the step, do not paper over it.
+ * marker announces the day #292 is fixed instead of quietly continuing to pass.
+ * #284's scope boundary asks for exactly this — file the product bug, mark the
+ * step, do not paper over it.
  *
  * The wire contract asserted below is the one the backend actually emits, NOT
  * the `chat.stream.chunk`/`chat.stream.done` pair #284's body names: every frame
@@ -79,17 +78,16 @@ function uniquePrompt(): string {
 }
 
 test('the chat loop works end to end: send, stream, persist, reload', async ({ page }) => {
-  // A whole agent turn — conversation create, admission, dispatch to the
-  // worker, a model call and the stream — does not fit Playwright's 30s
-  // default, and a test-level TIMEOUT is a hard failure that `test.fail()`
-  // cannot absorb, so an under-budgeted test would report as a red suite
-  // rather than as the expected failure it is.
-  test.setTimeout(180_000);
+  // Expected to fail until #292 lands — see the module header. Remove this line
+  // with that fix; leaving it makes the suite fail once a turn completes, which
+  // is the point.
+  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #292: the chat page sends no model and the conversation has no participants');
 
-  // Expected to fail until #291 lands — see the module header. Remove this line
-  // with that fix; leaving it makes the suite fail once the route accepts a
-  // session, which is the point.
-  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #291: the agent-execution start route rejects a browser session');
+  // A whole agent turn — conversation create, admission, dispatch to the
+  // worker, a model call and the stream back — does not fit Playwright's 30s
+  // default. The individual waits below are each bounded well under this, so a
+  // real hang still fails on the specific step rather than on the clock.
+  test.setTimeout(180_000);
 
   const prompt = uniquePrompt();
 
