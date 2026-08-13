@@ -8,8 +8,9 @@ use elitea_worker_rust::protocol::command::{
     parse_and_verify_agent_command,
 };
 use elitea_worker_rust::protocol::control::{
-    AgentControlClient, AgentControlError, BeginAgentExecution, ControlSemanticError,
-    DesiredExecutionState, InvocationAuthorizationDecision, RuntimeControlRejectionKind,
+    AgentClaimDecision, AgentControlClient, AgentControlError, AgentOutputRecoveryKind,
+    BeginAgentExecution, ControlSemanticError, DesiredExecutionState,
+    InvocationAuthorizationDecision, RuntimeControlRejectionKind, TerminalRedeliveryKind,
 };
 use elitea_worker_rust::protocol::elitea::runtime::v1::{
     AuthorizeInvocationResponseV1, BeginExecutionResponseV1, ClaimCommandRequestV1,
@@ -60,6 +61,10 @@ fn claim_response() -> ClaimCommandResponseV1 {
     ClaimCommandResponseV1::decode(bytes("accepted_claim").as_slice()).expect("claim fixture")
 }
 
+fn claim_fixture(name: &str) -> ClaimCommandResponseV1 {
+    ClaimCommandResponseV1::decode(bytes(name).as_slice()).expect("claim fixture")
+}
+
 #[derive(Default)]
 struct FakeState {
     claim: Mutex<ClaimCommandResponseV1>,
@@ -70,6 +75,7 @@ struct FakeState {
     settlement: Mutex<PrepareSettlementResponseV1>,
     claim_requests: Mutex<Vec<ClaimCommandRequestV1>>,
     renew_requests: Mutex<Vec<RenewLeaseRequestV1>>,
+    settlement_requests: Mutex<Vec<PrepareSettlementRequestV1>>,
 }
 
 struct FakeRpc(Arc<FakeState>);
@@ -131,8 +137,13 @@ impl ControlRpc for FakeRpc {
 
     async fn prepare_settlement(
         &self,
-        _request: Request<PrepareSettlementRequestV1>,
+        request: Request<PrepareSettlementRequestV1>,
     ) -> Result<Response<PrepareSettlementResponseV1>, Status> {
+        self.0
+            .settlement_requests
+            .lock()
+            .expect("settlement requests")
+            .push(request.into_inner());
         Ok(Response::new(
             self.0.settlement.lock().expect("settlement").clone(),
         ))
@@ -207,6 +218,239 @@ async fn python_vectors_cross_authenticated_claim_and_both_effect_fences() {
             .expect("invocation authority"),
         InvocationAuthorizationDecision::AuthorizedNow(_)
     ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn every_python_restart_disposition_maps_to_an_input_free_closed_type() {
+    let (control, state) = client();
+
+    let AgentClaimDecision::Accepted(_accepted) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("fresh accepted delivery")
+    else {
+        panic!("accepted claim must be the only input-bearing decision")
+    };
+    *state.claim.lock().expect("claim") = claim_fixture("claim_settled_ack");
+    let AgentClaimDecision::SettledAck(authority) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("settled redelivery")
+    else {
+        panic!("settled claim must return terminal ACK authority")
+    };
+    assert_eq!(authority.kind(), TerminalRedeliveryKind::Settled);
+
+    *state.claim.lock().expect("claim") = claim_fixture("claim_obsolete_ack");
+    let AgentClaimDecision::ObsoleteAck(authority) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("obsolete redelivery")
+    else {
+        panic!("obsolete claim must return terminal ACK authority")
+    };
+    assert_eq!(authority.kind(), TerminalRedeliveryKind::Obsolete);
+
+    *state.claim.lock().expect("claim") = claim_fixture("claim_retry_later_noack");
+    assert!(matches!(
+        control
+            .claim_agent_delivery(&verified(), NOW)
+            .await
+            .expect("retry decision"),
+        AgentClaimDecision::RetryLaterNoAck(_)
+    ));
+
+    *state.claim.lock().expect("claim") = claim_fixture("claim_retired_ack");
+    let AgentClaimDecision::RetiredAck(authority) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("deadline retirement")
+    else {
+        panic!("retired claim must return terminal ACK authority")
+    };
+    assert_eq!(authority.kind(), TerminalRedeliveryKind::Retired);
+
+    *state.claim.lock().expect("claim") = claim_fixture("claim_active_lease_noack");
+    let AgentClaimDecision::ActiveLeaseNoAck(recovery) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("active lease recovery")
+    else {
+        panic!("active lease must return output-only recovery")
+    };
+    assert_eq!(recovery.kind(), AgentOutputRecoveryKind::ActiveLease);
+    assert_eq!(recovery.desired_state(), DesiredExecutionState::Running);
+    let (recovery, _lease) = recovery.split_lease_authority();
+    assert_eq!(recovery.claim_handoff_watermark(), 4);
+
+    *state.claim.lock().expect("claim") = claim_fixture("claim_recover_running_noack");
+    let AgentClaimDecision::RecoverRunningNoAck(recovery) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("running recovery")
+    else {
+        panic!("running claim must return output-only recovery")
+    };
+    assert_eq!(recovery.kind(), AgentOutputRecoveryKind::Running);
+    assert_eq!(recovery.desired_state(), DesiredExecutionState::Cancelled);
+
+    *state.claim.lock().expect("claim") = claim_fixture("claim_recover_ambiguous_invocation_noack");
+    let AgentClaimDecision::RecoverAmbiguousInvocationNoAck(recovery) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("ambiguous invocation recovery")
+    else {
+        panic!("ambiguous claim must return output-only recovery")
+    };
+    assert_eq!(
+        recovery.kind(),
+        AgentOutputRecoveryKind::AmbiguousInvocation
+    );
+    assert_eq!(recovery.desired_state(), DesiredExecutionState::Running);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn persisted_terminal_and_settlement_recovery_never_recreate_business_authority() {
+    let (control, state) = client();
+    *state.claim.lock().expect("claim") = claim_fixture("claim_recover_terminal_ack");
+    let AgentClaimDecision::RecoverTerminalAck(recovery) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("terminal ACK recovery")
+    else {
+        panic!("terminal ACK recovery must return proposal authority")
+    };
+    let receipt = control
+        .prepare_recovered_agent_settlement(recovery)
+        .await
+        .expect("exact settlement replay");
+    assert_eq!(receipt.receipt_id(), "settlement-receipt-1");
+    {
+        let requests = state
+            .settlement_requests
+            .lock()
+            .expect("settlement requests");
+        let request = requests.last().expect("settlement replay request");
+        let proposal = request.proposal.as_ref().expect("persisted proposal");
+        assert_eq!(proposal.proposal_id, "command-1:settlement");
+        assert_eq!(request.idempotency_key, "command-1:prepare-settlement");
+        assert_eq!(
+            request
+                .proposal_digest
+                .as_ref()
+                .expect("proposal digest")
+                .value,
+            ring::digest::digest(&ring::digest::SHA256, &proposal.encode_to_vec()).as_ref()
+        );
+    }
+
+    *state.claim.lock().expect("claim") = claim_fixture("claim_recover_settlement");
+    let AgentClaimDecision::RecoverSettlement(recovery) = control
+        .claim_agent_delivery(&verified(), NOW)
+        .await
+        .expect("prepared settlement recovery")
+    else {
+        panic!("prepared settlement must return receipt authority")
+    };
+    assert_eq!(recovery.receipt_id(), "settlement-receipt-recovery-1");
+    assert_eq!(
+        recovery.outcome(),
+        elitea_worker_rust::protocol::elitea::runtime::v1::ExecutionOutcomeV1::Succeeded
+    );
+    assert_eq!(
+        state
+            .settlement_requests
+            .lock()
+            .expect("settlement requests")
+            .len(),
+        1,
+        "an already prepared settlement must not call PrepareSettlement"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_recovery_shapes_fail_closed_before_authority_is_minted() {
+    let (control, state) = client();
+
+    for disposition in [0, 999] {
+        let mut malformed = claim_response();
+        malformed.receipt.as_mut().expect("receipt").disposition = disposition;
+        *state.claim.lock().expect("claim") = malformed;
+        assert!(
+            control
+                .claim_agent_delivery(&verified(), NOW)
+                .await
+                .is_err()
+        );
+    }
+
+    let mut business_leak = claim_fixture("claim_recover_running_noack");
+    business_leak
+        .receipt
+        .as_mut()
+        .expect("receipt")
+        .input_bundle = claim_response()
+        .receipt
+        .expect("accepted receipt")
+        .input_bundle;
+    *state.claim.lock().expect("claim") = business_leak;
+    assert!(
+        control
+            .claim_agent_delivery(&verified(), NOW)
+            .await
+            .is_err()
+    );
+
+    let mut forged_no_authority = claim_fixture("claim_obsolete_ack");
+    forged_no_authority
+        .receipt
+        .as_mut()
+        .expect("receipt")
+        .claim_id = "forged".to_owned();
+    *state.claim.lock().expect("claim") = forged_no_authority;
+    assert!(
+        control
+            .claim_agent_delivery(&verified(), NOW)
+            .await
+            .is_err()
+    );
+
+    let mut changed_proposal = claim_fixture("claim_recover_terminal_ack");
+    changed_proposal
+        .receipt
+        .as_mut()
+        .expect("receipt")
+        .settlement_recovery
+        .as_mut()
+        .expect("recovery")
+        .proposal
+        .as_mut()
+        .expect("proposal")
+        .terminal_sequence += 1;
+    *state.claim.lock().expect("claim") = changed_proposal;
+    assert!(matches!(
+        control.claim_agent_delivery(&verified(), NOW).await,
+        Err(AgentControlError::Semantic(
+            ControlSemanticError::InvalidInput(_) | ControlSemanticError::AuthorizationFailed(_)
+        ))
+    ));
+
+    let mut malformed_retirement = claim_fixture("claim_retired_ack");
+    malformed_retirement
+        .receipt
+        .as_mut()
+        .expect("receipt")
+        .retirement
+        .as_mut()
+        .expect("retirement")
+        .retryable = false;
+    *state.claim.lock().expect("claim") = malformed_retirement;
+    assert!(
+        control
+            .claim_agent_delivery(&verified(), NOW)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

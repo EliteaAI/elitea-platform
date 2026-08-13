@@ -19,6 +19,7 @@ from elitea.runtime.v1 import (  # noqa: E402
     envelope_pb2,
     errors_pb2,
     input_pb2,
+    output_pb2,
 )
 
 
@@ -138,6 +139,95 @@ renewal_seed = (
 )
 
 
+def recovery_claim(disposition: int) -> control_pb2.ClaimCommandResponseV1:
+    response = control_pb2.ClaimCommandResponseV1.FromString(
+        claim.SerializeToString(deterministic=True)
+    )
+    response.receipt.disposition = disposition
+    response.receipt.ClearField("input_bundle_ref")
+    response.receipt.ClearField("input_bundle")
+    return response
+
+
+def no_authority_claim(
+    disposition: int,
+    desired_state: int,
+) -> control_pb2.ClaimCommandResponseV1:
+    response = recovery_claim(disposition)
+    response.receipt.ClearField("fence")
+    response.receipt.lease_expires_at_unix_millis = 0
+    response.receipt.claim_handoff_watermark = 0
+    response.receipt.claim_id = ""
+    response.receipt.desired_state = desired_state
+    return response
+
+
+terminal_proposal = output_pb2.SettlementProposalV1(
+    proposal_id="command-1:settlement",
+    requested_outcome=common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED,
+    terminal_logical_output_id="agent-execution:execution-1",
+    terminal_event_id="command-1:5",
+    terminal_sequence=5,
+    terminal_payload_digest=sha256(b"terminal-agent-result"),
+    prepare_idempotency_key="command-1:prepare-settlement",
+)
+terminal_proposal_raw = terminal_proposal.SerializeToString(deterministic=True)
+
+recover_terminal = recovery_claim(
+    control_pb2.CLAIM_DISPOSITION_V1_RECOVER_TERMINAL_ACK
+)
+recover_terminal.receipt.settlement_recovery.CopyFrom(
+    control_pb2.SettlementRecoveryV1(
+        proposal=terminal_proposal,
+        proposal_digest=sha256(terminal_proposal_raw),
+        idempotency_key=terminal_proposal.prepare_idempotency_key,
+    )
+)
+
+recover_settlement = recovery_claim(
+    control_pb2.CLAIM_DISPOSITION_V1_RECOVER_SETTLEMENT
+)
+recover_settlement.receipt.settlement_recovery.CopyFrom(
+    control_pb2.SettlementRecoveryV1(
+        settlement_receipt_id="settlement-receipt-recovery-1",
+        outcome=common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED,
+    )
+)
+
+settled = recovery_claim(control_pb2.CLAIM_DISPOSITION_V1_SETTLED_ACK)
+obsolete = no_authority_claim(
+    control_pb2.CLAIM_DISPOSITION_V1_OBSOLETE_ACK,
+    common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
+)
+active = recovery_claim(control_pb2.CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK)
+retry_later = no_authority_claim(
+    control_pb2.CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK,
+    common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
+)
+retired = no_authority_claim(
+    control_pb2.CLAIM_DISPOSITION_V1_RETIRED_ACK,
+    common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
+)
+retired.receipt.retirement.CopyFrom(
+    errors_pb2.RuntimeErrorV1(
+        code=errors_pb2.RUNTIME_ERROR_CODE_V1_DEADLINE_EXCEEDED,
+        safe_message=(
+            "The execution deadline was exceeded before worker authority was granted."
+        ),
+        retryable=True,
+    )
+)
+recover_running = recovery_claim(
+    control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+)
+recover_running.receipt.desired_state = (
+    common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED
+)
+recover_ambiguous = recovery_claim(
+    control_pb2.CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK
+)
+
+
 def size_bound_pair(
     content_length: int,
 ) -> tuple[bytes, bytes]:
@@ -179,6 +269,17 @@ signed_over_limit, claim_over_limit = size_bound_pair(1024 * 1024 + 1)
 fixtures = {
     "signed_command": signed.SerializeToString(deterministic=True),
     "accepted_claim": claim.SerializeToString(deterministic=True),
+    "claim_recover_terminal_ack": recover_terminal.SerializeToString(deterministic=True),
+    "claim_recover_settlement": recover_settlement.SerializeToString(deterministic=True),
+    "claim_settled_ack": settled.SerializeToString(deterministic=True),
+    "claim_obsolete_ack": obsolete.SerializeToString(deterministic=True),
+    "claim_active_lease_noack": active.SerializeToString(deterministic=True),
+    "claim_retry_later_noack": retry_later.SerializeToString(deterministic=True),
+    "claim_retired_ack": retired.SerializeToString(deterministic=True),
+    "claim_recover_running_noack": recover_running.SerializeToString(deterministic=True),
+    "claim_recover_ambiguous_invocation_noack": recover_ambiguous.SerializeToString(
+        deterministic=True
+    ),
     "begin_started": control_pb2.BeginExecutionResponseV1(
         disposition=control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW
     ).SerializeToString(deterministic=True),

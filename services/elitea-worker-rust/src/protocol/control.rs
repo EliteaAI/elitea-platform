@@ -10,13 +10,13 @@ use super::command::VerifiedAgentCommand;
 use super::elitea::runtime::v1::{
     AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1,
     BeginExecutionDispositionV1, BeginExecutionRequestV1, BeginExecutionResponseV1,
-    ClaimCommandRequestV1, ClaimCommandResponseV1, ClaimDispositionV1, DesiredExecutionStateV1,
-    DigestAlgorithmV1, DigestV1, ExecutionFenceV1, ExecutionIdentityV1,
+    ClaimCommandRequestV1, ClaimCommandResponseV1, ClaimDispositionV1, ClaimReceiptV1,
+    DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1, ExecutionIdentityV1,
     ExecutionInputBundleReferenceV1, ExecutionInputBundleV1, ExecutionInputEntryV1,
     ExecutionOutcomeV1, ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1,
     PrepareSettlementRequestV1, PrepareSettlementResponseV1, RenewLeaseRequestV1,
     RenewLeaseResponseV1, RuntimeErrorCodeV1, RuntimeErrorV1, ScopedContentReferenceV1,
-    worker_command_v1,
+    SettlementProposalV1, SettlementRecoveryV1, worker_command_v1,
 };
 use crate::transport::{
     ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, DurablyAckedTerminal,
@@ -29,6 +29,8 @@ const MAX_AGENT_INPUT_BYTES: u64 = 1024 * 1024;
 const AGENT_EXECUTION_REQUEST_ROLE: &str = "agent.execution_request";
 const AGENT_INPUT_MEDIA_TYPE: &str = "application/vnd.elitea.agent-execution-input.v1+protobuf";
 const INPUT_GRANT_AUDIENCE: &str = "elitea.runtime.input.read.v1";
+const DEADLINE_RETIREMENT_SAFE_MESSAGE: &str =
+    "The execution deadline was exceeded before worker authority was granted.";
 
 /// Stable semantic failures returned by the runtime control boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -214,6 +216,166 @@ impl AcceptedAgentClaim {
             identity: Some(self.identity.clone()),
             fence: Some(self.fence.clone()),
         }
+    }
+}
+
+/// Exhaustive, authenticated claim result for one agent delivery.
+///
+/// Only [`Self::Accepted`] contains immutable business inputs. Every recovery
+/// variant is deliberately input-free and cannot be converted into fresh SDK
+/// invocation authority.
+pub enum AgentClaimDecision {
+    Accepted(Box<AcceptedAgentClaim>),
+    RecoverTerminalAck(Box<RecoverTerminalAck>),
+    RecoverSettlement(RecoveredSettlement),
+    SettledAck(TerminalCommandAck),
+    ObsoleteAck(TerminalCommandAck),
+    ActiveLeaseNoAck(AgentOutputRecovery),
+    RetryLaterNoAck(RetryLaterNoAck),
+    RetiredAck(TerminalCommandAck),
+    RecoverRunningNoAck(AgentOutputRecovery),
+    RecoverAmbiguousInvocationNoAck(AgentOutputRecovery),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalRedeliveryKind {
+    Settled,
+    Obsolete,
+    Retired,
+}
+
+/// Server proof that one redelivered command may be retired without business
+/// input resolution or SDK execution. The value is opaque and non-cloneable.
+pub struct TerminalCommandAck {
+    kind: TerminalRedeliveryKind,
+}
+
+impl TerminalCommandAck {
+    #[must_use]
+    pub const fn kind(&self) -> TerminalRedeliveryKind {
+        self.kind
+    }
+}
+
+/// A retry/quarantine decision carrying no worker authority.
+pub struct RetryLaterNoAck {
+    _sealed: (),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentOutputRecoveryKind {
+    ActiveLease,
+    Running,
+    AmbiguousInvocation,
+}
+
+struct RecoveryClaimBinding {
+    identity: ExecutionIdentityV1,
+    fence: ExecutionFenceV1,
+    lease_expires_at_unix_millis: i64,
+    claim_id: String,
+    claim_handoff_watermark: u64,
+    desired_state: DesiredExecutionState,
+}
+
+/// Input-free authority for exact durable output recovery under an active
+/// replacement fence. It never grants `BeginExecution` or SDK invocation.
+pub struct AgentOutputRecovery {
+    kind: AgentOutputRecoveryKind,
+    binding: RecoveryClaimBinding,
+}
+
+impl AgentOutputRecovery {
+    #[must_use]
+    pub const fn kind(&self) -> AgentOutputRecoveryKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn desired_state(&self) -> DesiredExecutionState {
+        self.binding.desired_state
+    }
+
+    #[must_use]
+    pub const fn claim_handoff_watermark(&self) -> u64 {
+        self.binding.claim_handoff_watermark
+    }
+
+    #[must_use]
+    pub const fn lease_expires_at_unix_millis(&self) -> i64 {
+        self.binding.lease_expires_at_unix_millis
+    }
+
+    /// Separate the exact-fence recovery state from its unique lease handle.
+    /// The delivery integration must supervise that handle before publishing.
+    #[must_use]
+    pub fn split_lease_authority(self) -> (LeasedAgentOutputRecovery, ClaimLeaseHandle) {
+        let lease = ClaimLeaseHandle {
+            identity: self.binding.identity.clone(),
+            fence: self.binding.fence.clone(),
+            claim_id: self.binding.claim_id.clone(),
+            lease_expires_at_unix_millis: self.binding.lease_expires_at_unix_millis,
+            renewal_sequence: 0,
+        };
+        (
+            LeasedAgentOutputRecovery {
+                kind: self.kind,
+                binding: self.binding,
+            },
+            lease,
+        )
+    }
+}
+
+/// Recovery state exposed only after the caller owns the unique lease handle.
+pub struct LeasedAgentOutputRecovery {
+    kind: AgentOutputRecoveryKind,
+    binding: RecoveryClaimBinding,
+}
+
+impl LeasedAgentOutputRecovery {
+    #[must_use]
+    pub const fn kind(&self) -> AgentOutputRecoveryKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn desired_state(&self) -> DesiredExecutionState {
+        self.binding.desired_state
+    }
+
+    #[must_use]
+    pub const fn claim_handoff_watermark(&self) -> u64 {
+        self.binding.claim_handoff_watermark
+    }
+}
+
+/// Exact persisted proposal returned after a terminal output ACK was lost.
+/// It can only be consumed by the authenticated settlement RPC method.
+pub struct RecoverTerminalAck {
+    identity: ExecutionIdentityV1,
+    fence: ExecutionFenceV1,
+    proposal: SettlementProposalV1,
+    proposal_digest: DigestV1,
+    idempotency_key: String,
+}
+
+/// Exact already-prepared settlement receipt. Possession authorizes command
+/// retirement but never output replay or SDK execution.
+pub struct RecoveredSettlement {
+    receipt_id: String,
+    outcome: ExecutionOutcomeV1,
+}
+
+impl RecoveredSettlement {
+    #[must_use]
+    pub fn receipt_id(&self) -> &str {
+        &self.receipt_id
+    }
+
+    #[must_use]
+    pub const fn outcome(&self) -> ExecutionOutcomeV1 {
+        self.outcome
     }
 }
 
@@ -444,6 +606,34 @@ impl<R: ControlRpc> AgentControlClient<R> {
         .map_err(Into::into)
     }
 
+    /// Claim one agent delivery and retain every restart disposition as a
+    /// closed, authority-specific type.
+    ///
+    /// Unlike [`Self::claim_agent`], this is the delivery-orchestration entry
+    /// point: recovery receipts are not collapsed into fresh-claim failures.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed transport, runtime rejection, identity, fence, or
+    /// disposition-shape failure.
+    pub async fn claim_agent_delivery(
+        &self,
+        verified: &VerifiedAgentCommand,
+        now_unix_millis: i64,
+    ) -> Result<AgentClaimDecision, AgentControlError> {
+        let request =
+            build_agent_claim_request(verified, &self.workload_session_id, &self.producer_id)?;
+        let response = self.control.claim_command(request).await?;
+        parse_agent_claim_decision(
+            verified,
+            response,
+            &self.workload_session_id,
+            &self.producer_id,
+            now_unix_millis,
+        )
+        .map_err(Into::into)
+    }
+
     /// Cross the restart-safe `BeginExecution` fence, consuming the fresh claim.
     ///
     /// # Errors
@@ -561,6 +751,33 @@ impl<R: ControlRpc> AgentControlClient<R> {
         let response = self.control.prepare_settlement(request).await?;
         parse_prepare_settlement_response(response, expected_outcome).map_err(Into::into)
     }
+
+    /// Replay the exact state-owner proposal after a terminal ACK crash.
+    ///
+    /// The recovery value is consumed, so decoded protobufs or replayed parser
+    /// calls cannot independently mint settlement authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed transport, rejection, or outcome-binding failure.
+    pub async fn prepare_recovered_agent_settlement(
+        &self,
+        recovery: Box<RecoverTerminalAck>,
+    ) -> Result<SettlementReceipt, AgentControlError> {
+        let expected_outcome = ExecutionOutcomeV1::try_from(recovery.proposal.requested_outcome)
+            .map_err(|_| {
+                ControlSemanticError::InvalidInput("the settlement recovery outcome is malformed")
+            })?;
+        let request = PrepareSettlementRequestV1 {
+            identity: Some(recovery.identity),
+            fence: Some(recovery.fence),
+            proposal: Some(recovery.proposal),
+            proposal_digest: Some(recovery.proposal_digest),
+            idempotency_key: recovery.idempotency_key,
+        };
+        let response = self.control.prepare_settlement(request).await?;
+        parse_prepare_settlement_response(response, expected_outcome).map_err(Into::into)
+    }
 }
 
 /// Bind the exact authenticated envelope to one claim request.
@@ -582,6 +799,390 @@ pub fn build_agent_claim_request(
         workload_session_id: workload_session_id.to_owned(),
         producer_id: producer_id.to_owned(),
         signed_command: Some(verified.signed().clone()),
+    })
+}
+
+fn parse_agent_claim_decision(
+    verified: &VerifiedAgentCommand,
+    response: ClaimCommandResponseV1,
+    workload_session_id: &str,
+    producer_id: &str,
+    now_unix_millis: i64,
+) -> Result<AgentClaimDecision, ControlSemanticError> {
+    if now_unix_millis <= 0 {
+        return Err(ControlSemanticError::InvalidInput(
+            "the runtime clock is malformed",
+        ));
+    }
+    let receipt = exclusive_claim_receipt(response)?;
+    validate_claim_identity(verified, &receipt)?;
+    let disposition = ClaimDispositionV1::try_from(receipt.disposition)
+        .map_err(|_| ControlSemanticError::InvalidInput("the claim disposition is malformed"))?;
+    validate_retirement_placement(disposition, &receipt)?;
+
+    match disposition {
+        ClaimDispositionV1::Accepted => parse_accepted_agent_claim(
+            verified,
+            ClaimCommandResponseV1 {
+                receipt: Some(receipt),
+                rejection: None,
+            },
+            workload_session_id,
+            producer_id,
+            now_unix_millis,
+        )
+        .map(|claim| AgentClaimDecision::Accepted(Box::new(claim))),
+        ClaimDispositionV1::RecoverTerminalAck => parse_terminal_ack_recovery(
+            verified,
+            &receipt,
+            workload_session_id,
+            producer_id,
+            now_unix_millis,
+        )
+        .map(|recovery| AgentClaimDecision::RecoverTerminalAck(Box::new(recovery))),
+        ClaimDispositionV1::RecoverSettlement => {
+            parse_recovered_settlement(&receipt, workload_session_id, producer_id, now_unix_millis)
+                .map(AgentClaimDecision::RecoverSettlement)
+        }
+        ClaimDispositionV1::SettledAck => {
+            validate_recovery_claim(
+                &receipt,
+                workload_session_id,
+                producer_id,
+                now_unix_millis,
+                false,
+            )?;
+            Ok(AgentClaimDecision::SettledAck(TerminalCommandAck {
+                kind: TerminalRedeliveryKind::Settled,
+            }))
+        }
+        ClaimDispositionV1::ObsoleteAck => {
+            validate_no_worker_authority(&receipt)?;
+            if receipt.desired_state != DesiredExecutionStateV1::Cancelled as i32 {
+                return Err(ControlSemanticError::InvalidInput(
+                    "the obsolete claim desired state is malformed",
+                ));
+            }
+            Ok(AgentClaimDecision::ObsoleteAck(TerminalCommandAck {
+                kind: TerminalRedeliveryKind::Obsolete,
+            }))
+        }
+        ClaimDispositionV1::ActiveLeaseNoack => parse_output_recovery(
+            &receipt,
+            workload_session_id,
+            producer_id,
+            now_unix_millis,
+            AgentOutputRecoveryKind::ActiveLease,
+        )
+        .map(AgentClaimDecision::ActiveLeaseNoAck),
+        ClaimDispositionV1::RetryLaterNoack => {
+            validate_no_worker_authority(&receipt)?;
+            desired_state(receipt.desired_state)?;
+            Ok(AgentClaimDecision::RetryLaterNoAck(RetryLaterNoAck {
+                _sealed: (),
+            }))
+        }
+        ClaimDispositionV1::RetiredAck => {
+            validate_no_worker_authority_except_retirement(&receipt)?;
+            desired_state(receipt.desired_state)?;
+            validate_deadline_retirement(receipt.retirement.as_ref())?;
+            Ok(AgentClaimDecision::RetiredAck(TerminalCommandAck {
+                kind: TerminalRedeliveryKind::Retired,
+            }))
+        }
+        ClaimDispositionV1::RecoverRunningNoack => parse_output_recovery(
+            &receipt,
+            workload_session_id,
+            producer_id,
+            now_unix_millis,
+            AgentOutputRecoveryKind::Running,
+        )
+        .map(AgentClaimDecision::RecoverRunningNoAck),
+        ClaimDispositionV1::RecoverAmbiguousInvocationNoack => parse_output_recovery(
+            &receipt,
+            workload_session_id,
+            producer_id,
+            now_unix_millis,
+            AgentOutputRecoveryKind::AmbiguousInvocation,
+        )
+        .map(AgentClaimDecision::RecoverAmbiguousInvocationNoAck),
+        ClaimDispositionV1::Unspecified => Err(ControlSemanticError::InvalidInput(
+            "the claim disposition is malformed",
+        )),
+    }
+}
+
+fn validate_retirement_placement(
+    disposition: ClaimDispositionV1,
+    receipt: &ClaimReceiptV1,
+) -> Result<(), ControlSemanticError> {
+    if disposition != ClaimDispositionV1::RetiredAck && receipt.retirement.is_some() {
+        return Err(ControlSemanticError::InvalidInput(
+            "the claim disposition contains unexpected retirement material",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_claim_identity(
+    verified: &VerifiedAgentCommand,
+    receipt: &ClaimReceiptV1,
+) -> Result<(), ControlSemanticError> {
+    if receipt.identity.as_ref() != Some(&identity_from_command(verified)) {
+        return Err(ControlSemanticError::AuthorizationFailed(
+            "the claim receipt identity does not match its command",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_no_worker_authority(receipt: &ClaimReceiptV1) -> Result<(), ControlSemanticError> {
+    if receipt.retirement.is_some() {
+        return Err(ControlSemanticError::InvalidInput(
+            "the no-authority claim contains retirement material",
+        ));
+    }
+    validate_no_worker_authority_except_retirement(receipt)
+}
+
+fn validate_no_worker_authority_except_retirement(
+    receipt: &ClaimReceiptV1,
+) -> Result<(), ControlSemanticError> {
+    if receipt.fence.is_some()
+        || receipt.lease_expires_at_unix_millis != 0
+        || receipt.input_bundle_ref.is_some()
+        || receipt.input_bundle.is_some()
+        || receipt.claim_handoff_watermark != 0
+        || !receipt.claim_id.is_empty()
+        || receipt.settlement_recovery.is_some()
+    {
+        return Err(ControlSemanticError::InvalidInput(
+            "the no-authority claim contains worker authority or business material",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_deadline_retirement(
+    retirement: Option<&RuntimeErrorV1>,
+) -> Result<(), ControlSemanticError> {
+    if retirement.is_none_or(|value| {
+        value.code != RuntimeErrorCodeV1::DeadlineExceeded as i32
+            || value.safe_message != DEADLINE_RETIREMENT_SAFE_MESSAGE
+            || !value.retryable
+    }) {
+        return Err(ControlSemanticError::InvalidInput(
+            "the retired claim detail is malformed",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recovery_claim(
+    receipt: &ClaimReceiptV1,
+    workload_session_id: &str,
+    producer_id: &str,
+    now_unix_millis: i64,
+    allow_settlement_recovery: bool,
+) -> Result<RecoveryClaimBinding, ControlSemanticError> {
+    if receipt.input_bundle_ref.is_some()
+        || receipt.input_bundle.is_some()
+        || receipt.retirement.is_some()
+        || (!allow_settlement_recovery && receipt.settlement_recovery.is_some())
+        || receipt.claim_handoff_watermark > i64::MAX as u64
+    {
+        return Err(ControlSemanticError::InvalidInput(
+            "the recovery claim contains unexpected business material",
+        ));
+    }
+    let fence = receipt
+        .fence
+        .as_ref()
+        .ok_or(ControlSemanticError::AuthorizationFailed(
+            "the claim fence is malformed or expired",
+        ))?;
+    validate_active_fence(
+        fence,
+        &receipt.claim_id,
+        receipt.lease_expires_at_unix_millis,
+        workload_session_id,
+        producer_id,
+        now_unix_millis,
+    )?;
+    Ok(RecoveryClaimBinding {
+        identity: receipt
+            .identity
+            .clone()
+            .ok_or(ControlSemanticError::AuthorizationFailed(
+                "the claim receipt identity does not match its command",
+            ))?,
+        fence: fence.clone(),
+        lease_expires_at_unix_millis: receipt.lease_expires_at_unix_millis,
+        claim_id: receipt.claim_id.clone(),
+        claim_handoff_watermark: receipt.claim_handoff_watermark,
+        desired_state: desired_state(receipt.desired_state)?,
+    })
+}
+
+fn parse_output_recovery(
+    receipt: &ClaimReceiptV1,
+    workload_session_id: &str,
+    producer_id: &str,
+    now_unix_millis: i64,
+    kind: AgentOutputRecoveryKind,
+) -> Result<AgentOutputRecovery, ControlSemanticError> {
+    let binding = validate_recovery_claim(
+        receipt,
+        workload_session_id,
+        producer_id,
+        now_unix_millis,
+        false,
+    )?;
+    if kind != AgentOutputRecoveryKind::ActiveLease
+        && !matches!(
+            binding.desired_state,
+            DesiredExecutionState::Running | DesiredExecutionState::Cancelled
+        )
+    {
+        return Err(ControlSemanticError::InvalidInput(
+            "the running recovery desired state is malformed",
+        ));
+    }
+    Ok(AgentOutputRecovery { kind, binding })
+}
+
+fn parse_terminal_ack_recovery(
+    verified: &VerifiedAgentCommand,
+    receipt: &ClaimReceiptV1,
+    workload_session_id: &str,
+    producer_id: &str,
+    now_unix_millis: i64,
+) -> Result<RecoverTerminalAck, ControlSemanticError> {
+    let binding = validate_recovery_claim(
+        receipt,
+        workload_session_id,
+        producer_id,
+        now_unix_millis,
+        true,
+    )?;
+    let recovery =
+        receipt
+            .settlement_recovery
+            .as_ref()
+            .ok_or(ControlSemanticError::InvalidInput(
+                "the terminal ACK recovery receipt is missing",
+            ))?;
+    let (proposal, proposal_digest, idempotency_key) =
+        validate_terminal_recovery(verified, recovery)?;
+    Ok(RecoverTerminalAck {
+        identity: binding.identity,
+        fence: binding.fence,
+        proposal,
+        proposal_digest,
+        idempotency_key,
+    })
+}
+
+fn validate_terminal_recovery(
+    verified: &VerifiedAgentCommand,
+    recovery: &SettlementRecoveryV1,
+) -> Result<(SettlementProposalV1, DigestV1, String), ControlSemanticError> {
+    if !recovery.settlement_receipt_id.is_empty()
+        || recovery.outcome != ExecutionOutcomeV1::Unspecified as i32
+        || !bounded_text(&recovery.idempotency_key, MAX_CONTROL_IDENTITY_BYTES)
+    {
+        return Err(ControlSemanticError::InvalidInput(
+            "the terminal ACK recovery receipt is malformed",
+        ));
+    }
+    let proposal = recovery
+        .proposal
+        .as_ref()
+        .ok_or(ControlSemanticError::InvalidInput(
+            "the terminal ACK recovery receipt is malformed",
+        ))?;
+    let proposal_digest =
+        recovery
+            .proposal_digest
+            .as_ref()
+            .ok_or(ControlSemanticError::InvalidInput(
+                "the terminal ACK recovery receipt is malformed",
+            ))?;
+    let outcome = ExecutionOutcomeV1::try_from(proposal.requested_outcome).map_err(|_| {
+        ControlSemanticError::InvalidInput("the terminal ACK recovery proposal is malformed")
+    })?;
+    let command = verified.command();
+    if !terminal_outcome(outcome)
+        || proposal.terminal_sequence == 0
+        || proposal.terminal_sequence > i64::MAX as u64
+        || proposal.proposal_id != format!("{}:settlement", command.command_id)
+        || proposal.terminal_logical_output_id
+            != format!("agent-execution:{}", command.execution_id)
+        || proposal.terminal_event_id
+            != format!("{}:{}", command.command_id, proposal.terminal_sequence)
+        || proposal.prepare_idempotency_key != format!("{}:prepare-settlement", command.command_id)
+        || recovery.idempotency_key != proposal.prepare_idempotency_key
+        || !valid_nonzero_sha256(proposal.terminal_payload_digest.as_ref())
+        || !valid_nonzero_sha256(Some(proposal_digest))
+    {
+        return Err(ControlSemanticError::InvalidInput(
+            "the terminal ACK recovery proposal is malformed",
+        ));
+    }
+    let calculated = digest::digest(&digest::SHA256, &proposal.encode_to_vec());
+    if calculated
+        .as_ref()
+        .ct_eq(&proposal_digest.value)
+        .unwrap_u8()
+        != 1
+    {
+        return Err(ControlSemanticError::AuthorizationFailed(
+            "the terminal ACK recovery proposal digest is invalid",
+        ));
+    }
+    Ok((
+        proposal.clone(),
+        proposal_digest.clone(),
+        recovery.idempotency_key.clone(),
+    ))
+}
+
+fn parse_recovered_settlement(
+    receipt: &ClaimReceiptV1,
+    workload_session_id: &str,
+    producer_id: &str,
+    now_unix_millis: i64,
+) -> Result<RecoveredSettlement, ControlSemanticError> {
+    validate_recovery_claim(
+        receipt,
+        workload_session_id,
+        producer_id,
+        now_unix_millis,
+        true,
+    )?;
+    let recovery =
+        receipt
+            .settlement_recovery
+            .as_ref()
+            .ok_or(ControlSemanticError::InvalidInput(
+                "the prepared settlement recovery receipt is missing",
+            ))?;
+    let outcome = ExecutionOutcomeV1::try_from(recovery.outcome).map_err(|_| {
+        ControlSemanticError::InvalidInput("the prepared settlement recovery receipt is malformed")
+    })?;
+    if recovery.proposal.is_some()
+        || recovery.proposal_digest.is_some()
+        || !recovery.idempotency_key.is_empty()
+        || !bounded_text(&recovery.settlement_receipt_id, MAX_CONTROL_IDENTITY_BYTES)
+        || !terminal_outcome(outcome)
+    {
+        return Err(ControlSemanticError::InvalidInput(
+            "the prepared settlement recovery receipt is malformed",
+        ));
+    }
+    Ok(RecoveredSettlement {
+        receipt_id: recovery.settlement_receipt_id.clone(),
+        outcome,
     })
 }
 
@@ -999,6 +1600,14 @@ fn require_sha256(digest: Option<&DigestV1>) -> Result<&[u8], ControlSemanticErr
         ));
     }
     Ok(&value.value)
+}
+
+fn valid_nonzero_sha256(value: Option<&DigestV1>) -> bool {
+    value.is_some_and(|value| {
+        value.algorithm == DigestAlgorithmV1::Sha256 as i32
+            && value.value.len() == 32
+            && value.value.iter().any(|byte| *byte != 0)
+    })
 }
 
 fn desired_state(value: i32) -> Result<DesiredExecutionState, ControlSemanticError> {
