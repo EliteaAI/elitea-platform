@@ -1,0 +1,40 @@
+# Traefik DYNAMIC config for the worker's platform_origin.
+#
+# One route, no carve-outs: everything the SDK asks for is forwarded to
+# elitea-main as-is. That is deliberately unlike deploy/centry-hybrid, where the
+# equivalent edge splits worker traffic between Go and pylon —
+# `tools_list`, `application`/`version` and the artifact APIs are routed to
+# pylon there because Go does not serve them (Go's tools_list is a different
+# path and answers 501 by design). This stack has no pylon, so an agent that
+# needs any of those will fail inside the worker; a plain adhoc turn does not
+# touch them.
+#
+# The certificate is the runtime CA's `platform-edge`, whose only SAN is
+# DNS:elitea-platform-edge — the exact host in worker-runtime.json's
+# platform_origin. The worker's TLS trust for this hop is the runtime CA alone
+# (REQUESTS_CA_BUNDLE / SSL_CERT_FILE on the worker service), so a certificate
+# from any other issuer fails closed.
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /run/elitea-runtime/platform-edge.crt
+        keyFile: /run/elitea-runtime/platform-edge.key
+
+http:
+  routers:
+    platform:
+      rule: PathPrefix(`/`)
+      entryPoints:
+        - platform
+      tls: {}
+      service: elitea-main
+
+  services:
+    elitea-main:
+      loadBalancer:
+        servers:
+          # Cleartext on the compose network. The edge terminates TLS for the
+          # worker; it does not re-originate it, and elitea-main cannot accept
+          # it on this port anyway.
+          - url: "http://elitea-main:8080"

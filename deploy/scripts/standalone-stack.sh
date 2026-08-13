@@ -139,6 +139,34 @@ ON CONFLICT (workload_session_id) DO UPDATE
         revoked_at        = NULL;
 SQL
     echo "→ Authorized. session=${WORKER_SESSION_ID} producer=${WORKER_PRODUCER_ID}"
+
+    # Give every seeded user an active PAT.
+    #
+    # Not optional, and not obvious: when the worker claims an execution it POSTs
+    # to the content listener for a client token, which resolves through
+    # ActorTokenIssuer → LocalIssuer.IssueToken. That issuer "never creates,
+    # rotates, or stores a PAT" — it re-signs an EXISTING active one
+    # (GetActivePATForUser). With no row the claim fails at stage
+    # `actor_pat_issuance` and the execution dies before any model call, with no
+    # hint that a database row is what was missing.
+    #
+    # The E2E seeder creates users but no auth_core__token rows, so this is the
+    # only place it happens. The uuid is the credential the Go side re-signs with
+    # the PAT HS512 key from the runtime material; expires NULL means no expiry,
+    # which the issuer's query accepts.
+    echo "→ Issuing PATs for users without one…"
+    $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+      psql -v ON_ERROR_STOP=1 -U elitea -d elitea <<'SQL'
+INSERT INTO public.auth_core__token (uuid, expires, user_id, name)
+SELECT gen_random_uuid()::text, NULL, u.id, 'standalone-runtime'
+FROM public.auth_core__user AS u
+WHERE u.suspended = false
+  AND NOT EXISTS (
+      SELECT 1 FROM public.auth_core__token AS t
+      WHERE t.user_id = u.id AND t.uuid IS NOT NULL
+        AND (t.expires IS NULL OR t.expires > (clock_timestamp() AT TIME ZONE 'UTC'))
+  );
+SQL
     ;;
 
   seed-llm)
@@ -309,6 +337,46 @@ SQL
       echo "  ✓ ${rows} active workload session(s)"
     else
       fail "no active workload session — run: $0 seed-runtime"
+    fi
+
+    echo "→ agent worker:"
+    # A consumer registered on the group is the discriminating signal. "Container
+    # is running" is not: the worker restarts on failure, so a crash-looping one
+    # still shows as up between attempts, and its own logs are not proof it got
+    # as far as Redis. XINFO CONSUMERS reports only consumers that actually
+    # joined the group, so a name here means TLS, the ACL user, the stream and
+    # the group all worked.
+    consumers="$($ENGINE run --rm --network "$NETWORK" \
+                  -v "${RUNTIME_CERTS}:/m:ro" --entrypoint sh docker.io/library/redis:7-alpine -c \
+                  "redis-cli --tls --cacert /m/runtime-ca.crt -h runtime-redis -p 6380 \
+                     --user bootstrap --pass \"\$(cat /m/redis-bootstrap-password)\" \
+                     --no-auth-warning XINFO CONSUMERS '${STREAM}' '${GROUP}'" 2>&1 || true)"
+    case "$consumers" in
+      *standalone-agent-worker*) echo "  ✓ worker joined ${GROUP}" ;;
+      *) fail "no consumer on ${GROUP} — the worker never reached Redis (check its logs)" ;;
+    esac
+
+    # The worker's platform_origin must terminate TLS with the runtime CA's
+    # edge certificate; the SDK verifies it against that CA alone. A plain
+    # connect would pass against any TLS listener, so verify the chain.
+    edge="$(probe "openssl s_client -connect elitea-platform-edge:443 -CAfile /m/runtime-ca.crt -servername elitea-platform-edge </dev/null")"
+    case "$edge" in
+      *"Verify return code: 0"*) echo "  ✓ platform-edge TLS verifies against the runtime CA" ;;
+      *) fail "platform-edge did not present a runtime-CA certificate for elitea-platform-edge" ;;
+    esac
+
+    echo "→ execution actor PATs:"
+    # Without an active PAT the worker's claim dies at actor_pat_issuance, long
+    # before any model call, so this is a precondition rather than a nicety.
+    pats="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+              psql -U elitea -d elitea -tAc \
+              "SELECT count(*) FROM public.auth_core__token
+                WHERE uuid IS NOT NULL
+                  AND (expires IS NULL OR expires > (clock_timestamp() AT TIME ZONE 'UTC'))" 2>/dev/null || echo 0)"
+    if [ "${pats:-0}" -ge 1 ]; then
+      echo "  ✓ ${pats} active PAT(s)"
+    else
+      fail "no active PAT — run: $0 seed-runtime (executions fail at actor_pat_issuance)"
     fi
 
     if [ "$runtime_failures" -ne 0 ]; then

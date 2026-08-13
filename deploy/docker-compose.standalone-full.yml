@@ -59,16 +59,29 @@
 #   All of it is provisioned by deploy/scripts/gen-runtime-certs.sh and installed
 #   per-consumer by the runtime-material init service.
 #
+# ── The agent worker (issue #282) ────────────────────────────────────────────
+#   elitea-worker is the NodeEvent producer — Go admits and projects executions
+#   but has no agent-token producer of its own. Two things it needs are not
+#   obvious:
+#     * platform_origin must be an https origin (config.py:187 rejects anything
+#       else) and elitea-main has no TLS listener for its /api/v2 + /llm surface,
+#       so `platform-edge` terminates TLS for it with a runtime-CA certificate.
+#     * the SDK verifies TLS through the OS trust store on import, which cannot
+#       contain a locally minted CA — hence ELITEA_DISABLE_SYSTEM_CA plus
+#       REQUESTS_CA_BUNDLE/SSL_CERT_FILE on the worker service.
+#   The worker has NO env-var configuration: one JSON file, deploy/runtime/
+#   worker-runtime.json, whose stream/group must match elitea-main's env below.
+#
 # ── What still does NOT work, and why ────────────────────────────────────────
-#   The core loop still does not complete end to end, for two reasons that are
-#   NOT this file's environment:
-#     * services/elitea-worker-python is not in this stack yet (#282). Go has no
-#       native agent-token producer; it only projects and serves the events. So
-#       an admitted execution streams no tokens and ends in a failure/timeout
-#       terminal event. That is the expected shape here, not a regression.
-#       Its material (client cert, Redis password, spool key) is already minted
-#       and installed into the standalone_runtime_worker volume, so adding the
-#       service is a compose-only change.
+#     * No LLM backend for E2E-MOCK-MODEL yet (#283), and no provider key by
+#       default, so a full model round-trip is not demonstrable here. Verified:
+#       an authenticated dispatch reaches the agent-execution use case and the
+#       worker joins the consumer group over TLS.
+#     * Toolkit-bearing agents fail regardless: the SDK resolves toolkits via
+#       /api/v2/elitea_core/tools_list/{project_id}, which centry-hybrid routes
+#       to PYLON — Go's equivalent is a different path and answers 501 by
+#       design. Same for nested application references and the artifact toolkit.
+#       A plain adhoc turn touches none of them.
 #     * the web chat surface still emits chat_predict into a noop socket.io
 #       client (apps/elitea-web/src/widgets/chat-box/ui/hooks/useChatBoxHandlers.ts:116)
 #       instead of POSTing and subscribing to {events_url} — that port is #93.
@@ -162,6 +175,7 @@ services:
       - standalone_runtime_main:/dst/main
       - standalone_runtime_redis:/dst/redis
       - standalone_runtime_worker:/dst/worker
+      - standalone_runtime_edge:/dst/edge
     restart: "no"
 
   # The runtime dispatch bus. Separate from the plaintext `redis` above because
@@ -222,6 +236,14 @@ services:
       - |
         set -eu
         export PGPASSWORD=elitea
+        # The worker's langgraph checkpointer opens its own DATABASE and calls
+        # setup() to create its tables, so `agentstate` only has to exist. It is
+        # a separate database, not a schema, because that is the connection
+        # string shape the current indexer already uses (#282).
+        if ! psql -h postgres -U elitea -d postgres -tAc \
+             "SELECT 1 FROM pg_database WHERE datname = 'agentstate'" | grep -q 1; then
+          psql -v ON_ERROR_STOP=1 -h postgres -U elitea -d postgres -c "CREATE DATABASE agentstate"
+        fi
         if psql -h postgres -U elitea -d elitea -tAc "SELECT to_regclass('centry.project')" | grep -q .; then
           echo "centry schema already present; skipping 001_initial.sql"
           exit 0
@@ -562,6 +584,101 @@ services:
       retries: 10
       start_period: 5s
 
+  # ── Agent execution worker (issue #282) ─────────────────────────────────────
+
+  # TLS front for the worker's platform_origin. See deploy/runtime/
+  # platform-edge.yml for why elitea-main cannot serve this itself and why this
+  # is not the browser-facing `traefik` service below.
+  platform-edge:
+    image: traefik:v3.4
+    command: ["--configfile=/etc/traefik/traefik.yml"]
+    volumes:
+      - ./runtime/platform-edge.yml:/etc/traefik/traefik.yml:ro
+      - ./runtime/platform-edge-dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - standalone_runtime_edge:/run/elitea-runtime:ro
+    networks:
+      default:
+        aliases:
+          # The certificate's only SAN, and the host in worker-runtime.json's
+          # platform_origin. The compose service name already resolves, but the
+          # alias is declared so renaming the service cannot silently break
+          # hostname verification.
+          - elitea-platform-edge
+    depends_on:
+      runtime-material:
+        condition: service_completed_successfully
+      elitea-main:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The NodeEvent producer. Go admits and projects executions but has no
+  # agent-token producer of its own, so without this service an admitted run
+  # streams nothing and ends in a terminal failure.
+  elitea-worker:
+    image: ghcr.io/eliteaai/elitea-worker-python:standalone
+    build:
+      # Repo root, not services/elitea-worker-python: the Containerfile copies
+      # libs/proto (:17) and testdata/proto/runtime/v1 (:79). It also git-clones
+      # elitea-sdk at a pinned revision behind a SHA-256 archive gate, so a local
+      # elitea-sdk checkout is irrelevant to the build and a hash mismatch is a
+      # build failure rather than a warning.
+      context: ..
+      dockerfile: services/elitea-worker-python/Containerfile
+    # The only supported command shape: one JSON config, no env-var settings.
+    # Capabilities are compiled in, not selected here — the Go side decides which
+    # it will accept (composition.go's capabilityVersions map).
+    command: ["serve", "--config", "/run/elitea/runtime.json"]
+    environment:
+      # TLS trust for platform_origin. The SDK routes verification through the
+      # OS trust store on import (elitea_sdk/_system_ca.py injects truststore),
+      # which cannot contain a CA minted on this machine minutes ago. Disabling
+      # that injection restores the standard mechanisms, and then the two
+      # variables below cover both HTTP stacks the SDK uses: `requests` for the
+      # /api/v2 calls (REQUESTS_CA_BUNDLE) and httpx/openai for the model call
+      # (SSL_CERT_FILE, honoured by ssl.create_default_context).
+      #
+      # A runtime-CA-only bundle is correct AND tighter than adding public
+      # roots: every destination the worker dials — control, output, content,
+      # platform_origin — is signed by that CA, and model traffic egresses
+      # through elitea-main's /llm proxy rather than directly to a provider.
+      ELITEA_DISABLE_SYSTEM_CA: "1"
+      REQUESTS_CA_BUNDLE: /run/elitea-runtime/runtime-ca.crt
+      SSL_CERT_FILE: /run/elitea-runtime/runtime-ca.crt
+      # The one environment variable the worker itself reads. Mirrors the
+      # hybrid's fail-safe snapshot: broader than the current
+      # `artifact.delete_file` rule so metadata drift cannot bypass approval.
+      ELITEA_SENSITIVE_TOOLS: '{"*":["delete_file"]}'
+    volumes:
+      - ./runtime/worker-runtime.json:/run/elitea/runtime.json:ro
+      - standalone_runtime_worker:/run/elitea-runtime:ro
+      # 0700 and owned by uid 10001 — the worker contract requires a private
+      # spool root. A fresh named volume starts 0755 owned by root, so it is
+      # prepared by the init service rather than assumed.
+      - standalone_worker_spool:/var/lib/elitea-worker/output-spool
+    depends_on:
+      runtime-material:
+        condition: service_completed_successfully
+      worker-spool-init:
+        condition: service_completed_successfully
+      runtime-redis:
+        condition: service_healthy
+      runtime-bootstrap:
+        condition: service_completed_successfully
+      elitea-main:
+        condition: service_healthy
+      platform-edge:
+        condition: service_started
+    restart: unless-stopped
+
+  worker-spool-init:
+    image: docker.io/library/alpine:3.20
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - chown 10001:10001 /spool && chmod 700 /spool
+    volumes:
+      - standalone_worker_spool:/spool
+    restart: "no"
+
   # ── Traefik: routes /app → elitea-web, /api → elitea-main ──────────────────
   traefik:
     image: traefik:v3.4
@@ -583,5 +700,8 @@ volumes:
   # use. Populated by runtime-material from deploy/certs/runtime.
   standalone_runtime_main:
   standalone_runtime_redis:
-  # Provisioned now, consumed when the worker service lands (#282).
   standalone_runtime_worker:
+  standalone_runtime_edge:
+  # The worker's output spool. Private (0700, uid 10001) — prepared by
+  # worker-spool-init because a fresh named volume starts 0755 root-owned.
+  standalone_worker_spool:

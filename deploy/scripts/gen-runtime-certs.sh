@@ -25,7 +25,9 @@
 #     control-server.{crt,key}        elitea-main control gRPC   :9443
 #     output-server.{crt,key}         elitea-main output gRPC    :9444
 #     content-server.{crt,key}        elitea-main content HTTPS  :9445
+#     platform-edge.{crt,key}         TLS front for the worker's platform_origin
 #     agent-worker-client.{crt,key}   presented by elitea-worker-python (#282)
+#     agent-checkpoint-connection     DSN for the worker's langgraph checkpointer
 #     command-signing-key.pem         Ed25519 PKCS#8, signs dispatch envelopes
 #     command-signing-keyring.json    its public half, keyed by ELITEA_RUNTIME_SIGNING_KEY_ID
 #     redis-{producer,worker,bootstrap,auth}-password
@@ -76,7 +78,9 @@ material=(
   control-server.crt control-server.key
   output-server.crt output-server.key
   content-server.crt content-server.key
+  platform-edge.crt platform-edge.key
   agent-worker-client.crt agent-worker-client.key
+  agent-checkpoint-connection
   command-signing-key.pem command-signing-keyring.json
   redis-producer-password redis-worker-password
   redis-bootstrap-password redis-auth-password
@@ -91,7 +95,7 @@ for name in "${material[@]}"; do
 done
 if [ "$needs_regen" -eq 0 ]; then
   for name in runtime-ca.crt redis-server.crt control-server.crt output-server.crt \
-              content-server.crt agent-worker-client.crt; do
+              content-server.crt platform-edge.crt agent-worker-client.crt; do
     openssl x509 -checkend 86400 -noout -in "$RUNTIME_DIR/$name" >/dev/null 2>&1 || needs_regen=1
   done
 fi
@@ -134,6 +138,12 @@ issue_server redis-server   runtime-redis "DNS:runtime-redis,DNS:localhost,IP:12
 issue_server control-server elitea-main   "DNS:elitea-main"
 issue_server output-server  elitea-main   "DNS:elitea-main"
 issue_server content-server elitea-main   "DNS:elitea-main"
+# The worker's platform_origin. elitea-main has no TLS listener of its own for
+# its ordinary /api/v2 + /llm surface, and the worker refuses a plaintext origin
+# outright (config.py:187), so a TLS front terminates for it. Its own hostname,
+# not elitea-main's: the edge is a distinct hop and its certificate must not be
+# interchangeable with the three private listener certificates.
+issue_server platform-edge  elitea-platform-edge "DNS:elitea-platform-edge"
 
 # ── worker client cert: exactly one SPIFFE URI SAN, nothing else ─────────────
 openssl req -newkey rsa:2048 -nodes \
@@ -210,6 +220,13 @@ python3 -c 'import base64,os,sys;sys.stdout.write(base64.urlsafe_b64encode(os.ur
   > "$RUNTIME_DIR/vault-master-key"
 # The worker spool key is exactly 32 RAW bytes (#282 config.py).
 openssl rand 32 > "$RUNTIME_DIR/worker-output-spool-key"
+
+# The worker's langgraph PostgresSaver connection. It is a separate DATABASE on
+# the same server, not a schema: the checkpointer calls setup() and creates its
+# own tables, so `agentstate` only has to exist (db-init creates it). Agent
+# capability pools require this file; other pools must not receive it.
+printf 'postgresql://elitea:elitea@postgres:5432/agentstate?sslmode=disable' \
+  > "$RUNTIME_DIR/agent-checkpoint-connection"
 
 # The Form provider is required by the auth schema (it has no OIDC variant), but
 # nothing signs in through it here: the browser authenticates via oidc-mock and

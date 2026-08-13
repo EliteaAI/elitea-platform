@@ -57,16 +57,25 @@ install_files "$REDIS" 999:999 0600 redis-server.key redis-users.acl
 # redis-cli container that mounts this volume and nothing else.
 install_files "$REDIS" 999:999 0600 redis-bootstrap-password
 
-# ── elitea-worker-python (uid 10001) — provisioned here, consumed by #282 ────
-# The worker service itself is not in this compose file yet. Its material is
-# installed now so that adding the service is a compose-only change, and so the
-# worker identity that seed-runtime writes into elitea_runtime.workload_sessions
-# has a certificate to match on day one.
+# ── elitea-worker-python (uid 10001) ─────────────────────────────────────────
+# The worker never receives a server private key, the command-signing key or any
+# Redis password but its own: it verifies signatures with the public keyring and
+# reads its own ACL user's password.
 WORKER=/dst/worker
 mkdir -p "$WORKER"; chown 10001:10001 "$WORKER"; chmod 700 "$WORKER"
 install_files "$WORKER" 10001:10001 0644 runtime-ca.crt command-signing-keyring.json
 install_files "$WORKER" 10001:10001 0600 \
   agent-worker-client.crt agent-worker-client.key \
-  redis-worker-password worker-output-spool-key
+  redis-worker-password worker-output-spool-key \
+  agent-checkpoint-connection
+
+# ── platform-edge (traefik, root) ────────────────────────────────────────────
+# Only the edge certificate and its key. The edge terminates TLS for the
+# worker's platform_origin and has no part in the runtime's own trust decisions,
+# so it must not hold the runtime CA key, the signing key or any password.
+EDGE=/dst/edge
+mkdir -p "$EDGE"; chown 0:0 "$EDGE"; chmod 755 "$EDGE"
+install_files "$EDGE" 0:0 0644 platform-edge.crt
+install_files "$EDGE" 0:0 0600 platform-edge.key
 
 echo "runtime material installed"

@@ -118,11 +118,62 @@ listeners (with the runtime off, nothing binds 9443/9444/9445 and the probe gets
 ECONNREFUSED rather than a TLS handshake), the consumer group, the active
 workload-session row, and elitea-main's `runtime_enabled=true` boot log.
 
+## The worker (#282)
+
+`elitea-worker` is the NodeEvent producer. Go admits and projects executions but
+has no agent-token producer of its own, so without it an admitted run streams
+nothing. Three things about it are not guessable from the compose file:
+
+**It has no environment configuration.** Config is one JSON file —
+`elitea-worker serve --config /run/elitea/runtime.json`, `extra="forbid"`. The
+only environment variable the worker itself reads is `ELITEA_SENSITIVE_TOOLS`.
+See [`worker-runtime.json`](worker-runtime.json); its `redis_stream` /
+`redis_group` must match the compose env on elitea-main, and its
+`workload_session_id` / `producer_id` must match the row `seed-runtime` writes.
+
+**`platform_origin` needs its own TLS front.** The worker rejects a non-https
+origin outright (`config.py:187`), and elitea-main has no TLS listener for its
+ordinary `/api/v2` + `/llm` surface — its three mTLS listeners speak the private
+control/output/content protocols, not the product API. Hence `platform-edge`, a
+second Traefik that terminates TLS with the runtime CA's `platform-edge`
+certificate and forwards to `elitea-main:8080`. It is not the browser edge and
+publishes no host port. (`content_origin` is different: that one is elitea-main's
+own :9445 listener, reached over mTLS, and the worker requires **HTTP/2** on it
+specifically — `serve.py:721` sets `http1=False`.)
+
+**Its TLS trust needs three environment variables, or nothing works.** The SDK
+routes verification through the OS trust store on import
+(`elitea_sdk/_system_ca.py` injects `truststore`), which cannot contain a CA
+minted on this machine. `ELITEA_DISABLE_SYSTEM_CA=1` restores the standard
+mechanisms, and then `REQUESTS_CA_BUNDLE` covers the `requests` calls to
+`/api/v2` while `SSL_CERT_FILE` covers the httpx/openai model call. A
+runtime-CA-only bundle is both correct and tighter than adding public roots:
+every host the worker dials is signed by that CA, and model traffic egresses
+through elitea-main's `/llm` proxy rather than directly to a provider.
+
+## Execution actors need a PAT
+
+When the worker claims an execution it asks the content listener for a client
+token, which resolves through `ActorTokenIssuer` → `LocalIssuer.IssueToken`.
+That issuer "never creates, rotates, or stores a PAT" — it re-signs an
+**existing active one** (`GetActivePATForUser`). With no row the claim fails at
+stage `actor_pat_issuance`, before any model call, and nothing in the error says
+a database row was missing. The E2E seeder creates users but no
+`auth_core__token` rows, so `standalone-stack.sh seed-runtime` issues one per
+user.
+
 ## What still does not work
 
-An admitted execution streams no tokens: `services/elitea-worker-python` is not
-in this stack yet (#282), and Go has no native agent-token producer — it only
-projects and serves the events. The worker's material is already minted and
-installed into `standalone_runtime_worker`, so adding the service is a
-compose-only change. The web chat surface also still emits into a noop socket.io
-client rather than subscribing to `{events_url}`; that port is #93.
+A model token round-trip has not been demonstrated end to end in this stack:
+there is no LLM backend for `E2E-MOCK-MODEL` yet (#283) and no provider key by
+default. Verified so far: an authenticated dispatch reaches the agent-execution
+use case, and the worker joins the consumer group over TLS.
+
+Toolkit-bearing agents will fail here regardless. The SDK resolves toolkits
+through `/api/v2/elitea_core/tools_list/{project_id}`, which `deploy/centry-hybrid`
+routes to **pylon**; Go's equivalent is a different path and answers 501 by
+design. Nested application references and the artifact toolkit are pylon-backed
+in the hybrid for the same reason. A plain adhoc turn touches none of them.
+
+The web chat surface also still emits into a noop socket.io client rather than
+subscribing to `{events_url}`; that port is #93.
