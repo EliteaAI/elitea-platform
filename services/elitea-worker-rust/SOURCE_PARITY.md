@@ -35,6 +35,7 @@ Detailed ledgers:
 - [`docs/source-mapping/agent-runtime.md`](docs/source-mapping/agent-runtime.md)
 - [`docs/source-mapping/configuration-toolsets.md`](docs/source-mapping/configuration-toolsets.md)
 - [`docs/source-mapping/indexing.md`](docs/source-mapping/indexing.md)
+- [`docs/adk-rust-2.0.0-audit.md`](docs/adk-rust-2.0.0-audit.md)
 
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
 | --- | --- | --- | --- | --- |
