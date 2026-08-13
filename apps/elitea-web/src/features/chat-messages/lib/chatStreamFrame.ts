@@ -95,6 +95,9 @@ export const HANDLED_STREAM_TYPES: ReadonlySet<string> = new Set<string>([
   SocketMessageType.AgentHitlInterrupt,
   SocketMessageType.AgentRequiresConfirmation,
   SocketMessageType.McpAuthorizationRequired,
+  SocketMessageType.SwarmChildMessage,
+  SocketMessageType.ChatPredictSummaryStarted,
+  SocketMessageType.ChatPredictSummaryFinished,
 ]);
 
 /**
@@ -197,6 +200,29 @@ export interface ChatStreamFrame {
   readonly references?: readonly unknown[] | undefined;
   readonly created_at?: string | number | undefined;
   readonly sio_event?: string | undefined;
+  /**
+   * Swarm child fields, carried at the TOP level rather than in
+   * `response_metadata` — both are first-class members of the node-event codec
+   * (`elitea-main/internal/transport/runtimegrpc/nodeevent/codec.go:41`).
+   *
+   * On a `swarm_child_message` frame `message_id` is the CHILD's id, not the
+   * assistant message being streamed, and `parent_message_id` names the message
+   * the child's output belongs to.
+   */
+  readonly parent_message_id?: string | undefined;
+  readonly agent_name?: string | undefined;
+  readonly task_id?: string | undefined;
+  /**
+   * The summary frames' own envelope. `chat_predict_summary_started` carries
+   * its run id and model under `payload`, NOT under `response_metadata` like
+   * every other frame — reading the usual place yields nothing.
+   */
+  readonly payload?:
+    | {
+        readonly response_metadata?: { readonly tool_run_id?: string | undefined } | undefined;
+        readonly llm_settings?: { readonly model_name?: string | undefined } | undefined;
+      }
+    | undefined;
   readonly [key: string]: unknown;
 }
 

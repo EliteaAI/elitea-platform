@@ -168,12 +168,19 @@ describe('applyChatStreamFrame', () => {
 
 describe('the ported boundary is explicit', () => {
   it('every handled type is reduced, and every unhandled one is inert', () => {
-    // The fixture satisfies EVERY handled case's preconditions — including an
-    // already-started tool action, which the end/error cases require — so a
-    // "handled type changed nothing" failure means the case is genuinely
-    // unreachable rather than under-supplied by the test.
+    // The fixture satisfies EVERY handled case's preconditions — an
+    // already-started tool action for the end/error cases, and a processing
+    // summary for chat_predict_summary_finished, which closes by type rather
+    // than by run id — so a "handled type changed nothing" failure means the
+    // case is genuinely unreachable rather than under-supplied by the test.
     const before: readonly ChatMessage[] = [
-      { ...pendingAssistant(), toolActions: [{ id: 'run-x', type: 'tool', status: 'processing' } as ToolAction] },
+      {
+        ...pendingAssistant(),
+        toolActions: [
+          { id: 'run-x', type: 'tool', status: 'processing' } as ToolAction,
+          { id: 'run-sum', type: 'summary', status: 'processing' } as ToolAction,
+        ],
+      },
     ];
 
     for (const type of Object.values(SocketMessageType)) {
@@ -834,5 +841,271 @@ describe('applyChatStreamFrame — interrupts', () => {
       expect(history[0]?.toolActions).toHaveLength(1);
       expect(((history[0]?.toolActions ?? [])[0] as ToolAction).status).toBe('action_required');
     });
+  });
+});
+
+describe('applyChatStreamFrame — swarm', () => {
+  const CHILD_ID = 'child-message-1';
+
+  function swarmFrame(extra: Record<string, unknown> = {}) {
+    // NOTE the shape: message_id is the CHILD's own id, and parent_message_id
+    // names the assistant message the answer belongs to.
+    return {
+      type: SocketMessageType.SwarmChildMessage,
+      message_id: CHILD_ID,
+      parent_message_id: MESSAGE_ID,
+      agent_name: 'researcher',
+      created_at: '2026-08-13 12:00:00',
+      ...extra,
+    };
+  }
+
+  function swarmActions(history: readonly ChatMessage[]): readonly ToolAction[] {
+    return (history[0]?.toolActions ?? []) as readonly ToolAction[];
+  }
+
+  it('attaches the child answer to the PARENT, not to the id the frame leads with', () => {
+    // findTarget resolves by message_id, which here is the CHILD's — using it
+    // would miss every time and drop the sub-agent's whole answer.
+    const history = applyChatStreamFrame([pendingAssistant()], swarmFrame({ content: 'I found three sources.' }), CONTEXT);
+
+    expect(history).toHaveLength(1);
+    expect(history[0]?.id).toBe(MESSAGE_ID);
+    expect(swarmActions(history)).toHaveLength(1);
+    expect(swarmActions(history)[0]).toMatchObject({
+      id: CHILD_ID,
+      name: 'researcher',
+      type: 'swarm_child',
+      status: 'complete',
+      content: 'I found three sources.',
+      toolOutputs: 'I found three sources.',
+      toolMeta: { agent_name: 'researcher' },
+    });
+  });
+
+  it('falls back to the in-flight message when the parent id has not propagated', () => {
+    // A child can report before its parent's id is known. Losing a sub-agent's
+    // whole answer is worse than attaching it to the turn in progress.
+    const history = applyChatStreamFrame(
+      [pendingAssistant()],
+      swarmFrame({ parent_message_id: undefined, content: 'partial finding' }),
+      CONTEXT,
+    );
+
+    expect(swarmActions(history)).toHaveLength(1);
+  });
+
+  it('drops a tool_use-only message instead of adding an empty accordion', () => {
+    // Anthropic content blocks: a child that only called tools has no prose,
+    // and an entry per tool call would bury the answers that do exist.
+    const before: readonly ChatMessage[] = [pendingAssistant()];
+    const toolUseOnly = applyChatStreamFrame(
+      before,
+      swarmFrame({ content: [{ type: 'tool_use', name: 'search', input: {} }] }),
+      CONTEXT,
+    );
+    const whitespace = applyChatStreamFrame(before, swarmFrame({ content: '   ' }), CONTEXT);
+
+    expect(toolUseOnly).toBe(before);
+    expect(whitespace).toBe(before);
+  });
+
+  it('keeps the text blocks out of a mixed content array and joins them', () => {
+    const history = applyChatStreamFrame(
+      [pendingAssistant()],
+      swarmFrame({
+        content: [{ text: 'first' }, { type: 'tool_use', name: 'search' }, { text: 'second' }],
+      }),
+      CONTEXT,
+    );
+
+    // The tool_use block contributes nothing — stringifying it would put raw
+    // JSON in the sub-agent accordion.
+    expect(swarmActions(history)[0]?.['content']).toBe('first\nsecond');
+  });
+
+  it('reads text from a bare object and stringifies one that has none', () => {
+    const withText = applyChatStreamFrame([pendingAssistant()], swarmFrame({ content: { text: 'from object' } }), CONTEXT);
+    expect(swarmActions(withText)[0]?.['content']).toBe('from object');
+
+    const withoutText = applyChatStreamFrame([pendingAssistant()], swarmFrame({ content: { finding: 'x' } }), CONTEXT);
+    expect(String(swarmActions(withoutText)[0]?.['content'])).toContain('finding');
+  });
+
+  it('normalises the Postgres-style timestamp rather than producing an Invalid Date', () => {
+    const history = applyChatStreamFrame([pendingAssistant()], swarmFrame({ content: 'done' }), CONTEXT);
+    const action = swarmActions(history)[0];
+
+    expect(action?.['created_at']).toBe(Date.parse('2026-08-13T12:00:00Z'));
+    expect(action?.['ended_at']).toBe(action?.['created_at']);
+    expect(action?.['timestamp']).toBe(action?.['created_at']);
+  });
+
+  it('falls back to the injected clock when the frame carries no timestamp', () => {
+    const history = applyChatStreamFrame(
+      [pendingAssistant()],
+      swarmFrame({ created_at: undefined, content: 'done' }),
+      CONTEXT,
+    );
+
+    expect(swarmActions(history)[0]?.['created_at']).toBe(Date.parse('2026-08-13T00:00:00.000Z'));
+  });
+
+  it('accumulates one entry per child rather than replacing the previous one', () => {
+    let history = applyChatStreamFrame([pendingAssistant()], swarmFrame({ content: 'from researcher' }), CONTEXT);
+    history = applyChatStreamFrame(
+      history,
+      swarmFrame({ message_id: 'child-message-2', agent_name: 'writer', content: 'from writer' }),
+      CONTEXT,
+    );
+
+    expect(swarmActions(history).map((action) => action.name)).toEqual(['researcher', 'writer']);
+  });
+
+  it('leaves state untouched when no message can own the child', () => {
+    const before: readonly ChatMessage[] = [{ ...pendingAssistant(), isStreaming: false, isLoading: false, id: 'other' }];
+    expect(applyChatStreamFrame(before, swarmFrame({ content: 'orphan' }), CONTEXT)).toBe(before);
+  });
+
+  it('leaves the raw swarm lifecycle frames inert', () => {
+    // The baseline states outright that swarm work renders from
+    // swarm_child_message alone; reducing these too would be a second, partial
+    // source for the same accordions.
+    const before: readonly ChatMessage[] = [pendingAssistant()];
+    for (const type of [
+      SocketMessageType.AgentSwarmAgentStart,
+      SocketMessageType.AgentSwarmAgentResponse,
+      SocketMessageType.AgentSwarmHandoff,
+    ]) {
+      expect(applyChatStreamFrame(before, frame(type, { content: 'x' }), CONTEXT), type).toBe(before);
+    }
+  });
+});
+
+describe('applyChatStreamFrame — summaries', () => {
+  const startFrame = (extra: Record<string, unknown> = {}) =>
+    frame(SocketMessageType.ChatPredictSummaryStarted, {
+      // The run id and model come in on `payload`, not response_metadata.
+      payload: { response_metadata: { tool_run_id: 'run-sum' }, llm_settings: { model_name: 'gpt-4o' } },
+      ...extra,
+    });
+
+  function actions(history: readonly ChatMessage[]): readonly ToolAction[] {
+    return (history[0]?.toolActions ?? []) as readonly ToolAction[];
+  }
+
+  it('adds a processing summary entry built from payload, not response_metadata', () => {
+    const history = applyChatStreamFrame([pendingAssistant()], startFrame(), CONTEXT);
+
+    expect(actions(history)).toHaveLength(1);
+    expect(actions(history)[0]).toMatchObject({
+      id: 'thinking_step_run-sum',
+      type: 'summary',
+      status: 'processing',
+      message: 'Summarizing the chat history...',
+      toolMeta: { ls_model_name: 'gpt-4o' },
+    });
+  });
+
+  it('gives an id-less summary a unique id instead of one shared literal', () => {
+    // The baseline's `'thinking_step_' + id || '' + v4()` is always truthy, so
+    // its uuid fallback never ran and every id-less summary collided.
+    const first = applyChatStreamFrame([pendingAssistant()], startFrame({ payload: {} }), CONTEXT);
+    const second = applyChatStreamFrame([pendingAssistant()], startFrame({ payload: {} }), CONTEXT);
+
+    expect(actions(first)[0]?.id).not.toBe(actions(second)[0]?.id);
+    expect(actions(first)[0]?.id).not.toBe('thinking_step_undefined');
+  });
+
+  it('clears the previous answer AND every pause left over from it', () => {
+    // Summarising resumes a turn. A stale approval card surviving the reset
+    // would still be clickable against a run that has moved on.
+    const history = applyChatStreamFrame(
+      [
+        {
+          ...pendingAssistant(),
+          content: 'previous answer',
+          references: ['r'],
+          isStreaming: false,
+          isLoading: false,
+          hitlInterrupt: { tool_name: 'x' },
+          hitlInterrupts: [{ tool_name: 'x' }],
+          requiresConfirmation: { message: 'm', buttonText: 'Continue' },
+        },
+      ],
+      startFrame(),
+      CONTEXT,
+    );
+
+    expect(history[0]?.content).toBe('');
+    expect(history[0]?.references).toEqual([]);
+    expect(history[0]?.hitlInterrupt).toBeUndefined();
+    expect(history[0]?.hitlInterrupts).toBeUndefined();
+    expect(history[0]?.requiresConfirmation).toBeUndefined();
+    // Back in flight: the answer is still coming after the summary.
+    expect(history[0]?.isStreaming).toBe(true);
+    expect(history[0]?.isLoading).toBe(true);
+  });
+
+  it('keeps existing tool actions rather than replacing the timeline', () => {
+    const history = applyChatStreamFrame(
+      [{ ...pendingAssistant(), toolActions: [{ id: 'earlier', type: 'tool', status: 'complete' } as ToolAction] }],
+      startFrame(),
+      CONTEXT,
+    );
+
+    expect(actions(history).map((action) => action.id)).toEqual(['earlier', 'thinking_step_run-sum']);
+  });
+
+  it('links the reply to the question it answers, and does not overwrite an existing link', () => {
+    const fresh = applyChatStreamFrame([pendingAssistant()], startFrame(), CONTEXT);
+    expect(fresh[0]?.replyToId).toBe(QUESTION_ID);
+
+    const already = applyChatStreamFrame([{ ...pendingAssistant(), replyToId: 'earlier-question' }], startFrame(), CONTEXT);
+    expect(already[0]?.replyToId).toBe('earlier-question');
+  });
+
+  it('creates the message when the summary starts before it exists', () => {
+    const history = applyChatStreamFrame([], startFrame(), CONTEXT);
+
+    expect(history).toHaveLength(1);
+    expect(history[0]?.role).toBe('assistant');
+    expect(actions(history)).toHaveLength(1);
+  });
+
+  it('closes the summary by type and status, since the finish frame carries no run id', () => {
+    // An id lookup would find nothing and leave the summary spinning for the
+    // rest of the conversation.
+    let history = applyChatStreamFrame([pendingAssistant()], startFrame(), CONTEXT);
+    history = applyChatStreamFrame(history, frame(SocketMessageType.ChatPredictSummaryFinished), CONTEXT);
+
+    expect(actions(history)[0]).toMatchObject({ status: 'complete', content: '', message: undefined });
+    expect(actions(history)[0]?.['ended_at']).toBe(Date.parse('2026-08-13T00:00:00.000Z'));
+  });
+
+  it('leaves an already-finished summary and other tools alone', () => {
+    const before: readonly ChatMessage[] = [
+      {
+        ...pendingAssistant(),
+        toolActions: [
+          { id: 's1', type: 'summary', status: 'complete' } as ToolAction,
+          { id: 't1', type: 'tool', status: 'processing' } as ToolAction,
+        ],
+      },
+    ];
+    // No processing summary to close: the frame must not settle the running
+    // tool that happens to sit next to it.
+    expect(applyChatStreamFrame(before, frame(SocketMessageType.ChatPredictSummaryFinished), CONTEXT)).toBe(before);
+  });
+
+  it('closes only the summary when a tool is running alongside it', () => {
+    let history = applyChatStreamFrame(
+      [{ ...pendingAssistant(), toolActions: [{ id: 't1', type: 'tool', status: 'processing' } as ToolAction] }],
+      startFrame(),
+      CONTEXT,
+    );
+    history = applyChatStreamFrame(history, frame(SocketMessageType.ChatPredictSummaryFinished), CONTEXT);
+
+    expect(actions(history).map((action) => action.status)).toEqual(['processing', 'complete']);
   });
 });

@@ -1,8 +1,8 @@
 /**
  * lib/chatStreamReducer.ts — the chat streaming reducer (issue #93, Surface B).
  *
- * PORT STATUS — slices 1-5 (core streaming, the tool lifecycle, thinking steps,
- * interrupts, then graph events). The baseline reducer is
+ * PORT STATUS — slices 1-7 (core streaming, the tool lifecycle, thinking steps,
+ * interrupts, graph events, swarm, then summaries). The baseline reducer is
  * `EliteaUI/src/components/Chat/hooks.js:391-1581`: 1,191 lines, 34 switch
  * cases. This module ports the 14 that carry a plain agent turn from "sent" to
  * "answered", which is the sequence a live stack actually emits:
@@ -14,9 +14,6 @@
  * NOT YET PORTED, each its own slice, and each currently a no-op that leaves
  * state untouched rather than a silent content drop:
  *
- *   swarm             swarm_child_message, agent_swarm_agent_start,
- *                     agent_swarm_agent_response, agent_swarm_handoff
- *   summaries         chat_predict_summary_started/finished
  *   echo              chat_user_message
  *
  * STATE-INERT BY DESIGN, which is a different thing from unported: the
@@ -25,7 +22,9 @@
  * but the forward call. They fall through to `default` here on purpose, and
  * `agentGraphEvents.shouldForwardAgentEvent` carries the half a caller owes
  * them. `freeform` is inert for the same reason: the baseline's case is a bare
- * `break`.
+ * `break`, and the three raw `agent_swarm_*` frames are inert because the
+ * baseline says outright that swarm work renders from `swarm_child_message`
+ * alone.
  *
  * SIDE EFFECTS ARE NOT PORTED, and that is a boundary rather than an omission.
  * The baseline's tool cases also fire Google Analytics events, write
@@ -44,8 +43,9 @@
  * before the transport swap rather than after.
  */
 import { convertJsonToString } from '@/shared/lib/json';
+import { convertTime } from '@/entities/message/lib/normalise';
 import { ROLES } from '@/shared/lib/enums';
-import { TOOL_ACTION_TYPES, ToolActionStatus } from '@/shared/lib/chat';
+import { TOOL_ACTION_NAMES, TOOL_ACTION_TYPES, ToolActionStatus } from '@/shared/lib/chat';
 
 import { normalizeExecutionHierarchy } from './executionHierarchy';
 import { mergeHitlInterrupts, normalizeHitlInterrupt, type NormalizedHitlInterrupt } from './hitlInterrupts';
@@ -341,6 +341,47 @@ function singlePauseRaw(frame: ChatStreamFrame): Record<string, unknown> {
     tool_call_id: nested['tool_call_id'],
     resume_strategy: nested['resume_strategy'] ?? responseMetadata?.resume_strategy,
   };
+}
+
+/**
+ * The text a swarm child actually said.
+ *
+ * The backend sends Anthropic-format content blocks, so `content` is a string,
+ * an array mixing `{text}` blocks with `{type: 'tool_use'}` blocks, or a bare
+ * object. Only the text survives: a tool_use block has no prose to show, and
+ * stringifying one would put raw JSON in the sub-agent accordion.
+ */
+function swarmChildText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((block) => typeof block === 'string' || (block as { text?: unknown } | null)?.text)
+      .map((block) => (typeof block === 'string' ? block : String((block as { text: unknown }).text)))
+      .join('\n');
+  }
+  if (content && typeof content === 'object') {
+    const text = (content as { text?: unknown }).text;
+    return typeof text === 'string' ? text : convertJsonToString(content);
+  }
+  return '';
+}
+
+/**
+ * The message a swarm child's output belongs to.
+ *
+ * NOT `findTarget`: on this frame `message_id` is the CHILD's id, so the usual
+ * lookup would miss and the child's answer would be dropped. The baseline
+ * resolves `parent_message_id` and falls back to whichever message is still in
+ * flight — a child can report before its parent's id has propagated, and losing
+ * a sub-agent's whole answer is worse than attaching it to the turn in progress.
+ */
+function findSwarmParent(history: readonly ChatMessage[], frame: ChatStreamFrame): number {
+  const parentId = frame.parent_message_id;
+  if (parentId) {
+    const byId = history.findIndex((message) => message.id === parentId);
+    if (byId !== -1) return byId;
+  }
+  return history.findIndex((message) => message.isStreaming || message.isLoading);
 }
 
 /**
@@ -868,6 +909,159 @@ export function applyChatStreamFrame(
         ...(!isFanoutChild && threadId !== undefined ? { threadId } : {}),
       });
     }
+
+    // A swarm sub-agent finished and reported its answer. It lands as a tool
+    // action on the PARENT's message, which the renderer pulls out by type and
+    // shows as its own accordion (`ApplicationAnswer.tsx:161-166`).
+    //
+    // The shape is the baseline's LIVE one, which is not quite the persisted
+    // one `convertMessagesToChatHistory.buildSwarmChildAction` produces: that
+    // adds `isSwarmChild`/`agentName` and defaults a missing name to
+    // "Child Agent", where an unnamed live child falls through to the
+    // renderer's own "Sub-agent". The divergence is the baseline's, so it is
+    // reproduced rather than quietly reconciled — the two paths are compared
+    // side by side on the same conversation, and inventing a third shape here
+    // would make a replayed swarm turn differ from the one just watched.
+    case SocketMessageType.SwarmChildMessage: {
+      const text = swarmChildText(frame.content);
+      // A tool_use-only message has nothing to say; adding it would put an
+      // empty accordion in the timeline for every tool the child called.
+      if (!text.trim()) return history;
+
+      const parentIndex = findSwarmParent(history, frame);
+      if (parentIndex === -1) return history;
+      const parent = history[parentIndex];
+      if (!parent) return history;
+
+      const createdAt = frame.created_at;
+      const at =
+        typeof createdAt === 'string'
+          ? new Date(convertTime(createdAt)).getTime()
+          : typeof createdAt === 'number'
+            ? createdAt
+            : Date.parse(nowIso(context));
+      const agentName = frame.agent_name ?? '';
+
+      const draft: Record<string, unknown> = {
+        id: frame.message_id ?? crypto.randomUUID(),
+        name: agentName,
+        status: ToolActionStatus.complete,
+        toolInputs: '',
+        toolOutputs: text,
+        toolMeta: { agent_name: agentName },
+        created_at: at,
+        ended_at: at,
+        timestamp: at,
+        content: text,
+        type: TOOL_ACTION_TYPES.SwarmChild,
+        markdown: true,
+      };
+
+      return replaceAt(history, parentIndex, {
+        toolActions: [...((parent.toolActions ?? []) as readonly ToolAction[]), draft as unknown as ToolAction],
+      });
+    }
+
+    // The history got long enough that the backend is summarising it before it
+    // can answer. This is a RESUMPTION, not a new turn: it clears the previous
+    // answer and every pause left over from it, so a summary that follows an
+    // approval does not leave a stale card the user could still click.
+    case SocketMessageType.ChatPredictSummaryStarted: {
+      // The run id and model live on `payload`, not `response_metadata`.
+      const runId = frame.payload?.response_metadata?.tool_run_id;
+      const summary: Record<string, unknown> = {
+        name: TOOL_ACTION_NAMES.Summary,
+        // Same precedence bug as the thinking-step case in the baseline
+        // (`'thinking_step_' + id || '' + v4()` is always truthy, so the uuid
+        // never ran and every id-less summary collided). The intent is a
+        // unique id, which is what this does.
+        id: `thinking_step_${runId ?? crypto.randomUUID()}`,
+        status: ToolActionStatus.processing,
+        toolInputs: undefined,
+        toolOutputs: undefined,
+        toolMeta: { ls_model_name: frame.payload?.llm_settings?.model_name ?? '' },
+        created_at: Date.parse(nowIso(context)),
+        type: TOOL_ACTION_TYPES.Summary,
+        markdown: true,
+        renderHtml: false,
+        message: 'Summarizing the chat history...',
+        content: '',
+      };
+
+      const reset: Partial<ChatMessage> = {
+        isLoading: true,
+        isStreaming: true,
+        // `undefined`, not `false`, as the baseline writes it — the two are the
+        // same to `isMessageInFlight`, and diverging here would be an invented
+        // difference between a resumed turn and a fresh one.
+        isRegenerating: undefined,
+        content: '',
+        references: [],
+        requiresConfirmation: undefined,
+        hitlInterrupt: undefined,
+        hitlInterrupts: undefined,
+        ...(frame.task_id !== undefined ? { taskId: frame.task_id } : {}),
+        ...(frame.question_id !== undefined ? { questionId: frame.question_id } : {}),
+        ...(context.participantId !== undefined ? { participantId: context.participantId } : {}),
+      };
+
+      if (index === -1) {
+        const created = createAssistantMessage(frame, context);
+        return [...history, { ...created, ...reset, toolActions: [summary as unknown as ToolAction] }];
+      }
+      const current = history[index];
+      if (!current) return history;
+      return replaceAt(history, index, {
+        ...reset,
+        // DEVIATION: the baseline copies the whole question message onto
+        // `msg.replyTo`. This app models the link as an id (`replyToId`), so
+        // the id is what gets written — carrying a snapshot of another message
+        // would be a second copy of state that goes stale on edit.
+        ...(current.replyToId === undefined && frame.question_id !== undefined
+          ? { replyToId: frame.question_id }
+          : {}),
+        toolActions: [...((current.toolActions ?? []) as readonly ToolAction[]), summary as unknown as ToolAction],
+      });
+    }
+
+    // Summarising finished. Closes the entry by TYPE and status rather than by
+    // id: the finish frame carries no run id at all, so an id lookup would
+    // leave the summary spinning for the rest of the conversation.
+    case SocketMessageType.ChatPredictSummaryFinished: {
+      if (index === -1) return history;
+      const current = history[index];
+      if (!current) return history;
+      const actions = (current.toolActions ?? []) as readonly ToolAction[];
+      const target = actions.find(
+        (action) => action['type'] === TOOL_ACTION_TYPES.Summary && action.status === ToolActionStatus.processing,
+      );
+      if (!target) return history;
+
+      return replaceAt(history, index, {
+        toolActions: actions.map((action) =>
+          action === target
+            ? ({
+                ...action,
+                // The status line is cleared when the tool ends, the same way
+                // the tool-end case clears it.
+                message: undefined,
+                content: '',
+                status: ToolActionStatus.complete,
+                ended_at: Date.parse(nowIso(context)),
+              } as ToolAction)
+            : action,
+        ),
+      });
+    }
+
+    // The raw swarm lifecycle. State-inert on purpose, and NOT forwarded
+    // either: the baseline's comment is explicit that the UI renders swarm work
+    // from swarm_child_message alone, so these three would be a second, partial
+    // source for the same accordions.
+    case SocketMessageType.AgentSwarmAgentStart:
+    case SocketMessageType.AgentSwarmAgentResponse:
+    case SocketMessageType.AgentSwarmHandoff:
+      return history;
 
     case SocketMessageType.References: {
       if (index === -1 || !frame.references) return history;
