@@ -9,6 +9,7 @@ pub mod redis_commands;
 pub use control_grpc::{
     ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, TonicControlRpc,
 };
+pub use input_content::{InputContentClient, InputContentError, MaterializedInput};
 pub use output_grpc::{
     DurablyAckedTerminal, OutputGrpcConfig, OutputGrpcError, OutputGrpcSession, PreparedOutputSpool,
 };

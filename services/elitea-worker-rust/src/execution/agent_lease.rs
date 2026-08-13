@@ -155,7 +155,7 @@ impl ClaimLeaseError {
     pub fn retryable(&self) -> bool {
         match self {
             Self::Draining(_) | Self::MonitorClosed(_) => true,
-            Self::Control(error) => control_error_retryable(error),
+            Self::Control(error) => error.retryable(),
             Self::InvalidConfiguration(_)
             | Self::InvalidClock(_)
             | Self::LeaseLost(_)
@@ -204,25 +204,6 @@ impl std::error::Error for ClaimLeaseError {
             Self::Control(error) => Some(error),
             _ => None,
         }
-    }
-}
-
-fn control_error_retryable(error: &AgentControlError) -> bool {
-    match error {
-        AgentControlError::Transport(_)
-        | AgentControlError::Semantic(ControlSemanticError::DependencyUnavailable(_)) => true,
-        AgentControlError::Semantic(ControlSemanticError::Rejected(rejection)) => {
-            rejection.retryable()
-        }
-        AgentControlError::Semantic(
-            ControlSemanticError::InvalidInput(_)
-            | ControlSemanticError::ResourceExhausted(_)
-            | ControlSemanticError::IncompatibleVersion(_)
-            | ControlSemanticError::AuthorizationFailed(_)
-            | ControlSemanticError::UnsupportedCapability(_)
-            | ControlSemanticError::Cancelled(_)
-            | ControlSemanticError::DeadlineExceeded(_),
-        ) => false,
     }
 }
 

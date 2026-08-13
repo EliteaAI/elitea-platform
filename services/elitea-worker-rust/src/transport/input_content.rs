@@ -80,6 +80,11 @@ impl MaterializedInput {
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_slice()
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(bytes: Vec<u8>) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
 }
 
 /// Immutable request policy for one dedicated content channel.

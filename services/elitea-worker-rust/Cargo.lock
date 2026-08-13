@@ -141,6 +141,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tower",
+ "tracing",
  "zeroize",
 ]
 

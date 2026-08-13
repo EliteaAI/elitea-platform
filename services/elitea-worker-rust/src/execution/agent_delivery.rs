@@ -75,10 +75,10 @@ pub enum AgentDeliveryRouteKind {
 /// Its fields remain private so later execution stages cannot bypass the
 /// shared router or manufacture fresh business-input authority.
 pub struct FreshAgentDelivery {
-    _delivery: RedisCommandDelivery,
+    delivery: RedisCommandDelivery,
     verified: VerifiedAgentCommand,
     claim_handoff_watermark: u64,
-    _claim: AcceptedAgentClaim,
+    claim: AcceptedAgentClaim,
 }
 
 impl FreshAgentDelivery {
@@ -90,6 +90,30 @@ impl FreshAgentDelivery {
     #[must_use]
     pub const fn claim_handoff_watermark(&self) -> u64 {
         self.claim_handoff_watermark
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        RedisCommandDelivery,
+        VerifiedAgentCommand,
+        AcceptedAgentClaim,
+    ) {
+        (self.delivery, self.verified, self.claim)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_fresh_agent_delivery(
+    delivery: RedisCommandDelivery,
+    verified: VerifiedAgentCommand,
+    claim: AcceptedAgentClaim,
+) -> FreshAgentDelivery {
+    FreshAgentDelivery {
+        delivery,
+        claim_handoff_watermark: claim.claim_handoff_watermark(),
+        verified,
+        claim,
     }
 }
 
@@ -210,10 +234,10 @@ where
         match decision {
             AgentClaimDecision::Accepted(claim) => {
                 Ok(AgentDeliveryRoute::Fresh(Box::new(FreshAgentDelivery {
-                    _delivery: delivery,
+                    delivery,
                     verified,
                     claim_handoff_watermark: claim.claim_handoff_watermark(),
-                    _claim: *claim,
+                    claim: *claim,
                 })))
             }
             AgentClaimDecision::ActiveLeaseNoAck(recovery)

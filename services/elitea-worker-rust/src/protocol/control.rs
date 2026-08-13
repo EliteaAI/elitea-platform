@@ -70,6 +70,32 @@ pub enum AgentControlError {
     Transport(ControlGrpcError),
 }
 
+impl AgentControlError {
+    /// Whether another delivery attempt can succeed without changing the
+    /// immutable command. Authenticated Main rejections retain Main's explicit
+    /// decision; only transport unavailability is intrinsically retryable.
+    #[must_use]
+    pub const fn retryable(&self) -> bool {
+        match self {
+            Self::Transport(ControlGrpcError::Unavailable(_))
+            | Self::Semantic(ControlSemanticError::DependencyUnavailable(_)) => true,
+            Self::Semantic(ControlSemanticError::Rejected(rejection)) => rejection.retryable(),
+            Self::Transport(
+                ControlGrpcError::InvalidConfiguration(_) | ControlGrpcError::ResourceExhausted(_),
+            )
+            | Self::Semantic(
+                ControlSemanticError::InvalidInput(_)
+                | ControlSemanticError::ResourceExhausted(_)
+                | ControlSemanticError::IncompatibleVersion(_)
+                | ControlSemanticError::AuthorizationFailed(_)
+                | ControlSemanticError::UnsupportedCapability(_)
+                | ControlSemanticError::Cancelled(_)
+                | ControlSemanticError::DeadlineExceeded(_),
+            ) => false,
+        }
+    }
+}
+
 impl fmt::Display for AgentControlError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -455,7 +481,7 @@ impl PendingLeaseActivation {
     }
 
     pub(crate) fn into_inactive(self) -> InactiveAgentExecution {
-        InactiveAgentExecution { _claim: self.claim }
+        InactiveAgentExecution { claim: self.claim }
     }
 }
 
@@ -463,7 +489,13 @@ impl PendingLeaseActivation {
 /// grant business-input access. A later coordinator may use it only to produce
 /// a canonical pre-invocation terminal or a recovery disposition.
 pub struct InactiveAgentExecution {
-    _claim: AcceptedAgentClaim,
+    claim: AcceptedAgentClaim,
+}
+
+impl InactiveAgentExecution {
+    pub(crate) fn into_output_authority(self) -> AgentExecutionOutputAuthority {
+        AgentExecutionOutputAuthority { claim: self.claim }
+    }
 }
 
 /// Business-input access after the delivery path owns a unique lease handle.
@@ -518,6 +550,31 @@ impl LeaseMonitoredAgentExecution {
             expected_source_sha256: &source_digest.value,
             media_type: &content.media_type,
         })
+    }
+
+    pub(crate) fn into_output_authority(self) -> AgentExecutionOutputAuthority {
+        AgentExecutionOutputAuthority { claim: self.claim }
+    }
+}
+
+/// Opaque post-Begin authority retained for pre-invocation terminal output.
+/// It exposes neither the fence token nor business input through public API.
+pub struct AgentExecutionOutputAuthority {
+    #[allow(dead_code)] // Consumed by the next output-coordination slice.
+    claim: AcceptedAgentClaim,
+}
+
+impl AgentExecutionOutputAuthority {
+    #[must_use]
+    #[allow(dead_code)] // Consumed by the next output-coordination slice.
+    pub(crate) const fn claim_handoff_watermark(&self) -> u64 {
+        self.claim.claim_handoff_watermark
+    }
+
+    #[must_use]
+    #[allow(dead_code)] // Consumed by the next output-coordination slice.
+    pub(crate) const fn fence(&self) -> &ExecutionFenceV1 {
+        &self.claim.fence
     }
 }
 

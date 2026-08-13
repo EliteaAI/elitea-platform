@@ -23,6 +23,7 @@ tokio-stream = "=0.1.19"
 tonic = { version = "=0.14.2", features = ["tls-ring"] }
 tonic-prost = "=0.14.2"
 tower = { version = "=0.5.3", features = ["util"] }
+tracing = "=0.1.44"
 zeroize = "=1.9.0"
 
 [build-dependencies]
