@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use elitea_worker_rust::execution::{
+    ClaimLeaseActivation, ClaimLeaseError, ClaimLeaseMonitor, ClaimLeaseMonitorConfig,
+};
 use elitea_worker_rust::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
     parse_and_verify_agent_command,
@@ -78,6 +81,7 @@ struct FakeState {
     settlement_requests: Mutex<Vec<PrepareSettlementRequestV1>>,
 }
 
+#[derive(Clone)]
 struct FakeRpc(Arc<FakeState>);
 
 #[async_trait]
@@ -206,7 +210,16 @@ async fn python_vectors_cross_authenticated_claim_and_both_effect_fences() {
     else {
         panic!("fresh begin must prepare")
     };
-    let (preparing, _lease) = preparing.start_lease_monitor();
+    let starting = preparing.start_lease_monitor();
+    let mut monitor = ClaimLeaseMonitor::start(
+        Arc::new(control.clone()),
+        starting,
+        Arc::new(|| NOW),
+        ClaimLeaseMonitorConfig::new(Duration::from_secs(10)).expect("lease config"),
+    );
+    let ClaimLeaseActivation::Active(preparing) = monitor.activate().await else {
+        panic!("running immediate lease poll must activate input authority")
+    };
     assert_eq!(preparing.input_bundle().input_bundle_id, "bundle-1");
     assert_eq!(preparing.input_bundle_ref().immutable_version, "v1");
     assert_eq!(preparing.request_entry().entry_id, "agent-request");
@@ -218,6 +231,7 @@ async fn python_vectors_cross_authenticated_claim_and_both_effect_fences() {
             .expect("invocation authority"),
         InvocationAuthorizationDecision::AuthorizedNow(_)
     ));
+    monitor.close().await.expect("lease close");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -454,7 +468,7 @@ async fn malformed_recovery_shapes_fail_closed_before_authority_is_minted() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn lease_key_state_and_margin_match_python_semantics() {
+async fn supervised_lease_key_state_and_monotonicity_match_python_semantics() {
     let (control, state) = client();
     let claim = fresh_claim(&control).await;
     let BeginAgentExecution::Preparing(preparing) = control
@@ -464,23 +478,20 @@ async fn lease_key_state_and_margin_match_python_semantics() {
     else {
         panic!("fresh begin must prepare")
     };
-    let (_preparing, mut lease_handle) = preparing.start_lease_monitor();
-    let lease = control
-        .renew_lease(&mut lease_handle, NOW, Duration::from_secs(10))
-        .await
-        .expect("renewed lease");
-    assert_eq!(lease.lease_expires_at_unix_millis, NOW + 60_000);
-    assert_eq!(lease.desired_state, DesiredExecutionState::Running);
+    let starting = preparing.start_lease_monitor();
+    let mut monitor = ClaimLeaseMonitor::start(
+        Arc::new(control.clone()),
+        starting,
+        Arc::new(|| NOW),
+        ClaimLeaseMonitorConfig::new(Duration::from_secs(10)).expect("lease config"),
+    );
+    assert!(matches!(
+        monitor.activate().await,
+        ClaimLeaseActivation::Active(_)
+    ));
     assert_eq!(
         state.renew_requests.lock().expect("renew requests")[0].idempotency_key,
         vectors()["renewal_key_1"]
-    );
-    assert_eq!(
-        control
-            .observe_lease(&lease_handle)
-            .await
-            .expect("desired state"),
-        DesiredExecutionState::Running
     );
 
     *state.renew.lock().expect("renew") = RenewLeaseResponseV1 {
@@ -488,14 +499,14 @@ async fn lease_key_state_and_margin_match_python_semantics() {
         desired_state: DesiredExecutionStateV1::Cancelled as i32,
         rejection: None,
     };
-    let error = control
-        .renew_lease(&mut lease_handle, NOW, Duration::from_secs(10))
-        .await
-        .expect_err("insufficient margin");
+    let error = monitor.check_now().await.expect_err("shortened lease");
     assert!(matches!(
         error,
-        AgentControlError::Semantic(ControlSemanticError::AuthorizationFailed(_))
+        ClaimLeaseError::Control(AgentControlError::Semantic(
+            ControlSemanticError::AuthorizationFailed(_)
+        ))
     ));
+    assert!(monitor.close().await.is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -694,15 +705,23 @@ async fn mixed_control_response_shapes_fail_closed() {
     else {
         panic!("fresh begin must prepare")
     };
-    let (_preparing, mut lease) = preparing.start_lease_monitor();
+    let starting = preparing.start_lease_monitor();
+    let mut monitor = ClaimLeaseMonitor::start(
+        Arc::new(control),
+        starting,
+        Arc::new(|| NOW),
+        ClaimLeaseMonitorConfig::new(Duration::from_secs(10)).expect("lease config"),
+    );
+    let ClaimLeaseActivation::Inactive { error, .. } = monitor.activate().await else {
+        panic!("ambiguous renewal must not activate the execution")
+    };
     assert!(matches!(
-        control
-            .renew_lease(&mut lease, NOW, Duration::from_secs(10))
-            .await,
-        Err(AgentControlError::Semantic(
+        error,
+        ClaimLeaseError::Control(AgentControlError::Semantic(
             ControlSemanticError::InvalidInput(_)
         ))
     ));
+    assert!(monitor.close().await.is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]

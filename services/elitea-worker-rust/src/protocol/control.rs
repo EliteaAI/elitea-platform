@@ -1,5 +1,4 @@
 use std::fmt;
-use std::time::Duration;
 
 use prost::Message;
 use ring::digest;
@@ -65,7 +64,7 @@ impl fmt::Display for ControlSemanticError {
 impl std::error::Error for ControlSemanticError {}
 
 /// Stable semantic-or-transport failure for authenticated agent control.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum AgentControlError {
     Semantic(ControlSemanticError),
     Transport(ControlGrpcError),
@@ -418,7 +417,7 @@ impl PreparingAgentExecution {
     /// Split the preparation into one execution typestate and one unique lease
     /// handle before exposing business input references.
     #[must_use]
-    pub fn start_lease_monitor(self) -> (LeaseMonitoredAgentExecution, ClaimLeaseHandle) {
+    pub fn start_lease_monitor(self) -> LeaseStartingAgentExecution {
         let lease = ClaimLeaseHandle {
             identity: self.claim.identity.clone(),
             fence: self.claim.fence.clone(),
@@ -426,8 +425,45 @@ impl PreparingAgentExecution {
             lease_expires_at_unix_millis: self.claim.lease_expires_at_unix_millis,
             renewal_sequence: 0,
         };
-        (LeaseMonitoredAgentExecution { claim: self.claim }, lease)
+        LeaseStartingAgentExecution {
+            claim: self.claim,
+            lease,
+        }
     }
+}
+
+/// Post-Begin execution state which has not completed its immediate lease poll.
+/// Business input and invocation authority remain inaccessible.
+pub struct LeaseStartingAgentExecution {
+    claim: AcceptedAgentClaim,
+    lease: ClaimLeaseHandle,
+}
+
+impl LeaseStartingAgentExecution {
+    pub(crate) fn split(self) -> (PendingLeaseActivation, ClaimLeaseHandle) {
+        (PendingLeaseActivation { claim: self.claim }, self.lease)
+    }
+}
+
+pub(crate) struct PendingLeaseActivation {
+    claim: AcceptedAgentClaim,
+}
+
+impl PendingLeaseActivation {
+    pub(crate) fn into_monitored(self) -> LeaseMonitoredAgentExecution {
+        LeaseMonitoredAgentExecution { claim: self.claim }
+    }
+
+    pub(crate) fn into_inactive(self) -> InactiveAgentExecution {
+        InactiveAgentExecution { _claim: self.claim }
+    }
+}
+
+/// Opaque execution ownership retained when the immediate lease poll does not
+/// grant business-input access. A later coordinator may use it only to produce
+/// a canonical pre-invocation terminal or a recovery disposition.
+pub struct InactiveAgentExecution {
+    _claim: AcceptedAgentClaim,
 }
 
 /// Business-input access after the delivery path owns a unique lease handle.
@@ -528,6 +564,25 @@ pub(crate) fn test_lease_monitored_input_execution(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_lease_starting_execution(
+    lease_expires_at_unix_millis: i64,
+) -> LeaseStartingAgentExecution {
+    let mut execution = test_lease_monitored_input_execution(1, [0x61; 32]);
+    execution.claim.lease_expires_at_unix_millis = lease_expires_at_unix_millis;
+    let lease = ClaimLeaseHandle {
+        identity: execution.claim.identity.clone(),
+        fence: execution.claim.fence.clone(),
+        claim_id: execution.claim.claim_id.clone(),
+        lease_expires_at_unix_millis,
+        renewal_sequence: 0,
+    };
+    LeaseStartingAgentExecution {
+        claim: execution.claim,
+        lease,
+    }
+}
+
 /// Recovery-only state proving `BeginExecution` reported prior possible work.
 pub struct BeginExecutionRecovery {
     _claim: AcceptedAgentClaim,
@@ -565,6 +620,10 @@ impl ClaimLeaseHandle {
             identity: Some(self.identity.clone()),
             fence: Some(self.fence.clone()),
         }
+    }
+
+    pub(crate) fn commit_renewal(&mut self, observation: LeaseObservation) {
+        self.lease_expires_at_unix_millis = observation.lease_expires_at_unix_millis;
     }
 }
 
@@ -670,6 +729,7 @@ impl AgentCommandRetirementAuthority {
 /// Raw protobuf responses never mint execution or retirement authority. The
 /// client owns the one-attempt transport call and consumes typestate on the two
 /// durable side-effect fences.
+#[derive(Clone)]
 pub struct AgentControlClient<R> {
     control: ControlGrpcClient<R>,
     workload_session_id: String,
@@ -806,25 +866,23 @@ impl<R: ControlRpc> AgentControlClient<R> {
 
     /// Renew one unchanged accepted claim with an internally generated key.
     ///
+    /// This operation deliberately does not commit the returned expiry to the
+    /// lease handle. The lease supervisor must first observe desired state and
+    /// validate the post-RPC safety margin, then call the crate-private commit
+    /// boundary. This prevents a slow observation from making a nominally
+    /// successful renewal unsafe.
+    ///
     /// # Errors
     ///
     /// Returns a typed transport, runtime rejection, or lease validation error.
-    pub async fn renew_lease(
+    pub(crate) async fn renew_lease(
         &self,
         lease: &mut ClaimLeaseHandle,
-        now_unix_millis: i64,
-        poll_interval: Duration,
     ) -> Result<LeaseObservation, AgentControlError> {
         let request = lease.next_renewal_request()?;
         let response = self.control.renew_lease(request).await?;
-        let observation = parse_renew_lease_response(
-            &response,
-            lease.lease_expires_at_unix_millis,
-            now_unix_millis,
-            poll_interval,
-        )?;
-        lease.lease_expires_at_unix_millis = observation.lease_expires_at_unix_millis;
-        Ok(observation)
+        parse_renew_lease_response(&response, lease.lease_expires_at_unix_millis)
+            .map_err(Into::into)
     }
 
     /// Observe the server-owned desired state for one unchanged accepted claim.
@@ -832,7 +890,7 @@ impl<R: ControlRpc> AgentControlClient<R> {
     /// # Errors
     ///
     /// Returns a typed transport, runtime rejection, or response-shape failure.
-    pub async fn observe_lease(
+    pub(crate) async fn observe_lease(
         &self,
         lease: &ClaimLeaseHandle,
     ) -> Result<DesiredExecutionState, AgentControlError> {
@@ -1519,18 +1577,16 @@ fn parse_authorize_invocation_response(
     }
 }
 
-/// Validate a renewed lease against the previous monotonic expiry and polling
-/// safety margin.
+/// Validate a renewed lease against the previous monotonic expiry.
 ///
 /// # Errors
 ///
-/// Returns a typed rejection, authorization failure for a shortened/expired
-/// lease, or invalid input for a malformed desired state.
+/// Returns a typed rejection, authorization failure for a shortened lease, or
+/// invalid input for a malformed desired state. The delivery-level supervisor
+/// owns the later clock and polling-margin validation.
 fn parse_renew_lease_response(
     response: &RenewLeaseResponseV1,
     previous_expiry_unix_millis: i64,
-    now_unix_millis: i64,
-    poll_interval: Duration,
 ) -> Result<LeaseObservation, ControlSemanticError> {
     if let Some(rejection) = response.rejection.as_ref() {
         if response.lease_expires_at_unix_millis != 0
@@ -1542,20 +1598,14 @@ fn parse_renew_lease_response(
         }
         return Err(runtime_rejection(rejection));
     }
-    if previous_expiry_unix_millis <= 0 || now_unix_millis <= 0 || poll_interval.is_zero() {
+    if previous_expiry_unix_millis <= 0 {
         return Err(ControlSemanticError::InvalidInput(
             "the lease validation boundary is malformed",
         ));
     }
-    let margin = doubled_duration_millis_ceil(poll_interval)?;
-    if response.lease_expires_at_unix_millis < previous_expiry_unix_millis
-        || response
-            .lease_expires_at_unix_millis
-            .checked_sub(now_unix_millis)
-            .is_none_or(|remaining| remaining < margin)
-    {
+    if response.lease_expires_at_unix_millis < previous_expiry_unix_millis {
         return Err(ControlSemanticError::AuthorizationFailed(
-            "the renewed claim lease is malformed or expired",
+            "the renewed claim lease moved backwards",
         ));
     }
     Ok(LeaseObservation {
@@ -1842,22 +1892,6 @@ fn runtime_rejection(error: &RuntimeErrorV1) -> ControlSemanticError {
     ControlSemanticError::Rejected(RuntimeControlRejection {
         kind,
         retryable: error.retryable,
-    })
-}
-
-fn doubled_duration_millis_ceil(duration: Duration) -> Result<i64, ControlSemanticError> {
-    let doubled_nanos =
-        duration
-            .as_nanos()
-            .checked_mul(2)
-            .ok_or(ControlSemanticError::ResourceExhausted(
-                "the lease polling interval exceeds the approved limit",
-            ))?;
-    let millis = doubled_nanos.div_ceil(1_000_000);
-    i64::try_from(millis).map_err(|_| {
-        ControlSemanticError::ResourceExhausted(
-            "the lease polling interval exceeds the approved limit",
-        )
     })
 }
 

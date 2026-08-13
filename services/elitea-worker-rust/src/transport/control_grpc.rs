@@ -166,6 +166,7 @@ impl ControlRpc for TonicControlRpc {
 }
 
 /// One-attempt control client with whole-message and metadata bounds.
+#[derive(Clone)]
 pub struct ControlGrpcClient<R> {
     rpc: R,
     config: ControlGrpcConfig,
