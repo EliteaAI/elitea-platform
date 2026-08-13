@@ -18,33 +18,45 @@ command, claim/lease/fence protocol, tenant authority, durable output delivery,
 settlement, current browser event contract, credential grants or migration
 policy.
 
-The dependency will be introduced with a compile spike before any production
-capability is advertised. The expected feature floor is:
+The dependency is now pinned and locked with defaults disabled. The first
+compile/behavior slice enables only the provider-neutral execution substrate:
 
 ```toml
-adk-rust = {
-  version = "=2.0.0",
-  default-features = false,
-  features = [
-    "agents",
-    "runner",
-    "sessions",
-    "postgres-session",
-    "graph",
-    "tools",
-    "mcp",
-    "mcp-http",
-    "artifacts",
-    "codeact-monty",
-    # Add exactly one reviewed model-provider feature.
-  ],
-}
+adk-rust = { version = "=2.0.0", default-features = false,
+  features = ["agents", "runner", "sessions", "models", "graph", "tools"] }
 ```
+
+`models` exposes provider-neutral model contracts and `MockLlm`; it does not
+enable a network provider. Production provider, PostgreSQL session/checkpoint,
+MCP, artifacts, skills and CodeAct features remain separate reviewed changes.
+In particular, enabling the default `minimal` preset would silently add Gemini,
+so it is intentionally disabled.
 
 ADK's umbrella crate does not forward the runner's `context-compaction`
 feature. If selected after parity tests, add an exact direct `adk-runner`
 dependency to unify that feature. Do not enable `standard`, `enterprise` or
 `full` as a shortcut.
+
+The worker still reports no production capability. The dependency and native
+behavior tests prove library compatibility only; they do not cross the Elitea
+claim/authorization fence or enable agent execution.
+
+## Current native proof
+
+`tests/adk_native_primitives.rs` exercises the exact façade dependency rather
+than importing ADK component crates directly:
+
+- `MockLlm` -> `LlmAgent` -> `InMemorySessionService` -> `Runner` produces an
+  event stream without provider credentials;
+- `FunctionTool` is discovered through `BasicToolset` and invoked with an exact
+  function-call identity;
+- a `StateGraph` forks into unequal branches and a deferred fan-in runs exactly
+  once after both branches complete;
+- a four-node frontier configured with `with_max_concurrency(2)` admits at most
+  two node bodies until permits are released.
+
+These are component-level proofs. They do not establish production provider,
+PostgreSQL, Redis, HITL, MCP, artifact, restart or load behavior.
 
 ## Primitive map
 
@@ -55,7 +67,7 @@ dependency to unify that feature. Do not enable `standard`, `enterprise` or
 | Fixed parallel agents | `ParallelAgent` | Add an outer capacity policy; it has no maximum-concurrency argument and is not fail-fast |
 | Static graph fork/join | `StateGraph`, multiple outgoing edges, deferred fan-in, `CompiledGraph::with_max_concurrency` | Preferred true pipeline parallel-node implementation |
 | Dynamic parallel collection | Custom `Node`, `NodeContext::run_node_with`, stable `RunNodeOptions::with_run_id` | Bound with `buffer_unordered(N)` or a semaphore and sort results before state reduction |
-| Tools | `Tool`, `Toolset`, `BasicToolset`, typed `#[tool]` | Prefer typed tool macro; `FunctionTool` raw JSON is not automatic schema validation |
+| Tools | `Tool`, `Toolset`, `BasicToolset`, typed `#[tool]` | Prefer typed tool macro; `FunctionTool` raw JSON is not automatic schema validation. Elitea still owns tool identity, grants, policy and result projection |
 | Conversation state | `SessionService`, `Session` | Implement or wrap storage to meet Elitea ordering, metadata and concurrency requirements |
 | Graph checkpoints | `Checkpointer`, `SqliteCheckpointer` as behavioral reference | Implement PostgreSQL for new Rust lineages; add Elitea scoping/fencing outside the trait |
 | Remote MCP | `McpToolset`, `McpHttpClientBuilder`, `McpServerManager` | Keep stdio outside the main worker; prefix names per server and bound connections/concurrency |
@@ -91,6 +103,13 @@ an interrupt yet return before applying their state, making resume re-execution
 possible.
 
 ## PostgreSQL checkpointer requirements
+
+The native `adk_graph::Checkpointer` contract is the target, not the current
+LangGraph blob schema. Its operations are `save`, latest-by-thread `load`,
+`load_by_id`, thread `list`, thread `delete`, and retention `prune`. The bundled
+SQLite implementation is the behavioral reference, but Elitea will implement a
+PostgreSQL backend in the worker and keep tenant/thread authorization and
+generation fencing around this deliberately small trait.
 
 The PostgreSQL implementation of ADK `Checkpointer` must preserve the complete
 checkpoint model demonstrated by `SqliteCheckpointer`:
@@ -151,11 +170,60 @@ checkpoint and resume tests pass.
 - MCP task `InputRequired` is not durable application HITL; keep Elitea's
   explicit pause/continuation contract.
 
+ADK tool confirmation and graph HITL are related but distinct primitives.
+`RunConfig` confirmation decisions are keyed by `function_call_id`, with an
+optional canonical argument fingerprint. That matches Elitea's requirement
+that an identical tool name and arguments can still be a new invocation. Graph
+interrupt-before/after and dynamic interrupts, together with a checkpoint, are
+the durable pause/resume substrate. The Elitea adapter must bind either path to
+the current `interrupt_id`; it must never authorize by tool name and arguments
+alone.
+
+## Redis ownership
+
+Redis is still required for the Elitea worker. Redis Streams own durable command
+intake, pending-entry reclaim/heartbeat and the final atomic `XACK` + `XDEL` +
+delivery-index removal. The already implemented strict delivery decoder and
+retirement authority are only the contract boundary; a TLS/ACL client, stream
+consumer/reclaimer and restricted Lua effect still require component and
+restart proof.
+
+ADK graph/session Redis features are optional execution-state backends and do
+not replace that delivery transport. They are not enabled in the current
+feature set. Any later ADK Redis use must have separate keys, ownership,
+retention and failure semantics from Elitea command delivery.
+
+## Errors, tracing and performance
+
+ADK errors remain internal causes. Elitea adapters must map them once into
+stable operator codes, retryability and bounded safe messages, retain the source
+for the owning tracing boundary, and never copy provider bodies, prompts,
+credentials, checkpoint state or raw dependency errors across a trust boundary.
+Low-level code should not repeatedly log an error that the orchestration owner
+will record.
+
+Tracing is designed with each execution slice, even where export plumbing is
+deferred. Spans need stable execution, generation, claim-attempt, capability,
+agent/node/tool and function-call identifiers; secret values and high-cardinality
+payloads are excluded. ADK's own instrumentation is useful below this boundary,
+but Elitea owns the lifecycle span that correlates admission, authorization,
+ADK execution, durable output, settlement and Redis retirement.
+
+The scalability design is bounded async admission, resource-specific limits,
+single-owner delivery state and graph/tool concurrency ceilings. `smallvec`,
+`crossbeam` or custom lock-free structures are not added speculatively. They are
+appropriate only after representative profiles identify a hot allocation or
+contention point and a benchmark proves the replacement improves the complete
+worker workload without weakening cancellation, backpressure or durability.
+
 ## Required compile and behavior spikes
 
-1. Exact dependency/features plus `cargo tree -e features` and locked build.
-2. Static graph fork/join with unequal durations, bounded active count,
-   deterministic reducer and exactly one join.
+1. **Complete:** exact dependency/features, locked build, native model/agent/
+   session/runner execution and toolset invocation.
+2. **Complete foundation:** static graph fork/join with unequal branch lengths,
+   bounded active count, deterministic result and exactly one join. Production
+   graph compilation, checkpoint/restart, error policy and HITL remain later
+   integration gates.
 3. Dynamic 100-item node with bounded concurrency, stable run IDs and restart.
 4. PostgreSQL full-field round trip, deterministic latest, prune/delete,
    rollback, wrong-thread rejection, tenant isolation, concurrent writers and
