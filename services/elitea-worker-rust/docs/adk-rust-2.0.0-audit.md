@@ -102,16 +102,41 @@ effects are replay-safe. The executor can drain sibling futures before it sees
 an interrupt yet return before applying their state, making resume re-execution
 possible.
 
-## PostgreSQL checkpointer requirements
+ADK-Rust 2.0.0 does not yet make its deferred fan-in durable. The executor's
+`pending_deferred` tracker and timeout start instants are process memory, while
+the native `Checkpoint` persists state, pending nodes, step, cleared interrupt,
+attempts and the child ledger. A crash after the short side of an unequal fork
+has reached a deferred join can therefore restore only the still-pending long
+branch and lose the earlier arrival. Elitea will solve that at its adapter
+boundary by storing a versioned fan-in ledger in native checkpoint state and
+reconstructing it before graph resume. The restart-between-arrivals test is a
+production blocker for the new node.
+
+The first YAML `parallel` node will consequently expose only `wait: all` with a
+bounded maximum concurrency, stable branch IDs, deterministic reduction and a
+fail-after-drain error policy. The action-layer `WaitAny` and `WaitN` modes are
+state collectors after a frontier has already completed; they are not an
+early-release scheduler. `wait: one` and `wait: many` stay rejected until an
+Elitea scheduler durably records the completed set and absolute deadline and
+defines replay-safe sibling cancellation. ADK `ParallelAgent` remains a
+separate primitive for fixed subagents and does not implement this graph node.
+
+## PostgreSQL checkpointer implementation
 
 The native `adk_graph::Checkpointer` contract is the target, not the current
 LangGraph blob schema. Its operations are `save`, latest-by-thread `load`,
 `load_by_id`, thread `list`, thread `delete`, and retention `prune`. The bundled
-SQLite implementation is the behavioral reference, but Elitea will implement a
-PostgreSQL backend in the worker and keep tenant/thread authorization and
-generation fencing around this deliberately small trait.
+SQLite implementation is the behavioral reference. Elitea's PostgreSQL backend
+keeps tenant/thread authorization and generation fencing around this
+deliberately small trait.
 
-The PostgreSQL implementation of ADK `Checkpointer` must preserve the complete
+The worker now implements the exact ADK-Rust 2.0.0 `Checkpointer` trait in
+`src/state/postgres_checkpointer.rs`. Main migration
+`0064_agent_graph_checkpoints.sql` owns a new `adk-graph.2.0.0.v1` lineage. It
+deliberately does not read, write, copy or pickle LangGraph checkpoint tuples or
+blob tables.
+
+The implementation preserves the complete
 checkpoint model demonstrated by `SqliteCheckpointer`:
 
 - thread and checkpoint IDs;
@@ -122,9 +147,38 @@ checkpoint model demonstrated by `SqliteCheckpointer`:
 - retry attempts;
 - child-execution ledger.
 
-Use JSONB/TIMESTAMPTZ, one transaction per save/prune operation, deterministic
-latest ordering and set-based pruning. Add Elitea-owned tenant and authenticated
-thread scoping, generation/lease fencing, conflict control and migrations.
+The fields are stored directly as bounded canonical JSON text plus
+TIMESTAMPTZ. Text follows the SQLite baseline and preserves accepted
+arbitrary-precision JSON number spellings that PostgreSQL JSONB would
+normalize or reject. PostgreSQL `IS JSON` constraints validate the container
+shapes, while a canonical RFC3339 companion retains nanoseconds that PostgreSQL
+timestamps cannot represent. A writer-serialized save ordinal preserves ADK
+append order even when creation timestamps tie or move backwards. Duplicate
+identical saves are idempotent, changed payload under the same ID conflicts,
+and pruning is set based and uses the database clock.
+
+One adapter is activated from an opaque current claim for exactly one tenant,
+resource project, projection project, capability, graph-definition digest and
+thread. Every operation locks and rechecks Main's unreleased, unexpired claim,
+`MAY_HAVE_STARTED` invocation state, generation, attempt, lease epoch, workload
+session, producer and the full 32-byte fence token. The token is zeroized with
+its Rust owner and is never persisted in checkpoint tables. A newer claim
+fences the old adapter; deleting checkpoint history deliberately retains the
+writer row so deletion cannot resurrect stale authority.
+
+The adapter receives a caller-owned `PgPool`; it never opens a pool per agent or
+per checkpoint. Each operation borrows a pooled connection through a SQLx
+transaction and returns it on commit or cancellation/drop. Deployment owns the
+single bounded pool, acquisition timeout, statement/lock timeouts, credentials
+and connection metrics. Hard row/frontier/map/depth/node/thread-count and
+retained-byte limits are enforced in Rust and the migration before restore can
+allocate an unbounded structure.
+
+Errors have a stable data-free code, bounded operator message and explicit
+retryability. Connection, TLS, pool, serialization/deadlock/lock-timeout and
+server-shutdown classes are retryable; schema, constraint, decode and other
+programming/data failures are not. The raw SQLx cause is available only through
+the trusted error source for the owning tracing boundary.
 
 Explicit ADK resume can look up a checkpoint by checkpoint ID without proving
 it belongs to the requested thread. The Elitea boundary must authorize and bind
@@ -134,6 +188,16 @@ must reject a mismatched returned checkpoint.
 Checkpointing remains at-least-once around external effects. An effect completed
 before its superstep checkpoint can repeat after a crash, so mutation tools need
 stable effect identities and effect-boundary deduplication/fencing.
+
+The isolated PostgreSQL 18 component test applies the real migration and proves
+complete-field/nanosecond/arbitrary-number round trip, exact-save replay,
+save-order preservation across timestamp ties, wrong-thread isolation,
+graph-definition isolation, release-race/newer-claim fencing, prune/delete and
+reuse of a four-connection pool. Production composition still
+must derive the graph-definition digest from the admitted immutable graph,
+authorize existing Python lineages for Python-only continuation or explicit
+migration, grant a restricted worker database role, and run the same test on
+Linux CI and the deployed pooler.
 
 ## Session and compaction constraints
 
@@ -225,9 +289,10 @@ worker workload without weakening cancellation, backpressure or durability.
    graph compilation, checkpoint/restart, error policy and HITL remain later
    integration gates.
 3. Dynamic 100-item node with bounded concurrency, stable run IDs and restart.
-4. PostgreSQL full-field round trip, deterministic latest, prune/delete,
-   rollback, wrong-thread rejection, tenant isolation, concurrent writers and
-   generation fencing.
+4. **Complete storage primitive:** PostgreSQL full-field/nanosecond round trip,
+   deterministic latest, exact retry, prune/delete, wrong-thread and graph
+   isolation, newer-claim fencing and pool reuse. Restricted-role/pooler load,
+   Linux CI, invocation composition and restart fan-in remain production gates.
 5. Session metadata fidelity, SQL-bounded history, deterministic order,
    concurrent deltas, corrupt-event visibility and compaction reconstruction.
 6. MCP HTTP plus external stdio runner, OAuth expiry/401, reconnect without

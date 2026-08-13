@@ -8,6 +8,8 @@ pub mod protocol;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod spool;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod state;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod transport;
 
 use std::fmt;
@@ -48,7 +50,7 @@ impl std::error::Error for CliError {
 ///
 /// Returns [`CliError::InvalidArguments`] for every command that is not yet
 /// admitted, and preserves serialization or output failures without exposing
-/// their internal details through [`CliError::Display`].
+/// their internal details through its [`std::fmt::Display`] implementation.
 pub fn run<I, S, W>(arguments: I, mut output: W) -> Result<(), CliError>
 where
     I: IntoIterator<Item = S>,
