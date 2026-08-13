@@ -512,11 +512,22 @@ except Exception as error:
       if [ -z "$CHAT_PAT" ] || [ -z "$CHAT_USER" ]; then
         echo "  ~ SKIPPED: no PAT to drive the turn (run: $0 seed-runtime)"
       else
+        # Run INSIDE the compose network, not from the host: the events stream
+        # is only reachable through platform-edge (#289), and the edge's
+        # certificate has exactly one SAN — elitea-platform-edge — so a host
+        # client would fail hostname verification even if the name resolved.
+        # The mock image is used purely as a python runtime with the runtime CA
+        # available; --user 0:0 so it can read the 0600 signing key.
         set +e
-        python3 "${REPO_ROOT}/deploy/scripts/chat-smoke.py" \
-          --base-url "http://localhost:${PORT}" \
+        $ENGINE run --rm --network "$NETWORK" \
+          -v "${RUNTIME_CERTS}:/m:ro" \
+          -v "${REPO_ROOT}/deploy/scripts/chat-smoke.py:/opt/chat-smoke.py:ro" \
+          --user 0:0 --entrypoint python3 \
+          ghcr.io/eliteaai/elitea-mock-llm:standalone /opt/chat-smoke.py \
+          --base-url "https://elitea-platform-edge" \
+          --ca /m/runtime-ca.crt \
           --pat-uuid "$CHAT_PAT" \
-          --signing-key "${RUNTIME_CERTS}/auth-pat-signing-key" \
+          --signing-key /m/auth-pat-signing-key \
           --user-id "$CHAT_USER"
         smoke_status=$?
         set -e
