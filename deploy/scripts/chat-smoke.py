@@ -18,7 +18,8 @@ can be proven today. This is that proof.
 It authenticates with a PAT minted from the deployment's own signing key rather
 than driving an OIDC login, because the whole point is to run without a browser.
 
-Exit codes: 0 pass, 1 fail, 2 skipped (a precondition the stack owner must seed).
+Exit codes: 0 pass, 1 fail, 2 skipped (a precondition the stack owner must seed),
+3 blocked by a filed platform gap (the path is reached and the platform refuses).
 """
 
 from __future__ import annotations
@@ -45,6 +46,16 @@ class Skip(Exception):
 
 class Fail(Exception):
     """The path under test was exercised and did not behave."""
+
+
+class Blocked(Exception):
+    """The platform refused the turn for a known, filed reason.
+
+    Distinct from Fail so a filed gap does not make `check` permanently red and
+    useless as a gate for everything else, and distinct from Skip because the
+    path WAS exercised — the refusal is a real answer from the platform, not a
+    missing precondition.
+    """
 
 
 def mint_pat(uuid: str, signing_key: bytes) -> str:
@@ -141,6 +152,12 @@ def start_turn(client: Client, project: int, conversation: str, prompt: str, mod
          "llm_settings": {"model_name": model, "temperature": 0.1, "max_tokens": 256, "stream": True}})
     if status == 404:
         raise Skip("the agent-execution route is not mounted (ELITEA_RUNTIME_ENABLED off?)")
+    if status == 422 and "unsupported_agent_execution" in body:
+        # The version freezer's admission gate. It returns one sentinel from 14
+        # sites with no wrapped detail, so neither this script nor an operator
+        # can tell which precondition it objected to — that opacity is half of
+        # what #288 asks to fix.
+        raise Blocked("the version freezer refused the turn (#288)")
     if status != 200:
         raise Fail(f"start turn → HTTP {status}: {body[:300]}")
     events_url = json.loads(body).get("events_url")
@@ -230,6 +247,9 @@ def main() -> int:
         if prompt not in content:
             raise Fail("streamed content did not echo the prompt the mock was given")
         assert_persisted(client, args.project, conversation, prompt)
+    except Blocked as blocked:
+        print(f"  ! BLOCKED: {blocked}")
+        return 3
     except Skip as skip:
         print(f"  ~ SKIPPED: {skip}")
         return 2

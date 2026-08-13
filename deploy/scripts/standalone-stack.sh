@@ -244,15 +244,23 @@ ON CONFLICT (elitea_title) DO UPDATE
 -- Model row GET /llm/v1/models synthesises its list from. elitea_title is the
 -- alias the caller passes in the request `model` field; data.name is the wire
 -- name used as a fallback id.
+--
+-- `label` is NOT decoration. repos/models.go's mapCurrentModelCandidate
+-- REJECTS an llm-section row whose label is NULL, and the rejection is an
+-- error rather than a skip — so one unlabelled row empties the whole model
+-- catalog. The agent version freezer resolves every turn's model against that
+-- catalog, so a missing label surfaces three layers away as
+-- "unsupported_agent_execution: This agent turn requires the current execution
+-- path" with nothing pointing at a configuration row.
 INSERT INTO p_1.configuration
-    (project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
 VALUES
-    (1, :'model', 'llm_model', 'llm',
+    (1, :'model', :'model', 'llm_model', 'llm',
      jsonb_build_object('name', :'model'),
      '{}', false, true, 'user', NOW(), NOW())
 ON CONFLICT (elitea_title) DO UPDATE
     SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
-        status_ok = true, updated_at = NOW();
+        label = EXCLUDED.label, status_ok = true, updated_at = NOW();
 SQL
     echo "→ Seeded. Model alias: $MODEL"
     if [ "$PROVIDER" = "mock" ]; then
@@ -514,7 +522,9 @@ except Exception as error:
         set -e
         case "$smoke_status" in
           0) ;;
-          2) ;;  # the script prints its own SKIPPED line with the reason
+          2) ;;  # SKIPPED — the script prints the missing precondition
+          3) ;;  # BLOCKED by a filed platform gap; printed, not counted, for
+                 # the same reason as the #287 guard above
           *) fail "chat smoke failed" ;;
         esac
       fi

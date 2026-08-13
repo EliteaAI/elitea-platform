@@ -98,5 +98,5 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
-	require.EqualValues(t, 122, Head(tenant))
+	require.EqualValues(t, 123, Head(tenant))
 }

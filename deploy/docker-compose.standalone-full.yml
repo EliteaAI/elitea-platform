@@ -276,6 +276,15 @@ services:
       dockerfile: services/elitea-main/Containerfile
       target: e2e
     entrypoint: ["/elitea-migrate"]
+    # -all-tenants, not bare: the shared history alone leaves every p_<id>
+    # schema at whatever 001_initial.sql created, and the tenant history is
+    # where the agent-execution chat tables live (#287). Without it an
+    # authenticated turn fails on `relation "chat_messages_text" does not
+    # exist` long before it reaches the worker.
+    #
+    # It enumerates projects from centry.project, so it is a no-op on a
+    # database that has none yet and picks them up on the next `up`.
+    command: ["-all-tenants"]
     environment:
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
     depends_on:
