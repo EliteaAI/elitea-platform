@@ -121,10 +121,34 @@ indexer_worker_password="$(<"$runtime/redis-indexer-worker-password")"
 acl_tmp="$(mktemp "$runtime/.redis-users-v2.acl.XXXXXX")"
 config_tmp="$(mktemp "$runtime/.indexer-runtime-v2.json.XXXXXX")"
 checkpoint_tmp="$(mktemp "$runtime/.agent-checkpoint-connection.XXXXXX")"
+main_database_config_tmp="$(mktemp "$runtime/.pylon-main-shared.XXXXXX")"
+auth_database_config_tmp="$(mktemp "$runtime/.pylon-auth-core.XXXXXX")"
 cleanup() {
-  rm -f "$acl_tmp" "$config_tmp" "$checkpoint_tmp"
+  rm -f "$acl_tmp" "$config_tmp" "$checkpoint_tmp" \
+    "$main_database_config_tmp" "$auth_database_config_tmp"
 }
 trap cleanup EXIT
+
+# The current services keep their production defaults in tracked Centry
+# configuration. The mixed deployment runs them beside six isolated Go pools
+# on one local PostgreSQL server, so generate deployment-scoped copies instead
+# of mutating those authoritative defaults.
+sed \
+  -e 's/^    pool_size: 100$/    pool_size: 16/' \
+  -e 's/^    max_overflow: 200$/    max_overflow: 4/' \
+  "$centry_dir/pylon_main/configs/shared.yml" > "$main_database_config_tmp"
+sed \
+  -e 's/^  pool_size: 25$/  pool_size: 8/' \
+  -e 's/^  max_overflow: 25$/  max_overflow: 2/' \
+  "$centry_dir/pylon_auth/configs/auth_core.yml" > "$auth_database_config_tmp"
+if ! grep -q '^    pool_size: 16$' "$main_database_config_tmp" || \
+   ! grep -q '^    max_overflow: 4$' "$main_database_config_tmp" || \
+   ! grep -q '^  pool_size: 8$' "$auth_database_config_tmp" || \
+   ! grep -q '^  max_overflow: 2$' "$auth_database_config_tmp"; then
+  echo "failed to generate bounded hybrid PostgreSQL pool configuration" >&2
+  exit 1
+fi
+chmod 600 "$main_database_config_tmp" "$auth_database_config_tmp"
 
 if [[ ! "$POSTGRES_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( POSTGRES_PORT > 65535 )); then
   echo "POSTGRES_PORT must be a valid TCP port" >&2
@@ -211,6 +235,8 @@ jq -e \
 mv "$acl_tmp" "$runtime/redis-users-v2.acl"
 mv "$config_tmp" "$runtime/indexer-runtime-v2.json"
 mv "$checkpoint_tmp" "$runtime/agent-checkpoint-connection"
+mv "$main_database_config_tmp" "$runtime/pylon-main-shared.yml"
+mv "$auth_database_config_tmp" "$runtime/pylon-auth-core.yml"
 trap - EXIT
 
 echo "mixed-deployment runtime material is ready at $runtime_root"
