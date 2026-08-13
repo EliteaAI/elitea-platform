@@ -101,21 +101,26 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     const payload = (generateMessagePayload ?? buildDefaultMessagePayload)({ question, questionId, participant, conversationUuid: resolvedConversationUuid, attachmentList, isSendingToUser, userIds });
     setChatHistory((prev) => [...prev, buildOptimisticUserMessage(questionId, question, userParticipant, participantId)]);
     if (!isStreamingNow) setStreamingInfo(questionId);
-    // Only emit once a conversation UUID actually exists — baseline: `ChatBox.jsx:928` `if (conversationUuid) { emit(...) }`.
+    // Only start once a conversation UUID actually exists — baseline:
+    // `ChatBox.jsx:928` `if (conversationUuid) { emit(...) }`.
     //
-    // NOT migrated to SSE (issue #93): the chat surface has no consumer for
-    // the streamed `execution.node_event` envelope — the streaming reducer
-    // the old app fed from `chat_predict` was never ported (`features/
-    // chat-messages` is still unwired). Starting the run over REST here would
-    // suppress this emit, and the answer would never render. The REST layer
-    // is ready (`conversationApi.startAgentExecution` +
-    // `conversationApi.contracts`); wiring it belongs with the unit that
-    // lands that reducer.
+    // SSE FIRST, socket as fallback (issue #93). The streaming reducer this
+    // needed now exists, so the run starts over REST and its answer streams
+    // back over `execution.node_event`. Exactly ONE of the two starts may
+    // run: `startStreamedExecution` resolving true means the execution is
+    // already live server-side, and emitting `chat_predict` as well would run
+    // the agent a second time. It resolves false only when the backend serves
+    // no replay stream, which is when the socket path is still correct.
     if (resolvedConversationUuid) {
-      try {
-        emitSocket('chat_predict', { ...payload, conversation_uuid: resolvedConversationUuid, project_id: toProjectIdString(projectId) });
-      } catch (error) {
-        console.warn('[useChatBoxHandlers] chat_predict emit failed:', error);
+      const streamed = deps.startStreamedExecution
+        ? await deps.startStreamedExecution({ conversationUuid: resolvedConversationUuid, payload })
+        : false;
+      if (!streamed) {
+        try {
+          emitSocket('chat_predict', { ...payload, conversation_uuid: resolvedConversationUuid, project_id: toProjectIdString(projectId) });
+        } catch (error) {
+          console.warn('[useChatBoxHandlers] chat_predict emit failed:', error);
+        }
       }
     }
     return buildSendResult(createdConversation);

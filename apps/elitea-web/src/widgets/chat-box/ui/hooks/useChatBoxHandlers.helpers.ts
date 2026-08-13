@@ -67,6 +67,22 @@ export interface ChatBoxHandlerDeps {
   readonly socketId?: string | undefined;
   /** Session-scoped bookkeeping of MCP servers declined/authenticated this conversation (never persisted). Lifetime owned by the caller. */
   readonly sessionDeclinedMcpServersRef?: { current: Map<string, Record<string, unknown>> };
+  /**
+   * Start the run over REST and subscribe to its SSE replay stream
+   * (`features/chat-messages`'s `useChatStreamTransport`).
+   *
+   * Resolving `true` means that transport owns the run, and `chat_predict`
+   * must NOT also be emitted — the two are separate starts, and emitting both
+   * would run the agent twice. Resolving `false` means this backend serves no
+   * replay stream, and the socket emit is the fallback.
+   *
+   * Optional so a caller that has not wired the transport keeps the socket
+   * behaviour unchanged.
+   */
+  readonly startStreamedExecution?: (params: {
+    readonly conversationUuid: string;
+    readonly payload: Record<string, unknown>;
+  }) => Promise<boolean>;
 }
 /** Result of the handlers hook. `regenerateAnswer`: baseline never emits a separate socket event — the REST call's `sid` links it to the live stream. */
 export interface UseChatBoxHandlersResult {

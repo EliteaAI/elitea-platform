@@ -10,11 +10,11 @@
 export { useEventSource } from './useEventSource';
 export type { ExecutionEventData } from './executionEvents';
 /**
- * `useExecutionEventStream` (subscribe by a server-supplied `events_url`)
- * is deliberately NOT re-exported: its only caller today is
- * `useExecutionEvents` inside the same module. The chat surface that needed
- * the by-url form does not subscribe yet — see `widgets/chat-box/ui/hooks/
- * useChatBoxHandlers.ts` — so exporting it here would be a dead barrel
- * symbol (knip's gate agrees).
+ * `useExecutionEventStream` subscribes by the `events_url` the START
+ * endpoint returned, rather than re-deriving the path — the server owns that
+ * shape. It was withheld from this barrel while the chat surface had no
+ * consumer for the streamed envelope; `features/chat-messages`'s
+ * `useChatStreamTransport` is that consumer, so the condition no longer
+ * holds.
  */
-export { useExecutionEvents } from './executionEvents';
+export { useExecutionEventStream, useExecutionEvents } from './executionEvents';
