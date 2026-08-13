@@ -15,14 +15,20 @@ message fields.
 | Source path and symbol | Observable behavior | Rust target | ADK-Rust role | Proving tests | Status / deviation |
 | --- | --- | --- | --- | --- | --- |
 | `libs/proto/elitea/runtime/v1/{agent,command,envelope,input}.proto` | Reference-only signed command and bounded application/ad-hoc input | `build.rs`, `src/protocol/{mod,command,wire}.rs`, `src/agents/protocol.rs` | None | `tests/{agent_command_contract,agent_input_contract}.rs`, Python-generated fixtures and mutation/limit corpora | Partial: signed agent command plus strict agent input are implemented; full offline envelope and other capabilities are planned |
-| `libs/proto/elitea/runtime/v1/{control,output}.proto` | Claim, begin, authorize, lease, desired state, settlement, ordered output stream | `src/protocol/output.rs`, `src/transport/{control,output}.rs` | None | Python progress, success and cancellation frame goldens pass; real gRPC component and failure-injection tests remain | Partial: deterministic progress/terminal framing implemented; transport, ACK/credit and settlement execution planned |
+| `libs/proto/elitea/runtime/v1/{control,output}.proto` | Claim, begin, authorize, lease, desired state, settlement, ordered output stream | `src/protocol/output.rs`, `src/transport/{output_session,output_grpc}.rs`, planned `src/transport/control.rs` | None | Python progress/success/cancellation frame goldens; ACK/credit/replay state and encrypted-spool component corpus | Partial: deterministic framing and one output stream attempt are implemented; control/settlement and reconnect coordination are planned |
 | Python worker `protocol/codec.py::{parse_and_verify_signed_command,_scan_worker_command,_validate_command,Ed25519CommandAuthenticator}` | Verify exact signed bytes before decode; reject duplicate/unknown tags and capability mismatch | `src/protocol/{command,wire}.rs` | None | `tests/agent_command_contract.rs`: Python HMAC/Ed25519 fixtures, pre-auth tamper and authenticated wire/semantic mutation corpus | Partial: both agent entrypoints are admitted; other capability commands and file-backed offline envelope remain planned |
 | Python worker `protocol/agent.py::{parse_agent_execution_input,request_from,bind_result_artifact}` | Canonical input parsing, semantic validation, exact content binding, terminal artifact binding | `src/agents/protocol.rs`, `src/agents/result.rs` | None | `tests/agent_input_contract.rs`: Python application/ad-hoc fixtures, duplicate/depth/string/number/truncation corpus and three supported terminal states | Partial: implemented through typed request and terminal artifact; delivery invocation remains gated |
 | Python worker `handlers/agent.py::{AgentExecutionKind,AgentExecutionPayload,AgentExecutionHandler.execute}` | Select exactly one configured-application or ad-hoc entry point | `src/agents/request.rs` | Agent construction only after admission | Typed fixture tests for both entry points; recording executor test remains planned | Foundation: immutable kind/payload/request exist; runtime delegation is not implemented |
 | Python worker `protocol/codec.py::build_node_event_output_frame` and Main `domain/runtime/fence.go::Fence.Validate` | Bind validated event to verified command identity, post-claim nonzero fence, sequence, digest and 64 KiB frame | `src/protocol/output.rs` | None | `tests/node_event_contract.rs::exact_python_vectors_match_browser_proto_and_claim_bound_output_frame` and identity/fence mutations | Implemented for nonterminal agent progress; Rust rejects an all-zero fence token before Main, closing a legacy Python-helper gap |
-| Python worker `protocol/codec.py::{build_output_frame,_runtime_error_message}` and Main `application/output/agent_execution.go` | Bind agent result or registered failure to terminal identity, exact payload digest and deterministic settlement proposal | `src/protocol/output.rs`, strengthened result checks in `src/agents/result.rs` | None | `tests/agent_output_contract.rs`: exact Python success/cancellation frames, all nine safe error mappings, digest/settlement and malformed-result corpus | Implemented terminal frame construction. Rust rejects zero digests and artifacts over 64 KiB before Main; terminal ACK, PrepareSettlement and Redis ACK ordering are not part of this slice |
+| Python worker `protocol/codec.py::{build_output_frame,_runtime_error_message}` and Main `application/output/agent_execution.go` | Bind agent result or registered failure to terminal identity, exact payload digest and deterministic settlement proposal | `src/protocol/output.rs`, strengthened result checks in `src/agents/result.rs` | None | `tests/agent_output_contract.rs`: exact Python success/cancellation frames, all nine safe error mappings, digest/settlement and malformed-result corpus | Implemented terminal frame construction and terminal ACK handling. Rust rejects zero digests and artifacts over 64 KiB before Main; PrepareSettlement and Redis ACK ordering remain planned |
 | Python worker `transport/output_spool.py::EncryptedOutputSpool` | Bounded AES-256-GCM file format, idempotent immutable put, sorted replay, exact atomic replacement and ACK deletion | `src/spool.rs::{EncryptedOutputSpool,SpooledFrame,SpoolLimits}` | None | `tests/output_spool_contract.rs`: encryption, capacity, replacement, replay, corruption, unsafe entries, permissions, ownership and cleanup; Python fixed-nonce golden | Implemented synchronous primitive for macOS/Linux. Rust uses directory-relative filesystem calls, validates owner-private files and holds an exclusive advisory child lock |
 | Python worker `serve.py::{_execution_spool_binding,_prepare_execution_spool}` | Seven-field length-prefixed identity, SHA-256 child path, HKDF-SHA256 execution key and stream AAD | `src/spool.rs::{ExecutionSpoolIdentity,ExecutionSpoolBinding,SpoolMasterKey}` | None | `src/spool.rs::tests::binding_hkdf_and_fixed_nonce_ciphertext_match_python` generated by `tests/fixtures/generate_output_spool_fixtures.py` | Implemented without caller-supplied derived key/path/AAD, preventing identity drift |
+| Python worker `transport/output_grpc.py::OutputGrpcSession::{start,send,_restore_pending,_replay_pending}` | Validate one bootstrap grant, restore exact deterministic frames, block new admission behind replay, persist before send and await one bound ACK per replayed frame | `src/transport/output_grpc.rs::OutputGrpcSession`, `src/transport/output_session.rs::{OutputSessionState,DurableOutputFrame}` | None | Unit state corpus plus encrypted-spool component cases `lost_ack_preserves_exact_spool_for_next_session_replay` and `early_eof_during_replay_preserves_the_durable_frame` | Implemented for one attempt. Delivery-owned bounded fresh-session reconnect is planned rather than hidden inside the stream |
+| Python worker `transport/output_grpc.py::OutputGrpcSession::_accept_ack` and Main `runtimegrpc/output/server.go::Server.Publish` | Absolute credit replacement, exact stream/identity/fence/watermark binding, monotonic committed prefix and typed cancellation/deadline/retry results | `src/transport/output_session.rs::{validate_ack,commit_ack}` | None | Bootstrap-once, credit ceiling, forged fence, backward/beyond-write ACK, draining and winner mutation tests | Implemented. Rust additionally bounds durable counters to PostgreSQL `BIGINT`; protobuf ACK duplicate/unknown-field inspection is limited by tonic/prost and recorded below |
+| Python worker `transport/output_grpc.py::OutputGrpcSession::{replays,replace_pending_exact,replace_pending_cancelled_recovery,replace_pending_ambiguous_recovery}` and `execution/delivery.py::_reconnectable_output` recovery decisions | Inspect durable bytes before networking; exact-CAS the sole pending frame; allow only advancing fresh-fence cancellation/ambiguous recovery; retire only a completely covered prefix | `src/transport/output_grpc.rs::PreparedOutputSpool` | None | No-network prepare/reopen, post-terminal rejection, complete-prefix reconciliation, exact terminal CAS and cancelled/ambiguous rebind mutation tests | Implemented as an explicit pre-network typestate boundary. A reconciled object cannot be reused, and stream connection consumes the prepared spool |
+| Python worker `transport/output_grpc.py::secure_output_channel`, `_validated_metadata` | mTLS output endpoint, 64 KiB request/80 KiB response limits and allowlisted session metadata | `src/transport/output_grpc.rs::TonicOutputStream` plus planned deployment TLS composition | None | Configuration/message-limit/metadata unit tests; real mTLS component test planned | Partial: tonic sets exact encoding/decoding ceilings and sends each metadata key once over an injected channel. CA/certificate/key loading and hostname policy are not yet implemented |
+| Python worker `execution/delivery.py::_publish_output`, `_reconnectable_output` | Bounded new-session retry over the unchanged encrypted spool | planned `src/execution/output_delivery.rs` | None | ACK-loss retry-budget and cross-process restart tests | Planned; a failed Rust session is latched unusable and leaves its spool files intact for a freshly opened handle |
+| Python worker `execution/delivery.py::_prepare_frame_settlement` and `control_grpc.py::ExecutionControlClient.prepare_settlement` | Terminal bound ACK and spool retirement precede deterministic PrepareSettlement; Redis retirement follows the validated receipt | planned `src/transport/control.rs`, `src/execution/agent_delivery.rs` | None | Settlement digest/receipt/recovery/order component and system tests | Planned; intentionally not folded into output-stream ACK handling |
 | Python worker `execution/delivery.py::AgentExecutionDeliveryProcessor` | Claim-bound materialization, authorize-once, event/result output, settlement and ACK | `src/execution/agent_delivery.rs` | Runner invoked behind the effect fence | Component tests for recovery dispositions, ACK loss and cancellation races | Planned |
 | Python worker `capabilities.py::capability_message` | Capability identity and feature advertisement | `src/capabilities.rs` | None | Manifest golden and production-registration fail-closed test | Foundation: only empty production registration exists |
 | Python worker `handlers/agent_events.py::CurrentAgentNodeEventCallback` | Ordered current-compatible events, pause projection, terminal browser artifact | `src/agents/events.rs` | ADK events are input only | Ordered differential ordinary/HITL/MCP/tool/skill corpus | Planned; not conflated with the generic codec |
@@ -86,6 +92,57 @@ this slice does not claim complete post-drop key erasure from worker process
 memory. Process isolation and termination remain the memory-disposal boundary;
 a future stronger in-process erasure requirement must select and audit a
 cipher/KDF representation which guarantees it.
+
+### Output stream boundaries and deviations
+
+`src/transport/output_grpc.rs` owns one ordered stream attempt. It receives and
+validates bootstrap credit before any write, uses tonic's bounded request
+channel, persists exact deterministic protobuf bytes on the blocking pool,
+consumes absolute frame/byte credit, waits for the bound ACK, deletes and
+fsyncs the acknowledged spool prefix, and only then advances the caller-visible
+watermark. Transport failure latches the attempt unusable; the delivery layer
+will create a fresh stream and a fresh exclusive spool handle for bounded
+replay, matching Python's retry ownership rather than reconnecting secretly.
+
+`PreparedOutputSpool` validates and exposes the encrypted durable state before
+any endpoint is contacted. Delivery coordination must choose exact replay,
+complete-prefix reconciliation, same-binding terminal replacement, or one of
+the two narrowly validated fresh-fence recovery replacements before consuming
+the object to connect. Appending after a terminal and reusing a reconciled
+object are rejected by the Rust state machine.
+
+An owned per-execution actor continues an admitted durable send even when its
+caller stops awaiting it, preventing delayed ACK reassignment. Its admission
+channel and byte permit allow only one current frame; explicit close interrupts
+credit, send, or ACK waits and joins the actor before releasing the spool lock.
+
+Production Main grants one frame and 64 KiB. Rust therefore serializes each
+execution's `spool -> send -> ACK` operation. Tonic/hyper independently drives
+HTTP/2 request and response I/O, so the first send enters an empty bounded
+channel and ACK receipt is not coupled to a blocking socket write. This is an
+intentional simplification of Python's separate writer/receiver task pair for
+the current one-frame window; any future server policy with multiple in-flight
+frames requires a new bounded-concurrency proof rather than silently changing
+this state machine.
+
+Although protobuf counters are unsigned, Main stores sequence, generation,
+claim attempt, lease epoch and handoff watermark in PostgreSQL `BIGINT`. Rust
+rejects values above `i64::MAX` before transport. This narrows the Python
+session's nominal `u64` acceptance to the actual durable consumer domain.
+
+The output channel is injected, not constructed from TLS files in this slice.
+The generated tonic client is explicitly capped at 64 KiB encoded requests and
+80 KiB decoded ACKs, and sends the two allowlisted workload metadata values
+once. Production composition must still load private material safely, require
+TLS 1.3 and verified client/server identities, and prove hostname/CA failure
+cases. Passing a channel is not production admission authority.
+
+Tonic's generated prost response decoder does not expose erased unknown or
+duplicate ACK fields for a second strict-wire scan. Current Main is mutually
+authenticated and emits canonical ACKs, so exact decoded binding and semantic
+validation is the current compatibility boundary. Symmetric raw-wire rejection
+would require a reviewed custom tonic codec and remains a production-hardening
+decision, not a claimed property of this slice.
 
 ### Agent input field projection
 

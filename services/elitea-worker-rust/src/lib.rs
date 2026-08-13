@@ -5,6 +5,8 @@ pub mod capabilities;
 pub mod protocol;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod spool;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod transport;
 
 use std::fmt;
 use std::io::{self, Write};
