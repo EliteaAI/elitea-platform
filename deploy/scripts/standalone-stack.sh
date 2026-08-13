@@ -5,7 +5,8 @@
 #   up           bring the stack up and wait for healthy
 #   seed         schema + OIDC users + RBAC — delegates to the E2E seeder
 #   seed-runtime authorize the agent worker's certificate identity (#281)
-#   seed-llm     add a real provider credential so the gateway can serve completions
+#   seed-llm     credential the gateway serves completions with. Defaults to the
+#                offline mock (#283) unless OPENAI_API_KEY/ANTHROPIC_API_KEY is set
 #   check        verify the gateway mTLS hop and the runtime plane
 #   down         tear down (add -v yourself to drop volumes)
 #
@@ -14,7 +15,8 @@
 #   deploy/scripts/standalone-stack.sh up
 #   deploy/scripts/standalone-stack.sh seed
 #   deploy/scripts/standalone-stack.sh seed-runtime
-#   OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm
+#   deploy/scripts/standalone-stack.sh seed-llm            # offline mock
+#   OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm   # real provider
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -175,32 +177,64 @@ SQL
     # row the E2E seeder writes for the UI's token button, and a different one
     # again from section='llm'/type='llm_model', which is what GET /llm/v1/models
     # reads. Seed all three so both the API and the model picker work.
-    PROVIDER="${LLM_PROVIDER:-open_ai}"
+    # Mock mode (issue #283) is the DEFAULT when no provider key is present, so
+    # a fresh stack completes a model turn offline. With OPENAI_API_KEY (or
+    # ANTHROPIC_API_KEY, or an explicit LLM_PROVIDER) set, behaviour is exactly
+    # what it was: the real credential is seeded and the mock is not, so nothing
+    # can quietly answer a request the operator meant to bill to a provider.
+    PROVIDER="${LLM_PROVIDER:-}"
+    if [ -z "$PROVIDER" ] && [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+      PROVIDER="mock"
+    fi
+    PROVIDER="${PROVIDER:-open_ai}"
     case "$PROVIDER" in
-      open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}" ;;
-      anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}" ;;
-      *) echo "ERROR: LLM_PROVIDER must be open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
+      mock)
+        # `vllm`, not `open_ai`, and that is load-bearing rather than a label:
+        # bifrost only lifts its SSRF guard for the self-hosted classes
+        # (internal/account/account.go:235 — schemas.VLLM and schemas.Ollama),
+        # so a private compose address must be one of them. api_base carries no
+        # /v1: bifrost appends /v1/chat/completions itself. A distinct host also
+        # keeps it clear of the self-referential-origin guard on the platform's
+        # own /llm origin.
+        API_KEY="mock-key-not-used"; MODEL="${LLM_MODEL:-E2E-MOCK-MODEL}"
+        API_BASE="http://llm-mock:8090"; CRED_TYPE="vllm"
+        ;;
+      open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai" ;;
+      anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic" ;;
+      *) echo "ERROR: LLM_PROVIDER must be mock, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
     esac
     if [ -z "$API_KEY" ]; then
       echo "ERROR: \$$KEY_VAR is empty. Usage: $KEY_VAR=... $0 seed-llm" >&2
       exit 1
     fi
+    if [ "$PROVIDER" = "mock" ]; then
+      # The wire name must carry the provider prefix. bifrost resolves the
+      # provider from the model string alone (ParseModelString) with an EMPTY
+      # default, so a bare `E2E-MOCK-MODEL` reaches core with no provider and
+      # never gets as far as the credential. The `llm_model` row below is
+      # therefore titled `vllm/E2E-MOCK-MODEL`, which is what the model picker
+      # hands to the SDK and what the SDK puts on the wire.
+      MODEL="vllm/${MODEL#vllm/}"
+    fi
     # A LITERAL api_key deliberately avoids the Fernet vault entirely: vault
     # Resolve returns any value that is not a {{secret.NAME}} reference verbatim,
     # so no centry.secrets_key/secrets_data rows and no SECRETS_MASTER_KEY are
     # needed for local testing.
-    echo "→ Seeding a $PROVIDER credential + model row for project 1…"
+    echo "→ Seeding a $PROVIDER credential (type=$CRED_TYPE) + model row for project 1…"
     $COMPOSE_BIN $COMPOSE_F exec -T postgres \
       psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
-        -v provider="$PROVIDER" -v apikey="$API_KEY" -v model="$MODEL" <<'SQL'
--- Credential the gateway's Account reads (section='ai_credentials'). api_base is
--- empty so the provider's default endpoint is used, which also keeps it clear of
--- the self-referential-origin guard.
+        -v provider="$CRED_TYPE" -v apikey="$API_KEY" -v model="$MODEL" \
+        -v apibase="$API_BASE" <<'SQL'
+-- Credential the gateway's Account reads (section='ai_credentials'). An empty
+-- api_base means "use the provider's default endpoint", which also keeps a
+-- cloud credential clear of the self-referential-origin guard. The mock sets it
+-- to the compose address of llm-mock, which is why that host has to be named in
+-- GATEWAY_EGRESS_ALLOWLIST and why the credential type is `vllm`.
 INSERT INTO p_1.configuration
     (project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
 VALUES
     (1, 'standalone-' || :'provider', :'provider', 'ai_credentials',
-     jsonb_build_object('api_key', :'apikey', 'api_base', ''),
+     jsonb_build_object('api_key', :'apikey', 'api_base', :'apibase'),
      '{}', false, true, 'user', NOW(), NOW())
 ON CONFLICT (elitea_title) DO UPDATE
     SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
@@ -220,6 +254,9 @@ ON CONFLICT (elitea_title) DO UPDATE
         status_ok = true, updated_at = NOW();
 SQL
     echo "→ Seeded. Model alias: $MODEL"
+    if [ "$PROVIDER" = "mock" ]; then
+      echo "  (offline mock — no provider key used. Set OPENAI_API_KEY to seed a real one instead.)"
+    fi
     ;;
 
   check)
@@ -377,6 +414,65 @@ SQL
       echo "  ✓ ${pats} active PAT(s)"
     else
       fail "no active PAT — run: $0 seed-runtime (executions fail at actor_pat_issuance)"
+    fi
+
+    echo "→ model completion through the gateway:"
+    # The full hop: elitea-main → gateway (mTLS) → llm-mock. Runs as a real
+    # caller, because the gateway resolves per-project credentials from the
+    # authenticated identity — an unauthenticated probe would only ever prove
+    # that auth works.
+    #
+    # A PAT bearer is minted here from the same material elitea-main validates
+    # with, rather than reusing a browser session: the /llm mount takes bearer
+    # tokens and this avoids driving an OIDC login from a shell script.
+    #
+    # `project_not_resolved` is reported as SKIPPED, not FAILED: it means the
+    # caller has no personal project, which is a seeding state (`$0 seed`), not
+    # a broken LLM path. Only an attempted-and-failed hop fails the check.
+    LLM_PROBE="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT uuid FROM public.auth_core__token WHERE uuid IS NOT NULL LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+    if [ -z "$LLM_PROBE" ]; then
+      echo "  ~ SKIPPED: no PAT to authenticate with (run: $0 seed-runtime)"
+    else
+      LLM_JWT="$(python3 - "$LLM_PROBE" "${RUNTIME_CERTS}/auth-pat-signing-key" <<'PY'
+import base64, hashlib, hmac, json, pathlib, sys
+key = pathlib.Path(sys.argv[2]).read_bytes()
+b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+header = b64(json.dumps({"alg": "HS512", "typ": "JWT"}, separators=(",", ":")).encode())
+payload = b64(json.dumps({"uuid": sys.argv[1], "expires": None}, separators=(",", ":")).encode())
+print(f"{header}.{payload}." + b64(hmac.new(key, f"{header}.{payload}".encode(), hashlib.sha512).digest()))
+PY
+)"
+      # probe() runs postgres:18, which ships openssl but no python3; the mock
+      # image is the only one in the stack with a python runtime, and it runs as
+      # an unprivileged uid that cannot read the 0600 host material — so this
+      # one probe runs that image as root.
+      llm_probe() {
+        $ENGINE run --rm --network "$NETWORK" -v "${RUNTIME_CERTS}:/m:ro" --user 0:0 \
+          --entrypoint python3 ghcr.io/eliteaai/elitea-mock-llm:standalone -c "$1" 2>&1 || true
+      }
+      LLM_OUT="$(llm_probe "
+import json, ssl, urllib.error, urllib.request
+context = ssl.create_default_context(cafile='/m/runtime-ca.crt')
+body = json.dumps({'model': 'vllm/E2E-MOCK-MODEL',
+                   'messages': [{'role': 'user', 'content': 'standalone check'}]}).encode()
+request = urllib.request.Request(
+    'https://elitea-platform-edge/llm/v1/chat/completions', data=body,
+    headers={'Authorization': 'Bearer ${LLM_JWT}', 'Content-Type': 'application/json'})
+try:
+    print('OK', urllib.request.urlopen(request, context=context, timeout=30).read().decode())
+except urllib.error.HTTPError as error:
+    print('HTTPERR', error.code, error.read().decode()[:200])
+except Exception as error:
+    print('ERR', type(error).__name__, error)
+")"
+      case "$LLM_OUT" in
+        *'OK'*'standalone check'*) echo "  ✓ completion returned the mock's echo of the request" ;;
+        *project_not_resolved*)    echo "  ~ SKIPPED: caller has no personal project (run: $0 seed)" ;;
+        *'HTTPERR 502'*)           fail "gateway could not reach llm-mock — is GATEWAY_EGRESS_ALLOWLIST set? (see the compose comment)" ;;
+        *)                         fail "completion hop failed: $(printf '%s' "$LLM_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
+      esac
     fi
 
     if [ "$runtime_failures" -ne 0 ]; then

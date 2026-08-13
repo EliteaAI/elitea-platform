@@ -162,12 +162,45 @@ a database row was missing. The E2E seeder creates users but no
 `auth_core__token` rows, so `standalone-stack.sh seed-runtime` issues one per
 user.
 
+## The mock LLM (#283)
+
+`seed-llm` defaults to an offline mock when no provider key is present, so a
+model turn completes with no network and no billing. Three things are easy to
+get wrong:
+
+**The credential must be type `vllm`.** bifrost lifts its SSRF-safe dialer only
+for the self-hosted provider classes — `account.go:235` sets
+`AllowPrivateNetwork` for `schemas.VLLM` and `schemas.Ollama` alone, and only
+when `GATEWAY_EGRESS_ALLOWLIST` is non-empty. An `open_ai` credential pointing
+at a compose address is refused by the dialer no matter what the allowlist says.
+
+**`GATEWAY_EGRESS_ALLOWLIST` must name the mock.** `llm-mock:8090` is a private
+address; without the entry the hop fails with `provider_connection_failed`,
+which reads like a broken service rather than a policy decision. The compose
+default is written `${GATEWAY_EGRESS_ALLOWLIST-llm-mock:8090}` with a single
+`-`: the `:-` form treats empty and unset alike, so an operator disarming the
+allowlist would silently get the mock allowlisted back.
+
+**The wire model carries a provider prefix**, `vllm/E2E-MOCK-MODEL`. bifrost
+resolves the provider from the model string alone (`ParseModelString`) with an
+**empty** default, so a bare `E2E-MOCK-MODEL` reaches core with no provider and
+never gets as far as the credential. The seeded `llm_model` row is titled with
+the prefix so the picker hands the SDK a name that routes.
+
+`api_base` is `http://llm-mock:8090` with no path — bifrost appends
+`/v1/chat/completions` itself.
+
+With `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` set, `seed-llm` behaves exactly as
+it did before: the real credential is seeded and the mock is not, so nothing can
+quietly answer a request meant for a provider.
+
 ## What still does not work
 
-A model token round-trip has not been demonstrated end to end in this stack:
-there is no LLM backend for `E2E-MOCK-MODEL` yet (#283) and no provider key by
-default. Verified so far: an authenticated dispatch reaches the agent-execution
-use case, and the worker joins the consumer group over TLS.
+The chat loop has not been driven end to end from a message to a streamed
+reply. Verified: an authenticated dispatch reaches the agent-execution use case,
+the worker joins the consumer group over TLS, and a completion through
+elitea-main → gateway → mock returns the mock's echo (streaming and unary).
+Joining those into one journey is #284.
 
 Toolkit-bearing agents will fail here regardless. The SDK resolves toolkits
 through `/api/v2/elitea_core/tools_list/{project_id}`, which `deploy/centry-hybrid`

@@ -72,11 +72,24 @@
 #   The worker has NO env-var configuration: one JSON file, deploy/runtime/
 #   worker-runtime.json, whose stream/group must match elitea-main's env below.
 #
+# ── The mock LLM (issue #283) ────────────────────────────────────────────────
+#   `seed-llm` now defaults to an OFFLINE mock when no provider key is present,
+#   so a model turn completes with no network and no billing. Two details are
+#   load-bearing:
+#     * the credential is seeded as type `vllm`, not `open_ai`. bifrost lifts
+#       its SSRF guard only for the self-hosted classes (account.go:235), so a
+#       private compose address must be one of them — an `open_ai` credential
+#       pointing at llm-mock is refused by the dialer whatever the allowlist
+#       says.
+#     * the wire model carries the provider prefix, `vllm/E2E-MOCK-MODEL`.
+#       bifrost resolves the provider from the model string alone, with an
+#       EMPTY default (ParseModelString), so a bare name reaches core with no
+#       provider and never gets as far as the credential.
+#   With OPENAI_API_KEY (or ANTHROPIC_API_KEY) set, seed-llm behaves exactly as
+#   before and the mock is not seeded — nothing can quietly answer a request the
+#   operator meant to bill to a provider.
+#
 # ── What still does NOT work, and why ────────────────────────────────────────
-#     * No LLM backend for E2E-MOCK-MODEL yet (#283), and no provider key by
-#       default, so a full model round-trip is not demonstrable here. Verified:
-#       an authenticated dispatch reaches the agent-execution use case and the
-#       worker joins the consumer group over TLS.
 #     * Toolkit-bearing agents fail regardless: the SDK resolves toolkits via
 #       /api/v2/elitea_core/tools_list/{project_id}, which centry-hybrid routes
 #       to PYLON — Go's equivalent is a different path and answers 501 by
@@ -360,11 +373,28 @@ services:
       GATEWAY_TLS_CERT_FILE: /run/certs/gateway-server.crt
       GATEWAY_TLS_KEY_FILE: /run/certs/gateway-server.key
       GATEWAY_TLS_CA_FILE: /run/certs/ca.crt
-      # Deliberately UNSET: GATEWAY_EGRESS_ALLOWLIST.
-      # Empty means "public destinations only, any host" — bifrost's SSRF-safe
-      # dialer refuses private addresses. Setting it would ADD private-network
-      # reachability for the named hosts, which is the opposite of what a local
-      # test stack wants. Set it only to reach a provider on your LAN.
+      # Egress policy (issue #283). Empty means "public destinations only" —
+      # bifrost's SSRF-safe dialer refuses private addresses, which is what
+      # stops a tenant-authored api_base steering the gateway into the cluster.
+      # `llm-mock:8090` is named here because the mock is a compose-network
+      # (private) address and would otherwise be refused by policy, not by
+      # configuration — a connection error that reads like a broken service.
+      #
+      # Naming a host does TWO things (internal/config/config.go:174-192):
+      # every tenant-authored api_base must now match an entry, AND
+      # private-network dialing is enabled — but only for the self-hosted
+      # provider classes (account.go:235 sets AllowPrivateNetwork for
+      # schemas.VLLM and schemas.Ollama alone). That is why the mock is seeded
+      # as a `vllm` credential: an `open_ai` one pointing here would still be
+      # refused by the dialer, allowlist or not.
+      #
+      # Add your own entries to reach a provider on your LAN. Setting the
+      # variable to the EMPTY string restores the default deny (and breaks only
+      # the mock hop) — which is why the default uses `-` and not `:-`: the
+      # `:-` form treats empty and unset alike, so an operator disarming the
+      # allowlist would have silently got the mock allowlisted back, and a
+      # negative test written against it would pass while proving nothing.
+      GATEWAY_EGRESS_ALLOWLIST: "${GATEWAY_EGRESS_ALLOWLIST-llm-mock:8090}"
       GATEWAY_LOG_LEVEL: "${GATEWAY_LOG_LEVEL:-info}"
     volumes:
       - ./certs:/run/certs:ro
@@ -376,9 +406,43 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Not required at boot — the gateway dials an upstream per request — but
+      # ordering it here means a `seed-llm` immediately after `up` cannot race a
+      # mock that has not bound its port yet.
+      llm-mock:
+        condition: service_healthy
     # No healthcheck: the final image is distroless (no shell, no wget/curl) and
     # declares HEALTHCHECK NONE. Dependents use service_started — safe because
     # elitea-main does not dial the gateway at boot; it only loads its certs.
+    restart: unless-stopped
+
+  # ── Mock LLM upstream (issue #283) ──────────────────────────────────────────
+  # Deterministic OpenAI-compatible server so E2E-MOCK-MODEL completes with no
+  # provider key and no outbound network. Standard-library Python, built from
+  # deploy/mock-llm; see that Containerfile for why nothing is pulled.
+  #
+  # It is seeded as a `vllm` credential (standalone-stack.sh seed-llm), not
+  # `open_ai`: bifrost only lifts its SSRF guard for the self-hosted provider
+  # classes, so a private-address upstream must be one of them. bifrost appends
+  # /v1/chat/completions to the credential's api_base, which is therefore
+  # http://llm-mock:8090 with no path.
+  llm-mock:
+    image: ghcr.io/eliteaai/elitea-mock-llm:standalone
+    build:
+      context: ./mock-llm
+      dockerfile: Containerfile
+    environment:
+      MOCK_LLM_PORT: "8090"
+      MOCK_LLM_MODEL: "E2E-MOCK-MODEL"
+    healthcheck:
+      # The image has no curl or wget — python is the only client available,
+      # and it is guaranteed present because it is the runtime.
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/healthz').read()"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
     restart: unless-stopped
 
   # ── Application services ────────────────────────────────────────────────────
