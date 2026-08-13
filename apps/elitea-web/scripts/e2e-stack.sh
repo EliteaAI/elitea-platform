@@ -692,6 +692,35 @@ INSERT INTO centry.secrets_data (id, data) VALUES
     ('project-1', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f447738384e6179597230503157334c364279534e5257346647764e5f6778596831726f472d386d646b77547a5155666a42735a785366694a62304f35726a4b2d455a707971362d5436704c7252674a4c6851395935376753595546446955383237486a36634473756a4b2d78'::bytea)
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
 
+-- The same EMPTY vault for every personal project this seed creates.
+--
+-- `CurrentModelCatalogReader` loads the project's model defaults out of the
+-- centry vault and fails the whole read when the rows are ABSENT — not when
+-- they are empty. So a project without them answers 500 to
+-- `GET /configurations/models/{project}`, which is what the chat page asks for
+-- its model catalogue: the picker then presents nothing and a turn cannot name
+-- a model (#293).
+--
+-- The pair is COPIED from project-1 rather than generated: the blobs are Fernet
+-- (AES-128-CBC + HMAC-SHA256), which psql cannot produce, and project-1's vault
+-- is deliberately empty — so copying key AND data together yields a valid,
+-- consistent, empty vault under a key that decrypts it. The five real upload
+-- limits live in the ADMIN vault, which stays the shared fallback for every
+-- project exactly as before.
+INSERT INTO centry.secrets_key (id, data)
+SELECT 'project-' || p.id::text, source.data
+FROM centry.project p
+CROSS JOIN (SELECT data FROM centry.secrets_key WHERE id = 'project-1') AS source
+WHERE p.name LIKE 'project\_user\_%'
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO centry.secrets_data (id, data)
+SELECT 'project-' || p.id::text, source.data
+FROM centry.project p
+CROSS JOIN (SELECT data FROM centry.secrets_data WHERE id = 'project-1') AS source
+WHERE p.name LIKE 'project\_user\_%'
+ON CONFLICT (id) DO NOTHING;
+
 -- ── admin projects fixture (unit A14) ────────────────────────────────────
 -- 001_initial.sql seeds ONE project ("Default Project"), which is not enough
 -- to tell a working listing from a broken one: with a single row, the tab

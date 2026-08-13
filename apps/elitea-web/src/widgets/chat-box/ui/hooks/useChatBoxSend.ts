@@ -55,8 +55,13 @@ function buildStartBody(params: {
   const { payload } = params;
   const question = typeof payload['question'] === 'string' ? payload['question'] : '';
   const participantId = payload['participant_id'];
+  // A NUMBER, not the string the socket payload carries: the route decodes
+  // `project_id` into an integer field and rejects a string with the same flat
+  // `400 Invalid agent execution request` it uses for every other malformed
+  // body, naming nothing.
+  const numericProjectID = Number(params.projectId);
   return {
-    project_id: params.projectId,
+    project_id: Number.isFinite(numericProjectID) ? numericProjectID : params.projectId,
     conversation_uuid: params.conversationUuid,
     // 0 is the ad-hoc "no specific participant" value the backend smoke uses;
     // a missing key is rejected rather than defaulted.

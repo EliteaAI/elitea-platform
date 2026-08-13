@@ -28,19 +28,15 @@
  * reducer. That is the whole point of running the journey here.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * CURRENTLY EXPECTED TO FAIL — #293
+ * CURRENTLY EXPECTED TO FAIL — #294
  * ─────────────────────────────────────────────────────────────────────────────
- * #291 (start route rejecting a session) and #292's two gaps (no model wired
- * into the turn, no participants on the conversation) are fixed. The journey
- * now stops one step earlier than the send: the model picker cannot populate,
- * because `GET /configurations/configurations/{project}` answers 500 for every
- * project — silently, with no server-side log line (#293). Nothing had reached
- * that route before: it was composed without a session credential AND the seed
- * never granted its (plural) permission, so fixing both is what exposed it.
- *
- * `test.fail()` rather than a skip or a weakened assertion, deliberately:
- * Playwright FAILS an expected-failure test that unexpectedly passes, so this
- * marker announces the day #293 is fixed instead of quietly continuing to pass.
+ * The loop WORKS: with #291/#292/#293 fixed this journey drives a real turn all
+ * the way through — model selection, conversation, participants, admission, the
+ * SSE stream — and the answer renders. It renders twice and all at once (#294):
+ * whole-message frames are appended after the streamed chunks, and nothing is
+ * painted incrementally even with the mock slowed to 800ms per chunk. The
+ * assertion below that fails is the incremental one, which is exactly the
+ * defect.
  *
  * The wire contract asserted below is the one the backend actually emits, NOT
  * the `chat.stream.chunk`/`chat.stream.done` pair #284's body names: every frame
@@ -87,9 +83,10 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   // real hang still fails on the specific step rather than on the clock.
   test.setTimeout(180_000);
 
-  // Expected to fail until #293 lands — see the module header. Remove this line
-  // with that fix; leaving it makes the suite fail once a turn completes.
-  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #293: the model catalogue route 500s, so no model can be selected');
+  // Expected to fail until #294 lands — see the module header. Remove this line
+  // with that fix; leaving it makes the suite fail once the answer paints once
+  // and incrementally, which is the point.
+  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #294: the answer renders twice and never incrementally');
 
   const prompt = uniquePrompt();
 
