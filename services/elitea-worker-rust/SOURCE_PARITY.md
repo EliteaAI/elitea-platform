@@ -1,6 +1,6 @@
 # Rust worker source parity
 
-- Status: reconstruction foundation only
+- Status: reconstruction foundation plus agent protocol input/result slice
 - Last verified: 2026-08-13
 - Production capability registration: disabled
 
@@ -39,9 +39,9 @@ Detailed ledgers:
 
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
 | --- | --- | --- | --- | --- |
-| `libs/proto/elitea/runtime/v1/*.proto` | Language-neutral worker command, input, output, control, and settlement contracts | `src/protocol/` | Cross-language binary fixtures and strict parser tests | Not started |
-| `services/elitea-worker-python/src/elitea_worker/protocol/agent.py` | Strict `AgentExecutionInputV1` parsing and result binding | `src/agents/protocol.rs` | Differential application/ad-hoc contract tests | Not started |
-| `services/elitea-worker-python/src/elitea_worker/handlers/agent.py` | Select application versus ad-hoc semantic entry point | `src/agents/request.rs` | Unit tests for both entry points | Not started |
+| `libs/proto/elitea/runtime/v1/*.proto` | Language-neutral worker command, input, output, control, and settlement contracts | `build.rs`, `src/protocol/` | Generated client compile plus Python-produced agent binary fixtures | Partial: all bindings and clients generate; only agent input/result semantics are implemented |
+| `services/elitea-worker-python/src/elitea_worker/protocol/agent.py` | Strict `AgentExecutionInputV1` parsing and result binding | `src/agents/protocol.rs`, `src/agents/result.rs` | `tests/agent_input_contract.rs` application/ad-hoc, limits, mutation and terminal corpus | Partial: input construction and three admitted result states pass; delivery is not implemented |
+| `services/elitea-worker-python/src/elitea_worker/handlers/agent.py` | Select application versus ad-hoc semantic entry point | `src/agents/request.rs` | Typed semantic fixture tests for both entry points | Foundation: immutable split exists; executor delegation is not implemented |
 | `services/elitea-worker-python/src/elitea_worker/handlers/agent_events.py` | Ordered `NodeEventV1` projection | `src/compat/node_events.rs` | Ordered differential event corpus | Not started |
 | `projects/elitea-sdk/elitea_sdk/runtime/**` | Agent assembly, toolsets, skills, MCP, HITL, continuation, and nested execution behavior | Capability-owned modules under `src/agents/`, `src/configurations/`, and `src/toolkits/` | Unit, property, component, and behavioral parity tests | Not started |
 | `projects/centry/pylon_indexer/plugins/indexer_worker/**` | Current application/ad-hoc invocation, callback, checkpoint, child dispatch, and indexing behavior | `src/agents/`, `src/compat/`, then `src/indexing/` | Differential fixtures plus cross-process tests | Not started |

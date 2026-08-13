@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
+pub mod agents;
 pub mod capabilities;
+pub mod protocol;
 
 use std::fmt;
 use std::io::{self, Write};

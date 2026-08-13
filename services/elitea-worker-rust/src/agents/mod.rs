@@ -1,0 +1,17 @@
+//! Language-neutral agent execution contracts.
+
+pub mod protocol;
+pub mod request;
+pub mod result;
+
+pub use protocol::{
+    AGENT_INPUT_SCHEMA_REVISION, AgentProtocolError, parse_agent_execution_input, request_from,
+};
+pub use request::{
+    AgentExecutionKind, AgentExecutionPayload, AgentExecutionRequest, AgentInputBinding,
+    NextInputSuggestionPolicy, UserInput,
+};
+pub use result::{
+    AGENT_RESULT_CLASSIFICATION, AGENT_RESULT_MEDIA_TYPE, AgentResultArtifact, AgentTerminalState,
+    bind_result_artifact,
+};

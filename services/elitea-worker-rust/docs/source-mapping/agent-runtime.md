@@ -14,15 +14,40 @@ message fields.
 
 | Source path and symbol | Observable behavior | Rust target | ADK-Rust role | Proving tests | Status / deviation |
 | --- | --- | --- | --- | --- | --- |
-| `libs/proto/elitea/runtime/v1/{agent,command,envelope,input}.proto` | Reference-only signed command and bounded application/ad-hoc input | `build.rs`, `src/protocol/mod.rs`, `src/agents/protocol.rs` | None | `tests/agent_input_contract.rs`, command negative/property corpus | Planned |
+| `libs/proto/elitea/runtime/v1/{agent,command,envelope,input}.proto` | Reference-only signed command and bounded application/ad-hoc input | `build.rs`, `src/protocol/mod.rs`, `src/agents/protocol.rs` | None | `tests/agent_input_contract.rs`, Python-generated fixtures and truncation/limit corpus | Partial: all bindings generate; strict agent input is implemented, signed command/envelope admission is planned |
 | `libs/proto/elitea/runtime/v1/{control,output}.proto` | Claim, begin, authorize, lease, desired state, settlement, ordered output stream | `src/transport/control.rs`, `src/transport/output.rs` | None | Real gRPC component and failure-injection tests | Planned |
 | Python worker `protocol/codec.py::{parse_and_verify_signed_command,_scan_worker_command,_validate_command}` | Verify exact signed bytes before decode; reject duplicate/unknown tags and capability mismatch | `src/protocol/envelope.rs`, `src/protocol/command.rs` | None | Fuzz/property tests and Python/Go/Rust golden commands | Planned |
-| Python worker `protocol/agent.py::{parse_agent_execution_input,request_from,bind_result_artifact}` | Canonical input parsing, semantic validation, exact content binding, terminal artifact binding | `src/agents/protocol.rs`, `src/agents/result.rs` | None | Application/ad-hoc golden inputs and three supported terminal states | Planned |
-| Python worker `handlers/agent.py::{AgentExecutionKind,AgentExecutionPayload,AgentExecutionHandler.execute}` | Select exactly one configured-application or ad-hoc entry point | `src/agents/request.rs` | Agent construction only after admission | Recording executor tests for both entry points | Planned |
+| Python worker `protocol/agent.py::{parse_agent_execution_input,request_from,bind_result_artifact}` | Canonical input parsing, semantic validation, exact content binding, terminal artifact binding | `src/agents/protocol.rs`, `src/agents/result.rs` | None | `tests/agent_input_contract.rs`: Python application/ad-hoc fixtures, duplicate/depth/string/number/truncation corpus and three supported terminal states | Partial: implemented through typed request and terminal artifact; delivery invocation remains gated |
+| Python worker `handlers/agent.py::{AgentExecutionKind,AgentExecutionPayload,AgentExecutionHandler.execute}` | Select exactly one configured-application or ad-hoc entry point | `src/agents/request.rs` | Agent construction only after admission | Typed fixture tests for both entry points; recording executor test remains planned | Foundation: immutable kind/payload/request exist; runtime delegation is not implemented |
 | Python worker `execution/delivery.py::AgentExecutionDeliveryProcessor` | Claim-bound materialization, authorize-once, event/result output, settlement and ACK | `src/execution/agent_delivery.rs` | Runner invoked behind the effect fence | Component tests for recovery dispositions, ACK loss and cancellation races | Planned |
 | Python worker `capabilities.py::capability_message` | Capability identity and feature advertisement | `src/capabilities.rs` | None | Manifest golden and production-registration fail-closed test | Foundation: only empty production registration exists |
 | Python worker `handlers/agent_events.py::CurrentAgentNodeEventCallback` | Ordered current-compatible events, pause projection, terminal browser artifact | `src/compat/node_events.rs` | ADK events are input only | Ordered differential ordinary/HITL/MCP/tool/skill corpus | Planned |
 | `libs/proto/elitea/runtime/v1/node_event.proto` and Python `protocol/node_event.py` | Exact 13-field browser event with strict JSON fragments | `src/compat/node_events.rs` | None | Cross-language JSON property/fuzz tests | Planned |
+
+### Agent input field projection
+
+Every wire field is declared in `libs/proto/elitea/runtime/v1/agent.proto`,
+decoded by Python `protocol/agent.py::request_from`, and now owned by the Rust
+types below. This is a field projection, not dispatch authority: fences and
+runtime clients never become request fields. `mcp_tokens` is claim-fetched
+secret data, so the Rust payload intentionally implements neither `Clone` nor
+`Debug`.
+
+| Proto fields | Python projected payload | Rust projection and validator | Status |
+| --- | --- | --- | --- |
+| `schema_revision` | validated before `request_from` | `protocol.rs::parse_agent_execution_input` | Implemented |
+| `llm`, `chat_history`, `user_input` | `AgentExecutionPayload.{llm,chat_history,user_input}` | `request.rs::AgentExecutionPayload`; object/list/text-or-block validation in `protocol.rs` | Implemented |
+| `thread_id`, `checkpoint_id`, `debug` | same names | `request.rs::AgentExecutionPayload` with protobuf presence preserved | Implemented |
+| `tools`, `application`, `internal_tools`, `steps_limit` | same names | owned JSON/list/string-list/positive `u32`; application/ad-hoc identity checks in `protocol.rs` | Implemented |
+| `mcp_tokens`, `ignored_mcp_servers`, `user_declined_mcp_servers` | same names | owned object/list fields in `request.rs`; credential redemption remains outside this type | Implemented wire parity; runtime auth planned |
+| `should_continue`, `hitl_resume`, `hitl_action`, `hitl_value`, `hitl_decisions` | same names | presence-preserving fields plus resume-decision invariant in `protocol.rs` | Implemented input parity; continuation runtime planned |
+| `execution_generation`, `is_regenerate`, `meta`, `conversation_id` | same names | owned immutable fields in `request.rs` | Implemented input parity |
+| `persona`, `context_settings`, `supports_vision`, `return_chat_history` | same names; empty persona becomes `generic` | same fields and default in `request.rs`/`protocol.rs` | Implemented input parity |
+| `invoked_skills`, `applied_skills`, `attached_skills` | same names | owned JSON lists in `request.rs` | Implemented input parity; skill runtime planned |
+| `auto_approve_sensitive_actions`, `input_attachments` | same names | owned fields in `request.rs` | Implemented input parity; policy/effect runtime planned |
+| `parallel_reconcile`, `parallel_terminal_errors` | same names | optional object/list in `request.rs` | Implemented decoding only; end-to-end behavior blocked |
+| `exception_handling_enabled`, `debug_mode` | same names | `Option<bool>` in `request.rs` | Implemented |
+| `next_input_suggestion` | bounded policy object with defaults | typed `NextInputSuggestionPolicy` and closed-field validation | Implemented |
 
 ## Assembly, execution, and state
 
