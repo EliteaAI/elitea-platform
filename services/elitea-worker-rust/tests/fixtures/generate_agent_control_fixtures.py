@@ -304,8 +304,26 @@ same_identity_changed_intent_signed = envelope_pb2.SignedWorkerCommandEnvelopeV1
     ).digest(),
 )
 
+adhoc_command = command_pb2.WorkerCommandV1.FromString(command_raw)
+adhoc_command.command_type = command_pb2.WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_ADHOC
+adhoc_command.capability_id = "agent.execute.adhoc.v1"
+adhoc_command_raw = adhoc_command.SerializeToString(deterministic=True)
+adhoc_signed = envelope_pb2.SignedWorkerCommandEnvelopeV1(
+    envelope_schema_revision="elitea.runtime.signed-worker-command.v1",
+    signature_profile=envelope_pb2.SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256,
+    key_id=CONFORMANCE_KEY_ID,
+    worker_command_bytes=adhoc_command_raw,
+    worker_command_digest=sha256(adhoc_command_raw),
+    signature=hmac.new(
+        CONFORMANCE_KEY,
+        adhoc_command_raw,
+        hashlib.sha256,
+    ).digest(),
+)
+
 fixtures = {
     "signed_command": signed.SerializeToString(deterministic=True),
+    "signed_command_adhoc": adhoc_signed.SerializeToString(deterministic=True),
     "signed_command_same_identity_changed_intent": (
         same_identity_changed_intent_signed.SerializeToString(deterministic=True)
     ),
