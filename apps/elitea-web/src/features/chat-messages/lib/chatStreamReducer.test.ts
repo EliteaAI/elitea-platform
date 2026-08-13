@@ -1254,3 +1254,33 @@ describe('a whole-message frame after the streamed chunks', () => {
     expect(history[0]?.content).toBe('MOCK: helloMOCK: hello world');
   });
 });
+
+describe('a streamed token is renderable the moment it arrives', () => {
+  it('clears isLoading on the first delta, and keeps isStreaming', () => {
+    // `ApplicationAnswer` gates the answer body on
+    // `canRenderContent = !exception && !isLoadingOrRegenerating`. A chunk that
+    // leaves `isLoading` true therefore accumulates text the UI refuses to
+    // paint, and the whole reply appears in one step when the turn settles —
+    // which is indistinguishable, on screen, from no streaming at all (#294).
+    const history = applyChatStreamFrame(
+      [pendingAssistant()],
+      frame(SocketMessageType.AgentLlmChunk, { content: 'MOCK: ' }),
+      CONTEXT,
+    );
+
+    expect(history[0]?.content).toBe('MOCK: ');
+    expect(history[0]?.isLoading, 'a delta IS output; holding isLoading hides it').toBe(false);
+    // The turn is still running: the stop control and spinner read isStreaming.
+    expect(history[0]?.isStreaming).toBe(true);
+  });
+
+  it('still shows the spinner before any token arrives', () => {
+    // agent_llm_start means "asked the model, nothing back yet" — that IS
+    // loading, and flipping it early would drop the only affordance the user
+    // has while waiting.
+    const history = applyChatStreamFrame([pendingAssistant()], frame(SocketMessageType.AgentLlmStart), CONTEXT);
+
+    expect(history[0]?.isLoading).toBe(true);
+    expect(history[0]?.isStreaming).toBe(true);
+  });
+});

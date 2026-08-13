@@ -108,7 +108,22 @@ export function isUserMessage(
   userIds: readonly (string | number)[],
   replyToId: string | number | undefined,
   sentTo: { entity_name?: string } | undefined,
+  /**
+   * The row's own `role`, when the source states one.
+   *
+   * `GET /elitea_core/messages/prompt_lib/{project}/{conversation}` — what a
+   * conversation deep link reads — answers rows shaped
+   * `{id, uid, role, content}` with NO `author_participant_id`, `sent_to_id`
+   * or `reply_to_id`. Every clause of the heuristic below then misses except
+   * `(!sentToId && !replyToId)`, which is TRUE, so an assistant reply was
+   * classified as a USER message: on reload the answer rendered as a second
+   * question, authored by "User No Longer Available" (measured). An explicit
+   * role is authoritative and needs no inference.
+   */
+  role?: string,
 ): boolean {
+  if (role === 'user') return true;
+  if (role === 'assistant') return false;
   return (
     userIds.includes(authorParticipantId ?? '') ||
     userIds.includes(sentToId ?? '') ||
@@ -273,6 +288,7 @@ export function convertMessagesToChatHistory(
       userIds,
       reply_to_id,
       sent_to,
+      (messageGroup as { role?: string }).role,
     );
 
     if (isUser) {

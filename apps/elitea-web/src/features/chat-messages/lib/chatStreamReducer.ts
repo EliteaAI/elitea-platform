@@ -460,7 +460,24 @@ export function applyChatStreamFrame(
       return replaceAt(history, index, {
         content: current.content + delta,
         isStreaming: true,
-        isLoading: true,
+        // FALSE once a token exists, and this is what makes streaming visible:
+        // `ApplicationAnswer` gates the answer body on
+        // `canRenderContent = !exception && !isLoadingOrRegenerating`, so while
+        // `isLoading` is true the accumulated text is held back and the whole
+        // reply appears in one step when the turn settles — measured, with the
+        // mock slowed to 400ms per chunk (#294).
+        //
+        // `isLoading` means "waiting for output"; a delta IS output. The
+        // processing affordances do not disappear, because `isProcessing` also
+        // reads `isStreaming`, which stays true until the turn ends.
+        //
+        // DEVIATION, stated: the baseline's chunk case does not write
+        // `msg.content` at all — it appends each delta to the LLM tool action
+        // and lets `agent_response` fill the bubble at the end, so its bubble
+        // never streams either and the live feedback is the thinking view.
+        // This port streams the answer itself, which is why it also has to
+        // suppress the duplicate `agent_response` append below.
+        isLoading: false,
       });
     }
 

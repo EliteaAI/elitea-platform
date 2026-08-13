@@ -27,21 +27,6 @@
  * can only have arrived over the SSE replay stream and through the ported
  * reducer. That is the whole point of running the journey here.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * CURRENTLY EXPECTED TO FAIL — #294, second half
- * ─────────────────────────────────────────────────────────────────────────────
- * The duplication half of #294 is FIXED and this journey proves it: the reply
- * renders exactly once. What still fails is the assertion below that a PARTIAL
- * answer is painted before the turn ends. It is not a sampling artefact — the
- * sampler starts with the click and polls every 50ms, and the mock is slowed to
- * 400ms per chunk (≈1.5s of streaming) — and it is not a stale image, since the
- * runner now rebuilds. The chunks arrive as separate SSE frames and the DOM
- * still goes empty → whole answer in one step.
- *
- * `test.fail()` rather than deleting the assertion: it is the only thing in the
- * suite that can tell streaming from a late bulk render, and Playwright fails an
- * expected-failure test that unexpectedly passes, so it announces the fix.
- *
  * The wire contract asserted below is the one the backend actually emits, NOT
  * the `chat.stream.chunk`/`chat.stream.done` pair #284's body names: every frame
  * arrives as one SSE `execution.node_event` whose semantic type lives in the
@@ -86,9 +71,6 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   // default. The individual waits below are each bounded well under this, so a
   // real hang still fails on the specific step rather than on the clock.
   test.setTimeout(180_000);
-
-  // Expected to fail until #294's incremental-render half lands.
-  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #294: no partial answer is painted before the turn ends');
 
   const prompt = uniquePrompt();
 
@@ -158,6 +140,8 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
 
   const createdResponse = await created;
   expect(createdResponse.status(), 'the send must create a real conversation').toBe(201);
+  const projectId = CONVERSATIONS_RE.exec(new URL(createdResponse.url()).pathname)?.[1] ?? '';
+  expect(projectId, 'the conversation must belong to a project').not.toBe('');
   const conversation = (await createdResponse.json()) as { id?: string; name?: string };
   expect(conversation.id, 'the conversation must carry a server-assigned id').toMatch(/^\d+$/);
   expect(conversation.name, 'the conversation is named after the question that opened it').toBe(prompt);
@@ -208,6 +192,30 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   // The negative guard, now that both halves have been observed.
   expect(sendRequests.length, `the send path made no request at all: ${JSON.stringify(sendRequests)}`).toBeGreaterThan(0);
   expect(sendRequests.some((entry) => entry.startsWith('POST'))).toBe(true);
+
+  // ── Persistence ──
+  // Waited for EXPLICITLY, because the stream is ahead of the store: the
+  // browser renders the answer as tokens arrive, while the server writes the
+  // message group when the turn finalises. Measured — a read issued the moment
+  // the UI settled returned the assistant row with `content: ""`, and the same
+  // conversation carried the full text moments later. Navigating straight away
+  // therefore failed against a backend that was merely still writing.
+  //
+  // Asserting the STORED text here also makes the reload assertion below a
+  // statement about rendering rather than a second, weaker persistence check.
+  await expect
+    .poll(
+      async () => {
+        const stored = await page.request.get(
+          `${BASE_URL}/api/v2/elitea_core/messages/prompt_lib/${projectId}/${conversation.id ?? ''}`,
+        );
+        if (!stored.ok()) return '';
+        const body = (await stored.json()) as { items?: readonly { role?: string; content?: string }[] };
+        return body.items?.find((item) => item.role === 'assistant')?.content ?? '';
+      },
+      { timeout: 30_000, message: 'the assistant reply was streamed but never stored' },
+    )
+    .toContain(prompt);
 
   // ── Persistence, through the UI ──
   // A FRESH load of the conversation's own URL re-reads everything from the
