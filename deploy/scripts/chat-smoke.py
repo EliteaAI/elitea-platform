@@ -39,6 +39,10 @@ import uuid as uuid_module
 
 ADHOC_CONTRACT = "agent.execute.adhoc.v1"
 
+# `pipeline_finish` ends a healthy turn; `execution_failed`/`error` end a broken
+# one and must not be mistaken for completion.
+TERMINAL_EVENT_TYPES = frozenset({"pipeline_finish", "execution_failed", "error"})
+
 
 class Skip(Exception):
     """A precondition is missing; the path under test was never exercised."""
@@ -167,45 +171,53 @@ def start_turn(client: Client, project: int, conversation: str, prompt: str, mod
 
 
 def read_stream(client: Client, events_url: str, deadline_seconds: int) -> tuple[list[str], str]:
-    """Collect SSE event names and assembled content until a terminal event."""
+    """Collect node-event types and the assembled assistant text.
+
+    The wire contract is NOT the one #248's notes describe. Every frame is a
+    single SSE event named `execution.node_event`; the semantic type lives in
+    the payload's `type` field, and a turn runs
+    agent_start → agent_on_transitional_edge → agent_llm_start →
+    agent_llm_chunk* → agent_llm_end → agent_response → partial_message →
+    full_message → pipeline_finish. Asserting on `chat.stream.chunk` /
+    `chat.stream.done` would fail against a perfectly healthy stream.
+    """
     status, body, response = client.request("GET", events_url, stream=True)
-    if status == 401:
-        # Not a bad token: production_runtime.go:31-37 composes this route with
-        # PrincipalValidator + ForwardedIdentityVerifier only — no bearer and no
-        # session cookie — so the credential that just admitted the turn cannot
-        # read its own stream. Reaching it needs a forward-auth edge injecting
-        # verified identity headers, which the hybrid has and this stack does
-        # not (#289). The admission half above is genuinely proven by here.
-        raise Blocked("the events stream accepts no credential this client can present (#289)")
+    if status in (401, 403):
+        # production_runtime.go composes this route with PrincipalValidator +
+        # ForwardedIdentityVerifier only — no bearer, no session cookie — so it
+        # is reachable exclusively through a forward-auth edge that projects
+        # verified identity headers (#289). A 403 here usually means the edge's
+        # X-Forwarded-Host does not equal auth.form.yml's public_origin host.
+        raise Blocked(f"the events stream refused this caller: HTTP {status} (#289)")
     if status != 200:
         raise Fail(f"events stream → HTTP {status}: {body[:200]}")
-    names: list[str] = []
+
+    types: list[str] = []
     content: list[str] = []
     deadline = time.monotonic() + deadline_seconds
-    event_name = ""
     try:
         for raw in response:
             if time.monotonic() > deadline:
-                raise Fail(f"no terminal event within {deadline_seconds}s; saw {names or 'nothing'}")
+                raise Fail(f"no terminal event within {deadline_seconds}s; saw {types or 'nothing'}")
             line = raw.decode(errors="replace").rstrip("\n")
-            if line.startswith("event:"):
-                event_name = line.split(":", 1)[1].strip()
-                names.append(event_name)
-                if event_name in ("chat.stream.done", "execution.failed"):
-                    break
-            elif line.startswith("data:"):
-                payload = line.split(":", 1)[1].strip()
-                try:
-                    parsed = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                for key in ("content", "delta", "text"):
-                    value = parsed.get(key) if isinstance(parsed, dict) else None
-                    if isinstance(value, str):
-                        content.append(value)
+            # ": heartbeat" and ": connected" are SSE comments, not events.
+            if not line.startswith("data:"):
+                continue
+            try:
+                event = json.loads(line.split(":", 1)[1].strip())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type") or "")
+            types.append(event_type)
+            if event_type == "agent_llm_chunk" and isinstance(event.get("content"), str):
+                content.append(event["content"])
+            if event_type in TERMINAL_EVENT_TYPES:
+                break
     finally:
         response.close()
-    return names, "".join(content)
+    return types, "".join(content)
 
 
 def assert_persisted(client: Client, project: int, conversation: str, expected: str) -> None:
@@ -214,6 +226,10 @@ def assert_persisted(client: Client, project: int, conversation: str, expected: 
     A stream can be produced and never stored; asserting only on it would pass
     against a backend that forgets the turn the moment it ends.
     """
+    # The NUMERIC id again, not the uuid: ListMessages reads by
+    # chat_message_group.conversation_id. Passing the uuid returns 200 with an
+    # empty list, so this assertion would fail against a database that has the
+    # rows — which is exactly how it first failed.
     status, body, _ = client.request(
         "GET", f"/api/v2/elitea_core/messages/prompt_lib/{project}/{conversation}")
     if status != 200:
@@ -245,16 +261,19 @@ def main() -> int:
         events_url = start_turn(client, args.project, conversation, prompt, args.model,
                                 str(uuid_module.uuid4()), str(uuid_module.uuid4()))
         print(f"  · turn admitted, events_url={events_url}")
-        names, content = read_stream(client, events_url, args.timeout)
-        if "execution.failed" in names:
-            raise Fail(f"execution failed; events: {names}")
-        if not any(name == "chat.stream.chunk" for name in names):
-            raise Fail(f"no chat.stream.chunk event; events: {names}")
-        if "chat.stream.done" not in names:
-            raise Fail(f"no terminal chat.stream.done; events: {names}")
+        types, content = read_stream(client, events_url, args.timeout)
+        if any(t in ("execution_failed", "error") for t in types):
+            raise Fail(f"execution failed; events: {types}")
+        if "agent_llm_chunk" not in types:
+            raise Fail(f"no streamed token chunk; events: {types}")
+        if "pipeline_finish" not in types:
+            raise Fail(f"no terminal pipeline_finish; events: {types}")
+        # The mock echoes the prompt, so finding it in the ASSEMBLED chunk
+        # content proves the tokens came from this turn's model call rather
+        # than from a replayed or cached stream.
         if prompt not in content:
-            raise Fail("streamed content did not echo the prompt the mock was given")
-        assert_persisted(client, args.project, conversation, prompt)
+            raise Fail(f"streamed content did not echo this run's prompt; got {content[:120]!r}")
+        assert_persisted(client, args.project, conversation_id, prompt)
     except Blocked as blocked:
         print(f"  ! BLOCKED: {blocked}")
         return 3
@@ -265,7 +284,7 @@ def main() -> int:
         print(f"  ✗ {failure}")
         return 1
 
-    print(f"  ✓ streamed {len(names)} events and persisted the reply")
+    print(f"  ✓ streamed {len(types)} node events, echoed the prompt, and persisted the reply")
     return 0
 
 
