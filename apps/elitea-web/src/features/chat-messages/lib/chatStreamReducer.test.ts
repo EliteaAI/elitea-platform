@@ -140,6 +140,26 @@ describe('applyChatStreamFrame', () => {
     expect(after).toBe(before);
   });
 
+  it('leaves state untouched for every graph frame, and for freeform', () => {
+    // These are state-inert BY DESIGN, not unported: the baseline's five graph
+    // cases contain nothing but the forward call, and its freeform case is a
+    // bare `break`. A caller forwards them via shouldForwardAgentEvent; the
+    // reducer must not invent a state change the baseline never made.
+    const before: readonly ChatMessage[] = [pendingAssistant()];
+    for (const type of [
+      SocketMessageType.AgentOnFunctionToolNode,
+      SocketMessageType.AgentOnToolNode,
+      SocketMessageType.AgentOnTransitionalEdge,
+      SocketMessageType.AgentOnConditionalEdge,
+      SocketMessageType.AgentOnDecisionEdge,
+      'agent_on_loop_node',
+      SocketMessageType.Freeform,
+    ]) {
+      const after = applyChatStreamFrame(before, frame(type, { content: 'ignored' }), CONTEXT);
+      expect(after, `${type} changed message state`).toBe(before);
+    }
+  });
+
   it('ignores a frame with no type at all', () => {
     const before: readonly ChatMessage[] = [pendingAssistant()];
     expect(applyChatStreamFrame(before, { message_id: MESSAGE_ID }, CONTEXT)).toBe(before);

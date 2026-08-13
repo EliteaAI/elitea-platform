@@ -60,9 +60,14 @@ export const SocketMessageType = {
 } as const;
 
 /**
- * The types THIS slice reduces. Everything else in `SocketMessageType` is a
- * later slice (tool nodes, thinking steps, HITL, MCP authorization, swarm,
- * summaries, edges) — see the reducer's module doc for the running list.
+ * The types that CHANGE MESSAGE STATE. Everything else in `SocketMessageType`
+ * is either a later slice (swarm, summaries, `chat_user_message`) or state-inert
+ * by design — see the reducer's module doc for the running list.
+ *
+ * The `agent_on_*` graph frames are absent for the second reason, not the
+ * first: they carry the flow editor's node highlighting and touch no message
+ * (`agentGraphEvents.ts`). Listing them here would claim a state change the
+ * baseline never made.
  *
  * Exported so a caller can tell "we chose not to render this yet" from "the
  * backend sent something nobody has ever seen", and so a test can assert the
@@ -79,7 +84,6 @@ export const HANDLED_STREAM_TYPES: ReadonlySet<string> = new Set<string>([
   SocketMessageType.AgentResponse,
   SocketMessageType.References,
   SocketMessageType.PipelineFinish,
-  SocketMessageType.Freeform,
   SocketMessageType.Error,
   SocketMessageType.LlmError,
   SocketMessageType.AgentException,

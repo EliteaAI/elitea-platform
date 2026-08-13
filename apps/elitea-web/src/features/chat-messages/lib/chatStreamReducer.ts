@@ -1,8 +1,8 @@
 /**
  * lib/chatStreamReducer.ts — the chat streaming reducer (issue #93, Surface B).
  *
- * PORT STATUS — slices 1-4 (core streaming, the tool lifecycle, thinking steps,
- * then interrupts). The baseline reducer is
+ * PORT STATUS — slices 1-5 (core streaming, the tool lifecycle, thinking steps,
+ * interrupts, then graph events). The baseline reducer is
  * `EliteaUI/src/components/Chat/hooks.js:391-1581`: 1,191 lines, 34 switch
  * cases. This module ports the 14 that carry a plain agent turn from "sent" to
  * "answered", which is the sequence a live stack actually emits:
@@ -14,13 +14,18 @@
  * NOT YET PORTED, each its own slice, and each currently a no-op that leaves
  * state untouched rather than a silent content drop:
  *
- *   graph nodes       agent_on_function_tool_node, agent_on_tool_node and the
- *                     three agent_on_*_edge frames (progress chips, not tool
- *                     lifecycle)
  *   swarm             swarm_child_message, agent_swarm_agent_start,
  *                     agent_swarm_agent_response, agent_swarm_handoff
  *   summaries         chat_predict_summary_started/finished
  *   echo              chat_user_message
+ *
+ * STATE-INERT BY DESIGN, which is a different thing from unported: the
+ * `agent_on_*` graph frames drive the pipeline flow editor's node highlighting
+ * and touch no message at all — the baseline's five case labels contain nothing
+ * but the forward call. They fall through to `default` here on purpose, and
+ * `agentGraphEvents.shouldForwardAgentEvent` carries the half a caller owes
+ * them. `freeform` is inert for the same reason: the baseline's case is a bare
+ * `break`.
  *
  * SIDE EFFECTS ARE NOT PORTED, and that is a boundary rather than an omission.
  * The baseline's tool cases also fire Google Analytics events, write
@@ -553,8 +558,15 @@ export function applyChatStreamFrame(
 
     // A whole response, fenced when it is not plain text. It carries the
     // terminal signal for a chat turn.
-    case SocketMessageType.AgentResponse:
-    case SocketMessageType.Freeform: {
+    //
+    // `freeform` is NOT handled here despite the similar name. Reading the
+    // baseline's graph slice turned up that its `freeform` case is a bare
+    // `break` (hooks.js:1393-1394) — it appends nothing and forwards nothing —
+    // and an earlier slice of this port had paired the two. Neither the Go
+    // services nor the Python worker's event map emits `freeform` at all, so
+    // the pairing was inert in practice, but appending on a frame the baseline
+    // ignores is a content duplication waiting for whoever revives the type.
+    case SocketMessageType.AgentResponse: {
       const text = frameText(frame, true);
       if (index === -1) {
         if (!text) return history;
