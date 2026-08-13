@@ -435,6 +435,22 @@ pub struct LeaseMonitoredAgentExecution {
     claim: AcceptedAgentClaim,
 }
 
+/// Borrowed, post-Begin authority used only by the claim-bound input client.
+///
+/// The type and every field remain crate-private so the fence cannot cross the
+/// public API or be reconstructed from caller-selected values.
+pub(crate) struct ClaimBoundInputAuthority<'a> {
+    pub(crate) execution_id: &'a str,
+    pub(crate) generation: u64,
+    pub(crate) content_id: &'a str,
+    pub(crate) immutable_version: &'a str,
+    pub(crate) claim_id: &'a str,
+    pub(crate) fence_token: &'a [u8],
+    pub(crate) expected_source_length: u64,
+    pub(crate) expected_source_sha256: &'a [u8],
+    pub(crate) media_type: &'a str,
+}
+
 impl LeaseMonitoredAgentExecution {
     #[must_use]
     pub const fn input_bundle_ref(&self) -> &ExecutionInputBundleReferenceV1 {
@@ -449,6 +465,66 @@ impl LeaseMonitoredAgentExecution {
     #[must_use]
     pub const fn request_entry(&self) -> &ExecutionInputEntryV1 {
         self.claim.request_entry()
+    }
+
+    #[must_use]
+    pub(crate) fn input_content_authority(&self) -> Option<ClaimBoundInputAuthority<'_>> {
+        let content = self.claim.request_entry.content.as_ref()?;
+        let source_digest = content.digest.as_ref()?;
+        Some(ClaimBoundInputAuthority {
+            execution_id: &self.claim.identity.execution_id,
+            generation: self.claim.identity.generation,
+            content_id: &content.content_id,
+            immutable_version: &content.immutable_version,
+            claim_id: &self.claim.claim_id,
+            fence_token: &self.claim.fence.fence_token,
+            expected_source_length: content.byte_length,
+            expected_source_sha256: &source_digest.value,
+            media_type: &content.media_type,
+        })
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_lease_monitored_input_execution(
+    expected_source_length: u64,
+    expected_source_sha256: [u8; 32],
+) -> LeaseMonitoredAgentExecution {
+    let content = ScopedContentReferenceV1 {
+        content_id: "settings id".to_owned(),
+        immutable_version: "v/1".to_owned(),
+        media_type: AGENT_INPUT_MEDIA_TYPE.to_owned(),
+        byte_length: expected_source_length,
+        digest: Some(DigestV1 {
+            algorithm: DigestAlgorithmV1::Sha256 as i32,
+            value: expected_source_sha256.to_vec(),
+        }),
+        classification: "project".to_owned(),
+        required_grant_audience: INPUT_GRANT_AUDIENCE.to_owned(),
+    };
+    LeaseMonitoredAgentExecution {
+        claim: AcceptedAgentClaim {
+            identity: ExecutionIdentityV1 {
+                execution_id: "execution/one".to_owned(),
+                generation: 2,
+                ..ExecutionIdentityV1::default()
+            },
+            fence: ExecutionFenceV1 {
+                fence_token: vec![b'f'; 32],
+                ..ExecutionFenceV1::default()
+            },
+            lease_expires_at_unix_millis: 1_700_000_060_000,
+            claim_id: "claim-1".to_owned(),
+            claim_handoff_watermark: 0,
+            input_bundle_ref: ExecutionInputBundleReferenceV1::default(),
+            input_bundle: ExecutionInputBundleV1::default(),
+            request_entry: ExecutionInputEntryV1 {
+                entry_id: "agent-request".to_owned(),
+                immutable_version: "v/1".to_owned(),
+                semantic_role: AGENT_EXECUTION_REQUEST_ROLE.to_owned(),
+                content: Some(content),
+            },
+        },
     }
 }
 

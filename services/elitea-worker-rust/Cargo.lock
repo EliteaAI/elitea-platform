@@ -122,6 +122,11 @@ name = "elitea-worker-rust"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
+ "bytes",
+ "http",
+ "http-body-util",
+ "percent-encoding",
  "prost",
  "protoc-bin-vendored",
  "ring",
@@ -135,6 +140,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tower",
  "zeroize",
 ]
 

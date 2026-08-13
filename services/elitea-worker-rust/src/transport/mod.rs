@@ -1,4 +1,7 @@
 pub mod control_grpc;
+pub mod input_content;
+#[cfg(test)]
+mod input_content_tests;
 pub mod output_grpc;
 mod output_session;
 pub mod redis_commands;
