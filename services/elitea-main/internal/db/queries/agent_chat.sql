@@ -225,6 +225,19 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
         AND pending_response.is_streaming
         AND NOT EXISTS (
             SELECT 1
+            FROM chat_message_group AS newer_response
+            WHERE newer_response.conversation_id = pending_response.conversation_id
+              AND newer_response.reply_to_id IS NOT NULL
+              AND (
+                  newer_response.created_at > pending_response.created_at
+                  OR (
+                      newer_response.created_at = pending_response.created_at
+                      AND newer_response.id > pending_response.id
+                  )
+              )
+        )
+        AND NOT EXISTS (
+            SELECT 1
             FROM chat_message_group AS retried_question
             WHERE retried_question.id = pending_response.reply_to_id
               AND retried_question.uuid = sqlc.arg(question_id)::uuid
@@ -255,6 +268,26 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
 SELECT application_version.id AS application_version_id,
        application_version.application_id,
        application_version.agent_type,
+       COALESCE((
+           SELECT jsonb_agg(
+               jsonb_build_object(
+                   'skill_id', skill_mapping.skill_id,
+                   'name', skill.name,
+                   'icon_meta', CASE
+                       WHEN skill_version.id IS NULL THEN 'null'::jsonb
+                       ELSE COALESCE(skill_version.meta -> 'icon_meta', 'null'::jsonb)
+                   END
+               )
+               ORDER BY skill_mapping.id
+           )
+           FROM entity_skill_mapping AS skill_mapping
+           JOIN skills AS skill
+             ON skill.id = skill_mapping.skill_id
+           LEFT JOIN skill_versions AS skill_version
+             ON skill_version.id = skill_mapping.skill_version_id
+           WHERE skill_mapping.entity_version_id = application_version.id
+             AND skill_mapping.entity_type = 'agent'
+       ), '[]'::jsonb)::text AS skills_json,
        COALESCE((
            SELECT jsonb_agg(
                jsonb_build_object(
@@ -374,21 +407,6 @@ LEFT JOIN LATERAL (
               = (sqlc.arg(project_id)::integer)::text
           AND COALESCE(application_participant.meta ->> 'name', '') <> ''
           AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
-          AND (
-              LOWER(application_version.agent_type) = 'pipeline'
-              OR NOT EXISTS (
-                  SELECT 1
-                  FROM entity_tool_mapping AS child_mapping
-                  JOIN elitea_tools AS child_tool
-                    ON child_tool.id = child_mapping.tool_id
-                  WHERE child_mapping.entity_version_id = application_version.id
-                    AND child_mapping.entity_type = 'agent'
-                    AND (
-                        child_tool.type = 'mcp'
-                        OR child_tool.meta ->> 'mcp' = 'true'
-                    )
-              )
-          )
     ) AS current_tool
 ) AS current_tools ON TRUE
 LEFT JOIN LATERAL (
@@ -500,21 +518,6 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
             OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
             OR invalid_application_version.id IS NULL
             OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
-            OR (
-                LOWER(invalid_application_version.agent_type) <> 'pipeline'
-                AND EXISTS (
-                    SELECT 1
-                    FROM entity_tool_mapping AS unsupported_child_mapping
-                    JOIN elitea_tools AS unsupported_child_tool
-                      ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
-                    WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
-                      AND unsupported_child_mapping.entity_type = 'agent'
-                      AND (
-                          unsupported_child_tool.type = 'mcp'
-                          OR unsupported_child_tool.meta ->> 'mcp' = 'true'
-                      )
-                )
-            )
         )
   )
   AND NOT EXISTS (
@@ -522,6 +525,19 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       FROM chat_message_group AS pending_response
       WHERE pending_response.conversation_id = conversation.id
         AND pending_response.is_streaming
+        AND NOT EXISTS (
+            SELECT 1
+            FROM chat_message_group AS newer_response
+            WHERE newer_response.conversation_id = pending_response.conversation_id
+              AND newer_response.reply_to_id IS NOT NULL
+              AND (
+                  newer_response.created_at > pending_response.created_at
+                  OR (
+                      newer_response.created_at = pending_response.created_at
+                      AND newer_response.id > pending_response.id
+                  )
+              )
+        )
         AND NOT EXISTS (
             SELECT 1
             FROM chat_message_group AS retried_question
@@ -1121,6 +1137,19 @@ WITH resolved AS MATERIALIZED (
           FROM chat_message_group AS pending_response
           WHERE pending_response.conversation_id = conversation.id
             AND pending_response.is_streaming
+            AND NOT EXISTS (
+                SELECT 1
+                FROM chat_message_group AS newer_response
+                WHERE newer_response.conversation_id = pending_response.conversation_id
+                  AND newer_response.reply_to_id IS NOT NULL
+                  AND (
+                      newer_response.created_at > pending_response.created_at
+                      OR (
+                          newer_response.created_at = pending_response.created_at
+                          AND newer_response.id > pending_response.id
+                      )
+                  )
+            )
       )
       AND NOT EXISTS (
           SELECT 1
@@ -1347,21 +1376,6 @@ WITH resolved AS MATERIALIZED (
                 OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
                 OR invalid_application_version.id IS NULL
                 OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
-                OR (
-                    LOWER(invalid_application_version.agent_type) <> 'pipeline'
-                    AND EXISTS (
-                        SELECT 1
-                        FROM entity_tool_mapping AS unsupported_child_mapping
-                        JOIN elitea_tools AS unsupported_child_tool
-                          ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
-                        WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
-                          AND unsupported_child_mapping.entity_type = 'agent'
-                          AND (
-                              unsupported_child_tool.type = 'mcp'
-                              OR unsupported_child_tool.meta ->> 'mcp' = 'true'
-                          )
-                    )
-                )
             )
       )
       AND NOT EXISTS (
@@ -1369,6 +1383,19 @@ WITH resolved AS MATERIALIZED (
           FROM chat_message_group AS pending_response
           WHERE pending_response.conversation_id = conversation.id
             AND pending_response.is_streaming
+            AND NOT EXISTS (
+                SELECT 1
+                FROM chat_message_group AS newer_response
+                WHERE newer_response.conversation_id = pending_response.conversation_id
+                  AND newer_response.reply_to_id IS NOT NULL
+                  AND (
+                      newer_response.created_at > pending_response.created_at
+                      OR (
+                          newer_response.created_at = pending_response.created_at
+                          AND newer_response.id > pending_response.id
+                      )
+                  )
+            )
       )
       AND NOT EXISTS (
           SELECT 1

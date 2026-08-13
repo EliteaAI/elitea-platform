@@ -16,6 +16,7 @@ from elitea_worker.execution.delivery import _validate_pending_output
 from elitea_worker.handlers.agent_events import (
     CurrentAgentNodeEventCallback,
     CurrentAgentNodeEventContext,
+    nested_skill_registry_from_payload,
 )
 from elitea_worker.protocol.codec import (
     VerifiedWorkerCommand,
@@ -343,6 +344,23 @@ def test_completed_response_content_excludes_hitl_and_authorization_pauses() -> 
     )
 
 
+def test_completed_response_content_keeps_only_current_visible_text_blocks() -> None:
+    callback, _ = _callback()
+
+    assert callback.completed_response_content(
+        {
+            "output": [
+                {"type": "text", "text": "First"},
+                {"type": "output_text", "text": " second"},
+                {"type": "reasoning", "text": "must remain private"},
+                {"type": "tool_use", "name": "search"},
+                {},
+                17,
+            ]
+        }
+    ) == "First second"
+
+
 def test_next_input_suggestion_rejects_empty_and_oversized_text() -> None:
     callback, events = _callback()
 
@@ -522,6 +540,43 @@ def test_saved_mcp_authorization_pause_remains_at_the_root_scope() -> None:
     assert "parent_agent_path" not in authorization
     assert "child_thread_id" not in authorization
     assert "checkpoint_ns" not in authorization
+
+
+def test_materialization_authorization_uses_a_deterministic_guardrail_identity() -> None:
+    callback, events = _callback()
+
+    class McpAuthorizationRequired(RuntimeError):
+        server_url = "https://mcp.example.test/events"
+        resource_metadata_url = "https://login.example.test/discovery"
+        resource_metadata = {
+            "resource_name": "Documentation MCP",
+            "provided_settings": {"client_secret": "must-not-cross-output"},
+        }
+        authorization_servers = ["https://login.example.test"]
+        tool_name = "search_docs"
+        toolkit_name = "documentation-mcp"
+        toolkit_type = "mcp"
+
+    assert callback.capture_materialization_authorization(
+        McpAuthorizationRequired("Documentation MCP authorization is required.")
+    )
+    pause = callback.authorization_pause_result()
+    assert pause is not None
+    terminal = callback.emit_terminal(pause, _request_payload())
+
+    decoded = [_json(event) for event in events]
+    assert [event["type"] for event in decoded] == [
+        "mcp_authorization_required",
+        "mcp_authorization_required",
+    ]
+    authorization = _json(terminal)["response_metadata"]
+    assert authorization["tool_run_id"] == (
+        "mcp-auth-materialization:execution-1"
+    )
+    assert authorization["tool_name"] == "search_docs"
+    assert authorization["toolkit_name"] == "documentation-mcp"
+    assert authorization["toolkit_type"] == "mcp"
+    assert "provided_settings" not in authorization["resource_metadata"]
 
 
 def test_delegated_authorization_terminal_requires_callback_identity() -> None:
@@ -768,6 +823,86 @@ def test_load_skill_projects_cumulative_compact_applied_skills() -> None:
         'Skill "Deploy" is active.'
     )
     assert "must not enter browser events" not in str(decoded)
+
+
+def test_nested_load_skill_uses_admission_frozen_child_identity() -> None:
+    callback, events = _callback()
+    callback.configure_skills(
+        applied_skills=[],
+        attached_skills=[],
+        nested_skill_registry=[
+            {
+                "application_id": 31,
+                "application_version_id": 41,
+                "application_name": "child-agent",
+                "skills": [
+                    {
+                        "skill_id": 7,
+                        "name": "Deploy",
+                        "icon_meta": {"icon": "deploy"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    callback.on_tool_start(
+        {"name": "load_skill", "metadata": {"display_name": "Skills"}},
+        "ignored",
+        run_id="nested-load-deploy",
+        metadata={
+            "parent_agent_name": "child-agent",
+            "parent_agent_path": [{"name": "child-agent", "call_id": "call-1"}],
+        },
+        inputs={"skill": "deploy"},
+    )
+    callback.on_tool_end(
+        'Skill "Deploy" is now active\n\nchild instructions must not enter events',
+        run_id="nested-load-deploy",
+    )
+
+    decoded = [_json(event) for event in events]
+    start = decoded[0]
+    assert start["response_metadata"]["tool_meta"]["loaded_skill"] == "Deploy"
+    assert start["response_metadata"]["tool_meta"]["icon_meta"] == {
+        "icon": "deploy"
+    }
+    partial = decoded[-1]
+    assert partial["response_metadata"]["invoked_skills"] == [
+        {"skill_id": 7, "name": "Deploy", "icon_meta": {"icon": "deploy"}}
+    ]
+    assert "child instructions" not in str(decoded)
+
+
+def test_nested_skill_registry_is_collected_from_adhoc_and_saved_roots() -> None:
+    registry = [
+        {
+            "application_id": 31,
+            "application_version_id": 41,
+            "application_name": "child-agent",
+            "skills": [{"skill_id": 7, "name": "Deploy", "icon_meta": None}],
+        }
+    ]
+    payload = SimpleNamespace(
+        tools=[
+            {
+                "type": "application",
+                "nested_skill_registry": registry,
+            }
+        ],
+        application={
+            "version_details": {
+                "tools": [
+                    {
+                        "type": "application",
+                        "nested_skill_registry": registry,
+                    }
+                ]
+            }
+        },
+    )
+
+    assert nested_skill_registry_from_payload(payload) == registry + registry
 
 
 def test_terminal_application_details_omit_skill_instruction_bodies() -> None:

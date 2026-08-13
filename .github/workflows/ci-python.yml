@@ -99,6 +99,8 @@ jobs:
         env:
           SDK_REVISION: b5113a129329b85d23c2d5c2bf55f18e307414ec
           SDK_ARCHIVE_SHA256: df398b4a378e7b88ea3b72511e31de13a17a02159c69fbada6f0b948a0ecf2d7
+          SDK_MCP_PREFLIGHT_PATCH: 5c9409779ac0a55f8bf74f6ef438977089187a14
+          SDK_MCP_HARD_TIMEOUT_PATCH: 07ddc5cd67a0c747f83ca0e26421cde71bd97d9d
         run: |
           git clone --filter=blob:none --no-checkout \
             https://github.com/EliteaAI/elitea-sdk.git \
@@ -106,6 +108,10 @@ jobs:
           git -C /tmp/elitea-sdk-current checkout --detach "${SDK_REVISION}"
           test "$(git -C /tmp/elitea-sdk-current rev-parse HEAD)" = "${SDK_REVISION}"
           test "$(git -C /tmp/elitea-sdk-current archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)" = "${SDK_ARCHIVE_SHA256}"
+          git -C /tmp/elitea-sdk-current cat-file -e "${SDK_MCP_PREFLIGHT_PATCH}^{commit}"
+          git -C /tmp/elitea-sdk-current cat-file -e "${SDK_MCP_HARD_TIMEOUT_PATCH}^{commit}"
+          git -C /tmp/elitea-sdk-current cherry-pick --no-commit "${SDK_MCP_PREFLIGHT_PATCH}"
+          git -C /tmp/elitea-sdk-current cherry-pick --no-commit "${SDK_MCP_HARD_TIMEOUT_PATCH}"
 
       - name: Install the pinned worker and protocol packages
         run: |
@@ -124,6 +130,7 @@ jobs:
           ELITEA_SDK_SOURCE_ROOT: /tmp/elitea-sdk-current
         run: |
           python -m pytest \
+            /tmp/elitea-sdk-current/tests/runtime/test_mcp_discovery_hang.py \
             services/elitea-worker-python/tests \
             scripts/contract/test_sync_index_types_snapshot.py \
             scripts/contract/test_sync_toolkit_schema_snapshot.py
