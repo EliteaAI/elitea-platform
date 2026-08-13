@@ -639,6 +639,7 @@ func newIndexRBACRouter(
 		http.HandlerFunc(eventHandler.Stream),
 		authsvc.NewPrincipalValidator(pool),
 		indexRBACPeerVerifier{},
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)

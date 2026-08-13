@@ -772,6 +772,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			publicRoutes.ExecutionEvents,
 			principalValidator,
 			forwardedIdentityVerifier,
+			// The browser's only credential for the events stream: an
+			// EventSource sends a cookie and nothing else (#93). Same secret
+			// the rest of the router uses, so a session is accepted here on
+			// exactly the terms it is accepted everywhere else.
+			os.Getenv("APPLICATION_SECRET_KEY"),
 		)
 		if err != nil {
 			return fmt.Errorf("compose production runtime HTTP routes: %w", err)
