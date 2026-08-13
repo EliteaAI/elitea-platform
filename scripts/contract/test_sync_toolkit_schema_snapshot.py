@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+import sync_toolkit_schema_snapshot as sync
 from sync_toolkit_schema_snapshot import (
     ContractSyncError,
     _annotation_projection,
+    _require_locked_patch_paths,
     project_toolkit_schemas,
 )
 
@@ -32,6 +36,34 @@ class _ToolkitModel:
                 "ordinary": {"type": "integer"},
             },
         }
+
+
+def test_sdk_identity_admits_only_the_exact_locked_patch_paths(
+    monkeypatch,
+) -> None:
+    patch_revision = "b" * 40
+    actual_paths = "elitea_sdk/runtime/toolkits/mcp.py"
+
+    def fake_git(_root, *arguments, binary=False):
+        assert binary is False
+        if arguments[:4] == (
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+        ):
+            assert arguments[4] == patch_revision
+            return "elitea_sdk/runtime/toolkits/mcp.py"
+        if arguments[:3] == ("diff", "--name-only", "HEAD"):
+            return actual_paths
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(sync, "_git", fake_git)
+    _require_locked_patch_paths(Path("/sdk"), [patch_revision])
+
+    actual_paths = "elitea_sdk/runtime/toolkits/tools.py"
+    with pytest.raises(ContractSyncError, match="patch lock"):
+        _require_locked_patch_paths(Path("/sdk"), [patch_revision])
 
 
 def test_projection_contains_only_annotations_consumed_by_main() -> None:

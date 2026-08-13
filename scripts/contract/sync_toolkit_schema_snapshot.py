@@ -91,29 +91,58 @@ def _package_tree_digest(package_root: Path) -> tuple[int, str]:
     return len(paths), digest.hexdigest()
 
 
+def _require_locked_patch_paths(
+    sdk_root: Path,
+    patch_revisions: object,
+) -> None:
+    if not isinstance(patch_revisions, list) or any(
+        not isinstance(revision, str) or len(revision) != 40
+        for revision in patch_revisions
+    ):
+        raise ContractSyncError("worker SDK patch lock is invalid")
+
+    expected: set[str] = set()
+    for revision in patch_revisions:
+        paths = _git(
+            sdk_root,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            revision,
+            "--",
+            "elitea_sdk",
+            "pyproject.toml",
+        )
+        expected.update(path for path in paths.splitlines() if path)
+
+    actual = _git(
+        sdk_root,
+        "diff",
+        "--name-only",
+        "HEAD",
+        "--",
+        "elitea_sdk",
+        "pyproject.toml",
+    )
+    if {path for path in actual.splitlines() if path} != expected:
+        raise ContractSyncError("SDK source changes do not match the worker patch lock")
+
+
 def _require_sdk_identity(sdk_root: Path, lock_path: Path) -> dict[str, Any]:
     try:
         lock = json.loads(lock_path.read_bytes())
         revision = lock["source"]["revision"]
         version = lock["distribution_version"]
         archive_digest = lock["source"]["git_archive_sha256"]
+        patch_revisions = lock["source"].get("patch_revisions", [])
         tree = lock["installed_package_tree"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ContractSyncError("worker SDK lock is invalid") from exc
 
     if _git(sdk_root, "rev-parse", "HEAD") != revision:
         raise ContractSyncError("SDK checkout does not match the worker lock")
-    dirty = _git(
-        sdk_root,
-        "status",
-        "--porcelain",
-        "--untracked-files=no",
-        "--",
-        "elitea_sdk",
-        "pyproject.toml",
-    )
-    if dirty:
-        raise ContractSyncError("SDK source has tracked local changes")
+    _require_locked_patch_paths(sdk_root, patch_revisions)
 
     try:
         project = tomllib.loads((sdk_root / "pyproject.toml").read_text())
