@@ -1,7 +1,7 @@
 /**
  * lib/chatStreamReducer.ts — the chat streaming reducer (issue #93, Surface B).
  *
- * PORT STATUS — first slice. The baseline reducer is
+ * PORT STATUS — slices 1-2 (core streaming, then the tool lifecycle). The baseline reducer is
  * `EliteaUI/src/components/Chat/hooks.js:391-1581`: 1,191 lines, 34 switch
  * cases. This module ports the 14 that carry a plain agent turn from "sent" to
  * "answered", which is the sequence a live stack actually emits:
@@ -13,8 +13,9 @@
  * NOT YET PORTED, each its own slice, and each currently a no-op that leaves
  * state untouched rather than a silent content drop:
  *
- *   tool nodes        agent_tool_start/end/error, agent_on_function_tool_node,
- *                     agent_on_tool_node, agent_on_*_edge
+ *   graph nodes       agent_on_function_tool_node, agent_on_tool_node and the
+ *                     three agent_on_*_edge frames (progress chips, not tool
+ *                     lifecycle)
  *   thinking          agent_thinking_step, agent_thinking_step_update, and the
  *                     `thinking_steps` fan-out AgentLlmEnd performs in the
  *                     baseline (hooks.js:~700+)
@@ -25,10 +26,13 @@
  *   summaries         chat_predict_summary_started/finished
  *   echo              chat_user_message
  *
- * The omitted cases are exactly the ones that build `toolActions`, so this
- * slice deliberately does not touch that field: a half-built tool timeline is
- * worse than none, and `useSyncChatMessage`'s merge already preserves locally
- * added `toolActions` when the persisted group arrives.
+ * SIDE EFFECTS ARE NOT PORTED, and that is a boundary rather than an omission.
+ * The baseline's tool cases also fire Google Analytics events, write
+ * `window.__lastToolMetaFull`, and call `McpAuthHelpers.setSessionId` when a
+ * tool reports an MCP session. A pure reducer cannot do any of that. The
+ * metadata those effects read is preserved verbatim on `toolMeta`, so the hook
+ * that eventually drives this reducer can perform them from the same frame —
+ * see `mcpSessionFromFrame`, which extracts exactly that pair for a caller.
  *
  * SHAPE DEVIATION from the baseline, applied throughout: the baseline MUTATES a
  * message object and calls `setChatHistory` for its side effects, reading refs
@@ -40,6 +44,11 @@
  */
 import { convertJsonToString } from '@/shared/lib/json';
 import { ROLES } from '@/shared/lib/enums';
+import { TOOL_ACTION_TYPES, ToolActionStatus } from '@/shared/lib/chat';
+
+import { normalizeExecutionHierarchy } from './executionHierarchy';
+
+import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
 
 import type { ChatMessage } from './convertMessagesToChatHistory';
 import { SocketMessageType, type ChatStreamFrame } from './chatStreamFrame';
@@ -129,6 +138,110 @@ function threadIdOf(frame: ChatStreamFrame): string | undefined {
   return typeof nested === 'string' ? nested : typeof metadata?.thread_id === 'string' ? metadata.thread_id : undefined;
 }
 
+
+/**
+ * One entry in a message's tool timeline. Left open deliberately: the baseline
+ * writes provider- and toolkit-specific members onto these objects and the
+ * rendering layer reads them by name, so narrowing the shape here would drop
+ * data the UI still needs.
+ */
+export interface ToolAction extends SubAgentGroupable {
+  readonly id: string;
+  readonly status: string;
+  readonly toolMeta?: Record<string, unknown> | undefined;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * The metadata a tool frame carries, merged the way the baseline merges it:
+ * `tool_meta.metadata` wins over `response_metadata.metadata`, because the
+ * LangChain tool's own metadata is the more specific of the two.
+ */
+function toolMetadata(frame: ChatStreamFrame): Record<string, unknown> {
+  const responseMetadata = frame.response_metadata;
+  return {
+    ...responseMetadata?.metadata,
+    ...responseMetadata?.tool_meta?.metadata,
+  };
+}
+
+/**
+ * Recover a toolkit name the metadata omitted from the tool's description.
+ * Two shapes are in the wild — `[Toolkit: name]` (vectorstore, inventory) and a
+ * `Toolkit: name` line (most others) — and the baseline tries both before
+ * giving up, which is why a single regex here would silently unlabel toolkits.
+ */
+function toolkitNameFromDescription(description: unknown): string {
+  if (typeof description !== 'string') return '';
+  const bracketed = /\[Toolkit:\s*([^\]]+)]/.exec(description);
+  if (bracketed?.[1]) return bracketed[1].trim();
+  const line = /(?:^|\n)Toolkit:\s*([^\n]+)/.exec(description);
+  return line?.[1]?.trim() ?? '';
+}
+
+/** Toolkit identity, in the baseline's precedence order. */
+function toolkitIdentity(frame: ChatStreamFrame, metadata: Record<string, unknown>): {
+  readonly name: string;
+  readonly type: string;
+} {
+  const responseMetadata = frame.response_metadata;
+  const rawToolName = responseMetadata?.tool_name ?? '';
+  // The pre-rename wire format encoded the toolkit in the tool name itself.
+  const legacyToolkit = rawToolName.includes('___') ? (rawToolName.split('___')[0] ?? '') : '';
+  const fromMetadata = typeof metadata['toolkit_name'] === 'string' ? (metadata['toolkit_name'] as string) : '';
+  const fromDescription = toolkitNameFromDescription(responseMetadata?.tool_meta?.description);
+  const typeFromMetadata = typeof metadata['toolkit_type'] === 'string' ? (metadata['toolkit_type'] as string) : '';
+  return {
+    name: fromMetadata || fromDescription || responseMetadata?.toolkit_name || legacyToolkit,
+    type: typeFromMetadata || responseMetadata?.toolkit_type || '',
+  };
+}
+
+/**
+ * The tool's display name. A lazy-loading wrapper puts its own class name in
+ * `tool_name` and signals the swap with `metadata.original_name`; the real name
+ * is then on `tool_meta.name`, and preferring it is what stops the UI showing
+ * "LazyLoading" instead of the tool the user invoked.
+ */
+function toolDisplayName(frame: ChatStreamFrame, metadata: Record<string, unknown>): string | undefined {
+  const responseMetadata = frame.response_metadata;
+  const wrapped = metadata['original_name'] && responseMetadata?.tool_meta?.name;
+  return wrapped ? (responseMetadata.tool_meta?.name as string) : responseMetadata?.tool_name;
+}
+
+function findToolAction(message: ChatMessage, runId: string | undefined): ToolAction | undefined {
+  if (!runId) return undefined;
+  const actions = message.toolActions as readonly ToolAction[] | undefined;
+  return actions?.find((action) => action.id === runId);
+}
+
+/** Replace one tool action by id, preserving order and leaving the rest untouched. */
+function replaceToolAction(
+  message: ChatMessage,
+  runId: string,
+  update: (action: ToolAction) => ToolAction,
+): readonly ToolAction[] {
+  const actions = (message.toolActions ?? []) as readonly ToolAction[];
+  return actions.map((action) => (action.id === runId ? update(action) : action));
+}
+
+/**
+ * The MCP session a tool frame reports, for a CALLER to persist.
+ *
+ * The baseline calls `McpAuthHelpers.setSessionId` from inside the reducer.
+ * That is I/O, so it cannot live here — but dropping it would silently break
+ * MCP re-authorization, so the pair is surfaced instead of discarded.
+ */
+export function mcpSessionFromFrame(
+  frame: ChatStreamFrame,
+): { readonly serverUrl: string; readonly sessionId: string } | undefined {
+  const metadata = toolMetadata(frame);
+  const sessionId = metadata['mcp_session_id'];
+  const serverUrl = metadata['mcp_server_url'];
+  if (typeof sessionId !== 'string' || typeof serverUrl !== 'string' || !sessionId || !serverUrl) return undefined;
+  return { serverUrl, sessionId };
+}
+
 /**
  * Apply one streaming frame.
  *
@@ -212,6 +325,118 @@ export function applyChatStreamFrame(
         content: current.content + text,
         ...(finished ? { isStreaming: false, isLoading: false, hitlInterrupt: undefined, hitlInterrupts: undefined } : {}),
         ...(finished && threadId !== undefined ? { threadId } : {}),
+      });
+    }
+
+
+    // A tool started. Creates the timeline entry the UI renders as a chip; a
+    // repeat for the same run id updates ancestry rather than duplicating it.
+    case SocketMessageType.AgentToolStart: {
+      if (index === -1) return history;
+      const current = history[index];
+      const runId = frame.response_metadata?.tool_run_id;
+      if (!current || !runId) return history;
+      const metadata = toolMetadata(frame);
+      const hierarchy = normalizeExecutionHierarchy(metadata, frame.response_metadata);
+      const threadId = threadIdOf(frame);
+      const existing = findToolAction(current, runId);
+
+      if (existing) {
+        return replaceAt(history, index, {
+          toolActions: replaceToolAction(current, runId, (action) => ({
+            ...action,
+            ...hierarchy,
+            toolMeta: { ...action.toolMeta, ...metadata, ...hierarchy },
+          })),
+          ...(threadId !== undefined ? { threadId } : {}),
+        });
+      }
+
+      const toolkit = toolkitIdentity(frame, metadata);
+      // Built imperatively, not with conditional spreads: spreading a
+      // `{name: X} | {}` union infers `name?: X | undefined`, which
+      // `exactOptionalPropertyTypes` rejects against `SubAgentGroupable`'s
+      // "absent or string". Same convention as
+      // `useToolkitChatSocket.hooks.ts:79-90`.
+      const draft: Record<string, unknown> = {
+        id: runId,
+        type: TOOL_ACTION_TYPES.Tool,
+        status: ToolActionStatus.processing,
+        message: '',
+        ...hierarchy,
+        toolInputs: frame.response_metadata?.tool_inputs,
+        toolOutputs: frame.response_metadata?.tool_outputs,
+        toolMeta: { ...metadata, toolkit_type: toolkit.type, toolkit_name: toolkit.name, ...hierarchy },
+        created_at: frame.response_metadata?.timestamp_start ?? frame.created_at,
+      };
+      const displayName = toolDisplayName(frame, metadata);
+      if (displayName !== undefined) draft['name'] = displayName;
+      if (typeof metadata['original_name'] === 'string') draft['original_name'] = metadata['original_name'];
+      const created = draft as unknown as ToolAction;
+      return replaceAt(history, index, {
+        toolActions: [...((current.toolActions ?? []) as readonly ToolAction[]), created],
+        ...(threadId !== undefined ? { threadId } : {}),
+      });
+    }
+
+    // The tool returned. Outputs ACCUMULATE — a string appends, an object
+    // merges — because a tool may report progressively, and replacing would
+    // discard everything but the last frame.
+    case SocketMessageType.AgentToolEnd: {
+      if (index === -1) return history;
+      const current = history[index];
+      const runId = frame.response_metadata?.tool_run_id;
+      if (!current || !runId || !findToolAction(current, runId)) return history;
+      const metadata = toolMetadata(frame);
+
+      return replaceAt(history, index, {
+        toolActions: replaceToolAction(current, runId, (action) => {
+          const hierarchy = normalizeExecutionHierarchy(metadata, action, action.toolMeta);
+          const output = frame.response_metadata?.tool_output;
+          const previous = action['toolOutputs'];
+          let toolOutputs = previous;
+          if (typeof output === 'string') {
+            toolOutputs = (typeof previous === 'string' ? previous : '') + convertJsonToString(output, true);
+          } else if (typeof output === 'object' && output !== null) {
+            toolOutputs = { ...((typeof previous === 'object' && previous !== null ? previous : {}) as object), ...output };
+          }
+          return {
+            ...action,
+            ...hierarchy,
+            toolOutputs,
+            message: undefined,
+            content: convertJsonToString(frame.content ?? ''),
+            // An action awaiting approval stays awaiting it: the wrapper ending
+            // is not the user answering.
+            status: action.status === ToolActionStatus.actionRequired ? action.status : ToolActionStatus.complete,
+            ended_at: frame.response_metadata?.timestamp_finish ?? frame.created_at,
+            created_at: frame.response_metadata?.timestamp_start ?? action['created_at'],
+            toolMeta: { ...action.toolMeta, ...metadata, ...hierarchy },
+          };
+        }),
+      });
+    }
+
+    case SocketMessageType.AgentToolError: {
+      if (index === -1) return history;
+      const current = history[index];
+      const runId = frame.response_metadata?.tool_run_id;
+      if (!current || !runId || !findToolAction(current, runId)) return history;
+      const metadata = toolMetadata(frame);
+
+      return replaceAt(history, index, {
+        toolActions: replaceToolAction(current, runId, (action) => {
+          const hierarchy = normalizeExecutionHierarchy(metadata, action, action.toolMeta);
+          return {
+            ...action,
+            ...hierarchy,
+            content: convertJsonToString(frame.content ?? ''),
+            status: ToolActionStatus.error,
+            ended_at: frame.created_at,
+            isError: true,
+            toolMeta: { ...action.toolMeta, ...metadata, ...hierarchy },
+          };
+        }),
       });
     }
 

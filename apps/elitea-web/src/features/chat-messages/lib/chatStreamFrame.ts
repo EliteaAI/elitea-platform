@@ -83,6 +83,9 @@ export const HANDLED_STREAM_TYPES: ReadonlySet<string> = new Set<string>([
   SocketMessageType.Error,
   SocketMessageType.LlmError,
   SocketMessageType.AgentException,
+  SocketMessageType.AgentToolStart,
+  SocketMessageType.AgentToolEnd,
+  SocketMessageType.AgentToolError,
 ]);
 
 /**
@@ -92,6 +95,23 @@ export const HANDLED_STREAM_TYPES: ReadonlySet<string> = new Set<string>([
  */
 interface StreamResponseMetadata {
   readonly finish_reason?: string | undefined;
+  readonly tool_run_id?: string | undefined;
+  readonly tool_name?: string | undefined;
+  readonly toolkit_name?: string | undefined;
+  readonly toolkit_type?: string | undefined;
+  readonly tool_inputs?: unknown;
+  readonly tool_outputs?: unknown;
+  readonly tool_output?: unknown;
+  readonly tool_meta?:
+    | {
+        readonly name?: string | undefined;
+        readonly description?: string | undefined;
+        readonly metadata?: Record<string, unknown> | undefined;
+        readonly [key: string]: unknown;
+      }
+    | undefined;
+  readonly timestamp_start?: string | number | undefined;
+  readonly timestamp_finish?: string | number | undefined;
   readonly thread_id?: string | undefined;
   readonly metadata?: { readonly thread_id?: string | undefined; readonly [key: string]: unknown } | undefined;
   readonly [key: string]: unknown;

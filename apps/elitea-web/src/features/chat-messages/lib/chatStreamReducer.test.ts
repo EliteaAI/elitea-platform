@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { applyChatStreamFrame, type ChatStreamContext } from './chatStreamReducer';
+import { applyChatStreamFrame, mcpSessionFromFrame, type ChatStreamContext, type ToolAction } from './chatStreamReducer';
 import { HANDLED_STREAM_TYPES, SocketMessageType, isChatStreamFrame } from './chatStreamFrame';
 import type { ChatMessage } from './convertMessagesToChatHistory';
 
@@ -148,10 +148,20 @@ describe('applyChatStreamFrame', () => {
 
 describe('the ported boundary is explicit', () => {
   it('every handled type is reduced, and every unhandled one is inert', () => {
-    const before: readonly ChatMessage[] = [pendingAssistant()];
+    // The fixture satisfies EVERY handled case's preconditions — including an
+    // already-started tool action, which the end/error cases require — so a
+    // "handled type changed nothing" failure means the case is genuinely
+    // unreachable rather than under-supplied by the test.
+    const before: readonly ChatMessage[] = [
+      { ...pendingAssistant(), toolActions: [{ id: 'run-x', type: 'tool', status: 'processing' } as ToolAction] },
+    ];
 
     for (const type of Object.values(SocketMessageType)) {
-      const next = applyChatStreamFrame(before, frame(type, { content: 'x', references: [] }), CONTEXT);
+      const next = applyChatStreamFrame(
+        before,
+        frame(type, { content: 'x', references: [], response_metadata: { tool_run_id: 'run-x' } }),
+        CONTEXT,
+      );
       if (HANDLED_STREAM_TYPES.has(type)) {
         expect(next, `${type} is listed as handled but changed nothing`).not.toBe(before);
       } else {
@@ -167,5 +177,151 @@ describe('isChatStreamFrame', () => {
     expect(isChatStreamFrame({ message_id: 'x' })).toBe(false);
     expect(isChatStreamFrame(null)).toBe(false);
     expect(isChatStreamFrame('agent_llm_chunk')).toBe(false);
+  });
+});
+
+describe('the tool lifecycle', () => {
+  const RUN_ID = 'run-1';
+
+  function toolFrame(type: string, responseMetadata: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+    return frame(type, { response_metadata: { tool_run_id: RUN_ID, ...responseMetadata }, ...extra });
+  }
+
+  function withStartedTool(): readonly ChatMessage[] {
+    return applyChatStreamFrame(
+      [pendingAssistant()],
+      toolFrame(SocketMessageType.AgentToolStart, {
+        tool_name: 'jira___create_issue',
+        tool_inputs: { summary: 'hi' },
+        metadata: { thread_id: 'thread-3' },
+      }),
+      CONTEXT,
+    );
+  }
+
+  it('creates a processing tool action and captures the thread id', () => {
+    const history = withStartedTool();
+    const action = (history[0]?.toolActions ?? [])[0] as ToolAction | undefined;
+
+    expect(action?.['id']).toBe(RUN_ID);
+    expect(action?.['status']).toBe('processing');
+    expect(action?.['type']).toBe('tool');
+    expect(action?.['toolInputs']).toEqual({ summary: 'hi' });
+    expect(history[0]?.threadId).toBe('thread-3');
+  });
+
+  it('derives the toolkit from the legacy toolkit___tool name when metadata omits it', () => {
+    const action = (withStartedTool()[0]?.toolActions ?? [])[0] as ToolAction;
+    expect((action['toolMeta'] as Record<string, unknown>)['toolkit_name']).toBe('jira');
+  });
+
+  it('recovers a toolkit name from either description shape', () => {
+    for (const [description, expected] of [
+      ['[Toolkit: vectorstore]\nDoes things', 'vectorstore'],
+      ['Does things\nToolkit: confluence', 'confluence'],
+    ] as const) {
+      const history = applyChatStreamFrame(
+        [pendingAssistant()],
+        toolFrame(SocketMessageType.AgentToolStart, { tool_name: 'search', tool_meta: { description } }),
+        CONTEXT,
+      );
+      const action = (history[0]?.toolActions ?? [])[0] as ToolAction;
+      expect((action['toolMeta'] as Record<string, unknown>)['toolkit_name']).toBe(expected);
+    }
+  });
+
+  it('prefers the real tool name over a lazy-loading wrapper class', () => {
+    // Without this the chip reads "LazyLoading" instead of the invoked tool.
+    const history = applyChatStreamFrame(
+      [pendingAssistant()],
+      toolFrame(SocketMessageType.AgentToolStart, {
+        tool_name: 'LazyLoading',
+        tool_meta: { name: 'get_plan_status', metadata: { original_name: 'get_plan_status' } },
+      }),
+      CONTEXT,
+    );
+    const action = (history[0]?.toolActions ?? [])[0] as ToolAction;
+
+    expect(action['name']).toBe('get_plan_status');
+    expect(action['original_name']).toBe('get_plan_status');
+  });
+
+  it('does not duplicate an action when the same run id starts twice', () => {
+    const once = withStartedTool();
+    const twice = applyChatStreamFrame(once, toolFrame(SocketMessageType.AgentToolStart, {}), CONTEXT);
+
+    expect(twice[0]?.toolActions).toHaveLength(1);
+  });
+
+  it('accumulates string outputs across end frames rather than replacing them', () => {
+    // A tool can report progressively; replacing would keep only the last frame.
+    let history = withStartedTool();
+    history = applyChatStreamFrame(history, toolFrame(SocketMessageType.AgentToolEnd, { tool_output: 'part one ' }), CONTEXT);
+    history = applyChatStreamFrame(history, toolFrame(SocketMessageType.AgentToolEnd, { tool_output: 'part two' }), CONTEXT);
+    const action = (history[0]?.toolActions ?? [])[0] as ToolAction;
+
+    expect(String(action['toolOutputs'])).toContain('part one');
+    expect(String(action['toolOutputs'])).toContain('part two');
+    expect(action['status']).toBe('complete');
+  });
+
+  it('merges object outputs', () => {
+    let history = withStartedTool();
+    history = applyChatStreamFrame(history, toolFrame(SocketMessageType.AgentToolEnd, { tool_output: { a: 1 } }), CONTEXT);
+    history = applyChatStreamFrame(history, toolFrame(SocketMessageType.AgentToolEnd, { tool_output: { b: 2 } }), CONTEXT);
+    const action = (history[0]?.toolActions ?? [])[0] as ToolAction;
+
+    expect(action['toolOutputs']).toEqual({ a: 1, b: 2 });
+  });
+
+  it('leaves an approval-gated action awaiting approval when its wrapper ends', () => {
+    // The wrapper ending is not the user answering.
+    const started = withStartedTool();
+    const gated = started.map((message) => ({
+      ...message,
+      toolActions: (message.toolActions ?? []).map((action) => ({ ...action, status: 'action_required' })),
+    })) as readonly ChatMessage[];
+    const ended = applyChatStreamFrame(gated, toolFrame(SocketMessageType.AgentToolEnd, {}), CONTEXT);
+    const action = (ended[0]?.toolActions ?? [])[0] as ToolAction;
+
+    expect(action['status']).toBe('action_required');
+  });
+
+  it('marks a failed tool without touching the others', () => {
+    let history = withStartedTool();
+    history = applyChatStreamFrame(
+      history,
+      frame(SocketMessageType.AgentToolStart, { response_metadata: { tool_run_id: 'run-2', tool_name: 'other' } }),
+      CONTEXT,
+    );
+    history = applyChatStreamFrame(history, toolFrame(SocketMessageType.AgentToolError, {}, { content: 'boom' }), CONTEXT);
+    const actions = (history[0]?.toolActions ?? []) as readonly ToolAction[];
+
+    expect(actions).toHaveLength(2);
+    expect(actions[0]?.['status']).toBe('error');
+    expect(actions[0]?.['isError']).toBe(true);
+    expect(actions[1]?.['status']).toBe('processing');
+  });
+
+  it('ignores an end or error for a run id it never saw start', () => {
+    const before = withStartedTool();
+    expect(applyChatStreamFrame(before, frame(SocketMessageType.AgentToolEnd, { response_metadata: { tool_run_id: 'ghost' } }), CONTEXT)).toBe(before);
+    expect(applyChatStreamFrame(before, frame(SocketMessageType.AgentToolError, { response_metadata: { tool_run_id: 'ghost' } }), CONTEXT)).toBe(before);
+  });
+});
+
+describe('mcpSessionFromFrame', () => {
+  it('surfaces the session a caller must persist, since the reducer cannot', () => {
+    expect(
+      mcpSessionFromFrame({
+        type: SocketMessageType.AgentToolEnd,
+        response_metadata: { metadata: { mcp_session_id: 's-1', mcp_server_url: 'https://mcp.example' } },
+      }),
+    ).toEqual({ sessionId: 's-1', serverUrl: 'https://mcp.example' });
+  });
+
+  it('returns nothing when either half is missing', () => {
+    expect(mcpSessionFromFrame({ type: 'x', response_metadata: { metadata: { mcp_session_id: 's-1' } } })).toBeUndefined();
+    expect(mcpSessionFromFrame({ type: 'x' })).toBeUndefined();
   });
 });
