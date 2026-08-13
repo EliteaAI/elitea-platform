@@ -443,6 +443,10 @@ services:
     environment:
       MOCK_LLM_PORT: "8090"
       MOCK_LLM_MODEL: "E2E-MOCK-MODEL"
+      # 0 by default — a fast reply is what every other consumer wants. The
+      # chat streaming journey overrides it so "a partial answer was painted"
+      # is deterministic rather than a race (see e2e/streaming/).
+      MOCK_LLM_CHUNK_DELAY_MS: "${MOCK_LLM_CHUNK_DELAY_MS:-0}"
     healthcheck:
       # The image has no curl or wget — python is the only client available,
       # and it is guaranteed present because it is the runtime.

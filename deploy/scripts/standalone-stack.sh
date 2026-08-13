@@ -531,36 +531,38 @@ except Exception as error:
     # depend on are created by no migration in this repo — they are owned by
     # pylon's tenant-schema lifecycle, which a pylon-free stack does not have.
     # See #287; agent_chat_baseline.sql states the assumption in its header.
+    # The chat driver: a PAT whose user owns a personal project AND holds the
+    # start route's permission IN it. That project — not project 1 — is where
+    # the turn runs, because the /llm hop resolves the caller's PERSONAL project
+    # to find the credential (#290).
+    CHAT_ROW="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT t.uuid || ' ' || t.user_id || ' ' || p.id
+           FROM public.auth_core__token t
+           JOIN centry.project p ON p.name = 'project_user_' || t.user_id::text
+           JOIN public.auth_core__project_user_role pur
+             ON pur.project_id = p.id AND pur.user_id = t.user_id
+           JOIN public.auth_core__project_role_permission perm
+             ON perm.role_id = pur.role_id AND perm.project_id = p.id
+            AND perm.permission = 'models.chat.messages.create'
+          WHERE t.uuid IS NOT NULL
+          ORDER BY t.user_id
+          LIMIT 1" 2>/dev/null | tr -d '\r')"
+    CHAT_PROJECT="$(printf '%s' "$CHAT_ROW" | awk '{print $3}')"
+    CHAT_PROJECT="${CHAT_PROJECT:-1}"
     MISSING_CHAT_TABLES="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
         "SELECT string_agg(missing.name, ',')
            FROM (VALUES ('chat_messages_text'),('chat_messages_context'),('chat_message_trace_step')) AS missing(name)
-          WHERE to_regclass('p_1.' || missing.name) IS NULL" 2>/dev/null | tr -d '[:space:]')"
+          WHERE to_regclass('p_${CHAT_PROJECT}.' || missing.name) IS NULL" 2>/dev/null | tr -d '[:space:]')"
     if [ -n "$MISSING_CHAT_TABLES" ]; then
       # Reported, not counted: this is a filed product gap, not a broken stack,
       # and folding it into the failure count would make `check` permanently red
       # and useless as a gate for everything else. It is printed on every run so
       # it cannot be quietly forgotten.
-      echo "  ! BLOCKED by #287 — p_1 is missing tenant chat tables; agent turns 500 here"
+      echo "  ! BLOCKED by #287 — p_${CHAT_PROJECT} is missing tenant chat tables; agent turns 500 here"
       echo "    (missing: $MISSING_CHAT_TABLES)"
     else
-      # The PAT must belong to a user who actually holds the permission the
-      # start route requires (models.chat.messages.create on project 1). An
-      # arbitrary `LIMIT 1` picks whichever token sorts first — on a freshly
-      # seeded stack that is dev@elitea.ai, who has no project role at all, and
-      # the smoke then fails with a 403 that looks exactly like a broken chat
-      # backend rather than a mis-chosen caller.
-      CHAT_ROW="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
-          psql -U elitea -d elitea -tAc \
-          "SELECT t.uuid || ' ' || t.user_id
-             FROM public.auth_core__token t
-             JOIN public.auth_core__project_user_role pur ON pur.user_id = t.user_id AND pur.project_id = 1
-             JOIN public.auth_core__project_role_permission perm
-               ON perm.role_id = pur.role_id AND perm.project_id = 1
-              AND perm.permission = 'models.chat.messages.create'
-            WHERE t.uuid IS NOT NULL
-            ORDER BY t.user_id
-            LIMIT 1" 2>/dev/null | tr -d '\r')"
       CHAT_PAT="$(printf '%s' "$CHAT_ROW" | awk '{print $1}')"
       CHAT_USER="$(printf '%s' "$CHAT_ROW" | awk '{print $2}')"
       if [ -z "$CHAT_PAT" ] || [ -z "$CHAT_USER" ]; then
@@ -582,7 +584,8 @@ except Exception as error:
           --ca /m/runtime-ca.crt \
           --pat-uuid "$CHAT_PAT" \
           --signing-key /m/auth-pat-signing-key \
-          --user-id "$CHAT_USER"
+          --user-id "$CHAT_USER" \
+          --project "$CHAT_PROJECT"
         smoke_status=$?
         set -e
         case "$smoke_status" in

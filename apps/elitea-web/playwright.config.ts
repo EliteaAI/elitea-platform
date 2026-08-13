@@ -5,6 +5,9 @@
  *   setup         — global setup: OIDC login per persona → saves storageState
  *   chromium      — 30 journeys against the real stack, chromium
  *   webkit        — same 30 journeys, webkit (spec §6.2)
+ *   chat-stream   — the #284 chat journey, against the FULL standalone stack
+ *                   (runtime plane + worker + mock LLM); see that project's
+ *                   own note and `scripts/chat-stream-e2e.sh`
  *
  * The `setup` project runs once before the browser projects; each browser
  * project depends on it so the storageState files are always fresh.
@@ -22,6 +25,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const STORAGE_STATE = {
   member: path.join(__dirname, '.playwright-state', 'member.json'),
   admin: path.join(__dirname, '.playwright-state', 'admin.json'),
+  /**
+   * The #284 chat driver. A persona of its own because it OWNS a personal
+   * project, and the app selects the signed-in user's personal project over
+   * the one `auth.setup.ts` writes to storage — handing member/admin one moves
+   * every other journey off project 1 (measured, see the seeder's note).
+   */
+  chat: path.join(__dirname, '.playwright-state', 'chat.json'),
 };
 
 // Default 8082 locally: centry legacy stack occupies 8080; CI sets E2E_PORT=8080.
@@ -122,6 +132,30 @@ export default defineConfig({
       },
       dependencies: ['setup'],
       testMatch: /visual\/.+\.spec\.ts/,
+    },
+
+    /*
+     * ── chat-stream (#284) — the chat definition-of-done journey ───────────
+     *
+     * Its own project because it is the one journey that cannot run against
+     * `docker-compose.e2e-standalone.yml`: an agent turn needs the runtime
+     * plane, the worker and a model backend, none of which that stack has.
+     * `scripts/chat-stream-e2e.sh` brings up the FULL standalone stack and
+     * points this project at it, so it never runs by accident against a stack
+     * that would fail it for the wrong reason.
+     *
+     * Chromium only: this asserts a transport and a render, not a rasteriser,
+     * and a second engine would double the stack time for no new signal.
+     */
+    {
+      name: 'chat-stream',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.chat,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: /streaming\/.+\.spec\.ts/,
     },
   ],
 

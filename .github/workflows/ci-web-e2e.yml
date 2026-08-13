@@ -248,6 +248,61 @@ jobs:
           COMPOSE_BIN: docker compose
         run: bash scripts/e2e-stack.sh down
 
+  chat-stream:
+    name: Chat definition-of-done journey (#284)
+    # The product core loop, end to end through the UI: send → SSE stream →
+    # rendered answer → persisted after a reload. It runs on PRs for the same
+    # reason the journeys do — the 2026-08-12 audit found Send silently no-op
+    # with every unit suite green, and this is the only job that can catch that
+    # class of regression.
+    #
+    # A separate job from `e2e` because it needs a DIFFERENT stack: the full
+    # standalone compose (runtime plane + agent worker + mock LLM). The E2E
+    # stack cannot run an agent turn at all, so this journey would fail there
+    # for a reason that has nothing to do with the change under test.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The web and worker images build from repo-root context.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Install Playwright chromium
+        # The `setup` project (OIDC login → storageState) and this journey both
+        # run under Desktop Chrome; webkit would double the stack time for no
+        # additional signal about a transport.
+        run: npx playwright install --with-deps chromium
+      - name: Run the journey against a fresh standalone stack
+        # The script owns the whole lifecycle: runtime PKI, compose up, the
+        # three seed steps, then Playwright. It uses its own compose project so
+        # it can never disturb another stack, and tears down on exit.
+        #
+        # COMPOSE_BIN is docker on the runner; the script auto-detects podman
+        # locally. MOCK_LLM_CHUNK_DELAY_MS makes the partial-render assertion
+        # deterministic rather than a race against a one-paint reply.
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          CHAT_STREAM_PROJECT: elitea-chatstream-ci
+          CHAT_STREAM_PORT: "8084"
+          MOCK_LLM_CHUNK_DELAY_MS: "120"
+        run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-chat-stream
+          path: apps/elitea-web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   visual:
     name: Visual regression
     # Release tags, pull requests, and manual dispatch.

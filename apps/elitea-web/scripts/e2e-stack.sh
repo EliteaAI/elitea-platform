@@ -531,79 +531,72 @@ JOIN auth_core__project_role r ON r.project_id = 1 AND r.name = 'editor'
 WHERE u.email = 'e2e-member@autotest.local'
 ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 
--- Personal projects for the chat personas (#290).
+-- A dedicated chat-driver persona and its personal project (#290).
 --
 -- Every server-side model call is authenticated as the ACTOR — the worker
--- carries the user's PAT — and `middleware.Project` then resolves that user's
+-- carries the user's PAT — and `middleware.Project` resolves that user's
 -- PERSONAL project to find the provider credential
 -- (`db/queries/auth_projects.sql:5-37`). Without one the LLM hop answers
 -- `project_not_resolved` and an agent turn streams `agent_llm_start` straight
 -- to `pipeline_finish` with no token ever produced: admitted, streamed, empty.
 --
+-- A SEPARATE persona rather than giving `e2e-member`/`e2e-admin` a personal
+-- project, and that separation is load-bearing: the app auto-selects the
+-- signed-in user's personal project over the one `auth.setup.ts` writes to
+-- localStorage. Handing the existing personas one silently moves every journey
+-- off project 1 — measured: the chat page began issuing
+-- `…/conversations/prompt_lib/90102`, so every journey asserting a project-1
+-- URL would break for a reason unrelated to its own subject.
+--
 -- The resolver needs BOTH halves — a `project_user_<uid>` project AND a
 -- project-role assignment on it — so the pair is created together; the project
--- alone resolves to nothing.
---
--- Ids are derived (90100 + user id) rather than literal because these personas
--- are inserted with serial ids, and they stay inside the 9xxxx range the
--- fixtures below reserve. `seed-llm` seeds the provider credential into each of
--- these schemas, and `standalone-stack.sh seed` re-runs the tenant migrations
--- so `p_<id>` exists for them.
+-- alone resolves to nothing. The id is derived (90100 + user id) because this
+-- persona is inserted with a serial id, and stays inside the 9xxxx range the
+-- fixtures below reserve.
+INSERT INTO auth_core__user (email, name)
+VALUES ('e2e-chat@autotest.local', 'E2E Chat Driver')
+ON CONFLICT (email) DO NOTHING;
+
 INSERT INTO centry.project (id, name, owner_id, keycloak_groups, create_success, suspended)
 SELECT 90100 + u.id, 'project_user_' || u.id, u.id, '{}', true, false
 FROM auth_core__user u
-WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local')
+WHERE u.email = 'e2e-chat@autotest.local'
 ON CONFLICT (id) DO UPDATE
     SET name = EXCLUDED.name, owner_id = EXCLUDED.owner_id, suspended = EXCLUDED.suspended;
 
 INSERT INTO auth_core__project_role (project_id, name)
 SELECT 90100 + u.id, 'admin'
 FROM auth_core__user u
-WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local')
+WHERE u.email = 'e2e-chat@autotest.local'
 ON CONFLICT (project_id, name) DO NOTHING;
 
 INSERT INTO auth_core__project_user_role (project_id, user_id, role_id)
 SELECT r.project_id, u.id, r.id
 FROM auth_core__user u
 JOIN auth_core__project_role r ON r.project_id = 90100 + u.id AND r.name = 'admin'
-WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local')
+WHERE u.email = 'e2e-chat@autotest.local'
 ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 
--- Tenant schemas for every project this seed created.
---
--- In a real deployment pylon provisions `p_<id>` when it creates the project;
--- this seeder is that provisioner's stand-in, so it owes the same schema.
--- elitea-migrate VALIDATES the schema and never creates one
--- (`migrate/runner.go:50`), and its `-all-tenants` preflight ERRORS on any
--- create_success project that lacks one — so a project row seeded without a
--- schema does not merely miss migrations, it makes the next `up` fail for the
--- whole stack. The admin fixtures (90001-90003) have always been in that state;
--- they only escaped notice because migrate runs before the seeder on a first
--- `up` and nobody re-ran it afterwards.
-DO $schemas$
-DECLARE
-    target RECORD;
-BEGIN
-    FOR target IN
-        -- Every create_success project, not only those missing a schema:
-        -- `create_tenant_schema` is idempotent (all 47 tables are
-        -- CREATE TABLE IF NOT EXISTS), so running it unconditionally also
-        -- repairs a schema that exists but is empty — the state a bare
-        -- CREATE SCHEMA would have left behind.
-        SELECT p.id
-        FROM centry.project p
-        WHERE p.create_success = TRUE
-        ORDER BY p.id
-    LOOP
-        -- `create_tenant_schema` is the stack's own tenant DDL, defined by
-        -- 001_initial.sql and used there to build p_1. A bare CREATE SCHEMA is
-        -- NOT enough: the tenant migration history expands tables the baseline
-        -- is expected to have already created, so an empty schema fails on
-        -- `relation "configuration" does not exist`.
-        PERFORM create_tenant_schema('p_' || target.id::text);
-    END LOOP;
-END
-$schemas$;
+-- The chat driver acts INSIDE its personal project, so the permissions the chat
+-- routes check have to exist there too — the project-1 grants above do not
+-- reach it.
+INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
+SELECT r.project_id, r.id, p.permission
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 90100 + u.id AND r.name = 'admin'
+CROSS JOIN (VALUES
+    ('projects.projects.project.view'),
+    ('models.chat.conversations.list'),
+    ('models.chat.conversations.create'),
+    ('models.chat.conversations.regenerate'),
+    ('models.chat.conversation.details'),
+    ('models.chat.messages.create'),
+    ('models.chat.folders.get'),
+    ('configurations.configuration.list'),
+    ('configurations.configuration.details')
+) AS p(permission)
+WHERE u.email = 'e2e-chat@autotest.local'
+ON CONFLICT (project_id, role_id, permission) DO NOTHING;
 
 -- social_users rows (needed for personal_project_id resolution).
 INSERT INTO centry.social_users (user_id, title)
@@ -730,6 +723,48 @@ FROM auth_core__user u
 JOIN auth_core__project_role r ON r.project_id = 90001 AND r.name = 'admin'
 WHERE u.email IN ('e2e-project-admin@autotest.local', 'e2e-admin@autotest.local')
 ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
+
+-- Tenant schemas for every project this seed created.
+--
+-- POSITION IS LOAD-BEARING: this must run after EVERY `centry.project` insert,
+-- including the admin fixtures below-that-were-above. Placed earlier it
+-- provisions only the rows that happen to exist yet, and the next migrate call
+-- fails its preflight on the rest — a FIRST seed then breaks while a second
+-- one "fixes" it, which is exactly how this was found.
+--
+-- In a real deployment pylon provisions `p_<id>` when it creates the project;
+-- this seeder is that provisioner's stand-in, so it owes the same schema.
+-- elitea-migrate VALIDATES the schema and never creates one
+-- (`migrate/runner.go:50`), and its `-all-tenants` preflight ERRORS on any
+-- create_success project that lacks one — so a project row seeded without a
+-- schema does not merely miss migrations, it makes the next `up` fail for the
+-- whole stack. The admin fixtures (90001-90003) have always been in that state;
+-- they only escaped notice because migrate runs before the seeder on a first
+-- `up` and nobody re-ran it afterwards.
+DO $schemas$
+DECLARE
+    target RECORD;
+BEGIN
+    FOR target IN
+        -- Every create_success project, not only those missing a schema:
+        -- `create_tenant_schema` is idempotent (all 47 tables are
+        -- CREATE TABLE IF NOT EXISTS), so running it unconditionally also
+        -- repairs a schema that exists but is empty — the state a bare
+        -- CREATE SCHEMA would have left behind.
+        SELECT p.id
+        FROM centry.project p
+        WHERE p.create_success = TRUE
+        ORDER BY p.id
+    LOOP
+        -- `create_tenant_schema` is the stack's own tenant DDL, defined by
+        -- 001_initial.sql and used there to build p_1. A bare CREATE SCHEMA is
+        -- NOT enough: the tenant migration history expands tables the baseline
+        -- is expected to have already created, so an empty schema fails on
+        -- `relation "configuration" does not exist`.
+        PERFORM create_tenant_schema('p_' || target.id::text);
+    END LOOP;
+END
+$schemas$;
 
 -- ── audit trail fixture (unit A14) ───────────────────────────────────────
 -- `centry.audit_events` is written by the legacy tracing plugin, which the Go

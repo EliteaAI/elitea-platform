@@ -32,6 +32,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(os.environ.get("MOCK_LLM_PORT", "8090"))
 MODEL = os.environ.get("MOCK_LLM_MODEL", "E2E-MOCK-MODEL")
 PREFIX = os.environ.get("MOCK_LLM_PREFIX", "MOCK:")
+# Per-chunk delay, default 0 (fast). The chat streaming journey sets it so that
+# "a token rendered before the turn finished" is a DETERMINISTIC observation
+# rather than a race against a reply that arrives in one paint: with no delay
+# every chunk lands within a few milliseconds and a browser can legitimately
+# show the finished answer without ever painting a partial one, which would
+# make an incremental assertion flaky rather than wrong.
+CHUNK_DELAY_SECONDS = float(os.environ.get("MOCK_LLM_CHUNK_DELAY_MS", "0")) / 1000.0
 MAX_BODY_BYTES = 1 << 20
 
 
@@ -158,6 +165,8 @@ class Handler(BaseHTTPRequestHandler):
         # not actually exercising incremental streaming.
         for word in reply.split(" "):
             event({**base, "choices": [{"index": 0, "delta": {"content": word + " "}, "finish_reason": None}]})
+            if CHUNK_DELAY_SECONDS:
+                time.sleep(CHUNK_DELAY_SECONDS)
         event({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                "usage": {"prompt_tokens": 1,
                          "completion_tokens": max(1, len(reply.split())),

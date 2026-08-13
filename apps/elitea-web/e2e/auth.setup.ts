@@ -35,6 +35,14 @@ setup.describe('Auth setup', () => {
     setup.setTimeout(60_000);
     await performOidcLogin(page, 'e2e-admin@autotest.local', STORAGE_STATE.admin);
   });
+
+  // The #284 chat driver. Its personal project is what the /llm hop resolves
+  // the provider credential from, which is why it cannot be one of the two
+  // personas above — see `playwright.config.ts`'s STORAGE_STATE.chat.
+  setup('authenticate as chat-driver persona', async ({ page }) => {
+    setup.setTimeout(60_000);
+    await performOidcLogin(page, 'e2e-chat@autotest.local', STORAGE_STATE.chat);
+  });
 });
 
 /**
