@@ -48,6 +48,23 @@ func TestChatWriteRoutesAcceptABrowserSession(t *testing.T) {
 			"model picker cannot read its own catalogue in a browser (#292)")
 	}
 
+	// The runtime routes the web app calls directly (#93 Surface A): the index
+	// list, an index run and its cancel, and the chat stop button. Composed for
+	// forwarded identity alone they answered 401 to the product's own UI while
+	// working for the worker — Surface A's REST path could not be exercised
+	// from a browser at all.
+	runtime := authConfigVariable(t, file, "browserRuntimeAuth")
+	if !authConfigHasField(runtime, "SessionSecret") {
+		t.Fatal("the browser runtime AuthConfig has no SessionSecret: the index " +
+			"list, run and cancel are unreachable from the web app (#93 Surface A)")
+	}
+	for _, field := range []string{"PrincipalValidator", "ForwardedIdentityVerifier"} {
+		if !authConfigHasField(runtime, field) {
+			t.Fatalf("the browser runtime AuthConfig lost %s — the worker and the "+
+				"forward-auth edge authenticate with it", field)
+		}
+	}
+
 	// The peer verifier must survive alongside it. Accepting a session is
 	// additive; dropping forwarded identity would break the worker and the
 	// forward-auth edge, which are the callers that work today.

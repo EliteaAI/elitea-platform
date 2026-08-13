@@ -796,14 +796,29 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose production runtime HTTP routes: %w", err)
 		}
+		// The browser's credential for the runtime routes the WEB APP calls
+		// directly (#93 Surface A): the index list, an index run and its
+		// cancel, and the chat stop button. Each was composed for forwarded
+		// identity alone, so every one of them answered `401 missing
+		// authorization header` to the product's own UI while working for the
+		// worker — the same shape as #291 on the chat start route, and the
+		// reason Surface A's REST path could not be exercised from a browser
+		// at all.
+		//
+		// Additive: the peer verifier and principal validator are unchanged,
+		// so the worker and the forward-auth edge authenticate exactly as
+		// before, and each route still resolves permissions through the RBAC
+		// resolver it is given.
+		browserRuntimeAuth := apimw.AuthConfig{
+			Validator:                 formGraph,
+			PrincipalValidator:        principalValidator,
+			ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			SessionSecret:             os.Getenv("APPLICATION_SECRET_KEY"),
+		}
 		if publicRoutes.IndexStart != nil {
 			currentIndexStart, err = indexingapi.NewCurrentIndexStartRoute(
 				publicRoutes.IndexStart,
-				apimw.AuthConfig{
-					Validator:                 formGraph,
-					PrincipalValidator:        principalValidator,
-					ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				},
+				browserRuntimeAuth,
 				legacyrbac.NewPostgresResolver(pool),
 			)
 			if err != nil {
@@ -844,11 +859,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if publicRoutes.AgentCancel != nil {
 			currentAgentCancel, err = agentexecutionapi.NewCurrentAgentCancelRoute(
 				publicRoutes.AgentCancel,
-				apimw.AuthConfig{
-					Validator:                 formGraph,
-					PrincipalValidator:        principalValidator,
-					ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				},
+				browserRuntimeAuth,
 				legacyrbac.NewPostgresResolver(pool),
 			)
 			if err != nil {
@@ -858,11 +869,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if publicRoutes.IndexCancel != nil {
 			currentIndexCancel, err = indexingapi.NewCurrentIndexCancelRoute(
 				publicRoutes.IndexCancel,
-				apimw.AuthConfig{
-					Validator:                 formGraph,
-					PrincipalValidator:        principalValidator,
-					ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				},
+				browserRuntimeAuth,
 				legacyrbac.NewPostgresResolver(pool),
 			)
 			if err != nil {
@@ -872,11 +879,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if publicRoutes.IndexMeta != nil {
 			currentIndexMeta, err = indexingapi.NewCurrentIndexMetaRoute(
 				publicRoutes.IndexMeta,
-				apimw.AuthConfig{
-					Validator:                 formGraph,
-					PrincipalValidator:        principalValidator,
-					ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				},
+				browserRuntimeAuth,
 				legacyrbac.NewPostgresResolver(pool),
 			)
 			if err != nil {
@@ -887,11 +890,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			currentIndexMetaDelete, err =
 				indexingapi.NewCurrentIndexMetaDeleteRoute(
 					publicRoutes.IndexMetaDelete,
-					apimw.AuthConfig{
-						Validator:                 formGraph,
-						PrincipalValidator:        principalValidator,
-						ForwardedIdentityVerifier: forwardedIdentityVerifier,
-					},
+					browserRuntimeAuth,
 					legacyrbac.NewPostgresResolver(pool),
 				)
 			if err != nil {
