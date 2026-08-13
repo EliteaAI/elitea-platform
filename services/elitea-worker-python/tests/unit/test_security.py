@@ -1,11 +1,50 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from elitea_worker.execution.errors import InvalidInput
 from elitea_worker.security import _load_redis_password
+
+
+def test_private_plane_ssl_context_survives_process_global_wrapper() -> None:
+    script = """
+import ssl
+
+original = ssl.SSLContext
+
+class InjectedSSLContext(original):
+    pass
+
+ssl.SSLContext = InjectedSSLContext
+
+import elitea_worker
+
+assert elitea_worker._PRIVATE_PLANE_SSL_CONTEXT is original
+context = elitea_worker._PRIVATE_PLANE_SSL_CONTEXT(ssl.PROTOCOL_TLS_CLIENT)
+elitea_worker._PRIVATE_PLANE_SSL_CONTEXT_BASE.minimum_version.__set__(
+    context,
+    ssl.TLSVersion.TLSv1_3,
+)
+elitea_worker._PRIVATE_PLANE_SSL_CONTEXT_BASE.verify_mode.__set__(
+    context,
+    ssl.CERT_REQUIRED,
+)
+assert context.minimum_version == ssl.TLSVersion.TLSv1_3
+assert context.verify_mode == ssl.CERT_REQUIRED
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.parametrize(
