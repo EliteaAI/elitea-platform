@@ -447,6 +447,12 @@ CROSS JOIN (VALUES
     ('models.chat.folders.create'),
     ('models.chat.folders.update'),
     ('models.chat.folders.delete'),
+    -- Starting an agent turn. `agentexecution/route.go:32` requires
+    -- `models.chat.messages.create` and the regenerate route its sibling;
+    -- without them a seeded stack answers 403 to the first message ever sent,
+    -- which is a seed gap that reads exactly like a broken chat backend.
+    ('models.chat.messages.create'),
+    ('models.chat.conversations.regenerate'),
     ('models.project_context.view'),
     ('models.project_context.edit'),
     ('configuration.users.users.view'),

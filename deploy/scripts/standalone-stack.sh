@@ -503,12 +503,25 @@ except Exception as error:
       echo "  ! BLOCKED by #287 — p_1 is missing tenant chat tables; agent turns 500 here"
       echo "    (missing: $MISSING_CHAT_TABLES)"
     else
-      CHAT_PAT="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+      # The PAT must belong to a user who actually holds the permission the
+      # start route requires (models.chat.messages.create on project 1). An
+      # arbitrary `LIMIT 1` picks whichever token sorts first — on a freshly
+      # seeded stack that is dev@elitea.ai, who has no project role at all, and
+      # the smoke then fails with a 403 that looks exactly like a broken chat
+      # backend rather than a mis-chosen caller.
+      CHAT_ROW="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
           psql -U elitea -d elitea -tAc \
-          "SELECT uuid FROM public.auth_core__token WHERE uuid IS NOT NULL LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
-      CHAT_USER="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
-          psql -U elitea -d elitea -tAc \
-          "SELECT user_id FROM public.auth_core__token WHERE uuid IS NOT NULL LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+          "SELECT t.uuid || ' ' || t.user_id
+             FROM public.auth_core__token t
+             JOIN public.auth_core__project_user_role pur ON pur.user_id = t.user_id AND pur.project_id = 1
+             JOIN public.auth_core__project_role_permission perm
+               ON perm.role_id = pur.role_id AND perm.project_id = 1
+              AND perm.permission = 'models.chat.messages.create'
+            WHERE t.uuid IS NOT NULL
+            ORDER BY t.user_id
+            LIMIT 1" 2>/dev/null | tr -d '\r')"
+      CHAT_PAT="$(printf '%s' "$CHAT_ROW" | awk '{print $1}')"
+      CHAT_USER="$(printf '%s' "$CHAT_ROW" | awk '{print $2}')"
       if [ -z "$CHAT_PAT" ] || [ -z "$CHAT_USER" ]; then
         echo "  ~ SKIPPED: no PAT to drive the turn (run: $0 seed-runtime)"
       else

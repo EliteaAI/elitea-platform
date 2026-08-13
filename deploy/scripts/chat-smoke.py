@@ -170,8 +170,13 @@ def start_turn(client: Client, project: int, conversation: str, prompt: str, mod
     return events_url
 
 
-def read_stream(client: Client, events_url: str, deadline_seconds: int) -> tuple[list[str], str]:
+def read_stream(client: Client, events_url: str, deadline_seconds: int,
+                captured: list[dict] | None = None) -> tuple[list[str], str]:
     """Collect node-event types and the assembled assistant text.
+
+    When `captured` is supplied, every decoded frame is appended to it verbatim.
+    That is what lets the web reducer be replayed against a REAL run rather than
+    against fixtures someone wrote to match it (see --capture).
 
     The wire contract is NOT the one #248's notes describe. Every frame is a
     single SSE event named `execution.node_event`; the semantic type lives in
@@ -211,6 +216,8 @@ def read_stream(client: Client, events_url: str, deadline_seconds: int) -> tuple
                 continue
             event_type = str(event.get("type") or "")
             types.append(event_type)
+            if captured is not None:
+                captured.append(event)
             if event_type == "agent_llm_chunk" and isinstance(event.get("content"), str):
                 content.append(event["content"])
             if event_type in TERMINAL_EVENT_TYPES:
@@ -248,6 +255,10 @@ def main() -> int:
     parser.add_argument("--model", default="vllm/E2E-MOCK-MODEL")
     parser.add_argument("--ca", default=None)
     parser.add_argument("--timeout", type=int, default=90)
+    parser.add_argument(
+        "--capture", type=pathlib.Path, default=None,
+        help="write every streamed frame here as JSON, for replaying this exact "
+             "run through the web streaming reducer (apps/elitea-web)")
     args = parser.parse_args()
 
     # Deterministic but unique per run: the mock echoes it back, so finding it in
@@ -261,7 +272,11 @@ def main() -> int:
         events_url = start_turn(client, args.project, conversation, prompt, args.model,
                                 str(uuid_module.uuid4()), str(uuid_module.uuid4()))
         print(f"  · turn admitted, events_url={events_url}")
-        types, content = read_stream(client, events_url, args.timeout)
+        captured: list[dict] | None = [] if args.capture else None
+        types, content = read_stream(client, events_url, args.timeout, captured)
+        if args.capture and captured is not None:
+            args.capture.write_text(json.dumps({"prompt": prompt, "frames": captured}, indent=2))
+            print(f"  · captured {len(captured)} frames → {args.capture}")
         if any(t in ("execution_failed", "error") for t in types):
             raise Fail(f"execution failed; events: {types}")
         if "agent_llm_chunk" not in types:
