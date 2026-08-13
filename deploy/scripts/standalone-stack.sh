@@ -101,6 +101,15 @@ case "${1:-}" in
     E2E_PROJECT="$PROJECT" \
     COMPOSE_BIN="$COMPOSE_BIN" \
       "${REPO_ROOT}/apps/elitea-web/scripts/e2e-stack.sh" seed
+    # The seeder inserts projects (the chat personas' personal projects, #290,
+    # and the admin fixtures), and a project without its `p_<id>` schema is
+    # worse than absent: the resolver hands it out and the very next query
+    # fails on a missing relation. elitea-migrate enumerates centry.project, so
+    # re-running it here creates exactly the schemas the seed just added —
+    # otherwise they appear only after the NEXT `up`, which is what the migrate
+    # service's own comment already anticipates.
+    echo "→ Applying tenant migrations for newly seeded projects…"
+    $COMPOSE_BIN $COMPOSE_F run --rm --no-deps elitea-migrate -all-tenants
     ;;
 
   seed-runtime)
@@ -221,20 +230,39 @@ SQL
     # Resolve returns any value that is not a {{secret.NAME}} reference verbatim,
     # so no centry.secrets_key/secrets_data rows and no SECRETS_MASTER_KEY are
     # needed for local testing.
-    echo "→ Seeding a $PROVIDER credential (type=$CRED_TYPE) + model row for project 1…"
+    # Project 1 AND every personal project (#290). The gateway resolves the
+    # credential from the CALLER's personal project, not from the project the
+    # conversation lives in, so seeding p_1 alone leaves every agent turn
+    # without a credential even though the model picker lists the model.
+    # Restricted to schemas that actually exist: a project row whose tenant
+    # migrations have not run yet would fail the insert on a missing relation
+    # rather than skip it.
+    TARGET_PROJECTS="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT p.id FROM centry.project p
+          WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%')
+            AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace
+                         WHERE nspname = 'p_' || p.id::text)
+          ORDER BY p.id" 2>/dev/null | tr -d '\r')"
+    if [ -z "$TARGET_PROJECTS" ]; then
+      echo "ERROR: no tenant schema to seed into. Run: $0 seed" >&2
+      exit 1
+    fi
+    for TARGET in $TARGET_PROJECTS; do
+    echo "→ Seeding a $PROVIDER credential (type=$CRED_TYPE) + model row for project ${TARGET}…"
     $COMPOSE_BIN $COMPOSE_F exec -T postgres \
       psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
         -v provider="$CRED_TYPE" -v apikey="$API_KEY" -v model="$MODEL" \
-        -v apibase="$API_BASE" <<'SQL'
+        -v apibase="$API_BASE" -v pid="$TARGET" -v schema="p_${TARGET}" <<'SQL'
 -- Credential the gateway's Account reads (section='ai_credentials'). An empty
 -- api_base means "use the provider's default endpoint", which also keeps a
 -- cloud credential clear of the self-referential-origin guard. The mock sets it
 -- to the compose address of llm-mock, which is why that host has to be named in
 -- GATEWAY_EGRESS_ALLOWLIST and why the credential type is `vllm`.
-INSERT INTO p_1.configuration
+INSERT INTO :"schema".configuration
     (project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
 VALUES
-    (1, 'standalone-' || :'provider', :'provider', 'ai_credentials',
+    (:pid, 'standalone-' || :'provider', :'provider', 'ai_credentials',
      jsonb_build_object('api_key', :'apikey', 'api_base', :'apibase'),
      '{}', false, true, 'user', NOW(), NOW())
 ON CONFLICT (elitea_title) DO UPDATE
@@ -252,16 +280,17 @@ ON CONFLICT (elitea_title) DO UPDATE
 -- catalog, so a missing label surfaces three layers away as
 -- "unsupported_agent_execution: This agent turn requires the current execution
 -- path" with nothing pointing at a configuration row.
-INSERT INTO p_1.configuration
+INSERT INTO :"schema".configuration
     (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
 VALUES
-    (1, :'model', :'model', 'llm_model', 'llm',
+    (:pid, :'model', :'model', 'llm_model', 'llm',
      jsonb_build_object('name', :'model'),
      '{}', false, true, 'user', NOW(), NOW())
 ON CONFLICT (elitea_title) DO UPDATE
     SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
         label = EXCLUDED.label, status_ok = true, updated_at = NOW();
 SQL
+    done
     echo "→ Seeded. Model alias: $MODEL"
     if [ "$PROVIDER" = "mock" ]; then
       echo "  (offline mock — no provider key used. Set OPENAI_API_KEY to seed a real one instead.)"
@@ -438,9 +467,21 @@ SQL
     # `project_not_resolved` is reported as SKIPPED, not FAILED: it means the
     # caller has no personal project, which is a seeding state (`$0 seed`), not
     # a broken LLM path. Only an attempted-and-failed hop fails the check.
+    # The caller must OWN a personal project, because that is what the /llm
+    # route resolves the provider credential from. A bare `LIMIT 1` picks
+    # dev@elitea.ai, who has none, and the hop then reports
+    # `project_not_resolved` — a true statement about the wrong caller, which
+    # made this check permanently SKIPPED even on a correctly seeded stack.
     LLM_PROBE="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
-        "SELECT uuid FROM public.auth_core__token WHERE uuid IS NOT NULL LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+        "SELECT t.uuid
+           FROM public.auth_core__token t
+           JOIN centry.project p ON p.name = 'project_user_' || t.user_id::text
+           JOIN public.auth_core__project_user_role pur
+             ON pur.project_id = p.id AND pur.user_id = t.user_id
+          WHERE t.uuid IS NOT NULL
+          ORDER BY t.user_id
+          LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
     if [ -z "$LLM_PROBE" ]; then
       echo "  ~ SKIPPED: no PAT to authenticate with (run: $0 seed-runtime)"
     else
