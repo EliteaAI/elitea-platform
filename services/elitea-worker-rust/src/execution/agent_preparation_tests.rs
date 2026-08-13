@@ -20,13 +20,17 @@ use crate::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
     parse_and_verify_agent_command,
 };
-use crate::protocol::control::{AgentControlClient, LeaseMonitoredAgentExecution};
+use crate::protocol::control::{
+    AgentControlClient, AgentControlError, InvocationAuthorizationDecision,
+    InvocationAuthorizationTerminalCause, LeaseMonitoredAgentExecution,
+};
 use crate::protocol::elitea::runtime::v1::{
-    AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1, BeginExecutionDispositionV1,
-    BeginExecutionRequestV1, BeginExecutionResponseV1, ClaimCommandRequestV1,
-    ClaimCommandResponseV1, DesiredExecutionStateV1, ObserveDesiredStateRequestV1,
-    ObserveDesiredStateResponseV1, PrepareSettlementRequestV1, PrepareSettlementResponseV1,
-    RenewLeaseRequestV1, RenewLeaseResponseV1,
+    AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1,
+    BeginExecutionDispositionV1, BeginExecutionRequestV1, BeginExecutionResponseV1,
+    ClaimCommandRequestV1, ClaimCommandResponseV1, DesiredExecutionStateV1,
+    ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1, PrepareSettlementRequestV1,
+    PrepareSettlementResponseV1, RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1,
+    RuntimeErrorV1,
 };
 use crate::protocol::output::RuntimeFailureKind;
 use crate::transport::redis_commands::{RedisCommandDelivery, RedisCommandLimits};
@@ -72,6 +76,8 @@ struct TestControlState {
     calls: Mutex<Vec<&'static str>>,
     claim: ClaimCommandResponseV1,
     begin: Mutex<BeginExecutionResponseV1>,
+    authorize: Mutex<AuthorizeInvocationResponseV1>,
+    authorize_unavailable: AtomicBool,
     renew: Mutex<RenewLeaseResponseV1>,
     observe: Mutex<ObserveDesiredStateResponseV1>,
     observe_queue: Mutex<VecDeque<ObserveDesiredStateResponseV1>>,
@@ -87,6 +93,11 @@ impl Default for TestControlState {
                 disposition: BeginExecutionDispositionV1::StartedNow as i32,
                 rejection: None,
             }),
+            authorize: Mutex::new(AuthorizeInvocationResponseV1 {
+                disposition: AuthorizeInvocationDispositionV1::AuthorizedNow as i32,
+                rejection: None,
+            }),
+            authorize_unavailable: AtomicBool::new(false),
             renew: Mutex::new(RenewLeaseResponseV1 {
                 lease_expires_at_unix_millis: NOW + 60_000,
                 desired_state: DesiredExecutionStateV1::Running as i32,
@@ -126,7 +137,13 @@ impl ControlRpc for TestControlRpc {
         &self,
         _request: Request<AuthorizeInvocationRequestV1>,
     ) -> Result<Response<AuthorizeInvocationResponseV1>, Status> {
-        panic!("preparation must stop before invocation authorization")
+        self.0.calls.lock().expect("calls").push("authorize");
+        if self.0.authorize_unavailable.load(Ordering::SeqCst) {
+            return Err(Status::unavailable("not exposed"));
+        }
+        Ok(Response::new(
+            self.0.authorize.lock().expect("authorize").clone(),
+        ))
     }
 
     async fn renew_lease(
@@ -326,6 +343,30 @@ async fn prepare_test(
     .await
 }
 
+async fn prepared_for_authorization(
+    control: Arc<AgentControlClient<TestControlRpc>>,
+    state: Arc<TestControlState>,
+    admission: &InvocationAdmission,
+    kind: AgentExecutionKind,
+) -> Box<super::agent_preparation::PreparedAgentInvocation> {
+    let fresh = fresh(control.as_ref(), &state, kind).await;
+    let input = TestInput::bytes(Arc::clone(&state), input_fixture(kind));
+    let outcome = prepare_test(
+        fresh,
+        control,
+        admission,
+        &input,
+        Arc::new(TestClock::new(NOW)),
+        config(Duration::from_secs(10)),
+    )
+    .await
+    .expect("prepared invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = outcome else {
+        panic!("valid input must reach the authorization boundary")
+    };
+    prepared
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn application_and_adhoc_share_one_ordered_preparation_path() {
     for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
@@ -355,11 +396,162 @@ async fn application_and_adhoc_share_one_ordered_preparation_path() {
         );
         assert_eq!(admission.available_capacity(), 0);
 
-        let (_, _, _, _, reservation, lease) = (*prepared).into_parts();
+        let (reservation, lease) = (*prepared).into_test_cleanup();
         lease.close().await.expect("lease close");
         drop(reservation);
         assert_eq!(admission.available_capacity(), 1);
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn authorization_carries_the_matching_prepared_request_to_submission() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        let (control, state) = control();
+        let admission = admission(1, Duration::from_secs(1));
+        let prepared =
+            prepared_for_authorization(Arc::clone(&control), Arc::clone(&state), &admission, kind)
+                .await;
+
+        let decision = control
+            .authorize_agent_invocation((*prepared).into_authorization_candidate())
+            .await;
+        let InvocationAuthorizationDecision::AuthorizedNow(authorized) = decision else {
+            panic!("the fixture must authorize exactly once")
+        };
+        let (payload, _output) = authorized.into_test_parts();
+        let observed_kind = payload.execution_kind();
+        let (request, reservation, lease) = payload.into_test_parts();
+        let request_kind = request.kind;
+        assert_eq!(observed_kind, kind);
+        assert_eq!(request_kind, kind);
+        assert_eq!(
+            *state.calls.lock().expect("calls"),
+            ["begin", "renew", "observe", "input", "authorize"]
+        );
+        lease.close().await.expect("lease close");
+        drop(reservation);
+        assert_eq!(admission.available_capacity(), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn every_non_authorized_outcome_retains_the_same_payload_without_submission() {
+    enum Case {
+        Already,
+        Rejected,
+        Unknown,
+    }
+
+    for case in [Case::Already, Case::Rejected, Case::Unknown] {
+        let (control, state) = control();
+        match case {
+            Case::Already => {
+                *state.authorize.lock().expect("authorize") = AuthorizeInvocationResponseV1 {
+                    disposition: AuthorizeInvocationDispositionV1::AlreadyAuthorized as i32,
+                    rejection: None,
+                };
+            }
+            Case::Rejected => {
+                *state.authorize.lock().expect("authorize") = AuthorizeInvocationResponseV1 {
+                    disposition: AuthorizeInvocationDispositionV1::Unspecified as i32,
+                    rejection: Some(RuntimeErrorV1 {
+                        code: RuntimeErrorCodeV1::DependencyUnavailable as i32,
+                        safe_message: "server detail must not escape".to_owned(),
+                        retryable: true,
+                    }),
+                };
+            }
+            Case::Unknown => state.authorize_unavailable.store(true, Ordering::SeqCst),
+        }
+        let admission = admission(1, Duration::from_secs(1));
+        let prepared = prepared_for_authorization(
+            Arc::clone(&control),
+            Arc::clone(&state),
+            &admission,
+            AgentExecutionKind::Application,
+        )
+        .await;
+        let decision = control
+            .authorize_agent_invocation((*prepared).into_authorization_candidate())
+            .await;
+
+        let (payload, error) = match decision {
+            InvocationAuthorizationDecision::AlreadyAuthorized(terminal) => {
+                assert!(matches!(
+                    terminal.cause(),
+                    InvocationAuthorizationTerminalCause::AlreadyAuthorized
+                ));
+                let (payload, _output, cause) = terminal.into_test_parts();
+                assert_eq!(cause.code(), "invocation_authorization.already_authorized");
+                (payload, None)
+            }
+            InvocationAuthorizationDecision::Rejected(terminal) => {
+                let InvocationAuthorizationTerminalCause::Rejected(error) = terminal.cause() else {
+                    panic!("authenticated rejection must remain typed")
+                };
+                assert!(error.retryable());
+                assert!(!error.to_string().contains("server detail"));
+                let (payload, _output, cause) = terminal.into_test_parts();
+                assert_eq!(cause.code(), "invocation_authorization.rejected");
+                (payload, None)
+            }
+            InvocationAuthorizationDecision::Unknown(unknown) => {
+                assert!(matches!(unknown.error(), AgentControlError::Transport(_)));
+                assert!(!unknown.error().to_string().contains("not exposed"));
+                let (payload, error) = unknown.into_test_parts();
+                (payload, Some(error))
+            }
+            InvocationAuthorizationDecision::AuthorizedNow(_) => {
+                panic!("the configured response must not grant submission")
+            }
+        };
+        assert_eq!(payload.execution_kind(), AgentExecutionKind::Application);
+        if let Some(error) = error {
+            assert!(error.retryable());
+        }
+        let (_, reservation, lease) = payload.into_test_parts();
+        lease.close().await.expect("lease close");
+        drop(reservation);
+        assert_eq!(admission.available_capacity(), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mixed_authorization_response_carries_payload_to_terminal_only() {
+    let (control, state) = control();
+    *state.authorize.lock().expect("authorize") = AuthorizeInvocationResponseV1 {
+        disposition: AuthorizeInvocationDispositionV1::AuthorizedNow as i32,
+        rejection: Some(RuntimeErrorV1 {
+            code: RuntimeErrorCodeV1::Internal as i32,
+            safe_message: String::new(),
+            retryable: false,
+        }),
+    };
+    let admission = admission(1, Duration::from_secs(1));
+    let prepared = prepared_for_authorization(
+        Arc::clone(&control),
+        state,
+        &admission,
+        AgentExecutionKind::Adhoc,
+    )
+    .await;
+    let InvocationAuthorizationDecision::Rejected(terminal) = control
+        .authorize_agent_invocation((*prepared).into_authorization_candidate())
+        .await
+    else {
+        panic!("a mixed response must not mint submission authority")
+    };
+    assert!(matches!(
+        terminal.cause(),
+        InvocationAuthorizationTerminalCause::Rejected(AgentControlError::Semantic(
+            crate::protocol::control::ControlSemanticError::InvalidInput(_)
+        ))
+    ));
+    let (payload, _output, _) = terminal.into_test_parts();
+    assert_eq!(payload.execution_kind(), AgentExecutionKind::Adhoc);
+    let (_, reservation, lease) = payload.into_test_parts();
+    lease.close().await.expect("lease close");
+    drop(reservation);
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]

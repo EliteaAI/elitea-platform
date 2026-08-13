@@ -12,8 +12,8 @@ use elitea_worker_rust::protocol::command::{
 };
 use elitea_worker_rust::protocol::control::{
     AgentClaimDecision, AgentControlClient, AgentControlError, AgentOutputRecoveryKind,
-    BeginAgentExecution, ControlSemanticError, DesiredExecutionState,
-    InvocationAuthorizationDecision, RuntimeControlRejectionKind, TerminalRedeliveryKind,
+    BeginAgentExecution, ControlSemanticError, DesiredExecutionState, RuntimeControlRejectionKind,
+    TerminalRedeliveryKind,
 };
 use elitea_worker_rust::protocol::elitea::runtime::v1::{
     AuthorizeInvocationResponseV1, BeginExecutionResponseV1, ClaimCommandRequestV1,
@@ -192,7 +192,7 @@ async fn fresh_claim(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn python_vectors_cross_authenticated_claim_and_both_effect_fences() {
+async fn python_vectors_cross_authenticated_claim_and_begin_fence() {
     let (control, state) = client();
     let claim = fresh_claim(&control).await;
     let claim_request = state.claim_requests.lock().expect("claim requests")[0].clone();
@@ -224,13 +224,6 @@ async fn python_vectors_cross_authenticated_claim_and_both_effect_fences() {
     assert_eq!(preparing.input_bundle_ref().immutable_version, "v1");
     assert_eq!(preparing.request_entry().entry_id, "agent-request");
 
-    assert!(matches!(
-        control
-            .authorize_agent_invocation(preparing)
-            .await
-            .expect("invocation authority"),
-        InvocationAuthorizationDecision::AuthorizedNow(_)
-    ));
     monitor.close().await.expect("lease close");
 }
 

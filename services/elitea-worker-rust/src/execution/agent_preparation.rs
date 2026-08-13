@@ -28,7 +28,7 @@ use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
     AgentControlClient, AgentControlError, AgentExecutionOutputAuthority, BeginAgentExecution,
-    LeaseMonitoredAgentExecution,
+    InvocationAuthorizationCandidate, LeaseMonitoredAgentExecution,
 };
 use crate::protocol::elitea::runtime::v1::{DigestAlgorithmV1, DigestV1};
 use crate::transport::redis_commands::RedisCommandDelivery;
@@ -198,25 +198,66 @@ impl PreparedAgentInvocation {
         &self.request
     }
 
-    #[allow(dead_code)] // Consumed by the next authorize-and-run slice.
-    pub(crate) fn into_parts(
+    /// Seal every prepared value together before the authorization RPC.
+    ///
+    /// The request and claim cannot be extracted independently: the control
+    /// operation carries this complete payload through to the exact native ADK
+    /// submission boundary.
+    #[allow(dead_code)] // Called by the next owned invocation coordinator.
+    pub(crate) fn into_authorization_candidate(
+        self,
+    ) -> InvocationAuthorizationCandidate<PreparedAgentAuthorizationPayload> {
+        let Self {
+            delivery,
+            verified,
+            request,
+            execution,
+            reservation,
+            lease,
+        } = self;
+        execution.bind_invocation(PreparedAgentAuthorizationPayload {
+            delivery,
+            verified,
+            request,
+            reservation,
+            lease,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_test_cleanup(self) -> (InvocationReservation, ClaimLeaseMonitor) {
+        (self.reservation, self.lease)
+    }
+}
+
+/// Complete non-cloneable invocation state carried through authorization.
+#[allow(dead_code)] // Consumed by the next native ADK invocation slice.
+pub(crate) struct PreparedAgentAuthorizationPayload {
+    #[allow(dead_code)] // Consumed by the native ADK invocation slice.
+    delivery: RedisCommandDelivery,
+    #[allow(dead_code)] // Consumed by the native ADK invocation slice.
+    verified: VerifiedAgentCommand,
+    request: AgentExecutionRequest,
+    reservation: InvocationReservation,
+    lease: ClaimLeaseMonitor,
+}
+
+impl PreparedAgentAuthorizationPayload {
+    #[must_use]
+    #[allow(dead_code)] // Used by the next native ADK invocation slice.
+    pub(crate) const fn execution_kind(&self) -> AgentExecutionKind {
+        self.request.kind
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_test_parts(
         self,
     ) -> (
-        RedisCommandDelivery,
-        VerifiedAgentCommand,
         AgentExecutionRequest,
-        LeaseMonitoredAgentExecution,
         InvocationReservation,
         ClaimLeaseMonitor,
     ) {
-        (
-            self.delivery,
-            self.verified,
-            self.request,
-            self.execution,
-            self.reservation,
-            self.lease,
-        )
+        (self.request, self.reservation, self.lease)
     }
 }
 

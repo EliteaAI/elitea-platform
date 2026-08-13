@@ -236,6 +236,7 @@ impl AcceptedAgentClaim {
     }
 
     #[must_use]
+    #[allow(dead_code)] // Called by the next owned invocation coordinator.
     fn authorize_invocation_request(&self) -> AuthorizeInvocationRequestV1 {
         AuthorizeInvocationRequestV1 {
             identity: Some(self.identity.clone()),
@@ -689,17 +690,166 @@ pub enum BeginAgentExecution {
     AlreadyStarted(BeginExecutionRecovery),
 }
 
-/// The only value that permits one SDK submission.
+/// The only value that permits one native ADK submission.
 ///
-/// It is deliberately opaque and non-cloneable. The execution adapter must
-/// consume it at the synchronous SDK submission boundary.
-pub struct InvocationPermit {
-    _claim: AcceptedAgentClaim,
+/// It is deliberately opaque and non-cloneable. The invocation coordinator
+/// must consume the enclosing [`AuthorizedAgentInvocation`] at the actual
+/// runner submission boundary; the permit is never exposed independently.
+#[allow(dead_code)] // Constructed by the next owned invocation coordinator.
+struct InvocationSubmissionPermit {
+    _sealed: (),
 }
 
-pub enum InvocationAuthorizationDecision {
-    AuthorizedNow(Box<InvocationPermit>),
-    AlreadyAuthorized(Box<BeginExecutionRecovery>),
+/// Complete prepared payload bound to the accepted claim before authorization.
+///
+/// The constructor is crate-private so only the preparation coordinator can
+/// bind a validated request, verified command, delivery, reservation, and
+/// supervised lease to the claim that produced them.
+#[allow(dead_code)] // Consumed by the next owned invocation coordinator.
+pub(crate) struct InvocationAuthorizationCandidate<T> {
+    execution: LeaseMonitoredAgentExecution,
+    payload: T,
+}
+
+impl LeaseMonitoredAgentExecution {
+    #[allow(dead_code)] // Called only by the sealed preparation handoff for now.
+    pub(crate) fn bind_invocation<T>(self, payload: T) -> InvocationAuthorizationCandidate<T> {
+        InvocationAuthorizationCandidate {
+            execution: self,
+            payload,
+        }
+    }
+}
+
+/// Paired authority for exactly one native ADK submission, its output, and the
+/// complete request/run state that was carried through authorization.
+///
+/// Keeping all three in one non-cloneable value prevents replay and prevents a
+/// coordinator from authorizing claim A while submitting claim B's request.
+#[allow(dead_code)] // Consumed by the next native ADK invocation slice.
+pub(crate) struct AuthorizedAgentInvocation<T> {
+    permit: InvocationSubmissionPermit,
+    output: AgentExecutionOutputAuthority,
+    payload: T,
+}
+
+impl<T> AuthorizedAgentInvocation<T> {
+    /// Inspect carry-through state only inside this module's unit-test build.
+    ///
+    /// Production intentionally has no unwrapping method until the native ADK
+    /// driver can consume the value without returning raw components.
+    #[cfg(test)]
+    pub(crate) fn into_test_parts(self) -> (T, AgentExecutionOutputAuthority) {
+        let Self {
+            permit: InvocationSubmissionPermit { _sealed: () },
+            output,
+            payload,
+        } = self;
+        (payload, output)
+    }
+}
+
+/// Canonical terminal cause when Main answered the authorization attempt but
+/// did not grant fresh invocation authority.
+#[derive(Clone, Debug)]
+pub enum InvocationAuthorizationTerminalCause {
+    AlreadyAuthorized,
+    Rejected(AgentControlError),
+}
+
+impl InvocationAuthorizationTerminalCause {
+    /// Stable low-cardinality category for logs and terminal mapping.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::AlreadyAuthorized => "invocation_authorization.already_authorized",
+            Self::Rejected(_) => "invocation_authorization.rejected",
+        }
+    }
+}
+
+impl fmt::Display for InvocationAuthorizationTerminalCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyAuthorized => formatter.write_str(
+                "the invocation may already have crossed the durable authorization boundary",
+            ),
+            Self::Rejected(error) => write!(formatter, "invocation authorization failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for InvocationAuthorizationTerminalCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Rejected(error) => Some(error),
+            Self::AlreadyAuthorized => None,
+        }
+    }
+}
+
+/// Claim-bound terminal authority retained for an authenticated semantic
+/// authorization response. It grants output but never ADK submission.
+#[allow(dead_code)] // Consumed by the next terminal coordination slice.
+pub(crate) struct InvocationAuthorizationTerminal<T> {
+    output: AgentExecutionOutputAuthority,
+    cause: InvocationAuthorizationTerminalCause,
+    payload: T,
+}
+
+impl<T> InvocationAuthorizationTerminal<T> {
+    #[must_use]
+    #[allow(dead_code)] // Used by the next terminal coordination slice.
+    pub const fn cause(&self) -> &InvocationAuthorizationTerminalCause {
+        &self.cause
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_test_parts(
+        self,
+    ) -> (
+        T,
+        AgentExecutionOutputAuthority,
+        InvocationAuthorizationTerminalCause,
+    ) {
+        (self.payload, self.output, self.cause)
+    }
+}
+
+/// No-ACK ownership retained when the authorization RPC outcome is unknown.
+///
+/// The accepted claim remains sealed inside this value so callers cannot turn
+/// transport uncertainty into either a fresh submission or a new terminal.
+#[allow(dead_code)] // Consumed by the next no-ACK recovery coordinator.
+pub(crate) struct InvocationAuthorizationUnknown<T> {
+    _claim: AcceptedAgentClaim,
+    error: AgentControlError,
+    payload: T,
+}
+
+impl<T> InvocationAuthorizationUnknown<T> {
+    #[must_use]
+    #[allow(dead_code)] // Used by the next no-ACK recovery coordinator.
+    pub const fn error(&self) -> &AgentControlError {
+        &self.error
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_test_parts(self) -> (T, AgentControlError) {
+        (self.payload, self.error)
+    }
+}
+
+/// Exhaustive result of the final durable fence before native ADK execution.
+///
+/// The operation itself is the authority-minting boundary: raw protobuf
+/// responses cannot construct any of these opaque values.
+#[allow(dead_code)] // Exhausted by the next owned invocation coordinator.
+pub(crate) enum InvocationAuthorizationDecision<T> {
+    AuthorizedNow(Box<AuthorizedAgentInvocation<T>>),
+    AlreadyAuthorized(Box<InvocationAuthorizationTerminal<T>>),
+    Rejected(Box<InvocationAuthorizationTerminal<T>>),
+    Unknown(Box<InvocationAuthorizationUnknown<T>>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -904,21 +1054,58 @@ impl<R: ControlRpc> AgentControlClient<R> {
 
     /// Cross the final invocation fence exactly once.
     ///
-    /// The owned preparing state prevents replaying one response to mint more
-    /// permits. Only `AUTHORIZED_NOW` produces [`InvocationPermit`].
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed transport, runtime rejection, or response-shape failure.
-    pub async fn authorize_agent_invocation(
+    /// The owned execution state prevents replaying one response to mint more
+    /// permits. Only `AUTHORIZED_NOW` produces an opaque submission/output
+    /// pair. Authenticated semantic failures retain terminal output authority;
+    /// transport uncertainty retains neither terminal nor submission access.
+    #[allow(dead_code)] // Called by the next owned invocation coordinator.
+    pub(crate) async fn authorize_agent_invocation<T>(
         &self,
-        preparing: LeaseMonitoredAgentExecution,
-    ) -> Result<InvocationAuthorizationDecision, AgentControlError> {
-        let response = self
-            .control
-            .authorize_invocation(preparing.claim.authorize_invocation_request())
-            .await?;
-        parse_authorize_invocation_response(preparing.claim, &response).map_err(Into::into)
+        candidate: InvocationAuthorizationCandidate<T>,
+    ) -> InvocationAuthorizationDecision<T> {
+        let InvocationAuthorizationCandidate { execution, payload } = candidate;
+        let request = execution.claim.authorize_invocation_request();
+        let response = self.control.authorize_invocation(request).await;
+        let claim = execution.claim;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                return InvocationAuthorizationDecision::Unknown(Box::new(
+                    InvocationAuthorizationUnknown {
+                        _claim: claim,
+                        error: error.into(),
+                        payload,
+                    },
+                ));
+            }
+        };
+        match parse_authorize_invocation_response(&response) {
+            Ok(AuthorizeInvocationDecision::AuthorizedNow) => {
+                InvocationAuthorizationDecision::AuthorizedNow(Box::new(
+                    AuthorizedAgentInvocation {
+                        permit: InvocationSubmissionPermit { _sealed: () },
+                        output: AgentExecutionOutputAuthority { claim },
+                        payload,
+                    },
+                ))
+            }
+            Ok(AuthorizeInvocationDecision::AlreadyAuthorized) => {
+                InvocationAuthorizationDecision::AlreadyAuthorized(Box::new(
+                    InvocationAuthorizationTerminal {
+                        output: AgentExecutionOutputAuthority { claim },
+                        cause: InvocationAuthorizationTerminalCause::AlreadyAuthorized,
+                        payload,
+                    },
+                ))
+            }
+            Err(error) => InvocationAuthorizationDecision::Rejected(Box::new(
+                InvocationAuthorizationTerminal {
+                    output: AgentExecutionOutputAuthority { claim },
+                    cause: InvocationAuthorizationTerminalCause::Rejected(error.into()),
+                    payload,
+                },
+            )),
+        }
     }
 
     /// Renew one unchanged accepted claim with an internally generated key.
@@ -1598,17 +1785,24 @@ fn parse_begin_execution_response(
     }
 }
 
-/// Interpret the last durable fence before SDK submission.
-///
-/// Only `AUTHORIZED_NOW` constructs an [`InvocationPermit`].
+/// Descriptive response value before the authenticated operation mints worker
+/// authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // Parsed by the next owned invocation coordinator.
+enum AuthorizeInvocationDecision {
+    AuthorizedNow,
+    AlreadyAuthorized,
+}
+
+/// Interpret the last durable fence before native ADK submission.
 ///
 /// # Errors
 ///
 /// Returns a typed runtime rejection or rejects ambiguous/malformed responses.
+#[allow(dead_code)] // Parsed by the next owned invocation coordinator.
 fn parse_authorize_invocation_response(
-    claim: AcceptedAgentClaim,
     response: &AuthorizeInvocationResponseV1,
-) -> Result<InvocationAuthorizationDecision, ControlSemanticError> {
+) -> Result<AuthorizeInvocationDecision, ControlSemanticError> {
     if let Some(rejection) = response.rejection.as_ref() {
         if response.disposition != AuthorizeInvocationDispositionV1::Unspecified as i32 {
             return Err(ControlSemanticError::InvalidInput(
@@ -1619,14 +1813,10 @@ fn parse_authorize_invocation_response(
     }
     match AuthorizeInvocationDispositionV1::try_from(response.disposition).ok() {
         Some(AuthorizeInvocationDispositionV1::AuthorizedNow) => {
-            Ok(InvocationAuthorizationDecision::AuthorizedNow(Box::new(
-                InvocationPermit { _claim: claim },
-            )))
+            Ok(AuthorizeInvocationDecision::AuthorizedNow)
         }
         Some(AuthorizeInvocationDispositionV1::AlreadyAuthorized) => {
-            Ok(InvocationAuthorizationDecision::AlreadyAuthorized(
-                Box::new(BeginExecutionRecovery { _claim: claim }),
-            ))
+            Ok(AuthorizeInvocationDecision::AlreadyAuthorized)
         }
         _ => Err(ControlSemanticError::InvalidInput(
             "the invocation authorization disposition is malformed",
