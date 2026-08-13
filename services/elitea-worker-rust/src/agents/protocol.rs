@@ -212,6 +212,8 @@ fn validate_binding(binding: &AgentInputBinding) -> Result<(), AgentProtocolErro
     if binding.input_bundle_id.is_empty()
         || binding.request_entry_id.is_empty()
         || binding.request_immutable_version.is_empty()
+        || binding.input_bundle_digest.iter().all(|byte| *byte == 0)
+        || binding.request_content_digest.iter().all(|byte| *byte == 0)
     {
         return Err(AgentProtocolError::InvalidInput(
             "the agent execution input binding is malformed",

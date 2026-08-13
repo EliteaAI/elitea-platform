@@ -1,13 +1,17 @@
 use prost::Message;
 use ring::digest;
 
+use crate::agents::result::{BoundAgentExecutionResult, validate_agent_execution_result};
+
 use super::command::VerifiedAgentCommand;
 use super::node_event::encode_current_node_event_json;
 use super::{
     ProtocolError,
     elitea::runtime::v1::{
-        DigestAlgorithmV1, DigestV1, ExecutionFenceV1, ExecutionIdentityV1,
-        ExecutionOutputEventTypeV1, ExecutionOutputFrameV1, NodeEventV1, execution_output_frame_v1,
+        AgentExecutionResultV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1, ExecutionIdentityV1,
+        ExecutionOutcomeV1, ExecutionOutputEventTypeV1, ExecutionOutputFrameV1, NodeEventV1,
+        RuntimeErrorCodeV1, RuntimeErrorV1, SettlementProposalV1, execution_output_frame_v1,
+        worker_command_v1,
     },
 };
 
@@ -15,6 +19,24 @@ pub const OUTPUT_SCHEMA_REVISION: &str = "elitea.runtime.execution-output.v1";
 pub const MAX_OUTPUT_FRAME_BYTES: usize = 64 * 1024;
 
 const MAX_SAFE_STRING_BYTES: usize = 256;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeFailureKind {
+    UnsupportedCapability,
+    IncompatibleVersion,
+    InvalidInput,
+    ResourceExhausted,
+    DependencyUnavailable,
+    DeadlineExceeded,
+    AuthorizationFailed,
+    Cancelled,
+    Internal,
+}
+
+pub enum AgentTerminalOutput {
+    Result(Box<BoundAgentExecutionResult>),
+    Failure(RuntimeFailureKind),
+}
 
 /// Bind one validated current `NodeEvent` to the exact claimed agent stream.
 ///
@@ -77,6 +99,189 @@ pub fn build_node_event_output_frame(
         ));
     }
     Ok(frame)
+}
+
+/// Bind one terminal agent result or registered safe failure to the claimed
+/// stream and its deterministic settlement proposal.
+///
+/// # Errors
+///
+/// Returns a bounded [`ProtocolError`] for an invalid result, fence, sequence,
+/// occurrence time, or complete terminal frame.
+pub fn build_agent_terminal_output_frame(
+    verified: &VerifiedAgentCommand,
+    fence: &ExecutionFenceV1,
+    outcome: AgentTerminalOutput,
+    sequence: u64,
+    occurred_at_unix_millis: i64,
+    claim_handoff_watermark: u64,
+) -> Result<ExecutionOutputFrameV1, ProtocolError> {
+    if sequence == 0 || occurred_at_unix_millis <= 0 || claim_handoff_watermark >= sequence {
+        return Err(ProtocolError::InvalidInput(
+            "the terminal output identity is malformed",
+        ));
+    }
+    validate_fence(fence)?;
+
+    let (event_type, payload, payload_bytes, requested_outcome) = match outcome {
+        AgentTerminalOutput::Result(result) => {
+            let result = result.into_message();
+            validate_agent_execution_result(&result)?;
+            validate_result_command_binding(verified, &result)?;
+            let bytes = result.encode_to_vec();
+            (
+                ExecutionOutputEventTypeV1::AgentExecutionResult,
+                execution_output_frame_v1::Payload::AgentExecution(result),
+                bytes,
+                ExecutionOutcomeV1::Succeeded,
+            )
+        }
+        AgentTerminalOutput::Failure(kind) => {
+            let error = runtime_error(kind);
+            let bytes = error.encode_to_vec();
+            (
+                ExecutionOutputEventTypeV1::RuntimeError,
+                execution_output_frame_v1::Payload::RuntimeError(error),
+                bytes,
+                if kind == RuntimeFailureKind::Cancelled {
+                    ExecutionOutcomeV1::Cancelled
+                } else {
+                    ExecutionOutcomeV1::Failed
+                },
+            )
+        }
+    };
+    let payload_digest = sha256(&payload_bytes);
+    let command = verified.command();
+    let logical_output_id = format!("agent-execution:{}", command.execution_id);
+    let event_id = format!("{}:{sequence}", command.command_id);
+    let frame = ExecutionOutputFrameV1 {
+        output_schema_revision: OUTPUT_SCHEMA_REVISION.to_owned(),
+        stream_id: format!("{}:{}", command.execution_id, command.generation),
+        identity: Some(ExecutionIdentityV1 {
+            tenant_id: command.tenant_id.clone(),
+            resource_project_id: command.resource_project_id.clone(),
+            projection_project_id: command.projection_project_id.clone(),
+            command_id: command.command_id.clone(),
+            execution_id: command.execution_id.clone(),
+            generation: command.generation,
+        }),
+        fence: Some(fence.clone()),
+        logical_output_id: logical_output_id.clone(),
+        event_id: event_id.clone(),
+        sequence,
+        claim_handoff_watermark,
+        event_type: event_type as i32,
+        occurred_at_unix_millis,
+        payload_digest: Some(payload_digest.clone()),
+        terminal: true,
+        settlement_proposal: Some(SettlementProposalV1 {
+            proposal_id: format!("{}:settlement", command.command_id),
+            requested_outcome: requested_outcome as i32,
+            terminal_logical_output_id: logical_output_id,
+            terminal_event_id: event_id,
+            terminal_sequence: sequence,
+            terminal_payload_digest: Some(payload_digest),
+            prepare_idempotency_key: format!("{}:prepare-settlement", command.command_id),
+        }),
+        payload: Some(payload),
+    };
+    if frame.encoded_len() > MAX_OUTPUT_FRAME_BYTES {
+        return Err(ProtocolError::ResourceExhausted(
+            "the terminal event exceeds the approved output limit",
+        ));
+    }
+    Ok(frame)
+}
+
+fn runtime_error(kind: RuntimeFailureKind) -> RuntimeErrorV1 {
+    let (code, safe_message, retryable) = match kind {
+        RuntimeFailureKind::UnsupportedCapability => (
+            RuntimeErrorCodeV1::UnsupportedCapability,
+            "Configuration type is not supported.",
+            false,
+        ),
+        RuntimeFailureKind::IncompatibleVersion => (
+            RuntimeErrorCodeV1::IncompatibleVersion,
+            "The requested contract version is not compatible.",
+            false,
+        ),
+        RuntimeFailureKind::InvalidInput => (
+            RuntimeErrorCodeV1::InvalidInput,
+            "The execution input is invalid.",
+            false,
+        ),
+        RuntimeFailureKind::ResourceExhausted => (
+            RuntimeErrorCodeV1::ResourceExhausted,
+            "The execution exceeded an approved resource limit.",
+            false,
+        ),
+        RuntimeFailureKind::DependencyUnavailable => (
+            RuntimeErrorCodeV1::DependencyUnavailable,
+            "A required runtime dependency is unavailable.",
+            true,
+        ),
+        RuntimeFailureKind::DeadlineExceeded => (
+            RuntimeErrorCodeV1::DeadlineExceeded,
+            "The execution deadline was exceeded.",
+            true,
+        ),
+        RuntimeFailureKind::AuthorizationFailed => (
+            RuntimeErrorCodeV1::AuthorizationFailed,
+            "Execution authorization failed.",
+            false,
+        ),
+        RuntimeFailureKind::Cancelled => (
+            RuntimeErrorCodeV1::Cancelled,
+            "Execution was cancelled.",
+            false,
+        ),
+        RuntimeFailureKind::Internal => (
+            RuntimeErrorCodeV1::Internal,
+            "The runtime operation failed.",
+            false,
+        ),
+    };
+    RuntimeErrorV1 {
+        code: code as i32,
+        safe_message: safe_message.to_owned(),
+        retryable,
+    }
+}
+
+fn validate_result_command_binding(
+    verified: &VerifiedAgentCommand,
+    result: &AgentExecutionResultV1,
+) -> Result<(), ProtocolError> {
+    let command = verified.command();
+    let Some(input) = command.input_bundle_ref.as_ref() else {
+        return Err(ProtocolError::InvalidInput(
+            "the agent result does not match its command binding",
+        ));
+    };
+    let Some(worker_command_v1::CapabilityCommand::AgentExecution(agent)) =
+        command.capability_command.as_ref()
+    else {
+        return Err(ProtocolError::InvalidInput(
+            "the agent result does not match its command binding",
+        ));
+    };
+    if result.input_bundle_id != input.input_bundle_id
+        || result.input_bundle_digest != input.digest
+        || result.request_entry_id != agent.request_entry_id
+    {
+        return Err(ProtocolError::InvalidInput(
+            "the agent result does not match its command binding",
+        ));
+    }
+    Ok(())
+}
+
+fn sha256(payload: &[u8]) -> DigestV1 {
+    DigestV1 {
+        algorithm: DigestAlgorithmV1::Sha256 as i32,
+        value: digest::digest(&digest::SHA256, payload).as_ref().to_vec(),
+    }
 }
 
 fn validate_fence(fence: &ExecutionFenceV1) -> Result<(), ProtocolError> {

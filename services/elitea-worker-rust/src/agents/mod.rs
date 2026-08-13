@@ -12,5 +12,5 @@ pub use request::{
 };
 pub use result::{
     AGENT_RESULT_CLASSIFICATION, AGENT_RESULT_MEDIA_TYPE, AgentResultArtifact, AgentTerminalState,
-    bind_result_artifact,
+    BoundAgentExecutionResult, bind_result_artifact,
 };

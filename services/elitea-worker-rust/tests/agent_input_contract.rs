@@ -309,17 +309,32 @@ fn terminal_artifact_binding_covers_only_three_current_supported_states() {
             },
         )
         .expect("terminal artifact binding");
-        assert_eq!(result.terminal_state, expected as i32);
-        assert_eq!(result.input_bundle_id, "bundle-1");
-        assert_eq!(result.request_entry_id, "agent-request");
+        assert_eq!(result.message().terminal_state, expected as i32);
+        assert_eq!(result.message().input_bundle_id, "bundle-1");
+        assert_eq!(result.message().request_entry_id, "agent-request");
+        assert_eq!(result.message().request_immutable_version, "v1");
         assert_eq!(
-            result.input_bundle_digest.as_ref().unwrap().algorithm,
+            result
+                .message()
+                .request_content_digest
+                .as_ref()
+                .unwrap()
+                .value,
+            vec![b'r'; 32]
+        );
+        assert_eq!(
+            result
+                .message()
+                .input_bundle_digest
+                .as_ref()
+                .unwrap()
+                .algorithm,
             DigestAlgorithmV1::Sha256 as i32
         );
-        let artifact = result.result_artifact.unwrap();
+        let artifact = result.message().result_artifact.as_ref().unwrap();
         assert_eq!(artifact.media_type, AGENT_RESULT_MEDIA_TYPE);
         assert_eq!(artifact.classification, AGENT_RESULT_CLASSIFICATION);
-        assert_eq!(artifact.digest.unwrap().value, vec![b'a'; 32]);
+        assert_eq!(artifact.digest.as_ref().unwrap().value, vec![b'a'; 32]);
     }
 }
 
@@ -337,25 +352,104 @@ fn malformed_content_bindings_and_artifacts_are_rejected_before_delivery() {
         Err(AgentProtocolError::InvalidInput(message)) if message.contains("binding")
     ));
 
+    let mut zero_binding = binding();
+    zero_binding.input_bundle_digest.fill(0);
+    assert!(matches!(
+        request_from(
+            application_message(),
+            AgentExecutionKind::Application,
+            zero_binding
+        ),
+        Err(AgentProtocolError::InvalidInput(message)) if message.contains("binding")
+    ));
+
     let request = request_from(
         application_message(),
         AgentExecutionKind::Application,
         binding(),
     )
     .expect("application request");
-    assert!(matches!(
+
+    for artifact in [
+        AgentResultArtifact {
+            artifact_id: String::new(),
+            immutable_version: "v1".to_owned(),
+            byte_length: 1,
+            digest: [b'a'; 32],
+        },
+        AgentResultArtifact {
+            artifact_id: "artifact-1".to_owned(),
+            immutable_version: "v1".to_owned(),
+            byte_length: 64 * 1024 + 1,
+            digest: [b'a'; 32],
+        },
+        AgentResultArtifact {
+            artifact_id: "artifact-1".to_owned(),
+            immutable_version: "v1".to_owned(),
+            byte_length: 1,
+            digest: [0; 32],
+        },
+        AgentResultArtifact {
+            artifact_id: "artifact-1".to_owned(),
+            immutable_version: "v1".to_owned(),
+            byte_length: 0,
+            digest: [b'a'; 32],
+        },
+    ] {
+        assert!(matches!(
+            bind_result_artifact(&request, AgentTerminalState::Completed, artifact),
+            Err(AgentProtocolError::InvalidInput(message)) if message.contains("artifact binding")
+        ));
+    }
+}
+
+#[test]
+fn artifact_metadata_limits_are_enforced_at_the_typed_boundary() {
+    let request = request_from(
+        application_message(),
+        AgentExecutionKind::Application,
+        binding(),
+    )
+    .expect("application request");
+
+    for (artifact_id, immutable_version) in [
+        ("x".repeat(256), "v1".to_owned()),
+        ("artifact-1".to_owned(), "x".repeat(256)),
+    ] {
         bind_result_artifact(
             &request,
             AgentTerminalState::Completed,
             AgentResultArtifact {
-                artifact_id: String::new(),
-                immutable_version: "v1".to_owned(),
+                artifact_id,
+                immutable_version,
                 byte_length: 1,
-                digest: [0; 32],
-            }
-        ),
-        Err(AgentProtocolError::InvalidInput(message)) if message.contains("artifact binding")
-    ));
+                digest: [b'a'; 32],
+            },
+        )
+        .expect("256-byte artifact metadata");
+    }
+
+    for (artifact_id, immutable_version) in [
+        ("artifact-1".to_owned(), String::new()),
+        ("x".repeat(257), "v1".to_owned()),
+        ("artifact-1".to_owned(), "x".repeat(257)),
+        ("artifact\n1".to_owned(), "v1".to_owned()),
+        ("artifact-1".to_owned(), "v1\u{7f}".to_owned()),
+    ] {
+        assert!(matches!(
+            bind_result_artifact(
+                &request,
+                AgentTerminalState::Completed,
+                AgentResultArtifact {
+                    artifact_id,
+                    immutable_version,
+                    byte_length: 1,
+                    digest: [b'a'; 32],
+                },
+            ),
+            Err(AgentProtocolError::InvalidInput(message)) if message.contains("artifact binding")
+        ));
+    }
 }
 
 fn assert_invalid(message: AgentExecutionInputV1, kind: AgentExecutionKind, expected: &str) {

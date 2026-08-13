@@ -10,6 +10,9 @@ use crate::protocol::{
 pub const AGENT_RESULT_MEDIA_TYPE: &str = "application/vnd.elitea.agent-execution-result.v1+json";
 pub const AGENT_RESULT_CLASSIFICATION: &str = "tenant-confidential";
 
+const MAX_RESULT_METADATA_BYTES: usize = 256;
+const MAX_RESULT_ARTIFACT_BYTES: u64 = 64 * 1024;
+
 /// Terminal states currently accepted end to end by Main.
 ///
 /// `PARKED_CHILDREN` is deliberately absent until the declared proto state is
@@ -29,6 +32,19 @@ pub struct AgentResultArtifact {
     pub digest: [u8; 32],
 }
 
+pub struct BoundAgentExecutionResult(AgentExecutionResultV1);
+
+impl BoundAgentExecutionResult {
+    pub(crate) fn into_message(self) -> AgentExecutionResultV1 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn message(&self) -> &AgentExecutionResultV1 {
+        &self.0
+    }
+}
+
 /// Bind one admitted terminal outcome to an immutable artifact reference.
 ///
 /// # Errors
@@ -39,17 +55,19 @@ pub fn bind_result_artifact(
     request: &AgentExecutionRequest,
     terminal_state: AgentTerminalState,
     artifact: AgentResultArtifact,
-) -> Result<AgentExecutionResultV1, AgentProtocolError> {
-    if artifact.artifact_id.is_empty()
-        || artifact.immutable_version.is_empty()
+) -> Result<BoundAgentExecutionResult, AgentProtocolError> {
+    if !valid_metadata(&artifact.artifact_id)
+        || !valid_metadata(&artifact.immutable_version)
         || artifact.byte_length == 0
+        || artifact.byte_length > MAX_RESULT_ARTIFACT_BYTES
+        || artifact.digest.iter().all(|byte| *byte == 0)
     {
         return Err(AgentProtocolError::InvalidInput(
             "the agent result artifact binding is malformed",
         ));
     }
     let binding = &request.binding;
-    Ok(AgentExecutionResultV1 {
+    Ok(BoundAgentExecutionResult(AgentExecutionResultV1 {
         input_bundle_id: binding.input_bundle_id.clone(),
         input_bundle_digest: Some(digest(binding.input_bundle_digest)),
         request_entry_id: binding.request_entry_id.clone(),
@@ -70,6 +88,61 @@ pub fn bind_result_artifact(
             digest: Some(digest(artifact.digest)),
             classification: AGENT_RESULT_CLASSIFICATION.to_owned(),
         }),
+    }))
+}
+
+pub(crate) fn validate_agent_execution_result(
+    result: &AgentExecutionResultV1,
+) -> Result<(), AgentProtocolError> {
+    if !valid_metadata(&result.input_bundle_id)
+        || !valid_metadata(&result.request_entry_id)
+        || !valid_metadata(&result.request_immutable_version)
+        || !valid_sha256(result.input_bundle_digest.as_ref())
+        || !valid_sha256(result.request_content_digest.as_ref())
+        || !matches!(
+            AgentExecutionTerminalStateV1::try_from(result.terminal_state),
+            Ok(AgentExecutionTerminalStateV1::Completed
+                | AgentExecutionTerminalStateV1::PausedHitl
+                | AgentExecutionTerminalStateV1::PausedMcpAuth)
+        )
+    {
+        return Err(AgentProtocolError::InvalidInput(
+            "the agent result binding is malformed",
+        ));
+    }
+    let Some(artifact) = result.result_artifact.as_ref() else {
+        return Err(AgentProtocolError::InvalidInput(
+            "the agent result artifact binding is malformed",
+        ));
+    };
+    if !valid_metadata(&artifact.artifact_id)
+        || !valid_metadata(&artifact.immutable_version)
+        || artifact.media_type != AGENT_RESULT_MEDIA_TYPE
+        || artifact.classification != AGENT_RESULT_CLASSIFICATION
+        || artifact.byte_length == 0
+        || artifact.byte_length > MAX_RESULT_ARTIFACT_BYTES
+        || !valid_sha256(artifact.digest.as_ref())
+    {
+        return Err(AgentProtocolError::InvalidInput(
+            "the agent result artifact binding is malformed",
+        ));
+    }
+    Ok(())
+}
+
+fn valid_metadata(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_RESULT_METADATA_BYTES
+        && !value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == 0x7f)
+}
+
+fn valid_sha256(value: Option<&DigestV1>) -> bool {
+    value.is_some_and(|value| {
+        value.algorithm == DigestAlgorithmV1::Sha256 as i32
+            && value.value.len() == 32
+            && value.value.iter().any(|byte| *byte != 0)
     })
 }
 
