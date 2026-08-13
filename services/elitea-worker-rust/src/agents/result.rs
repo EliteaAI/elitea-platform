@@ -1,8 +1,10 @@
-use super::protocol::AgentProtocolError;
 use super::request::AgentExecutionRequest;
-use crate::protocol::elitea::runtime::v1::{
-    AgentExecutionArtifactReferenceV1, AgentExecutionResultV1, AgentExecutionTerminalStateV1,
-    DigestAlgorithmV1, DigestV1,
+use crate::protocol::{
+    ProtocolError as AgentProtocolError,
+    elitea::runtime::v1::{
+        AgentExecutionArtifactReferenceV1, AgentExecutionResultV1, AgentExecutionTerminalStateV1,
+        DigestAlgorithmV1, DigestV1,
+    },
 };
 
 pub const AGENT_RESULT_MEDIA_TYPE: &str = "application/vnd.elitea.agent-execution-result.v1+json";

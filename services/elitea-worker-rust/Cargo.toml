@@ -7,8 +7,10 @@ publish = false
 
 [dependencies]
 prost = "=0.14.3"
+ring = "=0.17.14"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["arbitrary_precision"] }
+subtle = "=2.6.1"
 tonic = { version = "=0.14.2", features = ["tls-ring"] }
 tonic-prost = "=0.14.2"
 

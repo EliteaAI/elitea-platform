@@ -4,9 +4,8 @@ pub mod protocol;
 pub mod request;
 pub mod result;
 
-pub use protocol::{
-    AGENT_INPUT_SCHEMA_REVISION, AgentProtocolError, parse_agent_execution_input, request_from,
-};
+pub use crate::protocol::ProtocolError as AgentProtocolError;
+pub use protocol::{AGENT_INPUT_SCHEMA_REVISION, parse_agent_execution_input, request_from};
 pub use request::{
     AgentExecutionKind, AgentExecutionPayload, AgentExecutionRequest, AgentInputBinding,
     NextInputSuggestionPolicy, UserInput,

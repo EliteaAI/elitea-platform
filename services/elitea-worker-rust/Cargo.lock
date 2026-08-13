@@ -123,8 +123,10 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
+ "ring",
  "serde",
  "serde_json",
+ "subtle",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

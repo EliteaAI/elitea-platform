@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fmt;
 
 use prost::Message;
 use serde_json::{Map, Value};
@@ -8,32 +7,15 @@ use super::request::{
     AgentExecutionKind, AgentExecutionPayload, AgentExecutionRequest, AgentInputBinding,
     NextInputSuggestionPolicy, UserInput,
 };
-use crate::protocol::elitea::runtime::v1::AgentExecutionInputV1;
+use crate::protocol::{
+    ProtocolError as AgentProtocolError, elitea::runtime::v1::AgentExecutionInputV1,
+};
 
 pub const AGENT_INPUT_SCHEMA_REVISION: &str = "elitea.runtime.agent-execution-input.v1";
 const MAX_AGENT_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_JSON_VALUE_BYTES: usize = 256 * 1024;
 const MAX_JSON_DEPTH: usize = 64;
 const MAX_JSON_STRING_BYTES: usize = 64 * 1024;
-
-/// Stable, data-free error classification for the public input boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AgentProtocolError {
-    InvalidInput(&'static str),
-    ResourceExhausted(&'static str),
-}
-
-impl fmt::Display for AgentProtocolError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidInput(message) | Self::ResourceExhausted(message) => {
-                formatter.write_str(message)
-            }
-        }
-    }
-}
-
-impl std::error::Error for AgentProtocolError {}
 
 /// Decode only the canonical protobuf representation admitted by protocol v1.
 ///
