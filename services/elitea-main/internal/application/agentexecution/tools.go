@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
@@ -16,6 +18,10 @@ import (
 const (
 	currentAgentDefaultMaxTokens          = int64(4_000)
 	currentAgentReasoningDefaultMaxTokens = int64(16_000)
+	currentMaxNestedSkillApplications     = 25
+	currentMaxNestedSkills                = 512
+	currentMaxNestedSkillIconBytes        = 16 * 1024
+	currentNestedSkillRegistryField       = "nested_skill_registry"
 )
 
 // CurrentApplicationVersionFreezer converts the current saved application
@@ -232,6 +238,12 @@ func freezeCurrentStoredApplicationReference(tool map[string]any) (map[string]an
 	if !validApplicationID || !validVersionID {
 		return nil, false
 	}
+	nestedSkills, validNestedSkills := freezeCurrentNestedSkillRegistry(
+		tool[currentNestedSkillRegistryField],
+	)
+	if !validNestedSkills {
+		return nil, false
+	}
 
 	tool["id"] = toolID
 	tool["author_id"] = authorID
@@ -243,6 +255,11 @@ func freezeCurrentStoredApplicationReference(tool map[string]any) (map[string]an
 	tool["variables"] = variables
 	tool["agent_type"] = agentType
 	tool["created_at"] = createdAt
+	if nestedSkills == nil {
+		delete(tool, currentNestedSkillRegistryField)
+	} else {
+		tool[currentNestedSkillRegistryField] = nestedSkills
+	}
 	return tool, true
 }
 
@@ -256,7 +273,12 @@ func freezeCurrentAdhocApplicationReference(
 	actorUserID int32,
 ) (map[string]any, bool) {
 	toolID, hasToolID := tool["id"]
-	if len(tool) != 11 || !hasToolID || toolID != nil {
+	_, hasNestedSkills := tool[currentNestedSkillRegistryField]
+	expectedFields := 11
+	if hasNestedSkills {
+		expectedFields++
+	}
+	if len(tool) != expectedFields || !hasToolID || toolID != nil {
 		return nil, false
 	}
 	name, validName := boundedCurrentAgentReferenceString(tool["name"], false)
@@ -281,8 +303,14 @@ func freezeCurrentAdhocApplicationReference(
 	if !validApplicationID || !validVersionID {
 		return nil, false
 	}
+	nestedSkills, validNestedSkills := freezeCurrentNestedSkillRegistry(
+		tool[currentNestedSkillRegistryField],
+	)
+	if !validNestedSkills {
+		return nil, false
+	}
 
-	return map[string]any{
+	frozen := map[string]any{
 		"type":           "application",
 		"name":           name,
 		"description":    description,
@@ -299,7 +327,86 @@ func freezeCurrentAdhocApplicationReference(
 		"toolkit_name": toolkitName,
 		"agent_type":   agentType,
 		"created_at":   createdAt,
-	}, true
+	}
+	if nestedSkills != nil {
+		frozen[currentNestedSkillRegistryField] = nestedSkills
+	}
+	return frozen, true
+}
+
+func freezeCurrentNestedSkillRegistry(value any) ([]any, bool) {
+	if value == nil {
+		return nil, true
+	}
+	entries, ok := value.([]any)
+	if !ok || len(entries) == 0 || len(entries) > currentMaxNestedSkillApplications {
+		return nil, false
+	}
+	result := make([]any, 0, len(entries))
+	totalSkills := 0
+	seenApplications := make(map[string]struct{}, len(entries))
+	for _, rawEntry := range entries {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok || len(entry) != 4 {
+			return nil, false
+		}
+		applicationID, validApplicationID := positiveCurrentAgentJSONInteger(entry["application_id"])
+		versionID, validVersionID := positiveCurrentAgentJSONInteger(entry["application_version_id"])
+		applicationName, validApplicationName := boundedCurrentAgentReferenceString(
+			entry["application_name"],
+			false,
+		)
+		skills, validSkills := entry["skills"].([]any)
+		identity := fmt.Sprintf("%d:%d", applicationID, versionID)
+		if !validApplicationID || !validVersionID || !validApplicationName ||
+			!validSkills || len(skills) == 0 {
+			return nil, false
+		}
+		if _, duplicate := seenApplications[identity]; duplicate {
+			return nil, false
+		}
+		seenApplications[identity] = struct{}{}
+		frozenSkills := make([]any, 0, len(skills))
+		seenSkills := make(map[int64]struct{}, len(skills))
+		for _, rawSkill := range skills {
+			totalSkills++
+			if totalSkills > currentMaxNestedSkills {
+				return nil, false
+			}
+			skill, ok := rawSkill.(map[string]any)
+			if !ok || len(skill) != 3 {
+				return nil, false
+			}
+			skillID, validSkillID := positiveCurrentAgentJSONInteger(skill["skill_id"])
+			name, validName := skill["name"].(string)
+			iconMeta := skill["icon_meta"]
+			if !validSkillID || !validName || name == "" || !utf8.ValidString(name) ||
+				utf8.RuneCountInString(name) > 256 || strings.ContainsAny(name, "\x00\r\n") {
+				return nil, false
+			}
+			if _, duplicate := seenSkills[skillID]; duplicate {
+				return nil, false
+			}
+			seenSkills[skillID] = struct{}{}
+			if iconMeta != nil {
+				if _, object := iconMeta.(map[string]any); !object {
+					return nil, false
+				}
+				encoded, err := json.Marshal(iconMeta)
+				if err != nil || len(encoded) > currentMaxNestedSkillIconBytes {
+					return nil, false
+				}
+			}
+			frozenSkills = append(frozenSkills, map[string]any{
+				"skill_id": skillID, "name": name, "icon_meta": iconMeta,
+			})
+		}
+		result = append(result, map[string]any{
+			"application_id": applicationID, "application_version_id": versionID,
+			"application_name": applicationName, "skills": frozenSkills,
+		})
+	}
+	return result, true
 }
 
 func boundedCurrentAgentReferenceString(value any, allowEmpty bool) (string, bool) {

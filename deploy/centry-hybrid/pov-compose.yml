@@ -12,6 +12,7 @@ services:
   pylon_main:
     volumes:
       - ${ELITEA_PLATFORM_DIR:?set ELITEA_PLATFORM_DIR}/deploy/centry-hybrid/runtime-interface-litellm.yml:/data/configs/runtime_interface_litellm.yml:ro
+      - ${ELITEA_AUTH_POV_RUNTIME_DIR:?set ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/pylon-main-shared.yml:/data/configs/shared.yml:ro
     depends_on:
       elitea-litellm:
         condition: service_healthy
@@ -55,6 +56,15 @@ services:
       ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM: commands.v1.index.ingest.indexing.shared.2.0
       ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP: elitea-indexer-worker-v2
       ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES: "16"
+      # Hybrid-only capacity budget. Standalone Go deployments retain the
+      # compiled phase-one defaults.
+      ELITEA_RUNTIME_DB_ADMISSION_MAX_CONNS: "3"
+      ELITEA_RUNTIME_DB_CONTROL_MAX_CONNS: "2"
+      ELITEA_RUNTIME_DB_OUTPUT_MAX_CONNS: "2"
+      ELITEA_RUNTIME_DB_REPLAY_MAX_CONNS: "1"
+      ELITEA_RUNTIME_DB_TERMINAL_MAX_CONNS: "1"
+      ELITEA_RUNTIME_DB_CONTENT_MAX_CONNS: "1"
+      ELITEA_DATABASE_MAX_CONNS: "4"
       # Optional, live current-platform policy lookup for next-input suggestions.
       # The exact actor PAT crosses only the private gateway route below; lookup
       # failure suppresses the suggestion and never blocks the primary turn.
@@ -64,6 +74,10 @@ services:
         condition: service_completed_successfully
     networks:
       - runtime_gateway
+
+  pylon_auth:
+    volumes:
+      - ${ELITEA_AUTH_POV_RUNTIME_DIR:?set ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/pylon-auth-core.yml:/data/configs/auth_core.yml:ro
 
   elitea-migrate:
     # Main is the single build owner for this shared image tag.

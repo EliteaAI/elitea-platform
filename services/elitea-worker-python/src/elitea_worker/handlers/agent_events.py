@@ -157,12 +157,18 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
         self._authorization_pause_message: str | None = None
         self._applied_skills: list[dict[str, Any]] = []
         self._skills_by_name: dict[str, dict[str, Any]] = {}
+        self._nested_skills_by_parent: dict[
+            tuple[str, str], dict[str, Any] | None
+        ] = {}
+        self._nested_skills_by_name: dict[str, dict[str, Any] | None] = {}
+        self._tool_skill_identities: dict[str, dict[str, Any]] = {}
 
     def configure_skills(
         self,
         *,
         applied_skills: list[Any] | None,
         attached_skills: list[Any] | None,
+        nested_skill_registry: list[Any] | None = None,
     ) -> None:
         """Install the current turn-scoped skill projection.
 
@@ -192,9 +198,33 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             if not isinstance(name, str) or not name.strip():
                 continue
             registry.setdefault(name.strip().lower(), dict(raw))
+        nested_by_parent: dict[tuple[str, str], dict[str, Any] | None] = {}
+        nested_by_name: dict[str, dict[str, Any] | None] = {}
+        for raw_registry in nested_skill_registry or []:
+            if not isinstance(raw_registry, dict):
+                continue
+            parent = raw_registry.get("application_name")
+            skills = raw_registry.get("skills")
+            if not isinstance(parent, str) or not parent.strip() or not isinstance(skills, list):
+                continue
+            parent_key = parent.strip().lower()
+            for raw in skills:
+                identity = _valid_compact_skill(raw)
+                if identity is None:
+                    continue
+                skill_key = identity["name"].strip().lower()
+                _register_unique_skill(
+                    nested_by_parent,
+                    (parent_key, skill_key),
+                    identity,
+                )
+                _register_unique_skill(nested_by_name, skill_key, identity)
         with self._lock:
             self._applied_skills = applied
             self._skills_by_name = registry
+            self._nested_skills_by_parent = nested_by_parent
+            self._nested_skills_by_name = nested_by_name
+            self._tool_skill_identities = {}
 
     def emit_agent_start(self, *, invoked_skills: list[Any] | None = None) -> None:
         self._emit("agent_start", response_metadata={"invoked_skills": invoked_skills or []})
@@ -218,6 +248,47 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             "paused": True,
             "pause_type": "mcp_auth",
         }
+
+    def capture_materialization_authorization(self, error: BaseException) -> bool:
+        """Project an SDK authorization raised before a tool callback exists.
+
+        Saved or nested MCP toolkits can discover delegated authorization while
+        the SDK is constructing the agent graph. LangChain therefore has no
+        tool invocation on which to deliver ``on_tool_error``. Preserve the
+        established authorization terminal contract with a deterministic
+        execution-scoped invocation identity.
+        """
+
+        if not _is_mcp_authorization_required(error):
+            return False
+        supplied_run_id = getattr(error, "tool_run_id", None)
+        if (
+            not isinstance(supplied_run_id, str)
+            or not supplied_run_id
+            or len(supplied_run_id.encode("utf-8")) > 512
+            or any(character in supplied_run_id for character in "\x00\r\n")
+        ):
+            supplied_run_id = (
+                f"mcp-auth-materialization:{self._context.execution_id}"
+            )
+        metadata = {
+            key: getattr(error, key)
+            for key in _HIERARCHY_KEYS
+            if getattr(error, key, None) is not None
+        }
+        callback_name = (
+            getattr(error, "tool_name", None)
+            or getattr(error, "toolkit_name", None)
+            or "mcp_authorization"
+        )
+        self._guard(
+            self._pause_for_authorization,
+            supplied_run_id,
+            error,
+            metadata,
+            callback_name,
+        )
+        return True
 
     def emit_terminal(
         self,
@@ -430,9 +501,13 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             requested = inputs.get("skill") if isinstance(inputs, dict) else None
             if isinstance(requested, str) and requested.strip():
                 with self._lock:
-                    registered = dict(
-                        self._skills_by_name.get(requested.strip().lower(), {})
+                    registered = self._resolve_skill_identity_locked(
+                        requested,
+                        hierarchy,
                     )
+                    if registered is not None:
+                        self._tool_skill_identities[selected] = dict(registered)
+                registered = registered or {}
                 loaded_name = registered.get("name") or requested.strip()
                 tool_meta["loaded_skill"] = loaded_name
                 icon_meta = registered.get("icon_meta")
@@ -556,8 +631,13 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             entry["finish_reason"] = "error" if failed else "stop"
             public_output = None if failed else _trace_text(value)
             if not failed and entry.get("tool_name") == "load_skill":
-                self._record_loaded_skill_locked(public_output or "")
+                self._record_loaded_skill_locked(
+                    public_output or "",
+                    self._tool_skill_identities.pop(selected, None),
+                )
                 public_output = _public_load_skill_output(public_output)
+            else:
+                self._tool_skill_identities.pop(selected, None)
             entry["tool_output"] = public_output
             entry["error"] = _trace_text(value) if failed else None
             self._tools[selected] = entry
@@ -759,7 +839,11 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             },
         )
 
-    def _record_loaded_skill_locked(self, output: str) -> None:
+    def _record_loaded_skill_locked(
+        self,
+        output: str,
+        registered: dict[str, Any] | None,
+    ) -> None:
         match = _LOADED_SKILL_PREFIX_RE.match(output) or (
             _LOAD_SKILL_ALREADY_ACTIVE_RE.match(output)
         )
@@ -772,8 +856,27 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             for skill in self._applied_skills
         ):
             return
-        registered = self._skills_by_name.get(key, {})
-        self._applied_skills.append(_compact_skill(registered, name=name))
+        if registered is None:
+            registered = self._skills_by_name.get(key)
+        identity = _valid_compact_skill(registered)
+        if identity is None or identity["name"].strip().lower() != key:
+            raise InvalidInput("The loaded skill identity is unavailable.")
+        self._applied_skills.append(_compact_skill(identity, name=identity["name"]))
+
+    def _resolve_skill_identity_locked(
+        self,
+        requested: str,
+        hierarchy: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        skill_key = requested.strip().lower()
+        parent = _immediate_parent_name(hierarchy)
+        if parent is None:
+            registered = self._skills_by_name.get(skill_key)
+            return dict(registered) if registered is not None else None
+        registered = self._nested_skills_by_parent.get((parent, skill_key))
+        if registered is None:
+            registered = self._nested_skills_by_name.get(skill_key)
+        return dict(registered) if registered is not None else None
 
     def _applied_skills_snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -844,6 +947,33 @@ class CurrentAgentNodeEventCallback(BaseCallbackHandler):
             raise failure
 
 
+def nested_skill_registry_from_payload(
+    payload: AgentExecutionPayload,
+) -> list[Any]:
+    """Collect admission-frozen compact child skill registries.
+
+    Main attaches each registry to the application reference whose subtree it
+    describes. The SDK still fetches child instruction bodies itself; only the
+    compact identity required by UI and persistence projection crosses here.
+    """
+
+    groups: list[Any] = [payload.tools]
+    version_details = payload.application.get("version_details")
+    if isinstance(version_details, dict):
+        groups.append(version_details.get("tools"))
+    registries: list[Any] = []
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for tool in group:
+            if not isinstance(tool, dict) or tool.get("type") != "application":
+                continue
+            registry = tool.get("nested_skill_registry")
+            if isinstance(registry, list):
+                registries.extend(registry)
+    return registries
+
+
 def _thinking_step(response: Any, run_id: str, state: dict[str, Any]) -> dict[str, Any]:
     generation = None
     generations = getattr(response, "generations", None)
@@ -906,28 +1036,26 @@ def _normalize_response_content(content: Any) -> str:
         return content
     if isinstance(content, list):
         text_parts: list[str] = []
-        has_only_tool_blocks = True
         for block in content:
             if isinstance(block, dict):
-                if block.get("type") == "text":
-                    text_parts.append(str(block.get("text", "")))
-                    has_only_tool_blocks = False
+                if block.get("type") in {"text", "output_text"}:
+                    text = block.get("text")
+                    if isinstance(text, str) and text:
+                        text_parts.append(text)
                 elif "text" in block and "type" not in block:
-                    text_parts.append(str(block.get("text", "")))
-                    has_only_tool_blocks = False
-                elif block.get("type") in {"tool_use", "tool_result", "thinking"}:
+                    text = block.get("text")
+                    if isinstance(text, str) and text:
+                        text_parts.append(text)
+                elif block.get("type") in {
+                    "tool_use",
+                    "tool_result",
+                    "thinking",
+                    "reasoning",
+                }:
                     continue
-                else:
-                    text_parts.append(json.dumps(block, ensure_ascii=False))
-                    has_only_tool_blocks = False
             elif isinstance(block, str):
-                text_parts.append(block)
-                has_only_tool_blocks = False
-            else:
-                text_parts.append(str(block))
-                has_only_tool_blocks = False
-        if has_only_tool_blocks and not text_parts:
-            return ""
+                if block:
+                    text_parts.append(block)
         return "".join(text_parts)
     return json.dumps(content, ensure_ascii=False)
 
@@ -1083,6 +1211,55 @@ def _compact_skill(raw: dict[str, Any], *, name: str) -> dict[str, Any]:
         "name": name,
         "icon_meta": _json_value(raw.get("icon_meta")),
     }
+
+
+def _valid_compact_skill(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    skill_id = raw.get("skill_id")
+    name = raw.get("name")
+    icon_meta = raw.get("icon_meta")
+    if (
+        not isinstance(skill_id, int)
+        or isinstance(skill_id, bool)
+        or skill_id <= 0
+        or not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(icon_meta, (dict, type(None)))
+    ):
+        return None
+    return {
+        "skill_id": skill_id,
+        "name": name,
+        "icon_meta": _json_value(icon_meta),
+    }
+
+
+def _register_unique_skill(
+    registry: dict[Any, dict[str, Any] | None],
+    key: Any,
+    identity: dict[str, Any],
+) -> None:
+    if key not in registry:
+        registry[key] = dict(identity)
+        return
+    existing = registry[key]
+    if existing != identity:
+        registry[key] = None
+
+
+def _immediate_parent_name(hierarchy: dict[str, Any]) -> str | None:
+    path = hierarchy.get("parent_agent_path")
+    if isinstance(path, list) and path:
+        last = path[-1]
+        if isinstance(last, dict):
+            name = last.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip().lower()
+    parent = hierarchy.get("parent_agent_name")
+    if isinstance(parent, str) and parent.strip():
+        return parent.strip().lower()
+    return None
 
 
 def _public_load_skill_output(output: str | None) -> str | None:

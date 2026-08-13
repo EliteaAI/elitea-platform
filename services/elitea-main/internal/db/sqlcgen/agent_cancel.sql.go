@@ -17,6 +17,12 @@ WITH target AS MATERIALIZED (
            response.reply_to_id AS question_message_group_id,
            job.execution_id,
            job.generation,
+           response.is_streaming,
+           (
+               response.meta ? 'hitl_interrupt'
+               OR response.meta ? 'hitl_interrupts'
+               OR response.meta ? 'authorization_requests'
+           ) AS has_pause_projection,
            (response.meta ->> 'execution_generation')::text
                AS client_execution_generation
     FROM chat_message_group AS response
@@ -62,8 +68,18 @@ WITH target AS MATERIALIZED (
       AND (
           (
               job.desired_state = 'RUNNING'
-              AND job.state IN (
-                  'PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING'
+              AND (
+                  job.state IN (
+                      'PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING'
+                  )
+                  OR (
+                      job.state IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+                      AND target.is_streaming
+                  )
+                  OR (
+                      job.state = 'SUCCEEDED'
+                      AND target.has_pause_projection
+                  )
               )
           )
           OR job.desired_state = 'CANCELLED'

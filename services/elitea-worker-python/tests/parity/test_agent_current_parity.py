@@ -23,13 +23,13 @@ _CURRENT_WORKER_UTILS = (
 _MEMORY_HELPERS = _CURRENT_WORKER_UTILS / "agent_execution_common.py"
 _MEMORY_CONFIG = _PROJECTS_ROOT / "centry/pylon_indexer/configs/indexer_worker.yml"
 _APPLICATION_SHA256 = (
-    "34dff10d710acb706c13fe079a79e609300fc3a443cef70e2cb4a3da65008fc8"
+    "9563031f1db357f7cc4350a4901a0f1dbb2727d6b352fb063455d93105503c6f"
 )
 _ADHOC_SHA256 = (
-    "5b38754341ce78e5d133b3f97f2a9fdd3b9aa8429919b068d55df64940aa525c"
+    "50f9ab9ea2c2f1bc454dd40fb5509106e39c1d2ce3bccfc4a8269ba6ef2c68a6"
 )
 _MEMORY_HELPERS_SHA256 = (
-    "11fe45cd0db90756a1892e8598126854e66336a7e297955f16def017a6225090"
+    "49827cd7dfe22666a4ec1d8c89c342798402f4ad417b5416e50d1d73a60deb56"
 )
 _CURRENT_MAIN = _PROJECTS_ROOT / "centry/pylon_main/plugins/elitea_core"
 _TRACE_WRITER = _CURRENT_MAIN / "utils/trace_step_writer.py"
@@ -197,7 +197,7 @@ def test_checkpoint_selection_is_bound_to_current_worker_source() -> None:
     assert "autocommit: true" in config
 
 
-def test_language_neutral_input_covers_every_current_worker_kwarg() -> None:
+def test_language_neutral_input_has_only_the_registered_token_continue_drift() -> None:
     current_keys: set[str] = set()
     for path, function_name in (
         (_APPLICATION, "_indexer_agent_task_inner"),
@@ -211,7 +211,11 @@ def test_language_neutral_input_covers_every_current_worker_kwarg() -> None:
         for field in agent_pb2.AgentExecutionInputV1.DESCRIPTOR.fields
     }
 
-    assert current_keys <= contract_fields
+    # EL-6057 added token-limit continuation after this platform slice was
+    # admitted. Keep the drift exact and visible until Main owns the partial
+    # response reconstruction and continuation admission; any second missing
+    # field remains an immediate parity failure.
+    assert current_keys - contract_fields == {"truncated_content"}
 
 
 @pytest.mark.parametrize(

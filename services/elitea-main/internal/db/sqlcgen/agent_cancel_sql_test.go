@@ -17,9 +17,13 @@ func TestCurrentAgentCancelSQLFencesTerminalJobsAndPreservesCurrentProjection(t 
 			t.Fatalf("cancellation SQL missing %q", fragment)
 		}
 	}
-	for _, terminalState := range []string{"'SUCCEEDED'", "'FAILED'"} {
-		if strings.Contains(cancelCurrentAgentExecution, "job.state IN ("+terminalState) {
-			t.Fatalf("terminal state %s must not become cancelled", terminalState)
+	normalizedCancelSQL := strings.Join(strings.Fields(cancelCurrentAgentExecution), " ")
+	for _, fence := range []string{
+		"job.state IN ('SUCCEEDED', 'FAILED', 'CANCELLED') AND target.is_streaming",
+		"job.state = 'SUCCEEDED' AND target.has_pause_projection",
+	} {
+		if !strings.Contains(normalizedCancelSQL, fence) {
+			t.Fatalf("settled cancellation SQL missing conditional fence %q", fence)
 		}
 	}
 	for _, fragment := range []string{

@@ -143,6 +143,10 @@ func TestPostgresCurrentApplicationTurnAllowsASecondMessageOnTheSameConversation
 		t,
 		"a0000000-0000-4000-8000-000000000031",
 	)
+	resolve.QuestionID = thirdQuestionID
+	if _, err := queries.ResolveCurrentApplicationTurn(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("overlapping turn resolution error=%v", err)
+	}
 	_, err = queries.InsertCurrentApplicationTurn(
 		t.Context(),
 		sqlcgen.InsertCurrentApplicationTurnParams{
@@ -185,6 +189,32 @@ LEFT JOIN chat_messages_text AS text
 			responses,
 			contents,
 		)
+	}
+
+	completePostgresCurrentApplicationTurn(
+		t,
+		tx,
+		secondResponse,
+		"second response",
+	)
+	markPostgresResponseAsSupersededOrphan(t, tx, firstResponse)
+	if _, err := queries.ResolveCurrentApplicationTurn(t.Context(), resolve); err != nil {
+		t.Fatalf("resolve with superseded orphan response: %v", err)
+	}
+	if _, err := queries.InsertCurrentApplicationTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentApplicationTurnParams{
+			ActorUserID: 11, TargetParticipantID: 21,
+			ApplicationVersionID: 41, ApplicationID: 31,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID: thirdQuestionID, QuestionMeta: []byte(`{}`),
+			QuestionItemID: thirdQuestionItemID, UserInput: "after orphan",
+			ResponseMessageID:   thirdResponseID,
+			ExecutionGeneration: "80000000-0000-4000-8000-000000000031",
+			ExecutionID:         "execution-agent-after-orphan",
+		},
+	); err != nil {
+		t.Fatalf("insert with superseded orphan response: %v", err)
 	}
 }
 
@@ -641,6 +671,10 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	if firstResponse == secondResponse {
 		t.Fatal("distinct ad-hoc turns reused one response message identity")
 	}
+	resolve.QuestionID = mustCurrentPGUUID(t, "80000000-0000-4000-8000-000000000032")
+	if _, err := queries.ResolveCurrentAdhocTurn(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("overlapping ad-hoc resolution error=%v", err)
+	}
 	_, err = queries.InsertCurrentAdhocTurn(
 		t.Context(),
 		sqlcgen.InsertCurrentAdhocTurnParams{
@@ -657,6 +691,32 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("overlapping ad-hoc turn error=%v", err)
+	}
+
+	completePostgresCurrentApplicationTurn(
+		t,
+		tx,
+		secondResponse,
+		"second ad-hoc response",
+	)
+	markPostgresResponseAsSupersededOrphan(t, tx, firstResponse)
+	if _, err := queries.ResolveCurrentAdhocTurn(t.Context(), resolve); err != nil {
+		t.Fatalf("resolve ad-hoc turn with superseded orphan response: %v", err)
+	}
+	if _, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID: resolve.QuestionID, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "90000000-0000-4000-8000-000000000032"),
+			UserInput:           "after orphan",
+			ResponseMessageID:   mustCurrentPGUUID(t, "a0000000-0000-4000-8000-000000000032"),
+			ExecutionGeneration: "80000000-0000-4000-8000-000000000032",
+			ExecutionID:         "execution-adhoc-after-orphan",
+		},
+	); err != nil {
+		t.Fatalf("insert ad-hoc turn with superseded orphan response: %v", err)
 	}
 }
 
@@ -764,6 +824,79 @@ WHERE id = 25`); err != nil {
 		},
 	); err != nil {
 		t.Fatalf("insert direct MCP turn: %v", err)
+	}
+}
+
+func TestPostgresCurrentAdhocTurnAdmitsApplicationWithMCPChild(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+INSERT INTO elitea_tools (id, type, name, description, settings, author_id, meta)
+VALUES (
+    52, 'mcp', 'child-mcp', 'MCP child owned by the attached application',
+    '{"url":"https://mcp.example.invalid/events","selected_tools":["search_docs"]}'::jsonb,
+    11, '{"mcp":true}'::jsonb
+);
+INSERT INTO entity_tool_mapping (
+    tool_id, entity_id, entity_version_id, entity_type, selected_tools
+) VALUES (52, 31, 41, 'agent', '["search_docs"]'::jsonb);`); err != nil {
+		t.Fatal(err)
+	}
+
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000032")
+	questionID := mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000040")
+	resolved, err := queries.ResolveCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+			QuestionID: questionID, ConversationUuid: conversationID,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve application with MCP child: %v", err)
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal([]byte(resolved.ToolsJson), &tools); err != nil {
+		t.Fatalf("decode tools: %v", err)
+	}
+	var application map[string]any
+	for _, tool := range tools {
+		if tool["type"] == "application" {
+			application = tool
+			break
+		}
+	}
+	settings, validSettings := application["settings"].(map[string]any)
+	if len(tools) != 2 || application["toolkit_name"] != "leaf-agent" ||
+		!validSettings || settings["application_version_id"] != float64(41) {
+		t.Fatalf("application with MCP child tools=%s", resolved.ToolsJson)
+	}
+
+	if _, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID: questionID, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "30000000-0000-4000-8000-000000000040"),
+			UserInput:           "run the attached application without invoking its MCP child",
+			ResponseMessageID:   mustCurrentPGUUID(t, "40000000-0000-4000-8000-000000000040"),
+			ExecutionGeneration: "20000000-0000-4000-8000-000000000040",
+			ExecutionID:         "execution-adhoc-application-mcp-child",
+		},
+	); err != nil {
+		t.Fatalf("insert application with MCP child turn: %v", err)
 	}
 }
 
@@ -996,6 +1129,21 @@ WITH response_group AS (
 INSERT INTO chat_messages_text (id, content)
 SELECT response_item.id, $2
 FROM response_item`, responseID, content); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func markPostgresResponseAsSupersededOrphan(
+	t *testing.T,
+	tx pgx.Tx,
+	responseID pgtype.UUID,
+) {
+	t.Helper()
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET is_streaming = TRUE,
+    created_at = created_at - INTERVAL '1 hour'
+WHERE uuid = $1`, responseID); err != nil {
 		t.Fatal(err)
 	}
 }
