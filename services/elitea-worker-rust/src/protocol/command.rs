@@ -33,9 +33,26 @@ const CONFORMANCE_HMAC_KEY: &[u8] = b"ELITEA_RUNTIME_V1_TEST_ONLY_NOT_A_SECRET";
 
 /// An authenticated, strictly decoded reference-only agent command.
 pub struct VerifiedAgentCommand {
-    pub signed: SignedWorkerCommandEnvelopeV1,
-    pub command: WorkerCommandV1,
-    pub kind: AgentExecutionKind,
+    signed: SignedWorkerCommandEnvelopeV1,
+    command: WorkerCommandV1,
+    kind: AgentExecutionKind,
+}
+
+impl VerifiedAgentCommand {
+    #[must_use]
+    pub const fn signed(&self) -> &SignedWorkerCommandEnvelopeV1 {
+        &self.signed
+    }
+
+    #[must_use]
+    pub const fn command(&self) -> &WorkerCommandV1 {
+        &self.command
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> AgentExecutionKind {
+        self.kind
+    }
 }
 
 /// Verifies an already digest-bound immutable command.

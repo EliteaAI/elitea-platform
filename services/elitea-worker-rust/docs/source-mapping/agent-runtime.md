@@ -15,14 +15,38 @@ message fields.
 | Source path and symbol | Observable behavior | Rust target | ADK-Rust role | Proving tests | Status / deviation |
 | --- | --- | --- | --- | --- | --- |
 | `libs/proto/elitea/runtime/v1/{agent,command,envelope,input}.proto` | Reference-only signed command and bounded application/ad-hoc input | `build.rs`, `src/protocol/{mod,command,wire}.rs`, `src/agents/protocol.rs` | None | `tests/{agent_command_contract,agent_input_contract}.rs`, Python-generated fixtures and mutation/limit corpora | Partial: signed agent command plus strict agent input are implemented; full offline envelope and other capabilities are planned |
-| `libs/proto/elitea/runtime/v1/{control,output}.proto` | Claim, begin, authorize, lease, desired state, settlement, ordered output stream | `src/transport/control.rs`, `src/transport/output.rs` | None | Real gRPC component and failure-injection tests | Planned |
+| `libs/proto/elitea/runtime/v1/{control,output}.proto` | Claim, begin, authorize, lease, desired state, settlement, ordered output stream | `src/protocol/output.rs`, `src/transport/{control,output}.rs` | None | Python progress-frame golden now passes; real gRPC component and failure-injection tests remain | Partial: nonterminal frame implemented; transport, ACK/credit and settlement planned |
 | Python worker `protocol/codec.py::{parse_and_verify_signed_command,_scan_worker_command,_validate_command,Ed25519CommandAuthenticator}` | Verify exact signed bytes before decode; reject duplicate/unknown tags and capability mismatch | `src/protocol/{command,wire}.rs` | None | `tests/agent_command_contract.rs`: Python HMAC/Ed25519 fixtures, pre-auth tamper and authenticated wire/semantic mutation corpus | Partial: both agent entrypoints are admitted; other capability commands and file-backed offline envelope remain planned |
 | Python worker `protocol/agent.py::{parse_agent_execution_input,request_from,bind_result_artifact}` | Canonical input parsing, semantic validation, exact content binding, terminal artifact binding | `src/agents/protocol.rs`, `src/agents/result.rs` | None | `tests/agent_input_contract.rs`: Python application/ad-hoc fixtures, duplicate/depth/string/number/truncation corpus and three supported terminal states | Partial: implemented through typed request and terminal artifact; delivery invocation remains gated |
 | Python worker `handlers/agent.py::{AgentExecutionKind,AgentExecutionPayload,AgentExecutionHandler.execute}` | Select exactly one configured-application or ad-hoc entry point | `src/agents/request.rs` | Agent construction only after admission | Typed fixture tests for both entry points; recording executor test remains planned | Foundation: immutable kind/payload/request exist; runtime delegation is not implemented |
+| Python worker `protocol/codec.py::build_node_event_output_frame` and Main `domain/runtime/fence.go::Fence.Validate` | Bind validated event to verified command identity, post-claim nonzero fence, sequence, digest and 64 KiB frame | `src/protocol/output.rs` | None | `tests/node_event_contract.rs::exact_python_vectors_match_browser_proto_and_claim_bound_output_frame` and identity/fence mutations | Implemented for nonterminal agent progress; Rust rejects an all-zero fence token before Main, closing a legacy Python-helper gap. Generic terminal frames remain planned |
 | Python worker `execution/delivery.py::AgentExecutionDeliveryProcessor` | Claim-bound materialization, authorize-once, event/result output, settlement and ACK | `src/execution/agent_delivery.rs` | Runner invoked behind the effect fence | Component tests for recovery dispositions, ACK loss and cancellation races | Planned |
 | Python worker `capabilities.py::capability_message` | Capability identity and feature advertisement | `src/capabilities.rs` | None | Manifest golden and production-registration fail-closed test | Foundation: only empty production registration exists |
-| Python worker `handlers/agent_events.py::CurrentAgentNodeEventCallback` | Ordered current-compatible events, pause projection, terminal browser artifact | `src/compat/node_events.rs` | ADK events are input only | Ordered differential ordinary/HITL/MCP/tool/skill corpus | Planned |
-| `libs/proto/elitea/runtime/v1/node_event.proto` and Python `protocol/node_event.py` | Exact 13-field browser event with strict JSON fragments | `src/compat/node_events.rs` | None | Cross-language JSON property/fuzz tests | Planned |
+| Python worker `handlers/agent_events.py::CurrentAgentNodeEventCallback` | Ordered current-compatible events, pause projection, terminal browser artifact | `src/agents/events.rs` | ADK events are input only | Ordered differential ordinary/HITL/MCP/tool/skill corpus | Planned; not conflated with the generic codec |
+| `libs/proto/elitea/runtime/v1/node_event.proto`, Python `protocol/node_event.py`, and Main `runtimegrpc/nodeevent/codec.go` | Exact 13-field browser event, arbitrary JSON fragments, defaults, bounds and Go escaping | `src/protocol/node_event.rs`, closed rules in `src/protocol/wire.rs` | None | `tests/node_event_contract.rs`, existing two-case/36-type corpus, Python exact vectors and malformed/mutation cases | Implemented generic codec; unknown protobuf tags and noncanonical replay bytes intentionally fail earlier in Rust. Rust retains compact raw fragment number/escape spellings like authoritative Go `json.Compact`; Python currently normalizes those spellings while preserving semantics |
+
+### Intentional NodeEvent codec deviations
+
+The committed Python and Go codecs disagree on noncanonical-but-valid JSON
+fragment spellings. Python parses then serializes, so `"\u0061"`, `1e0` and
+`-0` become `"a"`, `1.0` and `0`. Main's Go codec uses `json.Compact` and
+preserves the original spellings. Rust deliberately follows the Go durable
+consumer: it validates and compacts fragments without float coercion or string
+normalization. Browser semantics are unchanged, but semantically equal input
+from Python and Rust can have different protobuf bytes and payload digests.
+`tests/fixtures/node_event_vectors.txt` and
+`go_authoritative_raw_fragment_policy_is_explicit_against_python_normalization`
+freeze this disagreement explicitly; the future event bridge must construct
+stable fragments once and rely on spool replay rather than regenerate an
+already allocated sequence.
+
+Rust also classifies byte, depth, decoded-string, protobuf and complete-frame
+limit failures as `ProtocolError::ResourceExhausted`. The current Python codec
+collapses most of these into `InvalidCurrentNodeEvent`, which its delivery
+bridge maps to `INVALID_INPUT`. The typed Rust classification is intentional;
+the future UI compatibility bridge may map it to the legacy public error only
+where the existing product contract requires that presentation. Neither
+deviation is a claim of byte-for-byte Python parity.
 
 ### Agent input field projection
 

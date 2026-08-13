@@ -66,13 +66,13 @@ fn python_hmac_fixtures_select_both_exact_agent_semantics() {
         )
         .expect("Python signed agent command");
 
-        assert_eq!(verified.kind, expected_kind);
-        assert_eq!(verified.command.command_type, expected_type as i32);
-        assert_eq!(verified.command.execution_id, "execution-1");
-        assert_eq!(verified.command.generation, 2);
-        assert_eq!(verified.command.dispatch_ordinal, 3);
+        assert_eq!(verified.kind(), expected_kind);
+        assert_eq!(verified.command().command_type, expected_type as i32);
+        assert_eq!(verified.command().execution_id, "execution-1");
+        assert_eq!(verified.command().generation, 2);
+        assert_eq!(verified.command().dispatch_ordinal, 3);
         let Some(worker_command_v1::CapabilityCommand::AgentExecution(agent)) =
-            verified.command.capability_command
+            &verified.command().capability_command
         else {
             panic!("agent command oneof");
         };
@@ -104,13 +104,13 @@ fn python_ed25519_vector_uses_exact_key_domain_and_length_binding() {
         parse_and_verify_agent_command(&fixture("application_ed25519"), Some(&authenticator))
             .expect("Python Ed25519 fixture");
 
-    assert_eq!(verified.kind, AgentExecutionKind::Application);
+    assert_eq!(verified.kind(), AgentExecutionKind::Application);
     assert_eq!(
-        verified.signed.signature_profile,
+        verified.signed().signature_profile,
         SignatureProfileV1::Ed25519 as i32
     );
 
-    let mut wrong_key_id = verified.signed;
+    let mut wrong_key_id = verified.signed().clone();
     wrong_key_id.key_id = "retired-key".to_owned();
     assert!(matches!(
         authenticator.authenticate(&wrong_key_id),

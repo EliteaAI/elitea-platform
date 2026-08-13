@@ -1,6 +1,6 @@
 # Rust worker source parity
 
-- Status: reconstruction foundation plus agent protocol input/result slice
+- Status: reconstruction foundation plus agent protocol and progress-frame slices
 - Last verified: 2026-08-13
 - Production capability registration: disabled
 
@@ -39,11 +39,13 @@ Detailed ledgers:
 
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
 | --- | --- | --- | --- | --- |
-| `libs/proto/elitea/runtime/v1/*.proto` | Language-neutral worker command, input, output, control, and settlement contracts | `build.rs`, `src/protocol/` | Generated client compile plus Python-produced signed-command and agent-input binary fixtures | Partial: strict signed agent command and agent input/result semantics are implemented; output/control runtime is not |
+| `libs/proto/elitea/runtime/v1/*.proto` | Language-neutral worker command, input, output, control, and settlement contracts | `build.rs`, `src/protocol/` | Generated client compile plus Python-produced command, input, NodeEvent and progress-frame binary fixtures | Partial: strict signed agent command, agent input/result, generic NodeEvent and nonterminal frame semantics are implemented; output/control transport is not |
 | `services/elitea-worker-python/src/elitea_worker/protocol/codec.py` | Verify exact signed bytes before closed-wire command decode and validate the selected capability | `src/protocol/{command,wire}.rs` | `tests/agent_command_contract.rs` HMAC/Ed25519 vectors and authenticated mutation corpus | Partial: application/ad-hoc command admission is implemented; other capabilities and offline execution envelope are not |
 | `services/elitea-worker-python/src/elitea_worker/protocol/agent.py` | Strict `AgentExecutionInputV1` parsing and result binding | `src/agents/protocol.rs`, `src/agents/result.rs` | `tests/agent_input_contract.rs` application/ad-hoc, limits, mutation and terminal corpus | Partial: input construction and three admitted result states pass; delivery is not implemented |
 | `services/elitea-worker-python/src/elitea_worker/handlers/agent.py` | Select application versus ad-hoc semantic entry point | `src/agents/request.rs` | Typed semantic fixture tests for both entry points | Foundation: immutable split exists; executor delegation is not implemented |
-| `services/elitea-worker-python/src/elitea_worker/handlers/agent_events.py` | Ordered `NodeEventV1` projection | `src/compat/node_events.rs` | Ordered differential event corpus | Not started |
+| Python worker `protocol/node_event.py` and Main `runtimegrpc/nodeevent/codec.go` | Bounded 13-field current JSON/`NodeEventV1` codec, arbitrary JSON fragments and Go-compatible escaping | `src/protocol/node_event.rs` | `tests/node_event_contract.rs`: existing 36-type corpus, Python wire/browser/drift vectors, limits and wire mutations | Intentional deviation: lossless compact fragment spellings and typed resource-limit failures follow the Go durable boundary; SDK/ADK event bridge is separate |
+| `services/elitea-worker-python/src/elitea_worker/protocol/codec.py::build_node_event_output_frame` | Claim-fence-bound, deterministic nonterminal progress frame | `src/protocol/output.rs` | Python-produced complete `ExecutionOutputFrameV1` golden plus identity/digest/limit mutation tests | Implemented frame construction; gRPC, ACK/credit, spool and settlement are not |
+| `services/elitea-worker-python/src/elitea_worker/handlers/agent_events.py` | Ordered SDK callback-to-`NodeEventV1` projection | `src/agents/events.rs` | Ordered differential ordinary/tool/HITL/MCP/skill corpus | Not started |
 | `projects/elitea-sdk/elitea_sdk/runtime/**` | Agent assembly, toolsets, skills, MCP, HITL, continuation, and nested execution behavior | Capability-owned modules under `src/agents/`, `src/configurations/`, and `src/toolkits/` | Unit, property, component, and behavioral parity tests | Not started |
 | `projects/centry/pylon_indexer/plugins/indexer_worker/**` | Current application/ad-hoc invocation, callback, checkpoint, child dispatch, and indexing behavior | `src/agents/`, `src/compat/`, then `src/indexing/` | Differential fixtures plus cross-process tests | Not started |
 | `adk-rust = 2.0.0` published crates | Native agent, graph, toolset, session, checkpoint, MCP, and HITL primitives | Narrow modules under `src/adk/` and capability owners | Compile spikes, component tests, and upstream-bound compatibility tests | Not added |

@@ -9,6 +9,7 @@ pub(crate) enum Schema {
     WorkerCommand,
     InputBundleReference,
     AgentExecutionCommand,
+    NodeEvent,
 }
 
 #[derive(Clone, Copy)]
@@ -159,6 +160,10 @@ const fn field_rule(schema: Schema, field: u32) -> Option<FieldRule> {
         },
         Schema::AgentExecutionCommand => match field {
             1..=4 => Some(length()),
+            _ => None,
+        },
+        Schema::NodeEvent => match field {
+            1..=13 => Some(length()),
             _ => None,
         },
     }

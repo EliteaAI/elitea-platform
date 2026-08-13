@@ -1,5 +1,7 @@
 pub mod command;
 mod error;
+pub mod node_event;
+pub mod output;
 mod wire;
 
 // Generated protobuf and gRPC clients mirror comments and method shapes owned
