@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -49,6 +50,7 @@ func currentApplicationNestingTestNode(
 		ApplicationVersionID:  versionID,
 		ApplicationID:         applicationID,
 		AgentType:             agentType,
+		SkillsJson:            "[]",
 		ChildApplicationsJson: string(encoded),
 	}
 }
@@ -195,8 +197,8 @@ func TestValidateCurrentApplicationNestingEnforcesRawHopBackstop(t *testing.T) {
 func TestFilterCurrentAdhocApplicationNestingSkipsOnlyInvalidApplication(t *testing.T) {
 	tools := json.RawMessage(`[
   {"id":19,"type":"github"},
-  {"id":null,"type":"application","settings":{"application_id":101,"application_version_id":1}},
-  {"id":null,"type":"application","settings":{"application_id":102,"application_version_id":2}}
+  {"id":null,"type":"application","name":"leaf","settings":{"application_id":101,"application_version_id":1}},
+  {"id":null,"type":"application","name":"container","settings":{"application_id":102,"application_version_id":2}}
 ]`)
 	stub := &currentApplicationNestingQuerierStub{nodes: map[int32]sqlcgen.ResolveCurrentApplicationNestingNodeRow{
 		1: currentApplicationNestingTestNode(t, 1, 101, "agent"),
@@ -214,6 +216,40 @@ func TestFilterCurrentAdhocApplicationNestingSkipsOnlyInvalidApplication(t *test
 	}
 	if len(decoded) != 2 || decoded[0]["type"] != "github" || decoded[1]["type"] != "application" {
 		t.Fatalf("filtered=%s", filtered)
+	}
+}
+
+func TestFilterCurrentAdhocApplicationNestingFreezesCompactChildSkills(t *testing.T) {
+	node := currentApplicationNestingTestNode(t, 1, 101, "agent")
+	node.SkillsJson = `[{"skill_id":7,"name":"Deploy","icon_meta":{"icon":"deploy"}}]`
+	filtered, err := filterCurrentAdhocApplicationNesting(
+		context.Background(),
+		&currentApplicationNestingQuerierStub{
+			nodes: map[int32]sqlcgen.ResolveCurrentApplicationNestingNodeRow{1: node},
+		},
+		json.RawMessage(`[
+  {"id":null,"type":"application","name":"child-agent","settings":{"application_id":101,"application_version_id":1}}
+]`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tools []struct {
+		NestedSkills []currentApplicationSkillRegistry `json:"nested_skill_registry"`
+	}
+	if err := json.Unmarshal(filtered, &tools); err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || len(tools[0].NestedSkills) != 1 ||
+		tools[0].NestedSkills[0].ApplicationName != "child-agent" ||
+		len(tools[0].NestedSkills[0].Skills) != 1 ||
+		tools[0].NestedSkills[0].Skills[0].SkillID != 7 ||
+		tools[0].NestedSkills[0].Skills[0].Name != "Deploy" ||
+		string(tools[0].NestedSkills[0].Skills[0].IconMeta) != `{"icon":"deploy"}` {
+		t.Fatalf("materialized tools=%s", filtered)
+	}
+	if strings.Contains(string(filtered), "instructions") {
+		t.Fatalf("nested skill instructions crossed admission: %s", filtered)
 	}
 }
 

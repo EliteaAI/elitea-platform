@@ -141,9 +141,9 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 
 	// Database
 	dbDSN := envOr("DATABASE_URL", "postgres://localhost:5432/elitea?sslmode=disable")
-	pool, err := pgxpool.New(ctx, dbDSN)
+	pool, err := openDatabasePool(ctx, dbDSN, os.LookupEnv)
 	if err != nil {
-		return fmt.Errorf("create database pool: %w", err)
+		return err
 	}
 	defer pool.Close()
 
@@ -701,7 +701,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentIndexScheduleUpdate http.Handler
 	var currentIndexScheduleDelete http.Handler
 	if runtimeConfig.Enabled {
-		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
+		databasePoolLimits, limitsErr := runtimecomposition.DatabasePoolLimitsFromEnv(os.LookupEnv)
+		if limitsErr != nil {
+			return fmt.Errorf("load runtime database pool limits: %w", limitsErr)
+		}
+		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, databasePoolLimits)
 		if openErr != nil {
 			return openErr
 		}

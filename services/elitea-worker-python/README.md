@@ -12,7 +12,9 @@ The current Pylon Indexer baseline installs `elitea-sdk[all]==0.8.30` from
 `centry/pylon_indexer/plugins/sdk_plugin/requirements.txt`. The standalone
 worker separately admits `elitea-sdk==0.9.8` at
 `b5113a129329b85d23c2d5c2bf55f18e307414ec` after a bounded source/dependency
-delta review. The current `0.8.30` behavior remains the comparison authority
+delta review. The worker applies the two exact, upstream-merged MCP discovery
+timeout/cleanup revisions recorded in `elitea-sdk.lock.json` without changing
+the admitted 0.9.8 dependency graph. The current `0.8.30` behavior remains the comparison authority
 until each covered family passes the target parity harness. The target image
 maps the required indexing dependencies as follows:
 
