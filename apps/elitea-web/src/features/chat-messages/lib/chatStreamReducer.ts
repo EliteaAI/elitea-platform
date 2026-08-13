@@ -16,9 +16,6 @@
  *   graph nodes       agent_on_function_tool_node, agent_on_tool_node and the
  *                     three agent_on_*_edge frames (progress chips, not tool
  *                     lifecycle)
- *   thinking          agent_thinking_step, agent_thinking_step_update, and the
- *                     `thinking_steps` fan-out AgentLlmEnd performs in the
- *                     baseline (hooks.js:~700+)
  *   interrupts        agent_hitl_interrupt, agent_requires_confirmation,
  *                     mcp_authorization_required
  *   swarm             swarm_child_message, agent_swarm_agent_start,
@@ -51,7 +48,7 @@ import { normalizeExecutionHierarchy } from './executionHierarchy';
 import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
 
 import type { ChatMessage } from './convertMessagesToChatHistory';
-import { SocketMessageType, type ChatStreamFrame } from './chatStreamFrame';
+import { SocketMessageType, type ChatStreamFrame, type ThinkingStep } from './chatStreamFrame';
 
 /** Caller-supplied identity for messages this reducer has to create. */
 export interface ChatStreamContext {
@@ -225,6 +222,51 @@ function replaceToolAction(
   return actions.map((action) => (action.id === runId ? update(action) : action));
 }
 
+
+/**
+ * Apply one `thinking_steps` entry to the action it describes.
+ *
+ * Returns `undefined` when the step names no action we know, so the caller can
+ * tell "nothing to update" from "updated to nothing".
+ */
+function applyThinkingStep(action: ToolAction, step: ThinkingStep): ToolAction {
+  const hierarchy = normalizeExecutionHierarchy(step, step.metadata, step.message?.response_metadata?.metadata, action, action.toolMeta);
+  // The backend normalises `text` for every provider. The "with inputs {...}"
+  // tail is a verbose restatement of arguments the UI already shows, and the
+  // baseline strips it rather than rendering it twice.
+  const text = convertJsonToString(step.text ?? '', true).replace(/\s+with inputs\s+\{[^}]*\}/g, '');
+  const stepModelName = step.message?.response_metadata?.model_name;
+  const correctToolName = step.message?.response_metadata?.tool_name;
+  const existingMeta = action.toolMeta ?? {};
+  const modelName = existingMeta['ls_model_name'];
+
+  const toolMeta: Record<string, unknown> = { ...existingMeta, ...hierarchy };
+  if (stepModelName && !modelName) toolMeta['ls_model_name'] = stepModelName;
+
+  const updated: Record<string, unknown> = {
+    ...action,
+    ...hierarchy,
+    content: text,
+    ended_at: step.timestamp_finish,
+    toolMeta,
+  };
+  // Only a real node name, never the model's own name echoed back.
+  if (correctToolName?.trim() && correctToolName !== toolMeta['ls_model_name']) updated['name'] = correctToolName;
+  if (step.thinking) updated['thinking'] = step.thinking;
+  return updated as unknown as ToolAction;
+}
+
+/**
+ * A step that produced no text and belongs to no parent agent is a graph
+ * transition, not something a user asked for; the baseline drops it so the
+ * timeline shows work rather than plumbing.
+ */
+function isEmptyTransition(updated: ToolAction): boolean {
+  const content = updated['content'];
+  const hasText = typeof content === 'string' && content.trim().length > 0;
+  return !hasText && !updated.parent_agent_name;
+}
+
 /**
  * The MCP session a tool frame reports, for a CALLER to persist.
  *
@@ -302,9 +344,140 @@ export function applyChatStreamFrame(
 
     // The model finished emitting tokens. Streaming stops; the turn is not
     // necessarily over (agent_response and pipeline_finish still follow).
+    //
+    // This frame also carries the `thinking_steps` fan-out: one batch closing
+    // out every step reported live. A pipeline with several LLM nodes reports
+    // them all here, which is why this loops rather than handling a single id.
     case SocketMessageType.AgentLlmEnd: {
       if (index === -1) return history;
-      return replaceAt(history, index, { isLoading: false });
+      const current = history[index];
+      if (!current) return history;
+
+      const steps = frame.response_metadata?.thinking_steps ?? [];
+      const actions = (current.toolActions ?? []) as readonly ToolAction[];
+      const removed = new Set<string>();
+      let next = actions;
+
+      for (const step of steps) {
+        // The normalised id, with the baseline's backward-compatible fallback
+        // for providers that only echoed it inside the message id.
+        const stepRunId = step.tool_run_id ?? step.message?.id?.replace('lc_run--', '');
+        if (!stepRunId) continue;
+        const target = next.find((action) => action.id === stepRunId);
+        if (!target) continue;
+        const updated = applyThinkingStep(target, step);
+        if (isEmptyTransition(updated)) {
+          removed.add(stepRunId);
+          continue;
+        }
+        next = next.map((action) =>
+          action.id === stepRunId ? ({ ...updated, status: ToolActionStatus.complete } as ToolAction) : action,
+        );
+      }
+
+      // The frame's own tool_run_id closes too, unless something already
+      // settled it or it is waiting on the user.
+      const primaryId = frame.response_metadata?.tool_run_id;
+      if (primaryId) {
+        next = next.map((action) =>
+          action.id === primaryId &&
+          action.status !== ToolActionStatus.complete &&
+          action.status !== ToolActionStatus.actionRequired
+            ? ({ ...action, status: ToolActionStatus.complete, ended_at: frame.created_at } as ToolAction)
+            : action,
+        );
+      }
+
+      if (removed.size > 0) next = next.filter((action) => !removed.has(action.id));
+      const unchanged = next === actions;
+      return replaceAt(history, index, { isLoading: false, ...(unchanged ? {} : { toolActions: next }) });
+    }
+
+    // A step reports progress for a tool that may not have started yet: a
+    // thinking step can arrive BEFORE its agent_tool_start, so this creates a
+    // placeholder rather than dropping the progress.
+    case SocketMessageType.AgentThinkingStep: {
+      if (index === -1) return history;
+      const current = history[index];
+      const runId = frame.response_metadata?.tool_run_id;
+      if (!current) return history;
+      const metadata = toolMetadata(frame);
+      const actions = (current.toolActions ?? []) as readonly ToolAction[];
+      const existing = runId ? actions.find((action) => action.id === runId) : undefined;
+      const hierarchy = normalizeExecutionHierarchy(
+        frame.response_metadata?.metadata,
+        frame.response_metadata?.tool_meta?.metadata,
+        existing,
+        existing?.toolMeta,
+      );
+
+      if (existing && runId) {
+        return replaceAt(history, index, {
+          toolActions: replaceToolAction(current, runId, (action) => ({
+            ...action,
+            ...hierarchy,
+            message: frame.response_metadata?.message,
+            // `?? true`, not the baseline's `|| true`, which can only ever
+            // yield true and so silently ignored an explicit `markdown: false`.
+            markdown: frame.response_metadata?.markdown ?? true,
+            toolMeta: { ...action.toolMeta, ...metadata, ...hierarchy },
+          })),
+        });
+      }
+
+      // The baseline's id here is `'thinking_step_' + toolRunId || '' + v4()`,
+      // which parses as `('thinking_step_' + toolRunId) || ('' + v4())` — always
+      // truthy, so the uuid fallback never ran and every id-less step collided
+      // on the literal "thinking_step_undefined". The intent is a unique id.
+      const placeholderId = `thinking_step_${runId ?? crypto.randomUUID()}`;
+      const draft: Record<string, unknown> = {
+        id: placeholderId,
+        name: TOOL_ACTION_TYPES.Toolkit,
+        type: TOOL_ACTION_TYPES.Toolkit,
+        status: ToolActionStatus.processing,
+        ...hierarchy,
+        toolInputs: frame.response_metadata?.tool_inputs,
+        toolOutputs: frame.response_metadata?.tool_outputs,
+        toolMeta: { ...metadata, ...hierarchy },
+        responseMetadata: frame.response_metadata,
+        created_at: frame.created_at,
+        markdown: frame.response_metadata?.markdown ?? true,
+        renderHtml: frame.response_metadata?.render_html ?? false,
+        message: frame.response_metadata?.message,
+        content: '',
+      };
+      return replaceAt(history, index, {
+        toolActions: [...actions, draft as unknown as ToolAction],
+      });
+    }
+
+    // Progress text for a step already on the timeline.
+    case SocketMessageType.AgentThinkingStepUpdate: {
+      if (index === -1) return history;
+      const current = history[index];
+      const runId = frame.response_metadata?.tool_run_id;
+      if (!current || !runId || !findToolAction(current, runId)) return history;
+      const toolMetaFromFrame = frame.response_metadata?.tool_meta;
+
+      return replaceAt(history, index, {
+        toolActions: replaceToolAction(current, runId, (action) => {
+          const hierarchy = normalizeExecutionHierarchy(
+            frame.response_metadata?.metadata,
+            frame.response_metadata?.tool_meta?.metadata,
+            action,
+            action.toolMeta,
+          );
+          return {
+            ...action,
+            ...hierarchy,
+            message: convertJsonToString(frame.response_metadata?.message, true),
+            markdown: frame.response_metadata?.markdown ?? false,
+            // Only when the frame supplies one: the toolkit badge reads this,
+            // and overwriting it with nothing would blank the badge mid-run.
+            ...(toolMetaFromFrame ? { toolMeta: { ...action.toolMeta, ...toolMetaFromFrame, ...hierarchy } } : {}),
+          } as ToolAction;
+        }),
+      });
     }
 
     // A whole response, fenced when it is not plain text. It carries the

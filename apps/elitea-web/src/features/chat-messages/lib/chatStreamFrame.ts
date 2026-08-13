@@ -86,6 +86,8 @@ export const HANDLED_STREAM_TYPES: ReadonlySet<string> = new Set<string>([
   SocketMessageType.AgentToolStart,
   SocketMessageType.AgentToolEnd,
   SocketMessageType.AgentToolError,
+  SocketMessageType.AgentThinkingStep,
+  SocketMessageType.AgentThinkingStepUpdate,
 ]);
 
 /**
@@ -110,10 +112,35 @@ interface StreamResponseMetadata {
         readonly [key: string]: unknown;
       }
     | undefined;
+  readonly message?: unknown;
+  readonly markdown?: boolean | undefined;
+  readonly render_html?: boolean | undefined;
+  readonly thinking_steps?: readonly ThinkingStep[] | undefined;
   readonly timestamp_start?: string | number | undefined;
   readonly timestamp_finish?: string | number | undefined;
   readonly thread_id?: string | undefined;
   readonly metadata?: { readonly thread_id?: string | undefined; readonly [key: string]: unknown } | undefined;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * One entry of `agent_llm_end`'s `thinking_steps` fan-out: the model's account
+ * of a step it already reported live, arriving in one batch at the end.
+ */
+export interface ThinkingStep {
+  readonly tool_run_id?: string | undefined;
+  readonly text?: unknown;
+  readonly thinking?: string | undefined;
+  readonly timestamp_finish?: string | number | undefined;
+  readonly metadata?: Record<string, unknown> | undefined;
+  readonly message?:
+    | {
+        readonly id?: string | undefined;
+        readonly response_metadata?:
+          | { readonly model_name?: string | undefined; readonly tool_name?: string | undefined; readonly metadata?: Record<string, unknown> | undefined }
+          | undefined;
+      }
+    | undefined;
   readonly [key: string]: unknown;
 }
 

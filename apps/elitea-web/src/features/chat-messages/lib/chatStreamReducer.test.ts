@@ -325,3 +325,200 @@ describe('mcpSessionFromFrame', () => {
     expect(mcpSessionFromFrame({ type: 'x' })).toBeUndefined();
   });
 });
+
+describe('thinking steps', () => {
+  const RUN = 'run-think';
+
+  function withAction(overrides: Partial<ToolAction> = {}): readonly ChatMessage[] {
+    return [
+      {
+        ...pendingAssistant(),
+        toolActions: [{ id: RUN, type: 'tool', status: 'processing', ...overrides } as ToolAction],
+      },
+    ];
+  }
+
+  function actionsOf(history: readonly ChatMessage[]): readonly ToolAction[] {
+    return (history[0]?.toolActions ?? []) as readonly ToolAction[];
+  }
+
+  it('creates a placeholder when a step arrives before its tool started', () => {
+    // Steps can precede agent_tool_start; dropping them loses the progress the
+    // user is waiting to see.
+    const history = applyChatStreamFrame(
+      [pendingAssistant()],
+      frame(SocketMessageType.AgentThinkingStep, {
+        response_metadata: { tool_run_id: RUN, message: 'searching…' },
+      }),
+      CONTEXT,
+    );
+    const action = actionsOf(history)[0];
+
+    expect(action?.id).toBe(`thinking_step_${RUN}`);
+    expect(action?.['message']).toBe('searching…');
+    expect(action?.status).toBe('processing');
+  });
+
+  it('gives id-less steps DISTINCT placeholders', () => {
+    // The baseline's `'thinking_step_' + id || '' + v4()` parses as
+    // `('thinking_step_' + id) || …`, always truthy, so every id-less step
+    // collided on "thinking_step_undefined". Two steps must not become one.
+    let history = applyChatStreamFrame([pendingAssistant()], frame(SocketMessageType.AgentThinkingStep, {}), CONTEXT);
+    history = applyChatStreamFrame(history, frame(SocketMessageType.AgentThinkingStep, {}), CONTEXT);
+    const ids = actionsOf(history).map((action) => action.id);
+
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('updates an existing action instead of adding a second one', () => {
+    const history = applyChatStreamFrame(
+      withAction(),
+      frame(SocketMessageType.AgentThinkingStep, { response_metadata: { tool_run_id: RUN, message: 'step two' } }),
+      CONTEXT,
+    );
+
+    expect(actionsOf(history)).toHaveLength(1);
+    expect(actionsOf(history)[0]?.['message']).toBe('step two');
+  });
+
+  it('honours an explicit markdown:false, which the baseline could not', () => {
+    // `markdown || true` can only ever be true.
+    const history = applyChatStreamFrame(
+      withAction(),
+      frame(SocketMessageType.AgentThinkingStep, {
+        response_metadata: { tool_run_id: RUN, markdown: false, message: 'x' },
+      }),
+      CONTEXT,
+    );
+
+    expect(actionsOf(history)[0]?.['markdown']).toBe(false);
+  });
+
+  it('applies progress text on an update', () => {
+    const history = applyChatStreamFrame(
+      withAction(),
+      frame(SocketMessageType.AgentThinkingStepUpdate, {
+        response_metadata: { tool_run_id: RUN, message: 'half done', tool_meta: { toolkit_name: 'jira' } },
+      }),
+      CONTEXT,
+    );
+    const action = actionsOf(history)[0];
+
+    expect(String(action?.['message'])).toContain('half done');
+    expect((action?.toolMeta ?? {})['toolkit_name']).toBe('jira');
+  });
+
+  it('ignores an update for a step it never saw', () => {
+    const before = withAction();
+    expect(
+      applyChatStreamFrame(before, frame(SocketMessageType.AgentThinkingStepUpdate, { response_metadata: { tool_run_id: 'ghost' } }), CONTEXT),
+    ).toBe(before);
+  });
+
+  describe('the agent_llm_end fan-out', () => {
+    it('closes every step in one batch, not just the first', () => {
+      // A pipeline with several LLM nodes reports them all in one frame.
+      const history: readonly ChatMessage[] = [
+        {
+          ...pendingAssistant(),
+          toolActions: [
+            { id: 'a', type: 'tool', status: 'processing', parent_agent_name: 'root' } as ToolAction,
+            { id: 'b', type: 'tool', status: 'processing', parent_agent_name: 'root' } as ToolAction,
+          ],
+        },
+      ];
+      const next = applyChatStreamFrame(
+        history,
+        frame(SocketMessageType.AgentLlmEnd, {
+          response_metadata: {
+            thinking_steps: [
+              { tool_run_id: 'a', text: 'did a' },
+              { tool_run_id: 'b', text: 'did b' },
+            ],
+          },
+        }),
+        CONTEXT,
+      );
+
+      expect(actionsOf(next).map((action) => action.status)).toEqual(['complete', 'complete']);
+      expect(actionsOf(next)[0]?.['content']).toContain('did a');
+    });
+
+    it('drops an empty transition step rather than showing plumbing', () => {
+      const history: readonly ChatMessage[] = [
+        { ...pendingAssistant(), toolActions: [{ id: 'a', type: 'tool', status: 'processing' } as ToolAction] },
+      ];
+      const next = applyChatStreamFrame(
+        history,
+        frame(SocketMessageType.AgentLlmEnd, { response_metadata: { thinking_steps: [{ tool_run_id: 'a', text: '   ' }] } }),
+        CONTEXT,
+      );
+
+      expect(actionsOf(next)).toHaveLength(0);
+    });
+
+    it('keeps an empty step that belongs to a parent agent', () => {
+      const history: readonly ChatMessage[] = [
+        {
+          ...pendingAssistant(),
+          toolActions: [{ id: 'a', type: 'tool', status: 'processing', parent_agent_name: 'planner' } as ToolAction],
+        },
+      ];
+      const next = applyChatStreamFrame(
+        history,
+        frame(SocketMessageType.AgentLlmEnd, { response_metadata: { thinking_steps: [{ tool_run_id: 'a', text: '' }] } }),
+        CONTEXT,
+      );
+
+      expect(actionsOf(next)).toHaveLength(1);
+    });
+
+    it('strips the verbose "with inputs {...}" tail the UI already renders', () => {
+      const next = applyChatStreamFrame(
+        withAction({ parent_agent_name: 'root' } as Partial<ToolAction>),
+        frame(SocketMessageType.AgentLlmEnd, {
+          response_metadata: { thinking_steps: [{ tool_run_id: RUN, text: 'called search with inputs {"q": 1}' }] },
+        }),
+        CONTEXT,
+      );
+
+      expect(String(actionsOf(next)[0]?.['content'])).not.toContain('with inputs');
+      expect(String(actionsOf(next)[0]?.['content'])).toContain('called search');
+    });
+
+    it('recovers the run id from the message id when the step omits it', () => {
+      const next = applyChatStreamFrame(
+        withAction({ parent_agent_name: 'root' } as Partial<ToolAction>),
+        frame(SocketMessageType.AgentLlmEnd, {
+          response_metadata: { thinking_steps: [{ text: 'done', message: { id: `lc_run--${RUN}` } }] },
+        }),
+        CONTEXT,
+      );
+
+      expect(actionsOf(next)[0]?.status).toBe('complete');
+    });
+
+    it('closes the frame\'s own tool but leaves an approval-gated one alone', () => {
+      const history: readonly ChatMessage[] = [
+        {
+          ...pendingAssistant(),
+          toolActions: [
+            { id: 'p', type: 'tool', status: 'processing' } as ToolAction,
+            { id: 'g', type: 'tool', status: 'action_required' } as ToolAction,
+          ],
+        },
+      ];
+      let next = applyChatStreamFrame(history, frame(SocketMessageType.AgentLlmEnd, { response_metadata: { tool_run_id: 'p' } }), CONTEXT);
+      next = applyChatStreamFrame(next, frame(SocketMessageType.AgentLlmEnd, { response_metadata: { tool_run_id: 'g' } }), CONTEXT);
+
+      expect(actionsOf(next)[0]?.status).toBe('complete');
+      expect(actionsOf(next)[1]?.status).toBe('action_required');
+    });
+
+    it('still stops the spinner when there are no steps at all', () => {
+      const next = applyChatStreamFrame([pendingAssistant()], frame(SocketMessageType.AgentLlmEnd), CONTEXT);
+      expect(next[0]?.isLoading).toBe(false);
+    });
+  });
+});
