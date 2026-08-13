@@ -7,7 +7,8 @@
 #   seed-runtime authorize the agent worker's certificate identity (#281)
 #   seed-llm     credential the gateway serves completions with. Defaults to the
 #                offline mock (#283) unless OPENAI_API_KEY/ANTHROPIC_API_KEY is set
-#   check        verify the gateway mTLS hop and the runtime plane
+#   check        verify the gateway mTLS hop, the runtime plane and the chat
+#                critical path (delegates the last to chat-smoke.py)
 #   down         tear down (add -v yourself to drop volumes)
 #
 # Typical first run:
@@ -473,6 +474,50 @@ except Exception as error:
         *'HTTPERR 502'*)           fail "gateway could not reach llm-mock — is GATEWAY_EGRESS_ALLOWLIST set? (see the compose comment)" ;;
         *)                         fail "completion hop failed: $(printf '%s' "$LLM_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
       esac
+    fi
+
+    echo "→ chat critical path (#284 smoke):"
+    # Precondition first, because the failure it produces is a bare HTTP 500
+    # that names nothing. Three tenant chat tables the agent-execution queries
+    # depend on are created by no migration in this repo — they are owned by
+    # pylon's tenant-schema lifecycle, which a pylon-free stack does not have.
+    # See #287; agent_chat_baseline.sql states the assumption in its header.
+    MISSING_CHAT_TABLES="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT string_agg(missing.name, ',')
+           FROM (VALUES ('chat_messages_text'),('chat_messages_context'),('chat_message_trace_step')) AS missing(name)
+          WHERE to_regclass('p_1.' || missing.name) IS NULL" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$MISSING_CHAT_TABLES" ]; then
+      # Reported, not counted: this is a filed product gap, not a broken stack,
+      # and folding it into the failure count would make `check` permanently red
+      # and useless as a gate for everything else. It is printed on every run so
+      # it cannot be quietly forgotten.
+      echo "  ! BLOCKED by #287 — p_1 is missing tenant chat tables; agent turns 500 here"
+      echo "    (missing: $MISSING_CHAT_TABLES)"
+    else
+      CHAT_PAT="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT uuid FROM public.auth_core__token WHERE uuid IS NOT NULL LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+      CHAT_USER="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT user_id FROM public.auth_core__token WHERE uuid IS NOT NULL LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+      if [ -z "$CHAT_PAT" ] || [ -z "$CHAT_USER" ]; then
+        echo "  ~ SKIPPED: no PAT to drive the turn (run: $0 seed-runtime)"
+      else
+        set +e
+        python3 "${REPO_ROOT}/deploy/scripts/chat-smoke.py" \
+          --base-url "http://localhost:${PORT}" \
+          --pat-uuid "$CHAT_PAT" \
+          --signing-key "${RUNTIME_CERTS}/auth-pat-signing-key" \
+          --user-id "$CHAT_USER"
+        smoke_status=$?
+        set -e
+        case "$smoke_status" in
+          0) ;;
+          2) ;;  # the script prints its own SKIPPED line with the reason
+          *) fail "chat smoke failed" ;;
+        esac
+      fi
     fi
 
     if [ "$runtime_failures" -ne 0 ]; then
