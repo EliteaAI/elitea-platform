@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 # Wrapper for the full standalone stack (deploy/docker-compose.standalone-full.yml).
 #
-#   certs     generate local mTLS material (idempotent; run once)
-#   up        bring the stack up and wait for healthy
-#   seed      schema + OIDC users + RBAC — delegates to the E2E seeder
-#   seed-llm  add a real provider credential so the gateway can serve completions
-#   check     verify the gateway is reachable over mTLS
-#   down      tear down (add -v yourself to drop volumes)
+#   certs        generate local mTLS + runtime-plane material (idempotent)
+#   up           bring the stack up and wait for healthy
+#   seed         schema + OIDC users + RBAC — delegates to the E2E seeder
+#   seed-runtime authorize the agent worker's certificate identity (#281)
+#   seed-llm     add a real provider credential so the gateway can serve completions
+#   check        verify the gateway mTLS hop and the runtime plane
+#   down         tear down (add -v yourself to drop volumes)
 #
 # Typical first run:
 #   deploy/scripts/standalone-stack.sh certs
 #   deploy/scripts/standalone-stack.sh up
 #   deploy/scripts/standalone-stack.sh seed
+#   deploy/scripts/standalone-stack.sh seed-runtime
 #   OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PROJECT="elitea-standalone"
+# Overridable so a second, disposable stack can be brought up for verification
+# without touching a running one. Note that the oidc-mock port is fixed at 9400
+# and cannot be remapped, so two stacks can only coexist if the second one drops
+# that port publication with an override file.
+PROJECT="${STANDALONE_PROJECT:-elitea-standalone}"
 COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.yml"
 
 # Shared with apps/elitea-web/scripts/e2e-stack.sh: CI has the docker compose
@@ -29,7 +35,12 @@ PORT="${STANDALONE_PORT:-8084}"
 
 case "${1:-}" in
   certs)
-    exec "${REPO_ROOT}/deploy/scripts/gen-gateway-certs.sh"
+    # Two independent trust roots, minted by two scripts: the gateway CA for the
+    # elitea-main → Bifrost egress hop, and the runtime CA that signs workload
+    # identities authorized to call into elitea-main. Merging them would let an
+    # egress client cert authenticate as a workload.
+    "${REPO_ROOT}/deploy/scripts/gen-gateway-certs.sh"
+    exec "${REPO_ROOT}/deploy/scripts/gen-runtime-certs.sh"
     ;;
 
   up)
@@ -37,6 +48,12 @@ case "${1:-}" in
     # in a restart loop on a missing client cert.
     if [ ! -f "${REPO_ROOT}/deploy/certs/client.crt" ]; then
       echo "ERROR: mTLS material missing. Run: $0 certs" >&2
+      exit 1
+    fi
+    # Same, for the runtime plane. Without it runtime-material aborts and every
+    # dependent service is stuck in `created` with no obvious cause.
+    if [ ! -f "${REPO_ROOT}/deploy/certs/runtime/runtime-ca.crt" ]; then
+      echo "ERROR: runtime-plane material missing. Run: $0 certs" >&2
       exit 1
     fi
     # oidc-mock's published port must equal its container port (the issuer is
@@ -81,6 +98,47 @@ case "${1:-}" in
     E2E_PROJECT="$PROJECT" \
     COMPOSE_BIN="$COMPOSE_BIN" \
       "${REPO_ROOT}/apps/elitea-web/scripts/e2e-stack.sh" seed
+    ;;
+
+  seed-runtime)
+    # Authorize the agent worker's certificate identity.
+    #
+    # Nothing in the repository inserts into elitea_runtime.workload_sessions —
+    # by design. WorkloadSessionsRepository "exposes no process-local
+    # registration or fallback allowlist"; sessions are provisioned by the
+    # deployment control plane before a worker connects, so a worker can never
+    # mint its own authority. In this stack the control plane is this command.
+    #
+    # The tuple must match exactly what workloadauth presents: the identity
+    # derived from the client certificate (one SPIFFE URI SAN — see
+    # internal/auth/workloadidentity), plus the session and producer ids the
+    # worker sends. All three are cross-checked in one query, so a mismatch in
+    # any of them is an indistinguishable "unauthorized".
+    #
+    # Keep these three values in sync with the worker's runtime.json (#282) and
+    # with RUNTIME_WORKER_SPIFFE_ID in gen-runtime-certs.sh.
+    WORKER_IDENTITY="${RUNTIME_WORKER_SPIFFE_ID:-spiffe://elitea.standalone/ns/default/sa/agent-worker}"
+    WORKER_SESSION_ID="${RUNTIME_WORKER_SESSION_ID:-standalone-agent-worker-1}"
+    WORKER_PRODUCER_ID="${RUNTIME_WORKER_PRODUCER_ID:-standalone-agent-worker-1}"
+    echo "→ Authorizing workload identity ${WORKER_IDENTITY}…"
+    $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+      psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
+        -v identity="$WORKER_IDENTITY" \
+        -v session="$WORKER_SESSION_ID" \
+        -v producer="$WORKER_PRODUCER_ID" <<'SQL'
+-- issued_at defaults to clock_timestamp(); the verifier requires
+-- issued_at <= now() < expires_at AND revoked_at IS NULL.
+INSERT INTO elitea_runtime.workload_sessions
+    (workload_session_id, workload_identity, producer_id, expires_at)
+VALUES
+    (:'session', :'identity', :'producer', clock_timestamp() + INTERVAL '365 days')
+ON CONFLICT (workload_session_id) DO UPDATE
+    SET workload_identity = EXCLUDED.workload_identity,
+        producer_id       = EXCLUDED.producer_id,
+        expires_at        = EXCLUDED.expires_at,
+        revoked_at        = NULL;
+SQL
+    echo "→ Authorized. session=${WORKER_SESSION_ID} producer=${WORKER_PRODUCER_ID}"
     ;;
 
   seed-llm)
@@ -150,9 +208,114 @@ SQL
     curl -sS --http1.1 --cert "$CERTS/client.crt" --key "$CERTS/client.key" \
          --cacert "$CERTS/ca.crt" --resolve "elitea-llm-gateway:${GW_PORT}:127.0.0.1" \
          "https://elitea-llm-gateway:${GW_PORT}/healthz" && echo
-    echo "→ elitea-main /llm mount:"
-    curl -sS -o /dev/null -w '  HTTP %{http_code} (401/403 = mounted and auth-gated; 404 = not mounted)\n' \
+    echo "→ elitea-main /llm reachability:"
+    # NOT a mount check, despite appearances. Auth runs before route matching, so
+    # every /api/v2 path answers 401 to an unauthenticated caller whether or not
+    # it is registered — measured against a stack with the route absent. A
+    # non-401 here means elitea-main is not answering at all.
+    curl -sS -o /dev/null -w '  HTTP %{http_code} (401/403 = elitea-main answering under auth)\n' \
          "http://localhost:${PORT}/api/v2/llm/v1/models" || true
+
+    # ── Runtime plane (issue #281) ───────────────────────────────────────────
+    # Each assertion below distinguishes "provisioned" from "process happens to
+    # be running". A healthy elitea-main proves nothing on its own: with the
+    # runtime flag off it is equally healthy and every route here 404s.
+    runtime_failures=0
+    fail() { echo "  ✗ $1" >&2; runtime_failures=$((runtime_failures + 1)); }
+
+    # One-off container on the stack's network with the host material mounted.
+    # `compose run` is not usable for these probes: both candidate services
+    # declare an entrypoint script, and `run` appends the command as arguments
+    # to it rather than replacing it.
+    ENGINE="${COMPOSE_BIN%% *}"
+    NETWORK="${PROJECT}_default"
+    RUNTIME_CERTS="${REPO_ROOT}/deploy/certs/runtime"
+    probe() {
+      # postgres:18 rather than the alpine-based images: this needs the openssl
+      # CLI, and neither alpine:3.20 nor redis:7-alpine ships one.
+      $ENGINE run --rm --network "$NETWORK" -v "${RUNTIME_CERTS}:/m:ro" \
+        --entrypoint sh docker.io/library/postgres:18 -c "$1" 2>&1 || true
+    }
+
+    echo "→ runtime listeners (mTLS, from inside the network):"
+    # A TLS 1.3 handshake that gets as far as "certificate required" proves the
+    # listener is bound AND enforcing RequireAndVerifyClientCert. A bare TCP
+    # connect would also succeed against a half-configured listener.
+    for entry in "control 9443" "output 9444" "content 9445"; do
+      set -- $entry
+      name="$1"; port="$2"
+      out="$(probe "openssl s_client -connect elitea-main:${port} -CAfile /m/runtime-ca.crt -tls1_3 </dev/null")"
+      case "$out" in
+        *"certificate required"*|*"peer did not return a certificate"*|*"Verify return code: 0"*)
+          echo "  ✓ ${name} :${port} — TLS 1.3 listener up, client cert required" ;;
+        *) fail "${name} :${port} — no mTLS listener (runtime disabled or PKI wrong)" ;;
+      esac
+    done
+
+    echo "→ dispatch streams:"
+    STREAM="commands.v1.agent.execute.agent.shared.1.0"
+    GROUP="elitea-agent-worker-v1"
+    # Read the group over TLS as the bootstrap ACL user. XINFO GROUPS naming the
+    # group proves the stream exists AND the group was created — a plain
+    # EXISTS check would pass on a stream that XADD created with no consumer.
+    groups="$($ENGINE run --rm --network "$NETWORK" \
+                -v "${RUNTIME_CERTS}:/m:ro" --entrypoint sh docker.io/library/redis:7-alpine -c \
+                "redis-cli --tls --cacert /m/runtime-ca.crt -h runtime-redis -p 6380 \
+                   --user bootstrap --pass \"\$(cat /m/redis-bootstrap-password)\" \
+                   --no-auth-warning XINFO GROUPS '${STREAM}'" 2>&1 || true)"
+    case "$groups" in
+      *"$GROUP"*) echo "  ✓ ${STREAM} has consumer group ${GROUP}" ;;
+      *) fail "${STREAM} has no ${GROUP} group — runtime-bootstrap did not run" ;;
+    esac
+
+    echo "→ runtime composition:"
+    # Deliberately a log assertion and NOT an HTTP probe.
+    #
+    # The obvious check — "POST /api/v2/elitea_core/messages/... must not be
+    # 404" — does not discriminate, and measuring it proves it: every /api/v2
+    # path answers 401 to an unauthenticated caller on BOTH a runtime-enabled
+    # and a runtime-disabled stack, because auth runs before route matching.
+    # GET/PUT/DELETE and the events path behave identically. So a passing "not
+    # 404" assertion would have said the routes were mounted on a stack where
+    # they were never registered.
+    #
+    # Authenticating would not rescue it either: the runtime routes compose
+    # PrincipalValidator + ForwardedIdentityVerifier with no session-cookie
+    # fallback (internal/api/production_runtime.go:31-37), so a browser session
+    # yields 401 whether or not the route exists.
+    #
+    # The two signals that DO separate the cases are this log line and the mTLS
+    # listeners above — with the runtime off, nothing binds 9443/9444/9445 and
+    # the probe gets ECONNREFUSED rather than a handshake.
+    MAIN_CONTAINER="$($ENGINE ps --format '{{.Names}}' | grep -m1 "${PROJECT}.*elitea-main" || true)"
+    # Captured rather than piped into `grep -q`: this script runs under
+    # `set -o pipefail`, and grep -q closes the pipe on its first match, so the
+    # producer dies of SIGPIPE and the pipeline reports failure precisely when
+    # the assertion SUCCEEDS — an inverted check that reads as a real failure.
+    MAIN_LOGS="$($ENGINE logs "$MAIN_CONTAINER" 2>&1 || true)"
+    case "$MAIN_LOGS" in
+      "") fail "elitea-main container not found in project ${PROJECT}" ;;
+      *'"runtime_enabled":true'*)
+        echo "  ✓ elitea-main started with runtime_enabled=true" ;;
+      *) fail "elitea-main did not log runtime_enabled=true — the flag or its env block is incomplete" ;;
+    esac
+
+    echo "→ workload session row:"
+    rows="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+              psql -U elitea -d elitea -tAc \
+              "SELECT count(*) FROM elitea_runtime.workload_sessions
+                WHERE revoked_at IS NULL AND expires_at > clock_timestamp()" 2>/dev/null || echo 0)"
+    if [ "${rows:-0}" -ge 1 ]; then
+      echo "  ✓ ${rows} active workload session(s)"
+    else
+      fail "no active workload session — run: $0 seed-runtime"
+    fi
+
+    if [ "$runtime_failures" -ne 0 ]; then
+      echo "→ ${runtime_failures} runtime-plane check(s) failed." >&2
+      exit 1
+    fi
+    echo "→ runtime plane OK."
     ;;
 
   *)

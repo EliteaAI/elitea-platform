@@ -573,69 +573,81 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, fmt.Errorf("compose execution replay retention janitor: %w", err)
 		}
 
-		indexMetaReconciler, reconcileErr := newCurrentIndexMetaTerminalReconciler(
-			indexMetaTerminalEffect,
-			500*time.Millisecond,
-			2*indexMetaTerminalEffect.concurrency,
-			func(err error) {
-				dependencies.Logger.Error(
-					"current index metadata terminal reconciliation failed",
-					"err",
-					err,
-				)
-			},
-		)
-		if reconcileErr != nil {
-			return nil, fmt.Errorf(
-				"construct current index metadata terminal reconciler: %w",
-				reconcileErr,
-			)
-		}
-		publisherRoot, err = newPublisherSet(publisherRoot, indexMetaReconciler)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"compose current index metadata terminal reconciler: %w",
-				err,
-			)
-		}
-		indexManualStopCleanupReconciler, reconcileErr :=
-			newCurrentIndexManualStopCleanupReconciler(
-				indexManualStopCleanupEffect,
+		// The reconcilers below are index-ingest machinery, but they used to sit
+		// under the combined `IndexIngest || AgentExecution` condition above.
+		// indexMetaTerminalEffect and indexManualStopCleanupEffect are only
+		// constructed when index ingest is enabled, so a runtime with agent
+		// execution ON and index ingest OFF — the only shape available to a
+		// deployment without the LiteLLM facade, since validateRuntimeComposition
+		// requires it for index ingest — panicked here on a nil dereference
+		// (`2*indexMetaTerminalEffect.concurrency`) before serving a request.
+		// The node-event replay repository, wake bus and retention janitor above
+		// stay shared: agent execution needs all three.
+		if config.IndexIngestDispatchEnabled {
+			indexMetaReconciler, reconcileErr := newCurrentIndexMetaTerminalReconciler(
+				indexMetaTerminalEffect,
 				500*time.Millisecond,
-				4,
+				2*indexMetaTerminalEffect.concurrency,
 				func(err error) {
 					dependencies.Logger.Error(
-						"current index manual Stop cleanup reconciliation failed",
+						"current index metadata terminal reconciliation failed",
 						"err",
 						err,
 					)
 				},
 			)
-		if reconcileErr != nil {
-			return nil, fmt.Errorf(
-				"construct current index manual Stop cleanup reconciler: %w",
-				reconcileErr,
+			if reconcileErr != nil {
+				return nil, fmt.Errorf(
+					"construct current index metadata terminal reconciler: %w",
+					reconcileErr,
+				)
+			}
+			publisherRoot, err = newPublisherSet(publisherRoot, indexMetaReconciler)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"compose current index metadata terminal reconciler: %w",
+					err,
+				)
+			}
+			indexManualStopCleanupReconciler, reconcileErr :=
+				newCurrentIndexManualStopCleanupReconciler(
+					indexManualStopCleanupEffect,
+					500*time.Millisecond,
+					4,
+					func(err error) {
+						dependencies.Logger.Error(
+							"current index manual Stop cleanup reconciliation failed",
+							"err",
+							err,
+						)
+					},
+				)
+			if reconcileErr != nil {
+				return nil, fmt.Errorf(
+					"construct current index manual Stop cleanup reconciler: %w",
+					reconcileErr,
+				)
+			}
+			publisherRoot, err = newPublisherSet(
+				publisherRoot,
+				indexManualStopCleanupReconciler,
 			)
-		}
-		publisherRoot, err = newPublisherSet(
-			publisherRoot,
-			indexManualStopCleanupReconciler,
-		)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"compose current index manual Stop cleanup reconciler: %w",
-				err,
+			if err != nil {
+				return nil, fmt.Errorf(
+					"compose current index manual Stop cleanup reconciler: %w",
+					err,
+				)
+			}
+			publisherRoot, err = newPublisherSet(
+				publisherRoot,
+				indexMetaTaskRestampReconciler,
 			)
-		}
-		publisherRoot, err = newPublisherSet(
-			publisherRoot,
-			indexMetaTaskRestampReconciler,
-		)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"compose current index metadata task restamp reconciler: %w",
-				err,
-			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"compose current index metadata task restamp reconciler: %w",
+					err,
+				)
+			}
 		}
 	}
 	if dependencies.ConfigurationLifecycleReconciler != nil {

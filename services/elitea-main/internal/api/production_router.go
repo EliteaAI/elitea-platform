@@ -75,7 +75,34 @@ func NewRouter(cfg RouterConfig) chi.Router {
 // regression test, not something this cleanup is meant to do.
 func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	if cfg.ProductionAuth != nil {
-		r.Mount(browserauth.BasePath, cfg.ProductionAuth.browser)
+		// Exactly one browser-auth plane may own /forward-auth. router.go mounts
+		// the OIDC session lifecycle on that prefix when SessionHandler is
+		// configured, and browserauth.BasePath is the same string — so composing
+		// both planes panicked chi at startup ("attempting to Mount() a handler
+		// on an existing path"). Three of their paths genuinely collide with
+		// different semantics: /login (Form login page vs OIDC redirect),
+		// /logout, and /auth_form/logout.
+		//
+		// That combination is not exotic: ELITEA_RUNTIME_ENABLED requires
+		// production auth (cmd/elitea-main/main.go:686-688), so any OIDC
+		// deployment that turns the runtime on lands here — which is what the
+		// standalone stack does (#281). main.go's comment claiming the two "can
+		// coexist" described an intent the router never implemented.
+		//
+		// OIDC wins the browser prefix, because it is the plane a browser in
+		// such a deployment actually authenticates through. The internal
+		// forward-auth endpoint below is NOT skipped: it is a distinct path, the
+		// edge's identity check depends on it, and it is what the runtime's
+		// ForwardedIdentityVerifier is paired with. Single-plane deployments are
+		// unaffected in either direction.
+		//
+		// cfg.SessionHandler, not cfg.Auth.SessionHandler: router.go:371 folds the
+		// latter into the former before reaching here, and the OIDC mount at
+		// router.go:408 tests exactly this field. Testing the other one would
+		// miss a caller that sets the top-level field directly and panic again.
+		if cfg.SessionHandler == nil {
+			r.Mount(browserauth.BasePath, cfg.ProductionAuth.browser)
+		}
 		// This address is reached only by the gateway's ForwardAuth middleware;
 		// deployment routing must never expose it as a product route.
 		r.Method(http.MethodGet, browserauth.MainForwardAuthPath, cfg.ProductionAuth.main)

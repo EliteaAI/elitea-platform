@@ -9,6 +9,12 @@ Two delivery paths, deliberately not one:
 
 > This machine uses **podman**: `podman compose up -d`, not `docker compose`.
 
+Agent execution (the chat send path) is gated on `ELITEA_RUNTIME_ENABLED`, which
+is a provisioning exercise rather than a flag — TLS Redis, three mTLS listeners,
+a SAN-bearing workload certificate, an Ed25519 signing keyring, production auth
+and a workload-session row. [`runtime/README.md`](runtime/README.md) documents
+that contract and the permission rules its material must satisfy.
+
 ## Composition decision (issue #240)
 
 `deploy/helm/elitea-platform/` used to be an empty `.gitkeep` — an umbrella

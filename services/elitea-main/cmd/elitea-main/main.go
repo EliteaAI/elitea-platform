@@ -309,7 +309,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 
 	// Wire OIDC browser-session authentication when OIDC_ISSUER_URL is set.
 	// SessionHandler and OIDCHandler are independent of the FormGraph path and
-	// can coexist with it (both populate RouterConfig.Auth).
+	// can coexist with it (both populate RouterConfig.Auth) — but only because
+	// internal/api/production_router.go now resolves the /forward-auth prefix to
+	// ONE owner. Composing both used to panic chi at startup; see the comment
+	// there before assuming any second browser-auth plane can simply be added.
 	var oidcSessionHandler *v2auth.SessionHandler
 	var oidcOIDCHandler *v2auth.OIDCHandler
 	oidcCfg, err := v2auth.OIDCConfigFromEnv()
