@@ -8,15 +8,20 @@ publish = false
 [dependencies]
 prost = "=0.14.3"
 ring = "=0.17.14"
+rustix = { version = "=1.1.4", features = ["fs", "process"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["arbitrary_precision", "raw_value"] }
 subtle = "=2.6.1"
 tonic = { version = "=0.14.2", features = ["tls-ring"] }
 tonic-prost = "=0.14.2"
+zeroize = "=1.9.0"
 
 [build-dependencies]
 protoc-bin-vendored = "=3.2.0"
 tonic-prost-build = "=0.14.2"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
 
 [lints.rust]
 unsafe_code = "forbid"

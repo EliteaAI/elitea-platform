@@ -3,6 +3,8 @@
 pub mod agents;
 pub mod capabilities;
 pub mod protocol;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod spool;
 
 use std::fmt;
 use std::io::{self, Write};

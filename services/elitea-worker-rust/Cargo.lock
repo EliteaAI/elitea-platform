@@ -124,12 +124,15 @@ dependencies = [
  "prost",
  "protoc-bin-vendored",
  "ring",
+ "rustix",
  "serde",
  "serde_json",
  "subtle",
+ "tempfile",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "zeroize",
 ]
 
 [[package]]
