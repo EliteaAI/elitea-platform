@@ -1200,3 +1200,57 @@ describe('applyChatStreamFrame — chat_user_message', () => {
     expect(applyChatStreamFrame(before, echo({ uuid: undefined }), ECHO_CONTEXT)).toBe(before);
   });
 });
+
+describe('a whole-message frame after the streamed chunks', () => {
+  // The exact sequence a browser receives, captured from a live standalone
+  // stack by wrapping window.EventSource. The reply is assembled by the chunk
+  // frames and then sent AGAIN, in full, by agent_response — appending both
+  // rendered every answer twice (#294).
+  const RECORDED = [
+    { type: SocketMessageType.AgentStart },
+    { type: SocketMessageType.AgentOnTransitionalEdge },
+    { type: SocketMessageType.AgentLlmStart },
+    { type: SocketMessageType.AgentLlmChunk, content: 'MOCK: ' },
+    { type: SocketMessageType.AgentLlmChunk, content: 'dbg ' },
+    { type: SocketMessageType.AgentLlmChunk, content: '1786658174033 ' },
+    { type: SocketMessageType.AgentLlmEnd },
+    { type: 'partial_message' },
+    { type: SocketMessageType.AgentOnTransitionalEdge },
+    { type: SocketMessageType.PipelineFinish, content: 'MOCK: dbg 1786658174033 ' },
+    { type: SocketMessageType.AgentResponse, content: 'MOCK: dbg 1786658174033 ' },
+    { type: 'full_message', content: 'MOCK: dbg 1786658174033 ' },
+  ];
+
+  it('renders the reply ONCE', () => {
+    const result = RECORDED.reduce<readonly ChatMessage[]>(
+      (history, next) => applyChatStreamFrame(history, frame(next.type, next.content !== undefined ? { content: next.content } : {}), CONTEXT),
+      [pendingAssistant()],
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.content).toBe('MOCK: dbg 1786658174033 ');
+    expect(result[0]?.isStreaming).toBe(false);
+  });
+
+  it('still appends a DISTINCT intermediate response', () => {
+    // The guard is on what is already rendered, not on the frame type, so a
+    // pipeline that emits several different responses keeps all of them.
+    let history = applyChatStreamFrame([pendingAssistant()], frame(SocketMessageType.AgentResponse, { content: 'step one' }), CONTEXT);
+    history = applyChatStreamFrame(history, frame(SocketMessageType.AgentResponse, { content: 'step two' }), CONTEXT);
+
+    expect(history[0]?.content).toContain('step one');
+    expect(history[0]?.content).toContain('step two');
+  });
+
+  it('does not swallow a reply that merely repeats the last words', () => {
+    // `endsWith` is exact: a response whose text is a SUFFIX of what is on
+    // screen is suppressed, but one that only shares a prefix still appends.
+    const history = applyChatStreamFrame(
+      [{ ...pendingAssistant(), content: 'MOCK: hello' }],
+      frame(SocketMessageType.AgentResponse, { content: 'MOCK: hello world' }),
+      CONTEXT,
+    );
+
+    expect(history[0]?.content).toBe('MOCK: helloMOCK: hello world');
+  });
+});

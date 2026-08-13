@@ -28,15 +28,19 @@
  * reducer. That is the whole point of running the journey here.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * CURRENTLY EXPECTED TO FAIL — #294
+ * CURRENTLY EXPECTED TO FAIL — #294, second half
  * ─────────────────────────────────────────────────────────────────────────────
- * The loop WORKS: with #291/#292/#293 fixed this journey drives a real turn all
- * the way through — model selection, conversation, participants, admission, the
- * SSE stream — and the answer renders. It renders twice and all at once (#294):
- * whole-message frames are appended after the streamed chunks, and nothing is
- * painted incrementally even with the mock slowed to 800ms per chunk. The
- * assertion below that fails is the incremental one, which is exactly the
- * defect.
+ * The duplication half of #294 is FIXED and this journey proves it: the reply
+ * renders exactly once. What still fails is the assertion below that a PARTIAL
+ * answer is painted before the turn ends. It is not a sampling artefact — the
+ * sampler starts with the click and polls every 50ms, and the mock is slowed to
+ * 400ms per chunk (≈1.5s of streaming) — and it is not a stale image, since the
+ * runner now rebuilds. The chunks arrive as separate SSE frames and the DOM
+ * still goes empty → whole answer in one step.
+ *
+ * `test.fail()` rather than deleting the assertion: it is the only thing in the
+ * suite that can tell streaming from a late bulk render, and Playwright fails an
+ * expected-failure test that unexpectedly passes, so it announces the fix.
  *
  * The wire contract asserted below is the one the backend actually emits, NOT
  * the `chat.stream.chunk`/`chat.stream.done` pair #284's body names: every frame
@@ -83,10 +87,8 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   // real hang still fails on the specific step rather than on the clock.
   test.setTimeout(180_000);
 
-  // Expected to fail until #294 lands — see the module header. Remove this line
-  // with that fix; leaving it makes the suite fail once the answer paints once
-  // and incrementally, which is the point.
-  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #294: the answer renders twice and never incrementally');
+  // Expected to fail until #294's incremental-render half lands.
+  test.fail(!process.env['CHAT_STREAM_UNMASK'], 'blocked by #294: no partial answer is painted before the turn ends');
 
   const prompt = uniquePrompt();
 
@@ -135,6 +137,23 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   );
   const streamed = page.waitForResponse((r) => EVENTS_RE.test(r.url()), { timeout: 30_000 });
 
+  // Sampling starts WITH the send, not after the response assertions below:
+  // the reply streams in under a second, and a sampler that only begins once
+  // those promises resolve routinely opens after the last chunk has landed —
+  // reporting "nothing was painted incrementally" about a turn it never
+  // watched. This runs concurrently and is awaited at the end.
+  const answer = page.getByTestId('chat-message-list').getByTestId('application-answer').first();
+  const partials: string[] = [];
+  const sampler = (async () => {
+    const deadline = Date.now() + 25_000;
+    while (Date.now() < deadline) {
+      const text = ((await answer.textContent().catch(() => '')) ?? '').trim();
+      if (text && !text.includes(prompt)) partials.push(text);
+      if (text.includes(prompt)) return;
+      await page.waitForTimeout(50);
+    }
+  })();
+
   await sendButton.click();
 
   const createdResponse = await created;
@@ -161,28 +180,15 @@ test('the chat loop works end to end: send, stream, persist, reload', async ({ p
   ).toContain('text/event-stream');
 
   // ── A token rendered BEFORE the turn finished ──
-  // The stack runs the mock with MOCK_LLM_CHUNK_DELAY_MS set, so the answer
-  // arrives over several paints instead of one. Sampling the answer while the
-  // composer is still disabled observes a genuinely partial render; without the
-  // delay a browser may legitimately paint only the finished answer, which
-  // would make this flaky rather than wrong.
-  const answer = page.getByTestId('chat-message-list').getByTestId('application-answer').first();
+  // The stack runs the mock with MOCK_LLM_CHUNK_DELAY_MS set so the reply
+  // spans several paints; the sampler above has been watching since the click.
   await expect(answer, 'an assistant turn must appear while the run is still open').toBeVisible({ timeout: 30_000 });
-
-  let partial = '';
-  await expect
-    .poll(
-      async () => {
-        const text = (await answer.textContent()) ?? '';
-        if (text.trim() && !text.includes(prompt)) partial = text.trim();
-        return partial.length;
-      },
-      {
-        timeout: 20_000,
-        message: 'no partial answer was ever painted — the reply arrived in one frame, not as a stream',
-      },
-    )
-    .toBeGreaterThan(0);
+  await sampler;
+  expect(
+    partials.length,
+    `no partial answer was ever painted — the reply arrived in one frame, not as a stream. Samples: ${JSON.stringify(partials.slice(0, 5))}`,
+  ).toBeGreaterThan(0);
+  const partial = partials[partials.length - 1] ?? '';
 
   // ── The completed answer ──
   // The mock echoes this run's unique prompt, so this cannot pass on a cached

@@ -623,8 +623,24 @@ export function applyChatStreamFrame(
       if (!current) return history;
       const finished = isFinalResponse(frame);
       const threadId = threadIdOf(frame);
+      // `agent_response` carries the WHOLE reply, and on this backend it
+      // arrives AFTER the `agent_llm_chunk` frames that already assembled the
+      // same text — measured against a live stack:
+      //
+      //   agent_llm_chunk "MOCK: " → "dbg " → "1786… "
+      //   agent_llm_end → partial_message → pipeline_finish
+      //   agent_response "MOCK: dbg 1786… "     ← the whole thing again
+      //
+      // Appending unconditionally (as the baseline does, `msg.content +=`)
+      // therefore renders every answer TWICE. The baseline gets away with it
+      // because pylon sent one or the other, never both.
+      //
+      // Gated on what is ALREADY THERE rather than on the frame type: a
+      // pipeline emitting several distinct intermediate responses still
+      // appends each of them, because none of those is a repeat of the tail.
+      const alreadyRendered = text !== '' && current.content.endsWith(text);
       return replaceAt(history, index, {
-        content: current.content + text,
+        content: alreadyRendered ? current.content : current.content + text,
         ...(finished ? { isStreaming: false, isLoading: false, hitlInterrupt: undefined, hitlInterrupts: undefined } : {}),
         ...(finished && threadId !== undefined ? { threadId } : {}),
       });

@@ -21,9 +21,11 @@ WEB_DIR="${REPO_ROOT}/apps/elitea-web"
 
 PROJECT="${CHAT_STREAM_PROJECT:-elitea-chatstream}"
 PORT="${CHAT_STREAM_PORT:-8084}"
-# Per-chunk delay for the mock. 120ms × the mock's word-per-chunk reply is well
-# under the journey's timeouts while being far longer than a paint.
-DELAY_MS="${MOCK_LLM_CHUNK_DELAY_MS:-120}"
+# Per-chunk delay for the mock. 400ms x the mock's word-per-chunk reply keeps
+# the whole turn well under the journey's timeouts while making each token a
+# separate paint — comfortably longer than a frame, so "a partial answer was
+# rendered" is an observation rather than a race.
+DELAY_MS="${MOCK_LLM_CHUNK_DELAY_MS:-400}"
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
 
@@ -48,6 +50,13 @@ echo "→ Runtime PKI + secrets (idempotent)…"
 run_stack certs
 
 echo "→ Bringing up ${PROJECT} on :${PORT} (mock chunk delay ${DELAY_MS}ms)…"
+# `up` reuses an image that already exists, so a source change lands only if
+# the build is asked for explicitly. That is not a nicety here: the whole
+# incremental-render assertion depends on the mock's per-chunk delay actually
+# running, and a stale mock streams the reply in one burst — which reads as
+# "the UI does not stream" rather than "the harness did not slow anything
+# down". Measured: chunk frames 33ms apart with the delay set to 600.
+run_stack build
 # `up` exits non-zero when a service declares no healthcheck even though the
 # stack is fine, so readiness is asserted below rather than taken from it.
 run_stack up || true

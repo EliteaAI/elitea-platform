@@ -2,6 +2,8 @@
 # Wrapper for the full standalone stack (deploy/docker-compose.standalone-full.yml).
 #
 #   certs        generate local mTLS + runtime-plane material (idempotent)
+#   build        rebuild the stack's images from source (`up` reuses existing
+#                tags, so a code change needs this first)
 #   up           bring the stack up and wait for healthy
 #   seed         schema + OIDC users + RBAC — delegates to the E2E seeder
 #   seed-runtime authorize the agent worker's certificate identity (#281)
@@ -78,6 +80,14 @@ case "${1:-}" in
     echo "→ Bringing up the full standalone stack (${COMPOSE_BIN})…"
     $COMPOSE_BIN $COMPOSE_F up -d --wait
     echo "→ Stack ready at http://localhost:${PORT}/app/"
+    ;;
+
+  build)
+    # `up` reuses whatever image already carries the tag, so a source change
+    # reaches a running stack only when the build is asked for explicitly.
+    # Verifying a code change against this stack without it silently tests the
+    # PREVIOUS build — which has cost this effort several confusing runs.
+    $COMPOSE_BIN $COMPOSE_F build "${@:2}"
     ;;
 
   down)
