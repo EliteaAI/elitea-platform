@@ -33,6 +33,7 @@ const CONFORMANCE_HMAC_KEY: &[u8] = b"ELITEA_RUNTIME_V1_TEST_ONLY_NOT_A_SECRET";
 
 /// An authenticated, strictly decoded reference-only agent command.
 pub struct VerifiedAgentCommand {
+    exact_signed_envelope: Box<[u8]>,
     signed: SignedWorkerCommandEnvelopeV1,
     command: WorkerCommandV1,
     kind: AgentExecutionKind,
@@ -42,6 +43,14 @@ impl VerifiedAgentCommand {
     #[must_use]
     pub const fn signed(&self) -> &SignedWorkerCommandEnvelopeV1 {
         &self.signed
+    }
+
+    /// Return the exact authenticated outer-envelope bytes received from the
+    /// command transport. This is crate-private because protocol consumers
+    /// must not substitute a protobuf reserialization for the signed delivery.
+    #[must_use]
+    pub(crate) fn exact_signed_envelope(&self) -> &[u8] {
+        &self.exact_signed_envelope
     }
 
     #[must_use]
@@ -197,6 +206,7 @@ pub fn parse_and_verify_agent_command(
         .map_err(|_| ProtocolError::InvalidInput("the worker command is malformed"))?;
     let kind = validate_agent_command(&command)?;
     Ok(VerifiedAgentCommand {
+        exact_signed_envelope: raw.into(),
         signed,
         command,
         kind,

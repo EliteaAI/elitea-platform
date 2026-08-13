@@ -14,6 +14,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Request, Streaming};
 
+use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::elitea::runtime::v1::{
     DigestAlgorithmV1, ExecutionFenceV1, ExecutionIdentityV1, ExecutionOutcomeV1,
     ExecutionOutputAckV1, ExecutionOutputFrameV1, RuntimeErrorCodeV1, SettlementProposalV1,
@@ -722,13 +723,27 @@ pub struct DurablyAckedTerminal {
     identity: ExecutionIdentityV1,
     fence: ExecutionFenceV1,
     proposal: SettlementProposalV1,
+    stable_delivery_id: String,
+    exact_signed_envelope: Box<[u8]>,
 }
 
 impl DurablyAckedTerminal {
     pub(crate) fn into_settlement_parts(
         self,
-    ) -> (ExecutionIdentityV1, ExecutionFenceV1, SettlementProposalV1) {
-        (self.identity, self.fence, self.proposal)
+    ) -> (
+        ExecutionIdentityV1,
+        ExecutionFenceV1,
+        SettlementProposalV1,
+        String,
+        Box<[u8]>,
+    ) {
+        (
+            self.identity,
+            self.fence,
+            self.proposal,
+            self.stable_delivery_id,
+            self.exact_signed_envelope,
+        )
     }
 }
 
@@ -809,6 +824,7 @@ impl OutputGrpcSession {
     /// the same spool/transport failures as [`Self::send`].
     pub async fn send_terminal(
         &mut self,
+        verified: &VerifiedAgentCommand,
         frame: ExecutionOutputFrameV1,
     ) -> Result<DurablyAckedTerminal, OutputGrpcError> {
         validate_terminal_settlement_binding(&frame)?;
@@ -828,11 +844,20 @@ impl OutputGrpcSession {
             .ok_or(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
                 "the terminal settlement proposal is missing",
             )))?;
+        if !terminal_identity_matches_command(&identity, verified) {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "the terminal output identity does not match its verified command",
+                ),
+            ));
+        }
         self.send_frame(frame).await?;
         Ok(DurablyAckedTerminal {
             identity,
             fence,
             proposal,
+            stable_delivery_id: verified.command().idempotency_key.clone(),
+            exact_signed_envelope: verified.exact_signed_envelope().into(),
         })
     }
 
@@ -982,6 +1007,19 @@ fn validate_terminal_settlement_binding(
     Ok(())
 }
 
+fn terminal_identity_matches_command(
+    identity: &ExecutionIdentityV1,
+    verified: &VerifiedAgentCommand,
+) -> bool {
+    let command = verified.command();
+    identity.tenant_id == command.tenant_id
+        && identity.resource_project_id == command.resource_project_id
+        && identity.projection_project_id == command.projection_project_id
+        && identity.command_id == command.command_id
+        && identity.execution_id == command.execution_id
+        && identity.generation == command.generation
+}
+
 #[derive(Clone, Copy)]
 enum RecoveryKind {
     Cancelled,
@@ -1071,6 +1109,10 @@ mod tests {
     use tokio::sync::Notify;
     use tonic::{Response, Status};
 
+    use crate::protocol::command::{
+        SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
+        parse_and_verify_agent_command,
+    };
     use crate::protocol::control::AgentControlClient;
     use crate::protocol::elitea::runtime::v1::{
         AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1, BeginExecutionRequestV1,
@@ -1085,6 +1127,29 @@ mod tests {
     };
 
     use super::*;
+
+    fn verified_agent_command(name: &str) -> crate::protocol::command::VerifiedAgentCommand {
+        let prefix = format!("{name}=");
+        let line = include_str!("../../tests/fixtures/agent_control_vectors.txt")
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .expect("signed command vector");
+        let (_, encoded) = line.split_once('=').expect("named vector");
+        let bytes = encoded
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("ASCII hex"), 16)
+                    .expect("fixture hex")
+            })
+            .collect::<Vec<_>>();
+        let authenticator = TestOnlyConformanceHmacAuthenticator;
+        parse_and_verify_agent_command(
+            &bytes,
+            Some(&authenticator as &dyn SignedCommandAuthenticator),
+        )
+        .expect("verified agent command")
+    }
 
     struct FakeStream {
         acknowledgements: VecDeque<Result<Option<ExecutionOutputAckV1>, OutputGrpcError>>,
@@ -1690,6 +1755,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn only_a_bound_terminal_ack_can_mint_and_settle_retirement_authority() {
         let temp = tempfile::tempdir().expect("temporary directory");
+        let verified = verified_agent_command("signed_command_output_session");
+        let mismatched = verified_agent_command("signed_command");
         let mut terminal = frame(1, true);
         terminal.payload_digest = Some(DigestV1 {
             algorithm: DigestAlgorithmV1::Sha256 as i32,
@@ -1718,13 +1785,19 @@ mod tests {
             .expect("output session");
         let mut output = spawn_output_actor(inner, settings.max_frame_bytes);
         assert!(matches!(
-            output.send_terminal(frame(1, false)).await,
+            output.send_terminal(&verified, frame(1, false)).await,
             Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
                 _
             )))
         ));
+        assert!(matches!(
+            output.send_terminal(&mismatched, terminal.clone()).await,
+            Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(_)
+            ))
+        ));
         let acknowledged = output
-            .send_terminal(terminal.clone())
+            .send_terminal(&verified, terminal.clone())
             .await
             .expect("durably acknowledged terminal");
 

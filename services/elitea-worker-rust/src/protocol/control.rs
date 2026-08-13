@@ -248,6 +248,7 @@ pub enum TerminalRedeliveryKind {
 /// input resolution or SDK execution. The value is opaque and non-cloneable.
 pub struct TerminalCommandAck {
     kind: TerminalRedeliveryKind,
+    retirement: CommandRetirementBinding,
 }
 
 impl TerminalCommandAck {
@@ -358,6 +359,7 @@ pub struct RecoverTerminalAck {
     proposal: SettlementProposalV1,
     proposal_digest: DigestV1,
     idempotency_key: String,
+    retirement: CommandRetirementBinding,
 }
 
 /// Exact already-prepared settlement receipt. Possession authorizes command
@@ -365,6 +367,7 @@ pub struct RecoverTerminalAck {
 pub struct RecoveredSettlement {
     receipt_id: String,
     outcome: ExecutionOutcomeV1,
+    retirement: CommandRetirementBinding,
 }
 
 impl RecoveredSettlement {
@@ -521,10 +524,10 @@ pub struct LeaseObservation {
 }
 
 /// Opaque, outcome-bound settlement receipt.
-#[derive(Debug)]
 pub struct SettlementReceipt {
     receipt_id: String,
     outcome: ExecutionOutcomeV1,
+    retirement: CommandRetirementBinding,
 }
 
 impl SettlementReceipt {
@@ -536,6 +539,53 @@ impl SettlementReceipt {
     #[must_use]
     pub const fn outcome(&self) -> ExecutionOutcomeV1 {
         self.outcome
+    }
+}
+
+struct CommandRetirementBinding {
+    identity: ExecutionIdentityV1,
+    stable_delivery_id: String,
+    exact_signed_envelope: Box<[u8]>,
+}
+
+/// Consuming proof that one exact agent command reached a durable terminal
+/// state and may cross the Redis retirement boundary.
+pub enum AgentCommandRetirementAuthority {
+    TerminalRedelivery(TerminalCommandAck),
+    RecoveredSettlement(RecoveredSettlement),
+    PreparedSettlement(SettlementReceipt),
+}
+
+impl From<TerminalCommandAck> for AgentCommandRetirementAuthority {
+    fn from(value: TerminalCommandAck) -> Self {
+        Self::TerminalRedelivery(value)
+    }
+}
+
+impl From<RecoveredSettlement> for AgentCommandRetirementAuthority {
+    fn from(value: RecoveredSettlement) -> Self {
+        Self::RecoveredSettlement(value)
+    }
+}
+
+impl From<SettlementReceipt> for AgentCommandRetirementAuthority {
+    fn from(value: SettlementReceipt) -> Self {
+        Self::PreparedSettlement(value)
+    }
+}
+
+impl AgentCommandRetirementAuthority {
+    pub(crate) fn into_binding(self) -> (ExecutionIdentityV1, String, Box<[u8]>) {
+        let binding = match self {
+            Self::TerminalRedelivery(value) => value.retirement,
+            Self::RecoveredSettlement(value) => value.retirement,
+            Self::PreparedSettlement(value) => value.retirement,
+        };
+        (
+            binding.identity,
+            binding.stable_delivery_id,
+            binding.exact_signed_envelope,
+        )
     }
 }
 
@@ -726,7 +776,13 @@ impl<R: ControlRpc> AgentControlClient<R> {
         &self,
         terminal: DurablyAckedTerminal,
     ) -> Result<SettlementReceipt, AgentControlError> {
-        let (identity, fence, proposal) = terminal.into_settlement_parts();
+        let (identity, fence, proposal, stable_delivery_id, exact_signed_envelope) =
+            terminal.into_settlement_parts();
+        let retirement = CommandRetirementBinding {
+            identity: identity.clone(),
+            stable_delivery_id,
+            exact_signed_envelope,
+        };
         let expected_outcome =
             ExecutionOutcomeV1::try_from(proposal.requested_outcome).map_err(|_| {
                 ControlSemanticError::InvalidInput("the settlement outcome is malformed")
@@ -749,7 +805,8 @@ impl<R: ControlRpc> AgentControlClient<R> {
             }),
         };
         let response = self.control.prepare_settlement(request).await?;
-        parse_prepare_settlement_response(response, expected_outcome).map_err(Into::into)
+        parse_prepare_settlement_response(response, expected_outcome, retirement)
+            .map_err(Into::into)
     }
 
     /// Replay the exact state-owner proposal after a terminal ACK crash.
@@ -776,7 +833,8 @@ impl<R: ControlRpc> AgentControlClient<R> {
             idempotency_key: recovery.idempotency_key,
         };
         let response = self.control.prepare_settlement(request).await?;
-        parse_prepare_settlement_response(response, expected_outcome).map_err(Into::into)
+        parse_prepare_settlement_response(response, expected_outcome, recovery.retirement)
+            .map_err(Into::into)
     }
 }
 
@@ -840,33 +898,22 @@ fn parse_agent_claim_decision(
             now_unix_millis,
         )
         .map(|recovery| AgentClaimDecision::RecoverTerminalAck(Box::new(recovery))),
-        ClaimDispositionV1::RecoverSettlement => {
-            parse_recovered_settlement(&receipt, workload_session_id, producer_id, now_unix_millis)
-                .map(AgentClaimDecision::RecoverSettlement)
-        }
-        ClaimDispositionV1::SettledAck => {
-            validate_recovery_claim(
-                &receipt,
-                workload_session_id,
-                producer_id,
-                now_unix_millis,
-                false,
-            )?;
-            Ok(AgentClaimDecision::SettledAck(TerminalCommandAck {
-                kind: TerminalRedeliveryKind::Settled,
-            }))
-        }
-        ClaimDispositionV1::ObsoleteAck => {
-            validate_no_worker_authority(&receipt)?;
-            if receipt.desired_state != DesiredExecutionStateV1::Cancelled as i32 {
-                return Err(ControlSemanticError::InvalidInput(
-                    "the obsolete claim desired state is malformed",
-                ));
-            }
-            Ok(AgentClaimDecision::ObsoleteAck(TerminalCommandAck {
-                kind: TerminalRedeliveryKind::Obsolete,
-            }))
-        }
+        ClaimDispositionV1::RecoverSettlement => parse_recovered_settlement(
+            verified,
+            &receipt,
+            workload_session_id,
+            producer_id,
+            now_unix_millis,
+        )
+        .map(AgentClaimDecision::RecoverSettlement),
+        ClaimDispositionV1::SettledAck => settled_ack_decision(
+            verified,
+            &receipt,
+            workload_session_id,
+            producer_id,
+            now_unix_millis,
+        ),
+        ClaimDispositionV1::ObsoleteAck => obsolete_ack_decision(verified, &receipt),
         ClaimDispositionV1::ActiveLeaseNoack => parse_output_recovery(
             &receipt,
             workload_session_id,
@@ -882,14 +929,7 @@ fn parse_agent_claim_decision(
                 _sealed: (),
             }))
         }
-        ClaimDispositionV1::RetiredAck => {
-            validate_no_worker_authority_except_retirement(&receipt)?;
-            desired_state(receipt.desired_state)?;
-            validate_deadline_retirement(receipt.retirement.as_ref())?;
-            Ok(AgentClaimDecision::RetiredAck(TerminalCommandAck {
-                kind: TerminalRedeliveryKind::Retired,
-            }))
-        }
+        ClaimDispositionV1::RetiredAck => retired_ack_decision(verified, &receipt),
         ClaimDispositionV1::RecoverRunningNoack => parse_output_recovery(
             &receipt,
             workload_session_id,
@@ -910,6 +950,55 @@ fn parse_agent_claim_decision(
             "the claim disposition is malformed",
         )),
     }
+}
+
+fn settled_ack_decision(
+    verified: &VerifiedAgentCommand,
+    receipt: &ClaimReceiptV1,
+    workload_session_id: &str,
+    producer_id: &str,
+    now_unix_millis: i64,
+) -> Result<AgentClaimDecision, ControlSemanticError> {
+    validate_recovery_claim(
+        receipt,
+        workload_session_id,
+        producer_id,
+        now_unix_millis,
+        false,
+    )?;
+    Ok(AgentClaimDecision::SettledAck(terminal_command_ack(
+        verified,
+        TerminalRedeliveryKind::Settled,
+    )))
+}
+
+fn obsolete_ack_decision(
+    verified: &VerifiedAgentCommand,
+    receipt: &ClaimReceiptV1,
+) -> Result<AgentClaimDecision, ControlSemanticError> {
+    validate_no_worker_authority(receipt)?;
+    if receipt.desired_state != DesiredExecutionStateV1::Cancelled as i32 {
+        return Err(ControlSemanticError::InvalidInput(
+            "the obsolete claim desired state is malformed",
+        ));
+    }
+    Ok(AgentClaimDecision::ObsoleteAck(terminal_command_ack(
+        verified,
+        TerminalRedeliveryKind::Obsolete,
+    )))
+}
+
+fn retired_ack_decision(
+    verified: &VerifiedAgentCommand,
+    receipt: &ClaimReceiptV1,
+) -> Result<AgentClaimDecision, ControlSemanticError> {
+    validate_no_worker_authority_except_retirement(receipt)?;
+    desired_state(receipt.desired_state)?;
+    validate_deadline_retirement(receipt.retirement.as_ref())?;
+    Ok(AgentClaimDecision::RetiredAck(terminal_command_ack(
+        verified,
+        TerminalRedeliveryKind::Retired,
+    )))
 }
 
 fn validate_retirement_placement(
@@ -1080,6 +1169,7 @@ fn parse_terminal_ack_recovery(
         proposal,
         proposal_digest,
         idempotency_key,
+        retirement: command_retirement_binding(verified),
     })
 }
 
@@ -1148,6 +1238,7 @@ fn validate_terminal_recovery(
 }
 
 fn parse_recovered_settlement(
+    verified: &VerifiedAgentCommand,
     receipt: &ClaimReceiptV1,
     workload_session_id: &str,
     producer_id: &str,
@@ -1183,6 +1274,7 @@ fn parse_recovered_settlement(
     Ok(RecoveredSettlement {
         receipt_id: recovery.settlement_receipt_id.clone(),
         outcome,
+        retirement: command_retirement_binding(verified),
     })
 }
 
@@ -1424,6 +1516,7 @@ fn parse_observe_desired_state_response(
 fn parse_prepare_settlement_response(
     response: PrepareSettlementResponseV1,
     expected_outcome: ExecutionOutcomeV1,
+    retirement: CommandRetirementBinding,
 ) -> Result<SettlementReceipt, ControlSemanticError> {
     if let Some(rejection) = response.rejection.as_ref() {
         if !response.settlement_receipt_id.is_empty()
@@ -1446,6 +1539,7 @@ fn parse_prepare_settlement_response(
     Ok(SettlementReceipt {
         receipt_id: response.settlement_receipt_id,
         outcome: expected_outcome,
+        retirement,
     })
 }
 
@@ -1587,6 +1681,24 @@ fn identity_from_command(verified: &VerifiedAgentCommand) -> ExecutionIdentityV1
         command_id: command.command_id.clone(),
         execution_id: command.execution_id.clone(),
         generation: command.generation,
+    }
+}
+
+fn command_retirement_binding(verified: &VerifiedAgentCommand) -> CommandRetirementBinding {
+    CommandRetirementBinding {
+        identity: identity_from_command(verified),
+        stable_delivery_id: verified.command().idempotency_key.clone(),
+        exact_signed_envelope: verified.exact_signed_envelope().into(),
+    }
+}
+
+fn terminal_command_ack(
+    verified: &VerifiedAgentCommand,
+    kind: TerminalRedeliveryKind,
+) -> TerminalCommandAck {
+    TerminalCommandAck {
+        kind,
+        retirement: command_retirement_binding(verified),
     }
 }
 

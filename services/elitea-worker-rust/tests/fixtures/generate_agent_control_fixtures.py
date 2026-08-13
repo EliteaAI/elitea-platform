@@ -266,8 +266,52 @@ def size_bound_pair(
 signed_at_limit, claim_at_limit = size_bound_pair(1024 * 1024)
 signed_over_limit, claim_over_limit = size_bound_pair(1024 * 1024 + 1)
 
+output_session_command = command_pb2.WorkerCommandV1.FromString(command_raw)
+output_session_command.resource_project_id = "resource-1"
+output_session_command.projection_project_id = "projection-1"
+output_session_command.generation = 1
+output_session_command_raw = output_session_command.SerializeToString(deterministic=True)
+output_session_signed = envelope_pb2.SignedWorkerCommandEnvelopeV1(
+    envelope_schema_revision="elitea.runtime.signed-worker-command.v1",
+    signature_profile=envelope_pb2.SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256,
+    key_id=CONFORMANCE_KEY_ID,
+    worker_command_bytes=output_session_command_raw,
+    worker_command_digest=sha256(output_session_command_raw),
+    signature=hmac.new(
+        CONFORMANCE_KEY,
+        output_session_command_raw,
+        hashlib.sha256,
+    ).digest(),
+)
+
+same_identity_changed_intent_command = command_pb2.WorkerCommandV1.FromString(
+    command_raw
+)
+same_identity_changed_intent_command.deadline_unix_millis += 1
+same_identity_changed_intent_raw = (
+    same_identity_changed_intent_command.SerializeToString(deterministic=True)
+)
+same_identity_changed_intent_signed = envelope_pb2.SignedWorkerCommandEnvelopeV1(
+    envelope_schema_revision="elitea.runtime.signed-worker-command.v1",
+    signature_profile=envelope_pb2.SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256,
+    key_id=CONFORMANCE_KEY_ID,
+    worker_command_bytes=same_identity_changed_intent_raw,
+    worker_command_digest=sha256(same_identity_changed_intent_raw),
+    signature=hmac.new(
+        CONFORMANCE_KEY,
+        same_identity_changed_intent_raw,
+        hashlib.sha256,
+    ).digest(),
+)
+
 fixtures = {
     "signed_command": signed.SerializeToString(deterministic=True),
+    "signed_command_same_identity_changed_intent": (
+        same_identity_changed_intent_signed.SerializeToString(deterministic=True)
+    ),
+    "signed_command_output_session": output_session_signed.SerializeToString(
+        deterministic=True
+    ),
     "accepted_claim": claim.SerializeToString(deterministic=True),
     "claim_recover_terminal_ack": recover_terminal.SerializeToString(deterministic=True),
     "claim_recover_settlement": recover_settlement.SerializeToString(deterministic=True),
