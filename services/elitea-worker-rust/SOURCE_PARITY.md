@@ -30,6 +30,12 @@ browser-event contracts.
 
 ## Current source-to-Rust mapping
 
+Detailed ledgers:
+
+- [`docs/source-mapping/agent-runtime.md`](docs/source-mapping/agent-runtime.md)
+- [`docs/source-mapping/configuration-toolsets.md`](docs/source-mapping/configuration-toolsets.md)
+- [`docs/source-mapping/indexing.md`](docs/source-mapping/indexing.md)
+
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
 | --- | --- | --- | --- | --- |
 | `libs/proto/elitea/runtime/v1/*.proto` | Language-neutral worker command, input, output, control, and settlement contracts | `src/protocol/` | Cross-language binary fixtures and strict parser tests | Not started |
