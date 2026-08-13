@@ -96,7 +96,7 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 		service.publicProjectID <= 0 || ctx == nil ||
 		request.ProjectID <= 0 || request.ActorUserID <= 0 ||
 		!validJSONObject(request.VersionDetails) {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("freeze dependencies or request identity are invalid")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -104,27 +104,27 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 
 	version, err := decodeCurrentApplicationVersion(request.VersionDetails)
 	if err != nil {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStartBecause("version details are not one decodable JSON object", err)
 	}
 	if err := service.resolveCurrentAgentModel(ctx, request.ProjectID, version); err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return nil, contextErr
 		}
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStartBecause("model resolution", err)
 	}
 	tools, ok := version["tools"].([]any)
 	if !ok {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("version tools is not an array")
 	}
 	for index, value := range tools {
 		tool, ok := value.(map[string]any)
 		if !ok {
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStart("a tool entry is not an object")
 		}
 		toolType, ok := tool["type"].(string)
 		if !ok || toolType == "" || len(toolType) > configurationapp.MaxCurrentToolkitSettingsIdentifier ||
 			strings.ContainsAny(toolType, "\x00\r\n") {
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStart("a tool entry has no usable type")
 		}
 		if toolType == "application" {
 			var frozen map[string]any
@@ -139,18 +139,18 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 				frozen, ok = freezeCurrentStoredApplicationReference(tool)
 			}
 			if !ok {
-				return nil, ErrUnsupportedCurrentAgentStart
+				return nil, unsupportedStart("an application tool reference could not be frozen")
 			}
 			tools[index] = frozen
 			continue
 		}
 		toolID, ok := positiveCurrentAgentJSONInteger(tool["id"])
 		if !ok {
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStart("a tool entry has no positive integer id")
 		}
 		settings, ok := tool["settings"].(map[string]any)
 		if !ok || settings == nil {
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStart("a tool entry has no settings object")
 		}
 		frozen, err := service.settings.Resolve(
 			ctx,
@@ -166,14 +166,14 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 			if contextErr := ctx.Err(); contextErr != nil {
 				return nil, contextErr
 			}
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStartBecause("toolkit settings resolution", err)
 		}
 
 		var storedName *string
 		if name, exists := tool["name"]; exists && name != nil {
 			text, ok := name.(string)
 			if !ok {
-				return nil, ErrUnsupportedCurrentAgentStart
+				return nil, unsupportedStart("a tool entry name is not a string")
 			}
 			storedName = &text
 		}
@@ -188,7 +188,7 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 			if contextErr := ctx.Err(); contextErr != nil {
 				return nil, contextErr
 			}
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStartBecause("toolkit name resolution", err)
 		}
 		tool["id"] = toolID
 		tool["settings"] = frozen
@@ -199,7 +199,7 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 
 	encoded, err := json.Marshal(version)
 	if err != nil || !validJSONObject(encoded) || len(encoded) > executiondomain.MaxAgentExecutionInputBytes {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("the frozen version is unencodable or exceeds the admission size bound")
 	}
 	return encoded, nil
 }
@@ -330,7 +330,7 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 ) error {
 	settings, ok := version["llm_settings"].(map[string]any)
 	if !ok || settings == nil {
-		return ErrUnsupportedCurrentAgentStart
+		return unsupportedStart("the turn carries no llm_settings object")
 	}
 	// This is Configurations-owned metadata. A stored or caller-projected value
 	// must never select the SDK model client implementation.
@@ -351,7 +351,7 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 	if !found {
 		if catalog.DefaultModelName == nil || catalog.DefaultModelProjectID == nil ||
 			*catalog.DefaultModelName == "" || *catalog.DefaultModelProjectID <= 0 {
-			return ErrUnsupportedCurrentAgentStart
+			return unsupportedStart("the requested model is not in the project's catalog and the catalog names no default")
 		}
 		modelName = *catalog.DefaultModelName
 		modelProjectID = int64(*catalog.DefaultModelProjectID)
@@ -359,7 +359,7 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 			catalog.Items, modelName, modelProjectID, true, projectID, service.publicProjectID,
 		)
 		if !found {
-			return ErrUnsupportedCurrentAgentStart
+			return unsupportedStart("the catalog's default model is not itself in the catalog")
 		}
 		settings["model_name"] = modelName
 		settings["model_project_id"] = modelProjectID
@@ -379,7 +379,7 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 	if value, exists := settings["max_tokens"]; exists && value != nil {
 		maxTokens, valid := currentAgentJSONInteger(value)
 		if !valid || maxTokens == 0 || maxTokens < -1 || maxTokens > math.MaxInt32 {
-			return ErrUnsupportedCurrentAgentStart
+			return unsupportedStart("max_tokens is out of the admitted range")
 		}
 		if maxTokens == -1 {
 			maxTokens = currentAgentDefaultMaxTokens
@@ -452,11 +452,11 @@ func decodeCurrentApplicationVersion(source []byte) (map[string]any, error) {
 	decoder.UseNumber()
 	var value map[string]any
 	if err := decoder.Decode(&value); err != nil || value == nil {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("version details are not a JSON object")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("version details carry trailing JSON")
 	}
 	return value, nil
 }

@@ -341,3 +341,50 @@ func validJSONArray(value []byte) bool {
 	trimmed := bytes.TrimSpace(value)
 	return json.Valid(trimmed) && len(trimmed) >= 2 && trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']'
 }
+
+// unsupportedCurrentAgentStart attributes ONE refusal without changing what
+// callers match on.
+//
+// The admission gate in tools.go used to return the bare
+// ErrUnsupportedCurrentAgentStart sentinel from every one of its refusal sites,
+// so an operator watching a deployment fail saw the same sentence — "current
+// agent start is not supported by the admitted parity slice" — whichever
+// precondition had actually objected, with nothing to distinguish a malformed
+// tool entry from an unresolvable model. The HTTP body is deliberately generic
+// and stays that way; the log line must not be (#288).
+//
+// Unwrap returns the sentinel first so errors.Is(err,
+// ErrUnsupportedCurrentAgentStart) — which is how the route maps this to 422 —
+// keeps matching, and the cause second so a dependency's own error survives
+// into the log instead of being swallowed.
+type unsupportedCurrentAgentStart struct {
+	reason string
+	cause  error
+}
+
+func (e *unsupportedCurrentAgentStart) Error() string {
+	message := ErrUnsupportedCurrentAgentStart.Error() + ": " + e.reason
+	if e.cause != nil {
+		message += ": " + e.cause.Error()
+	}
+	return message
+}
+
+func (e *unsupportedCurrentAgentStart) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrUnsupportedCurrentAgentStart}
+	}
+	return []error{ErrUnsupportedCurrentAgentStart, e.cause}
+}
+
+// unsupportedStart names a refusal. The reason must be a fixed string: it
+// reaches deployment logs, so it carries no request data.
+func unsupportedStart(reason string) error {
+	return &unsupportedCurrentAgentStart{reason: reason}
+}
+
+// unsupportedStartBecause names a refusal a dependency caused, keeping that
+// dependency's error attached.
+func unsupportedStartBecause(reason string, cause error) error {
+	return &unsupportedCurrentAgentStart{reason: reason, cause: cause}
+}

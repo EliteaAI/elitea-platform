@@ -169,6 +169,14 @@ def start_turn(client: Client, project: int, conversation: str, prompt: str, mod
 def read_stream(client: Client, events_url: str, deadline_seconds: int) -> tuple[list[str], str]:
     """Collect SSE event names and assembled content until a terminal event."""
     status, body, response = client.request("GET", events_url, stream=True)
+    if status == 401:
+        # Not a bad token: production_runtime.go:31-37 composes this route with
+        # PrincipalValidator + ForwardedIdentityVerifier only — no bearer and no
+        # session cookie — so the credential that just admitted the turn cannot
+        # read its own stream. Reaching it needs a forward-auth edge injecting
+        # verified identity headers, which the hybrid has and this stack does
+        # not (#289). The admission half above is genuinely proven by here.
+        raise Blocked("the events stream accepts no credential this client can present (#289)")
     if status != 200:
         raise Fail(f"events stream → HTTP {status}: {body[:200]}")
     names: list[str] = []

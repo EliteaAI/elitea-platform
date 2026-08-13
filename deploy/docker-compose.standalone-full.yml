@@ -530,13 +530,33 @@ services:
       # unless this is on. Mutation stays off: enabling it would demand the
       # LiteLLM lifecycle facade, which this stack replaced with Bifrost.
       ELITEA_CONFIGURATIONS_ENABLED: "true"
-      # Matches VITE_PUBLIC_PROJECT_ID below and for the same reason: this id
-      # designates the project whose configurations are treated as PUBLIC and
-      # merged into every other project's option lookups. Pointing it at the
-      # seeded working project (1) would make its own credentials show up twice.
-      # 99 is an id no fixture creates, so the public set stays empty.
-      ELITEA_AI_PROJECT_ID: "99"
-      ELITEA_VAULT_MASTER_KEY_FILE: /run/elitea-runtime/vault-master-key
+      # The project whose configurations are treated as PUBLIC and merged into
+      # every other project's option lookups.
+      #
+      # This was 99 — "an id no fixture creates, so the public set stays empty".
+      # That reasoning was wrong twice. The model catalog does not treat a
+      # missing public project as an empty set: it lists that project's
+      # configurations and propagates the failure, so every agent turn died in
+      # the version freezer with "list public model configurations: tenant:
+      # project does not exist" (#288). And the duplication it was avoiding
+      # cannot happen anyway — CurrentModelCatalogService.Get skips the public
+      # listing entirely when ProjectID == PublicProjectID.
+      #
+      # So it points at the seeded project. Unlike VITE_PUBLIC_PROJECT_ID below,
+      # which selects a UI view and must NOT be 1, this must name a project that
+      # exists.
+      ELITEA_AI_PROJECT_ID: "1"
+      # ELITEA_VAULT_MASTER_KEY_FILE is deliberately NOT set, and the material is
+      # still minted so a deployment that wants key wrapping can point at it.
+      #
+      # It selects between two incompatible readings of centry.secrets_key.data
+      # (internal/infra/storage/postgres_secret_vault.go:108-112): unset means
+      # OpenUnwrapped, where the row IS the vault's Fernet key; set means
+      # OpenWrapped, where the row is that key encrypted under the master key.
+      # The E2E seeder writes plaintext keys, so setting this makes the stack
+      # unable to read the vault its own seeder produced — which surfaced as
+      # every agent turn failing in the model-defaults lookup, three layers from
+      # anything that mentions a vault (#288).
 
       # ── Runtime plane (issue #281) ─────────────────────────────────────────
       # All-or-nothing: runtimecomposition/config.go rejects a partial block,
