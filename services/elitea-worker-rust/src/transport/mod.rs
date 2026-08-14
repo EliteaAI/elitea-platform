@@ -1,3 +1,6 @@
+pub(crate) mod anthropic_gateway;
+#[cfg(test)]
+mod anthropic_gateway_tests;
 pub mod control_grpc;
 pub mod input_content;
 #[cfg(test)]

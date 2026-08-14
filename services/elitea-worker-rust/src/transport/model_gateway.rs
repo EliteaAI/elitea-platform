@@ -149,7 +149,7 @@ impl fmt::Display for ModelGatewayError {
 impl std::error::Error for ModelGatewayError {}
 
 #[async_trait]
-trait ModelGatewayTransport: Send + Sync {
+pub(super) trait ModelGatewayTransport: Send + Sync {
     async fn post(
         &self,
         request: Request<Body>,
@@ -175,7 +175,7 @@ impl ModelGatewayTransport for TonicModelGatewayTransport {
     }
 }
 
-enum ModelGatewayTransportError {
+pub(super) enum ModelGatewayTransportError {
     Unavailable,
     Tonic(tonic::transport::Error),
 }
@@ -203,8 +203,8 @@ impl std::error::Error for ModelGatewayTransportError {
 
 /// Shared connection pool for claim-scoped model invocations.
 pub(crate) struct ModelGatewayClient {
-    transport: Arc<dyn ModelGatewayTransport>,
-    config: ModelGatewayConfig,
+    pub(super) transport: Arc<dyn ModelGatewayTransport>,
+    pub(super) config: ModelGatewayConfig,
 }
 
 impl ModelGatewayClient {
@@ -405,7 +405,9 @@ impl Llm for EliteaOpenAiCompatibleModel {
     }
 }
 
-fn validate_invocation(invocation: &ModelGatewayInvocation) -> Result<(), ModelGatewayError> {
+pub(super) fn validate_invocation(
+    invocation: &ModelGatewayInvocation,
+) -> Result<(), ModelGatewayError> {
     if !bounded_header_text(&invocation.model_name, MAX_MODEL_NAME_BYTES)
         || invocation.system_instruction.is_empty()
         || invocation.system_instruction.len() > MAX_INSTRUCTION_BYTES
@@ -482,7 +484,7 @@ fn build_request_body(
     Ok(Bytes::from(encoded))
 }
 
-fn validate_llm_request<'a>(
+pub(super) fn validate_llm_request<'a>(
     request: &'a LlmRequest,
     stream: bool,
     invocation: &ModelGatewayInvocation,
@@ -575,7 +577,7 @@ fn build_http_request(
     Ok(request)
 }
 
-fn validate_response_head(response: &Response<Body>) -> Result<(), AdkError> {
+pub(super) fn validate_response_head(response: &Response<Body>) -> Result<(), AdkError> {
     if response.version() != Version::HTTP_2 {
         return Err(model_error(
             ErrorCategory::Unavailable,
@@ -705,7 +707,10 @@ fn model_response_stream(
                 parser.finish_input();
             }
             while let Some(event) = parser.next_event()? {
-                match parse_sse_event(&event)? {
+                if event.event_type.is_some() {
+                    Err(invalid_sse())?;
+                }
+                match parse_sse_event(&event.data)? {
                     ParsedSseEvent::Response(model_response) => {
                         if saw_done || terminal.is_some() {
                             Err(model_error(
@@ -759,7 +764,7 @@ fn model_response_stream(
     })
 }
 
-async fn next_response_chunk(
+pub(super) async fn next_response_chunk(
     response: &mut Response<Body>,
     idle_timeout: Duration,
 ) -> Result<Option<Bytes>, AdkError> {
@@ -847,9 +852,15 @@ fn model_output_too_large() -> AdkError {
     )
 }
 
-struct SseParser {
+pub(super) struct BoundedSseEvent {
+    pub(super) event_type: Option<Vec<u8>>,
+    pub(super) data: Vec<u8>,
+}
+
+pub(super) struct SseParser {
     bytes: Vec<u8>,
     cursor: usize,
+    event_type: Option<Vec<u8>>,
     data: Vec<u8>,
     total_bytes: usize,
     max_event_bytes: usize,
@@ -860,10 +871,11 @@ struct SseParser {
 }
 
 impl SseParser {
-    fn new(max_event_bytes: usize, max_stream_bytes: usize, max_events: usize) -> Self {
+    pub(super) fn new(max_event_bytes: usize, max_stream_bytes: usize, max_events: usize) -> Self {
         Self {
             bytes: Vec::new(),
             cursor: 0,
+            event_type: None,
             data: Vec::new(),
             total_bytes: 0,
             max_event_bytes,
@@ -874,7 +886,7 @@ impl SseParser {
         }
     }
 
-    fn push(&mut self, chunk: &[u8]) -> Result<(), AdkError> {
+    pub(super) fn push(&mut self, chunk: &[u8]) -> Result<(), AdkError> {
         if self.input_finished {
             return Err(invalid_sse());
         }
@@ -894,7 +906,7 @@ impl SseParser {
         Ok(())
     }
 
-    fn finish_input(&mut self) {
+    pub(super) fn finish_input(&mut self) {
         if self.input_finished {
             return;
         }
@@ -905,7 +917,7 @@ impl SseParser {
         self.bytes.push(b'\n');
     }
 
-    fn next_event(&mut self) -> Result<Option<Vec<u8>>, AdkError> {
+    pub(super) fn next_event(&mut self) -> Result<Option<BoundedSseEvent>, AdkError> {
         loop {
             let Some(relative_end) = self.bytes[self.cursor..]
                 .iter()
@@ -924,6 +936,9 @@ impl SseParser {
             self.cursor = end + 1;
             if line.is_empty() {
                 if self.data.is_empty() {
+                    if self.event_type.is_some() {
+                        return Err(invalid_sse());
+                    }
                     self.compact();
                     continue;
                 }
@@ -931,6 +946,7 @@ impl SseParser {
                     self.data.pop();
                 }
                 let event = std::mem::take(&mut self.data);
+                let event_type = self.event_type.take();
                 self.emitted_events = self
                     .emitted_events
                     .checked_add(1)
@@ -939,9 +955,23 @@ impl SseParser {
                     return Err(too_many_events());
                 }
                 self.compact();
-                return Ok(Some(event));
+                return Ok(Some(BoundedSseEvent {
+                    event_type,
+                    data: event,
+                }));
             }
             if line.starts_with(b":") {
+                continue;
+            }
+            if let Some(value) = line.strip_prefix(b"event:") {
+                if self.event_type.is_some() || !self.data.is_empty() {
+                    return Err(invalid_sse());
+                }
+                let value = value.strip_prefix(b" ").unwrap_or(value);
+                if value.is_empty() || value.len() > self.max_event_bytes {
+                    return Err(invalid_sse());
+                }
+                self.event_type = Some(value.to_vec());
                 continue;
             }
             let Some(value) = line.strip_prefix(b"data:") else {
@@ -952,6 +982,7 @@ impl SseParser {
                 .data
                 .len()
                 .checked_add(value.len() + 1)
+                .and_then(|length| length.checked_add(self.event_type.as_ref().map_or(0, Vec::len)))
                 .ok_or_else(event_too_large)?;
             if next_len > self.max_event_bytes {
                 return Err(event_too_large());
@@ -1113,7 +1144,11 @@ fn too_many_events() -> AdkError {
     )
 }
 
-fn model_error(category: ErrorCategory, code: &'static str, message: &'static str) -> AdkError {
+pub(super) fn model_error(
+    category: ErrorCategory,
+    code: &'static str,
+    message: &'static str,
+) -> AdkError {
     AdkError::new(ErrorComponent::Model, category, code, message).with_provider("elitea")
 }
 

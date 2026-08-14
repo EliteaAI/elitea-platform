@@ -90,6 +90,61 @@ fn model_response() -> Response<Body> {
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
 }
 
+fn anthropic_response() -> Response<Body> {
+    let raw = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_ordinary\",\"content\":[],\"model\":\"claude-sonnet-4-5\",\"role\":\"assistant\",\"type\":\"message\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"native Anthropic response\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn use_native_anthropic(request: &mut super::request::AgentExecutionRequest) {
+    match request.kind {
+        AgentExecutionKind::Application => {
+            request
+                .payload
+                .llm
+                .get_mut("kwargs")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("application runtime model")
+                .insert("openai_compatible".to_owned(), serde_json::json!(false));
+            let settings = request
+                .payload
+                .application
+                .get_mut("version_details")
+                .and_then(serde_json::Value::as_object_mut)
+                .and_then(|version| version.get_mut("llm_settings"))
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("application model settings");
+            settings.insert(
+                "model_name".to_owned(),
+                serde_json::json!("claude-sonnet-4-5"),
+            );
+            settings.insert("openai_compatible".to_owned(), serde_json::json!(false));
+        }
+        AgentExecutionKind::Adhoc => {
+            let settings = request
+                .payload
+                .llm
+                .get_mut("kwargs")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("ad-hoc model settings");
+            settings.insert("model".to_owned(), serde_json::json!("claude-sonnet-4-5"));
+            settings.insert("openai_compatible".to_owned(), serde_json::json!(false));
+        }
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn application_and_adhoc_share_authorized_redemption_model_session_and_projection() {
     for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
@@ -151,6 +206,67 @@ async fn application_and_adhoc_share_authorized_redemption_model_session_and_pro
         );
         assert_eq!(captured[0].headers["openai-organization"], "17");
         assert!(captured[0].headers["authorization"].is_sensitive());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn application_and_adhoc_select_native_anthropic_without_changing_the_lifecycle() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        let mut request = ordinary_request(kind);
+        use_native_anthropic(&mut request);
+        let (runtime_context, context_calls) = runtime_context_client();
+        let (model_gateway, captured) = test_model_gateway_client(
+            vec![TestModelGatewayOutcome::Response(anthropic_response())],
+            test_model_gateway_config(),
+        )
+        .expect("model gateway fixture client");
+        let assembler =
+            OrdinaryNativeAgentAssembler::new(Arc::new(runtime_context), Arc::new(model_gateway));
+        let assembly = AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        );
+        let mut invocation = assembler
+            .assemble(assembly)
+            .await
+            .expect("authorized native Anthropic assembly");
+        assert_eq!(context_calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            invocation.project_start(chrono::Utc::now()).unwrap().len(),
+            1
+        );
+
+        let (mut native, mut projector, completion) = invocation.start().expect("native start");
+        while let Some(event) = native.next_event().await.expect("native event") {
+            let _batch = projector.project(&event).expect("projected native event");
+        }
+        let completed = completion.select().await.expect("selected completion");
+        let finish = projector
+            .finish_after_eos(completed, chrono::Utc::now())
+            .expect("finished browser output");
+        let full_message = finish
+            .into_iter()
+            .map(|event| {
+                serde_json::from_slice::<serde_json::Value>(
+                    &encode_current_node_event_json(&event).expect("canonical browser event"),
+                )
+                .expect("browser event JSON")
+            })
+            .find(|event| event["type"] == "full_message")
+            .expect("full message event");
+        assert_eq!(full_message["content"], "native Anthropic response");
+
+        let captured = captured.lock().expect("captured native request");
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].uri.path(), "/llm/v1/messages");
+        let body: serde_json::Value =
+            serde_json::from_slice(&captured[0].body).expect("native request JSON");
+        assert_eq!(body["model"], "claude-sonnet-4-5");
+        assert_eq!(body["messages"][0]["content"], "current");
+        assert_eq!(captured[0].headers["openai-organization"], "17");
+        assert!(captured[0].headers["authorization"].is_sensitive());
+        assert!(captured[0].headers["x-api-key"].is_sensitive());
     }
 }
 

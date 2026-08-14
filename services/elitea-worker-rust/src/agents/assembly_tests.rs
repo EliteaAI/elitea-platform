@@ -1,6 +1,6 @@
 use serde_json::{Map, Value, json};
 
-use super::assembly::{OrdinaryNoToolProfile, ReasoningEffort};
+use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
 use super::request::{
     AgentExecutionKind, AgentExecutionPayload, AgentExecutionRequest, AgentInputBinding,
     NextInputSuggestionPolicy, UserInput,
@@ -112,6 +112,10 @@ fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contract
             .expect("ordinary application profile");
     assert_eq!(application.kind(), AgentExecutionKind::Application);
     assert_eq!(application.model_name(), "fixture-model");
+    assert_eq!(
+        application.model_provider(),
+        OrdinaryModelProvider::OpenAiChat
+    );
     assert_eq!(application.model_project_id(), 17);
     assert_eq!(application.max_tokens(), 4096);
     assert_eq!(
@@ -124,6 +128,7 @@ fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contract
         .expect("ordinary ad-hoc profile");
     assert_eq!(adhoc.kind(), AgentExecutionKind::Adhoc);
     assert_eq!(adhoc.model_name(), "fixture-model");
+    assert_eq!(adhoc.model_provider(), OrdinaryModelProvider::OpenAiChat);
     assert_eq!(adhoc.model_project_id(), 17);
     assert_eq!(adhoc.max_tokens(), 2048);
     assert_eq!(adhoc.reasoning_effort(), None);
@@ -265,7 +270,7 @@ fn insert_application_meta(request: &mut AgentExecutionRequest, key: &str, value
 }
 
 #[test]
-fn pipeline_tools_and_unsupported_model_dialects_fail_closed() {
+fn pipeline_tools_templates_and_defaults_are_classified_before_redemption() {
     let mut pipeline = ordinary_request(AgentExecutionKind::Application);
     let version = pipeline
         .payload
@@ -290,21 +295,6 @@ fn pipeline_tools_and_unsupported_model_dialects_fail_closed() {
         .expect("application version")
         .insert("tools".to_owned(), json!([{"type": "github"}]));
     assert!(OrdinaryNoToolProfile::validate(&configured_tool).is_err());
-
-    let mut anthropic = ordinary_request(AgentExecutionKind::Adhoc);
-    anthropic
-        .payload
-        .llm
-        .get_mut("kwargs")
-        .and_then(Value::as_object_mut)
-        .expect("model kwargs")
-        .insert("openai_compatible".to_owned(), Value::Bool(false));
-    assert_eq!(
-        OrdinaryNoToolProfile::validate(&anthropic)
-            .expect_err("unreviewed provider dialect")
-            .code(),
-        NativeAgentAssemblyErrorCode::UnsupportedCapability
-    );
 
     let mut application_override = ordinary_request(AgentExecutionKind::Application);
     application_override
@@ -346,6 +336,83 @@ fn pipeline_tools_and_unsupported_model_dialects_fail_closed() {
             .expect_err("unimplemented ad-hoc template")
             .code(),
         NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+}
+
+#[test]
+fn authoritative_compatibility_selects_the_sdk_provider_dialect() {
+    let mut native_adhoc = ordinary_request(AgentExecutionKind::Adhoc);
+    let native_kwargs = native_adhoc
+        .payload
+        .llm
+        .get_mut("kwargs")
+        .and_then(Value::as_object_mut)
+        .expect("model kwargs");
+    native_kwargs.insert("model".to_owned(), json!("claude-sonnet-4-5"));
+    native_kwargs.insert("openai_compatible".to_owned(), Value::Bool(false));
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&native_adhoc)
+            .expect("native Anthropic ad-hoc profile")
+            .model_provider(),
+        OrdinaryModelProvider::NativeAnthropic
+    );
+
+    let mut native_application = ordinary_request(AgentExecutionKind::Application);
+    native_application
+        .payload
+        .llm
+        .get_mut("kwargs")
+        .and_then(Value::as_object_mut)
+        .expect("application runtime model")
+        .insert("openai_compatible".to_owned(), Value::Bool(false));
+    native_application
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .and_then(|version| version.get_mut("llm_settings"))
+        .and_then(Value::as_object_mut)
+        .expect("application model settings")
+        .insert(
+            "model_name".to_owned(),
+            json!("anthropic/claude-sonnet-4-5"),
+        );
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&native_application)
+            .expect("native Anthropic application profile")
+            .model_provider(),
+        OrdinaryModelProvider::NativeAnthropic
+    );
+
+    native_adhoc
+        .payload
+        .llm
+        .get_mut("kwargs")
+        .and_then(Value::as_object_mut)
+        .expect("model kwargs")
+        .insert("openai_compatible".to_owned(), Value::Bool(true));
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&native_adhoc)
+            .expect("Claude through OpenAI-compatible profile")
+            .model_provider(),
+        OrdinaryModelProvider::OpenAiChat
+    );
+
+    let mut unsupported_adaptive_none = ordinary_request(AgentExecutionKind::Adhoc);
+    let settings = unsupported_adaptive_none
+        .payload
+        .llm
+        .get_mut("kwargs")
+        .and_then(Value::as_object_mut)
+        .expect("adaptive model settings");
+    settings.insert("model".to_owned(), json!("claude-sonnet-4-6"));
+    settings.insert("openai_compatible".to_owned(), json!(false));
+    settings.insert("reasoning_effort".to_owned(), json!("none"));
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&unsupported_adaptive_none)
+            .expect_err("pinned SDK cannot construct adaptive effort none")
+            .code(),
+        NativeAgentAssemblyErrorCode::InvalidInput
     );
 }
 

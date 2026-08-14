@@ -12,12 +12,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::assembly::ReasoningEffort;
+use super::assembly::{OrdinaryModelProvider, ReasoningEffort};
 use super::runtime::{
     AssembledNativeAgentInvocation, AuthorizedNativeAssembly, NativeAgentAssembler,
     NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
 };
-use super::session::{OrdinaryAgentCompletion, assemble_ordinary_native};
+use super::session::{BoundOrdinaryAgentModel, OrdinaryAgentCompletion, assemble_ordinary_native};
+use crate::transport::anthropic_gateway::BoundAnthropicGateway;
 use crate::transport::model_gateway::{
     BoundModelGateway, ModelGatewayClient, ModelGatewayError, ModelGatewayInvocation,
     ModelReasoningEffort,
@@ -49,7 +50,7 @@ impl OrdinaryNativeAgentAssembler {
 
 #[async_trait]
 impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
-    type Completion = OrdinaryAgentCompletion<BoundModelGateway>;
+    type Completion = OrdinaryAgentCompletion<BoundOrdinaryGateway>;
 
     async fn assemble(
         &self,
@@ -70,11 +71,39 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
             reasoning_effort: profile.reasoning_effort().map(model_reasoning_effort),
             temperature: profile.temperature(),
         };
-        let model = self
-            .model_gateway
-            .bind_ordinary(context, invocation)
-            .map_err(model_binding_error)?;
+        let model = match profile.model_provider() {
+            OrdinaryModelProvider::OpenAiChat => self
+                .model_gateway
+                .bind_ordinary(context, invocation)
+                .map(BoundOrdinaryGateway::OpenAi),
+            OrdinaryModelProvider::NativeAnthropic => self
+                .model_gateway
+                .bind_anthropic_ordinary(context, invocation)
+                .map(BoundOrdinaryGateway::Anthropic),
+        }
+        .map_err(model_binding_error)?;
         assemble_ordinary_native(model, plan).await
+    }
+}
+
+pub(crate) enum BoundOrdinaryGateway {
+    OpenAi(BoundModelGateway),
+    Anthropic(BoundAnthropicGateway),
+}
+
+impl BoundOrdinaryAgentModel for BoundOrdinaryGateway {
+    fn adk_model(&self) -> Arc<dyn adk_rust::Llm> {
+        match self {
+            Self::OpenAi(model) => model.adk_model(),
+            Self::Anthropic(model) => model.adk_model(),
+        }
+    }
+
+    fn take_completed_text(self) -> Result<String, NativeAgentAssemblyError> {
+        match self {
+            Self::OpenAi(model) => model.take_completed_text(),
+            Self::Anthropic(model) => model.take_completed_text(),
+        }
     }
 }
 

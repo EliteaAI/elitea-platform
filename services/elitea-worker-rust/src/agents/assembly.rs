@@ -23,12 +23,20 @@ pub(crate) enum ReasoningEffort {
     None,
 }
 
+/// Provider dialect selected by the authoritative frozen Main input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OrdinaryModelProvider {
+    OpenAiChat,
+    NativeAnthropic,
+}
+
 /// Frozen model and execution controls for the first no-tool profile.
 #[derive(Debug, PartialEq)]
 pub(crate) struct OrdinaryNoToolProfile {
     kind: AgentExecutionKind,
     instructions: String,
     model_name: String,
+    model_provider: OrdinaryModelProvider,
     model_project_id: u32,
     max_tokens: u32,
     reasoning_effort: Option<ReasoningEffort>,
@@ -49,6 +57,7 @@ impl OrdinaryNoToolProfile {
             kind: request.kind,
             instructions: model.instructions,
             model_name: model.model_name,
+            model_provider: model.model_provider,
             model_project_id: model.model_project_id,
             max_tokens: model.max_tokens,
             reasoning_effort: model.reasoning_effort,
@@ -69,6 +78,11 @@ impl OrdinaryNoToolProfile {
     #[must_use]
     pub(crate) fn model_name(&self) -> &str {
         &self.model_name
+    }
+
+    #[must_use]
+    pub(crate) const fn model_provider(&self) -> OrdinaryModelProvider {
+        self.model_provider
     }
 
     #[must_use]
@@ -206,10 +220,20 @@ fn application_model(
         .get("kwargs")
         .and_then(Value::as_object)
         .ok_or_else(invalid_profile)?;
-    if kwargs.len() != 1 || kwargs.get("openai_compatible") != Some(&Value::Bool(true)) {
+    if kwargs.len() != 1 {
         return Err(unsupported_profile());
     }
-    validate_model(settings, ModelFieldNames::APPLICATION, false, instructions)
+    let compatible = match kwargs.get("openai_compatible") {
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(invalid_profile()),
+        None => return Err(unsupported_profile()),
+    };
+    validate_model(
+        settings,
+        ModelFieldNames::APPLICATION,
+        Some(compatible),
+        instructions,
+    )
 }
 
 fn validate_empty_feature_array(
@@ -276,7 +300,7 @@ fn adhoc_model(
         .get("kwargs")
         .and_then(Value::as_object)
         .ok_or_else(invalid_profile)?;
-    validate_model(kwargs, ModelFieldNames::ADHOC, true, instructions)
+    validate_model(kwargs, ModelFieldNames::ADHOC, None, instructions)
 }
 
 #[derive(Clone, Copy)]
@@ -314,6 +338,7 @@ impl ModelFieldNames {
 struct ValidatedModel {
     instructions: String,
     model_name: String,
+    model_provider: OrdinaryModelProvider,
     model_project_id: u32,
     max_tokens: u32,
     reasoning_effort: Option<ReasoningEffort>,
@@ -323,7 +348,7 @@ struct ValidatedModel {
 fn validate_model(
     settings: &Map<String, Value>,
     names: ModelFieldNames,
-    require_compatible: bool,
+    compatibility_override: Option<bool>,
     instructions: &str,
 ) -> Result<ValidatedModel, NativeAgentAssemblyError> {
     if settings
@@ -335,12 +360,13 @@ fn validate_model(
     {
         return Err(unsupported_profile());
     }
-    match settings.get("openai_compatible") {
-        Some(Value::Bool(true)) => {}
-        Some(Value::Bool(false)) | None if !require_compatible => {}
-        Some(Value::Bool(false)) | None => return Err(unsupported_profile()),
-        Some(_) => return Err(invalid_profile()),
-    }
+    let compatible = match compatibility_override {
+        Some(value) => value,
+        None => match settings.get("openai_compatible") {
+            Some(Value::Bool(value)) => *value,
+            None | Some(_) => return Err(invalid_profile()),
+        },
+    };
     let model_name = settings
         .get(names.model)
         .and_then(Value::as_str)
@@ -364,14 +390,52 @@ fn validate_model(
     {
         return Err(invalid_profile());
     }
+    let model_provider = if compatible || !anthropic_model_name(&model_name) {
+        OrdinaryModelProvider::OpenAiChat
+    } else {
+        OrdinaryModelProvider::NativeAnthropic
+    };
+    if model_provider == OrdinaryModelProvider::NativeAnthropic
+        && reasoning_effort == Some(ReasoningEffort::None)
+        && adaptive_anthropic_model(&model_name)
+    {
+        return Err(invalid_profile());
+    }
     Ok(ValidatedModel {
         instructions: instructions.to_owned(),
         model_name,
+        model_provider,
         model_project_id,
         max_tokens,
         reasoning_effort,
         temperature,
     })
+}
+
+fn anthropic_model_name(model_name: &str) -> bool {
+    let model_name = model_name.to_ascii_lowercase();
+    model_name.contains("anthropic") || model_name.contains("claude")
+}
+
+fn adaptive_anthropic_model(model_name: &str) -> bool {
+    let model_name = model_name.to_ascii_lowercase();
+    [
+        "opus-4-7",
+        "opus_4_7",
+        "opus-4.7",
+        "opus-4-8",
+        "opus_4_8",
+        "opus-4.8",
+        "sonnet-4-6",
+        "sonnet_4_6",
+        "sonnet-4.6",
+        "sonnet-5",
+        "sonnet_5",
+        "opus-5",
+        "opus_5",
+    ]
+    .iter()
+    .any(|pattern| model_name.contains(pattern))
 }
 
 fn positive_u32(value: Option<&Value>) -> Result<u32, NativeAgentAssemblyError> {
