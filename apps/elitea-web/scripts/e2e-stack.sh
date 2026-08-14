@@ -665,9 +665,9 @@ WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local', 'e2e-
 ON CONFLICT (user_id) DO NOTHING;
 
 -- p_1.configuration: one mock model config so the personal-token create button is
--- enabled (tokens.tsx: isAddButtonDisabled = configurations.length === 0).
--- useListModelsQuery calls /configurations/configurations/{id}?section=models, so
--- the row must use section='models'. status_ok=true satisfies the UI gate.
+-- enabled (tokens.tsx: isAddButtonDisabled = configurations.length === 0). This
+-- row is the CREDENTIAL, section='models', which is what
+-- /configurations/configurations/{id}?section=models lists.
 INSERT INTO p_1.configuration
     (project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
 VALUES
@@ -675,6 +675,30 @@ VALUES
      '{"api_key":"e2e-mock-key","api_base":"http://localhost/mock","api_version":"2024-02-01","model":"gpt-4o"}',
      '{}', false, true, 'user', NOW(), NOW())
 ON CONFLICT (elitea_title) DO UPDATE SET section = EXCLUDED.section, updated_at = NOW();
+
+-- The row the MODEL PICKER reads, and a DIFFERENT section from the credential
+-- above. The picker was moved off the credentials list onto the model
+-- CATALOGUE (`/configurations/models/{projectId}`), and that route selects
+-- `section = 'llm'` (CurrentModelSectionLLM, application/configurations/models.go)
+-- — so the section='models' credential row alone leaves the picker with nothing
+-- to show and it renders "NONE".
+--
+-- Caught by the @visual chat snapshots, which are the only place the picker's
+-- resolved label is asserted: no unit test covers it, because the seed and the
+-- route live on opposite sides of the wire. The three sections are genuinely
+-- distinct and easy to conflate — `ai_credentials` (what the gateway resolves),
+-- `models` (the credentials list), and `llm`/`llm_model` (the catalogue the
+-- picker and GET /llm/v1/models read). deploy/scripts/standalone-stack.sh seeds
+-- all three for the same reason.
+INSERT INTO p_1.configuration
+    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (1, 'e2e-mock-model-llm', 'E2E-MOCK-MODEL', 'llm_model', 'llm',
+     '{"name":"E2E-MOCK-MODEL"}',
+     '{}', false, true, 'user', NOW(), NOW())
+ON CONFLICT (elitea_title) DO UPDATE
+    SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
+        label = EXCLUDED.label, status_ok = true, updated_at = NOW();
 
 -- centry secret vaults for the admin scope and project 1.
 --
