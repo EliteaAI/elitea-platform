@@ -105,7 +105,12 @@ jobs:
           - runner: ubuntu-latest
             arch: linux/amd64
             suffix: linux-amd64
-          - runner: [self-hosted, arm64]
+          # GitHub-hosted arm64 runner (free for public repos). Pinned to the
+          # 24.04 image rather than a floating `-arm` alias so an image rollover
+          # can't silently change the build environment under us. There is no
+          # self-hosted runner fleet for this repo — do not reintroduce
+          # `[self-hosted, arm64]`, the job will queue forever.
+          - runner: ubuntu-24.04-arm
             arch: linux/arm64
             suffix: linux-arm64
 

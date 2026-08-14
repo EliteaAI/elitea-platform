@@ -145,8 +145,24 @@ jobs:
         # elitea-main uses the `e2e` target, which builds the admin SPA from
         # apps/elitea-web/src/entries/admin — the same bundle the shipping
         # `final` stage carries, since `final` derives from `e2e`.
+        #
+        # The pinned Playwright image is pulled HERE, in the background, rather
+        # than in a step of its own. The two builds are CPU-bound and the pull
+        # is network-bound, so the ~27s pull (measured, run 31775604015's visual
+        # job) hides completely inside the ~160s build and the test step below
+        # starts against a warm local image.
         working-directory: ${{ github.workspace }}
         run: |
+          # Bounded and NON-FATAL, both deliberately. `docker run` in the test
+          # step pulls the image itself if it is missing, so a failed or slow
+          # pull here costs the overlap, never the run — and `timeout` stops a
+          # stalled pull from hanging this step and getting mis-blamed on the
+          # build, which is what the naive `docker pull &` would have done.
+          (
+            timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+              || echo "::warning::background pull of the pinned Playwright image failed or timed out; the test step will pull it inline"
+          ) &
+          pw_pull=$!
           docker build \
             --file services/elitea-main/Containerfile \
             --target e2e \
@@ -158,6 +174,9 @@ jobs:
             --tag ghcr.io/eliteaai/elitea-web:e2e \
             --platform linux/amd64 \
             .
+          # The subshell above swallows its own failure, so this only joins the
+          # background job — it cannot fail the step.
+          wait "$pw_pull"
       - name: Both images are present in the local image store
         # Without this, a build that silently fails to load looks like a working
         # job right up until compose quietly tries the registry. Assert the end
@@ -189,27 +208,57 @@ jobs:
           COMPOSE_BIN: docker compose
           E2E_PORT: "8080"
         run: bash scripts/e2e-stack.sh seed
-      - name: Install Playwright browsers
-        # Both engines every time: the `setup` project (OIDC login → storageState)
-        # runs under Desktop Chrome regardless of which engine the journeys use,
-        # so the webkit leg needs chromium too.
-        run: npx playwright install --with-deps chromium webkit
-      - name: Playwright against the real stack
+      - name: Playwright against the real stack (pinned container, host network)
+        # No `npx playwright install --with-deps` step. That step cost 57s on the
+        # chromium leg and 82s on the webkit leg, and the browser downloads were
+        # only ~14s of it — the other ~67s was apt fetching 114 MB of system
+        # libraries onto a runner that then throws them away. Caching
+        # ~/.cache/ms-playwright, the usual advice, would have recovered the 14s
+        # and left the 67s untouched.
+        #
+        # `mcr.microsoft.com/playwright:v1.62.0-noble` ships both browsers AND
+        # those system libraries pre-installed, so the whole install disappears;
+        # what remains is the image pull, already paid for in the background of
+        # the build step above. This is the same mechanism the `visual` job below
+        # uses, for a different reason (font-stack determinism) — here it is
+        # purely about not rebuilding a browser environment that exists as a
+        # published image.
+        #
+        # The image tag is kept honest by scripts/check-playwright-image-tag.mjs,
+        # which scans EVERY workflow and asserts each
+        # `mcr.microsoft.com/playwright:vX.Y.Z-noble` matches the pinned
+        # @playwright/test — so this second reference is gated automatically.
+        #
+        # `--network host`, not a job `container:`: the stack was brought up on
+        # the HOST by e2e-stack.sh, and GitHub job containers do not share the
+        # runner's network namespace, so localhost:8080 would not reach it (the
+        # same constraint documented on the visual job).
+        #
         # E2E_REUSE_STACK=1, not the `!CI` default: the stack is already up from
         # the steps above, and with CI set `reuseExistingServer` would be false —
-        # Playwright would try to start it a second time and abort on the port
-        # being in use.
+        # Playwright would try to start it a second time, from inside a container
+        # that has no container runtime.
         #
         # `--project` is explicit rather than `npm run e2e` so that (a) each
         # matrix leg reports one engine's result, and (b) the `visual` project
-        # stays out of this job — its snapshots are only valid inside the pinned
-        # Playwright container, which is the `visual` job's business.
-        env:
-          CI: "true"
-          E2E_REUSE_STACK: "1"
-          E2E_PORT: "8080"
-          PLAYWRIGHT_BASE_URL: "http://localhost:8080"
-        run: npx playwright test --project=${{ matrix.engine }}
+        # stays out of this job — its snapshots are the `visual` job's business.
+        run: |
+          docker run --rm --network host \
+            -v "$PWD":/work -w /work \
+            -e CI=true \
+            -e E2E_REUSE_STACK=1 \
+            -e E2E_PORT=8080 \
+            -e PLAYWRIGHT_BASE_URL=http://localhost:8080 \
+            mcr.microsoft.com/playwright:v1.62.0-noble \
+            npx playwright test --project=${{ matrix.engine }}
+      - name: Give the report back to the runner user
+        # The container runs as root, so playwright-results/ and
+        # playwright-report/ come back root-owned. upload-artifact can still READ
+        # them (0644), but a root-owned tree in the workspace is a trap for any
+        # later step that wants to write there, and the failure would be a
+        # baffling EACCES far from its cause.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v7
@@ -344,10 +393,25 @@ jobs:
       # runtime, and a job `container:` would be docker-in-docker AND would not
       # share the runner's network namespace, so BASE_URL=localhost:8082 could
       # not reach it (issue #61, item 2).
+      # The pinned Playwright image is pulled in the background here for the same
+      # reason the `e2e` job pulls it during its build step: `up` spends ~160s
+      # building the stack's two images from the compose `build:` stanzas, which
+      # is CPU-bound, while the ~27s pull is network-bound. Overlapping them
+      # takes the pull off the critical path of the snapshot step below.
       - name: Bring up the E2E stack (host)
         env:
           COMPOSE_BIN: docker compose
-        run: ./scripts/e2e-stack.sh up && ./scripts/e2e-stack.sh seed
+        run: |
+          # Bounded and non-fatal for the reason given on the `e2e` job's copy:
+          # the snapshot step's `docker run` pulls the image itself if this
+          # fails, so the optimisation can never cost the run.
+          (
+            timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+              || echo "::warning::background pull of the pinned Playwright image failed or timed out; the snapshot step will pull it inline"
+          ) &
+          pw_pull=$!
+          ./scripts/e2e-stack.sh up && ./scripts/e2e-stack.sh seed
+          wait "$pw_pull"
 
       # Only the TEST RUN is containerised, in the image pinned to the same
       # Playwright version, because baselines are only comparable when one fixed

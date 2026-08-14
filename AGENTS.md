@@ -89,6 +89,23 @@ prototype shortcuts into new code merely to preserve current behavior.
   Build outputs such as `services/elitea-main/elitea-main` and `cutover-ctl`
   should not be updated or newly committed.
 
+## Language (ASD-STE100)
+
+Write all agent-authored text in ASD-STE100 Simplified Technical English. This
+rule applies to GitHub issues, pull-request bodies, review comments, commit
+messages, and documentation changes in this repository.
+
+- Write short sentences: maximum 20 words for an instruction, maximum 25 words
+  for a description.
+- Give one instruction per sentence. Use the active voice and the present tense.
+- Start each instruction with the verb.
+- Use one approved term for one thing. Do not switch between synonyms for the
+  same object.
+- Keep paragraphs short: maximum 6 sentences.
+
+Code identifiers, file paths, command lines, log excerpts, and quoted output
+are exempt from these rules.
+
 ## Verification
 
 Start with targeted checks, then expand in proportion to the change:
