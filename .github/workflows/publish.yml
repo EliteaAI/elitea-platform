@@ -53,6 +53,74 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ── Job 1b: Release parity audit ────────────────────────────────────────────
+  # Lives HERE, not in a workflow_run workflow of its own, and that is the
+  # whole point. A separate workflow_run audit has to check out the released
+  # commit and then EXECUTE it (`go run ./tools/uictl`) in the privileged
+  # default-branch context, which CodeQL flags as
+  # actions/cache-poisoning/poisonable-step and which is a real shape rather
+  # than a false positive. As a job here it runs in the ordinary push context
+  # on a commit that is already on main, so there is no untrusted checkout to
+  # reason about at all.
+  #
+  # It also gates better: `needs: release` reads semantic-release's OWN
+  # new_release_published output instead of re-deriving whether a release
+  # happened by hunting for a `v*` tag pointing at HEAD.
+  #
+  # What it audits: the same two commands ci-web.yml runs on every PR, re-run
+  # against what was actually shipped. On a PR they gate the diff; a release is
+  # cut from main, and main can carry a merge result that no single PR ever
+  # validated.
+  audit:
+    name: Release parity audit
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    # Narrower than the workflow default (contents/packages/issues/pull-requests
+    # write): this job only reads the tree.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive # apps/elitea-ui is the pinned parity baseline
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          # uictl has no external dependencies and no go.sum, so the cache
+          # would hold the toolchain and little else for two commands that run
+          # once per release.
+          cache: false
+
+      - name: Route + manifest parity (release-blocking)
+        run: |
+          echo "### Release audit — ${{ needs.release.outputs.new_release_git_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          go run ./tools/uictl parity-routes --baseline apps/elitea-ui
+          go run ./tools/uictl parity-manifest --validate
+
+      # `--require-must` REPORTS, it does not block, and that is a visible
+      # decision rather than an omission: it exits 1 on a large tracked backlog
+      # of unverified priority:must items, so enforcing it today would red every
+      # release on a signal nobody can act on at release time. Whether a release
+      # should block on the parity register is a policy call.
+      #
+      # The step still FAILS if the audit emits no recognisable verdict at all —
+      # "ran, found nothing" and "did not really run" are otherwise the same log
+      # line, which is the entire subject of the gate-dormancy work.
+      - name: Require-must parity (advisory — reports, does not block)
+        run: |
+          set -uo pipefail
+          OUT="$(go run ./tools/uictl parity-manifest --require-must 2>&1)" && STATUS=0 || STATUS=$?
+          echo "$OUT"
+          if ! printf '%s' "$OUT" | grep -qE 'priority:must item|all priority:must items'; then
+            echo "::error::parity-manifest --require-must produced no verdict line (exit $STATUS)"
+            exit 1
+          fi
+          printf '%s\n' "$OUT" | grep -E 'priority:must item|all priority:must items' >> "$GITHUB_STEP_SUMMARY"
+
   # ── Job 2: Build each image on its native runner ────────────────────────────
   # NOTE (issue #244): elitea-worker-python has a Containerfile
   # (services/elitea-worker-python/Containerfile) but deliberately has no bake
