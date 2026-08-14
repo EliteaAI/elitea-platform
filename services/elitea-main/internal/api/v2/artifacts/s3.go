@@ -435,17 +435,17 @@ func (h *Handler) UploadObjectS3(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// DeleteObjectS3 removes one object.
+// DeleteObjectS3 removes one object, idempotently.
 //
-// Like the native DeleteObject it stats first, so deleting a key that is not
-// there is a 404 NoSuchKey rather than a success. That diverges from real S3,
-// whose DELETE is idempotent and answers 204 for an absent key — the
-// divergence is deliberate and follows the native route, which is this
-// surface's behavioural reference: the SDK phrases a delete's success as
-// "File '<key>' deleted successfully" (client.py:1204) with no way to tell
-// the caller nothing was there, and an agent toolkit reporting that for a
-// mistyped key would feed a false premise straight into the model's next
-// step. NoSuchKey is a code the SDK's table can phrase exactly.
+// An absent key is 204, not 404 — this follows real S3 rather than the native
+// DeleteObject. The contract matters more than the diagnostic: every S3 client
+// is written against an idempotent DELETE, and a redelivered request (a retry
+// after a timeout, a replayed queue message) must not turn into an error
+// because the first attempt already succeeded.
+//
+// A missing BUCKET is still an error. The bucket comes from the caller's own
+// configuration rather than from a key it is iterating, so silence there would
+// hide a misconfigured toolkit instead of absorbing a repeat.
 //
 // 204 with no body, matching both S3 and the native route. delete_artifact_s3
 // never reads the body.
