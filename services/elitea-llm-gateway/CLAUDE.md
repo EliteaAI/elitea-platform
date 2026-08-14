@@ -47,6 +47,16 @@ because each was a real bug found across 3 review rounds.
   `scripts/env-drift-allowlist.txt` with a justification. `scripts/env-drift-check.sh`
   enforces this in CI.
 
+## Language (ASD-STE100)
+Write ALL agent-authored text in ASD-STE100 Simplified Technical English: GitHub
+issues, PR bodies, review comments, commit messages, and documentation edits.
+Rules that apply here:
+- Write short sentences (max 20 words for an instruction, max 25 for a description).
+- Give one instruction per sentence. Use the active voice and the present tense.
+- Use one approved term for one thing; do not switch between synonyms.
+- Start an instruction with the verb (e.g. "Set GOWORK=off before you build").
+Code identifiers, file paths, log excerpts, and quoted output are exempt.
+
 ## Autonomy boundary (for agent-driven review/fix loops)
 An agent may run review→fix→verify→push autonomously ONLY within these limits:
 - Fix only findings tagged **autoFixable** (mechanical: wiring, error handling,
