@@ -129,6 +129,41 @@ describe('useChatStreamTransport', () => {
     expect(history.current[0]?.isLoading).toBe(false);
   });
 
+  it('reports isStreaming false once the turn ends, without waiting for a close', async () => {
+    // The regression this pins shipped and was caught only by the #284
+    // journey ("the composer must be released when the turn ends"). The
+    // server NEVER closes this stream — executions/events.go keeps it open and
+    // emits `: heartbeat` comments — so a transport that waits for a close to
+    // stop reporting isStreaming reports it forever. ChatBox gates BOTH the
+    // Stop button and the composer on that flag, so the composer stayed
+    // disabled for the rest of the session after the first answer.
+    //
+    // Deliberately asserts the flag AND that nothing is left subscribed: a
+    // transport that flipped the flag but kept the socket would still leak
+    // frames into the next conversation, which is #328.
+    okStart();
+    const { api, history, Probe } = harness();
+    render(<Probe />);
+
+    await act(async () => {
+      await api.current?.start(START);
+    });
+    await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'done' }));
+    });
+    expect(api.current?.isStreaming).toBe(true);
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'pipeline_finish' }));
+    });
+
+    await waitFor(() => expect(api.current?.isStreaming).toBe(false));
+    expect(registry.getOpen()).toHaveLength(0);
+    expect(history.current[0]?.isStreaming).toBe(false);
+  });
+
   it('reports false and opens NO stream when the backend rejects the contract', async () => {
     // The documented fallback signal: the caller then emits chat_predict.
     server.use(http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () => new HttpResponse(null, { status: 400 })));

@@ -236,10 +236,22 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
       // same array, but the forward below would still fire on it.
       if (!isChatStreamFrame(frame)) return;
       setChatHistory((prev) => applyChatStreamFrame(prev, frame, contextRef.current ?? {}));
-      if (isTurnTerminalFrame(frame)) doneRef.current = true;
+      // A terminal frame ENDS the turn, so the transport stops owning a run
+      // right here — it does not wait for the connection to close, because
+      // the server never closes it (executions/events.go keeps the stream open
+      // and only emits `: heartbeat` comments afterwards). `isStreaming` is
+      // `connection !== null`, and ChatBox now gates BOTH the Stop button and
+      // the composer on it, so leaving the connection open past the terminal
+      // frame left the composer disabled for the rest of the session — caught
+      // by the #284 journey's "the composer must be released when the turn
+      // ends".
+      //
+      // detach() never touches chat history, and it must not here: the
+      // terminal frame has already settled the message through the reducer.
+      if (isTurnTerminalFrame(frame)) detach();
       if (shouldForwardAgentEvent(frame.type)) onAgentEventRef.current?.(frame);
     },
-    [setChatHistory],
+    [setChatHistory, detach],
   );
 
   const onFailed = useCallback(
