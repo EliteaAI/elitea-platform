@@ -1,0 +1,337 @@
+// Package projectprovisioning creates a project and its tenant, which is the
+// one capability that kept legacy pylon on the critical path (#333). A
+// pylon-free deployment could serve the projects it already had; it could not
+// take a new one.
+//
+// The reference is legacy/plugins/projects/utils/project_steps.py. This package
+// reproduces that pipeline's SEMANTICS — the ordered steps, the per-step status
+// records, the reverse-order compensation, and `create_success` as the marker
+// that provisioning finished — not its transaction shape, which does not
+// survive the port. See steps.go for the per-step port/drop disposition.
+//
+// WHY THIS IS NOT ONE TRANSACTION. migrate.Runner.ApplyTenant re-reads
+// centry.project on a connection it takes from the pool itself, and opens its
+// own transaction to apply the corpus. So the project row must be COMMITTED
+// before the tenant corpus can be applied to it, and no single transaction can
+// span both. pylon has the same shape for a different reason (it commits after
+// every step), so the compensation model is a port rather than an invention.
+//
+// THE INVARIANT THAT MATTERS. `create_success` is written TRUE only after every
+// step succeeded. It is not decoration: cmd/elitea-migrate's `-all-tenants`
+// preflight hard-errors when ANY project with `create_success = TRUE` has no
+// `p_<id>` schema, and that error fails migration for the whole deployment, not
+// for the one project. So a half-provisioned project must never carry
+// `create_success = TRUE`. Every failure path in this file preserves that,
+// including the path where compensation itself fails.
+package projectprovisioning
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// TenantMigrator applies the embedded tenant history to one project's schema.
+// It is an interface at the consumer so that provisioning can be tested without
+// the real corpus, and so this package does not depend on the migrate runner's
+// concrete *pgxpool.Pool constructor.
+type TenantMigrator interface {
+	ApplyTenant(ctx context.Context, projectID int64) error
+}
+
+// ErrNameRequired reports an empty project name. pylon's ProjectCreatePD
+// declares `name: constr(min_length=1)`, so an empty name is a 400 there too.
+var ErrNameRequired = errors.New("projectprovisioning: project name is required")
+
+// ErrOwnerRequired reports a missing or non-positive owner. pylon takes the
+// owner from `g.auth.id` and never from the request body; so does the handler.
+var ErrOwnerRequired = errors.New("projectprovisioning: owner id must be positive")
+
+// Limits carries the per-project ceilings written to centry.project_quota.
+// Field for field legacy/plugins/projects/models/pd/project.py's ProjectCreatePD,
+// including its defaults — see DefaultLimits.
+type Limits struct {
+	DataRetentionLimit     int32
+	TestDurationLimit      int32
+	CPULimit               int32
+	MemoryLimit            int32
+	VCUHardLimit           int32
+	VCUSoftLimit           int32
+	VCULimitTotalBlock     bool
+	StorageHardLimit       int32
+	StorageSoftLimit       int32
+	StorageLimitTotalBlock bool
+}
+
+// DefaultLimits are ProjectCreatePD's field defaults, transcribed exactly.
+// A caller that omits a limit gets the same ceiling pylon would have given it.
+func DefaultLimits() Limits {
+	return Limits{
+		DataRetentionLimit:     1_000_000_000,
+		TestDurationLimit:      -1,
+		CPULimit:               -1,
+		MemoryLimit:            -1,
+		VCUHardLimit:           5000,
+		VCUSoftLimit:           4700,
+		VCULimitTotalBlock:     false,
+		StorageHardLimit:       10,
+		StorageSoftLimit:       9,
+		StorageLimitTotalBlock: false,
+	}
+}
+
+// Request is one project-create instruction. Name and OwnerID are mandatory.
+type Request struct {
+	Name string
+	// Plugins is stored verbatim on centry.project.plugins. pylon defaults it
+	// to the empty list and never validates the entries.
+	Plugins []string
+	// OwnerID is the authenticated caller. It is never read from a request body.
+	OwnerID int64
+	// AdminEmails receive membership in the new project, with AdminRoles.
+	// pylon's ProjectAdmin step does exactly this and skips silently when the
+	// list is empty.
+	AdminEmails []string
+	// AdminRoles are the project roles AdminEmails are granted. The HTTP
+	// handler hardcodes {"admin"}, as pylon's AdminAPI.post does.
+	AdminRoles []string
+	Limits     Limits
+}
+
+// Result is the outcome of one Provision call. Steps and RollbackSteps carry
+// one record per step ATTEMPTED, in attempt order, which is the shape
+// AdminAPI.post returns.
+type Result struct {
+	ProjectID     int64
+	Steps         []StepStatus
+	RollbackSteps []StepStatus
+}
+
+// ArtifactBootstrapper creates and removes a project's system buckets. It is
+// satisfied by internal/application/artifactbootstrap.Bootstrapper, and is
+// optional: a deployment that runs no artifact store configures none.
+type ArtifactBootstrapper interface {
+	BootstrapProjectBuckets(ctx context.Context, projectID string) error
+	TeardownProjectBuckets(ctx context.Context, projectID string) error
+}
+
+// Provisioner runs the project-create pipeline.
+type Provisioner struct {
+	pool     *pgxpool.Pool
+	migrator TenantMigrator
+	buckets  ArtifactBootstrapper
+	logger   *slog.Logger
+}
+
+// Option configures a Provisioner at construction time.
+type Option func(*Provisioner)
+
+// WithArtifactBuckets supplies the bucket bootstrapper. Without it the
+// artifact_buckets step is inert — see createArtifactBuckets.
+func WithArtifactBuckets(buckets ArtifactBootstrapper) Option {
+	return func(p *Provisioner) { p.buckets = buckets }
+}
+
+func New(pool *pgxpool.Pool, migrator TenantMigrator, logger *slog.Logger, options ...Option) *Provisioner {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	provisioner := &Provisioner{pool: pool, migrator: migrator, logger: logger}
+	for _, option := range options {
+		option(provisioner)
+	}
+	return provisioner
+}
+
+// Provision creates the project row, its tenant schema, its tenant migration
+// state and its RBAC rows, then marks it created.
+//
+// On any step failure it runs the completed steps' compensations in reverse and
+// returns the error together with both status lists, so the caller can report
+// what was attempted and what was undone — the information AdminAPI.post's 400
+// branch carries.
+func (p *Provisioner) Provision(ctx context.Context, request Request) (Result, error) {
+	if strings.TrimSpace(request.Name) == "" {
+		return Result{}, ErrNameRequired
+	}
+	if request.OwnerID <= 0 {
+		return Result{}, ErrOwnerRequired
+	}
+	if p.pool == nil || p.migrator == nil {
+		return Result{}, errors.New("projectprovisioning: provisioner is not configured")
+	}
+
+	state := &provisionState{request: request}
+	result := Result{}
+
+	for _, step := range createSteps() {
+		status := StepStatus{Step: step.name, Initialized: true}
+		err := step.create(ctx, p, state)
+		if err != nil {
+			status.setFailed(safeStepMessage(step.name))
+			result.Steps = append(result.Steps, status)
+			result.ProjectID = state.projectID
+			p.logger.ErrorContext(ctx, "project provisioning step failed",
+				"step", step.name, "project_id", state.projectID, "err", err)
+
+			result.RollbackSteps = p.compensate(ctx, state, result.Steps)
+			return result, fmt.Errorf("projectprovisioning: step %s: %w", step.name, err)
+		}
+		status.setOK()
+		result.Steps = append(result.Steps, status)
+	}
+
+	// The completion marker, written last and on its own. pylon sets
+	// create_success outside the step list too, for the same reason: it is not a
+	// provisioning action, it is the assertion that provisioning finished.
+	//
+	// If this write fails the tenant is fully built but unmarked, and every
+	// reader that filters on create_success would ignore it — a project that
+	// exists and is invisible. Compensating is the honest outcome.
+	if err := p.markCreated(ctx, state.projectID); err != nil {
+		p.logger.ErrorContext(ctx, "project provisioning could not be marked complete",
+			"project_id", state.projectID, "err", err)
+		result.ProjectID = state.projectID
+		result.RollbackSteps = p.compensate(ctx, state, result.Steps)
+		return result, fmt.Errorf("projectprovisioning: mark created: %w", err)
+	}
+
+	result.ProjectID = state.projectID
+	return result, nil
+}
+
+// markCreated flips create_success once every step has succeeded.
+func (p *Provisioner) markCreated(ctx context.Context, projectID int64) error {
+	tag, err := p.pool.Exec(ctx,
+		`UPDATE centry.project SET create_success = true WHERE id = $1`, projectID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("project %d disappeared during provisioning", projectID)
+	}
+	return nil
+}
+
+// compensate undoes the steps that ran, in reverse order.
+//
+// Unlike pylon's rollback loop — which has no per-step try/except, so the first
+// undo that raises aborts every remaining undo and discards the progress report
+// — every compensation here is isolated. One failing undo cannot strand the
+// rest, because the LAST of them is the one that removes the project row, and a
+// project row that outlives its schema is the state the elitea-migrate
+// preflight refuses to run against. It is only safe because the row is still
+// `create_success = FALSE`, which that preflight ignores.
+func (p *Provisioner) compensate(ctx context.Context, state *provisionState, attempted []StepStatus) []StepStatus {
+	// Compensation must still run when the request context is already done —
+	// otherwise a client disconnect during provisioning leaves the tenant
+	// half-created. WithoutCancel keeps the deadline off but the values on.
+	ctx = context.WithoutCancel(ctx)
+
+	completed := make(map[string]struct{}, len(attempted))
+	for _, status := range attempted {
+		if status.OK != nil && *status.OK {
+			completed[status.Step] = struct{}{}
+		}
+	}
+
+	steps := createSteps()
+	rollback := make([]StepStatus, 0, len(steps))
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		if _, ok := completed[step.name]; !ok {
+			continue
+		}
+		status := StepStatus{Step: step.name, Initialized: true}
+		if err := step.remove(ctx, p, state); err != nil {
+			status.setFailed(safeStepMessage(step.name))
+			p.logger.ErrorContext(ctx, "project provisioning compensation failed",
+				"step", step.name, "project_id", state.projectID, "err", err)
+		} else {
+			status.setOK()
+		}
+		rollback = append(rollback, status)
+	}
+	return rollback
+}
+
+// provisionState carries values between steps. It replaces pylon's mutable
+// `context` kwargs bag, which is the source of two defects this port does not
+// reproduce: a step that returns a scalar instead of a dict silently fails to
+// populate the next step's argument, and a compensation invoked before its
+// step ran raises TypeError on the missing key.
+type provisionState struct {
+	request      Request
+	projectID    int64
+	systemUserID int64
+}
+
+// projectIDString is the decimal project id, for the interfaces that take one.
+func (s *provisionState) projectIDString() string {
+	return strconv.FormatInt(s.projectID, 10)
+}
+
+// tenantSchema is the tenant schema name for the project being provisioned.
+// The `p_<id>` convention is fixed across this repository — see
+// migrate.Runner.ApplyTenant and tenant.BindProject, which derive it the same
+// way. The id is an int64 from a SERIAL column, so it cannot carry an
+// identifier-breaking character; the DDL path still quotes it.
+func (s *provisionState) tenantSchema() string {
+	return "p_" + strconv.FormatInt(s.projectID, 10)
+}
+
+// safeStepMessage is what the caller is told about a failed step.
+//
+// pylon puts `str(exception)` in the status `msg`, which crosses a trust
+// boundary with a raw database error in it. AGENTS.md forbids that, and the
+// cause is logged with the project id instead. The step NAME is the part a
+// caller can act on, and it is preserved exactly.
+func safeStepMessage(step string) string {
+	return "step " + step + " did not complete"
+}
+
+// deleteTenantLedger removes the tenant migration ledger rows for a project
+// whose schema is being dropped.
+//
+// Without this the ledger would claim the corpus is applied to a schema that no
+// longer exists. Nothing reuses a SERIAL id in practice, so this is hygiene
+// rather than a correctness fix — but a ledger that describes an absent target
+// is exactly the kind of stale record that makes a later diagnosis wrong.
+func (p *Provisioner) deleteTenantLedger(ctx context.Context, projectID int64) error {
+	// The ledger schema is created on demand by the migrate runner, so on a
+	// failure before the first ApplyTenant it may not exist at all.
+	var exists bool
+	if err := p.pool.QueryRow(ctx,
+		`SELECT to_regclass('elitea_runtime.schema_migrations') IS NOT NULL`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("resolve migration ledger: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := p.pool.Exec(ctx, `
+DELETE FROM elitea_runtime.schema_migrations
+WHERE target_kind = 'tenant' AND target_id = $1`,
+		strconv.FormatInt(projectID, 10),
+	); err != nil {
+		return fmt.Errorf("delete tenant ledger rows: %w", err)
+	}
+	return nil
+}
+
+// dropTenantSchema removes the project's schema and everything in it.
+func (p *Provisioner) dropTenantSchema(ctx context.Context, schema string) error {
+	// pgx cannot parameterise an identifier, so the name is quoted rather than
+	// interpolated. It is derived from an int64 id, never from caller input.
+	statement := "DROP SCHEMA IF EXISTS " + pgx.Identifier{schema}.Sanitize() + " CASCADE"
+	if _, err := p.pool.Exec(ctx, statement); err != nil {
+		return fmt.Errorf("drop tenant schema: %w", err)
+	}
+	return nil
+}
