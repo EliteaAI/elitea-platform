@@ -1700,57 +1700,11 @@ CREATE TABLE p_1.entity_skill_mapping (
     entity_type VARCHAR(50) NOT NULL, skill_id INTEGER NOT NULL REFERENCES p_1.skills(id),
     skill_version_id INTEGER REFERENCES p_1.skill_versions(id)
 );
-CREATE TABLE p_1.chat_conversations (
-    id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE, name VARCHAR NOT NULL,
-    is_private BOOLEAN NOT NULL DEFAULT TRUE, author_id INTEGER NOT NULL,
-    meta JSONB NOT NULL DEFAULT '{}'::jsonb, source VARCHAR NOT NULL DEFAULT 'elitea',
-    instructions VARCHAR, created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP
-);
-CREATE TABLE p_1.chat_participants (
-    id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE, entity_name VARCHAR NOT NULL,
-    entity_meta JSONB NOT NULL DEFAULT '{}'::jsonb, meta JSON NOT NULL DEFAULT '{}'::json
-);
-CREATE TABLE p_1.chat_participant_mapping (
-    id SERIAL PRIMARY KEY,
-    conversation_id INTEGER NOT NULL REFERENCES p_1.chat_conversations(id),
-    participant_id INTEGER NOT NULL REFERENCES p_1.chat_participants(id),
-    entity_settings JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP,
-    UNIQUE (participant_id, conversation_id)
-);
-CREATE TABLE p_1.chat_message_group (
-    id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE,
-    author_participant_id INTEGER NOT NULL REFERENCES p_1.chat_participants(id),
-    conversation_id INTEGER NOT NULL REFERENCES p_1.chat_conversations(id),
-    sent_to_id INTEGER REFERENCES p_1.chat_participants(id),
-    reply_to_id INTEGER REFERENCES p_1.chat_message_group(id),
-    meta JSONB NOT NULL DEFAULT '{}'::jsonb, is_streaming BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP, task_id VARCHAR(64)
-);
-CREATE TABLE p_1.chat_message_items (
-    id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE, item_type VARCHAR(50) NOT NULL,
-    order_index INTEGER NOT NULL, meta JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP,
-    message_group_id INTEGER NOT NULL REFERENCES p_1.chat_message_group(id)
-);
-CREATE TABLE p_1.chat_messages_text (
-    id INTEGER PRIMARY KEY REFERENCES p_1.chat_message_items(id) ON DELETE CASCADE,
-    content TEXT NOT NULL
-);
-CREATE TABLE p_1.chat_message_trace_step (
-    id BIGINT PRIMARY KEY,
-    message_group_id INTEGER NOT NULL REFERENCES p_1.chat_message_group(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL, run_id TEXT, parent_agent_name TEXT, parent_agent_call_id TEXT,
-    started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ,
-    is_error BOOLEAN NOT NULL DEFAULT FALSE,
-    has_visible_content BOOLEAN NOT NULL DEFAULT TRUE,
-    tool_name TEXT, tool_inputs JSONB, tool_output TEXT, finish_reason TEXT,
-    step_type TEXT, text TEXT, thinking TEXT, model_name TEXT, attrs JSONB
-);
-CREATE TABLE p_1.chat_messages_context (
-    context_data JSONB NOT NULL, context_type TEXT,
-    id INTEGER PRIMARY KEY REFERENCES p_1.chat_message_items(id) ON DELETE CASCADE
-);
+-- The eight chat tables are created by applyPostgresIntegrationMigrations, for
+-- the same reason skills / skill_versions above are: tenant/0123 took ownership
+-- of them (#287) so a pylon-free deployment has them at all, and this seed's
+-- callers run that migration first. Re-creating them here would be a duplicate
+-- relation.
 INSERT INTO p_1.application_versions (
     id, application_id, name, status, author_id, uuid, llm_settings, instructions,
     conversation_starters, welcome_message, agent_type, meta, pipeline_settings

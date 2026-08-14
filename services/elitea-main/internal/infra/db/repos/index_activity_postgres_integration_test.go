@@ -510,7 +510,15 @@ VALUES (2, TRUE, FALSE);
 CREATE SCHEMA p_2;`); err != nil {
 		t.Fatal(err)
 	}
-	for _, projectID := range []int64{1, 2} {
+	// p_1 only: tenant/0123 (#287) now owns the chat tables, and
+	// applyPostgresIntegrationMigrations applies the tenant history to project 1
+	// before this seed runs — creating them again there is a duplicate relation.
+	// p_2 exists purely to prove tenant isolation and gets no tenant history, so
+	// it still needs the tables declared by hand. The two shapes differ slightly
+	// (p_2 keeps the deployed-legacy extras attachment_participant_id and
+	// folder_id, which no query in this repository reads); that difference is not
+	// what any assertion here turns on.
+	for _, projectID := range []int64{2} {
 		schema := pgx.Identifier{fmt.Sprintf("p_%d", projectID)}.Sanitize()
 		if _, err := pool.Exec(t.Context(), fmt.Sprintf(`
 CREATE TABLE %s.chat_conversations (
@@ -583,8 +591,8 @@ func seedCurrentActivityConversation(
 	schema := pgx.Identifier{fmt.Sprintf("p_%d", projectID)}.Sanitize()
 	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`
 WITH conversation AS (
-    INSERT INTO %s.chat_conversations (uuid, author_id, source)
-    VALUES ($1, $2, 'toolkit')
+    INSERT INTO %s.chat_conversations (uuid, name, author_id, source)
+    VALUES ($1, 'activity', $2, 'toolkit')
     RETURNING id
 ),
 participant AS (
