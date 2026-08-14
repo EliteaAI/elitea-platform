@@ -30,11 +30,31 @@
 -- (shared_owner_id, shared_id) mirrors 0122's skills columns: it points a
 -- public-catalog toolkit at the project + toolkit it was published from.
 
-ALTER TABLE elitea_tools
-    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+-- Guarded on the TABLE, not just the columns. `ADD COLUMN IF NOT EXISTS`
+-- tolerates a column that is already there; it does NOT tolerate a missing
+-- table, which raises 42P01 and fails the whole tenant chain.
+--
+-- And the table IS missing on a schema this repository builds by itself:
+-- `elitea_tools` appears only in `internal/db/schema/toolkit_baseline.sql`, a
+-- sqlc COMPILER projection, and in no migration — the same shape/ownership
+-- split 0123 was written for, one table further along. Any tenant schema
+-- created without pylon therefore has no `elitea_tools` at all, and this
+-- migration has nothing to say to it: it must record itself and move on, not
+-- abort. Caught by `configurations_artifacts_postgres_integration_test.go`,
+-- which applies the embedded tenant chain to a schema of its own making and
+-- runs only where a test database is configured.
+--
+-- This deliberately does NOT create the table. Claiming a pylon-owned table
+-- here has broken tenant seeding with 42P07 before; adopting `elitea_tools`
+-- is a separate decision about ownership, not a fix for this ALTER.
+DO $$
+BEGIN
+    IF to_regclass('elitea_tools') IS NULL THEN
+        RETURN;
+    END IF;
 
-ALTER TABLE elitea_tools
-    ADD COLUMN IF NOT EXISTS shared_owner_id INTEGER;
-
-ALTER TABLE elitea_tools
-    ADD COLUMN IF NOT EXISTS shared_id INTEGER;
+    ALTER TABLE elitea_tools ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+    ALTER TABLE elitea_tools ADD COLUMN IF NOT EXISTS shared_owner_id INTEGER;
+    ALTER TABLE elitea_tools ADD COLUMN IF NOT EXISTS shared_id INTEGER;
+END
+$$;
