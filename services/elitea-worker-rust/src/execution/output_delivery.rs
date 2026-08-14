@@ -13,9 +13,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use prost::Message;
+use ring::digest;
 use tonic::transport::Channel;
 
-use crate::agents::AgentExecutionKind;
+use crate::agents::{AgentExecutionKind, AgentResultArtifact};
 use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
@@ -23,6 +24,7 @@ use crate::protocol::control::{
     AgentExecutionOutputCursor, AgentProgressCommit,
 };
 use crate::protocol::elitea::runtime::v1::{ExecutionOutputFrameV1, NodeEventV1};
+use crate::protocol::node_event::encode_current_node_event_json;
 use crate::protocol::output::{
     AgentTerminalOutput, RuntimeFailureKind, ValidatedAgentOutputFrameKind,
     build_agent_terminal_output_frame, restored_terminal_failure_kind,
@@ -464,10 +466,20 @@ impl AgentProgressConnector for Channel {
 }
 
 #[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+struct PendingFullMessageArtifact {
+    artifact: AgentResultArtifact,
+}
+
+#[allow(dead_code)] // Retained for the capability-disabled supervised terminal transition.
+struct AckedFullMessageArtifact {
+    artifact: AgentResultArtifact,
+}
+
 struct PendingAgentProgress {
     frame: ExecutionOutputFrameV1,
     attempts: usize,
     rejection: Option<FrameBoundProgressRejection>,
+    full_message: Option<PendingFullMessageArtifact>,
 }
 
 #[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
@@ -497,6 +509,7 @@ pub(crate) struct FreshAgentProgressPublisher<C: AgentProgressConnector> {
     replay: Option<C::Replay>,
     replay_result: Option<Result<ProgressReplayDecision, OutputGrpcError>>,
     pending: Option<PendingAgentProgress>,
+    acked_full_message: Option<AckedFullMessageArtifact>,
     failed_closed: bool,
     max_output_sessions: usize,
 }
@@ -519,6 +532,7 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
             replay: None,
             replay_result: None,
             pending: None,
+            acked_full_message: None,
             failed_closed: false,
             max_output_sessions: config.max_output_sessions,
         }
@@ -547,6 +561,79 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
                 "the progress publisher already owns a pending frame",
             ));
         }
+        if event.r#type == "full_message" {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the full message requires the terminal artifact publication path",
+            ));
+        }
+        self.publish_event(verified, event, occurred_at_unix_millis, None)
+            .await
+    }
+
+    /// Publish the sole result-bearing `full_message` event.
+    ///
+    /// The exact canonical browser JSON is hashed before the first await. Only
+    /// the bound durable ACK promotes that candidate into terminal-result
+    /// authority retained inside this publisher.
+    pub(super) async fn publish_full_message(
+        &mut self,
+        verified: &VerifiedAgentCommand,
+        event: NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        if self.failed_closed {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher failed closed after a nonretryable outcome",
+            ));
+        }
+        if self.pending.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher already owns a pending frame",
+            ));
+        }
+        if self.acked_full_message.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the durably acknowledged full message must remain the last progress event",
+            ));
+        }
+        if event.r#type != "full_message" {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the terminal artifact path requires a full_message event",
+            ));
+        }
+        let artifact = result_artifact_for_event(verified, &event)
+            .map_err(AgentProgressPublishError::InvalidFrame)?;
+        self.publish_event(
+            verified,
+            event,
+            occurred_at_unix_millis,
+            Some(PendingFullMessageArtifact { artifact }),
+        )
+        .await
+    }
+
+    async fn publish_event(
+        &mut self,
+        verified: &VerifiedAgentCommand,
+        event: NodeEventV1,
+        occurred_at_unix_millis: i64,
+        full_message: Option<PendingFullMessageArtifact>,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        if self.failed_closed {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher failed closed after a nonretryable outcome",
+            ));
+        }
+        if self.pending.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher already owns a pending frame",
+            ));
+        }
+        if self.acked_full_message.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the durably acknowledged full message must remain the last progress event",
+            ));
+        }
         let progress = self
             .cursor
             .bind_progress(verified, event, occurred_at_unix_millis)
@@ -555,6 +642,7 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
             frame: progress.into_frame(),
             attempts: 0,
             rejection: None,
+            full_message,
         });
         self.drive_retained_progress().await
     }
@@ -836,7 +924,18 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
             ProgressReplayDecision::Acknowledged(acknowledged) => {
                 match self.cursor.commit_progress_durable(acknowledged) {
                     Ok(AgentProgressCommit::Advanced) => {
-                        self.pending = None;
+                        let pending =
+                            self.pending
+                                .take()
+                                .ok_or(AgentProgressPublishError::InvalidState(
+                                    "the progress publisher lost its acknowledged frame",
+                                ))?;
+                        self.acked_full_message =
+                            pending
+                                .full_message
+                                .map(|pending| AckedFullMessageArtifact {
+                                    artifact: pending.artifact,
+                                });
                         Ok(AgentProgressPublishOutcome::Acknowledged { sequence })
                     }
                     Ok(AgentProgressCommit::Exhausted(error)) => {
@@ -898,6 +997,49 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
         }
         Ok(decision)
     }
+
+    #[cfg(test)]
+    pub(super) fn into_test_acked_full_message(self) -> Option<AgentResultArtifact> {
+        self.acked_full_message.map(|proof| proof.artifact)
+    }
+}
+
+fn result_artifact_for_event(
+    verified: &VerifiedAgentCommand,
+    event: &NodeEventV1,
+) -> Result<AgentResultArtifact, ProtocolError> {
+    if event.r#type != "full_message" {
+        return Err(ProtocolError::InvalidInput(
+            "the result artifact requires a full_message event",
+        ));
+    }
+    let browser_json = encode_current_node_event_json(event)?;
+    let value = digest::digest(&digest::SHA256, &browser_json);
+    let mut sha256 = [0_u8; 32];
+    sha256.copy_from_slice(value.as_ref());
+    let byte_length = u64::try_from(browser_json.len()).map_err(|_| {
+        ProtocolError::ResourceExhausted("the full message exceeds the artifact length limit")
+    })?;
+    Ok(AgentResultArtifact {
+        artifact_id: format!(
+            "node-event:{}:full-message",
+            verified.command().execution_id
+        ),
+        immutable_version: sha256_version(&sha256),
+        byte_length,
+        digest: sha256,
+    })
+}
+
+fn sha256_version(digest: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut version = String::with_capacity(7 + 64);
+    version.push_str("sha256:");
+    for byte in digest {
+        version.push(char::from(HEX[usize::from(byte >> 4)]));
+        version.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    version
 }
 
 /// Sealed execution-bound spool factory retained across bounded reconnects.

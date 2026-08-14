@@ -1049,6 +1049,13 @@ fn browser_progress(content: &'static str) -> crate::protocol::elitea::runtime::
     decode_current_node_event_json(raw.as_bytes()).expect("valid browser progress event")
 }
 
+fn browser_full_message(
+    content: &'static str,
+) -> crate::protocol::elitea::runtime::v1::NodeEventV1 {
+    let raw = format!(r#"{{"type":"full_message","content":"{content}"}}"#);
+    decode_current_node_event_json(raw.as_bytes()).expect("valid full message event")
+}
+
 #[test]
 fn progress_session_budget_matches_the_deployed_v1_bounds() {
     assert!(AgentProgressPublisherConfig::new(1).is_ok());
@@ -1093,6 +1100,97 @@ async fn fresh_progress_keeps_one_live_session_across_exact_acked_events() {
     assert_eq!(state.connects.load(Ordering::SeqCst), 1);
     assert_eq!(state.sends.load(Ordering::SeqCst), 2);
     assert_eq!(state.replays.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn acked_full_message_binds_the_exact_canonical_browser_bytes() {
+    let state = FakeProgressState::new([LiveProgressAction::Acknowledge], []);
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+    let full_message = browser_full_message("final answer");
+    let browser_json = crate::protocol::node_event::encode_current_node_event_json(&full_message)
+        .expect("canonical full message JSON");
+    let expected_digest = digest::digest(&digest::SHA256, &browser_json);
+
+    let outcome = publisher
+        .publish_full_message(&verified, full_message, NOW)
+        .await
+        .expect("durable full message ACK");
+    assert_eq!(
+        outcome,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 5 }
+    );
+    let later = publisher
+        .publish(&verified, browser_progress("must not follow"), NOW + 1)
+        .await
+        .expect_err("full_message must remain the last progress event");
+    assert_eq!(later.code(), "agent_progress.invalid_state");
+
+    let artifact = publisher
+        .into_test_acked_full_message()
+        .expect("ACKed full message artifact proof");
+    assert_eq!(
+        artifact.artifact_id,
+        format!(
+            "node-event:{}:full-message",
+            verified.command().execution_id
+        )
+    );
+    assert_eq!(artifact.byte_length, browser_json.len() as u64);
+    assert_eq!(artifact.digest.as_slice(), expected_digest.as_ref());
+    assert_eq!(
+        artifact.immutable_version,
+        format!("sha256:{}", hex_lower(expected_digest.as_ref()))
+    );
+}
+
+#[tokio::test]
+async fn generic_or_unacknowledged_progress_cannot_mint_a_completed_terminal() {
+    let state = FakeProgressState::new([LiveProgressAction::PersistThenUnavailable], []);
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 1).await;
+
+    let generic = publisher
+        .publish(&verified, browser_full_message("wrong path"), NOW)
+        .await
+        .expect_err("generic progress cannot mint a result artifact");
+    assert_eq!(generic.code(), "agent_progress.invalid_state");
+    publisher
+        .publish_full_message(&verified, browser_full_message("not ACKed"), NOW)
+        .await
+        .expect_err("transport uncertainty must retain the full message");
+    assert!(publisher.into_test_acked_full_message().is_none());
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn restored_full_message_ack_retains_the_same_terminal_artifact_authority() {
+    let state = FakeProgressState::new(
+        [LiveProgressAction::PersistThenUnavailable],
+        [ReplayProgressAction::Acknowledge],
+    );
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+    let outcome = publisher
+        .publish_full_message(&verified, browser_full_message("restored result"), NOW)
+        .await
+        .expect("restored full message ACK");
+    assert_eq!(
+        outcome,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 5 }
+    );
+    assert!(publisher.into_test_acked_full_message().is_some());
+    assert_eq!(state.replays.load(Ordering::SeqCst), 1);
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 #[tokio::test]
