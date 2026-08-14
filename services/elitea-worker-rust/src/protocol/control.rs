@@ -212,6 +212,38 @@ impl AcceptedAgentClaim {
         self.claim_handoff_watermark
     }
 
+    /// Return the non-secret producer identity needed for execution-spool key
+    /// separation. The fence token and remaining bearer authority stay sealed.
+    #[must_use]
+    pub(crate) fn producer_id(&self) -> &str {
+        &self.fence.producer_id
+    }
+
+    /// Compare non-secret output transport metadata without exposing the raw
+    /// fence or allowing callers to reconstruct claim authority.
+    #[must_use]
+    pub(crate) fn matches_output_transport(
+        &self,
+        workload_session_id: &str,
+        producer_id: &str,
+    ) -> bool {
+        self.fence.workload_session_id == workload_session_id
+            && self.fence.producer_id == producer_id
+    }
+
+    /// Compare restored output binding without exposing the raw fence token.
+    #[must_use]
+    pub(crate) fn matches_output_binding(
+        &self,
+        identity: Option<&ExecutionIdentityV1>,
+        fence: Option<&ExecutionFenceV1>,
+        handoff_watermark: u64,
+    ) -> bool {
+        identity == Some(&self.identity)
+            && fence == Some(&self.fence)
+            && handoff_watermark == self.claim_handoff_watermark
+    }
+
     #[must_use]
     pub(crate) const fn input_bundle_ref(&self) -> &ExecutionInputBundleReferenceV1 {
         &self.input_bundle_ref
@@ -1214,6 +1246,23 @@ impl<R: ControlRpc> AgentControlClient<R> {
         parse_prepare_settlement_response(response, expected_outcome, recovery.retirement)
             .map_err(Into::into)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_accepted_agent_claim(
+    verified: &VerifiedAgentCommand,
+    response: ClaimCommandResponseV1,
+    workload_session_id: &str,
+    producer_id: &str,
+    now_unix_millis: i64,
+) -> Result<AcceptedAgentClaim, ControlSemanticError> {
+    parse_accepted_agent_claim(
+        verified,
+        response,
+        workload_session_id,
+        producer_id,
+        now_unix_millis,
+    )
 }
 
 /// Bind the exact authenticated envelope to one claim request.

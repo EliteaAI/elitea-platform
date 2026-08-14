@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::fs;
 use std::future::pending;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,6 +17,7 @@ use super::agent_preparation::{
     prepare_fresh_agent_invocation_with,
 };
 use super::invocation_admission::{InvocationAdmission, InvocationAdmissionConfig};
+use super::output_delivery::{AgentOutputPreflight, AgentOutputPreflightOutcome, EmptyAgentOutput};
 use crate::agents::AgentExecutionKind;
 use crate::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
@@ -33,8 +36,11 @@ use crate::protocol::elitea::runtime::v1::{
     RuntimeErrorV1,
 };
 use crate::protocol::output::RuntimeFailureKind;
+use crate::spool::{SpoolLimits, SpoolMasterKey};
 use crate::transport::redis_commands::{RedisCommandDelivery, RedisCommandLimits};
-use crate::transport::{ControlGrpcConfig, ControlRpc, InputContentError, MaterializedInput};
+use crate::transport::{
+    ControlGrpcConfig, ControlRpc, InputContentError, MaterializedInput, OutputGrpcConfig,
+};
 
 const NOW: i64 = 1_700_000_000_000;
 const DEADLINE: i64 = 1_700_000_100_000;
@@ -234,6 +240,42 @@ fn admission(capacity: usize, wait_timeout: Duration) -> InvocationAdmission {
     )
 }
 
+async fn empty_output(
+    fresh: super::agent_delivery::FreshAgentDelivery,
+) -> (tempfile::TempDir, EmptyAgentOutput) {
+    let temporary_base = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonical temporary root");
+    let temporary = tempfile::tempdir_in(temporary_base).expect("temporary output root");
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+        .expect("private output root");
+    let preflight = AgentOutputPreflight::new(
+        temporary.path().to_path_buf(),
+        SpoolMasterKey::new([b'p'; 32]),
+        SpoolLimits {
+            max_frames: 1,
+            max_encrypted_bytes: 2_048,
+            max_frame_bytes: 1_024,
+        },
+        OutputGrpcConfig {
+            max_queued_frames: 1,
+            max_queued_bytes: 1_024,
+            max_frame_bytes: 1_024,
+            max_server_credit_frames: 1,
+            max_server_credit_bytes: 1_024,
+            stream_deadline: Duration::from_mins(1),
+            ack_timeout: Duration::from_secs(1),
+            workload_session_id: "workload-1".to_owned(),
+            producer_id: "worker-1".to_owned(),
+        },
+    );
+    let outcome = preflight.prepare(fresh).await.expect("output preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("fresh preparation fixture must have an empty output spool");
+    };
+    (temporary, *empty)
+}
+
 struct TestClock(AtomicI64);
 
 impl TestClock {
@@ -337,6 +379,7 @@ async fn prepare_test(
     clock: Arc<TestClock>,
     config: AgentPreparationConfig,
 ) -> Result<AgentPreparationOutcome, super::agent_preparation::AgentPreparationError> {
+    let (_temporary, fresh) = empty_output(fresh).await;
     Box::pin(prepare_fresh_agent_invocation_with(
         fresh, control, admission, input, clock, config,
     ))
@@ -648,7 +691,7 @@ async fn immediate_stop_is_a_typed_terminal_and_never_fetches_input() {
     );
     assert_eq!(admission.available_capacity(), 0);
 
-    let (_, _, output, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, output, _spool, reservation, lease, _) = (*terminal).into_parts();
     assert_eq!(output.claim_handoff_watermark(), 4);
     assert_eq!(output.fence().fence_token.len(), 32);
     lease.close().await.expect("cancelled lease close");
@@ -685,7 +728,7 @@ async fn malformed_input_is_terminal_only_after_a_final_live_lease_poll() {
         *state.calls.lock().expect("calls"),
         ["begin", "renew", "observe", "input", "renew", "observe"]
     );
-    let (_, _, _, reservation, lease, cause) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, cause) = (*terminal).into_parts();
     assert!(matches!(
         cause,
         PreInvocationTerminalCause::InputProtocol(_)
@@ -767,7 +810,7 @@ async fn inclusive_deadline_is_terminal_after_lease_validation_and_before_input(
         *state.calls.lock().expect("calls"),
         ["begin", "renew", "observe", "renew", "observe"]
     );
-    let (_, _, _, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_parts();
     lease.close().await.expect("lease close");
     drop(reservation);
 }
@@ -787,6 +830,7 @@ async fn deadline_crossing_during_request_validation_cannot_mint_prepared_state(
         input_fixture(AgentExecutionKind::Application),
     );
     let clock = Arc::new(SteppingClock::new([NOW, NOW, DEADLINE, DEADLINE], DEADLINE));
+    let (_temporary, fresh) = empty_output(fresh).await;
 
     let outcome = Box::pin(prepare_fresh_agent_invocation_with(
         fresh,
@@ -809,7 +853,7 @@ async fn deadline_crossing_during_request_validation_cannot_mint_prepared_state(
         *state.calls.lock().expect("calls"),
         ["begin", "renew", "observe", "input", "renew", "observe"]
     );
-    let (_, _, _, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_parts();
     lease.close().await.expect("lease close");
     drop(reservation);
 }
@@ -863,7 +907,7 @@ async fn periodic_stop_cancels_and_drops_an_inflight_input_future() {
         *state.calls.lock().expect("calls"),
         ["begin", "renew", "observe", "input", "renew", "observe"]
     );
-    let (_, _, _, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_parts();
     lease.close().await.expect("cancelled lease close");
     drop(reservation);
 }
@@ -901,7 +945,7 @@ async fn input_dependency_failure_preserves_retryable_terminal_semantics() {
         terminal.cause().code(),
         "input_content.dependency_unavailable"
     );
-    let (_, _, _, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_parts();
     lease.close().await.expect("lease close");
     drop(reservation);
 }

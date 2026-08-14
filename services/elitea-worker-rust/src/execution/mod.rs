@@ -5,6 +5,7 @@ pub mod agent_lease;
 pub mod agent_preparation;
 pub mod invocation_admission;
 mod invocation_supervisor;
+pub mod output_delivery;
 
 #[cfg(test)]
 mod agent_lease_tests;
@@ -14,6 +15,8 @@ mod agent_preparation_tests;
 mod invocation_admission_tests;
 #[cfg(test)]
 mod invocation_supervisor_tests;
+#[cfg(test)]
+mod output_delivery_tests;
 
 pub use agent_delivery::{
     AgentDeliveryCompletion, AgentDeliveryCompletionKind, AgentDeliveryError, AgentDeliveryRoute,
@@ -31,4 +34,8 @@ pub use agent_preparation::{
 pub use invocation_admission::{
     InvocationAdmission, InvocationAdmissionConfig, InvocationAdmissionError,
     InvocationAdmissionErrorCode, InvocationReservation,
+};
+pub use output_delivery::{
+    AgentOutputPreflight, AgentOutputPreflightError, AgentOutputPreflightKind,
+    AgentOutputPreflightOutcome, EmptyAgentOutput, PendingAgentOutput, PendingAgentOutputKind,
 };

@@ -1,10 +1,11 @@
 //! Shared application/ad-hoc preparation before invocation authorization.
 //!
-//! This stage consumes one fresh routed delivery and owns the exact order:
-//! invocation capacity -> `BeginExecution` -> supervised lease activation ->
-//! claim-bound input materialization -> canonical input parsing. It stops
-//! before `AuthorizeInvocation`, so a prepared value is still safe to abandon
-//! without creating ambiguous ADK side effects.
+//! This stage consumes a fresh delivery whose encrypted output spool was
+//! already proven empty. It then owns the exact order: invocation capacity ->
+//! `BeginExecution` -> supervised lease activation -> claim-bound input
+//! materialization -> canonical input parsing. It stops before
+//! `AuthorizeInvocation`, so a prepared value is still safe to abandon without
+//! creating ambiguous ADK side effects.
 
 use std::fmt;
 use std::sync::Arc;
@@ -13,7 +14,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tracing::Instrument as _;
 
-use super::agent_delivery::FreshAgentDelivery;
 use super::agent_lease::{
     ClaimLeaseActivation, ClaimLeaseError, ClaimLeaseMonitor, ClaimLeaseMonitorConfig,
     SystemUnixMillisClock, UnixMillisClock,
@@ -21,6 +21,7 @@ use super::agent_lease::{
 use super::invocation_admission::{
     InvocationAdmission, InvocationAdmissionError, InvocationReservation,
 };
+use super::output_delivery::EmptyAgentOutput;
 use crate::agents::{
     AgentExecutionKind, AgentExecutionRequest, AgentInputBinding, parse_agent_execution_input,
 };
@@ -32,7 +33,9 @@ use crate::protocol::control::{
 };
 use crate::protocol::elitea::runtime::v1::{DigestAlgorithmV1, DigestV1};
 use crate::transport::redis_commands::RedisCommandDelivery;
-use crate::transport::{ControlRpc, InputContentClient, InputContentError, MaterializedInput};
+use crate::transport::{
+    ControlRpc, InputContentClient, InputContentError, MaterializedInput, PreparedOutputSpool,
+};
 
 /// Immutable preparation policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,6 +182,8 @@ pub struct PreparedAgentInvocation {
     #[allow(dead_code)] // Consumed by the next authorize-and-run slice.
     verified: VerifiedAgentCommand,
     request: AgentExecutionRequest,
+    #[allow(dead_code)] // Consumed by the next output-coordination slice.
+    output_spool: PreparedOutputSpool,
     #[allow(dead_code)] // Consumed by the next authorize-and-run slice.
     execution: LeaseMonitoredAgentExecution,
     #[allow(dead_code)] // Consumed by the next authorize-and-run slice.
@@ -211,6 +216,7 @@ impl PreparedAgentInvocation {
             delivery,
             verified,
             request,
+            output_spool,
             execution,
             reservation,
             lease,
@@ -219,6 +225,7 @@ impl PreparedAgentInvocation {
             delivery,
             verified,
             request,
+            output_spool,
             reservation,
             lease,
         })
@@ -238,6 +245,8 @@ pub(crate) struct PreparedAgentAuthorizationPayload {
     #[allow(dead_code)] // Consumed by the native ADK invocation slice.
     verified: VerifiedAgentCommand,
     request: AgentExecutionRequest,
+    #[allow(dead_code)] // Consumed by the output coordinator after authorization.
+    output_spool: PreparedOutputSpool,
     reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,
 }
@@ -269,7 +278,9 @@ pub struct PreInvocationTerminal {
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
     verified: VerifiedAgentCommand,
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
-    output: AgentExecutionOutputAuthority,
+    output_authority: AgentExecutionOutputAuthority,
+    #[allow(dead_code)] // Consumed by the next output-coordination slice.
+    output_spool: PreparedOutputSpool,
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
     reservation: InvocationReservation,
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
@@ -290,6 +301,7 @@ impl PreInvocationTerminal {
         RedisCommandDelivery,
         VerifiedAgentCommand,
         AgentExecutionOutputAuthority,
+        PreparedOutputSpool,
         InvocationReservation,
         ClaimLeaseMonitor,
         PreInvocationTerminalCause,
@@ -297,7 +309,8 @@ impl PreInvocationTerminal {
         (
             self.delivery,
             self.verified,
-            self.output,
+            self.output_authority,
+            self.output_spool,
             self.reservation,
             self.lease,
             self.cause,
@@ -412,7 +425,7 @@ impl std::error::Error for PreInvocationTerminalCause {
 /// unacknowledged for recovery. Durable cancellation is instead returned as a
 /// `PreInvocationTerminal` carrying its exact output authority.
 pub async fn prepare_fresh_agent_invocation<R>(
-    fresh: FreshAgentDelivery,
+    fresh: EmptyAgentOutput,
     control: Arc<AgentControlClient<R>>,
     admission: &InvocationAdmission,
     input: &InputContentClient,
@@ -433,7 +446,7 @@ where
 }
 
 pub(crate) async fn prepare_fresh_agent_invocation_with<R, K, I>(
-    fresh: FreshAgentDelivery,
+    fresh: EmptyAgentOutput,
     control: Arc<AgentControlClient<R>>,
     admission: &InvocationAdmission,
     input: &I,
@@ -446,6 +459,7 @@ where
     I: AgentInputMaterializer,
 {
     let kind = fresh.execution_kind();
+    let (fresh, output_spool) = fresh.into_parts();
     let (delivery, verified, claim) = fresh.into_parts();
     let command = verified.command();
     let span = tracing::info_span!(
@@ -460,67 +474,73 @@ where
         outcome = tracing::field::Empty,
         error_code = tracing::field::Empty,
     );
-    async move {
-        let reservation = match admission.reserve().await {
-            Ok(reservation) => reservation,
-            Err(error) if error.retryable() => {
-                tracing::Span::current().record("outcome", "retry_later_noack");
-                tracing::Span::current().record("error_code", error.code().as_str());
-                return Ok(AgentPreparationOutcome::RetryLaterNoAck);
-            }
-            Err(error) => return preparation_error(AgentPreparationError::Admission(error)),
-        };
-        tracing::Span::current().record("stage", "begin_execution");
-        let preparing = match control.begin_agent_execution(claim).await {
-            Ok(BeginAgentExecution::Preparing(preparing)) => preparing,
-            Ok(BeginAgentExecution::AlreadyStarted(_)) => {
-                tracing::Span::current().record("outcome", "recovery_required_noack");
-                return Ok(AgentPreparationOutcome::RecoveryRequiredNoAck);
-            }
-            Err(error) => return preparation_error(AgentPreparationError::BeginControl(error)),
-        };
+    Box::pin(
+        async move {
+            let reservation = match admission.reserve().await {
+                Ok(reservation) => reservation,
+                Err(error) if error.retryable() => {
+                    tracing::Span::current().record("outcome", "retry_later_noack");
+                    tracing::Span::current().record("error_code", error.code().as_str());
+                    return Ok(AgentPreparationOutcome::RetryLaterNoAck);
+                }
+                Err(error) => return preparation_error(AgentPreparationError::Admission(error)),
+            };
+            tracing::Span::current().record("stage", "begin_execution");
+            let preparing = match control.begin_agent_execution(claim).await {
+                Ok(BeginAgentExecution::Preparing(preparing)) => preparing,
+                Ok(BeginAgentExecution::AlreadyStarted(_)) => {
+                    tracing::Span::current().record("outcome", "recovery_required_noack");
+                    return Ok(AgentPreparationOutcome::RecoveryRequiredNoAck);
+                }
+                Err(error) => return preparation_error(AgentPreparationError::BeginControl(error)),
+            };
 
-        let starting = preparing.start_lease_monitor();
-        let mut lease = ClaimLeaseMonitor::start(
-            Arc::clone(&control),
-            starting,
-            Arc::clone(&clock),
-            config.lease,
-        );
-        tracing::Span::current().record("stage", "lease_activation");
-        let execution = match lease.activate().await {
-            ClaimLeaseActivation::Active(execution) => execution,
-            ClaimLeaseActivation::Inactive { execution, error } if is_terminal_lease(&error) => {
-                tracing::Span::current().record("outcome", "pre_invocation_terminal");
-                tracing::Span::current().record("error_code", error.code().as_str());
-                return Ok(AgentPreparationOutcome::PreInvocationTerminal(Box::new(
-                    PreInvocationTerminal {
-                        delivery,
-                        verified,
-                        output: execution.into_output_authority(),
-                        reservation,
-                        lease,
-                        cause: PreInvocationTerminalCause::Cancelled(error),
-                    },
-                )));
+            let starting = preparing.start_lease_monitor();
+            let mut lease = ClaimLeaseMonitor::start(
+                Arc::clone(&control),
+                starting,
+                Arc::clone(&clock),
+                config.lease,
+            );
+            tracing::Span::current().record("stage", "lease_activation");
+            let execution = match lease.activate().await {
+                ClaimLeaseActivation::Active(execution) => execution,
+                ClaimLeaseActivation::Inactive { execution, error }
+                    if is_terminal_lease(&error) =>
+                {
+                    tracing::Span::current().record("outcome", "pre_invocation_terminal");
+                    tracing::Span::current().record("error_code", error.code().as_str());
+                    return Ok(AgentPreparationOutcome::PreInvocationTerminal(Box::new(
+                        PreInvocationTerminal {
+                            delivery,
+                            verified,
+                            output_authority: execution.into_output_authority(),
+                            output_spool,
+                            reservation,
+                            lease,
+                            cause: PreInvocationTerminalCause::Cancelled(error),
+                        },
+                    )));
+                }
+                ClaimLeaseActivation::Inactive { error, .. }
+                | ClaimLeaseActivation::Unavailable(error) => {
+                    return preparation_error(AgentPreparationError::Lease(error));
+                }
+            };
+            ActiveAgentPreparation {
+                kind,
+                delivery,
+                verified,
+                output_spool,
+                execution,
+                reservation,
+                lease,
             }
-            ClaimLeaseActivation::Inactive { error, .. }
-            | ClaimLeaseActivation::Unavailable(error) => {
-                return preparation_error(AgentPreparationError::Lease(error));
-            }
-        };
-        ActiveAgentPreparation {
-            kind,
-            delivery,
-            verified,
-            execution,
-            reservation,
-            lease,
+            .materialize(input, clock.as_ref())
+            .await
         }
-        .materialize(input, clock.as_ref())
-        .await
-    }
-    .instrument(span)
+        .instrument(span),
+    )
     .await
 }
 
@@ -528,6 +548,7 @@ struct ActiveAgentPreparation {
     kind: AgentExecutionKind,
     delivery: RedisCommandDelivery,
     verified: VerifiedAgentCommand,
+    output_spool: PreparedOutputSpool,
     execution: LeaseMonitoredAgentExecution,
     reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,
@@ -599,6 +620,7 @@ impl ActiveAgentPreparation {
                 delivery: self.delivery,
                 verified: self.verified,
                 request,
+                output_spool: self.output_spool,
                 execution: self.execution,
                 reservation: self.reservation,
                 lease: self.lease,
@@ -628,6 +650,7 @@ impl ActiveAgentPreparation {
         pre_invocation_terminal(
             self.delivery,
             self.verified,
+            self.output_spool,
             self.execution,
             self.reservation,
             self.lease,
@@ -691,6 +714,7 @@ fn is_terminal_lease(error: &ClaimLeaseError) -> bool {
 fn pre_invocation_terminal(
     delivery: RedisCommandDelivery,
     verified: VerifiedAgentCommand,
+    output_spool: PreparedOutputSpool,
     execution: LeaseMonitoredAgentExecution,
     reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,
@@ -701,7 +725,8 @@ fn pre_invocation_terminal(
     AgentPreparationOutcome::PreInvocationTerminal(Box::new(PreInvocationTerminal {
         delivery,
         verified,
-        output: execution.into_output_authority(),
+        output_authority: execution.into_output_authority(),
+        output_spool,
         reservation,
         lease,
         cause,

@@ -252,6 +252,12 @@ impl PreparedOutputSpool {
         self.pending.last().map(|frame| frame.message().clone())
     }
 
+    /// Return the bounded number of restored, unacknowledged frames.
+    #[must_use]
+    pub const fn pending_frame_count(&self) -> usize {
+        self.pending.len()
+    }
+
     /// Report whether the spool contains these exact deterministic bytes.
     #[must_use]
     pub fn replays(&self, frame: &ExecutionOutputFrameV1) -> bool {

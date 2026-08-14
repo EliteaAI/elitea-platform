@@ -10,6 +10,7 @@ use crate::protocol::control::{
     AgentOutputRecovery, AgentOutputRecoveryKind, RecoveredSettlement, TerminalRedeliveryKind,
 };
 use crate::protocol::elitea::runtime::v1::ExecutionOutcomeV1;
+use crate::spool::ExecutionSpoolIdentity;
 use crate::transport::ControlRpc;
 use crate::transport::redis_commands::{
     RedisCommandDelivery, RedisCommandError, RedisCommandRetirer, RedisRetirementClient,
@@ -100,6 +101,42 @@ impl FreshAgentDelivery {
         AcceptedAgentClaim,
     ) {
         (self.delivery, self.verified, self.claim)
+    }
+
+    #[must_use]
+    pub(crate) fn spool_identity(&self) -> ExecutionSpoolIdentity {
+        let command = self.verified.command();
+        ExecutionSpoolIdentity {
+            tenant_id: command.tenant_id.clone(),
+            resource_project_id: command.resource_project_id.clone(),
+            projection_project_id: command.projection_project_id.clone(),
+            command_id: command.command_id.clone(),
+            execution_id: command.execution_id.clone(),
+            generation: command.generation,
+            producer_id: self.claim.producer_id().to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn matches_output_transport(
+        &self,
+        workload_session_id: &str,
+        producer_id: &str,
+    ) -> bool {
+        self.claim
+            .matches_output_transport(workload_session_id, producer_id)
+    }
+
+    #[must_use]
+    pub(crate) fn matches_output_binding(
+        &self,
+        frame: &crate::protocol::elitea::runtime::v1::ExecutionOutputFrameV1,
+    ) -> bool {
+        self.claim.matches_output_binding(
+            frame.identity.as_ref(),
+            frame.fence.as_ref(),
+            frame.claim_handoff_watermark,
+        )
     }
 }
 
