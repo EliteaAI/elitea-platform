@@ -1,12 +1,14 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore, watch};
 
 use super::redis_delivery::{
-    RedisDeliveryIntake, RedisDeliveryIntakeConfig, redis_intake_failure_is_fatal,
+    RedisDeliveryIntake, RedisDeliveryIntakeConfig, RedisDeliveryProcessor, RedisDeliveryRuntime,
+    RedisDeliveryRuntimeConfig, redis_intake_failure_is_fatal,
 };
 use crate::transport::redis_commands::{
     RedisCommandDelivery, RedisCommandLimits, RedisRetirementClient, RedisRetirementClientError,
@@ -38,6 +40,8 @@ struct FakeConnection {
     reclaims: Mutex<VecDeque<Result<RedisReclaimPage, RedisStreamsError>>>,
     heartbeats: Mutex<VecDeque<Result<Vec<String>, RedisStreamsError>>>,
     operations: Mutex<Vec<FakeOperation>>,
+    operation_changed: Notify,
+    read_available: Notify,
 }
 
 impl FakeConnection {
@@ -48,11 +52,14 @@ impl FakeConnection {
             reclaims: Mutex::new(VecDeque::new()),
             heartbeats: Mutex::new(VecDeque::new()),
             operations: Mutex::new(Vec::new()),
+            operation_changed: Notify::new(),
+            read_available: Notify::new(),
         }
     }
 
     fn push_read(&self, value: Result<Vec<RedisCommandDelivery>, RedisStreamsError>) {
         self.reads.lock().expect("read queue").push_back(value);
+        self.read_available.notify_one();
     }
 
     fn push_reclaim(&self, value: Result<RedisReclaimPage, RedisStreamsError>) {
@@ -96,6 +103,16 @@ impl FakeConnection {
             })
             .collect()
     }
+
+    async fn wait_operations(&self, expected: usize) {
+        while self.operations.lock().expect("operation log").len() < expected {
+            let changed = self.operation_changed.notified();
+            if self.operations.lock().expect("operation log").len() >= expected {
+                return;
+            }
+            changed.await;
+        }
+    }
 }
 
 #[async_trait]
@@ -130,11 +147,17 @@ impl RedisStreamsConnection for FakeConnection {
                     count,
                     block_millis,
                 });
-            self.reads
-                .lock()
-                .expect("read queue")
-                .pop_front()
-                .unwrap_or_else(|| Ok(Vec::new()))
+            self.operation_changed.notify_waiters();
+            loop {
+                if let Some(result) = self.reads.lock().expect("read queue").pop_front() {
+                    return result;
+                }
+                let available = self.read_available.notified();
+                if let Some(result) = self.reads.lock().expect("read queue").pop_front() {
+                    return result;
+                }
+                available.await;
+            }
         })
     }
 
@@ -153,6 +176,7 @@ impl RedisStreamsConnection for FakeConnection {
                     start_id: start_id.clone(),
                     count,
                 });
+            self.operation_changed.notify_waiters();
             self.reclaims
                 .lock()
                 .expect("reclaim queue")
@@ -175,6 +199,7 @@ impl RedisStreamsConnection for FakeConnection {
                 .lock()
                 .expect("operation log")
                 .push(FakeOperation::Heartbeat(entry_ids.clone()));
+            self.operation_changed.notify_waiters();
             self.heartbeats
                 .lock()
                 .expect("heartbeat queue")
@@ -189,6 +214,7 @@ impl RedisStreamsConnection for FakeConnection {
                 .lock()
                 .expect("operation log")
                 .push(FakeOperation::Close);
+            self.operation_changed.notify_waiters();
             Ok(())
         })
     }
@@ -224,9 +250,99 @@ impl RedisStreamsConnector for FakeConnector {
     }
 }
 
+struct TestProcessor {
+    started: AtomicUsize,
+    completed: AtomicUsize,
+    active: AtomicUsize,
+    maximum_active: AtomicUsize,
+    started_changed: Notify,
+    completed_changed: Notify,
+    release: Semaphore,
+    entries: Mutex<Vec<String>>,
+}
+
+impl TestProcessor {
+    fn new() -> Self {
+        Self {
+            started: AtomicUsize::new(0),
+            completed: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            maximum_active: AtomicUsize::new(0),
+            started_changed: Notify::new(),
+            completed_changed: Notify::new(),
+            release: Semaphore::new(0),
+            entries: Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn wait_started(&self, expected: usize) {
+        while self.started.load(Ordering::Acquire) < expected {
+            let changed = self.started_changed.notified();
+            if self.started.load(Ordering::Acquire) >= expected {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    async fn wait_completed(&self, expected: usize) {
+        while self.completed.load(Ordering::Acquire) < expected {
+            let changed = self.completed_changed.notified();
+            if self.completed.load(Ordering::Acquire) >= expected {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    fn release(&self, count: usize) {
+        self.release.add_permits(count);
+    }
+}
+
+struct ActiveProcess<'a> {
+    processor: &'a TestProcessor,
+}
+
+impl ActiveProcess<'_> {
+    fn enter(processor: &TestProcessor) -> ActiveProcess<'_> {
+        let active = processor.active.fetch_add(1, Ordering::AcqRel) + 1;
+        processor.maximum_active.fetch_max(active, Ordering::AcqRel);
+        ActiveProcess { processor }
+    }
+}
+
+impl Drop for ActiveProcess<'_> {
+    fn drop(&mut self) {
+        self.processor.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[async_trait]
+impl RedisDeliveryProcessor for TestProcessor {
+    async fn process(&self, delivery: RedisCommandDelivery) {
+        let _active = ActiveProcess::enter(self);
+        self.entries
+            .lock()
+            .expect("processed entries")
+            .push(delivery.entry_id().to_owned());
+        self.started.fetch_add(1, Ordering::AcqRel);
+        self.started_changed.notify_waiters();
+        let permit = self.release.acquire().await.expect("release semaphore");
+        permit.forget();
+        self.completed.fetch_add(1, Ordering::AcqRel);
+        self.completed_changed.notify_waiters();
+    }
+}
+
 fn config(max_concurrency: usize, queue_capacity: usize) -> RedisDeliveryIntakeConfig {
     RedisDeliveryIntakeConfig::new(max_concurrency, queue_capacity, 30_000, 60_000, 100)
         .expect("valid intake config")
+}
+
+fn runtime_config(max_concurrency: usize, queue_capacity: usize) -> RedisDeliveryRuntimeConfig {
+    RedisDeliveryRuntimeConfig::new(config(max_concurrency, queue_capacity), 100, 1_000)
+        .expect("valid runtime config")
 }
 
 fn delivery(entry_id: &str) -> RedisCommandDelivery {
@@ -259,7 +375,7 @@ async fn intake_alternates_a_bounded_read_with_the_due_reclaim_turn() {
         next_start_id: "7-0".to_owned(),
         deliveries: vec![delivery("2-0")],
     }));
-    let mut intake = intake(Arc::clone(&connection), config(1, 1));
+    let intake = intake(Arc::clone(&connection), config(1, 1));
 
     let first = intake.next_batch().await.expect("bounded new read");
     assert_eq!(first.len(), 1);
@@ -300,7 +416,7 @@ async fn an_owned_pending_entry_is_not_locally_admitted_twice() {
         next_start_id: "0-0".to_owned(),
         deliveries: vec![delivery("1-0")],
     }));
-    let mut intake = intake(Arc::clone(&connection), config(1, 1));
+    let intake = intake(Arc::clone(&connection), config(1, 1));
 
     let first = intake.next_batch().await.expect("first delivery");
     assert_eq!(intake.owned_count(), 1);
@@ -327,7 +443,7 @@ async fn ownership_capacity_is_retained_until_the_delivery_owner_drops() {
     connection.push_read(Ok(vec![delivery("1-0"), delivery("2-0")]));
     connection.push_read(Ok(vec![delivery("3-0")]));
     let intake = intake(connection, config(1, 1));
-    let mut intake = intake;
+    let intake = intake;
     let first = intake.next_batch().await.expect("capacity-filling batch");
     assert_eq!(first.len(), 2);
 
@@ -350,7 +466,7 @@ async fn processing_retains_heartbeat_identity_until_the_future_really_finishes(
     let connection = Arc::new(FakeConnection::new(2));
     connection.push_read(Ok(vec![delivery("2-0"), delivery("1-0")]));
     connection.push_heartbeat(Ok(vec!["1-0".to_owned(), "2-0".to_owned()]));
-    let mut intake = intake(Arc::clone(&connection), config(1, 1));
+    let intake = intake(Arc::clone(&connection), config(1, 1));
     let mut batch = intake.next_batch().await.expect("owned deliveries");
     let processing = batch.pop().expect("processing delivery");
     let queued = batch.pop().expect("queued delivery");
@@ -396,7 +512,7 @@ async fn retryable_generation_failure_is_not_replayed_and_next_turn_reconnects()
         Arc::clone(&second),
     ]));
     let handle = Arc::new(RedisStreamsHandle::new(connector));
-    let mut intake = RedisDeliveryIntake::new(handle, config(1, 1));
+    let intake = RedisDeliveryIntake::new(handle, config(1, 1));
 
     let error = intake.next_batch().await.err().expect("first read fails");
     assert_eq!(error.kind(), RedisStreamsErrorKind::DependencyUnavailable);
@@ -411,6 +527,154 @@ async fn retryable_generation_failure_is_not_replayed_and_next_turn_reconnects()
     )));
 }
 
+#[tokio::test(start_paused = true)]
+async fn runtime_stops_intake_but_heartbeats_until_owned_processing_drains() {
+    let connection = Arc::new(FakeConnection::new(2));
+    connection.push_read(Ok(vec![delivery("1-0")]));
+    let connector = Arc::new(FakeConnector::new([Arc::clone(&connection)]));
+    let handle = Arc::new(RedisStreamsHandle::new(connector));
+    let processor = Arc::new(TestProcessor::new());
+    let runtime = RedisDeliveryRuntime::new(handle, Arc::clone(&processor), runtime_config(1, 1));
+    let (stop, stopped) = watch::channel(false);
+    let task = tokio::spawn(runtime.run(stopped));
+    processor.wait_started(1).await;
+
+    stop.send(true).expect("request runtime stop");
+    tokio::task::yield_now().await;
+    assert!(!task.is_finished());
+    tokio::time::advance(Duration::from_millis(100)).await;
+    connection.wait_operations(3).await;
+    assert!(connection.operations().iter().any(
+        |operation| matches!(operation, FakeOperation::Heartbeat(entries) if entries == &["1-0"])
+    ));
+
+    processor.release(1);
+    task.await
+        .expect("runtime task")
+        .expect("graceful runtime drain");
+    assert_eq!(processor.active.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        connection.operations().last(),
+        Some(FakeOperation::Close)
+    ));
+}
+
+#[tokio::test]
+async fn runtime_worker_count_is_a_structural_processing_bound() {
+    let connection = Arc::new(FakeConnection::new(4));
+    connection.push_read(Ok(vec![
+        delivery("1-0"),
+        delivery("2-0"),
+        delivery("3-0"),
+        delivery("4-0"),
+    ]));
+    let connector = Arc::new(FakeConnector::new([connection]));
+    let handle = Arc::new(RedisStreamsHandle::new(connector));
+    let processor = Arc::new(TestProcessor::new());
+    let runtime = RedisDeliveryRuntime::new(handle, Arc::clone(&processor), runtime_config(2, 2));
+    let (stop, stopped) = watch::channel(false);
+    let task = tokio::spawn(runtime.run(stopped));
+
+    processor.wait_started(2).await;
+    assert_eq!(processor.started.load(Ordering::Acquire), 2);
+    assert_eq!(processor.maximum_active.load(Ordering::Acquire), 2);
+    stop.send(true).expect("request runtime stop");
+    processor.release(4);
+    processor.wait_completed(4).await;
+    task.await
+        .expect("runtime task")
+        .expect("bounded runtime drain");
+
+    assert_eq!(processor.maximum_active.load(Ordering::Acquire), 2);
+    assert_eq!(
+        processor.entries.lock().expect("processed entries").len(),
+        4
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn runtime_reconnects_only_after_the_stop_aware_dependency_delay() {
+    let first = Arc::new(FakeConnection::new(1));
+    first.push_read(Err(RedisStreamsError::unavailable(
+        "the first runtime generation is unavailable",
+    )));
+    let second = Arc::new(FakeConnection::new(1));
+    second.push_reclaim(Ok(RedisReclaimPage {
+        next_start_id: "0-0".to_owned(),
+        deliveries: vec![delivery("9-0")],
+    }));
+    let connector = Arc::new(FakeConnector::new([
+        Arc::clone(&first),
+        Arc::clone(&second),
+    ]));
+    let handle = Arc::new(RedisStreamsHandle::new(connector));
+    let processor = Arc::new(TestProcessor::new());
+    let runtime = RedisDeliveryRuntime::new(handle, Arc::clone(&processor), runtime_config(1, 1));
+    let (stop, stopped) = watch::channel(false);
+    let task = tokio::spawn(runtime.run(stopped));
+    first.wait_operations(1).await;
+
+    tokio::time::advance(Duration::from_millis(99)).await;
+    tokio::task::yield_now().await;
+    assert!(second.operations().is_empty());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    processor.wait_started(1).await;
+    assert!(matches!(
+        second.operations().first(),
+        Some(FakeOperation::Reclaim { .. })
+    ));
+
+    stop.send(true).expect("request runtime stop");
+    processor.release(1);
+    task.await
+        .expect("runtime task")
+        .expect("runtime after replacement");
+}
+
+#[tokio::test(start_paused = true)]
+async fn drain_timeout_abandons_only_local_ownership_and_reports_a_safe_code() {
+    let connection = Arc::new(FakeConnection::new(1));
+    connection.push_read(Ok(vec![delivery("1-0")]));
+    let connector = Arc::new(FakeConnector::new([connection]));
+    let handle = Arc::new(RedisStreamsHandle::new(connector));
+    let processor = Arc::new(TestProcessor::new());
+    let runtime = RedisDeliveryRuntime::new(handle, Arc::clone(&processor), runtime_config(1, 1));
+    let (stop, stopped) = watch::channel(false);
+    let task = tokio::spawn(runtime.run(stopped));
+    processor.wait_started(1).await;
+    stop.send(true).expect("request runtime stop");
+    tokio::task::yield_now().await;
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let error = task
+        .await
+        .expect("runtime task")
+        .expect_err("drain deadline must fail");
+    assert_eq!(error.code(), "redis_delivery.drain_timeout");
+    assert!(error.retryable());
+    assert_eq!(processor.completed.load(Ordering::Acquire), 0);
+    assert_eq!(processor.active.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn cancelling_the_runtime_owner_cannot_detach_a_processing_task() {
+    let connection = Arc::new(FakeConnection::new(1));
+    connection.push_read(Ok(vec![delivery("1-0")]));
+    let connector = Arc::new(FakeConnector::new([connection]));
+    let handle = Arc::new(RedisStreamsHandle::new(connector));
+    let processor = Arc::new(TestProcessor::new());
+    let runtime = RedisDeliveryRuntime::new(handle, Arc::clone(&processor), runtime_config(1, 1));
+    let (_stop, stopped) = watch::channel(false);
+    let task = tokio::spawn(runtime.run(stopped));
+    processor.wait_started(1).await;
+
+    task.abort();
+    task.await.expect_err("cancelled runtime owner");
+    tokio::task::yield_now().await;
+    assert_eq!(processor.active.load(Ordering::Acquire), 0);
+    assert_eq!(processor.completed.load(Ordering::Acquire), 0);
+}
+
 #[test]
 fn deployed_intake_bounds_fail_closed() {
     assert!(RedisDeliveryIntakeConfig::new(1, 1, 100, 60_000, 100).is_ok());
@@ -421,4 +685,10 @@ fn deployed_intake_bounds_fail_closed() {
     assert!(RedisDeliveryIntakeConfig::new(1, 1, 99, 60_000, 100).is_err());
     assert!(RedisDeliveryIntakeConfig::new(1, 1, 100, 59_999, 100).is_err());
     assert!(RedisDeliveryIntakeConfig::new(1, 1, 100, 60_000, 99).is_err());
+    let intake =
+        RedisDeliveryIntakeConfig::new(1, 1, 100, 60_000, 100).expect("valid bounded intake");
+    assert!(RedisDeliveryRuntimeConfig::new(intake, 100, 1_000).is_ok());
+    assert!(RedisDeliveryRuntimeConfig::new(intake, 60_000, 300_000).is_ok());
+    assert!(RedisDeliveryRuntimeConfig::new(intake, 99, 1_000).is_err());
+    assert!(RedisDeliveryRuntimeConfig::new(intake, 100, 999).is_err());
 }
