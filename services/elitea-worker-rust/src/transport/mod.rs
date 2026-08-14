@@ -9,6 +9,9 @@ mod redis_generation;
 #[cfg(test)]
 mod redis_generation_tests;
 pub mod redis_streams;
+pub(crate) mod runtime_context;
+#[cfg(test)]
+mod runtime_context_tests;
 
 pub use control_grpc::{
     ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, TonicControlRpc,

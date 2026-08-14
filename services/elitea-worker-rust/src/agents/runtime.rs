@@ -15,15 +15,27 @@ use adk_rust::futures::{FutureExt as _, StreamExt};
 use adk_rust::runner::Runner;
 use adk_rust::{AdkError, Content, Event, EventStream, SessionId, UserId};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
-use super::events::{AgentEventProjector, CompletedAgentBrowserOutput};
+use super::assembly::OrdinaryNoToolProfile;
+use super::events::{
+    AgentEventProjectionError, AgentEventProjector, CompletedAgentBrowserOutput,
+    ProjectedAgentEventBatch,
+};
 use super::request::AgentExecutionRequest;
+use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
+use crate::transport::runtime_context::{
+    ClaimScopedEliteaContext, RuntimeContextClient, RuntimeContextError,
+};
 
 /// Stable native assembly and result-selection failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeAgentAssemblyErrorCode {
     InvalidConfiguration,
+    InvalidInput,
     UnsupportedCapability,
+    ResourceExhausted,
+    AuthorizationFailed,
     DependencyUnavailable,
     InvalidResult,
 }
@@ -33,7 +45,10 @@ impl NativeAgentAssemblyErrorCode {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::InvalidConfiguration => "native_agent.invalid_configuration",
+            Self::InvalidInput => "native_agent.invalid_input",
             Self::UnsupportedCapability => "native_agent.unsupported_capability",
+            Self::ResourceExhausted => "native_agent.resource_exhausted",
+            Self::AuthorizationFailed => "native_agent.authorization_failed",
             Self::DependencyUnavailable => "native_agent.dependency_unavailable",
             Self::InvalidResult => "native_agent.invalid_result",
         }
@@ -82,6 +97,29 @@ impl fmt::Display for NativeAgentAssemblyError {
 
 impl std::error::Error for NativeAgentAssemblyError {}
 
+impl From<RuntimeContextError> for NativeAgentAssemblyError {
+    fn from(error: RuntimeContextError) -> Self {
+        let code = match error {
+            RuntimeContextError::InvalidConfiguration(_) => {
+                NativeAgentAssemblyErrorCode::InvalidConfiguration
+            }
+            RuntimeContextError::InvalidResponse(_) => NativeAgentAssemblyErrorCode::InvalidInput,
+            RuntimeContextError::ResourceExhausted(_) => {
+                NativeAgentAssemblyErrorCode::ResourceExhausted
+            }
+            RuntimeContextError::AuthorizationFailed(_) => {
+                NativeAgentAssemblyErrorCode::AuthorizationFailed
+            }
+            RuntimeContextError::DependencyUnavailable(_)
+            | RuntimeContextError::Transport(_)
+            | RuntimeContextError::Timeout(_) => {
+                NativeAgentAssemblyErrorCode::DependencyUnavailable
+            }
+        };
+        Self::new(code, "native agent runtime-context assembly failed")
+    }
+}
+
 /// Select the explicit application/ad-hoc browser result after real ADK EOS.
 ///
 /// Selection must be cancellation-safe, internally bounded, and free of
@@ -90,6 +128,113 @@ impl std::error::Error for NativeAgentAssemblyError {}
 #[async_trait]
 pub(crate) trait NativeAgentCompletionSelector: Send {
     async fn select(self) -> Result<CompletedAgentBrowserOutput, NativeAgentAssemblyError>;
+}
+
+/// Post-authorization assembly input with one runtime-context redemption.
+///
+/// The request and claim-scoped credential grant remain one owned run. An
+/// assembler may inspect the validated request and redeem the execution actor
+/// through the hardened client, but cannot extract or retain raw claim/fence
+/// authority independently.
+pub(crate) struct AuthorizedNativeAssembly<'a> {
+    request: &'a AgentExecutionRequest,
+    runtime_context: ClaimBoundRuntimeContextAuthority,
+}
+
+impl<'a> AuthorizedNativeAssembly<'a> {
+    #[must_use]
+    pub(crate) const fn new(
+        request: &'a AgentExecutionRequest,
+        runtime_context: ClaimBoundRuntimeContextAuthority,
+    ) -> Self {
+        Self {
+            request,
+            runtime_context,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn request(&self) -> &AgentExecutionRequest {
+        self.request
+    }
+
+    /// Validate the first production assembly profile before credential
+    /// redemption becomes reachable.
+    pub(crate) fn admit_ordinary_no_tool(
+        self,
+    ) -> Result<AdmittedOrdinaryNativeAssembly<'a>, NativeAgentAssemblyError> {
+        let profile = OrdinaryNoToolProfile::validate(self.request)?;
+        Ok(AdmittedOrdinaryNativeAssembly {
+            request: self.request,
+            runtime_context: self.runtime_context,
+            profile,
+        })
+    }
+}
+
+/// Strict ordinary/no-tool profile admitted before ephemeral PAT redemption.
+pub(crate) struct AdmittedOrdinaryNativeAssembly<'a> {
+    request: &'a AgentExecutionRequest,
+    runtime_context: ClaimBoundRuntimeContextAuthority,
+    profile: OrdinaryNoToolProfile,
+}
+
+impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
+    #[must_use]
+    pub(crate) const fn request(&self) -> &AgentExecutionRequest {
+        self.request
+    }
+
+    #[must_use]
+    pub(crate) const fn profile(&self) -> &OrdinaryNoToolProfile {
+        &self.profile
+    }
+
+    /// Redeem the ephemeral execution actor only after `AUTHORIZED_NOW`.
+    ///
+    /// The returned PAT remains zeroized, non-cloneable and non-formattable.
+    /// The caller must keep this one-attempt future inside the lease-raced
+    /// assembly phase.
+    pub(crate) async fn redeem_runtime_context(
+        self,
+        client: &RuntimeContextClient,
+    ) -> Result<RedeemedOrdinaryNativeAssembly<'a>, RuntimeContextError> {
+        let Self {
+            request,
+            runtime_context,
+            profile,
+        } = self;
+        let context = client.redeem(runtime_context).await?;
+        Ok(RedeemedOrdinaryNativeAssembly {
+            request,
+            profile,
+            context,
+        })
+    }
+}
+
+/// Admitted ordinary assembly after its sole claim-scoped PAT redemption.
+pub(crate) struct RedeemedOrdinaryNativeAssembly<'a> {
+    request: &'a AgentExecutionRequest,
+    profile: OrdinaryNoToolProfile,
+    context: ClaimScopedEliteaContext,
+}
+
+impl RedeemedOrdinaryNativeAssembly<'_> {
+    #[must_use]
+    pub(crate) const fn request(&self) -> &AgentExecutionRequest {
+        self.request
+    }
+
+    #[must_use]
+    pub(crate) const fn profile(&self) -> &OrdinaryNoToolProfile {
+        &self.profile
+    }
+
+    #[must_use]
+    pub(crate) const fn context(&self) -> &ClaimScopedEliteaContext {
+        &self.context
+    }
 }
 
 /// Trusted assembler for one validated, already-authorized request.
@@ -104,7 +249,7 @@ pub(crate) trait NativeAgentAssembler: Send + Sync + 'static {
 
     async fn assemble(
         &self,
-        request: &AgentExecutionRequest,
+        assembly: AuthorizedNativeAssembly<'_>,
     ) -> Result<AssembledNativeAgentInvocation<Self::Completion>, NativeAgentAssemblyError>;
 }
 
@@ -130,8 +275,22 @@ impl<S> AssembledNativeAgentInvocation<S> {
         }
     }
 
-    pub(crate) fn into_parts(self) -> (NativeAgentInvocation, AgentEventProjector, S) {
-        (self.invocation, self.projector, self.completion)
+    pub(crate) fn project_start(
+        &mut self,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        self.projector.start(occurred_at)
+    }
+
+    pub(crate) fn start(
+        self,
+    ) -> Result<(NativeAgentRun, AgentEventProjector, S), NativeAgentRuntimeError> {
+        let Self {
+            invocation,
+            projector,
+            completion,
+        } = self;
+        Ok((invocation.start()?, projector, completion))
     }
 }
 

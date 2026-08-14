@@ -16,7 +16,10 @@ use super::agent_invocation::{
     AuthorizedAgentLifecycle, OwnedFuture,
 };
 use super::agent_lease::{ClaimLeaseError, ClaimLeaseStateProbe, UnixMillisClock};
-use super::agent_preparation::{AuthorizedAgentRun, CursorBoundAuthorizedAgentRun};
+use super::agent_preparation::{
+    AgentNativeAssemblyOutcome, AssembledAuthorizedAgentRun, AuthorizedAgentRun,
+    CursorBoundAuthorizedAgentRun,
+};
 use super::output_delivery::{
     AgentProgressConnector, AgentProgressPublishOutcome, AgentTerminalRecoveryConfig,
     AgentTerminalReplay, FreshAgentTerminalSelection,
@@ -146,7 +149,7 @@ where
     RC: RedisRetirementClient + 'static,
     K: UnixMillisClock,
 {
-    let mut run = match run.bind_progress_publisher(connector, max_output_sessions) {
+    let run = match run.bind_progress_publisher(connector, max_output_sessions) {
         Ok(run) => run,
         Err(failure) => {
             let (run, _connector, error) = failure.into_parts();
@@ -172,11 +175,10 @@ where
         }
     }
 
-    let (next_run, assembly_result) = Box::pin(run.assemble_native(native_factory.as_ref())).await;
-    run = next_run;
-    let native_assembly = match assembly_result {
-        Ok(Ok(native_assembly)) => native_assembly,
-        Ok(Err(error)) => {
+    let mut native_assembly = match Box::pin(run.assemble_native(native_factory.as_ref())).await {
+        AgentNativeAssemblyOutcome::Assembled(native_assembly) => *native_assembly,
+        AgentNativeAssemblyOutcome::Failed { run, error } => {
+            let run = *run;
             let failure = assembly_failure(&error);
             tracing::warn!(
                 error_code = error.code().as_str(),
@@ -192,7 +194,11 @@ where
             ))
             .await;
         }
-        Err(ClaimLeaseError::Cancelled(_)) => {
+        AgentNativeAssemblyOutcome::Lease {
+            run,
+            error: ClaimLeaseError::Cancelled(_),
+        } => {
+            let run = *run;
             return Box::pin(finalize(
                 run,
                 RuntimeFailureKind::Cancelled,
@@ -203,19 +209,20 @@ where
             ))
             .await;
         }
-        Err(error) => {
+        AgentNativeAssemblyOutcome::Lease { run, error } => {
+            let run = *run;
             return Box::pin(run.close_no_ack(error.code().as_str(), error.retryable())).await;
         }
     };
-    let (invocation, mut projector, completion_selector) = native_assembly.into_parts();
 
     let start_time = match sampled_time(clock.as_ref()) {
         Ok((_, time)) => time,
-        Err(code) => return run.close_no_ack(code, false).await,
+        Err(code) => return native_assembly.into_run().close_no_ack(code, false).await,
     };
-    let start_batch = match projector.start(start_time) {
+    let start_batch = match native_assembly.project_start(start_time) {
         Ok(batch) => batch,
         Err(error) => {
+            let run = native_assembly.into_run();
             let failure = projection_failure(&error);
             tracing::warn!(
                 error_code = error.code().as_str(),
@@ -232,9 +239,16 @@ where
             .await;
         }
     };
-    match Box::pin(publish_batch(&mut run, start_batch, clock.as_ref())).await {
+    match Box::pin(publish_assembled_batch(
+        &mut native_assembly,
+        start_batch,
+        clock.as_ref(),
+    ))
+    .await
+    {
         BatchPublication::Acknowledged => {}
         BatchPublication::Rejected => {
+            let run = native_assembly.into_run();
             return Box::pin(finalize(
                 run,
                 RuntimeFailureKind::Cancelled,
@@ -246,11 +260,12 @@ where
             .await;
         }
         BatchPublication::RecoveryRequired { code, retryable } => {
-            return Box::pin(run.close_no_ack(code, retryable)).await;
+            return Box::pin(native_assembly.into_run().close_no_ack(code, retryable)).await;
         }
     }
 
-    if let Err(error) = run.ensure_lease_running() {
+    if let Err(error) = native_assembly.ensure_lease_running() {
+        let run = native_assembly.into_run();
         return Box::pin(finish_lease_boundary(
             run,
             error,
@@ -261,9 +276,10 @@ where
         ))
         .await;
     }
-    match deadline_reached(&run, clock.as_ref()) {
+    match deadline_reached_assembled(&native_assembly, clock.as_ref()) {
         Ok(false) => {}
         Ok(true) => {
+            let run = native_assembly.into_run();
             return Box::pin(finalize(
                 run,
                 RuntimeFailureKind::DeadlineExceeded,
@@ -274,17 +290,15 @@ where
             ))
             .await;
         }
-        Err(code) => return run.close_no_ack(code, false).await,
+        Err(code) => {
+            return native_assembly.into_run().close_no_ack(code, false).await;
+        }
     }
 
-    let native_assembly = crate::agents::runtime::AssembledNativeAgentInvocation::new(
-        invocation,
-        projector,
-        completion_selector,
-    );
-    let (mut native, mut projector, completion_selector) = match run.start_native(native_assembly) {
+    let started = match native_assembly.start() {
         Ok(started) => started,
-        Err(error) => {
+        Err(failure) => {
+            let (run, error) = (*failure).into_parts();
             tracing::warn!(
                 error_code = error.code().as_str(),
                 "native agent runtime failed to start"
@@ -300,6 +314,7 @@ where
             .await;
         }
     };
+    let (mut run, mut native, mut projector, completion_selector) = started.into_parts();
 
     let mut probe = run.lease_state_probe();
     let stream = Box::pin(drive_native_stream(
@@ -554,6 +569,56 @@ where
     BatchPublication::Acknowledged
 }
 
+async fn publish_assembled_batch<C, S, K>(
+    run: &mut AssembledAuthorizedAgentRun<C, S>,
+    batch: ProjectedAgentEventBatch,
+    clock: &K,
+) -> BatchPublication
+where
+    C: AgentProgressConnector,
+    K: UnixMillisClock,
+{
+    for event in batch {
+        match run.ensure_lease_running() {
+            Ok(()) => {}
+            Err(ClaimLeaseError::Cancelled(_)) => return BatchPublication::Rejected,
+            Err(error) => {
+                return BatchPublication::RecoveryRequired {
+                    code: error.code().as_str(),
+                    retryable: error.retryable(),
+                };
+            }
+        }
+        let occurred_at_unix_millis = clock.now_unix_millis();
+        if occurred_at_unix_millis <= 0 {
+            return BatchPublication::RecoveryRequired {
+                code: "agent_lifecycle.invalid_clock",
+                retryable: false,
+            };
+        }
+        let is_full_message = event.r#type == "full_message";
+        let result = if is_full_message {
+            run.publish_full_message(event, occurred_at_unix_millis)
+                .await
+        } else {
+            run.publish_progress(event, occurred_at_unix_millis).await
+        };
+        match result {
+            Ok(AgentProgressPublishOutcome::Acknowledged { .. }) => {}
+            Ok(AgentProgressPublishOutcome::Rejected { .. }) => {
+                return BatchPublication::Rejected;
+            }
+            Err(error) => {
+                return BatchPublication::RecoveryRequired {
+                    code: error.code(),
+                    retryable: error.retryable(),
+                };
+            }
+        }
+    }
+    BatchPublication::Acknowledged
+}
+
 async fn finish_after_stream<C, R, RC, K>(
     run: CursorBoundAuthorizedAgentRun<C>,
     mut failure: Option<RuntimeFailureKind>,
@@ -707,6 +772,21 @@ where
     Ok(now >= run.deadline_unix_millis())
 }
 
+fn deadline_reached_assembled<C, S, K>(
+    run: &AssembledAuthorizedAgentRun<C, S>,
+    clock: &K,
+) -> Result<bool, &'static str>
+where
+    C: AgentProgressConnector,
+    K: UnixMillisClock,
+{
+    let now = clock.now_unix_millis();
+    if now <= 0 {
+        return Err("agent_lifecycle.invalid_clock");
+    }
+    Ok(now >= run.deadline_unix_millis())
+}
+
 fn sampled_time<K: UnixMillisClock>(clock: &K) -> Result<(i64, DateTime<Utc>), &'static str> {
     let now = clock.now_unix_millis();
     let time = (now > 0)
@@ -724,6 +804,11 @@ fn assembly_failure(error: &NativeAgentAssemblyError) -> RuntimeFailureKind {
         NativeAgentAssemblyErrorCode::DependencyUnavailable => {
             RuntimeFailureKind::DependencyUnavailable
         }
+        NativeAgentAssemblyErrorCode::InvalidInput => RuntimeFailureKind::InvalidInput,
+        NativeAgentAssemblyErrorCode::ResourceExhausted => RuntimeFailureKind::ResourceExhausted,
+        NativeAgentAssemblyErrorCode::AuthorizationFailed => {
+            RuntimeFailureKind::AuthorizationFailed
+        }
         NativeAgentAssemblyErrorCode::InvalidConfiguration
         | NativeAgentAssemblyErrorCode::InvalidResult => RuntimeFailureKind::Internal,
     }
@@ -738,5 +823,49 @@ fn projection_failure(error: &AgentEventProjectionError) -> RuntimeFailureKind {
         AgentEventProjectionErrorCode::ProviderFailure
         | AgentEventProjectionErrorCode::InvalidState
         | AgentEventProjectionErrorCode::InvalidOutput => RuntimeFailureKind::Internal,
+    }
+}
+
+#[cfg(test)]
+mod taxonomy_tests {
+    use super::assembly_failure;
+    use crate::agents::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
+    use crate::protocol::output::RuntimeFailureKind;
+
+    #[test]
+    fn assembly_failures_keep_the_canonical_terminal_kind() {
+        for (code, expected) in [
+            (
+                NativeAgentAssemblyErrorCode::InvalidInput,
+                RuntimeFailureKind::InvalidInput,
+            ),
+            (
+                NativeAgentAssemblyErrorCode::UnsupportedCapability,
+                RuntimeFailureKind::UnsupportedCapability,
+            ),
+            (
+                NativeAgentAssemblyErrorCode::ResourceExhausted,
+                RuntimeFailureKind::ResourceExhausted,
+            ),
+            (
+                NativeAgentAssemblyErrorCode::AuthorizationFailed,
+                RuntimeFailureKind::AuthorizationFailed,
+            ),
+            (
+                NativeAgentAssemblyErrorCode::DependencyUnavailable,
+                RuntimeFailureKind::DependencyUnavailable,
+            ),
+            (
+                NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                RuntimeFailureKind::Internal,
+            ),
+            (
+                NativeAgentAssemblyErrorCode::InvalidResult,
+                RuntimeFailureKind::Internal,
+            ),
+        ] {
+            let error = NativeAgentAssemblyError::new(code, "fixture");
+            assert_eq!(assembly_failure(&error), expected);
+        }
     }
 }

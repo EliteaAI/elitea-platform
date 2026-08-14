@@ -30,8 +30,8 @@ use super::output_delivery::{
 };
 use crate::agents::result::AgentResultBinding;
 use crate::agents::runtime::{
-    AssembledNativeAgentInvocation, NativeAgentAssembler, NativeAgentCompletionSelector,
-    NativeAgentRun, NativeAgentRuntimeError,
+    AssembledNativeAgentInvocation, AuthorizedNativeAssembly, NativeAgentAssembler,
+    NativeAgentCompletionSelector, NativeAgentRun, NativeAgentRuntimeError,
 };
 use crate::agents::{
     AgentExecutionKind, AgentExecutionRequest, AgentInputBinding, parse_agent_execution_input,
@@ -40,9 +40,9 @@ use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
     AgentControlClient, AgentControlError, AgentExecutionOutputAuthority, BeginAgentExecution,
-    InvocationAuthorizationCandidate, InvocationAuthorizationNoAckAuthority,
-    InvocationAuthorizationPayload, InvocationAuthorizationTerminalCause,
-    InvocationSubmissionPermit, LeaseMonitoredAgentExecution,
+    ClaimBoundRuntimeContextAuthority, InvocationAuthorizationCandidate,
+    InvocationAuthorizationNoAckAuthority, InvocationAuthorizationPayload,
+    InvocationAuthorizationTerminalCause, InvocationSubmissionPermit, LeaseMonitoredAgentExecution,
 };
 use crate::protocol::elitea::runtime::v1::{DigestAlgorithmV1, DigestV1};
 use crate::transport::redis_commands::{
@@ -329,6 +329,7 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
         self,
         permit: InvocationSubmissionPermit,
         output_authority: AgentExecutionOutputAuthority,
+        runtime_context: ClaimBoundRuntimeContextAuthority,
     ) -> Self::Authorized {
         let Self {
             delivery,
@@ -345,6 +346,7 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
             output: output_spool,
             lease,
             permit,
+            runtime_context,
         }
     }
 
@@ -406,6 +408,7 @@ pub(crate) struct AuthorizedAgentRun {
     output: PreparedAgentOutput,
     lease: ClaimLeaseMonitor,
     permit: InvocationSubmissionPermit,
+    runtime_context: ClaimBoundRuntimeContextAuthority,
 }
 
 impl AuthorizedAgentRun {
@@ -459,6 +462,7 @@ impl AuthorizedAgentRun {
             output,
             lease,
             permit,
+            runtime_context,
         } = self;
         match output_authority.try_into_output_cursor(&verified) {
             Ok(cursor) => {
@@ -476,6 +480,7 @@ impl AuthorizedAgentRun {
                     ),
                     lease,
                     permit: Some(permit),
+                    runtime_context: Some(runtime_context),
                 })
             }
             Err(failure) => {
@@ -489,6 +494,7 @@ impl AuthorizedAgentRun {
                         output,
                         lease,
                         permit,
+                        runtime_context,
                     },
                     connector,
                     error: AgentProgressPublishError::InvalidFrame(error),
@@ -530,6 +536,156 @@ pub(crate) struct CursorBoundAuthorizedAgentRun<C: AgentProgressConnector> {
     publisher: FreshAgentProgressPublisher<C>,
     lease: ClaimLeaseMonitor,
     permit: Option<InvocationSubmissionPermit>,
+    runtime_context: Option<ClaimBoundRuntimeContextAuthority>,
+}
+
+/// Closed outcome of the sole post-authorization assembly attempt.
+pub(crate) enum AgentNativeAssemblyOutcome<C, S>
+where
+    C: AgentProgressConnector,
+{
+    Assembled(Box<AssembledAuthorizedAgentRun<C, S>>),
+    Failed {
+        run: Box<CursorBoundAuthorizedAgentRun<C>>,
+        error: crate::agents::runtime::NativeAgentAssemblyError,
+    },
+    Lease {
+        run: Box<CursorBoundAuthorizedAgentRun<C>>,
+        error: ClaimLeaseError,
+    },
+}
+
+/// Exact authorized run paired with the native assembly created from it.
+///
+/// Neither half can be extracted before the one-shot ADK start transition, so
+/// concurrent claims cannot cross-swap provider, session, projector or result
+/// selection state after credential redemption.
+pub(crate) struct AssembledAuthorizedAgentRun<C, S>
+where
+    C: AgentProgressConnector,
+{
+    run: CursorBoundAuthorizedAgentRun<C>,
+    assembled: AssembledNativeAgentInvocation<S>,
+}
+
+impl<C, S> AssembledAuthorizedAgentRun<C, S>
+where
+    C: AgentProgressConnector,
+{
+    pub(super) fn ensure_lease_running(&self) -> Result<(), ClaimLeaseError> {
+        self.run.ensure_lease_running()
+    }
+
+    #[must_use]
+    pub(super) fn deadline_unix_millis(&self) -> i64 {
+        self.run.deadline_unix_millis()
+    }
+
+    pub(super) fn project_start(
+        &mut self,
+        occurred_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<
+        crate::agents::events::ProjectedAgentEventBatch,
+        crate::agents::events::AgentEventProjectionError,
+    > {
+        self.assembled.project_start(occurred_at)
+    }
+
+    pub(super) async fn publish_progress(
+        &mut self,
+        event: crate::protocol::elitea::runtime::v1::NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        self.run
+            .publish_progress(event, occurred_at_unix_millis)
+            .await
+    }
+
+    pub(super) async fn publish_full_message(
+        &mut self,
+        event: crate::protocol::elitea::runtime::v1::NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        self.run
+            .publish_full_message(event, occurred_at_unix_millis)
+            .await
+    }
+
+    pub(super) fn into_run(self) -> CursorBoundAuthorizedAgentRun<C> {
+        self.run
+    }
+
+    pub(super) fn start(
+        self,
+    ) -> Result<StartedAuthorizedAgentRun<C, S>, Box<NativeStartFailure<C>>> {
+        let Self { mut run, assembled } = self;
+        if run.permit.is_none() || run.runtime_context.is_some() {
+            return Err(Box::new(NativeStartFailure {
+                run,
+                error: NativeAgentRuntimeError::invalid_state_for_lifecycle(),
+            }));
+        }
+        let Some(_submission_permit) = run.permit.take() else {
+            return Err(Box::new(NativeStartFailure {
+                run,
+                error: NativeAgentRuntimeError::invalid_state_for_lifecycle(),
+            }));
+        };
+        match assembled.start() {
+            Ok((native, projector, completion)) => Ok(StartedAuthorizedAgentRun {
+                run,
+                native,
+                projector,
+                completion,
+            }),
+            Err(error) => Err(Box::new(NativeStartFailure { run, error })),
+        }
+    }
+}
+
+/// Successfully started native work still paired with its exact output owner.
+pub(crate) struct StartedAuthorizedAgentRun<C, S>
+where
+    C: AgentProgressConnector,
+{
+    run: CursorBoundAuthorizedAgentRun<C>,
+    native: NativeAgentRun,
+    projector: crate::agents::events::AgentEventProjector,
+    completion: S,
+}
+
+impl<C, S> StartedAuthorizedAgentRun<C, S>
+where
+    C: AgentProgressConnector,
+{
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        CursorBoundAuthorizedAgentRun<C>,
+        NativeAgentRun,
+        crate::agents::events::AgentEventProjector,
+        S,
+    ) {
+        (self.run, self.native, self.projector, self.completion)
+    }
+}
+
+/// Failed one-shot start with the exact output/lease owner retained.
+pub(crate) struct NativeStartFailure<C>
+where
+    C: AgentProgressConnector,
+{
+    run: CursorBoundAuthorizedAgentRun<C>,
+    error: NativeAgentRuntimeError,
+}
+
+impl<C> NativeStartFailure<C>
+where
+    C: AgentProgressConnector,
+{
+    pub(super) fn into_parts(self) -> (CursorBoundAuthorizedAgentRun<C>, NativeAgentRuntimeError) {
+        (self.run, self.error)
+    }
 }
 
 #[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
@@ -556,6 +712,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             publisher,
             lease,
             permit,
+            runtime_context,
         } = self;
         let result = lease.check_now().await;
         (
@@ -566,6 +723,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                 publisher,
                 lease,
                 permit,
+                runtime_context,
             },
             result,
         )
@@ -579,16 +737,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
     pub(crate) async fn assemble_native<A: NativeAgentAssembler>(
         self,
         assembler: &A,
-    ) -> (
-        Self,
-        Result<
-            Result<
-                AssembledNativeAgentInvocation<A::Completion>,
-                crate::agents::runtime::NativeAgentAssemblyError,
-            >,
-            ClaimLeaseError,
-        >,
-    ) {
+    ) -> AgentNativeAssemblyOutcome<C, A::Completion> {
         let Self {
             delivery,
             verified,
@@ -596,21 +745,54 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             publisher,
             mut lease,
             permit,
+            mut runtime_context,
         } = self;
+        let Some(runtime_context_authority) = runtime_context.take() else {
+            return AgentNativeAssemblyOutcome::Failed {
+                run: Box::new(Self {
+                    delivery,
+                    verified,
+                    request,
+                    publisher,
+                    lease,
+                    permit,
+                    runtime_context,
+                }),
+                error: crate::agents::runtime::NativeAgentAssemblyError::new(
+                    crate::agents::runtime::NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                    "the authorized runtime-context grant is unavailable",
+                ),
+            };
+        };
+        let assembly = AuthorizedNativeAssembly::new(&request, runtime_context_authority);
         let assembly_result = lease
-            .run_cancellation_safe_phase(assembler.assemble(&request))
+            .run_cancellation_safe_phase(assembler.assemble(assembly))
             .await;
-        (
-            Self {
-                delivery,
-                verified,
-                request,
-                publisher,
-                lease,
-                permit,
+        let run = Self {
+            delivery,
+            verified,
+            request,
+            publisher,
+            lease,
+            permit,
+            runtime_context,
+        };
+        match assembly_result {
+            Ok(Ok(assembled_invocation)) => {
+                AgentNativeAssemblyOutcome::Assembled(Box::new(AssembledAuthorizedAgentRun {
+                    run,
+                    assembled: assembled_invocation,
+                }))
+            }
+            Ok(Err(error)) => AgentNativeAssemblyOutcome::Failed {
+                run: Box::new(run),
+                error,
             },
-            assembly_result,
-        )
+            Err(error) => AgentNativeAssemblyOutcome::Lease {
+                run: Box::new(run),
+                error,
+            },
+        }
     }
 
     pub(crate) async fn select_native_completion<S: NativeAgentCompletionSelector>(
@@ -633,6 +815,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             publisher,
             mut lease,
             permit,
+            runtime_context,
         } = self;
         let selection_result = lease.run_cancellation_safe_phase(selector.select()).await;
         (
@@ -643,6 +826,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                 publisher,
                 lease,
                 permit,
+                runtime_context,
             },
             selection_result,
         )
@@ -666,26 +850,6 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
         self.publisher
             .publish_full_message(&self.verified, event, occurred_at_unix_millis)
             .await
-    }
-
-    pub(crate) fn start_native<S>(
-        &mut self,
-        assembled: AssembledNativeAgentInvocation<S>,
-    ) -> Result<
-        (
-            NativeAgentRun,
-            crate::agents::events::AgentEventProjector,
-            S,
-        ),
-        NativeAgentRuntimeError,
-    > {
-        let _submission_permit = self
-            .permit
-            .take()
-            .ok_or_else(NativeAgentRuntimeError::invalid_state_for_lifecycle)?;
-        let (invocation, projector, completion) = assembled.into_parts();
-        let run = invocation.start()?;
-        Ok((run, projector, completion))
     }
 
     pub(crate) async fn resume_pending_progress(
@@ -714,6 +878,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             publisher,
             lease,
             permit: _,
+            runtime_context: _,
         } = self;
         let execution_kind = request.kind;
         let result = async {

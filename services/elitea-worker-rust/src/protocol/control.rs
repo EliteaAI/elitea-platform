@@ -4,6 +4,7 @@ use prost::Message;
 use ring::digest;
 use subtle::ConstantTimeEq;
 use tonic::transport::Channel;
+use zeroize::Zeroizing;
 
 use super::ProtocolError;
 use super::command::VerifiedAgentCommand;
@@ -638,6 +639,55 @@ pub(crate) struct ClaimBoundInputAuthority<'a> {
     pub(crate) media_type: &'a str,
 }
 
+/// Opaque authority for one post-authorization runtime-context redemption.
+///
+/// The Rust worker allows Main to resolve the actual execution actor only after
+/// `AUTHORIZED_NOW`. This value is therefore minted at that exact durable boundary,
+/// is neither cloneable nor formattable, and zeroizes its duplicated fence bytes on drop.
+/// It cannot submit ADK work, publish output, or settle the Redis delivery.
+pub(crate) struct ClaimBoundRuntimeContextAuthority {
+    execution_id: String,
+    generation: u64,
+    claim_id: String,
+    fence_token: Zeroizing<Vec<u8>>,
+    resource_project_id: String,
+}
+
+/// Borrowed request material exposed only to the hardened runtime-context
+/// transport. Keeping this view tied to the opaque owner prevents credentials
+/// from being redeemed from caller-selected loose identity fields.
+pub(crate) struct RuntimeContextRedemptionBinding<'a> {
+    pub(crate) execution_id: &'a str,
+    pub(crate) generation: u64,
+    pub(crate) claim_id: &'a str,
+    pub(crate) fence_token: &'a [u8],
+    pub(crate) resource_project_id: &'a str,
+}
+
+impl ClaimBoundRuntimeContextAuthority {
+    #[must_use]
+    fn from_claim(claim: &AcceptedAgentClaim) -> Self {
+        Self {
+            execution_id: claim.identity.execution_id.clone(),
+            generation: claim.identity.generation,
+            claim_id: claim.claim_id.clone(),
+            fence_token: Zeroizing::new(claim.fence.fence_token.clone()),
+            resource_project_id: claim.identity.resource_project_id.clone(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn redemption_binding(&self) -> RuntimeContextRedemptionBinding<'_> {
+        RuntimeContextRedemptionBinding {
+            execution_id: &self.execution_id,
+            generation: self.generation,
+            claim_id: &self.claim_id,
+            fence_token: self.fence_token.as_slice(),
+            resource_project_id: &self.resource_project_id,
+        }
+    }
+}
+
 impl LeaseMonitoredAgentExecution {
     #[must_use]
     pub const fn input_bundle_ref(&self) -> &ExecutionInputBundleReferenceV1 {
@@ -1092,6 +1142,17 @@ pub(crate) fn test_lease_monitored_input_execution(
 }
 
 #[cfg(test)]
+pub(crate) fn test_runtime_context_authority() -> ClaimBoundRuntimeContextAuthority {
+    ClaimBoundRuntimeContextAuthority {
+        execution_id: "execution/one".to_owned(),
+        generation: 2,
+        claim_id: "claim-1".to_owned(),
+        fence_token: Zeroizing::new(vec![b'f'; 32]),
+        resource_project_id: "17".to_owned(),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn test_lease_starting_execution(
     lease_expires_at_unix_millis: i64,
 ) -> LeaseStartingAgentExecution {
@@ -1315,6 +1376,7 @@ pub(crate) trait InvocationAuthorizationPayload: Sized {
         self,
         permit: InvocationSubmissionPermit,
         output: AgentExecutionOutputAuthority,
+        runtime_context: ClaimBoundRuntimeContextAuthority,
     ) -> Self::Authorized;
 
     fn into_authorization_terminal(
@@ -1573,9 +1635,11 @@ impl<R: ControlRpc> AgentControlClient<R> {
         };
         match parse_authorize_invocation_response(&response) {
             Ok(AuthorizeInvocationDecision::AuthorizedNow) => {
+                let runtime_context = ClaimBoundRuntimeContextAuthority::from_claim(&claim);
                 InvocationAuthorizationDecision::AuthorizedNow(Box::new(payload.into_authorized(
                     InvocationSubmissionPermit { _sealed: () },
                     AgentExecutionOutputAuthority { claim },
+                    runtime_context,
                 )))
             }
             Ok(AuthorizeInvocationDecision::AlreadyAuthorized) => {

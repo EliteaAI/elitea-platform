@@ -46,8 +46,9 @@ use crate::agents::events::{
     AgentEventProjectionContext, AgentEventProjector, CompletedAgentBrowserOutput,
 };
 use crate::agents::runtime::{
-    AssembledNativeAgentInvocation, NativeAgentAssembler, NativeAgentAssemblyError,
-    NativeAgentAssemblyErrorCode, NativeAgentCompletionSelector, NativeAgentInvocation,
+    AssembledNativeAgentInvocation, AuthorizedNativeAssembly, NativeAgentAssembler,
+    NativeAgentAssemblyError, NativeAgentAssemblyErrorCode, NativeAgentCompletionSelector,
+    NativeAgentInvocation,
 };
 use crate::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
@@ -1206,7 +1207,7 @@ impl NativeAgentAssembler for GatedNativeAssembler {
 
     async fn assemble(
         &self,
-        _request: &crate::agents::AgentExecutionRequest,
+        _assembly: AuthorizedNativeAssembly<'_>,
     ) -> Result<AssembledNativeAgentInvocation<Self::Completion>, NativeAgentAssemblyError> {
         self.started.notify_one();
         std::future::pending().await
@@ -1219,8 +1220,9 @@ impl NativeAgentAssembler for TestNativeAssembler {
 
     async fn assemble(
         &self,
-        request: &crate::agents::AgentExecutionRequest,
+        assembly: AuthorizedNativeAssembly<'_>,
     ) -> Result<AssembledNativeAgentInvocation<Self::Completion>, NativeAgentAssemblyError> {
+        let request = assembly.request();
         self.trace.lock().expect("trace").push(match request.kind {
             AgentExecutionKind::Application => "assemble_application",
             AgentExecutionKind::Adhoc => "assemble_adhoc",
