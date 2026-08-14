@@ -94,8 +94,8 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	shared, err := LoadManifest(platformmigrations.Files, ScopeShared)
 	require.NoError(t, err)
-	// 65: shared/0065_centry_notifications_uuid_unique.sql.
-	require.EqualValues(t, 65, Head(shared))
+	// 66: shared/0066_index_meta_permissions.sql.
+	require.EqualValues(t, 66, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

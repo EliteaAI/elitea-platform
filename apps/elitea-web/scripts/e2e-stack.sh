@@ -440,6 +440,13 @@ CROSS JOIN (VALUES
     ('models.applications.tool.details'),
     ('models.applications.tool.patch'),
     ('models.applications.tools.export'),
+    -- `.details` is the LIST permission for the indexes rail
+    -- (`internal/api/v2/indexing/index_meta.go:18`) and a DIFFERENT string
+    -- from `.edit`. Project 1 carries per-project rows, so the central
+    -- default-mode fallback that shared/0066 grants is suppressed here and the
+    -- string has to be listed explicitly; without it the rail 403s while the
+    -- Indexes tab still renders, which reads as a hung fetch — measured.
+    ('models.applications.index_meta.details'),
     ('models.applications.index_meta.edit'),
     ('models.chat.conversations.list'),
     ('models.chat.conversations.create'),
