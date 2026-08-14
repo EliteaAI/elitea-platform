@@ -64,6 +64,12 @@ export const VersionMeta = zod.object({
     .describe(
       'Written by UpdateAttachmentStorage as {\"toolkit_id\": \"...\"} (eliteacore\/handler.go:1777-1781).\n',
     ),
+  internal_tools: zod
+    .array(zod.string())
+    .optional()
+    .describe(
+      'Identifiers of the agent\'s enabled internal tools (e.g. \"internal_mcp\"). Client-owned: elitea-main never inspects the key — UpdateVersion assigns the whole meta map it receives (applications\/handler.go:826-828) — but the legacy UI writes it here and the replatformed edit page both reads and writes it, so it is modelled rather than left to the passthrough marker below.\n',
+    ),
 });
 
 export type VersionMeta = zod.input<typeof VersionMeta>;

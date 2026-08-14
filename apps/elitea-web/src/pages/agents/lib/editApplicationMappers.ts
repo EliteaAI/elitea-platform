@@ -155,25 +155,12 @@ export function toVersionSaveBody(
      * Always sent (not gated on being non-empty): turning the LAST one off
      * has to reach the wire, and an `undefined`-when-empty guard would make
      * exactly that one edit silently unsaveable.
-     *
-     * The cast is real and disclosed: the generated `VersionMeta` schema
-     * models a CLOSED object (`step_limit`/`icon_meta`/`category`/
-     * `source_version_id`/`parent_*`/`variables`/`attachment_storage`) with
-     * no `internal_tools` key and no passthrough marker, even though the
-     * whole legacy app writes it there, this repo's own `toVersionDraft`
-     * (below) READS it back out of `meta`, and the Go `UpdateVersion`
-     * handler assigns whatever `meta` map it is given wholesale. So the
-     * value does round-trip; only the contract is missing it. Widening
-     * `VersionMeta` in `api/v2.yaml` trips six unrelated codegen/parity
-     * gates, so it is filed separately rather than smuggled in here — and
-     * `storedMeta` is spread through untouched regardless, so a version that
-     * already carries the key keeps it either way.
      */
     meta: {
       ...storedMeta,
       ...(edits.stepLimit === undefined ? {} : { step_limit: edits.stepLimit }),
       internal_tools: [...edits.internalTools],
-    } as VersionWriteRequest['meta'],
+    },
   };
 }
 

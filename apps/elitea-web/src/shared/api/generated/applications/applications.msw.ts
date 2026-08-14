@@ -275,6 +275,13 @@ export const getCreateApplicationResponseMock = (
               },
               undefined,
             ]),
+            internal_tools: faker.helpers.arrayElement([
+              Array.from(
+                { length: faker.number.int({ min: 1, max: 10 }) },
+                (_, i) => i + 1,
+              ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+              undefined,
+            ]),
           },
         },
         null,
@@ -489,6 +496,13 @@ export const getCreateApplicationResponseMock = (
               },
               undefined,
             ]),
+            internal_tools: faker.helpers.arrayElement([
+              Array.from(
+                { length: faker.number.int({ min: 1, max: 10 }) },
+                (_, i) => i + 1,
+              ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+              undefined,
+            ]),
           },
         },
         null,
@@ -666,6 +680,13 @@ export const getListPublicApplicationsResponseMock = (
           },
           undefined,
         ]),
+        internal_tools: faker.helpers.arrayElement([
+          Array.from(
+            { length: faker.number.int({ min: 1, max: 10 }) },
+            (_, i) => i + 1,
+          ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+          undefined,
+        ]),
       },
     },
   })),
@@ -799,6 +820,13 @@ export const getGetApplicationResponseMock = (
                   undefined,
                 ]),
               },
+              undefined,
+            ]),
+            internal_tools: faker.helpers.arrayElement([
+              Array.from(
+                { length: faker.number.int({ min: 1, max: 10 }) },
+                (_, i) => i + 1,
+              ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
               undefined,
             ]),
           },
@@ -1024,6 +1052,13 @@ export const getEditApplicationResponseMock = (
               },
               undefined,
             ]),
+            internal_tools: faker.helpers.arrayElement([
+              Array.from(
+                { length: faker.number.int({ min: 1, max: 10 }) },
+                (_, i) => i + 1,
+              ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+              undefined,
+            ]),
           },
         },
         null,
@@ -1238,6 +1273,13 @@ export const getGetPublicApplicationResponseMock = (
                 undefined,
               ]),
             },
+            undefined,
+          ]),
+          internal_tools: faker.helpers.arrayElement([
+            Array.from(
+              { length: faker.number.int({ min: 1, max: 10 }) },
+              (_, i) => i + 1,
+            ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
             undefined,
           ]),
         },
@@ -1669,6 +1711,13 @@ export const getGetApplicationVersionDetailResponseMock = (
           },
           undefined,
         ]),
+        internal_tools: faker.helpers.arrayElement([
+          Array.from(
+            { length: faker.number.int({ min: 1, max: 10 }) },
+            (_, i) => i + 1,
+          ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+          undefined,
+        ]),
       },
     },
     null,
@@ -1872,6 +1921,13 @@ export const getUpdateApplicationVersionResponseMock = (
           },
           undefined,
         ]),
+        internal_tools: faker.helpers.arrayElement([
+          Array.from(
+            { length: faker.number.int({ min: 1, max: 10 }) },
+            (_, i) => i + 1,
+          ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+          undefined,
+        ]),
       },
     },
     null,
@@ -2073,6 +2129,13 @@ export const getSaveApplicationNewVersionResponseMock = (
               undefined,
             ]),
           },
+          undefined,
+        ]),
+        internal_tools: faker.helpers.arrayElement([
+          Array.from(
+            { length: faker.number.int({ min: 1, max: 10 }) },
+            (_, i) => i + 1,
+          ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
           undefined,
         ]),
       },
@@ -2308,6 +2371,13 @@ export const getExportApplicationResponseMock = (
             },
             undefined,
           ]),
+          internal_tools: faker.helpers.arrayElement([
+            Array.from(
+              { length: faker.number.int({ min: 1, max: 10 }) },
+              (_, i) => i + 1,
+            ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+            undefined,
+          ]),
         },
       },
       tools: Array.from(
@@ -2537,6 +2607,15 @@ export const getImportWizardResponseMock = (
                           undefined,
                         ]),
                       },
+                      undefined,
+                    ]),
+                    internal_tools: faker.helpers.arrayElement([
+                      Array.from(
+                        { length: faker.number.int({ min: 1, max: 10 }) },
+                        (_, i) => i + 1,
+                      ).map(() =>
+                        faker.string.alpha({ length: { min: 10, max: 20 } }),
+                      ),
                       undefined,
                     ]),
                   },
@@ -2813,6 +2892,15 @@ export const getImportWizardResponseMock = (
                           undefined,
                         ]),
                       },
+                      undefined,
+                    ]),
+                    internal_tools: faker.helpers.arrayElement([
+                      Array.from(
+                        { length: faker.number.int({ min: 1, max: 10 }) },
+                        (_, i) => i + 1,
+                      ).map(() =>
+                        faker.string.alpha({ length: { min: 10, max: 20 } }),
+                      ),
                       undefined,
                     ]),
                   },
@@ -3237,6 +3325,15 @@ export const getForkAgentResponseMock = (
                       undefined,
                     ]),
                   },
+                  undefined,
+                ]),
+                internal_tools: faker.helpers.arrayElement([
+                  Array.from(
+                    { length: faker.number.int({ min: 1, max: 10 }) },
+                    (_, i) => i + 1,
+                  ).map(() =>
+                    faker.string.alpha({ length: { min: 10, max: 20 } }),
+                  ),
                   undefined,
                 ]),
               },
