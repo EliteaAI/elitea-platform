@@ -30,6 +30,8 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
+	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 )
 
 // relationFixture is one project schema holding one application, one draft
@@ -53,26 +55,31 @@ func newRelationFixture(t *testing.T) *relationFixture {
 		t.Fatalf("run baseline migrations: %v", err)
 	}
 
-	// PRE-EXISTING, SEPARATE DEFECT, measured here rather than assumed: the
-	// baseline migration's `entity_tool_mapping` has NO `entity_id` column
-	// (001_initial.sql:451-460 — verified by reading information_schema on a
-	// freshly migrated database), while the production pylon schema this
-	// service inherits has `entity_id integer NOT NULL`
-	// (internal/db/schema/agent_chat_baseline.sql:104-113) and EVERY writer in
-	// this codebase names it: this handler's attach INSERT, eliteacore's
-	// clone/import INSERTs, and the chat query's own join
-	// (internal/db/queries/agent_chat.sql:107). So on a fresh Go-migrated
-	// database every attach 500s ("column entity_id ... does not exist")
-	// before `selected_tools` is even reached. This test is about
-	// `selected_tools`, not about that gap, so the fixture brings the table up
-	// to the shape every deployed instance actually has. Fixing the migration
-	// is a separate change (it cannot be an edit to 001_initial.sql — applied
-	// migrations are checksum-immutable).
-	if _, err := pool.Exec(ctx, `ALTER TABLE p_1.entity_tool_mapping ADD COLUMN IF NOT EXISTS entity_id INTEGER`); err != nil {
-		t.Fatalf("align the fixture table with the deployed schema: %v", err)
+	// The REAL ledgered corpus, on top of the bootstrap schema — not a
+	// hand-written ALTER bringing the fixture up to the shape production has.
+	// `entity_tool_mapping.entity_id` is missing from 001_initial.sql:451-460
+	// and is added by tenant/0125; an earlier revision of this fixture carried
+	// its own `ADD COLUMN IF NOT EXISTS entity_id INTEGER` instead, which meant
+	// these tests would have gone on passing if 0125 were dropped. Applying the
+	// corpus is what makes the attach below discriminate.
+	runner := migrate.New(pool, platformmigrations.Files)
+	if err := runner.ApplyShared(ctx); err != nil {
+		t.Fatalf("apply shared migrations: %v", err)
+	}
+	if err := runner.ApplyTenant(ctx, 1); err != nil {
+		t.Fatalf("apply tenant migrations to p_1: %v", err)
 	}
 
 	var applicationID, versionID, toolkitID int64
+	// A decoy application, so the real one below does not get id 1 and collide
+	// with its own version's id. `entity_id` and `entity_version_id` are
+	// different things and a test that cannot tell them apart cannot catch a
+	// writer that confuses them.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO p_1.applications (name, description, owner_id)
+		VALUES ('selected-tools-decoy', '', 1)`); err != nil {
+		t.Fatalf("insert decoy application: %v", err)
+	}
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO p_1.applications (name, description, owner_id)
 		VALUES ('selected-tools-fixture', '', 1) RETURNING id`).Scan(&applicationID); err != nil {
@@ -185,6 +192,76 @@ func TestRelationPatchPersistsSelectedToolsAndReadsThemBack(t *testing.T) {
 	readBack := fixture.readBackSelectedTools(t)
 	if len(readBack) != 2 || readBack[0] != "create_issue" || readBack[1] != "get_issue" {
 		t.Errorf("version_details.tools[].selected_tools = %#v, want [create_issue get_issue]", readBack)
+	}
+}
+
+// The attach itself, against the schema the migration corpus actually builds.
+//
+// `entity_tool_mapping.entity_id` is in the deployed pylon shape
+// (internal/db/schema/agent_chat_baseline.sql:104-113) and in every writer, but
+// was in no migration until tenant/0125. Revert 0125 and this test fails at the
+// first line with the production error, verbatim:
+//
+//	attach = 500, want 201: {"error":"ERROR: column \"entity_id\" of relation
+//	\"entity_tool_mapping\" does not exist (SQLSTATE 42703)"}
+//
+// which is exactly what a browser got from PATCH /api/v2/elitea_core/tool/
+// prompt_lib/{projectId}/{toolkitId} on any database this repository built for
+// itself.
+//
+// It asserts the VALUE, not merely that the row landed: `entity_id` must be the
+// owning APPLICATION, while `entity_version_id` is the version. A migration
+// that added the column and a handler that filled it with the version id would
+// satisfy NOT NULL and then join to nothing — the fixture deliberately has
+// distinct ids for the two so that confusion is visible here.
+//
+// The second half runs the chat read's own join predicate
+// (internal/db/queries/agent_chat.sql:106-108, generated twin
+// sqlcgen/agent_chat.sql.go:1233-1235) against the row the attach just wrote.
+// That is the other half of the same defect: fixing attach while leaving the
+// tool-resolution subquery unable to compile would be a half-fix, and the chat
+// query is far too large to call through from here.
+func TestRelationPatchStoresTheOwningApplicationAsEntityIDAndTheChatJoinFindsIt(t *testing.T) {
+	fixture := newRelationFixture(t)
+
+	recorder := fixture.patchRelation(t, fixture.attachBody())
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("attach = %d, want 201: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var storedEntityID, storedVersionID int64
+	if err := fixture.pool.QueryRow(context.Background(),
+		`SELECT entity_id, entity_version_id FROM p_1.entity_tool_mapping
+		 WHERE tool_id = $1 AND entity_type = 'agent'`, fixture.toolkitID,
+	).Scan(&storedEntityID, &storedVersionID); err != nil {
+		t.Fatalf("re-read the mapping row: %v", err)
+	}
+	if storedEntityID != fixture.applicationID {
+		t.Errorf("entity_id = %d, want %d (the owning application)", storedEntityID, fixture.applicationID)
+	}
+	if storedVersionID != fixture.versionID {
+		t.Errorf("entity_version_id = %d, want %d", storedVersionID, fixture.versionID)
+	}
+	if fixture.applicationID == fixture.versionID {
+		t.Fatalf("fixture degenerate: application and version share id %d, so this test cannot tell them apart", fixture.applicationID)
+	}
+
+	var joined int
+	if err := fixture.pool.QueryRow(context.Background(), `
+		SELECT count(*)
+		FROM p_1.application_versions AS application_version
+		JOIN p_1.entity_tool_mapping AS application_tool_mapping
+		  ON application_tool_mapping.entity_version_id = application_version.id
+		 AND application_tool_mapping.entity_id = application_version.application_id
+		 AND application_tool_mapping.entity_type = 'agent'
+		JOIN p_1.elitea_tools AS tool
+		  ON tool.id = application_tool_mapping.tool_id
+		WHERE application_version.id = $1`, fixture.versionID,
+	).Scan(&joined); err != nil {
+		t.Fatalf("the chat tool-resolution join does not run against the migrated schema: %v", err)
+	}
+	if joined != 1 {
+		t.Errorf("the chat tool-resolution join matched %d rows, want 1 — an attached toolkit that the agent turn cannot see", joined)
 	}
 }
 

@@ -99,6 +99,6 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
-	// 124: tenant/0124_elitea_tools_pylon_shape.sql.
-	require.EqualValues(t, 124, Head(tenant))
+	// 125: tenant/0125_entity_tool_mapping_entity_id.sql.
+	require.EqualValues(t, 125, Head(tenant))
 }
