@@ -6,7 +6,9 @@
 //! routed to recovery and can never be converted into fresh business input.
 
 use std::fmt;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -36,10 +38,15 @@ use crate::transport::{
 };
 
 use super::agent_delivery::FreshAgentDelivery;
-use super::agent_lease::{ClaimLeaseMonitor, ClaimLeaseMonitorConfig, UnixMillisClock};
+use super::agent_lease::{
+    ClaimLeaseError, ClaimLeaseMonitor, ClaimLeaseMonitorConfig, UnixMillisClock,
+};
+use super::agent_preparation::{AgentFailureTerminal, PreInvocationTerminal};
 
 const MIN_OUTPUT_SESSIONS: usize = 1;
 const MAX_OUTPUT_SESSIONS: usize = 8;
+
+type TerminalFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Stable preflight outcome category without exposing durable frame contents.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -180,6 +187,29 @@ pub(crate) struct PreparedAgentOutput {
 }
 
 impl PreparedAgentOutput {
+    /// Persist one fresh terminal before any output endpoint is contacted and
+    /// seal the exact bytes into the only allowed reconnect capability.
+    async fn persist_terminal(
+        self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<(PreparedOutputSpool, AgentOutputSpoolReopener), OutputGrpcError> {
+        let Self {
+            mut prepared,
+            factory,
+        } = self;
+        let durable = frame.clone();
+        let expected = frame.encode_to_vec();
+        let prepared = tokio::task::spawn_blocking(move || {
+            prepared.persist(durable)?;
+            Ok::<_, OutputGrpcError>(prepared)
+        })
+        .await
+        .map_err(|_| {
+            OutputGrpcError::Unavailable("the terminal output persistence task did not complete")
+        })??;
+        Ok((prepared, factory.seal_terminal(expected)))
+    }
+
     #[cfg(test)]
     pub(crate) fn into_test_spool(self) -> PreparedOutputSpool {
         self.prepared
@@ -310,6 +340,114 @@ impl AcceptedTerminalRecoveryCompletion {
     }
 }
 
+/// Confirmed outcome of a fresh pre-invocation failure terminal.
+#[derive(Debug)]
+#[allow(dead_code)] // Returned by the capability-gated fresh coordinator.
+pub(crate) struct AgentFailureTerminalCompletion {
+    execution_kind: AgentExecutionKind,
+    sequence: u64,
+    failure: RuntimeFailureKind,
+    settlement_receipt_id: String,
+}
+
+#[allow(dead_code)] // Observed by the next whole-delivery coordinator.
+impl AgentFailureTerminalCompletion {
+    #[must_use]
+    pub(crate) const fn execution_kind(&self) -> AgentExecutionKind {
+        self.execution_kind
+    }
+
+    #[must_use]
+    pub(crate) const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    #[must_use]
+    pub(crate) const fn failure(&self) -> RuntimeFailureKind {
+        self.failure
+    }
+
+    #[must_use]
+    pub(crate) fn settlement_receipt_id(&self) -> &str {
+        &self.settlement_receipt_id
+    }
+}
+
+/// Data-free failure for fresh terminal publication and retirement.
+#[derive(Debug)]
+#[allow(dead_code)] // Returned by the capability-gated fresh coordinator.
+pub(crate) enum AgentFailureTerminalError {
+    Lease(ClaimLeaseError),
+    Clock(&'static str),
+    InvalidDurableState(ProtocolError),
+    Preflight(AgentOutputPreflightError),
+    Output(OutputGrpcError),
+    Settlement(AgentControlError),
+    Redis(RedisCommandError),
+}
+
+#[allow(dead_code)] // Observed by the next whole-delivery coordinator.
+impl AgentFailureTerminalError {
+    /// Stable low-cardinality category for logs and metrics.
+    #[must_use]
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::Lease(_) => "agent_failure_terminal.lease_lost",
+            Self::Clock(_) => "agent_failure_terminal.invalid_clock",
+            Self::InvalidDurableState(_) => "agent_failure_terminal.invalid_durable_state",
+            Self::Preflight(error) => error.code(),
+            Self::Output(error) if reconnectable_output(error) => {
+                "agent_failure_terminal.output_unavailable"
+            }
+            Self::Output(_) => "agent_failure_terminal.output_rejected",
+            Self::Settlement(_) => "agent_failure_terminal.settlement_failed",
+            Self::Redis(error) => error.code(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn retryable(&self) -> bool {
+        match self {
+            Self::Lease(error) => error.retryable(),
+            Self::Preflight(error) => error.retryable(),
+            Self::Output(error) => reconnectable_output(error),
+            Self::Settlement(error) => error.retryable(),
+            Self::Redis(error) => error.retryable(),
+            Self::Clock(_) | Self::InvalidDurableState(_) => false,
+        }
+    }
+}
+
+impl fmt::Display for AgentFailureTerminalError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Lease(error) => write!(formatter, "terminal lease validation failed: {error}"),
+            Self::Clock(message) => formatter.write_str(message),
+            Self::InvalidDurableState(error) => {
+                write!(formatter, "the fresh terminal is invalid: {error}")
+            }
+            Self::Preflight(error) => write!(formatter, "terminal spool recovery failed: {error}"),
+            Self::Output(error) => write!(formatter, "terminal output delivery failed: {error}"),
+            Self::Settlement(error) => write!(formatter, "terminal settlement failed: {error}"),
+            Self::Redis(error) => write!(formatter, "terminal Redis retirement failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AgentFailureTerminalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lease(error) => Some(error),
+            Self::InvalidDurableState(error) => Some(error),
+            Self::Preflight(error) => Some(error),
+            Self::Output(error) => Some(error),
+            Self::Settlement(error) => Some(error),
+            Self::Redis(error) => Some(error),
+            Self::Clock(_) => None,
+        }
+    }
+}
+
 /// Data-free failure for the exact terminal recovery lifecycle.
 #[derive(Debug)]
 pub enum AgentTerminalRecoveryError {
@@ -408,6 +546,107 @@ impl AgentTerminalReplay for Channel {
     }
 }
 
+/// Publish and retire one canonical failure observed before native ADK entry.
+///
+/// A final supervised lease poll linearizes server Stop and fatal lease loss.
+/// Only after that poll does the coordinator sample occurrence time and apply
+/// the inclusive command deadline. The terminal is durably persisted before
+/// the first output attempt; every reconnect must prove the same exact bytes.
+#[allow(dead_code)] // Enabled with the owned fresh-invocation coordinator.
+pub(crate) fn publish_pre_invocation_terminal<'a, R, C, T, K>(
+    control: Arc<AgentControlClient<R>>,
+    retirer: &'a RedisCommandRetirer<C>,
+    replay: &'a T,
+    terminal: PreInvocationTerminal,
+    clock: Arc<K>,
+    recovery_config: AgentTerminalRecoveryConfig,
+) -> TerminalFuture<'a, Result<AgentFailureTerminalCompletion, AgentFailureTerminalError>>
+where
+    R: ControlRpc + 'static,
+    C: RedisRetirementClient + 'a,
+    T: AgentTerminalReplay + 'a,
+    K: UnixMillisClock,
+{
+    Box::pin(async move {
+        let AgentFailureTerminal {
+            delivery,
+            verified,
+            output_authority,
+            output,
+            reservation,
+            lease,
+            proposed_failure,
+        } = terminal.into_failure_terminal();
+        let execution_kind = verified.kind();
+
+        let result = async {
+            let mut failure = match lease.check_now().await {
+                Ok(()) => proposed_failure,
+                Err(ClaimLeaseError::Cancelled(_)) => RuntimeFailureKind::Cancelled,
+                Err(error) => return Err(AgentFailureTerminalError::Lease(error)),
+            };
+            let occurred_at_unix_millis = clock.now_unix_millis();
+            if occurred_at_unix_millis <= 0 {
+                return Err(AgentFailureTerminalError::Clock(
+                    "the wall clock cannot publish the agent terminal",
+                ));
+            }
+            if failure != RuntimeFailureKind::Cancelled
+                && occurred_at_unix_millis >= verified.command().deadline_unix_millis
+            {
+                failure = RuntimeFailureKind::DeadlineExceeded;
+            }
+            let frame = output_authority
+                .bind_failure_terminal(&verified, failure, occurred_at_unix_millis)
+                .map_err(AgentFailureTerminalError::InvalidDurableState)?;
+            let (spool, reopener) = output
+                .persist_terminal(&frame)
+                .await
+                .map_err(AgentFailureTerminalError::Output)?;
+            let (acknowledged, frame) = replay_terminal_with_replacement(
+                replay,
+                &verified,
+                frame,
+                spool,
+                reopener,
+                recovery_config.max_output_sessions,
+            )
+            .await
+            .map_err(failure_replay_error)?;
+            let failure = restored_terminal_failure_kind(&frame).ok_or(
+                AgentFailureTerminalError::InvalidDurableState(ProtocolError::InvalidInput(
+                    "the delivered failure terminal is malformed",
+                )),
+            )?;
+            let receipt = control
+                .prepare_agent_settlement(acknowledged)
+                .await
+                .map_err(AgentFailureTerminalError::Settlement)?;
+            let settlement_receipt_id = receipt.receipt_id().to_owned();
+            retirer
+                .retire_agent_command(delivery, &verified, receipt.into())
+                .await
+                .map_err(AgentFailureTerminalError::Redis)?;
+            Ok(AgentFailureTerminalCompletion {
+                execution_kind,
+                sequence: frame.sequence,
+                failure,
+                settlement_receipt_id,
+            })
+        }
+        .await;
+
+        if let Err(error) = lease.close().await {
+            tracing::warn!(
+                error_code = error.code().as_str(),
+                "claim lease supervision ended after failure terminal publication"
+            );
+        }
+        drop(reservation);
+        result
+    })
+}
+
 /// Replay and retire one terminal already admitted from an ACCEPTED claim.
 ///
 /// No `BeginExecution`, input, authorization or ADK authority exists on this
@@ -416,102 +655,152 @@ impl AgentTerminalReplay for Channel {
 /// output ACK can mint settlement authority, and only the validated settlement
 /// receipt can retire the Redis command.
 #[allow(dead_code)] // Enabled only after real TLS output and Redis composition lands.
-pub(crate) async fn recover_accepted_terminal<R, C, T, K>(
+pub(crate) fn recover_accepted_terminal<'a, R, C, T, K>(
     control: Arc<AgentControlClient<R>>,
-    retirer: &RedisCommandRetirer<C>,
-    replay: &T,
+    retirer: &'a RedisCommandRetirer<C>,
+    replay: &'a T,
     recovery: AcceptedTerminalOutputRecovery,
     clock: Arc<K>,
     lease_config: ClaimLeaseMonitorConfig,
     recovery_config: AgentTerminalRecoveryConfig,
-) -> Result<AcceptedTerminalRecoveryCompletion, AgentTerminalRecoveryError>
+) -> TerminalFuture<'a, Result<AcceptedTerminalRecoveryCompletion, AgentTerminalRecoveryError>>
 where
     R: ControlRpc + 'static,
-    C: RedisRetirementClient,
-    T: AgentTerminalReplay,
+    C: RedisRetirementClient + 'a,
+    T: AgentTerminalReplay + 'a,
     K: UnixMillisClock,
 {
-    let (delivery, verified, claim, spool, mut frame, mut reopener) = recovery.into_parts();
-    let execution_kind = verified.kind();
-    let lease = ClaimLeaseMonitor::start_recovery(Arc::clone(&control), claim, clock, lease_config);
+    Box::pin(async move {
+        let (delivery, verified, claim, spool, frame, reopener) = recovery.into_parts();
+        let execution_kind = verified.kind();
+        let lease =
+            ClaimLeaseMonitor::start_recovery(Arc::clone(&control), claim, clock, lease_config);
 
-    let result = async {
-        let acknowledged = match replay_exact_terminal(
-            replay,
-            &verified,
-            &frame,
-            spool,
-            &reopener,
-            recovery_config.max_output_sessions,
-        )
-        .await
-        {
-            Ok(acknowledged) => acknowledged,
-            Err(error) => {
-                let Some(winner) = output_winner(&error) else {
-                    return Err(AgentTerminalRecoveryError::Output(error));
-                };
-                if restored_terminal_failure_kind(&frame) == Some(winner) {
-                    return Err(AgentTerminalRecoveryError::Output(error));
-                }
-                let fence = frame.fence.as_ref().ok_or({
-                    AgentTerminalRecoveryError::Output(OutputGrpcError::Protocol(
-                        OutputProtocolError::AuthorizationFailed(
-                            "the durable terminal fence is unavailable for replacement",
-                        ),
-                    ))
-                })?;
-                let replacement = build_agent_terminal_output_frame(
-                    &verified,
-                    fence,
-                    AgentTerminalOutput::Failure(winner),
-                    frame.sequence,
-                    frame.occurred_at_unix_millis,
-                    frame.claim_handoff_watermark,
-                )
-                .map_err(AgentTerminalRecoveryError::InvalidDurableState)?;
-                let replacement_spool = reopener
-                    .replace_expected_terminal(&frame, &replacement)
-                    .await
-                    .map_err(AgentTerminalRecoveryError::Preflight)?;
-                frame = replacement;
-                replay_exact_terminal(
-                    replay,
-                    &verified,
-                    &frame,
-                    replacement_spool,
-                    &reopener,
-                    recovery_config.max_output_sessions,
-                )
+        let result = async {
+            let (acknowledged, frame) = replay_terminal_with_replacement(
+                replay,
+                &verified,
+                frame,
+                spool,
+                reopener,
+                recovery_config.max_output_sessions,
+            )
+            .await
+            .map_err(recovery_replay_error)?;
+
+            let receipt = control
+                .prepare_agent_settlement(acknowledged)
                 .await
-                .map_err(AgentTerminalRecoveryError::Output)?
+                .map_err(AgentTerminalRecoveryError::Settlement)?;
+            let settlement_receipt_id = receipt.receipt_id().to_owned();
+            retirer
+                .retire_agent_command(delivery, &verified, receipt.into())
+                .await
+                .map_err(AgentTerminalRecoveryError::Redis)?;
+            Ok(AcceptedTerminalRecoveryCompletion {
+                execution_kind,
+                sequence: frame.sequence,
+                settlement_receipt_id,
+            })
+        }
+        .await;
+
+        if let Err(error) = lease.close().await {
+            tracing::warn!(
+                error_code = error.code().as_str(),
+                "claim lease supervision ended after terminal recovery"
+            );
+        }
+        result
+    })
+}
+
+enum ExactTerminalReplayError {
+    InvalidDurableState(ProtocolError),
+    Preflight(AgentOutputPreflightError),
+    Output(OutputGrpcError),
+}
+
+async fn replay_terminal_with_replacement<T: AgentTerminalReplay>(
+    replay: &T,
+    verified: &VerifiedAgentCommand,
+    mut frame: ExecutionOutputFrameV1,
+    spool: PreparedOutputSpool,
+    mut reopener: AgentOutputSpoolReopener,
+    max_output_sessions: usize,
+) -> Result<(DurablyAckedTerminal, ExecutionOutputFrameV1), ExactTerminalReplayError> {
+    let acknowledged = match replay_exact_terminal(
+        replay,
+        verified,
+        &frame,
+        spool,
+        &reopener,
+        max_output_sessions,
+    )
+    .await
+    {
+        Ok(acknowledged) => acknowledged,
+        Err(error) => {
+            let Some(winner) = output_winner(&error) else {
+                return Err(ExactTerminalReplayError::Output(error));
+            };
+            if restored_terminal_failure_kind(&frame) == Some(winner) {
+                return Err(ExactTerminalReplayError::Output(error));
             }
-        };
-
-        let receipt = control
-            .prepare_agent_settlement(acknowledged)
+            let fence = frame.fence.as_ref().ok_or({
+                ExactTerminalReplayError::Output(OutputGrpcError::Protocol(
+                    OutputProtocolError::AuthorizationFailed(
+                        "the durable terminal fence is unavailable for replacement",
+                    ),
+                ))
+            })?;
+            let replacement = build_agent_terminal_output_frame(
+                verified,
+                fence,
+                AgentTerminalOutput::Failure(winner),
+                frame.sequence,
+                frame.occurred_at_unix_millis,
+                frame.claim_handoff_watermark,
+            )
+            .map_err(ExactTerminalReplayError::InvalidDurableState)?;
+            let replacement_spool = reopener
+                .replace_expected_terminal(&frame, &replacement)
+                .await
+                .map_err(ExactTerminalReplayError::Preflight)?;
+            frame = replacement;
+            replay_exact_terminal(
+                replay,
+                verified,
+                &frame,
+                replacement_spool,
+                &reopener,
+                max_output_sessions,
+            )
             .await
-            .map_err(AgentTerminalRecoveryError::Settlement)?;
-        let settlement_receipt_id = receipt.receipt_id().to_owned();
-        retirer
-            .retire_agent_command(delivery, &verified, receipt.into())
-            .await
-            .map_err(AgentTerminalRecoveryError::Redis)?;
-        Ok(AcceptedTerminalRecoveryCompletion {
-            execution_kind,
-            sequence: frame.sequence,
-            settlement_receipt_id,
-        })
-    }
-    .await;
+            .map_err(ExactTerminalReplayError::Output)?
+        }
+    };
+    Ok((acknowledged, frame))
+}
 
-    if let Err(error) = lease.close().await {
-        tracing::warn!(
-            error_code = error.code().as_str(),
-            "claim lease supervision ended after terminal recovery"
-        );
+fn recovery_replay_error(error: ExactTerminalReplayError) -> AgentTerminalRecoveryError {
+    match error {
+        ExactTerminalReplayError::InvalidDurableState(error) => {
+            AgentTerminalRecoveryError::InvalidDurableState(error)
+        }
+        ExactTerminalReplayError::Preflight(error) => AgentTerminalRecoveryError::Preflight(error),
+        ExactTerminalReplayError::Output(error) => AgentTerminalRecoveryError::Output(error),
     }
-    result
+}
+
+fn failure_replay_error(error: ExactTerminalReplayError) -> AgentFailureTerminalError {
+    match error {
+        ExactTerminalReplayError::InvalidDurableState(error) => {
+            AgentFailureTerminalError::InvalidDurableState(error)
+        }
+        ExactTerminalReplayError::Preflight(error) => AgentFailureTerminalError::Preflight(error),
+        ExactTerminalReplayError::Output(error) => AgentFailureTerminalError::Output(error),
+    }
 }
 
 #[allow(dead_code)] // Reachable from the gated recovery coordinator above.

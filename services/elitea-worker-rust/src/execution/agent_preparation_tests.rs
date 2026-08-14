@@ -691,9 +691,13 @@ async fn immediate_stop_is_a_typed_terminal_and_never_fetches_input() {
     );
     assert_eq!(admission.available_capacity(), 0);
 
-    let (_, _, output, _spool, reservation, lease, _) = (*terminal).into_parts();
-    assert_eq!(output.claim_handoff_watermark(), 4);
-    assert_eq!(output.fence().fence_token.len(), 32);
+    let (_, verified, output, _spool, reservation, lease, _) = (*terminal).into_test_parts();
+    let frame = output
+        .bind_failure_terminal(&verified, RuntimeFailureKind::Cancelled, NOW)
+        .expect("claim-bound cancellation terminal");
+    assert_eq!(frame.claim_handoff_watermark, 4);
+    assert_eq!(frame.sequence, 5);
+    assert_eq!(frame.fence.expect("bound fence").fence_token.len(), 32);
     lease.close().await.expect("cancelled lease close");
     drop(reservation);
     assert_eq!(admission.available_capacity(), 1);
@@ -728,7 +732,7 @@ async fn malformed_input_is_terminal_only_after_a_final_live_lease_poll() {
         *state.calls.lock().expect("calls"),
         ["begin", "renew", "observe", "input", "renew", "observe"]
     );
-    let (_, _, _, _spool, reservation, lease, cause) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, cause) = (*terminal).into_test_parts();
     assert!(matches!(
         cause,
         PreInvocationTerminalCause::InputProtocol(_)
@@ -810,7 +814,7 @@ async fn inclusive_deadline_is_terminal_after_lease_validation_and_before_input(
         *state.calls.lock().expect("calls"),
         ["begin", "renew", "observe", "renew", "observe"]
     );
-    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_test_parts();
     lease.close().await.expect("lease close");
     drop(reservation);
 }
@@ -853,7 +857,7 @@ async fn deadline_crossing_during_request_validation_cannot_mint_prepared_state(
         *state.calls.lock().expect("calls"),
         ["begin", "renew", "observe", "input", "renew", "observe"]
     );
-    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_test_parts();
     lease.close().await.expect("lease close");
     drop(reservation);
 }
@@ -907,7 +911,7 @@ async fn periodic_stop_cancels_and_drops_an_inflight_input_future() {
         *state.calls.lock().expect("calls"),
         ["begin", "renew", "observe", "input", "renew", "observe"]
     );
-    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_test_parts();
     lease.close().await.expect("cancelled lease close");
     drop(reservation);
 }
@@ -945,7 +949,7 @@ async fn input_dependency_failure_preserves_retryable_terminal_semantics() {
         terminal.cause().code(),
         "input_content.dependency_unavailable"
     );
-    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_parts();
+    let (_, _, _, _spool, reservation, lease, _) = (*terminal).into_test_parts();
     lease.close().await.expect("lease close");
     drop(reservation);
 }

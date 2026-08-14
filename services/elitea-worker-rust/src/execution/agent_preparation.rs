@@ -292,8 +292,20 @@ impl PreInvocationTerminal {
         &self.cause
     }
 
-    #[allow(dead_code)] // Consumed by the next output-coordination slice.
-    pub(crate) fn into_parts(
+    pub(super) fn into_failure_terminal(self) -> AgentFailureTerminal {
+        AgentFailureTerminal {
+            delivery: self.delivery,
+            verified: self.verified,
+            output_authority: self.output_authority,
+            output: self.output_spool,
+            reservation: self.reservation,
+            lease: self.lease,
+            proposed_failure: self.cause.runtime_failure_kind(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_test_parts(
         self,
     ) -> (
         RedisCommandDelivery,
@@ -314,6 +326,21 @@ impl PreInvocationTerminal {
             self.cause,
         )
     }
+}
+
+/// Sealed pre-authorization failure state consumed only by output delivery.
+///
+/// The type exposes neither request input nor fence material. Keeping delivery,
+/// command, output, capacity and lease ownership together prevents a terminal
+/// from being published or retired under another admitted invocation.
+pub(super) struct AgentFailureTerminal {
+    pub(super) delivery: RedisCommandDelivery,
+    pub(super) verified: VerifiedAgentCommand,
+    pub(super) output_authority: AgentExecutionOutputAuthority,
+    pub(super) output: PreparedAgentOutput,
+    pub(super) reservation: InvocationReservation,
+    pub(super) lease: ClaimLeaseMonitor,
+    pub(super) proposed_failure: crate::protocol::output::RuntimeFailureKind,
 }
 
 /// Canonical terminal cause observed before the durable invocation fence.

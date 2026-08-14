@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,11 +14,16 @@ use tonic::{Request, Response, Status};
 
 use super::agent_delivery::{FreshAgentDelivery, test_fresh_agent_delivery};
 use super::agent_lease::ClaimLeaseMonitorConfig;
+use super::agent_preparation::{
+    AgentInputMaterializer, AgentPreparationConfig, AgentPreparationOutcome, PreInvocationTerminal,
+    prepare_fresh_agent_invocation_with,
+};
+use super::invocation_admission::{InvocationAdmission, InvocationAdmissionConfig};
 use super::output_delivery::{
     AcceptedTerminalOutputRecovery, AgentOutputPreflight, AgentOutputPreflightError,
     AgentOutputPreflightKind, AgentOutputPreflightOutcome, AgentOutputRecoveryRequiredKind,
     AgentTerminalRecoveryConfig, AgentTerminalRecoveryError, AgentTerminalReplay,
-    recover_accepted_terminal,
+    publish_pre_invocation_terminal, recover_accepted_terminal,
 };
 use crate::agents::AgentExecutionKind;
 use crate::protocol::command::{
@@ -26,15 +32,16 @@ use crate::protocol::command::{
 };
 use crate::protocol::control::{AgentControlClient, test_accepted_agent_claim};
 use crate::protocol::elitea::runtime::v1::{
-    AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1, BeginExecutionRequestV1,
-    BeginExecutionResponseV1, ClaimCommandRequestV1, ClaimCommandResponseV1,
-    DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1, ExecutionIdentityV1,
-    ExecutionOutputEventTypeV1, ExecutionOutputFrameV1, ObserveDesiredStateRequestV1,
-    ObserveDesiredStateResponseV1, PrepareSettlementRequestV1, PrepareSettlementResponseV1,
-    RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1, execution_output_frame_v1,
+    AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1, BeginExecutionDispositionV1,
+    BeginExecutionRequestV1, BeginExecutionResponseV1, ClaimCommandRequestV1,
+    ClaimCommandResponseV1, DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1,
+    ExecutionIdentityV1, ExecutionOutputEventTypeV1, ExecutionOutputFrameV1,
+    ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1, PrepareSettlementRequestV1,
+    PrepareSettlementResponseV1, RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1,
+    execution_output_frame_v1,
 };
 use crate::protocol::node_event::decode_current_node_event_json;
-use crate::protocol::output::OUTPUT_SCHEMA_REVISION;
+use crate::protocol::output::{OUTPUT_SCHEMA_REVISION, RuntimeFailureKind};
 use crate::spool::{SpoolError, SpoolLimits, SpoolMasterKey};
 use crate::transport::output_grpc::test_acknowledged_terminal;
 use crate::transport::redis_commands::{
@@ -46,6 +53,7 @@ use crate::transport::{
     ControlGrpcConfig, ControlRpc, DurablyAckedTerminal, OutputGrpcConfig, OutputGrpcError,
     OutputProtocolError, PreparedOutputSpool,
 };
+use crate::transport::{InputContentError, MaterializedInput};
 
 const NOW: i64 = 1_700_000_000_000;
 
@@ -231,7 +239,9 @@ impl AgentTerminalReplay for FakeReplay {
 struct RecoveryControl {
     trace: Arc<Mutex<Vec<&'static str>>>,
     settlement_fails: bool,
-    renew_fails: bool,
+    renew_fail_after: Option<usize>,
+    renew_attempts: AtomicUsize,
+    observe_states: Mutex<VecDeque<i32>>,
 }
 
 #[async_trait]
@@ -247,7 +257,11 @@ impl ControlRpc for RecoveryControl {
         &self,
         _request: Request<BeginExecutionRequestV1>,
     ) -> Result<Response<BeginExecutionResponseV1>, Status> {
-        panic!("terminal recovery must not begin")
+        self.trace.lock().expect("trace").push("begin");
+        Ok(Response::new(BeginExecutionResponseV1 {
+            disposition: BeginExecutionDispositionV1::StartedNow as i32,
+            rejection: None,
+        }))
     }
 
     async fn authorize_invocation(
@@ -262,7 +276,11 @@ impl ControlRpc for RecoveryControl {
         _request: Request<RenewLeaseRequestV1>,
     ) -> Result<Response<RenewLeaseResponseV1>, Status> {
         self.trace.lock().expect("trace").push("renew");
-        if self.renew_fails {
+        let attempt = self.renew_attempts.fetch_add(1, Ordering::SeqCst);
+        if self
+            .renew_fail_after
+            .is_some_and(|successful| attempt >= successful)
+        {
             return Err(Status::unavailable("test lease renewal unavailable"));
         }
         Ok(Response::new(RenewLeaseResponseV1 {
@@ -278,7 +296,12 @@ impl ControlRpc for RecoveryControl {
     ) -> Result<Response<ObserveDesiredStateResponseV1>, Status> {
         self.trace.lock().expect("trace").push("observe");
         Ok(Response::new(ObserveDesiredStateResponseV1 {
-            desired_state: DesiredExecutionStateV1::Running as i32,
+            desired_state: self
+                .observe_states
+                .lock()
+                .expect("observe states")
+                .pop_front()
+                .unwrap_or(DesiredExecutionStateV1::Running as i32),
             rejection: None,
         }))
     }
@@ -304,16 +327,49 @@ impl ControlRpc for RecoveryControl {
     }
 }
 
+struct InvalidAgentInput {
+    trace: Arc<Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait]
+impl AgentInputMaterializer for InvalidAgentInput {
+    async fn materialize(
+        &self,
+        _execution: &crate::protocol::control::LeaseMonitoredAgentExecution,
+    ) -> Result<MaterializedInput, InputContentError> {
+        self.trace.lock().expect("trace").push("input");
+        Err(InputContentError::InvalidInput(
+            "the test agent input is invalid",
+        ))
+    }
+}
+
 fn recovery_control(
     trace: Arc<Mutex<Vec<&'static str>>>,
     settlement_fails: bool,
+) -> Arc<AgentControlClient<RecoveryControl>> {
+    recovery_control_with_policy(trace, settlement_fails, None, [])
+}
+
+fn recovery_control_with_policy(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+    settlement_fails: bool,
+    renew_fail_after: Option<usize>,
+    observe_states: impl IntoIterator<Item = DesiredExecutionStateV1>,
 ) -> Arc<AgentControlClient<RecoveryControl>> {
     Arc::new(
         AgentControlClient::new(
             RecoveryControl {
                 trace,
                 settlement_fails,
-                renew_fails: false,
+                renew_fail_after,
+                renew_attempts: AtomicUsize::new(0),
+                observe_states: Mutex::new(
+                    observe_states
+                        .into_iter()
+                        .map(|state| state as i32)
+                        .collect(),
+                ),
             },
             ControlGrpcConfig {
                 deadline: Duration::from_secs(1),
@@ -328,21 +384,7 @@ fn recovery_control(
 fn recovery_control_with_renew_failure(
     trace: Arc<Mutex<Vec<&'static str>>>,
 ) -> Arc<AgentControlClient<RecoveryControl>> {
-    Arc::new(
-        AgentControlClient::new(
-            RecoveryControl {
-                trace,
-                settlement_fails: false,
-                renew_fails: true,
-            },
-            ControlGrpcConfig {
-                deadline: Duration::from_secs(1),
-                workload_session_id: "workload-1".to_owned(),
-                producer_id: "worker-1".to_owned(),
-            },
-        )
-        .expect("recovery control"),
-    )
+    recovery_control_with_policy(trace, false, Some(0), [])
 }
 
 struct RecoveryRedis {
@@ -399,6 +441,54 @@ async fn pending_terminal_recovery() -> (
         panic!("durable terminal must route to recovery");
     };
     (temporary, preflight, *recovery, frame)
+}
+
+async fn pre_invocation_terminal_fixture(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+) -> (
+    tempfile::TempDir,
+    Arc<AgentControlClient<RecoveryControl>>,
+    PreInvocationTerminal,
+    InvocationAdmission,
+) {
+    pre_invocation_terminal_fixture_with_policy(trace, None, []).await
+}
+
+async fn pre_invocation_terminal_fixture_with_policy(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+    renew_fail_after: Option<usize>,
+    observe_states: impl IntoIterator<Item = DesiredExecutionStateV1>,
+) -> (
+    tempfile::TempDir,
+    Arc<AgentControlClient<RecoveryControl>>,
+    PreInvocationTerminal,
+    InvocationAdmission,
+) {
+    let (temporary, root) = root();
+    let preflight = preflight(root, "worker-1");
+    let empty = preflight.prepare(fresh()).await.expect("empty preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = empty else {
+        panic!("new execution spool must be empty");
+    };
+    let control =
+        recovery_control_with_policy(Arc::clone(&trace), false, renew_fail_after, observe_states);
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let outcome = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &InvalidAgentInput { trace },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("pre-invocation terminal");
+    let AgentPreparationOutcome::PreInvocationTerminal(terminal) = outcome else {
+        panic!("invalid input must produce a pre-invocation terminal");
+    };
+    (temporary, control, *terminal, admission)
 }
 
 fn lease_config() -> ClaimLeaseMonitorConfig {
@@ -821,6 +911,223 @@ async fn pending_frame_from_another_fence_fails_closed() {
     ));
     assert_eq!(error.code(), "agent_output.invalid_durable_state");
     assert!(!error.retryable());
+}
+
+#[tokio::test]
+async fn pre_invocation_failure_polls_persists_replays_settles_and_retires_in_order() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (_temporary, control, terminal, admission) =
+        pre_invocation_terminal_fixture(Arc::clone(&trace)).await;
+    let replay = FakeReplay::new(
+        [ReplayResult::Unavailable, ReplayResult::Acknowledged],
+        Arc::clone(&trace),
+    );
+    let retirer = recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    );
+
+    let completion = publish_pre_invocation_terminal(
+        control,
+        &retirer,
+        &replay,
+        terminal,
+        Arc::new(|| NOW),
+        recovery_config(2),
+    )
+    .await
+    .expect("failure terminal completion");
+
+    assert_eq!(completion.execution_kind(), AgentExecutionKind::Application);
+    assert_eq!(completion.sequence(), 5);
+    assert_eq!(completion.failure(), RuntimeFailureKind::InvalidInput);
+    assert_eq!(completion.settlement_receipt_id(), "settlement-receipt-1");
+    assert_eq!(admission.available_capacity(), 1);
+    let frames = replay.frames.lock().expect("frames");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0], frames[1]);
+    assert_eq!(frames[0].claim_handoff_watermark, 4);
+    assert_eq!(frames[0].occurred_at_unix_millis, NOW);
+    let Some(execution_output_frame_v1::Payload::RuntimeError(error)) = frames[0].payload.as_ref()
+    else {
+        panic!("canonical invalid-input terminal");
+    };
+    assert_eq!(error.code, RuntimeErrorCodeV1::InvalidInput as i32);
+    assert_eq!(
+        *trace.lock().expect("trace"),
+        [
+            "begin",
+            "renew",
+            "observe",
+            "input",
+            "renew",
+            "observe",
+            "renew",
+            "observe",
+            "replay",
+            "replay",
+            "settlement",
+            "redis",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn publication_deadline_is_sampled_after_the_final_lease_poll() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (_temporary, control, terminal, admission) =
+        pre_invocation_terminal_fixture(Arc::clone(&trace)).await;
+    let replay = FakeReplay::new([ReplayResult::Acknowledged], Arc::clone(&trace));
+    let retirer = recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    );
+
+    let completion = publish_pre_invocation_terminal(
+        control,
+        &retirer,
+        &replay,
+        terminal,
+        Arc::new(|| i64::MAX),
+        recovery_config(1),
+    )
+    .await
+    .expect("deadline terminal completion");
+
+    assert_eq!(completion.failure(), RuntimeFailureKind::DeadlineExceeded);
+    assert_eq!(admission.available_capacity(), 1);
+    let frames = replay.frames.lock().expect("frames");
+    assert_eq!(frames[0].occurred_at_unix_millis, i64::MAX);
+    let Some(execution_output_frame_v1::Payload::RuntimeError(error)) = frames[0].payload.as_ref()
+    else {
+        panic!("canonical deadline terminal");
+    };
+    assert_eq!(error.code, RuntimeErrorCodeV1::DeadlineExceeded as i32);
+    let trace = trace.lock().expect("trace");
+    let final_poll = trace
+        .windows(3)
+        .position(|window| window == ["renew", "observe", "replay"]);
+    assert!(final_poll.is_some(), "final lease poll must precede output");
+}
+
+#[tokio::test]
+async fn final_stop_beats_both_the_proposed_failure_and_deadline() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (_temporary, control, terminal, admission) = pre_invocation_terminal_fixture_with_policy(
+        Arc::clone(&trace),
+        None,
+        [
+            DesiredExecutionStateV1::Running,
+            DesiredExecutionStateV1::Running,
+            DesiredExecutionStateV1::Cancelled,
+        ],
+    )
+    .await;
+    let replay = FakeReplay::new([ReplayResult::Acknowledged], Arc::clone(&trace));
+    let retirer = recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    );
+
+    let completion = publish_pre_invocation_terminal(
+        control,
+        &retirer,
+        &replay,
+        terminal,
+        Arc::new(|| i64::MAX),
+        recovery_config(1),
+    )
+    .await
+    .expect("cancellation terminal completion");
+
+    assert_eq!(completion.failure(), RuntimeFailureKind::Cancelled);
+    assert_eq!(admission.available_capacity(), 1);
+    let frames = replay.frames.lock().expect("frames");
+    let Some(execution_output_frame_v1::Payload::RuntimeError(error)) = frames[0].payload.as_ref()
+    else {
+        panic!("canonical cancellation terminal");
+    };
+    assert_eq!(error.code, RuntimeErrorCodeV1::Cancelled as i32);
+}
+
+#[tokio::test]
+async fn fatal_final_lease_loss_suppresses_output_settlement_and_redis() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (_temporary, control, terminal, admission) =
+        pre_invocation_terminal_fixture_with_policy(Arc::clone(&trace), Some(2), []).await;
+    let replay = FakeReplay::new([ReplayResult::Acknowledged], Arc::clone(&trace));
+    let retirer = recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    );
+
+    let error = publish_pre_invocation_terminal(
+        control,
+        &retirer,
+        &replay,
+        terminal,
+        Arc::new(|| NOW),
+        recovery_config(1),
+    )
+    .await
+    .expect_err("fatal lease loss must suppress terminal output");
+
+    assert_eq!(error.code(), "agent_failure_terminal.lease_lost");
+    assert!(error.retryable());
+    assert_eq!(admission.available_capacity(), 1);
+    let trace = trace.lock().expect("trace");
+    assert!(!trace.contains(&"replay"));
+    assert!(!trace.contains(&"settlement"));
+    assert!(!trace.contains(&"redis"));
+}
+
+#[tokio::test]
+async fn exhausted_fresh_terminal_replay_retains_bytes_and_reports_safe_policy() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (_temporary, control, terminal, admission) =
+        pre_invocation_terminal_fixture(Arc::clone(&trace)).await;
+    let replay = FakeReplay::new([ReplayResult::Unavailable], Arc::clone(&trace));
+    let retirer = recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    );
+
+    let error = publish_pre_invocation_terminal(
+        control,
+        &retirer,
+        &replay,
+        terminal,
+        Arc::new(|| NOW),
+        recovery_config(1),
+    )
+    .await
+    .expect_err("bounded fresh terminal replay exhaustion");
+
+    assert_eq!(error.code(), "agent_failure_terminal.output_unavailable");
+    assert!(error.retryable());
+    assert_eq!(admission.available_capacity(), 1);
+    assert!(!trace.lock().expect("trace").contains(&"settlement"));
+    assert!(!trace.lock().expect("trace").contains(&"redis"));
 }
 
 #[tokio::test]

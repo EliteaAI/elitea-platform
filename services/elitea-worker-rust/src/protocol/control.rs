@@ -5,6 +5,7 @@ use ring::digest;
 use subtle::ConstantTimeEq;
 use tonic::transport::Channel;
 
+use super::ProtocolError;
 use super::command::VerifiedAgentCommand;
 use super::elitea::runtime::v1::{
     AgentExecutionResultV1, AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1,
@@ -12,11 +13,13 @@ use super::elitea::runtime::v1::{
     BeginExecutionResponseV1, ClaimCommandRequestV1, ClaimCommandResponseV1, ClaimDispositionV1,
     ClaimReceiptV1, DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1,
     ExecutionIdentityV1, ExecutionInputBundleReferenceV1, ExecutionInputBundleV1,
-    ExecutionInputEntryV1, ExecutionOutcomeV1, ObserveDesiredStateRequestV1,
-    ObserveDesiredStateResponseV1, PrepareSettlementRequestV1, PrepareSettlementResponseV1,
-    RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1, RuntimeErrorV1,
-    ScopedContentReferenceV1, SettlementProposalV1, SettlementRecoveryV1, worker_command_v1,
+    ExecutionInputEntryV1, ExecutionOutcomeV1, ExecutionOutputFrameV1,
+    ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1, PrepareSettlementRequestV1,
+    PrepareSettlementResponseV1, RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1,
+    RuntimeErrorV1, ScopedContentReferenceV1, SettlementProposalV1, SettlementRecoveryV1,
+    worker_command_v1,
 };
+use super::output::{AgentTerminalOutput, RuntimeFailureKind, build_agent_terminal_output_frame};
 use crate::transport::{
     ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, DurablyAckedTerminal,
     TonicControlRpc,
@@ -665,16 +668,38 @@ pub struct AgentExecutionOutputAuthority {
 }
 
 impl AgentExecutionOutputAuthority {
-    #[must_use]
-    #[allow(dead_code)] // Consumed by the next output-coordination slice.
-    pub(crate) const fn claim_handoff_watermark(&self) -> u64 {
-        self.claim.claim_handoff_watermark
-    }
-
-    #[must_use]
-    #[allow(dead_code)] // Consumed by the next output-coordination slice.
-    pub(crate) const fn fence(&self) -> &ExecutionFenceV1 {
-        &self.claim.fence
+    /// Consume the exact claim authority into one canonical failure terminal.
+    ///
+    /// The fence token never leaves this boundary. The sequence is derived
+    /// from the authenticated handoff watermark and cannot be supplied by a
+    /// caller or mixed with another verified command.
+    pub(crate) fn bind_failure_terminal(
+        self,
+        verified: &VerifiedAgentCommand,
+        failure: RuntimeFailureKind,
+        occurred_at_unix_millis: i64,
+    ) -> Result<ExecutionOutputFrameV1, ProtocolError> {
+        if self.claim.identity != identity_from_command(verified) {
+            return Err(ProtocolError::AuthorizationFailed(
+                "the terminal output authority does not match its command",
+            ));
+        }
+        let sequence = self
+            .claim
+            .claim_handoff_watermark
+            .checked_add(1)
+            .filter(|value| i64::try_from(*value).is_ok())
+            .ok_or(ProtocolError::ResourceExhausted(
+                "the terminal output sequence exceeds the durable counter limit",
+            ))?;
+        build_agent_terminal_output_frame(
+            verified,
+            &self.claim.fence,
+            AgentTerminalOutput::Failure(failure),
+            sequence,
+            occurred_at_unix_millis,
+            self.claim.claim_handoff_watermark,
+        )
     }
 }
 
