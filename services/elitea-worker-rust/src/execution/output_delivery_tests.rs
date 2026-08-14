@@ -23,22 +23,24 @@ use super::output_delivery::{
     AcceptedTerminalOutputRecovery, AgentOutputPreflight, AgentOutputPreflightError,
     AgentOutputPreflightKind, AgentOutputPreflightOutcome, AgentOutputRecoveryRequiredKind,
     AgentTerminalRecoveryConfig, AgentTerminalRecoveryError, AgentTerminalReplay,
-    publish_pre_invocation_terminal, recover_accepted_terminal,
+    publish_agent_failure_terminal, publish_pre_invocation_terminal, recover_accepted_terminal,
 };
 use crate::agents::AgentExecutionKind;
 use crate::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
     parse_and_verify_agent_command,
 };
-use crate::protocol::control::{AgentControlClient, test_accepted_agent_claim};
+use crate::protocol::control::{
+    AgentControlClient, InvocationAuthorizationDecision, test_accepted_agent_claim,
+};
 use crate::protocol::elitea::runtime::v1::{
-    AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1, BeginExecutionDispositionV1,
-    BeginExecutionRequestV1, BeginExecutionResponseV1, ClaimCommandRequestV1,
-    ClaimCommandResponseV1, DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1,
-    ExecutionIdentityV1, ExecutionOutputEventTypeV1, ExecutionOutputFrameV1,
-    ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1, PrepareSettlementRequestV1,
-    PrepareSettlementResponseV1, RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1,
-    execution_output_frame_v1,
+    AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1,
+    BeginExecutionDispositionV1, BeginExecutionRequestV1, BeginExecutionResponseV1,
+    ClaimCommandRequestV1, ClaimCommandResponseV1, DesiredExecutionStateV1, DigestAlgorithmV1,
+    DigestV1, ExecutionFenceV1, ExecutionIdentityV1, ExecutionOutputEventTypeV1,
+    ExecutionOutputFrameV1, ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1,
+    PrepareSettlementRequestV1, PrepareSettlementResponseV1, RenewLeaseRequestV1,
+    RenewLeaseResponseV1, RuntimeErrorCodeV1, execution_output_frame_v1,
 };
 use crate::protocol::node_event::decode_current_node_event_json;
 use crate::protocol::output::{OUTPUT_SCHEMA_REVISION, RuntimeFailureKind};
@@ -239,6 +241,7 @@ impl AgentTerminalReplay for FakeReplay {
 struct RecoveryControl {
     trace: Arc<Mutex<Vec<&'static str>>>,
     settlement_fails: bool,
+    authorize_already: bool,
     renew_fail_after: Option<usize>,
     renew_attempts: AtomicUsize,
     observe_states: Mutex<VecDeque<i32>>,
@@ -268,7 +271,15 @@ impl ControlRpc for RecoveryControl {
         &self,
         _request: Request<AuthorizeInvocationRequestV1>,
     ) -> Result<Response<AuthorizeInvocationResponseV1>, Status> {
-        panic!("terminal recovery must not authorize")
+        assert!(
+            self.authorize_already,
+            "terminal recovery must not authorize"
+        );
+        self.trace.lock().expect("trace").push("authorize");
+        Ok(Response::new(AuthorizeInvocationResponseV1 {
+            disposition: AuthorizeInvocationDispositionV1::AlreadyAuthorized as i32,
+            rejection: None,
+        }))
     }
 
     async fn renew_lease(
@@ -331,6 +342,23 @@ struct InvalidAgentInput {
     trace: Arc<Mutex<Vec<&'static str>>>,
 }
 
+struct ValidAgentInput {
+    trace: Arc<Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait]
+impl AgentInputMaterializer for ValidAgentInput {
+    async fn materialize(
+        &self,
+        _execution: &crate::protocol::control::LeaseMonitoredAgentExecution,
+    ) -> Result<MaterializedInput, InputContentError> {
+        self.trace.lock().expect("trace").push("input");
+        Ok(MaterializedInput::for_test(decode_hex(include_str!(
+            "../../tests/fixtures/agent_application_input.hex"
+        ))))
+    }
+}
+
 #[async_trait]
 impl AgentInputMaterializer for InvalidAgentInput {
     async fn materialize(
@@ -362,6 +390,7 @@ fn recovery_control_with_policy(
             RecoveryControl {
                 trace,
                 settlement_fails,
+                authorize_already: false,
                 renew_fail_after,
                 renew_attempts: AtomicUsize::new(0),
                 observe_states: Mutex::new(
@@ -378,6 +407,29 @@ fn recovery_control_with_policy(
             },
         )
         .expect("recovery control"),
+    )
+}
+
+fn authorization_control(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+) -> Arc<AgentControlClient<RecoveryControl>> {
+    Arc::new(
+        AgentControlClient::new(
+            RecoveryControl {
+                trace,
+                settlement_fails: false,
+                authorize_already: true,
+                renew_fail_after: None,
+                renew_attempts: AtomicUsize::new(0),
+                observe_states: Mutex::new(VecDeque::new()),
+            },
+            ControlGrpcConfig {
+                deadline: Duration::from_secs(1),
+                workload_session_id: "workload-1".to_owned(),
+                producer_id: "worker-1".to_owned(),
+            },
+        )
+        .expect("authorization control"),
     )
 }
 
@@ -974,6 +1026,85 @@ async fn pre_invocation_failure_polls_persists_replays_settles_and_retires_in_or
             "redis",
         ]
     );
+}
+
+#[tokio::test]
+async fn already_authorized_drops_request_authority_and_publishes_one_bound_internal_terminal() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, root) = root();
+    let preflight = preflight(root, "worker-1");
+    let outcome = preflight.prepare(fresh()).await.expect("empty preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new execution spool must be empty");
+    };
+    let control = authorization_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &ValidAgentInput {
+            trace: Arc::clone(&trace),
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid application input must reach authorization");
+    };
+    let decision = control
+        .authorize_agent_invocation((*prepared).into_authorization_candidate())
+        .await;
+    let InvocationAuthorizationDecision::AlreadyAuthorized(terminal) = decision else {
+        panic!("the scripted response must not grant invocation authority");
+    };
+    let replay = FakeReplay::new([ReplayResult::Acknowledged], Arc::clone(&trace));
+    let retirer = recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    );
+
+    let completion = publish_agent_failure_terminal(
+        control,
+        &retirer,
+        &replay,
+        *terminal,
+        Arc::new(|| NOW),
+        recovery_config(1),
+    )
+    .await
+    .expect("authorization terminal completion");
+
+    assert_eq!(completion.execution_kind(), AgentExecutionKind::Application);
+    assert_eq!(completion.sequence(), 5);
+    assert_eq!(completion.failure(), RuntimeFailureKind::Internal);
+    assert_eq!(completion.settlement_receipt_id(), "settlement-receipt-1");
+    assert_eq!(admission.available_capacity(), 1);
+    assert_eq!(replay.frames.lock().expect("frames").len(), 1);
+    assert_eq!(
+        *trace.lock().expect("trace"),
+        [
+            "begin",
+            "renew",
+            "observe",
+            "input",
+            "authorize",
+            "renew",
+            "observe",
+            "replay",
+            "settlement",
+            "redis",
+        ]
+    );
+    drop(temporary);
 }
 
 #[tokio::test]

@@ -29,7 +29,8 @@ use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
     AgentControlClient, AgentControlError, AgentExecutionOutputAuthority, BeginAgentExecution,
-    InvocationAuthorizationCandidate, LeaseMonitoredAgentExecution,
+    InvocationAuthorizationCandidate, InvocationAuthorizationPayload,
+    InvocationAuthorizationTerminalCause, LeaseMonitoredAgentExecution,
 };
 use crate::protocol::elitea::runtime::v1::{DigestAlgorithmV1, DigestV1};
 use crate::transport::redis_commands::RedisCommandDelivery;
@@ -268,6 +269,34 @@ impl PreparedAgentAuthorizationPayload {
     }
 }
 
+impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
+    type Terminal = AgentFailureTerminal;
+
+    fn into_authorization_terminal(
+        self,
+        output_authority: AgentExecutionOutputAuthority,
+        cause: InvocationAuthorizationTerminalCause,
+    ) -> Self::Terminal {
+        let Self {
+            delivery,
+            verified,
+            request: _,
+            output_spool,
+            reservation,
+            lease,
+        } = self;
+        AgentFailureTerminal {
+            delivery,
+            verified,
+            output_authority,
+            output: output_spool,
+            reservation,
+            lease,
+            proposed_failure: cause.runtime_failure_kind(),
+        }
+    }
+}
+
 /// Claim authority retained when the immediate lease boundary itself supplies
 /// a canonical pre-invocation terminal cause such as durable Stop.
 pub struct PreInvocationTerminal {
@@ -333,7 +362,7 @@ impl PreInvocationTerminal {
 /// The type exposes neither request input nor fence material. Keeping delivery,
 /// command, output, capacity and lease ownership together prevents a terminal
 /// from being published or retired under another admitted invocation.
-pub(super) struct AgentFailureTerminal {
+pub(crate) struct AgentFailureTerminal {
     pub(super) delivery: RedisCommandDelivery,
     pub(super) verified: VerifiedAgentCommand,
     pub(super) output_authority: AgentExecutionOutputAuthority,
@@ -341,6 +370,25 @@ pub(super) struct AgentFailureTerminal {
     pub(super) reservation: InvocationReservation,
     pub(super) lease: ClaimLeaseMonitor,
     pub(super) proposed_failure: crate::protocol::output::RuntimeFailureKind,
+}
+
+#[cfg(test)]
+impl AgentFailureTerminal {
+    pub(crate) fn into_test_cleanup(
+        self,
+    ) -> (
+        AgentExecutionKind,
+        crate::protocol::output::RuntimeFailureKind,
+        InvocationReservation,
+        ClaimLeaseMonitor,
+    ) {
+        (
+            self.verified.kind(),
+            self.proposed_failure,
+            self.reservation,
+            self.lease,
+        )
+    }
 }
 
 /// Canonical terminal cause observed before the durable invocation fence.

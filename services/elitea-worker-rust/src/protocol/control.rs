@@ -899,6 +899,16 @@ impl InvocationAuthorizationTerminalCause {
             Self::Rejected(_) => "invocation_authorization.rejected",
         }
     }
+
+    /// Convert only registered, data-free authorization outcomes into their
+    /// canonical runtime terminal category.
+    #[must_use]
+    pub const fn runtime_failure_kind(&self) -> RuntimeFailureKind {
+        match self {
+            Self::AlreadyAuthorized => RuntimeFailureKind::Internal,
+            Self::Rejected(error) => authorization_failure_kind(error),
+        }
+    }
 }
 
 impl fmt::Display for InvocationAuthorizationTerminalCause {
@@ -921,32 +931,63 @@ impl std::error::Error for InvocationAuthorizationTerminalCause {
     }
 }
 
-/// Claim-bound terminal authority retained for an authenticated semantic
-/// authorization response. It grants output but never ADK submission.
-#[allow(dead_code)] // Consumed by the next terminal coordination slice.
-pub(crate) struct InvocationAuthorizationTerminal<T> {
-    output: AgentExecutionOutputAuthority,
-    cause: InvocationAuthorizationTerminalCause,
-    payload: T,
+const fn authorization_failure_kind(error: &AgentControlError) -> RuntimeFailureKind {
+    match error {
+        AgentControlError::Transport(_) => RuntimeFailureKind::DependencyUnavailable,
+        AgentControlError::Semantic(error) => match error {
+            ControlSemanticError::InvalidInput(_) => RuntimeFailureKind::InvalidInput,
+            ControlSemanticError::ResourceExhausted(_) => RuntimeFailureKind::ResourceExhausted,
+            ControlSemanticError::IncompatibleVersion(_) => RuntimeFailureKind::IncompatibleVersion,
+            ControlSemanticError::AuthorizationFailed(_) => RuntimeFailureKind::AuthorizationFailed,
+            ControlSemanticError::UnsupportedCapability(_) => {
+                RuntimeFailureKind::UnsupportedCapability
+            }
+            ControlSemanticError::DependencyUnavailable(_) => {
+                RuntimeFailureKind::DependencyUnavailable
+            }
+            ControlSemanticError::Cancelled(_) => RuntimeFailureKind::Cancelled,
+            ControlSemanticError::DeadlineExceeded(_) => RuntimeFailureKind::DeadlineExceeded,
+            ControlSemanticError::Rejected(rejection) => match rejection.kind {
+                RuntimeControlRejectionKind::UnsupportedCapability => {
+                    RuntimeFailureKind::UnsupportedCapability
+                }
+                RuntimeControlRejectionKind::IncompatibleVersion => {
+                    RuntimeFailureKind::IncompatibleVersion
+                }
+                RuntimeControlRejectionKind::InvalidInput => RuntimeFailureKind::InvalidInput,
+                RuntimeControlRejectionKind::ResourceExhausted => {
+                    RuntimeFailureKind::ResourceExhausted
+                }
+                RuntimeControlRejectionKind::DependencyUnavailable => {
+                    RuntimeFailureKind::DependencyUnavailable
+                }
+                RuntimeControlRejectionKind::AuthorizationFailed => {
+                    RuntimeFailureKind::AuthorizationFailed
+                }
+                RuntimeControlRejectionKind::Cancelled => RuntimeFailureKind::Cancelled,
+                RuntimeControlRejectionKind::DeadlineExceeded => {
+                    RuntimeFailureKind::DeadlineExceeded
+                }
+            },
+        },
+    }
 }
 
-impl<T> InvocationAuthorizationTerminal<T> {
-    #[must_use]
-    #[allow(dead_code)] // Used by the next terminal coordination slice.
-    pub const fn cause(&self) -> &InvocationAuthorizationTerminalCause {
-        &self.cause
-    }
+/// Sealed payload conversion performed inside the authenticated authorization
+/// operation.
+///
+/// An implementation must consume both the prepared payload and its exact
+/// claim output authority into one terminal-only type. The control layer never
+/// exposes a generic tuple/map operation that could separate or cross-swap
+/// those values.
+pub(crate) trait InvocationAuthorizationPayload: Sized {
+    type Terminal;
 
-    #[cfg(test)]
-    pub(crate) fn into_test_parts(
+    fn into_authorization_terminal(
         self,
-    ) -> (
-        T,
-        AgentExecutionOutputAuthority,
-        InvocationAuthorizationTerminalCause,
-    ) {
-        (self.payload, self.output, self.cause)
-    }
+        output: AgentExecutionOutputAuthority,
+        cause: InvocationAuthorizationTerminalCause,
+    ) -> Self::Terminal;
 }
 
 /// No-ACK ownership retained when the authorization RPC outcome is unknown.
@@ -978,10 +1019,10 @@ impl<T> InvocationAuthorizationUnknown<T> {
 /// The operation itself is the authority-minting boundary: raw protobuf
 /// responses cannot construct any of these opaque values.
 #[allow(dead_code)] // Exhausted by the next owned invocation coordinator.
-pub(crate) enum InvocationAuthorizationDecision<T> {
+pub(crate) enum InvocationAuthorizationDecision<T: InvocationAuthorizationPayload> {
     AuthorizedNow(Box<AuthorizedAgentInvocation<T>>),
-    AlreadyAuthorized(Box<InvocationAuthorizationTerminal<T>>),
-    Rejected(Box<InvocationAuthorizationTerminal<T>>),
+    AlreadyAuthorized(Box<T::Terminal>),
+    Rejected(Box<T::Terminal>),
     Unknown(Box<InvocationAuthorizationUnknown<T>>),
 }
 
@@ -1195,7 +1236,10 @@ impl<R: ControlRpc> AgentControlClient<R> {
     pub(crate) async fn authorize_agent_invocation<T>(
         &self,
         candidate: InvocationAuthorizationCandidate<T>,
-    ) -> InvocationAuthorizationDecision<T> {
+    ) -> InvocationAuthorizationDecision<T>
+    where
+        T: InvocationAuthorizationPayload,
+    {
         let InvocationAuthorizationCandidate { execution, payload } = candidate;
         let request = execution.claim.authorize_invocation_request();
         let response = self.control.authorize_invocation(request).await;
@@ -1224,19 +1268,17 @@ impl<R: ControlRpc> AgentControlClient<R> {
             }
             Ok(AuthorizeInvocationDecision::AlreadyAuthorized) => {
                 InvocationAuthorizationDecision::AlreadyAuthorized(Box::new(
-                    InvocationAuthorizationTerminal {
-                        output: AgentExecutionOutputAuthority { claim },
-                        cause: InvocationAuthorizationTerminalCause::AlreadyAuthorized,
-                        payload,
-                    },
+                    payload.into_authorization_terminal(
+                        AgentExecutionOutputAuthority { claim },
+                        InvocationAuthorizationTerminalCause::AlreadyAuthorized,
+                    ),
                 ))
             }
             Err(error) => InvocationAuthorizationDecision::Rejected(Box::new(
-                InvocationAuthorizationTerminal {
-                    output: AgentExecutionOutputAuthority { claim },
-                    cause: InvocationAuthorizationTerminalCause::Rejected(error.into()),
-                    payload,
-                },
+                payload.into_authorization_terminal(
+                    AgentExecutionOutputAuthority { claim },
+                    InvocationAuthorizationTerminalCause::Rejected(error.into()),
+                ),
             )),
         }
     }

@@ -25,7 +25,7 @@ use crate::protocol::command::{
 };
 use crate::protocol::control::{
     AgentControlClient, AgentControlError, InvocationAuthorizationDecision,
-    InvocationAuthorizationTerminalCause, LeaseMonitoredAgentExecution,
+    LeaseMonitoredAgentExecution,
 };
 use crate::protocol::elitea::runtime::v1::{
     AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1,
@@ -479,6 +479,7 @@ async fn authorization_carries_the_matching_prepared_request_to_submission() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn every_non_authorized_outcome_retains_the_same_payload_without_submission() {
+    #[derive(Clone, Copy)]
     enum Case {
         Already,
         Rejected,
@@ -518,41 +519,35 @@ async fn every_non_authorized_outcome_retains_the_same_payload_without_submissio
             .authorize_agent_invocation((*prepared).into_authorization_candidate())
             .await;
 
-        let (payload, error) = match decision {
-            InvocationAuthorizationDecision::AlreadyAuthorized(terminal) => {
-                assert!(matches!(
-                    terminal.cause(),
-                    InvocationAuthorizationTerminalCause::AlreadyAuthorized
-                ));
-                let (payload, _output, cause) = terminal.into_test_parts();
-                assert_eq!(cause.code(), "invocation_authorization.already_authorized");
-                (payload, None)
-            }
-            InvocationAuthorizationDecision::Rejected(terminal) => {
-                let InvocationAuthorizationTerminalCause::Rejected(error) = terminal.cause() else {
-                    panic!("authenticated rejection must remain typed")
-                };
-                assert!(error.retryable());
-                assert!(!error.to_string().contains("server detail"));
-                let (payload, _output, cause) = terminal.into_test_parts();
-                assert_eq!(cause.code(), "invocation_authorization.rejected");
-                (payload, None)
+        let (observed_kind, failure, reservation, lease, error) = match decision {
+            InvocationAuthorizationDecision::AlreadyAuthorized(terminal)
+            | InvocationAuthorizationDecision::Rejected(terminal) => {
+                let (kind, failure, reservation, lease) = terminal.into_test_cleanup();
+                (kind, Some(failure), reservation, lease, None)
             }
             InvocationAuthorizationDecision::Unknown(unknown) => {
                 assert!(matches!(unknown.error(), AgentControlError::Transport(_)));
                 assert!(!unknown.error().to_string().contains("not exposed"));
                 let (payload, error) = unknown.into_test_parts();
-                (payload, Some(error))
+                let kind = payload.execution_kind();
+                let (_, reservation, lease) = payload.into_test_parts();
+                (kind, None, reservation, lease, Some(error))
             }
             InvocationAuthorizationDecision::AuthorizedNow(_) => {
                 panic!("the configured response must not grant submission")
             }
         };
-        assert_eq!(payload.execution_kind(), AgentExecutionKind::Application);
+        assert_eq!(observed_kind, AgentExecutionKind::Application);
+        match case {
+            Case::Already => assert_eq!(failure, Some(RuntimeFailureKind::Internal)),
+            Case::Rejected => {
+                assert_eq!(failure, Some(RuntimeFailureKind::DependencyUnavailable));
+            }
+            Case::Unknown => assert_eq!(failure, None),
+        }
         if let Some(error) = error {
             assert!(error.retryable());
         }
-        let (_, reservation, lease) = payload.into_test_parts();
         lease.close().await.expect("lease close");
         drop(reservation);
         assert_eq!(admission.available_capacity(), 1);
@@ -584,15 +579,9 @@ async fn mixed_authorization_response_carries_payload_to_terminal_only() {
     else {
         panic!("a mixed response must not mint submission authority")
     };
-    assert!(matches!(
-        terminal.cause(),
-        InvocationAuthorizationTerminalCause::Rejected(AgentControlError::Semantic(
-            crate::protocol::control::ControlSemanticError::InvalidInput(_)
-        ))
-    ));
-    let (payload, _output, _) = terminal.into_test_parts();
-    assert_eq!(payload.execution_kind(), AgentExecutionKind::Adhoc);
-    let (_, reservation, lease) = payload.into_test_parts();
+    let (kind, failure, reservation, lease) = terminal.into_test_cleanup();
+    assert_eq!(kind, AgentExecutionKind::Adhoc);
+    assert_eq!(failure, RuntimeFailureKind::InvalidInput);
     lease.close().await.expect("lease close");
     drop(reservation);
 }

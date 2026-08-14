@@ -567,6 +567,36 @@ where
     T: AgentTerminalReplay + 'a,
     K: UnixMillisClock,
 {
+    publish_agent_failure_terminal(
+        control,
+        retirer,
+        replay,
+        terminal.into_failure_terminal(),
+        clock,
+        recovery_config,
+    )
+}
+
+/// Publish any sealed failure terminal created before native ADK submission.
+///
+/// This shared owner accepts no request payload or raw fence. Preparation and
+/// authenticated authorization failures therefore follow one final-poll,
+/// durable-output and retirement implementation.
+#[allow(dead_code)] // Called by the next supervised authorization coordinator.
+pub(crate) fn publish_agent_failure_terminal<'a, R, C, T, K>(
+    control: Arc<AgentControlClient<R>>,
+    retirer: &'a RedisCommandRetirer<C>,
+    replay: &'a T,
+    terminal: AgentFailureTerminal,
+    clock: Arc<K>,
+    recovery_config: AgentTerminalRecoveryConfig,
+) -> TerminalFuture<'a, Result<AgentFailureTerminalCompletion, AgentFailureTerminalError>>
+where
+    R: ControlRpc + 'static,
+    C: RedisRetirementClient + 'a,
+    T: AgentTerminalReplay + 'a,
+    K: UnixMillisClock,
+{
     Box::pin(async move {
         let AgentFailureTerminal {
             delivery,
@@ -576,7 +606,7 @@ where
             reservation,
             lease,
             proposed_failure,
-        } = terminal.into_failure_terminal();
+        } = terminal;
         let execution_kind = verified.kind();
 
         let result = async {
