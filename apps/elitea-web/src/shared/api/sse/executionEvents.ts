@@ -122,6 +122,16 @@ export interface ExecutionEventCallbacks {
   /** Progress frames were pruned before this client could read them; the frame carries `reason`. */
   readonly onReplayReset?: ((frame: ExecutionEventData) => void) | undefined;
   /**
+   * The durable cursor of the frame just delivered — `events.go` writes an
+   * `id: <cursor>` line before every event, and that is what a resume has to
+   * send back (`./resume.ts`). Fired for EVERY event name, including the ones
+   * this caller has no handler for, because the cursor is a property of the
+   * stream rather than of any one frame family: resuming from the last frame
+   * a caller happened to care about would ask the server to replay everything
+   * in between all over again.
+   */
+  readonly onCursor?: ((cursor: string) => void) | undefined;
+  /**
    * The stream failed to OPEN, or dropped — a transport failure, not a
    * frame. Distinct from `onFailed` (which is the server telling you the
    * execution itself failed): this fires when there is no stream at all,
@@ -145,28 +155,30 @@ export interface ExecutionEventCallbacks {
  * disappeared. Frames with no callback are parsed and dropped.
  */
 export function useExecutionEventStream(eventsUrl: string | null | undefined, callbacks: ExecutionEventCallbacks): void {
-  const { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onError } = callbacks;
+  const { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError } = callbacks;
   const config = getConfig();
   const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
   const url = useMemo(() => resolveExecutionEventsUrl(serverUrl, eventsUrl), [serverUrl, eventsUrl]);
 
+  /**
+   * Record the cursor FIRST, then dispatch the frame.
+   *
+   * The cursor advances even for a frame that fails to parse: a resume from
+   * before a malformed frame would ask the server to send that same frame
+   * again, and it would fail again — an unparseable frame is a hole in the
+   * transcript, not a reason to loop on it.
+   */
+  const deliver = (handler: ((frame: ExecutionEventData) => void) | undefined) => (event: MessageEvent) => {
+    if (event.lastEventId) onCursor?.(event.lastEventId);
+    const frame = parseExecutionEventData(event);
+    if (frame) handler?.(frame);
+  };
+
   useEventSource(url, {
-    [EXECUTION_EVENT_NODE]: (event) => {
-      const frame = parseExecutionEventData(event);
-      if (frame) onNodeEvent?.(frame);
-    },
-    [EXECUTION_EVENT_INDEX_INGEST_COMPLETED]: (event) => {
-      const frame = parseExecutionEventData(event);
-      if (frame) onIndexIngestCompleted?.(frame);
-    },
-    [EXECUTION_EVENT_FAILED]: (event) => {
-      const frame = parseExecutionEventData(event);
-      if (frame) onFailed?.(frame);
-    },
-    [EXECUTION_EVENT_REPLAY_RESET]: (event) => {
-      const frame = parseExecutionEventData(event);
-      if (frame) onReplayReset?.(frame);
-    },
+    [EXECUTION_EVENT_NODE]: deliver(onNodeEvent),
+    [EXECUTION_EVENT_INDEX_INGEST_COMPLETED]: deliver(onIndexIngestCompleted),
+    [EXECUTION_EVENT_FAILED]: deliver(onFailed),
+    [EXECUTION_EVENT_REPLAY_RESET]: deliver(onReplayReset),
   }, { onError });
 }
 
@@ -186,7 +198,7 @@ export interface UseExecutionEventsParams extends ExecutionEventCallbacks {
  * disappeared. Frames with no callback are parsed and dropped.
  */
 export function useExecutionEvents(params: UseExecutionEventsParams): void {
-  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onError } = params;
+  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError } = params;
   const config = getConfig();
   const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
 
@@ -203,5 +215,5 @@ export function useExecutionEvents(params: UseExecutionEventsParams): void {
   // Already absolute against `vite_server_url` ⇒ `useExecutionEventStream`'s
   // own resolution is a no-op for it (same-origin prefix returns the path
   // unchanged; an absolute origin was already baked in above).
-  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onError });
+  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError });
 }

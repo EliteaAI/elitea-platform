@@ -21,6 +21,7 @@ import type { ChatMessage } from '../lib/convertMessagesToChatHistory';
 const BASE = '/api/v2';
 const EVENTS_URL = '/api/v2/executions/7/exec-1/events';
 const MESSAGE_ID = '63c6d989-2860-5d68-9e3e-3587c63350d3';
+const RESPONSE_MESSAGE_ID = 'e3f5b0f2-8a3c-4d9a-9a1e-0c2b7f5d1a44';
 
 const globals = globalThis as unknown as Record<string, unknown>;
 let registry: TestEventSourceRegistry;
@@ -83,8 +84,18 @@ afterEach(() => {
   resetGeneratedClient();
 });
 
-function okStart(body: Record<string, unknown> = { task_id: 'exec-1', events_url: EVENTS_URL }): void {
+function okStart(
+  body: Record<string, unknown> = { task_id: 'exec-1', events_url: EVENTS_URL, response_message_id: RESPONSE_MESSAGE_ID },
+): void {
   server.use(http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () => HttpResponse.json(body)));
+}
+
+/** Start a run and wait for its stream, the preamble every case below shares. */
+async function started(api: { current: UseChatStreamTransportResult | undefined }): Promise<void> {
+  await act(async () => {
+    await api.current?.start(START);
+  });
+  await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
 }
 
 const START = { projectId: 7, conversationUuid: 'uuid-1', contract: 'agent.execute.application.v1', body: { question: 'hi' } };
@@ -179,27 +190,22 @@ describe('useChatStreamTransport', () => {
     expect(errors).toEqual(['model unavailable']);
   });
 
-  it('stops the spinner when the stream itself drops', async () => {
-    // EventSource does not retry after an HTTP status, so nothing further will
-    // arrive — the frames that would have ended the turn are exactly the ones
-    // that stopped coming, and the message would spin forever.
+  it('does not settle the message on the first drop — that turn is still resumable', async () => {
+    // Before #329 a drop ended the turn on the spot. It is now a reconnect,
+    // and settling here would render "done" over an answer still coming.
     okStart();
     const { api, history, errors, Probe } = harness();
     render(<Probe />);
-    await act(async () => {
-      await api.current?.start(START);
-    });
-    await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
+    await started(api);
 
     act(() => {
       registry.fail();
     });
 
-    expect(history.current[0]?.isStreaming).toBe(false);
-    expect(history.current[0]?.isLoading).toBe(false);
-    // A dropped connection is not a failed answer: no exception is invented.
+    expect(history.current[0]?.isStreaming).toBe(true);
+    expect(history.current[0]?.isLoading).toBe(true);
     expect(history.current[0]?.exception).toBeUndefined();
-    expect(errors).toHaveLength(1);
+    expect(errors).toEqual([]);
   });
 
   it('does not reopen the stream when the context changes mid-answer', async () => {
@@ -267,6 +273,385 @@ describe('useChatStreamTransport', () => {
 
     expect(history.current).toBe(before);
     expect(agentEvents).toHaveLength(0);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  #328 — a stream belongs to the conversation that started it          */
+/* ------------------------------------------------------------------ */
+
+/** Two conversations, two histories, one never-unmounted hook — the real ChatBox shape. */
+function conversationHarness(): {
+  readonly api: { current: UseChatStreamTransportResult | undefined };
+  readonly first: { current: readonly ChatMessage[] };
+  readonly second: { current: readonly ChatMessage[] };
+  readonly Probe: (props: { conversationUuid: string; target: { current: readonly ChatMessage[] } }) => null;
+} {
+  const api: { current: UseChatStreamTransportResult | undefined } = { current: undefined };
+  const first: { current: readonly ChatMessage[] } = { current: [pendingAssistant()] };
+  const second: { current: readonly ChatMessage[] } = { current: [] };
+
+  function Probe({ conversationUuid, target }: { conversationUuid: string; target: { current: readonly ChatMessage[] } }): null {
+    api.current = useChatStreamTransport({
+      conversationUuid,
+      setChatHistory: (updater) => {
+        target.current = updater(target.current);
+      },
+      context: { name: 'Agent', now: () => '2026-08-13T00:00:00.000Z' },
+    });
+    return null;
+  }
+
+  return { api, first, second, Probe };
+}
+
+describe('stream ownership (#328)', () => {
+  it('does not leak the first conversation\'s frames into the second one', async () => {
+    okStart();
+    const { api, first, second, Probe } = conversationHarness();
+    const { rerender } = render(<Probe conversationUuid="uuid-1" target={first} />);
+    await started(api);
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'first answer' }));
+    });
+    expect(first.current[0]?.content).toBe('first answer');
+
+    // The user opens another conversation. ChatBox does NOT unmount — it
+    // re-renders against a different conversation and a different history.
+    rerender(<Probe conversationUuid="uuid-2" target={second} />);
+    // Asserted BEFORE any further frame: a terminal frame would close the
+    // stream on its own, which would let this pass with no switch handling
+    // at all.
+    expect(registry.getOpen()).toHaveLength(0);
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'LEAKED' }));
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_response', content: 'LEAKED WHOLE' }));
+      registry.emit('execution.failed', JSON.stringify({ error: 'LEAKED FAILURE' }));
+    });
+
+    // The assertion that matters: nothing from the abandoned run reached the
+    // transcript now on screen. Asserting `close()` fired would pass even if
+    // the frames still landed.
+    expect(second.current).toEqual([]);
+    expect(first.current[0]?.content).toBe('first answer');
+  });
+
+  it('subscribes to nothing when the user switches while the start POST is in flight', async () => {
+    // The run exists server-side by then, so `start` still answers `true` (a
+    // `chat_predict` fallback would run the agent twice) — but its frames
+    // belong to a transcript that is no longer on screen.
+    okStart();
+    const { api, second, Probe } = conversationHarness();
+    const { rerender } = render(<Probe conversationUuid="uuid-1" target={second} />);
+
+    const pending = api.current?.start(START);
+    // A synchronous `act` so the switch is COMMITTED before the POST resolves
+    // — the ordering the defect needs.
+    act(() => {
+      rerender(<Probe conversationUuid="uuid-2" target={second} />);
+    });
+    let owned: boolean | undefined;
+    await act(async () => {
+      owned = await pending;
+    });
+
+    expect(owned).toBe(true);
+    expect(registry.getSources()).toHaveLength(0);
+    expect(second.current).toEqual([]);
+  });
+
+  it('opens no stream after unmount, including a reconnect already scheduled', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      okStart();
+      const { api, history, Probe } = harness();
+      const { unmount } = render(<Probe />);
+      await started(api);
+
+      act(() => {
+        registry.fail();
+      });
+      const before = history.current;
+      unmount();
+
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+
+      // One source ever: the original. A pending reconnect that survived
+      // unmount would open a second, feeding a hook nothing renders.
+      expect(registry.getSources()).toHaveLength(1);
+      expect(registry.getOpen()).toHaveLength(0);
+      expect(registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'after unmount' }))).toBe(0);
+      expect(history.current).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  #328 — Stop                                                          */
+/* ------------------------------------------------------------------ */
+
+describe('stop (#328)', () => {
+  it('cancels the run server-side, closes the stream, and applies nothing further', async () => {
+    okStart();
+    const cancelled: string[] = [];
+    server.use(
+      http.delete(`${BASE}/elitea_core/task/prompt_lib/7/:responseMessageId`, ({ params }) => {
+        cancelled.push(String(params['responseMessageId']));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const { api, history, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'half an ans' }));
+      api.current?.stop();
+    });
+
+    await waitFor(() => expect(registry.getOpen()).toHaveLength(0));
+    // Closing the client stream would leave the agent running and billing;
+    // the DELETE addresses the response message the start endpoint named.
+    await waitFor(() => expect(cancelled).toEqual([RESPONSE_MESSAGE_ID]));
+    expect(history.current[0]?.isStreaming).toBe(false);
+    expect(history.current[0]?.isLoading).toBe(false);
+
+    const settled = history.current;
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: ' MORE' }));
+    });
+    expect(history.current).toBe(settled);
+    expect(history.current[0]?.content).toBe('half an ans');
+  });
+
+  it('does not reconnect after a stop', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      okStart();
+      server.use(http.delete(`${BASE}/elitea_core/task/prompt_lib/7/:id`, () => new HttpResponse(null, { status: 204 })));
+      const { api, Probe } = harness();
+      render(<Probe />);
+      await started(api);
+
+      act(() => {
+        api.current?.stop();
+        registry.fail();
+        vi.advanceTimersByTime(60_000);
+      });
+
+      expect(registry.getSources()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  #329 — reconnect, resume, backoff                                    */
+/* ------------------------------------------------------------------ */
+
+describe('resume after a drop (#329)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reopens from the last cursor and finishes the answer without duplicating it', async () => {
+    okStart();
+    const { api, history, errors, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'MOCK: ' }), '11');
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'chat ' }), '12');
+    });
+    expect(history.current[0]?.content).toBe('MOCK: chat ');
+
+    act(() => {
+      registry.fail();
+      vi.advanceTimersByTime(999);
+    });
+    expect(registry.getOpen()).toHaveLength(0);
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
+    // The whole point: `cursor` is what `events.go`'s `requestedCursor` reads
+    // as `Last-Event-ID`, so the server replays only frames after id 12.
+    expect(registry.getOpen()[0]?.url).toContain('/executions/7/exec-1/events?cursor=12');
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'smoke' }), '13');
+      // The tail `agent_response` carries the WHOLE answer, as the live stack
+      // emits it. Nothing may be rendered twice.
+      registry.emit(
+        'execution.node_event',
+        nodeEvent({ type: 'agent_response', content: 'MOCK: chat smoke', response_metadata: { finish_reason: 'stop' } }),
+        '14',
+      );
+    });
+
+    expect(history.current[0]?.content).toBe('MOCK: chat smoke');
+    expect(history.current[0]?.isStreaming).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  it('still reports isStreaming across the gap, so Stop does not turn back into Send', async () => {
+    okStart();
+    const { api, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+    expect(api.current?.isStreaming).toBe(true);
+
+    act(() => {
+      registry.fail();
+      vi.advanceTimersByTime(500);
+    });
+
+    // Nothing is subscribed right now — and the turn is still running.
+    expect(registry.getOpen()).toHaveLength(0);
+    expect(api.current?.isStreaming).toBe(true);
+  });
+
+  it('resumes from cursor 0 — i.e. no cursor at all — when the drop preceded every frame', async () => {
+    okStart();
+    const { api, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.fail();
+      vi.advanceTimersByTime(1_000);
+    });
+
+    await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
+    // Asking for `?cursor=` or `?cursor=undefined` would be a 400 from
+    // `strconv.ParseUint`; the whole run replays instead, and `agent_start`
+    // resets the bubble so the replay cannot double anything.
+    expect(registry.getOpen()[0]?.url).not.toContain('cursor');
+  });
+
+  it('bounds the retries at four, then settles the message and says the connection was lost', async () => {
+    okStart();
+    const { api, history, errors, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    // 1s, 2s, 4s, 8s — `streamReconnectDelayMs`. Each step is asserted for
+    // BOTH halves: nothing reopens a millisecond early, and it does reopen.
+    for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+      const opened = registry.getSources().length;
+      act(() => {
+        registry.fail();
+        vi.advanceTimersByTime(delay - 1);
+      });
+      expect(registry.getSources()).toHaveLength(opened);
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      // eslint-disable-next-line no-await-in-loop -- sequential by construction: each backoff step must be observed before the next drop.
+      await waitFor(() => expect(registry.getSources()).toHaveLength(opened + 1));
+    }
+
+    // The fifth failure is where the budget runs out.
+    act(() => {
+      registry.fail();
+      vi.advanceTimersByTime(600_000);
+    });
+
+    expect(registry.getSources()).toHaveLength(5);
+    expect(registry.getOpen()).toHaveLength(0);
+    expect(history.current[0]?.isStreaming).toBe(false);
+    expect(history.current[0]?.isLoading).toBe(false);
+    expect(history.current[0]?.exception).toBeUndefined();
+    expect(errors).toEqual(['The connection to the agent run was lost.']);
+  });
+
+  it('spends a fresh budget after a delivered frame, not the one the last outage exhausted', async () => {
+    okStart();
+    const { api, history, errors, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+      act(() => {
+        registry.fail();
+        vi.advanceTimersByTime(delay);
+      });
+      // eslint-disable-next-line no-await-in-loop -- sequential by construction.
+      await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
+    }
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'recovered' }), '7');
+    });
+    act(() => {
+      registry.fail();
+      vi.advanceTimersByTime(1_000);
+    });
+
+    await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
+    expect(registry.getOpen()[0]?.url).toContain('cursor=7');
+    expect(history.current[0]?.isStreaming).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
+  it('does not reconnect once the turn has finished', async () => {
+    // The server closes a finished stream, which reaches the client as an
+    // `error` event exactly like a drop. Retrying it would reopen a stream
+    // with nothing left to send, four times, per completed answer.
+    okStart();
+    const { api, errors, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'pipeline_finish' }), '9');
+      registry.fail();
+      vi.advanceTimersByTime(600_000);
+    });
+
+    expect(registry.getSources()).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
+  it('keeps streaming through a replay_reset instead of treating the pruned log as a failure', async () => {
+    okStart();
+    const { api, history, errors, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'before ' }), '3');
+      registry.fail();
+      vi.advanceTimersByTime(1_000);
+    });
+    await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
+
+    act(() => {
+      // The resume landed past the retention window: frames between cursor 3
+      // and 40 are gone for good.
+      registry.emit('execution.replay_reset', JSON.stringify({ reason: 'progress_retention_window_elapsed' }), '40');
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'after' }), '41');
+      registry.emit('execution.node_event', nodeEvent({ type: 'pipeline_finish' }), '42');
+    });
+
+    // A hole in the middle, and a turn that still completes — not an error,
+    // and not a reconnect loop back onto the pruned cursor.
+    expect(history.current[0]?.content).toBe('before after');
+    expect(history.current[0]?.isStreaming).toBe(false);
+    expect(errors).toEqual([]);
+    expect(registry.getSources()).toHaveLength(2);
   });
 });
 

@@ -18,3 +18,10 @@ export type { ExecutionEventData } from './executionEvents';
  * holds.
  */
 export { useExecutionEventStream, useExecutionEvents } from './executionEvents';
+/**
+ * Resume + backoff policy for a dropped execution stream (issue #329). Kept
+ * out of the hooks so the decisions are testable as values: how long to wait
+ * before reopening, when to stop waiting, and how to ask the server for only
+ * the frames this client missed.
+ */
+export { streamReconnectDelayMs, withResumeCursor } from './resume';

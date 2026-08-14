@@ -114,7 +114,6 @@ const ChatBoxInner = memo(function ChatBox({
   // Data layer
   const data = useChatBoxData(buildChatBoxDataParams({ activeConversation, activeParticipant, projectId, userId, userName, userAvatar, isAgentsPage }));
   const messages = data.messageList.messages;
-  const isStreaming = data.streaming.isStreamingNow || data.messageList.isStreamingFromHistory;
 
   // Participant normalisation + details fetch
   const { participantForEditor, normalisedParticipants, agentEditorParticipantDetails, isFetchingParticipantDetails } = useChatBoxParticipant({
@@ -172,12 +171,16 @@ const ChatBoxInner = memo(function ChatBox({
   // create-conversation-first and upload-attachments-first adapters.
   // `startStreamedExecution` reports whether the transport took the run, so
   // `sendQuestion` knows not to ALSO emit `chat_predict`.
-  const { startStreamedExecution, createConversationForSend, uploadAttachmentsForSend } = useChatBoxSend({
+  const { startStreamedExecution, stopStreamedExecution, isStreaming: isStreamedExecution, createConversationForSend, uploadAttachmentsForSend } = useChatBoxSend({
     deps: { createConversation: lifecycle.createConversation, uploadAttachments: data.attachments.upload.uploadAttachments },
-    setChatHistory: data.setChatHistory, projectId, projectIdString, isAgentsPage,
+    setChatHistory: data.setChatHistory, projectId, projectIdString, isAgentsPage, conversationUuid,
     activeParticipant, participants: conversationParticipants, userName, userAvatar,
     llmSettings, model: data.selectedModel, userId,
   });
+  // `isStreamingNow` is derived from the PERSISTED message groups, which carry
+  // no in-flight flag while an SSE turn runs — without the transport's own flag
+  // the composer never offers Stop for the very turn Stop exists to cancel (#328).
+  const isStreaming = [data.streaming.isStreamingNow, data.messageList.isStreamingFromHistory, isStreamedExecution].some(Boolean);
 
   // Action handlers — real socket protocol (chat_predict / chat_continue_predict),
   // real REST mutations, real conversation-creation-first send ordering.
@@ -279,14 +282,22 @@ const ChatBoxInner = memo(function ChatBox({
   // Imperative handle (stable via refs, so identity never churns)
   const handleClearRef = useStableRef(handleClear);
   const streamingRef = useStableRef(data.streaming);
+  // Stop has two halves and needs both (#328): the socket-era stop-task + room
+  // leave, for a task the SSE path never registered, and the transport's own
+  // cancel-and-close, for a stream the socket path never opened.
+  const stopStreamRef = useStableRef(stopStreamedExecution);
+  const stopGeneration = useCallback(() => {
+    stopStreamRef.current();
+    streamingRef.current.stopStreaming();
+  }, [stopStreamRef, streamingRef]);
   useImperativeHandle(
     chatInputRef as unknown as React.Ref<ChatBoxHandle>,
     () => ({
       onClear: () => { handleClearRef.current(); },
       mentionUser: (c) => { chatInputRef.current?.setValue?.(`@${c} `); },
-      stopAll: () => { streamingRef.current.stopStreaming(); },
+      stopAll: stopGeneration,
     }),
-    [handleClearRef, streamingRef],
+    [handleClearRef, stopGeneration],
   );
 
   // Early return
@@ -347,7 +358,7 @@ const ChatBoxInner = memo(function ChatBox({
           conversationId={conversationId !== undefined ? String(conversationId) : undefined}
           state={{ isLoading: isInputLoading, isStreaming, disabledSend, isCreatingConversation: data.lifecycle.isCreating }}
           content={{ placeholder: t('widgets.chatBox.inputPlaceholder', 'Type a message...'), clearInputAfterSubmit: true, slashHighlights: state.combinedHighlightRanges }}
-          callbacks={{ onSend: handleSend, onStopGeneration: data.streaming.stopStreaming, onNormalKeyDown: state.onNormalKeyDown, onInputChange: state.onInputChange }}
+          callbacks={{ onSend: handleSend, onStopGeneration: stopGeneration, onNormalKeyDown: state.onNormalKeyDown, onInputChange: state.onInputChange }}
           agentEditor={buildAgentEditorProps({
             participantForEditor,
             activeParticipantDetails: agentEditorParticipantDetails,

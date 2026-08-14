@@ -127,6 +127,13 @@ export interface UseChatBoxSendParams {
    */
   readonly model?: { readonly name?: string | undefined } | null | undefined;
   readonly setChatHistory: (updater: (prev: readonly ChatMessage[]) => readonly ChatMessage[]) => void;
+  /**
+   * The conversation on screen. The transport closes a stream whose owning
+   * conversation is no longer this one and drops its frames — without it, a
+   * run started in conversation A keeps writing into whichever conversation
+   * the (never-unmounted) ChatBox switches to (#328).
+   */
+  readonly conversationUuid?: string | undefined;
   readonly projectId: string | number | undefined;
   readonly projectIdString: string | undefined;
   /** An agent-app conversation takes a different execution contract from an ad-hoc/test one. */
@@ -150,6 +157,12 @@ export interface UseChatBoxSendResult {
     readonly payload: Record<string, unknown>;
   }) => Promise<boolean>;
   readonly isStreaming: boolean;
+  /**
+   * The user pressed Stop: cancel the run server-side and close its stream.
+   * A no-op when this transport does not own the current run, so it is safe to
+   * call alongside the socket-era `stopStreaming`.
+   */
+  readonly stopStreamedExecution: () => void;
   readonly createConversationForSend: (question: string) => Promise<{ readonly id?: string | number; readonly uuid?: string } | undefined>;
   readonly uploadAttachmentsForSend: (
     conversationId: string | number,
@@ -180,6 +193,7 @@ export function useChatBoxSend(params: UseChatBoxSendParams): UseChatBoxSendResu
   const { setChatHistory, projectId, projectIdString, isAgentsPage } = params;
   const transport = useChatStreamTransport({
     setChatHistory,
+    ...(params.conversationUuid !== undefined ? { conversationUuid: params.conversationUuid } : {}),
     context: buildChatStreamContext(params),
   });
   const { start } = transport;
@@ -252,5 +266,11 @@ export function useChatBoxSend(params: UseChatBoxSendParams): UseChatBoxSendResu
     [deps, projectId],
   );
 
-  return { startStreamedExecution, isStreaming: transport.isStreaming, createConversationForSend, uploadAttachmentsForSend };
+  return {
+    startStreamedExecution,
+    isStreaming: transport.isStreaming,
+    stopStreamedExecution: transport.stop,
+    createConversationForSend,
+    uploadAttachmentsForSend,
+  };
 }
