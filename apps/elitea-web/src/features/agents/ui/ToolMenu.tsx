@@ -10,7 +10,6 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { Toolkit } from '@/entities/toolkit';
 import { getGetApplicationQueryKey, useGetApplication, useListApplications } from '@/shared/api/generated/applications/applications';
 import type { Application, ApplicationDetail } from '@/shared/api/generated/model';
-import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { unwrapList } from '@/shared/api/unwrap';
 import { t } from '@/shared/i18n';
 import { SearchParams } from '@/shared/lib/params';
@@ -19,6 +18,7 @@ import { useAgentPipelineAssociation } from '../api/useAgentPipelineAssociation'
 import type { AssociationCandidate } from '../api/useAgentPipelineAssociation';
 import { useIsMcpVisible } from '../api/useIsMcpVisible';
 import { useSelectedProjectId } from '../api/useSelectedProjectId';
+import { setToolkitRelation } from '../lib/toolRelation';
 import { useFilterAddedItems } from '../lib/useFilterAddedItems';
 import type { AgentToolAssociation } from '../lib/types';
 
@@ -168,11 +168,7 @@ function resolveEntityLabel(agentType: string | undefined): 'agent' | 'pipeline'
  */
 async function associateToolkitInstance(projectId: string, applicationId: number, versionId: number, toolkitId: string | number): Promise<boolean> {
   try {
-    await eliteaFetch(`/elitea_core/tool/prompt_lib/${projectId}/${toolkitId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entity_version_id: versionId, entity_id: applicationId, entity_type: 'agent', has_relation: true }),
-    });
+    await setToolkitRelation({ projectId, applicationId, versionId, toolkitId, hasRelation: true });
     return true;
   } catch {
     return false;

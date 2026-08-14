@@ -67,6 +67,21 @@ export { DeleteApplicationButton } from './ui/DeleteApplicationButton';
 export { ExportApplicationButton } from './ui/ExportApplicationButton';
 
 /**
+ * #307 — the agent editor's Tools panel, and the LAST free slot on this
+ * curated API (20/20). One symbol, deliberately: a page-level composition
+ * would have had to import FOUR (`ApplicationTools`, `ToolCard`,
+ * `useDisassociateToolkit`, and the `AgentToolAssociation` type its
+ * `renderToolCard`/hook contracts are written in) against a budget with one
+ * slot free. `AgentToolsPanel` composes all four INSIDE the slice — the
+ * same "compose behind one export" answer `AgentVersionControls` already
+ * gave for the version dropdown + Save-As-Version pair — and takes only
+ * page-owned values across the boundary (ids, the server's raw
+ * `version_details.tools[]`, the read-only flag, a refetch callback), none
+ * of which needs a type import.
+ */
+export { AgentToolsPanel } from './ui/AgentToolsPanel';
+
+/**
  * Sub-unit A1a's ("Application data layer + version-lifecycle hooks")
  * contribution — the application/version data layer + tool change-diffing +
  * validation + chat-version-switch hooks (see each file's own doc comment

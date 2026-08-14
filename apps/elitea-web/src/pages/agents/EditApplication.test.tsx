@@ -45,6 +45,19 @@ function detail(overrides: { versions?: { id: string; name: string; status: stri
   };
 }
 
+/** `detail()` plus one attached toolkit — `id` (the mapping row) and `tool_id` (the toolkit instance) differ on purpose, see `features/agents/lib/toolRelation.ts`. */
+function detailWithTools() {
+  const base = detail();
+  return {
+    ...base,
+    version_details: {
+      ...base.version_details,
+      tools: [{ id: 5, tool_id: 77, entity_type: 'agent', name: 'Github', type: 'github', config: {} }],
+      meta: {},
+    },
+  };
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
 });
@@ -393,5 +406,35 @@ describe('EditApplication', () => {
     expect(screen.queryByRole('button', { name: /export agent/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /delete entity/i })).not.toBeInTheDocument();
     expect(screen.queryByTestId('agent-version-delete')).not.toBeInTheDocument();
+  });
+
+  /*
+   * #307's last piece — the Tools panel. `detail()` above carries no
+   * `tools`, so these use their own fixture; the panel's own attach/detach
+   * WIRE behaviour is covered in `features/agents/ui/AgentToolsPanel.test.tsx`
+   * (the two PATCH assertions), and these two assert the MOUNT and its
+   * read-only gate on the real page.
+   */
+  it('mounts the Tools panel inside the configuration panel, with the version\'s attached tools on screen', async () => {
+    server.use(getGetApplicationMockHandler(detailWithTools()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    const card = await screen.findByTestId('agent-toolkit-card', {}, { timeout: 5_000 });
+    // Visible, not merely present: the panel this page shipped before #307
+    // was a self-closing empty Box that satisfied toBeInTheDocument().
+    expect(card).toBeVisible();
+    expect(screen.getByText('Github')).toBeVisible();
+    expect(screen.getByTestId('edit-application-configuration-tab-panel')).toContainElement(card);
+    expect(screen.getByTestId('agent-add-toolkit-button')).toBeVisible();
+  });
+
+  it('offers a read-only viewer neither tool control (no attach menu, remove disabled)', async () => {
+    setPublicProjectId('42');
+    server.use(getGetApplicationMockHandler(detailWithTools()));
+    renderAgentsRoute(<EditApplication />, '/agents/latest/42', { projectId: '42' });
+
+    await screen.findByTestId('agent-toolkit-card', {}, { timeout: 5_000 });
+    expect(screen.queryByTestId('agent-add-toolkit-button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('agent-toolkit-delete-button')).toBeDisabled();
   });
 });

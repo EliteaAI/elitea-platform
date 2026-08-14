@@ -21,6 +21,16 @@ export interface EditApplicationVersionFields {
   readonly welcomeMessage: string;
   readonly variables: readonly { readonly name: string; readonly value: string }[];
   readonly stepLimit: number | undefined;
+  /**
+   * `meta.internal_tools` — the Tools panel's internal-tool switches (#307's
+   * mount). Held here with the other version-level fields because it is
+   * saved the same way they are: inside the `meta` blob the Go
+   * `UpdateVersion` handler assigns wholesale, which
+   * `toVersionSaveBody` merges rather than replaces. Unlike the attached
+   * TOOLKITS (immediate `entity_tool_mapping` writes, no Save involved),
+   * these switches are ordinary unsaved form state until Save.
+   */
+  readonly internalTools: readonly string[];
 }
 
 export interface EditApplicationVersionFieldsState {
@@ -38,6 +48,11 @@ export interface EditApplicationVersionFieldsState {
   readonly markSaved: () => void;
 }
 
+function toStringArray(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string');
+}
+
 function fromVersion(version: ApplicationVersionDetail | undefined): EditApplicationVersionFields {
   const metaRecord: Record<string, unknown> = version?.meta ?? {};
   return {
@@ -48,6 +63,7 @@ function fromVersion(version: ApplicationVersionDetail | undefined): EditApplica
       value: variable.value ?? '',
     })),
     stepLimit: typeof metaRecord['step_limit'] === 'number' ? metaRecord['step_limit'] : undefined,
+    internalTools: toStringArray(metaRecord['internal_tools']),
   };
 }
 
@@ -55,6 +71,8 @@ function areEqual(a: EditApplicationVersionFields, b: EditApplicationVersionFiel
   if (a.instructions !== b.instructions) return false;
   if (a.welcomeMessage !== b.welcomeMessage) return false;
   if (a.stepLimit !== b.stepLimit) return false;
+  if (a.internalTools.length !== b.internalTools.length) return false;
+  if (a.internalTools.some((name, index) => b.internalTools[index] !== name)) return false;
   if (a.variables.length !== b.variables.length) return false;
   return a.variables.every((variable, index) => {
     const other = b.variables[index];
@@ -107,6 +125,9 @@ export function useEditApplicationVersionFields(
         return true;
       case 'version_details.variables':
         setFields((previous) => ({ ...previous, variables: toVariables(value, previous.variables) }));
+        return true;
+      case 'version_details.meta.internal_tools':
+        setFields((previous) => ({ ...previous, internalTools: toStringArray(value) }));
         return true;
       case 'version_details.meta.step_limit':
         setFields((previous) => ({ ...previous, stepLimit: typeof value === 'number' ? value : undefined }));

@@ -5,10 +5,7 @@ import { HttpResponse, http } from 'msw';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  getDeleteApplicationToolMockHandler,
-  getUpdateApplicationRelationMockHandler,
-} from '@/shared/api/generated/applications/applications.msw';
+import { getUpdateApplicationRelationMockHandler } from '@/shared/api/generated/applications/applications.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
@@ -46,7 +43,30 @@ async function renderDisassociate(
   return rendered;
 }
 
-const TOOLKIT_TOOL: AgentToolAssociation = { id: 5, type: 'github', name: 'Github' };
+/**
+ * `PATCH /elitea_core/tool/prompt_lib/{projectId}/{toolkitId}` with
+ * `has_relation: false` — the real detach call (see the hook's own doc
+ * comment, deviation 1, for why this is NOT the generated
+ * `deleteApplicationTool` route). Hand-written for the same reason
+ * `ToolMenu.test.tsx`'s attach handler is: the endpoint has no orval
+ * wrapper, so no generated msw handler exists for it either.
+ */
+function toolkitDetachMockHandler(
+  capture?: (body: unknown, params: Readonly<Record<string, string | readonly string[] | undefined>>) => void,
+) {
+  return http.patch('*/elitea_core/tool/prompt_lib/:projectId/:toolkitId', async ({ request, params }) => {
+    capture?.(await request.json(), params);
+    return HttpResponse.json({ message: 'ok' }, { status: 201 });
+  });
+}
+
+/**
+ * `id` (5) and `tool_id` (77) deliberately DIFFER: `id` is the
+ * `entity_tool_mapping` row's own serial and `tool_id` is the toolkit
+ * instance's — a detach addressed by `id` hits an unrelated toolkit. Every
+ * assertion below that names 77 is guarding exactly that.
+ */
+const TOOLKIT_TOOL: AgentToolAssociation = { id: 5, tool_id: 77, type: 'github', name: 'Github' };
 const APPLICATION_TOOL: AgentToolAssociation = {
   id: 7,
   type: 'application',
@@ -76,8 +96,10 @@ afterEach(() => {
 });
 
 describe('useDisassociateToolkit', () => {
-  it('removes a regular toolkit via DELETE /tool/{toolId} and applies the tool-removal update', async () => {
-    server.use(getDeleteApplicationToolMockHandler());
+  it('detaches a regular toolkit with PATCH tool/{tool_id} has_relation:false, keyed on tool_id (NOT the mapping-row id), and applies the tool-removal update', async () => {
+    let body: unknown;
+    let params: Readonly<Record<string, string | readonly string[] | undefined>> | undefined;
+    server.use(toolkitDetachMockHandler((b, p) => { body = b; params = p; }));
     const onToolRemoved = vi.fn();
     const onToolRemovedFromFlow = vi.fn();
 
@@ -87,6 +109,11 @@ describe('useDisassociateToolkit', () => {
       await result.current.onDisassociateTool({ tool: TOOLKIT_TOOL });
     });
 
+    // The wire call itself, not just the local state update: the earlier port
+    // issued a DELETE against a route that deletes the toolkit INSTANCE
+    // project-wide, addressed by the wrong id space entirely.
+    expect(body).toMatchObject({ entity_version_id: 200, entity_id: 100, entity_type: 'agent', has_relation: false });
+    expect(params).toMatchObject({ projectId: 'proj-1', toolkitId: '77' });
     expect(onToolRemoved).toHaveBeenCalledWith({ tools: [], initialTools: [] });
     expect(onToolRemovedFromFlow).toHaveBeenCalledWith(TOOLKIT_TOOL);
     expect(result.current.isLoading).toBe(false);
@@ -94,7 +121,7 @@ describe('useDisassociateToolkit', () => {
   });
 
   it('calls setRefetch (via the shared applications store) when the form was not already dirty', async () => {
-    server.use(getDeleteApplicationToolMockHandler());
+    server.use(toolkitDetachMockHandler());
     const { useApplicationsStore } = await import('../../model/applicationsStore');
     useApplicationsStore.setState({ shouldRefetchDetails: false });
 
@@ -108,7 +135,7 @@ describe('useDisassociateToolkit', () => {
   });
 
   it('does NOT call setRefetch when the form already has unrelated unsaved changes (dirty: true)', async () => {
-    server.use(getDeleteApplicationToolMockHandler());
+    server.use(toolkitDetachMockHandler());
     const { useApplicationsStore } = await import('../../model/applicationsStore');
     useApplicationsStore.setState({ shouldRefetchDetails: false });
 
@@ -122,7 +149,7 @@ describe('useDisassociateToolkit', () => {
   });
 
   it('calls onDeleteAttachmentTool when removing the attachment toolkit', async () => {
-    server.use(getDeleteApplicationToolMockHandler());
+    server.use(toolkitDetachMockHandler());
     const onDeleteAttachmentTool = vi.fn();
 
     const { result } = await renderDisassociate(baseParams({ onDeleteAttachmentTool }));
@@ -134,9 +161,9 @@ describe('useDisassociateToolkit', () => {
     expect(onDeleteAttachmentTool).toHaveBeenCalledOnce();
   });
 
-  it('surfaces a network error from the delete-tool call without applying the tool-removal update', async () => {
+  it('surfaces a network error from the detach call without applying the tool-removal update', async () => {
     server.use(
-      http.delete('*/elitea_core/tool/prompt_lib/:projectId/:toolId', () =>
+      http.patch('*/elitea_core/tool/prompt_lib/:projectId/:toolkitId', () =>
         HttpResponse.json({ error: 'boom' }, { status: 500 }),
       ),
     );
@@ -232,7 +259,7 @@ describe('useDisassociateToolkit', () => {
   });
 
   it('invokes onPipelineAutoSave only when isFromPipeline is true', async () => {
-    server.use(getDeleteApplicationToolMockHandler());
+    server.use(toolkitDetachMockHandler());
     const onPipelineAutoSave = vi.fn();
 
     const { result } = await renderDisassociate(baseParams({ isFromPipeline: true, onPipelineAutoSave }));
@@ -249,7 +276,7 @@ describe('useDisassociateToolkit', () => {
   });
 
   it('does not invoke onPipelineAutoSave when isFromPipeline is false', async () => {
-    server.use(getDeleteApplicationToolMockHandler());
+    server.use(toolkitDetachMockHandler());
     const onPipelineAutoSave = vi.fn();
 
     const { result } = await renderDisassociate(baseParams({ isFromPipeline: false, onPipelineAutoSave }));

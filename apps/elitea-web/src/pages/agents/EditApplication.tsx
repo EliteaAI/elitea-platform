@@ -24,6 +24,7 @@ import { useEditApplicationVersionFields } from './lib/useEditApplicationVersion
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { EditApplicationActions } from './ui/EditApplicationActions';
+import { EditApplicationToolsPanel } from './ui/EditApplicationToolsPanel';
 import { useDiscardApplicationChanges } from './useDiscardApplicationChanges';
 
 const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
@@ -372,6 +373,23 @@ export function EditApplication(): ReactNode {
               values={editor.values}
               onFieldChange={editor.onFieldChange}
               disabled={isReadOnlyView || isFetching}
+            />
+            {/*
+             * #307 — tool attach/detach, the last of the "correctly-wired
+             * components with no mount point". See
+             * `./ui/EditApplicationToolsPanel.tsx` for what this page owns
+             * and `features/agents`' `AgentToolsPanel` for the composition
+             * itself. Both writes hit the server immediately (the
+             * `entity_tool_mapping` relation endpoint), independently of
+             * this page's Save button.
+             */}
+            <EditApplicationToolsPanel
+              projectId={projectId}
+              applicationId={applicationId}
+              activeVersion={activeVersion}
+              versionFields={versionFields}
+              isDirty={isDirty}
+              isReadOnly={isReadOnlyView}
             />
           </Box>
         </Box>

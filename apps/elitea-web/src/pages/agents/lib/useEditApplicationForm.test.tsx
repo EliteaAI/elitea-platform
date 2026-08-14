@@ -237,7 +237,17 @@ describe('useEditApplicationForm', () => {
     });
     // The Go handler assigns the whole `meta` map it receives, so a payload
     // of `{step_limit}` alone would silently blank every other stored key.
-    expect(versionBody['meta']).toEqual({ category: 'support', step_limit: 40 });
+    // `internal_tools` joined this payload with #307's Tools-panel mount —
+    // the switches are saved through this same `meta` blob, and an empty
+    // array is a real value (all switches off), not an omission.
+    expect(versionBody['meta']).toEqual({ category: 'support', step_limit: 40, internal_tools: [] });
+  });
+
+  it('sends the internal-tool switches through `meta.internal_tools` (issue 307 — the Tools panel had no save path at all)', async () => {
+    const { versionBody } = await captureSave((harness) => {
+      harness.applyFieldChange('version_details.meta.internal_tools', ['data_analysis', 'internal_mcp']);
+    });
+    expect(versionBody['meta']).toMatchObject({ internal_tools: ['data_analysis', 'internal_mcp'] });
   });
 
   it('sends the application-level name/description to the application PUT — a different endpoint, never called at all before issue 307', async () => {
