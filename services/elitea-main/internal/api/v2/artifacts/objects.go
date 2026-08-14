@@ -1,12 +1,15 @@
 package artifacts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -181,6 +184,74 @@ func artifactMaxObjectBytesFromEnv() (int64, bool) {
 	return v, true
 }
 
+// listObjectsQuery is the parsed, validated form of a bucket listing
+// request. It exists because elitea-main serves the same underlying listing
+// through two representations — the native route (ListObjects) and the
+// S3-shaped route the SDK's artifact toolkit speaks (ListObjectsS3, s3.go).
+// Only the wire rendering differs between them, so everything up to and
+// including the storage query is shared here rather than written twice:
+// a divergence between the two would be invisible until an index run
+// silently listed nothing.
+type listObjectsQuery struct {
+	prefix    string
+	delimiter string
+	maxKeys   int32
+	cursor    string
+}
+
+// parseListObjectsQuery validates the listing parameters both
+// representations accept. A non-empty code means the request is bad and the
+// caller must render (code, message) in its own error vocabulary — the two
+// representations use different code sets (artifact codes vs S3 codes), so
+// classification is shared here while rendering stays with the caller.
+func parseListObjectsQuery(q url.Values) (listObjectsQuery, string, string) {
+	prefix := q.Get("prefix")
+	if err := storage.ValidateKeyPrefix(prefix); err != nil {
+		return listObjectsQuery{}, "InvalidKey", err.Error()
+	}
+
+	var maxKeys int32
+	if limitStr := q.Get("limit"); limitStr != "" {
+		limit, err := strconv.ParseInt(limitStr, 10, 32)
+		if err != nil || limit < 0 {
+			return listObjectsQuery{}, "InvalidArgument", "limit must be a non-negative integer"
+		}
+		maxKeys = int32(limit)
+	}
+
+	return listObjectsQuery{
+		prefix:    prefix,
+		delimiter: q.Get("delimiter"),
+		maxKeys:   maxKeys,
+		cursor:    q.Get("cursor"),
+	}, "", ""
+}
+
+// errInvalidBucketRef marks a NewBucketRef failure inside listBucketObjects.
+// Callers reach that point only after requireBucket has confirmed the bucket
+// row exists, so a ref that will not build means the stored bucket name
+// violates the storage ref pattern — an internal inconsistency, not caller
+// error, and both representations must map it to "internal" rather than to
+// the InvalidKey they'd infer from the wrapped storage.ErrInvalidKey.
+var errInvalidBucketRef = errors.New("build bucket ref")
+
+// listBucketObjects runs the storage query shared by both listing
+// representations. The caller has already resolved and authorized the
+// project and confirmed the bucket exists.
+func (h *Handler) listBucketObjects(ctx context.Context, projectIDStr, bucket string, q listObjectsQuery) (storage.ListPage, error) {
+	bucketRef, err := storage.NewBucketRef(projectIDStr, bucket)
+	if err != nil {
+		return storage.ListPage{}, fmt.Errorf("%w: %w", errInvalidBucketRef, err)
+	}
+	return h.store.List(ctx, storage.ListQuery{
+		Bucket:            bucketRef,
+		KeyPrefix:         q.prefix,
+		Delimiter:         q.delimiter,
+		MaxKeys:           q.maxKeys,
+		ContinuationToken: q.cursor,
+	})
+}
+
 func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseProjectID(r)
 	if !ok {
@@ -193,37 +264,18 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bucketRef, err := storage.NewBucketRef(projectIDStr, bucket)
+	q, code, message := parseListObjectsQuery(r.URL.Query())
+	if code != "" {
+		writeError(w, statusForCode(code), code, message)
+		return
+	}
+
+	page, err := h.listBucketObjects(r.Context(), projectIDStr, bucket, q)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "list objects: "+err.Error())
-		return
-	}
-
-	q := r.URL.Query()
-	prefix := q.Get("prefix")
-	if err := storage.ValidateKeyPrefix(prefix); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidKey", err.Error())
-		return
-	}
-
-	var maxKeys int32
-	if limitStr := q.Get("limit"); limitStr != "" {
-		limit, err := strconv.ParseInt(limitStr, 10, 32)
-		if err != nil || limit < 0 {
-			writeError(w, http.StatusBadRequest, "InvalidArgument", "limit must be a non-negative integer")
+		if errors.Is(err, errInvalidBucketRef) {
+			writeError(w, http.StatusInternalServerError, "Internal", "list objects: "+err.Error())
 			return
 		}
-		maxKeys = int32(limit)
-	}
-
-	page, err := h.store.List(r.Context(), storage.ListQuery{
-		Bucket:            bucketRef,
-		KeyPrefix:         prefix,
-		Delimiter:         q.Get("delimiter"),
-		MaxKeys:           maxKeys,
-		ContinuationToken: q.Get("cursor"),
-	})
-	if err != nil {
 		writeStorageError(w, err)
 		return
 	}

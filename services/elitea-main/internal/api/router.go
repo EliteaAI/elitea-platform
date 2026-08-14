@@ -272,10 +272,23 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 	edit := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionEdit)
 	del := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionDelete)
 
+	// viewByQueryProject is the `view` gate for the one artifact route whose
+	// project arrives as a QUERY parameter rather than a path segment (the
+	// S3-shaped listing below). It is deliberately the same resolver, mode
+	// and permission as `view` — only the extractor differs — so the S3
+	// representation cannot be a softer way in than the native route.
+	viewByQueryProject := apimw.RequireResolvedPermissionsForProject(
+		deps.Resolver,
+		platformauth.PermissionModeDefault,
+		apimw.ProjectIDFromQuery("project_id"),
+		artifactPermissionView,
+	)
+
 	listBuckets, createBucket, getBucket, updateBucket, deleteBucket := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	createTransferGrant, commitTransferGrant := notImplementedArtifact, notImplementedArtifact
 	presignUploadPart, completeMultipartUpload, abortMultipartUpload := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+	listObjectsS3 := notImplementedArtifact
 	if deps.Handler != nil {
 		listBuckets, createBucket, getBucket, updateBucket, deleteBucket =
 			deps.Handler.ListBuckets, deps.Handler.CreateBucket, deps.Handler.GetBucket, deps.Handler.UpdateBucket, deps.Handler.DeleteBucket
@@ -284,6 +297,7 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 		createTransferGrant, commitTransferGrant = deps.Handler.CreateTransferGrant, deps.Handler.CommitTransferGrant
 		presignUploadPart, completeMultipartUpload, abortMultipartUpload =
 			deps.Handler.PresignUploadPart, deps.Handler.CompleteMultipartUpload, deps.Handler.AbortMultipartUpload
+		listObjectsS3 = deps.Handler.ListObjectsS3
 	}
 
 	r.Group(func(r chi.Router) {
@@ -320,6 +334,27 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 			r.With(create).Post("/grants/{projectID}/{grantID}:completeMultipart", completeMultipartUpload)
 			r.With(create).Post("/grants/{projectID}/{grantID}:abortMultipart", abortMultipartUpload)
 		})
+
+		// S3-shaped bucket listing — the listing the SDK's artifact toolkit
+		// actually performs, and therefore the one an index run depends on.
+		//
+		// It is mounted at the ROOT, not under /api/v2, because that is
+		// where the request arrives: the worker's platform_origin is
+		// validated to carry no path (elitea-worker-python
+		// config.py:187-199), the SDK appends "/artifacts/s3" to it with no
+		// api_v2_path (elitea-sdk client.py:115 — note every sibling URL on
+		// the lines above it DOES include /api/v2, so the omission is the
+		// contract, not an oversight), and the platform edge forwards the
+		// path verbatim. Mounting this under /api/v2 would reproduce the
+		// original defect: a 404 the SDK swallows into an empty listing,
+		// leaving an index run green having indexed nothing.
+		//
+		// The project is a query parameter here, so this is the one
+		// artifact route RequireResolvedPermissions (which reads the
+		// {projectID} PATH param) cannot gate; viewByQueryProject applies
+		// the identical resolver/mode/permission through the query
+		// extractor instead. Nothing else about the authorization differs.
+		r.With(viewByQueryProject).Get("/artifacts/s3/{bucket}", listObjectsS3)
 	})
 }
 

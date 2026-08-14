@@ -1809,6 +1809,10 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
 		"GET /app/{projectID}/mcp",
 		"GET /app/{projectID}/mcp/*",
+		// Root-mounted on purpose: the SDK builds this URL from a bare
+		// origin with no /api/v2 segment, so this is the path that actually
+		// arrives. See mountArtifactRoutes in router.go.
+		"GET /artifacts/s3/{bucket}",
 		"GET /auth",
 		"GET /avatars/{projectID}/{filename}",
 		"GET /docs",

@@ -223,9 +223,34 @@ func (s *fakeStore) List(_ context.Context, q storage.ListQuery) (storage.ListPa
 	sort.Strings(keys)
 
 	page := storage.ListPage{Objects: make([]storage.ObjectInfo, 0, len(keys))}
+	// Delimiter rollup, S3 semantics: a key whose remainder after KeyPrefix
+	// still contains the delimiter is not listed as an object — it collapses
+	// into a common prefix covering everything under that first delimiter.
+	// An empty delimiter disables grouping entirely, which is exactly the
+	// recursive listing the SDK asks for by omitting the parameter.
+	//
+	// This was previously unimplemented (delimiter was accepted and
+	// ignored), which made every listing here implicitly recursive and left
+	// CommonPrefixes permanently empty. No existing test passed a delimiter,
+	// so honouring it changes no established expectation — but without it a
+	// test of folder grouping would pass against a fake that cannot group,
+	// proving nothing.
+	seenPrefixes := map[string]bool{}
 	for _, k := range keys {
+		if q.Delimiter != "" {
+			remainder := strings.TrimPrefix(k, q.KeyPrefix)
+			if idx := strings.Index(remainder, q.Delimiter); idx >= 0 {
+				group := q.KeyPrefix + remainder[:idx+len(q.Delimiter)]
+				if !seenPrefixes[group] {
+					seenPrefixes[group] = true
+					page.CommonPrefixes = append(page.CommonPrefixes, group)
+				}
+				continue
+			}
+		}
 		page.Objects = append(page.Objects, s.objects[basePrefix+k])
 	}
+	sort.Strings(page.CommonPrefixes)
 	return page, nil
 }
 

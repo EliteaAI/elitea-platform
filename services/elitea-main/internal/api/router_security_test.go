@@ -159,6 +159,12 @@ var artifactRoutePermissions = []artifactRoutePermission{
 	{method: http.MethodDelete, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionDelete},
 	{method: http.MethodPost, path: "/api/v2/artifacts/grants/1/reports", permission: artifactPermissionCreate},
 	{method: http.MethodPost, path: "/api/v2/artifacts/grants/1/abc123:commit", permission: artifactPermissionCreate},
+	// The S3-shaped listing. It is listed here so it inherits the same
+	// unauthenticated-401 and no-permission-403 guarantees as every other
+	// artifact route, despite naming its project in the query string rather
+	// than the path — the whole risk of that route is that it becomes a
+	// softer way in, and these two tests are what forbid it.
+	{method: http.MethodGet, path: "/artifacts/s3/reports?project_id=1", permission: artifactPermissionView},
 }
 
 // allArtifactPermissions is used where a test wants authorization to be a
@@ -283,6 +289,11 @@ var artifactSuccessCases = []artifactSuccessCase{
 	{desc: "download object", method: http.MethodGet, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionView, wantStatus: http.StatusOK},
 	{desc: "stat object", method: http.MethodHead, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionView, wantStatus: http.StatusOK},
 	{desc: "delete object", method: http.MethodDelete, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionDelete, wantStatus: http.StatusNoContent},
+	// The S3-shaped listing, at its real root-level path. Before this route
+	// existed the same request produced a 404 that the SDK swallowed into an
+	// empty listing, so a 200 here is exactly the behaviour change that
+	// turns a vacuously green index run into a real one.
+	{desc: "list objects (s3)", method: http.MethodGet, path: "/artifacts/s3/reports?project_id=1", permission: artifactPermissionView, wantStatus: http.StatusOK},
 }
 
 // TestArtifactRoutesSucceedWithExactRequiredPermission proves S11's second
