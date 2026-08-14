@@ -6,6 +6,7 @@ pub mod agent_lease;
 pub mod agent_preparation;
 pub mod invocation_admission;
 mod invocation_supervisor;
+mod native_agent_lifecycle;
 pub mod output_delivery;
 
 #[cfg(test)]

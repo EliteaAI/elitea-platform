@@ -21,8 +21,8 @@ passing upstream test does not register a production worker capability.
 
 | Area | ADK-Rust 2.0.0 evidence | Decision | Elitea owner / next proof |
 | --- | --- | --- | --- |
-| Agent and runner | `LlmAgent`, `Runner`, `RunnerConfig`, `Event` | Adopt behind the sealed one-shot invocation state | Main claim/authorize fence, supervised lifetime, progress/terminal output and Redis retirement remain Elitea-owned |
-| Event stream | `EventStream`, `Event`, `Content`, `Part` | Adopt as internal semantic input, not as the browser/output contract | The closed ordinary-text projector maps bounded root-model text/thinking events to current `NodeEventV1` shapes and drains through EOS. Elitea's capability-disabled publisher keeps the exact command-bound cursor, encrypted spool, live or restored session, one pending frame and the 1..8 attempt budget inseparable. It reuses an ACKed live stream, persists before uncertain delivery, reopens only byte-identical progress, and recovers cancelled waits without resending an acknowledged frame. A specialized final-event path hashes the exact canonical `full_message` JSON before its first await; only its bound durable ACK promotes that candidate to an opaque result-artifact proof retained inside the publisher, after which no progress may follow. The supervised terminal `N + 1`, final lease/deadline selection, settlement, Redis retirement, sanitization, durable ADK composition and tool/HITL/MCP/application completion projection remain Elitea-owned gates |
+| Agent and runner | `LlmAgent`, `Runner`, `RunnerConfig`, `Event` | Adopt behind the sealed one-shot invocation state | Main claim/authorize fence, supervised lifetime, progress/terminal output and Redis retirement remain Elitea-owned. The capability-disabled native lifecycle now composes that complete owner for the ordinary-text application/ad-hoc profile; production provider/session/tool assembly remains closed |
+| Event stream | `EventStream`, `Event`, `Content`, `Part` | Adopt as internal semantic input, not as the browser/output contract | The closed ordinary-text projector maps bounded root-model text/thinking events to current `NodeEventV1` shapes and drains through EOS. Elitea's capability-disabled lifecycle retains the exact command-bound cursor, encrypted spool, live or restored session, one pending frame and the 1..8 attempt budget while it ACKs each projected batch before polling ADK again. It hashes the exact canonical `full_message` JSON before its first await; only its bound durable ACK can produce the request-bound terminal at `N + 1`. The owner then performs final Renew -> Observe, applies fatal lease > durable Stop > inclusive deadline > ADK completion, durably ACKs the terminal, prepares settlement and atomically retires the exact Redis delivery. Production sanitizers and provider/session/tool/skill/HITL/MCP/application assembly remain gates |
 | Graph/tool custom progress | Functional `TaskContext::emit(StreamEvent::custom(...))`, graph `NodeOutput.events`, and `ToolContext::emit_progress` | Wrap; never treat raw JSON or broadcast delivery as authoritative output | Useful for allowlisted pipeline and later indexing semantic events. Functional `emit` uses a Tokio broadcast sender and silently has no effect without listeners, so durable indexing/progress must still pass through the Elitea spool/send/ACK coordinator with schema, size and redaction policy. Tool progress already enters the ADK event stream but remains gated until its call identity and current browser shape are mapped |
 | Models | Provider-neutral `Llm`; optional OpenAI/Anthropic and other feature gates | Wrap | Construct the provider only after the authorized claim redeems credentials. Initial Elitea gateway support uses reviewed OpenAI-compatible routing; native Anthropic requires a header/routing compatibility adapter rather than silent coercion |
 | Tools/toolsets | `Tool`, `Toolset`, `BasicToolset`, typed tool macro | Adopt and wrap | Elitea owns saved configuration, selected-tool identity, grants, sensitive policy, absolute deadline, bounded concurrency and result projection |
@@ -92,12 +92,23 @@ delivery. The internal invocation supervisor now accepts work only with a
 non-cloneable reservation from its exact bounded admission pool, keeps accepted
 work alive when a result waiter disappears, closes admission during drain and
 returns an unaccepted authority-bearing future intact. The process panic hook
-also replaces arbitrary panic payloads with one static diagnostic. This does
-not yet authorize or execute a production capability; the complete lifecycle
-owner remains the next composition gate. `smallvec`, `crossbeam` and lock-free
-queues are not architecture requirements. Add them only after representative
-profiles identify an allocation or contention hot path and a benchmark proves
-an end-to-end gain without weakening cancellation or durability.
+also replaces arbitrary panic payloads with one static diagnostic. The
+capability-disabled native application/ad-hoc lifecycle now owns one authorized
+run through ADK EOS, per-event durable ACK backpressure, final lease and
+deadline reduction, terminal ACK, settlement and Redis retirement. Its
+ownership-heavy async phases are boxed at deliberate transition points so the
+generated poll stack remains bounded without increasing thread stack sizes.
+Cancellation-safe assembly and post-EOS result selection are raced against the
+supervised lease. Exact ADK-Rust 2.0.0 creates its `EventStream` without I/O on
+the first poll; the wrapper enforces that as a synchronous fail-closed start
+boundary, while session lookup and agent work remain inside the supervised
+stream.
+Production capability registration still waits for real provider, session,
+tool and policy assembly plus cross-process integration proof. `smallvec`,
+`crossbeam` and lock-free queues are not architecture requirements. Add them
+only after representative profiles identify an allocation or contention hot
+path and a benchmark proves an end-to-end gain without weakening cancellation
+or durability.
 
 Tracing is added at the orchestration owner as functionality lands. Stable
 span fields include execution/generation/claim attempt, capability, graph/node,

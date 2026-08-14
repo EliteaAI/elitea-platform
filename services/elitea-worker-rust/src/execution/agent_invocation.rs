@@ -28,7 +28,7 @@ use crate::protocol::control::{AgentControlClient, InvocationAuthorizationDecisi
 use crate::transport::ControlRpc;
 use crate::transport::redis_commands::{RedisCommandRetirer, RedisRetirementClient};
 
-type OwnedFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+pub(super) type OwnedFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// The sole continuation allowed to consume an authorized native run.
 ///
@@ -39,10 +39,23 @@ pub(super) trait AuthorizedAgentLifecycle: Send + Sync + 'static {
     fn run(&self, run: AuthorizedAgentRun) -> OwnedFuture<AgentAuthorizedLifecycleCompletion>;
 }
 
+/// Authority-free outcome of one fully owned authorized lifecycle.
+pub(super) enum AgentAuthorizedLifecycleDisposition {
+    ExecutedSettledAcked {
+        sequence: u64,
+        settlement_receipt_id: String,
+    },
+    RecoveryRequiredNoAck {
+        code: &'static str,
+        retryable: bool,
+    },
+}
+
 /// Authority-free observation returned only after the authorized lifecycle
 /// implementation has consumed every run capability.
 pub(super) struct AgentAuthorizedLifecycleCompletion {
     execution_kind: AgentExecutionKind,
+    disposition: AgentAuthorizedLifecycleDisposition,
 }
 
 impl AgentAuthorizedLifecycleCompletion {
@@ -51,9 +64,42 @@ impl AgentAuthorizedLifecycleCompletion {
         self.execution_kind
     }
 
+    #[must_use]
+    pub(super) const fn disposition(&self) -> &AgentAuthorizedLifecycleDisposition {
+        &self.disposition
+    }
+
+    pub(super) fn settled(
+        execution_kind: AgentExecutionKind,
+        sequence: u64,
+        settlement_receipt_id: String,
+    ) -> Self {
+        Self {
+            execution_kind,
+            disposition: AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked {
+                sequence,
+                settlement_receipt_id,
+            },
+        }
+    }
+
+    pub(super) const fn recovery_required(
+        execution_kind: AgentExecutionKind,
+        code: &'static str,
+        retryable: bool,
+    ) -> Self {
+        Self {
+            execution_kind,
+            disposition: AgentAuthorizedLifecycleDisposition::RecoveryRequiredNoAck {
+                code,
+                retryable,
+            },
+        }
+    }
+
     #[cfg(test)]
     pub(super) const fn for_test(execution_kind: AgentExecutionKind) -> Self {
-        Self { execution_kind }
+        Self::recovery_required(execution_kind, "agent_test.incomplete", false)
     }
 }
 

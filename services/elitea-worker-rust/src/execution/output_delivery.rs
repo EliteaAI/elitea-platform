@@ -16,7 +16,8 @@ use prost::Message;
 use ring::digest;
 use tonic::transport::Channel;
 
-use crate::agents::{AgentExecutionKind, AgentResultArtifact};
+use crate::agents::result::AgentResultBinding;
+use crate::agents::{AgentExecutionKind, AgentResultArtifact, AgentTerminalState};
 use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
@@ -475,6 +476,79 @@ struct AckedFullMessageArtifact {
     artifact: AgentResultArtifact,
 }
 
+/// Terminal selected by the supervisor-owned native lifecycle.
+pub(super) enum FreshAgentTerminalSelection {
+    Completed,
+    Failure(RuntimeFailureKind),
+}
+
+/// Exact durable terminal ACK returned only to the owning lifecycle.
+pub(super) struct FreshAgentTerminalAck {
+    pub(super) acknowledged: DurablyAckedTerminal,
+    pub(super) frame: ExecutionOutputFrameV1,
+}
+
+/// Stable terminalization failures which never authorize Redis retirement.
+#[derive(Debug)]
+pub(super) enum FreshAgentTerminalError {
+    RecoveryRequired(&'static str),
+    InvalidState(&'static str),
+    InvalidFrame(ProtocolError),
+    Preflight(AgentOutputPreflightError),
+    Output(OutputGrpcError),
+}
+
+impl FreshAgentTerminalError {
+    #[must_use]
+    pub(super) const fn code(&self) -> &'static str {
+        match self {
+            Self::RecoveryRequired(_) => "agent_terminal.recovery_required",
+            Self::InvalidState(_) | Self::InvalidFrame(_) => "agent_terminal.invalid_state",
+            Self::Preflight(error) => error.code(),
+            Self::Output(error) if reconnectable_output(error) => {
+                "agent_terminal.output_unavailable"
+            }
+            Self::Output(_) => "agent_terminal.output_rejected",
+        }
+    }
+
+    #[must_use]
+    pub(super) fn retryable(&self) -> bool {
+        match self {
+            Self::RecoveryRequired(_) => true,
+            Self::Preflight(error) => error.retryable(),
+            Self::Output(error) => reconnectable_output(error),
+            Self::InvalidState(_) | Self::InvalidFrame(_) => false,
+        }
+    }
+}
+
+impl fmt::Display for FreshAgentTerminalError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RecoveryRequired(message) | Self::InvalidState(message) => {
+                formatter.write_str(message)
+            }
+            Self::InvalidFrame(error) => {
+                write!(formatter, "the agent terminal is invalid: {error}")
+            }
+            Self::Preflight(error) => write!(formatter, "terminal spool recovery failed: {error}"),
+            Self::Output(error) => write!(formatter, "terminal output delivery failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for FreshAgentTerminalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidFrame(error) => Some(error),
+            Self::Preflight(error) => Some(error),
+            Self::Output(error) => Some(error),
+            Self::RecoveryRequired(_) | Self::InvalidState(_) => None,
+        }
+    }
+}
+
 struct PendingAgentProgress {
     frame: ExecutionOutputFrameV1,
     attempts: usize,
@@ -502,6 +576,7 @@ enum ProgressDrive {
 #[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
 pub(crate) struct FreshAgentProgressPublisher<C: AgentProgressConnector> {
     cursor: AgentExecutionOutputCursor,
+    result_binding: AgentResultBinding,
     first: Option<PreparedOutputSpool>,
     factory: AgentOutputSpoolFactory,
     connector: C,
@@ -518,6 +593,7 @@ pub(crate) struct FreshAgentProgressPublisher<C: AgentProgressConnector> {
 impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
     pub(crate) fn new(
         cursor: AgentExecutionOutputCursor,
+        result_binding: AgentResultBinding,
         output: PreparedAgentOutput,
         connector: C,
         config: AgentProgressPublisherConfig,
@@ -525,6 +601,7 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
         let PreparedAgentOutput { prepared, factory } = output;
         Self {
             cursor,
+            result_binding,
             first: Some(prepared),
             factory,
             connector,
@@ -610,6 +687,111 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
             Some(PendingFullMessageArtifact { artifact }),
         )
         .await
+    }
+
+    /// Consume the complete progress owner into one exact terminal ACK.
+    ///
+    /// This method is called only from the process-supervised native lifecycle;
+    /// it never returns a prepared terminal or the full-message artifact. A
+    /// pending frame without Main's bound rejection remains recovery-required
+    /// and cannot be replaced locally.
+    pub(super) async fn finish_terminal(
+        mut self,
+        verified: &VerifiedAgentCommand,
+        selection: FreshAgentTerminalSelection,
+        occurred_at_unix_millis: i64,
+        recovery_config: AgentTerminalRecoveryConfig,
+    ) -> Result<FreshAgentTerminalAck, FreshAgentTerminalError>
+    where
+        C: AgentTerminalReplay,
+    {
+        self.close_live().await;
+        if self.replay.is_some() || self.replay_result.is_some() {
+            return Err(FreshAgentTerminalError::RecoveryRequired(
+                "restored progress remains unresolved before terminal publication",
+            ));
+        }
+
+        let pending = self.pending.take();
+        let (terminal, replaced_progress) = match (selection, pending) {
+            (_, Some(pending)) if pending.rejection.is_none() => {
+                return Err(FreshAgentTerminalError::RecoveryRequired(
+                    "progress remains unacknowledged before terminal publication",
+                ));
+            }
+            (FreshAgentTerminalSelection::Completed, Some(_)) => {
+                return Err(FreshAgentTerminalError::InvalidState(
+                    "a rejected progress frame cannot become a completed terminal",
+                ));
+            }
+            (FreshAgentTerminalSelection::Completed, None) => {
+                let artifact = self
+                    .acked_full_message
+                    .take()
+                    .ok_or(FreshAgentTerminalError::InvalidState(
+                        "the completed terminal requires an acknowledged full message",
+                    ))?
+                    .artifact;
+                let result = self
+                    .result_binding
+                    .bind_artifact(AgentTerminalState::Completed, artifact)
+                    .map_err(FreshAgentTerminalError::InvalidFrame)?;
+                let terminal = self
+                    .cursor
+                    .bind_result_terminal(verified, result, occurred_at_unix_millis)
+                    .map_err(FreshAgentTerminalError::InvalidFrame)?;
+                (terminal, None)
+            }
+            (FreshAgentTerminalSelection::Failure(failure), None) => {
+                let terminal = self
+                    .cursor
+                    .bind_failure_terminal(verified, failure, occurred_at_unix_millis)
+                    .map_err(FreshAgentTerminalError::InvalidFrame)?;
+                (terminal, None)
+            }
+            (FreshAgentTerminalSelection::Failure(_), Some(pending)) => {
+                let rejection = pending
+                    .rejection
+                    .ok_or(FreshAgentTerminalError::InvalidState(
+                        "the rejected progress proof is unavailable",
+                    ))?;
+                let terminal = self
+                    .cursor
+                    .bind_rejected_progress_terminal(verified, rejection, occurred_at_unix_millis)
+                    .map_err(FreshAgentTerminalError::InvalidFrame)?;
+                (terminal, Some(pending.frame))
+            }
+        };
+        let terminal = terminal.into_frame();
+        let connector = self.connector;
+        let (prepared, reopener) = prepare_fresh_terminal_spool(
+            self.first.take(),
+            self.factory,
+            &terminal,
+            replaced_progress,
+        )
+        .await?;
+
+        let (acknowledged, frame) = replay_terminal_with_replacement(
+            &connector,
+            verified,
+            terminal,
+            prepared,
+            reopener,
+            recovery_config.max_output_sessions,
+        )
+        .await
+        .map_err(|error| match error {
+            ExactTerminalReplayError::InvalidDurableState(error) => {
+                FreshAgentTerminalError::InvalidFrame(error)
+            }
+            ExactTerminalReplayError::Preflight(error) => FreshAgentTerminalError::Preflight(error),
+            ExactTerminalReplayError::Output(error) => FreshAgentTerminalError::Output(error),
+        })?;
+        Ok(FreshAgentTerminalAck {
+            acknowledged,
+            frame,
+        })
     }
 
     async fn publish_event(
@@ -1002,6 +1184,63 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
     pub(super) fn into_test_acked_full_message(self) -> Option<AgentResultArtifact> {
         self.acked_full_message.map(|proof| proof.artifact)
     }
+}
+
+async fn prepare_fresh_terminal_spool(
+    first: Option<PreparedOutputSpool>,
+    factory: AgentOutputSpoolFactory,
+    terminal: &ExecutionOutputFrameV1,
+    replaced_progress: Option<ExecutionOutputFrameV1>,
+) -> Result<(PreparedOutputSpool, AgentOutputSpoolReopener), FreshAgentTerminalError> {
+    let prepared = if let Some(expected) = replaced_progress {
+        let reopened = factory
+            .reopen_progress(&expected)
+            .await
+            .map_err(FreshAgentTerminalError::Preflight)?;
+        let ReopenedAgentProgress::Pending(mut prepared) = reopened else {
+            return Err(FreshAgentTerminalError::RecoveryRequired(
+                "the rejected progress frame is not durably recoverable",
+            ));
+        };
+        let terminal_for_replace = terminal.clone();
+        tokio::task::spawn_blocking(move || {
+            prepared.replace_pending_exact(&expected, &terminal_for_replace)?;
+            Ok::<_, OutputGrpcError>(prepared)
+        })
+        .await
+        .map_err(|_| {
+            FreshAgentTerminalError::Output(OutputGrpcError::Unavailable(
+                "the terminal replacement task did not complete",
+            ))
+        })?
+        .map_err(FreshAgentTerminalError::Output)?
+    } else {
+        let mut prepared = match first {
+            Some(prepared) => prepared,
+            None => factory
+                .reopen()
+                .await
+                .map_err(FreshAgentTerminalError::Preflight)?,
+        };
+        if prepared.pending_frame_count() != 0 {
+            return Err(FreshAgentTerminalError::RecoveryRequired(
+                "the output spool is not empty before terminal publication",
+            ));
+        }
+        let terminal_for_persist = terminal.clone();
+        tokio::task::spawn_blocking(move || {
+            prepared.persist(terminal_for_persist)?;
+            Ok::<_, OutputGrpcError>(prepared)
+        })
+        .await
+        .map_err(|_| {
+            FreshAgentTerminalError::Output(OutputGrpcError::Unavailable(
+                "the terminal persistence task did not complete",
+            ))
+        })?
+        .map_err(FreshAgentTerminalError::Output)?
+    };
+    Ok((prepared, factory.seal_terminal(terminal.encode_to_vec())))
 }
 
 fn result_artifact_for_event(

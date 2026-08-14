@@ -1,4 +1,6 @@
 use super::request::AgentExecutionRequest;
+#[cfg(test)]
+use super::request::AgentInputBinding;
 use crate::protocol::{
     ProtocolError as AgentProtocolError,
     elitea::runtime::v1::{
@@ -45,6 +47,63 @@ impl BoundAgentExecutionResult {
     }
 }
 
+/// Exact admitted-input binding retained without the request payload.
+///
+/// This value lets the durable output owner build the terminal result without
+/// accepting a second caller-selected request after native execution. It is
+/// neither cloneable nor formattable because it is a provenance boundary, even
+/// though it contains no invocation or output authority.
+pub(crate) struct AgentResultBinding {
+    input_bundle_id: String,
+    input_bundle_digest: [u8; 32],
+    request_entry_id: String,
+    request_immutable_version: String,
+    request_content_digest: [u8; 32],
+}
+
+impl AgentResultBinding {
+    #[must_use]
+    pub(crate) fn from_request(request: &AgentExecutionRequest) -> Self {
+        let binding = &request.binding;
+        Self {
+            input_bundle_id: binding.input_bundle_id.clone(),
+            input_bundle_digest: binding.input_bundle_digest,
+            request_entry_id: binding.request_entry_id.clone(),
+            request_immutable_version: binding.request_immutable_version.clone(),
+            request_content_digest: binding.request_content_digest,
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_input_binding(binding: &AgentInputBinding) -> Self {
+        Self {
+            input_bundle_id: binding.input_bundle_id.clone(),
+            input_bundle_digest: binding.input_bundle_digest,
+            request_entry_id: binding.request_entry_id.clone(),
+            request_immutable_version: binding.request_immutable_version.clone(),
+            request_content_digest: binding.request_content_digest,
+        }
+    }
+
+    pub(crate) fn bind_artifact(
+        &self,
+        terminal_state: AgentTerminalState,
+        artifact: AgentResultArtifact,
+    ) -> Result<BoundAgentExecutionResult, AgentProtocolError> {
+        validate_artifact(&artifact)?;
+        Ok(BoundAgentExecutionResult(AgentExecutionResultV1 {
+            input_bundle_id: self.input_bundle_id.clone(),
+            input_bundle_digest: Some(digest(self.input_bundle_digest)),
+            request_entry_id: self.request_entry_id.clone(),
+            request_immutable_version: self.request_immutable_version.clone(),
+            request_content_digest: Some(digest(self.request_content_digest)),
+            terminal_state: terminal_state_value(terminal_state),
+            result_artifact: Some(artifact_reference(artifact)),
+        }))
+    }
+}
+
 /// Bind one admitted terminal outcome to an immutable artifact reference.
 ///
 /// # Errors
@@ -56,6 +115,10 @@ pub fn bind_result_artifact(
     terminal_state: AgentTerminalState,
     artifact: AgentResultArtifact,
 ) -> Result<BoundAgentExecutionResult, AgentProtocolError> {
+    AgentResultBinding::from_request(request).bind_artifact(terminal_state, artifact)
+}
+
+fn validate_artifact(artifact: &AgentResultArtifact) -> Result<(), AgentProtocolError> {
     if !valid_metadata(&artifact.artifact_id)
         || !valid_metadata(&artifact.immutable_version)
         || artifact.byte_length == 0
@@ -66,29 +129,26 @@ pub fn bind_result_artifact(
             "the agent result artifact binding is malformed",
         ));
     }
-    let binding = &request.binding;
-    Ok(BoundAgentExecutionResult(AgentExecutionResultV1 {
-        input_bundle_id: binding.input_bundle_id.clone(),
-        input_bundle_digest: Some(digest(binding.input_bundle_digest)),
-        request_entry_id: binding.request_entry_id.clone(),
-        request_immutable_version: binding.request_immutable_version.clone(),
-        request_content_digest: Some(digest(binding.request_content_digest)),
-        terminal_state: match terminal_state {
-            AgentTerminalState::Completed => AgentExecutionTerminalStateV1::Completed.into(),
-            AgentTerminalState::PausedHitl => AgentExecutionTerminalStateV1::PausedHitl.into(),
-            AgentTerminalState::PausedMcpAuth => {
-                AgentExecutionTerminalStateV1::PausedMcpAuth.into()
-            }
-        },
-        result_artifact: Some(AgentExecutionArtifactReferenceV1 {
-            artifact_id: artifact.artifact_id,
-            immutable_version: artifact.immutable_version,
-            media_type: AGENT_RESULT_MEDIA_TYPE.to_owned(),
-            byte_length: artifact.byte_length,
-            digest: Some(digest(artifact.digest)),
-            classification: AGENT_RESULT_CLASSIFICATION.to_owned(),
-        }),
-    }))
+    Ok(())
+}
+
+fn terminal_state_value(terminal_state: AgentTerminalState) -> i32 {
+    match terminal_state {
+        AgentTerminalState::Completed => AgentExecutionTerminalStateV1::Completed.into(),
+        AgentTerminalState::PausedHitl => AgentExecutionTerminalStateV1::PausedHitl.into(),
+        AgentTerminalState::PausedMcpAuth => AgentExecutionTerminalStateV1::PausedMcpAuth.into(),
+    }
+}
+
+fn artifact_reference(artifact: AgentResultArtifact) -> AgentExecutionArtifactReferenceV1 {
+    AgentExecutionArtifactReferenceV1 {
+        artifact_id: artifact.artifact_id,
+        immutable_version: artifact.immutable_version,
+        media_type: AGENT_RESULT_MEDIA_TYPE.to_owned(),
+        byte_length: artifact.byte_length,
+        digest: Some(digest(artifact.digest)),
+        classification: AGENT_RESULT_CLASSIFICATION.to_owned(),
+    }
 }
 
 pub(crate) fn validate_agent_execution_result(

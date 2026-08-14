@@ -204,7 +204,7 @@ pub(crate) struct AgentEventProjectionContext {
 
 #[cfg(test)]
 impl AgentEventProjectionContext {
-    pub(super) fn fixture(application_details: Value) -> Self {
+    pub(crate) fn fixture(application_details: Value) -> Self {
         Self {
             stream_id: "conversation-1".to_owned(),
             message_id: "message-1".to_owned(),
@@ -249,7 +249,7 @@ pub(crate) struct CompletedAgentBrowserOutput {
 
 #[cfg(test)]
 impl CompletedAgentBrowserOutput {
-    pub(super) fn fixture(content: &str) -> Self {
+    pub(crate) fn fixture(content: &str) -> Self {
         Self {
             content: content.to_owned(),
             thread_id: "thread-1".to_owned(),

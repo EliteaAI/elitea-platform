@@ -14,17 +14,24 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tracing::Instrument as _;
 
+use super::agent_invocation::AgentAuthorizedLifecycleCompletion;
 use super::agent_lease::{
     ClaimLeaseActivation, ClaimLeaseError, ClaimLeaseMonitor, ClaimLeaseMonitorConfig,
-    SystemUnixMillisClock, UnixMillisClock,
+    ClaimLeaseStateProbe, SystemUnixMillisClock, UnixMillisClock,
 };
 use super::invocation_admission::{
     InvocationAdmission, InvocationAdmissionError, InvocationReservation,
 };
 use super::output_delivery::{
     AgentProgressConnector, AgentProgressPublishError, AgentProgressPublishOutcome,
-    AgentProgressPublisherConfig, EmptyAgentOutput, FreshAgentProgressPublisher,
+    AgentProgressPublisherConfig, AgentTerminalRecoveryConfig, AgentTerminalReplay,
+    EmptyAgentOutput, FreshAgentProgressPublisher, FreshAgentTerminalSelection,
     PreparedAgentOutput,
+};
+use crate::agents::result::AgentResultBinding;
+use crate::agents::runtime::{
+    AssembledNativeAgentInvocation, NativeAgentAssembler, NativeAgentCompletionSelector,
+    NativeAgentRun, NativeAgentRuntimeError,
 };
 use crate::agents::{
     AgentExecutionKind, AgentExecutionRequest, AgentInputBinding, parse_agent_execution_input,
@@ -38,7 +45,9 @@ use crate::protocol::control::{
     InvocationSubmissionPermit, LeaseMonitoredAgentExecution,
 };
 use crate::protocol::elitea::runtime::v1::{DigestAlgorithmV1, DigestV1};
-use crate::transport::redis_commands::RedisCommandDelivery;
+use crate::transport::redis_commands::{
+    RedisCommandDelivery, RedisCommandRetirer, RedisRetirementClient,
+};
 use crate::transport::{ControlRpc, InputContentClient, InputContentError, MaterializedInput};
 
 /// Immutable preparation policy.
@@ -405,6 +414,21 @@ impl AuthorizedAgentRun {
         self.request.kind
     }
 
+    pub(super) async fn close_no_ack(
+        self,
+        code: &'static str,
+        retryable: bool,
+    ) -> AgentAuthorizedLifecycleCompletion {
+        let execution_kind = self.request.kind;
+        if let Err(error) = self.lease.close().await {
+            tracing::warn!(
+                error_code = error.code().as_str(),
+                "claim lease supervision ended while closing an unstarted authorized run"
+            );
+        }
+        AgentAuthorizedLifecycleCompletion::recovery_required(execution_kind, code, retryable)
+    }
+
     /// Bind the exact accepted claim to the sole progress publisher before ADK
     /// submission can begin.
     ///
@@ -437,14 +461,23 @@ impl AuthorizedAgentRun {
             permit,
         } = self;
         match output_authority.try_into_output_cursor(&verified) {
-            Ok(cursor) => Ok(CursorBoundAuthorizedAgentRun {
-                delivery,
-                verified,
-                request,
-                publisher: FreshAgentProgressPublisher::new(cursor, output, connector, config),
-                lease,
-                permit,
-            }),
+            Ok(cursor) => {
+                let result_binding = AgentResultBinding::from_request(&request);
+                Ok(CursorBoundAuthorizedAgentRun {
+                    delivery,
+                    verified,
+                    request,
+                    publisher: FreshAgentProgressPublisher::new(
+                        cursor,
+                        result_binding,
+                        output,
+                        connector,
+                        config,
+                    ),
+                    lease,
+                    permit: Some(permit),
+                })
+            }
             Err(failure) => {
                 let (output_authority, error) = failure.into_parts();
                 Err(Box::new(AuthorizedAgentProgressBindError {
@@ -496,7 +529,7 @@ pub(crate) struct CursorBoundAuthorizedAgentRun<C: AgentProgressConnector> {
     request: AgentExecutionRequest,
     publisher: FreshAgentProgressPublisher<C>,
     lease: ClaimLeaseMonitor,
-    permit: InvocationSubmissionPermit,
+    permit: Option<InvocationSubmissionPermit>,
 }
 
 #[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
@@ -504,6 +537,115 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
     #[must_use]
     pub(crate) const fn execution_kind(&self) -> AgentExecutionKind {
         self.request.kind
+    }
+
+    #[must_use]
+    pub(crate) fn deadline_unix_millis(&self) -> i64 {
+        self.verified.command().deadline_unix_millis
+    }
+
+    pub(crate) fn ensure_lease_running(&self) -> Result<(), ClaimLeaseError> {
+        self.lease.ensure_running()
+    }
+
+    pub(crate) async fn check_lease_now(self) -> (Self, Result<(), ClaimLeaseError>) {
+        let Self {
+            delivery,
+            verified,
+            request,
+            publisher,
+            lease,
+            permit,
+        } = self;
+        let result = lease.check_now().await;
+        (
+            Self {
+                delivery,
+                verified,
+                request,
+                publisher,
+                lease,
+                permit,
+            },
+            result,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn lease_state_probe(&self) -> ClaimLeaseStateProbe {
+        self.lease.state_probe()
+    }
+
+    pub(crate) async fn assemble_native<A: NativeAgentAssembler>(
+        self,
+        assembler: &A,
+    ) -> (
+        Self,
+        Result<
+            Result<
+                AssembledNativeAgentInvocation<A::Completion>,
+                crate::agents::runtime::NativeAgentAssemblyError,
+            >,
+            ClaimLeaseError,
+        >,
+    ) {
+        let Self {
+            delivery,
+            verified,
+            request,
+            publisher,
+            mut lease,
+            permit,
+        } = self;
+        let assembly_result = lease
+            .run_cancellation_safe_phase(assembler.assemble(&request))
+            .await;
+        (
+            Self {
+                delivery,
+                verified,
+                request,
+                publisher,
+                lease,
+                permit,
+            },
+            assembly_result,
+        )
+    }
+
+    pub(crate) async fn select_native_completion<S: NativeAgentCompletionSelector>(
+        self,
+        selector: S,
+    ) -> (
+        Self,
+        Result<
+            Result<
+                crate::agents::events::CompletedAgentBrowserOutput,
+                crate::agents::runtime::NativeAgentAssemblyError,
+            >,
+            ClaimLeaseError,
+        >,
+    ) {
+        let Self {
+            delivery,
+            verified,
+            request,
+            publisher,
+            mut lease,
+            permit,
+        } = self;
+        let selection_result = lease.run_cancellation_safe_phase(selector.select()).await;
+        (
+            Self {
+                delivery,
+                verified,
+                request,
+                publisher,
+                lease,
+                permit,
+            },
+            selection_result,
+        )
     }
 
     pub(crate) async fn publish_progress(
@@ -516,10 +658,121 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             .await
     }
 
+    pub(crate) async fn publish_full_message(
+        &mut self,
+        event: crate::protocol::elitea::runtime::v1::NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        self.publisher
+            .publish_full_message(&self.verified, event, occurred_at_unix_millis)
+            .await
+    }
+
+    pub(crate) fn start_native<S>(
+        &mut self,
+        assembled: AssembledNativeAgentInvocation<S>,
+    ) -> Result<
+        (
+            NativeAgentRun,
+            crate::agents::events::AgentEventProjector,
+            S,
+        ),
+        NativeAgentRuntimeError,
+    > {
+        let _submission_permit = self
+            .permit
+            .take()
+            .ok_or_else(NativeAgentRuntimeError::invalid_state_for_lifecycle)?;
+        let (invocation, projector, completion) = assembled.into_parts();
+        let run = invocation.start()?;
+        Ok((run, projector, completion))
+    }
+
     pub(crate) async fn resume_pending_progress(
         &mut self,
     ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
         self.publisher.resume_pending().await
+    }
+
+    pub(super) async fn finish_terminal<R, RC>(
+        self,
+        selection: FreshAgentTerminalSelection,
+        occurred_at_unix_millis: i64,
+        control: Arc<AgentControlClient<R>>,
+        retirer: Arc<RedisCommandRetirer<RC>>,
+        recovery_config: AgentTerminalRecoveryConfig,
+    ) -> AgentAuthorizedLifecycleCompletion
+    where
+        C: AgentTerminalReplay,
+        R: ControlRpc + 'static,
+        RC: RedisRetirementClient + 'static,
+    {
+        let Self {
+            delivery,
+            verified,
+            request,
+            publisher,
+            lease,
+            permit: _,
+        } = self;
+        let execution_kind = request.kind;
+        let result = async {
+            let terminal = publisher
+                .finish_terminal(
+                    &verified,
+                    selection,
+                    occurred_at_unix_millis,
+                    recovery_config,
+                )
+                .await
+                .map_err(|error| (error.code(), error.retryable()))?;
+            let sequence = terminal.frame.sequence;
+            let receipt = control
+                .prepare_agent_settlement(terminal.acknowledged)
+                .await
+                .map_err(|error| ("agent_lifecycle.settlement_failed", error.retryable()))?;
+            let settlement_receipt_id = receipt.receipt_id().to_owned();
+            retirer
+                .retire_agent_command(delivery, &verified, receipt.into())
+                .await
+                .map_err(|error| (error.code(), error.retryable()))?;
+            Ok::<_, (&'static str, bool)>((sequence, settlement_receipt_id))
+        }
+        .await;
+
+        if let Err(error) = lease.close().await {
+            tracing::warn!(
+                error_code = error.code().as_str(),
+                "claim lease supervision ended after authorized agent finalization"
+            );
+        }
+        match result {
+            Ok((sequence, settlement_receipt_id)) => AgentAuthorizedLifecycleCompletion::settled(
+                execution_kind,
+                sequence,
+                settlement_receipt_id,
+            ),
+            Err((code, retryable)) => AgentAuthorizedLifecycleCompletion::recovery_required(
+                execution_kind,
+                code,
+                retryable,
+            ),
+        }
+    }
+
+    pub(super) async fn close_no_ack(
+        self,
+        code: &'static str,
+        retryable: bool,
+    ) -> AgentAuthorizedLifecycleCompletion {
+        let execution_kind = self.request.kind;
+        if let Err(error) = self.lease.close().await {
+            tracing::warn!(
+                error_code = error.code().as_str(),
+                "claim lease supervision ended while retaining an agent command for recovery"
+            );
+        }
+        AgentAuthorizedLifecycleCompletion::recovery_required(execution_kind, code, retryable)
     }
 }
 

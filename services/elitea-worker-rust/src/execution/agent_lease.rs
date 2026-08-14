@@ -452,6 +452,23 @@ impl ClaimLeaseMonitor {
     where
         F: Future,
     {
+        self.run_cancellation_safe_phase(operation).await
+    }
+
+    /// Race a locally cancellation-safe lifecycle phase against lease state.
+    ///
+    /// The supplied future must not own a submitted business effect. Durable
+    /// Stop or fatal lease loss wins a ready tie and drops that future, while
+    /// this monitor retains the unique lease authority for terminal/no-ACK
+    /// cleanup. Native dependency assembly and post-EOS result selection use
+    /// this boundary; Runner execution never does.
+    pub(crate) async fn run_cancellation_safe_phase<F>(
+        &mut self,
+        operation: F,
+    ) -> Result<F::Output, ClaimLeaseError>
+    where
+        F: Future,
+    {
         self.ensure_running()?;
         tokio::pin!(operation);
         loop {

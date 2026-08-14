@@ -1,22 +1,29 @@
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use adk_rust::futures::stream;
+use adk_rust::runner::Runner;
+use adk_rust::session::{CreateRequest, InMemorySessionService, SessionService};
+use adk_rust::{
+    Agent, Content, Event, EventStream, FinishReason, InvocationContext, Part, SessionId, UserId,
+};
 use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
 use prost::Message;
 use ring::digest;
-use tokio::sync::{Semaphore, oneshot};
+use serde_json::json;
+use tokio::sync::{Notify, Semaphore, oneshot};
 use tonic::{Request, Response, Status};
 
 use super::agent_delivery::{FreshAgentDelivery, test_fresh_agent_delivery};
 use super::agent_invocation::{
     AgentAuthorizationJob, AgentAuthorizationJobCompletion, AgentAuthorizedLifecycleCompletion,
-    AuthorizedAgentLifecycle,
+    AgentAuthorizedLifecycleDisposition, AuthorizedAgentLifecycle,
 };
 use super::agent_lease::ClaimLeaseMonitorConfig;
 use super::agent_preparation::{
@@ -25,6 +32,7 @@ use super::agent_preparation::{
 };
 use super::invocation_admission::{InvocationAdmission, InvocationAdmissionConfig};
 use super::invocation_supervisor::InvocationSupervisor;
+use super::native_agent_lifecycle::NativeAuthorizedAgentLifecycle;
 use super::output_delivery::{
     AcceptedTerminalOutputRecovery, AgentOutputPreflight, AgentOutputPreflightError,
     AgentOutputPreflightKind, AgentOutputPreflightOutcome, AgentOutputRecoveryRequiredKind,
@@ -34,6 +42,13 @@ use super::output_delivery::{
     publish_pre_invocation_terminal, recover_accepted_terminal,
 };
 use crate::agents::AgentExecutionKind;
+use crate::agents::events::{
+    AgentEventProjectionContext, AgentEventProjector, CompletedAgentBrowserOutput,
+};
+use crate::agents::runtime::{
+    AssembledNativeAgentInvocation, NativeAgentAssembler, NativeAgentAssemblyError,
+    NativeAgentAssemblyErrorCode, NativeAgentCompletionSelector, NativeAgentInvocation,
+};
 use crate::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
     parse_and_verify_agent_command,
@@ -52,7 +67,9 @@ use crate::protocol::elitea::runtime::v1::{
     RenewLeaseResponseV1, RuntimeErrorCodeV1, execution_output_frame_v1,
 };
 use crate::protocol::node_event::decode_current_node_event_json;
-use crate::protocol::output::{OUTPUT_SCHEMA_REVISION, RuntimeFailureKind};
+use crate::protocol::output::{
+    OUTPUT_SCHEMA_REVISION, RuntimeFailureKind, restored_terminal_failure_kind,
+};
 use crate::spool::{SpoolError, SpoolLimits, SpoolMasterKey};
 use crate::transport::output_grpc::{
     ProgressRejectionWinner, ProgressReplayDecision, test_acknowledged_progress,
@@ -107,7 +124,14 @@ fn claim_response() -> ClaimCommandResponseV1 {
 }
 
 fn fresh() -> FreshAgentDelivery {
-    let raw = bytes("signed_command");
+    fresh_for_kind(AgentExecutionKind::Application)
+}
+
+fn fresh_for_kind(kind: AgentExecutionKind) -> FreshAgentDelivery {
+    let raw = bytes(match kind {
+        AgentExecutionKind::Application => "signed_command",
+        AgentExecutionKind::Adhoc => "signed_command_adhoc",
+    });
     let verified = parse_and_verify_agent_command(
         &raw,
         Some(&TestOnlyConformanceHmacAuthenticator as &dyn SignedCommandAuthenticator),
@@ -312,7 +336,7 @@ impl ControlRpc for RecoveryControl {
             return Err(Status::unavailable("test lease renewal unavailable"));
         }
         Ok(Response::new(RenewLeaseResponseV1 {
-            lease_expires_at_unix_millis: NOW + 60_000,
+            lease_expires_at_unix_millis: NOW + 600_000,
             desired_state: DesiredExecutionStateV1::Running as i32,
             rejection: None,
         }))
@@ -363,6 +387,11 @@ struct ValidAgentInput {
     trace: Arc<Mutex<Vec<&'static str>>>,
 }
 
+struct KindAgentInput {
+    trace: Arc<Mutex<Vec<&'static str>>>,
+    kind: AgentExecutionKind,
+}
+
 #[async_trait]
 impl AgentInputMaterializer for ValidAgentInput {
     async fn materialize(
@@ -373,6 +402,25 @@ impl AgentInputMaterializer for ValidAgentInput {
         Ok(MaterializedInput::for_test(decode_hex(include_str!(
             "../../tests/fixtures/agent_application_input.hex"
         ))))
+    }
+}
+
+#[async_trait]
+impl AgentInputMaterializer for KindAgentInput {
+    async fn materialize(
+        &self,
+        _execution: &crate::protocol::control::LeaseMonitoredAgentExecution,
+    ) -> Result<MaterializedInput, InputContentError> {
+        self.trace.lock().expect("trace").push("input");
+        let fixture = match self.kind {
+            AgentExecutionKind::Application => {
+                include_str!("../../tests/fixtures/agent_application_input.hex")
+            }
+            AgentExecutionKind::Adhoc => {
+                include_str!("../../tests/fixtures/agent_adhoc_input.hex")
+            }
+        };
+        Ok(MaterializedInput::for_test(decode_hex(fixture)))
     }
 }
 
@@ -465,7 +513,37 @@ fn authorization_control(
 fn authorized_control(
     trace: Arc<Mutex<Vec<&'static str>>>,
 ) -> Arc<AgentControlClient<RecoveryControl>> {
-    authorization_control_with_disposition(trace, AuthorizeInvocationDispositionV1::AuthorizedNow)
+    authorized_control_with_policy(trace, [])
+}
+
+fn authorized_control_with_policy(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+    observe_states: impl IntoIterator<Item = DesiredExecutionStateV1>,
+) -> Arc<AgentControlClient<RecoveryControl>> {
+    Arc::new(
+        AgentControlClient::new(
+            RecoveryControl {
+                trace,
+                settlement_fails: false,
+                authorize_disposition: Some(AuthorizeInvocationDispositionV1::AuthorizedNow),
+                authorize_unavailable: false,
+                renew_fail_after: None,
+                renew_attempts: AtomicUsize::new(0),
+                observe_states: Mutex::new(
+                    observe_states
+                        .into_iter()
+                        .map(|state| state as i32)
+                        .collect(),
+                ),
+            },
+            ControlGrpcConfig {
+                deadline: Duration::from_secs(1),
+                workload_session_id: "workload-1".to_owned(),
+                producer_id: "worker-1".to_owned(),
+            },
+        )
+        .expect("authorized control"),
+    )
 }
 
 fn unavailable_authorization_control(
@@ -998,6 +1076,217 @@ impl AgentProgressConnector for FakeProgressConnector {
     }
 }
 
+#[async_trait]
+impl AgentTerminalReplay for FakeProgressConnector {
+    async fn replay_terminal(
+        &self,
+        mut spool: PreparedOutputSpool,
+        verified: &crate::protocol::command::VerifiedAgentCommand,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<DurablyAckedTerminal, OutputGrpcError> {
+        assert_eq!(spool.pending_frame_count(), 1);
+        assert!(spool.replays(expected));
+        self.state
+            .frames
+            .lock()
+            .expect("progress frames")
+            .push(expected.clone());
+        spool.reconcile_pending_through(expected.sequence)?;
+        test_acknowledged_terminal(verified, expected)
+    }
+}
+
+struct ImmediateTextAgent;
+
+#[async_trait]
+impl Agent for ImmediateTextAgent {
+    fn name(&self) -> &'static str {
+        "root-agent"
+    }
+
+    fn description(&self) -> &'static str {
+        "native lifecycle fixture"
+    }
+
+    fn sub_agents(&self) -> &[Arc<dyn Agent>] {
+        &[]
+    }
+
+    async fn run(&self, context: Arc<dyn InvocationContext>) -> adk_rust::Result<EventStream> {
+        let mut event = Event::with_id("llm-1", context.invocation_id());
+        event.timestamp = Utc
+            .timestamp_millis_opt(NOW + 1)
+            .single()
+            .expect("valid fixture time");
+        event.author = self.name().to_owned();
+        event.llm_response.content = Some(Content {
+            role: "model".to_owned(),
+            parts: vec![Part::Text {
+                text: "hello".to_owned(),
+            }],
+        });
+        event.llm_response.partial = false;
+        event.llm_response.turn_complete = true;
+        event.llm_response.finish_reason = Some(FinishReason::Stop);
+        Ok(Box::pin(stream::iter([Ok(event)])))
+    }
+}
+
+struct GatedTextAgent {
+    started: Arc<Notify>,
+    release: Arc<Semaphore>,
+}
+
+#[async_trait]
+impl Agent for GatedTextAgent {
+    fn name(&self) -> &'static str {
+        "root-agent"
+    }
+
+    fn description(&self) -> &'static str {
+        "gated native lifecycle fixture"
+    }
+
+    fn sub_agents(&self) -> &[Arc<dyn Agent>] {
+        &[]
+    }
+
+    async fn run(&self, context: Arc<dyn InvocationContext>) -> adk_rust::Result<EventStream> {
+        let started = Arc::clone(&self.started);
+        let release = Arc::clone(&self.release);
+        let invocation_id = context.invocation_id().to_owned();
+        Ok(Box::pin(stream::unfold(
+            Some((started, release, invocation_id)),
+            |state| async move {
+                let (started, release, invocation_id) = state?;
+                started.notify_one();
+                release.acquire().await.ok()?.forget();
+                let mut event = Event::with_id("llm-1", invocation_id);
+                event.timestamp = Utc
+                    .timestamp_millis_opt(NOW + 1)
+                    .single()
+                    .expect("valid fixture time");
+                event.author = "root-agent".to_owned();
+                event.llm_response.content = Some(Content {
+                    role: "model".to_owned(),
+                    parts: vec![Part::Text {
+                        text: "hello".to_owned(),
+                    }],
+                });
+                event.llm_response.partial = false;
+                event.llm_response.turn_complete = true;
+                event.llm_response.finish_reason = Some(FinishReason::Stop);
+                Some((Ok(event), None))
+            },
+        )))
+    }
+}
+
+struct FixedCompletion;
+
+#[async_trait]
+impl NativeAgentCompletionSelector for FixedCompletion {
+    async fn select(self) -> Result<CompletedAgentBrowserOutput, NativeAgentAssemblyError> {
+        Ok(CompletedAgentBrowserOutput::fixture("hello"))
+    }
+}
+
+struct TestNativeAssembler {
+    trace: Arc<Mutex<Vec<&'static str>>>,
+    agent: Arc<dyn Agent>,
+}
+
+struct GatedNativeAssembler {
+    started: Arc<Notify>,
+}
+
+#[async_trait]
+impl NativeAgentAssembler for GatedNativeAssembler {
+    type Completion = FixedCompletion;
+
+    async fn assemble(
+        &self,
+        _request: &crate::agents::AgentExecutionRequest,
+    ) -> Result<AssembledNativeAgentInvocation<Self::Completion>, NativeAgentAssemblyError> {
+        self.started.notify_one();
+        std::future::pending().await
+    }
+}
+
+#[async_trait]
+impl NativeAgentAssembler for TestNativeAssembler {
+    type Completion = FixedCompletion;
+
+    async fn assemble(
+        &self,
+        request: &crate::agents::AgentExecutionRequest,
+    ) -> Result<AssembledNativeAgentInvocation<Self::Completion>, NativeAgentAssemblyError> {
+        self.trace.lock().expect("trace").push(match request.kind {
+            AgentExecutionKind::Application => "assemble_application",
+            AgentExecutionKind::Adhoc => "assemble_adhoc",
+        });
+        let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+        sessions
+            .create(CreateRequest {
+                app_name: "elitea".to_owned(),
+                user_id: "user-1".to_owned(),
+                session_id: Some("session-1".to_owned()),
+                state: HashMap::new(),
+            })
+            .await
+            .map_err(|_| {
+                NativeAgentAssemblyError::new(
+                    NativeAgentAssemblyErrorCode::DependencyUnavailable,
+                    "the test session could not be created",
+                )
+            })?;
+        let runner = Runner::builder()
+            .app_name("elitea")
+            .agent(Arc::clone(&self.agent))
+            .session_service(sessions)
+            .build()
+            .map_err(|_| {
+                NativeAgentAssemblyError::new(
+                    NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                    "the test native runner is invalid",
+                )
+            })?;
+        let invocation = NativeAgentInvocation::new(
+            runner,
+            UserId::new("user-1").map_err(|_| {
+                NativeAgentAssemblyError::new(
+                    NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                    "the test native user is invalid",
+                )
+            })?,
+            SessionId::new("session-1").map_err(|_| {
+                NativeAgentAssemblyError::new(
+                    NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                    "the test native session is invalid",
+                )
+            })?,
+            Content::new("user").with_text("hello"),
+        );
+        let application_details = match request.kind {
+            AgentExecutionKind::Application => json!({"id": 11, "version_id": 22}),
+            AgentExecutionKind::Adhoc => json!({}),
+        };
+        let projector =
+            AgentEventProjector::new(AgentEventProjectionContext::fixture(application_details))
+                .map_err(|_| {
+                    NativeAgentAssemblyError::new(
+                        NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                        "the test event projector is invalid",
+                    )
+                })?;
+        Ok(AssembledNativeAgentInvocation::new(
+            invocation,
+            projector,
+            FixedCompletion,
+        ))
+    }
+}
+
 async fn fresh_progress_publisher(
     state: Arc<FakeProgressState>,
     max_output_sessions: usize,
@@ -1035,8 +1324,18 @@ async fn fresh_progress_publisher_with_handoff(
     let cursor = authority
         .into_output_cursor(&verified)
         .expect("claim-bound output cursor");
+    let result_binding = crate::agents::result::AgentResultBinding::from_input_binding(
+        &crate::agents::AgentInputBinding {
+            input_bundle_id: "bundle-1".to_owned(),
+            input_bundle_digest: [0x41; 32],
+            request_entry_id: "request.json".to_owned(),
+            request_immutable_version: "version-1".to_owned(),
+            request_content_digest: [0x42; 32],
+        },
+    );
     let publisher = FreshAgentProgressPublisher::new(
         cursor,
+        result_binding,
         output,
         FakeProgressConnector { state },
         AgentProgressPublisherConfig::new(max_output_sessions).expect("progress publisher config"),
@@ -2200,6 +2499,526 @@ async fn dropped_authorization_waiter_cannot_cancel_the_owned_authorized_lifecyc
             "authorize",
             "authorized",
         ]
+    );
+    drop(temporary);
+}
+
+#[tokio::test]
+async fn application_and_adhoc_share_native_events_terminal_settlement_and_redis_retirement() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        Box::pin(run_native_lifecycle_case(kind)).await;
+    }
+}
+
+#[allow(clippy::too_many_lines)] // One end-to-end trace is clearer than split authority fixtures.
+async fn run_native_lifecycle_case(kind: AgentExecutionKind) {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let outcome = preflight(output_root, "worker-1")
+        .prepare(fresh_for_kind(kind))
+        .await
+        .expect("empty native lifecycle preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new native lifecycle spool must be empty");
+    };
+    let control = authorized_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let supervisor = InvocationSupervisor::new(admission.clone());
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &KindAgentInput {
+            trace: Arc::clone(&trace),
+            kind,
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared native invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid native input must reach authorization");
+    };
+    let progress_state =
+        FakeProgressState::new(std::iter::repeat_n(LiveProgressAction::Acknowledge, 8), []);
+    let connector = FakeProgressConnector {
+        state: Arc::clone(&progress_state),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let lifecycle = Arc::new(NativeAuthorizedAgentLifecycle::new(
+        Arc::new(TestNativeAssembler {
+            trace: Arc::clone(&trace),
+            agent: Arc::new(ImmediateTextAgent),
+        }),
+        connector.clone(),
+        Arc::clone(&control),
+        Arc::clone(&retirer),
+        Arc::new(|| NOW + 2),
+        1,
+        recovery_config(1),
+    ));
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
+        control,
+        retirer,
+        Arc::new(connector),
+        Arc::new(|| NOW + 2),
+        recovery_config(1),
+        lifecycle,
+    );
+    let invocation = match supervisor.submit(reservation, job) {
+        Ok(invocation) => invocation,
+        Err(rejected) => panic!("native lifecycle supervision failed: {}", rejected.error()),
+    };
+    let completion = invocation.wait().await.expect("native lifecycle result");
+    let AgentAuthorizationJobCompletion::Authorized(completion) = completion else {
+        panic!("the native lifecycle must own the authorized outcome");
+    };
+    supervisor.close().await.expect("native lifecycle drain");
+
+    assert_eq!(completion.execution_kind(), kind);
+    let AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked {
+        sequence,
+        settlement_receipt_id,
+    } = completion.disposition()
+    else {
+        panic!("the native lifecycle must settle and retire the command");
+    };
+    assert_eq!(*sequence, 13);
+    assert_eq!(settlement_receipt_id, "settlement-receipt-1");
+    assert_eq!(admission.available_capacity(), 1);
+
+    let frames = progress_state
+        .frames
+        .lock()
+        .expect("native lifecycle frames");
+    assert_eq!(frames.len(), 9);
+    let event_types: Vec<_> = frames
+        .iter()
+        .filter(|frame| !frame.terminal)
+        .map(|frame| match frame.payload.as_ref() {
+            Some(execution_output_frame_v1::Payload::NodeEvent(event)) => event.r#type.as_str(),
+            _ => panic!("progress frame must carry a NodeEvent"),
+        })
+        .collect();
+    assert_eq!(
+        event_types,
+        [
+            "agent_start",
+            "agent_llm_start",
+            "agent_llm_chunk",
+            "agent_llm_end",
+            "partial_message",
+            "pipeline_finish",
+            "agent_response",
+            "full_message",
+        ]
+    );
+    assert_eq!(frames[7].sequence + 1, frames[8].sequence);
+    assert!(frames[8].terminal);
+    assert!(matches!(
+        frames[8].payload,
+        Some(execution_output_frame_v1::Payload::AgentExecution(_))
+    ));
+    drop(frames);
+
+    let expected_assembly = match kind {
+        AgentExecutionKind::Application => "assemble_application",
+        AgentExecutionKind::Adhoc => "assemble_adhoc",
+    };
+    assert_eq!(
+        *trace.lock().expect("trace"),
+        [
+            "begin",
+            "renew",
+            "observe",
+            "input",
+            "authorize",
+            expected_assembly,
+            "renew",
+            "observe",
+            "settlement",
+            "redis",
+        ]
+    );
+    drop(temporary);
+}
+
+#[tokio::test(start_paused = true)]
+async fn durable_stop_interrupts_only_the_owned_run_then_settles_cancelled() {
+    Box::pin(run_durable_stop_case()).await;
+}
+
+#[allow(clippy::too_many_lines)] // Keep the Stop ownership trace in one fixture.
+async fn run_durable_stop_case() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let outcome = preflight(output_root, "worker-1")
+        .prepare(fresh())
+        .await
+        .expect("empty Stop lifecycle preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new Stop lifecycle spool must be empty");
+    };
+    let control = authorized_control_with_policy(
+        Arc::clone(&trace),
+        [
+            DesiredExecutionStateV1::Running,
+            DesiredExecutionStateV1::Cancelled,
+        ],
+    );
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let supervisor = InvocationSupervisor::new(admission.clone());
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &ValidAgentInput {
+            trace: Arc::clone(&trace),
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared Stop invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid Stop input must reach authorization");
+    };
+    let progress_state = FakeProgressState::new([LiveProgressAction::Acknowledge], []);
+    let connector = FakeProgressConnector {
+        state: Arc::clone(&progress_state),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Semaphore::new(0));
+    let lifecycle = Arc::new(NativeAuthorizedAgentLifecycle::new(
+        Arc::new(TestNativeAssembler {
+            trace: Arc::clone(&trace),
+            agent: Arc::new(GatedTextAgent {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            }),
+        }),
+        connector.clone(),
+        Arc::clone(&control),
+        Arc::clone(&retirer),
+        Arc::new(|| NOW + 2),
+        1,
+        recovery_config(1),
+    ));
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
+        control,
+        retirer,
+        Arc::new(connector),
+        Arc::new(|| NOW + 2),
+        recovery_config(1),
+        lifecycle,
+    );
+    let invocation = match supervisor.submit(reservation, job) {
+        Ok(invocation) => invocation,
+        Err(rejected) => panic!("Stop lifecycle supervision failed: {}", rejected.error()),
+    };
+    started.notified().await;
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    let completion = invocation.wait().await.expect("Stop lifecycle result");
+    release.add_permits(1);
+    let AgentAuthorizationJobCompletion::Authorized(completion) = completion else {
+        panic!("the Stop lifecycle must own the authorized outcome");
+    };
+    supervisor.close().await.expect("Stop lifecycle drain");
+
+    assert!(matches!(
+        completion.disposition(),
+        AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked { sequence: 6, .. }
+    ));
+    let frames = progress_state.frames.lock().expect("Stop lifecycle frames");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(
+        restored_terminal_failure_kind(&frames[1]).expect("cancelled terminal"),
+        RuntimeFailureKind::Cancelled
+    );
+    assert_eq!(admission.available_capacity(), 1);
+    assert!(
+        trace
+            .lock()
+            .expect("trace")
+            .ends_with(&["settlement", "redis"])
+    );
+    drop(temporary);
+}
+
+#[tokio::test(start_paused = true)]
+async fn durable_stop_cancels_stalled_post_authorization_assembly_before_runner_start() {
+    Box::pin(run_stop_during_assembly_case()).await;
+}
+
+#[allow(clippy::too_many_lines)] // Keep the cancellation-safe assembly proof in one trace.
+async fn run_stop_during_assembly_case() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let outcome = preflight(output_root, "worker-1")
+        .prepare(fresh())
+        .await
+        .expect("empty assembly lifecycle preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new assembly lifecycle spool must be empty");
+    };
+    let control = authorized_control_with_policy(
+        Arc::clone(&trace),
+        [
+            DesiredExecutionStateV1::Running,
+            DesiredExecutionStateV1::Cancelled,
+        ],
+    );
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1))
+            .expect("assembly invocation admission"),
+    );
+    let supervisor = InvocationSupervisor::new(admission.clone());
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &ValidAgentInput {
+            trace: Arc::clone(&trace),
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("assembly preparation config"),
+    )
+    .await
+    .expect("prepared assembly invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid assembly input must reach authorization");
+    };
+    let progress_state = FakeProgressState::new([LiveProgressAction::Acknowledge], []);
+    let connector = FakeProgressConnector {
+        state: Arc::clone(&progress_state),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let assembly_started = Arc::new(Notify::new());
+    let lifecycle = Arc::new(NativeAuthorizedAgentLifecycle::new(
+        Arc::new(GatedNativeAssembler {
+            started: Arc::clone(&assembly_started),
+        }),
+        connector.clone(),
+        Arc::clone(&control),
+        Arc::clone(&retirer),
+        Arc::new(|| NOW + 2),
+        1,
+        recovery_config(1),
+    ));
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
+        control,
+        retirer,
+        Arc::new(connector),
+        Arc::new(|| NOW + 2),
+        recovery_config(1),
+        lifecycle,
+    );
+    let invocation = match supervisor.submit(reservation, job) {
+        Ok(invocation) => invocation,
+        Err(rejected) => panic!(
+            "assembly lifecycle supervision failed: {}",
+            rejected.error()
+        ),
+    };
+    assembly_started.notified().await;
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    let completion = invocation.wait().await.expect("assembly lifecycle result");
+    let AgentAuthorizationJobCompletion::Authorized(completion) = completion else {
+        panic!("the assembly lifecycle must own the authorized outcome");
+    };
+    supervisor.close().await.expect("assembly lifecycle drain");
+
+    assert!(matches!(
+        completion.disposition(),
+        AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked { sequence: 5, .. }
+    ));
+    let frames = progress_state
+        .frames
+        .lock()
+        .expect("assembly lifecycle frames");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        restored_terminal_failure_kind(&frames[0]).expect("assembly cancelled terminal"),
+        RuntimeFailureKind::Cancelled
+    );
+    assert_eq!(admission.available_capacity(), 1);
+    assert!(
+        trace
+            .lock()
+            .expect("trace")
+            .ends_with(&["settlement", "redis"])
+    );
+    drop(temporary);
+}
+
+#[tokio::test]
+async fn deadline_during_native_run_preserves_completion_events_but_replaces_terminal_success() {
+    Box::pin(run_deadline_during_native_case()).await;
+}
+
+#[allow(clippy::too_many_lines)] // Keep the non-cancellable deadline trace in one fixture.
+async fn run_deadline_during_native_case() {
+    const DEADLINE: i64 = NOW + 100_000;
+
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let outcome = preflight(output_root, "worker-1")
+        .prepare(fresh())
+        .await
+        .expect("empty deadline lifecycle preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new deadline lifecycle spool must be empty");
+    };
+    let control = authorized_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let supervisor = InvocationSupervisor::new(admission.clone());
+    let clock = Arc::new(AtomicI64::new(NOW));
+    let preparation_clock = Arc::clone(&clock);
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &ValidAgentInput {
+            trace: Arc::clone(&trace),
+        },
+        Arc::new(move || preparation_clock.load(Ordering::SeqCst)),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared deadline invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid deadline input must reach authorization");
+    };
+    let progress_state =
+        FakeProgressState::new(std::iter::repeat_n(LiveProgressAction::Acknowledge, 8), []);
+    let connector = FakeProgressConnector {
+        state: Arc::clone(&progress_state),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Semaphore::new(0));
+    let lifecycle_clock = Arc::clone(&clock);
+    let lifecycle = Arc::new(NativeAuthorizedAgentLifecycle::new(
+        Arc::new(TestNativeAssembler {
+            trace: Arc::clone(&trace),
+            agent: Arc::new(GatedTextAgent {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            }),
+        }),
+        connector.clone(),
+        Arc::clone(&control),
+        Arc::clone(&retirer),
+        Arc::new(move || lifecycle_clock.load(Ordering::SeqCst)),
+        1,
+        recovery_config(1),
+    ));
+    let job_clock = Arc::clone(&clock);
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
+        control,
+        retirer,
+        Arc::new(connector),
+        Arc::new(move || job_clock.load(Ordering::SeqCst)),
+        recovery_config(1),
+        lifecycle,
+    );
+    let invocation = match supervisor.submit(reservation, job) {
+        Ok(invocation) => invocation,
+        Err(rejected) => panic!(
+            "deadline lifecycle supervision failed: {}",
+            rejected.error()
+        ),
+    };
+    started.notified().await;
+    clock.store(DEADLINE, Ordering::SeqCst);
+    release.add_permits(1);
+    let completion = invocation.wait().await.expect("deadline lifecycle result");
+    let AgentAuthorizationJobCompletion::Authorized(completion) = completion else {
+        panic!("the deadline lifecycle must own the authorized outcome");
+    };
+    supervisor.close().await.expect("deadline lifecycle drain");
+
+    assert!(matches!(
+        completion.disposition(),
+        AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked { sequence: 13, .. }
+    ));
+    let frames = progress_state
+        .frames
+        .lock()
+        .expect("deadline lifecycle frames");
+    assert_eq!(frames.len(), 9);
+    let event_types: Vec<_> = frames[..8]
+        .iter()
+        .map(|frame| match frame.payload.as_ref() {
+            Some(execution_output_frame_v1::Payload::NodeEvent(event)) => event.r#type.as_str(),
+            _ => panic!("deadline progress frame must carry a NodeEvent"),
+        })
+        .collect();
+    assert_eq!(
+        event_types,
+        [
+            "agent_start",
+            "agent_llm_start",
+            "agent_llm_chunk",
+            "agent_llm_end",
+            "partial_message",
+            "pipeline_finish",
+            "agent_response",
+            "full_message",
+        ]
+    );
+    assert_eq!(
+        restored_terminal_failure_kind(&frames[8]).expect("deadline terminal"),
+        RuntimeFailureKind::DeadlineExceeded
+    );
+    assert_eq!(admission.available_capacity(), 1);
+    assert!(
+        trace
+            .lock()
+            .expect("trace")
+            .ends_with(&["settlement", "redis"])
     );
     drop(temporary);
 }

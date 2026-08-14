@@ -89,7 +89,6 @@ async fn stop_is_scoped_to_one_same_session_native_invocation() {
         "first",
     )
     .start()
-    .await
     .expect("first native invocation");
     let mut second = invocation(
         sessions,
@@ -98,7 +97,6 @@ async fn stop_is_scoped_to_one_same_session_native_invocation() {
         "second",
     )
     .start()
-    .await
     .expect("second native invocation");
 
     let first_entered = first_started.notified();
@@ -163,7 +161,6 @@ async fn completed_native_stream_rejects_reuse_with_safe_operator_error() {
     let release = Arc::new(Semaphore::new(1));
     let mut run = invocation(sessions, Arc::new(Notify::new()), release, "complete")
         .start()
-        .await
         .expect("native invocation");
 
     assert!(run.next_event().await.expect("fixture event").is_some());

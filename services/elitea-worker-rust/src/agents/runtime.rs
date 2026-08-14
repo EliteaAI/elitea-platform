@@ -11,9 +11,129 @@
 
 use std::fmt;
 
-use adk_rust::futures::StreamExt;
+use adk_rust::futures::{FutureExt as _, StreamExt};
 use adk_rust::runner::Runner;
 use adk_rust::{AdkError, Content, Event, EventStream, SessionId, UserId};
+use async_trait::async_trait;
+
+use super::events::{AgentEventProjector, CompletedAgentBrowserOutput};
+use super::request::AgentExecutionRequest;
+
+/// Stable native assembly and result-selection failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeAgentAssemblyErrorCode {
+    InvalidConfiguration,
+    UnsupportedCapability,
+    DependencyUnavailable,
+    InvalidResult,
+}
+
+impl NativeAgentAssemblyErrorCode {
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidConfiguration => "native_agent.invalid_configuration",
+            Self::UnsupportedCapability => "native_agent.unsupported_capability",
+            Self::DependencyUnavailable => "native_agent.dependency_unavailable",
+            Self::InvalidResult => "native_agent.invalid_result",
+        }
+    }
+}
+
+/// Data-free failure before or after one native ADK stream.
+pub(crate) struct NativeAgentAssemblyError {
+    code: NativeAgentAssemblyErrorCode,
+    message: &'static str,
+}
+
+impl NativeAgentAssemblyError {
+    pub(crate) const fn new(code: NativeAgentAssemblyErrorCode, message: &'static str) -> Self {
+        Self { code, message }
+    }
+
+    #[must_use]
+    pub(crate) const fn code(&self) -> NativeAgentAssemblyErrorCode {
+        self.code
+    }
+
+    #[must_use]
+    pub(crate) const fn retryable(&self) -> bool {
+        matches!(
+            self.code,
+            NativeAgentAssemblyErrorCode::DependencyUnavailable
+        )
+    }
+}
+
+impl fmt::Debug for NativeAgentAssemblyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeAgentAssemblyError")
+            .field("code", &self.code)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for NativeAgentAssemblyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for NativeAgentAssemblyError {}
+
+/// Select the explicit application/ad-hoc browser result after real ADK EOS.
+///
+/// Selection must be cancellation-safe, internally bounded, and free of
+/// externally visible effects: durable Stop or fatal lease loss may drop the
+/// returned future. Any dependency I/O must carry its own reviewed timeout.
+#[async_trait]
+pub(crate) trait NativeAgentCompletionSelector: Send {
+    async fn select(self) -> Result<CompletedAgentBrowserOutput, NativeAgentAssemblyError>;
+}
+
+/// Trusted assembler for one validated, already-authorized request.
+///
+/// Assembly may construct local/provider/session dependencies but must not
+/// start ADK or perform a business effect. Its future must be
+/// cancellation-safe and every dependency attempt must be explicitly bounded,
+/// because durable Stop or fatal lease loss wins this phase.
+#[async_trait]
+pub(crate) trait NativeAgentAssembler: Send + Sync + 'static {
+    type Completion: NativeAgentCompletionSelector;
+
+    async fn assemble(
+        &self,
+        request: &AgentExecutionRequest,
+    ) -> Result<AssembledNativeAgentInvocation<Self::Completion>, NativeAgentAssemblyError>;
+}
+
+/// Native runner, browser projector and explicit post-EOS result selector.
+///
+/// This aggregate contains no claim, fence, settlement, or Redis authority.
+pub(crate) struct AssembledNativeAgentInvocation<S> {
+    invocation: NativeAgentInvocation,
+    projector: AgentEventProjector,
+    completion: S,
+}
+
+impl<S> AssembledNativeAgentInvocation<S> {
+    pub(crate) const fn new(
+        invocation: NativeAgentInvocation,
+        projector: AgentEventProjector,
+        completion: S,
+    ) -> Self {
+        Self {
+            invocation,
+            projector,
+            completion,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (NativeAgentInvocation, AgentEventProjector, S) {
+        (self.invocation, self.projector, self.completion)
+    }
+}
 
 /// Stable, data-free native runtime failure categories.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,10 +172,21 @@ impl NativeAgentRuntimeError {
         }
     }
 
+    pub(crate) fn invalid_state_for_lifecycle() -> Self {
+        Self::invalid_state()
+    }
+
     fn start_failed(error: AdkError) -> Self {
         Self {
             code: NativeAgentRuntimeErrorCode::StartFailed,
             _upstream: Some(Box::new(error)),
+        }
+    }
+
+    fn start_deferred() -> Self {
+        Self {
+            code: NativeAgentRuntimeErrorCode::StartFailed,
+            _upstream: None,
         }
     }
 
@@ -126,11 +257,16 @@ impl NativeAgentInvocation {
 
     /// Start exactly one run and seal its interruption scope with its stream.
     ///
+    /// Exact ADK-Rust 2.0.0 constructs the `EventStream` on its first poll and
+    /// defers session I/O and agent execution into that stream. This boundary
+    /// deliberately polls once and rejects any deferred start so it can never
+    /// retain the one-shot submission permit across an unbounded await.
+    ///
     /// # Errors
     ///
     /// Fails closed if the supplied Runner already owns an active run or ADK
     /// cannot create the event stream.
-    pub(crate) async fn start(self) -> Result<NativeAgentRun, NativeAgentRuntimeError> {
+    pub(crate) fn start(self) -> Result<NativeAgentRun, NativeAgentRuntimeError> {
         if !self.runner.active_runs().is_empty() {
             return Err(NativeAgentRuntimeError::invalid_state());
         }
@@ -138,9 +274,14 @@ impl NativeAgentInvocation {
         let app_name = runner.app_name().to_owned();
         let user_id = self.user_id.to_string();
         let session_id = self.session_id.to_string();
+        // Exact ADK-Rust 2.0.0 registers the run and constructs EventStream on
+        // its first poll; session lookup and agent work live inside that stream.
+        // Refuse a future version that moves I/O into this authority-consuming
+        // boundary instead of allowing an unbounded, non-interruptible start.
         let events = runner
             .run(self.user_id, self.session_id, self.user_content)
-            .await
+            .now_or_never()
+            .ok_or_else(NativeAgentRuntimeError::start_deferred)?
             .map_err(NativeAgentRuntimeError::start_failed)?;
         Ok(NativeAgentRun {
             runner,
