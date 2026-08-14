@@ -45,13 +45,20 @@ import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
 import type {
+  GlobalUserInviteResult,
   MessageResponse,
+  ModeRoleAssignResult,
+  ModeRoleListing,
+  ModeRoleRemoveResult,
   ModerationStatusResponse,
   PlatformSettings,
+  PublishedAgentsListing,
   Role,
   SupportAssistantConfig,
   UserInviteResult,
   UserListResponse,
+  UserProjectPermissionsResult,
+  UserProjectRoleMap,
 } from "../model";
 
 export const getUserListResponseMock = (
@@ -98,6 +105,78 @@ export const getUserDeleteResponseMock = (
   overrideResponse: Partial<Extract<MessageResponse, object>> = {},
 ): MessageResponse => ({
   msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListUserModeRolesResponseMock = (
+  overrideResponse: Partial<Extract<ModeRoleListing, object>> = {},
+): ModeRoleListing => ({
+  total: faker.number.int(),
+  rows: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    user_id: faker.number.int(),
+    user_email: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    user_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    mode: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    role: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  ...overrideResponse,
+});
+
+export const getAssignUserModeRoleResponseMock = (
+  overrideResponse: Partial<Extract<ModeRoleAssignResult, object>> = {},
+): ModeRoleAssignResult => ({
+  ok: faker.datatype.boolean(),
+  id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRemoveUserModeRoleResponseMock = (
+  overrideResponse: Partial<Extract<ModeRoleRemoveResult, object>> = {},
+): ModeRoleRemoveResult => ({
+  ok: faker.datatype.boolean(),
+  removed: faker.number.int(),
+  ...overrideResponse,
+});
+
+export const getInviteUserGloballyResponseMock = (
+  overrideResponse: Partial<Extract<GlobalUserInviteResult, object>> = {},
+): GlobalUserInviteResult => ({
+  ok: faker.datatype.boolean(),
+  id: faker.number.int(),
+  email: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  created: faker.datatype.boolean(),
+  invitation_delivered: faker.datatype.boolean(),
+  invitation_delivery: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetUserProjectPermissionsResponseMock =
+  (): UserProjectRoleMap => ({
+    [faker.string.alphanumeric(5)]: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  });
+
+export const getUpdateUserProjectPermissionsResponseMock = (
+  overrideResponse: Partial<Extract<UserProjectPermissionsResult, object>> = {},
+): UserProjectPermissionsResult => ({
+  role_map: {
+    [faker.string.alphanumeric(5)]: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  },
+  projects: faker.number.int(),
+  roles_created: faker.number.int(),
+  granted: faker.number.int(),
+  revoked: faker.number.int(),
+  roles_assigned: faker.number.int(),
   ...overrideResponse,
 });
 
@@ -156,6 +235,48 @@ export const getGetSupportAssistantConfigResponseMock = (
   overrideResponse: Partial<Extract<SupportAssistantConfig, object>> = {},
 ): SupportAssistantConfig => ({
   enabled: faker.datatype.boolean(),
+  ...overrideResponse,
+});
+
+export const getListAdminPublishedAgentsResponseMock = (
+  overrideResponse: Partial<Extract<PublishedAgentsListing, object>> = {},
+): PublishedAgentsListing => ({
+  items: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    public_agent_id: faker.number.int(),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    author_project_id: faker.helpers.arrayElement([faker.number.int(), null]),
+    published_versions: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      version_id: faker.number.int(),
+      version_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      published_at: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        null,
+      ]),
+      published_by: faker.helpers.arrayElement([{}, null]),
+    })),
+    total_published_versions: faker.number.int(),
+    adoption: {
+      conversation_count: faker.helpers.arrayElement([
+        faker.number.int(),
+        null,
+      ]),
+      project_count: faker.helpers.arrayElement([faker.number.int(), null]),
+    },
+    created_at: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      null,
+    ]),
+  })),
+  total: faker.number.int(),
+  page: faker.number.int(),
+  page_size: faker.number.int(),
   ...overrideResponse,
 });
 
@@ -256,6 +377,163 @@ export const getUserDeleteMockHandler = (
             ? await overrideResponse(info)
             : overrideResponse
           : getUserDeleteResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListUserModeRolesMockHandler = (
+  overrideResponse?:
+    | ModeRoleListing
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ModeRoleListing> | ModeRoleListing),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/admin/modes/administration",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListUserModeRolesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getAssignUserModeRoleMockHandler = (
+  overrideResponse?:
+    | ModeRoleAssignResult
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<ModeRoleAssignResult> | ModeRoleAssignResult),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/admin/modes/administration",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getAssignUserModeRoleResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveUserModeRoleMockHandler = (
+  overrideResponse?:
+    | ModeRoleRemoveResult
+    | ((
+        info: Parameters<Parameters<typeof http.delete>[1]>[0],
+      ) => Promise<ModeRoleRemoveResult> | ModeRoleRemoveResult),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete(
+    "*/admin/modes/administration",
+    async (info: Parameters<Parameters<typeof http.delete>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRemoveUserModeRoleResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getInviteUserGloballyMockHandler = (
+  overrideResponse?:
+    | GlobalUserInviteResult
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<GlobalUserInviteResult> | GlobalUserInviteResult),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/admin/user_invite/administration",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getInviteUserGloballyResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetUserProjectPermissionsMockHandler = (
+  overrideResponse?:
+    | UserProjectRoleMap
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<UserProjectRoleMap> | UserProjectRoleMap),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/admin/user_project_permissions/administration",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetUserProjectPermissionsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getUpdateUserProjectPermissionsMockHandler = (
+  overrideResponse?:
+    | UserProjectPermissionsResult
+    | ((
+        info: Parameters<Parameters<typeof http.put>[1]>[0],
+      ) =>
+        Promise<UserProjectPermissionsResult> | UserProjectPermissionsResult),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put(
+    "*/admin/user_project_permissions/administration",
+    async (info: Parameters<Parameters<typeof http.put>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUpdateUserProjectPermissionsResponseMock(),
         { status: 200 },
       );
     },
@@ -392,14 +670,47 @@ export const getGetSupportAssistantConfigMockHandler = (
     options,
   );
 };
+
+export const getListAdminPublishedAgentsMockHandler = (
+  overrideResponse?:
+    | PublishedAgentsListing
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<PublishedAgentsListing> | PublishedAgentsListing),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/admin_published_agents/administration",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListAdminPublishedAgentsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
 export const getAdminMock = () => [
   getUserListMockHandler(),
   getUserCreateMockHandler(),
   getUserUpdateMockHandler(),
   getUserDeleteMockHandler(),
+  getListUserModeRolesMockHandler(),
+  getAssignUserModeRoleMockHandler(),
+  getRemoveUserModeRoleMockHandler(),
+  getInviteUserGloballyMockHandler(),
+  getGetUserProjectPermissionsMockHandler(),
+  getUpdateUserProjectPermissionsMockHandler(),
   getRoleListMockHandler(),
   getModerationStatusMockHandler(),
   getCreateModerationRequestMockHandler(),
   getGetPlatformSettingsMockHandler(),
   getGetSupportAssistantConfigMockHandler(),
+  getListAdminPublishedAgentsMockHandler(),
 ];

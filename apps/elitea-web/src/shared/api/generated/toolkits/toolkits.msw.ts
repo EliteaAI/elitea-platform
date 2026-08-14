@@ -45,6 +45,7 @@ import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
 import type {
+  InternalMcpPatStatus,
   ToolkitInstance,
   ToolkitInstanceListResponse,
   ToolkitTypeSchemas,
@@ -113,6 +114,14 @@ export const getCreateToolkitResponseMock = (
   meta: {},
   created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   author_id: faker.number.int(),
+  ...overrideResponse,
+});
+
+export const getGetInternalMcpPatStatusResponseMock = (
+  overrideResponse: Partial<Extract<InternalMcpPatStatus, object>> = {},
+): InternalMcpPatStatus => ({
+  internal: faker.datatype.boolean(),
+  state: faker.string.alpha({ length: { min: 10, max: 20 } }),
   ...overrideResponse,
 });
 
@@ -245,10 +254,83 @@ export const getCreateToolkitMockHandler = (
     options,
   );
 };
+
+export const getListRegisteredMcpServersMockHandler = (
+  overrideResponse?:
+    | unknown
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<unknown> | unknown),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/tools_list/default/:projectId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 200 });
+    },
+    options,
+  );
+};
+
+export const getCallRegisteredMcpServerToolMockHandler = (
+  overrideResponse?:
+    | unknown
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<unknown> | unknown),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/elitea_core/tools_call/default/:projectId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 200 });
+    },
+    options,
+  );
+};
+
+export const getGetInternalMcpPatStatusMockHandler = (
+  overrideResponse?:
+    | InternalMcpPatStatus
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<InternalMcpPatStatus> | InternalMcpPatStatus),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/internal_mcp_pat_status/prompt_lib/:projectId/:toolkitType",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetInternalMcpPatStatusResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
 export const getToolkitsMock = () => [
   getGetToolkitMockHandler(),
   getUpdateToolkitMockHandler(),
   getListToolkitsMockHandler(),
   getListToolkitInstancesMockHandler(),
   getCreateToolkitMockHandler(),
+  getListRegisteredMcpServersMockHandler(),
+  getCallRegisteredMcpServerToolMockHandler(),
+  getGetInternalMcpPatStatusMockHandler(),
 ];

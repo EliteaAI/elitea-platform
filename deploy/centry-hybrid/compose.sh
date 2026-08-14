@@ -112,6 +112,8 @@ validate_model() {
     --arg route "$ELITEA_INDEX_ROUTE_FILE" \
     --arg runtime "$runtime_root/runtime/indexer-runtime-v2.json" \
     --arg checkpoint "$runtime_root/runtime/agent-checkpoint-connection" \
+    --arg main_database_config "$runtime_root/runtime/pylon-main-shared.yml" \
+    --arg auth_database_config "$runtime_root/runtime/pylon-auth-core.yml" \
     --arg interface "$script_dir/runtime-interface-litellm.yml" \
     --arg engine "$script_dir/runtime-engine-litellm.yml" \
     '
@@ -133,6 +135,13 @@ validate_model() {
         == .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP
       and .services["elitea-main"].environment.ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL
         == "https://elitea-gateway"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_ADMISSION_MAX_CONNS == "3"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_CONTROL_MAX_CONNS == "2"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_OUTPUT_MAX_CONNS == "2"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_REPLAY_MAX_CONNS == "1"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_TERMINAL_MAX_CONNS == "1"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_CONTENT_MAX_CONNS == "1"
+      and .services["elitea-main"].environment.ELITEA_DATABASE_MAX_CONNS == "4"
       and (.services["elitea-main"].networks | has("runtime_gateway"))
       and any(.services.auth_gateway.volumes[];
         .source == $route and .target == "/etc/traefik/dynamic/index.yml")
@@ -144,6 +153,10 @@ validate_model() {
         == "{\"*\":[\"delete_file\"]}"
       and any(.services.pylon_main.volumes[];
         .source == $interface and .target == "/data/configs/runtime_interface_litellm.yml")
+      and any(.services.pylon_main.volumes[];
+        .source == $main_database_config and .target == "/data/configs/shared.yml")
+      and any(.services.pylon_auth.volumes[];
+        .source == $auth_database_config and .target == "/data/configs/auth_core.yml")
       and any(.services.pylon_indexer.volumes[];
         .source == $engine and .target == "/data/configs/runtime_engine_litellm.yml")
       and (.services["elitea-litellm"].build.context | endswith("/hybrid_auth"))

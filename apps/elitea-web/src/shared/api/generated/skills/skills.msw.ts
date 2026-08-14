@@ -44,7 +44,19 @@ import { faker } from "@faker-js/faker";
 import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
-import type { Skill, SkillsList } from "../model";
+import type {
+  AttachPublicSkill200,
+  ListAgentsWithSkill200,
+  ListPublicSkills200,
+  ListSkillCategories200,
+  PublicSkillDetail,
+  PublishSkill200,
+  Skill,
+  SkillForkPayload,
+  SkillValidationResult,
+  SkillsList,
+  UnpublishSkill200,
+} from "../model";
 
 export const getListApplicationSkillsResponseMock = (
   overrideResponse: Partial<Extract<SkillsList, object>> = {},
@@ -256,6 +268,572 @@ export const getCreateSkillResponseMock = (
   ...overrideResponse,
 });
 
+export const getPublishSkillResponseMock = (
+  overrideResponse: Partial<Extract<PublishSkill200, object>> = {},
+): PublishSkill200 => ({
+  msg: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  public_skill_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  public_version_id: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  version_name: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  source_version_id: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getUnpublishSkillResponseMock = (
+  overrideResponse: Partial<Extract<UnpublishSkill200, object>> = {},
+): UnpublishSkill200 => ({
+  msg: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  status: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getValidateSkillForPublishResponseMock = (
+  overrideResponse: Partial<Extract<SkillValidationResult, object>> = {},
+): SkillValidationResult => ({
+  status: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  critical_issues: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    field: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    issue: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    fix: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  warnings: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    field: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    issue: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    fix: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  recommendations: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    field: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+    suggestion: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  })),
+  summary: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  counts: {
+    critical: faker.helpers.arrayElement([faker.number.int(), undefined]),
+    warnings: faker.helpers.arrayElement([faker.number.int(), undefined]),
+    suggestions: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  },
+  ai_validation_available: faker.datatype.boolean(),
+  validation_token: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getListPublicSkillsResponseMock = (
+  overrideResponse: Partial<Extract<ListPublicSkills200, object>> = {},
+): ListPublicSkills200 => ({
+  total: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  rows: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      description: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      owner_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      meta: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([null]),
+        undefined,
+      ]),
+      tags: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+        undefined,
+      ]),
+      versions: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+          name: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          status: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          created_at: faker.helpers.arrayElement([
+            faker.date.past().toISOString().slice(0, 19) + "Z",
+            undefined,
+          ]),
+          tags: faker.helpers.arrayElement([
+            Array.from(
+              { length: faker.number.int({ min: 1, max: 10 }) },
+              (_, i) => i + 1,
+            ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+            undefined,
+          ]),
+        })),
+        undefined,
+      ]),
+      has_published_version: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
+    })),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetPublicSkillResponseMock = (
+  overrideResponse: Partial<Extract<PublicSkillDetail, object>> = {},
+): PublicSkillDetail => ({
+  id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  name: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  description: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  owner_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  created_at: faker.helpers.arrayElement([
+    faker.date.past().toISOString().slice(0, 19) + "Z",
+    undefined,
+  ]),
+  meta: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([null]),
+    undefined,
+  ]),
+  versions: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      status: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      tags: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+        undefined,
+      ]),
+    })),
+    undefined,
+  ]),
+  version_details: faker.helpers.arrayElement([
+    {
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      instructions: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      status: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      author_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      tags: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+        undefined,
+      ]),
+      meta: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([null]),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetPublicSkillVersionResponseMock = (
+  overrideResponse: Partial<Extract<PublicSkillDetail, object>> = {},
+): PublicSkillDetail => ({
+  id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  name: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  description: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  owner_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  created_at: faker.helpers.arrayElement([
+    faker.date.past().toISOString().slice(0, 19) + "Z",
+    undefined,
+  ]),
+  meta: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([null]),
+    undefined,
+  ]),
+  versions: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      status: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      tags: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+        undefined,
+      ]),
+    })),
+    undefined,
+  ]),
+  version_details: faker.helpers.arrayElement([
+    {
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      instructions: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      status: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      author_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      tags: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+        undefined,
+      ]),
+      meta: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([null]),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getAttachPublicSkillResponseMock = (
+  overrideResponse: Partial<Extract<AttachPublicSkill200, object>> = {},
+): AttachPublicSkill200 => ({
+  results: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      agent_version_id: faker.helpers.arrayElement([
+        faker.number.int(),
+        undefined,
+      ]),
+      ok: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+      http_status: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      error: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+    })),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getListSkillCategoriesResponseMock = (
+  overrideResponse: Partial<Extract<ListSkillCategories200, object>> = {},
+): ListSkillCategories200 => ({
+  total: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  categories: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      is_default: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
+    })),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getExportSkillForkResponseMock = (
+  overrideResponse: Partial<Extract<SkillForkPayload, object>> = {},
+): SkillForkPayload => ({
+  skills: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      description: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      owner_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      project_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      user_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      entity: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      import_uuid: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      meta: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([null]),
+        undefined,
+      ]),
+      versions: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+          name: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          instructions: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          author_id: faker.helpers.arrayElement([
+            faker.number.int(),
+            undefined,
+          ]),
+          meta: faker.helpers.arrayElement([
+            faker.helpers.arrayElement([null]),
+            undefined,
+          ]),
+          tags: faker.helpers.arrayElement([
+            Array.from(
+              { length: faker.number.int({ min: 1, max: 10 }) },
+              (_, i) => i + 1,
+            ).map(() => ({
+              name: faker.helpers.arrayElement([
+                faker.string.alpha({ length: { min: 10, max: 20 } }),
+                undefined,
+              ]),
+              data: faker.helpers.arrayElement([{}, undefined]),
+            })),
+            undefined,
+          ]),
+        })),
+        undefined,
+      ]),
+    })),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getExportSkillVersionForkResponseMock = (
+  overrideResponse: Partial<Extract<SkillForkPayload, object>> = {},
+): SkillForkPayload => ({
+  skills: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      description: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      owner_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      project_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      user_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      entity: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      import_uuid: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      meta: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([null]),
+        undefined,
+      ]),
+      versions: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+          name: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          instructions: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          author_id: faker.helpers.arrayElement([
+            faker.number.int(),
+            undefined,
+          ]),
+          meta: faker.helpers.arrayElement([
+            faker.helpers.arrayElement([null]),
+            undefined,
+          ]),
+          tags: faker.helpers.arrayElement([
+            Array.from(
+              { length: faker.number.int({ min: 1, max: 10 }) },
+              (_, i) => i + 1,
+            ).map(() => ({
+              name: faker.helpers.arrayElement([
+                faker.string.alpha({ length: { min: 10, max: 20 } }),
+                undefined,
+              ]),
+              data: faker.helpers.arrayElement([{}, undefined]),
+            })),
+            undefined,
+          ]),
+        })),
+        undefined,
+      ]),
+    })),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getListAgentsWithSkillResponseMock = (
+  overrideResponse: Partial<Extract<ListAgentsWithSkill200, object>> = {},
+): ListAgentsWithSkill200 => ({
+  total: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  rows: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      application_id: faker.helpers.arrayElement([
+        faker.number.int(),
+        undefined,
+      ]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      entity_version_id: faker.helpers.arrayElement([
+        faker.number.int(),
+        undefined,
+      ]),
+      icon_meta: faker.helpers.arrayElement([
+        faker.helpers.arrayElement([null]),
+        undefined,
+      ]),
+    })),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
 export const getListApplicationSkillsMockHandler = (
   overrideResponse?:
     | SkillsList
@@ -333,8 +911,305 @@ export const getCreateSkillMockHandler = (
     options,
   );
 };
+
+export const getPublishSkillMockHandler = (
+  overrideResponse?:
+    | PublishSkill200
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<PublishSkill200> | PublishSkill200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/elitea_core/publish_skill/prompt_lib/:projectId/:skillId/:versionId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPublishSkillResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getUnpublishSkillMockHandler = (
+  overrideResponse?:
+    | UnpublishSkill200
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<UnpublishSkill200> | UnpublishSkill200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/elitea_core/unpublish_skill/prompt_lib/:projectId/:skillId/:versionId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUnpublishSkillResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getValidateSkillForPublishMockHandler = (
+  overrideResponse?:
+    | SkillValidationResult
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<SkillValidationResult> | SkillValidationResult),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/elitea_core/publish_skill_validate/prompt_lib/:projectId/:skillId/:versionId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getValidateSkillForPublishResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListPublicSkillsMockHandler = (
+  overrideResponse?:
+    | ListPublicSkills200
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ListPublicSkills200> | ListPublicSkills200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/public_skills/prompt_lib",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListPublicSkillsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetPublicSkillMockHandler = (
+  overrideResponse?:
+    | PublicSkillDetail
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<PublicSkillDetail> | PublicSkillDetail),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/public_skill/prompt_lib/:skillId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetPublicSkillResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetPublicSkillVersionMockHandler = (
+  overrideResponse?:
+    | PublicSkillDetail
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<PublicSkillDetail> | PublicSkillDetail),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/public_skill/prompt_lib/:skillId/:versionName",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetPublicSkillVersionResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getAttachPublicSkillMockHandler = (
+  overrideResponse?:
+    | AttachPublicSkill200
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<AttachPublicSkill200> | AttachPublicSkill200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/elitea_core/attach_public_skill/prompt_lib/:projectId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getAttachPublicSkillResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSkillCategoriesMockHandler = (
+  overrideResponse?:
+    | ListSkillCategories200
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ListSkillCategories200> | ListSkillCategories200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/skill_categories/prompt_lib/:projectId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSkillCategoriesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getExportSkillForkMockHandler = (
+  overrideResponse?:
+    | SkillForkPayload
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<SkillForkPayload> | SkillForkPayload),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/skill_export_fork/prompt_lib/:projectId/:skillId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getExportSkillForkResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getExportSkillVersionForkMockHandler = (
+  overrideResponse?:
+    | SkillForkPayload
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<SkillForkPayload> | SkillForkPayload),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/skill_export_fork/prompt_lib/:projectId/:skillId/:versionId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getExportSkillVersionForkResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListAgentsWithSkillMockHandler = (
+  overrideResponse?:
+    | ListAgentsWithSkill200
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ListAgentsWithSkill200> | ListAgentsWithSkill200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/agents_with_skill/prompt_lib/:projectId/:skillId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListAgentsWithSkillResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
 export const getSkillsMock = () => [
   getListApplicationSkillsMockHandler(),
   getListSkillsMockHandler(),
   getCreateSkillMockHandler(),
+  getPublishSkillMockHandler(),
+  getUnpublishSkillMockHandler(),
+  getValidateSkillForPublishMockHandler(),
+  getListPublicSkillsMockHandler(),
+  getGetPublicSkillMockHandler(),
+  getGetPublicSkillVersionMockHandler(),
+  getAttachPublicSkillMockHandler(),
+  getListSkillCategoriesMockHandler(),
+  getExportSkillForkMockHandler(),
+  getExportSkillVersionForkMockHandler(),
+  getListAgentsWithSkillMockHandler(),
 ];

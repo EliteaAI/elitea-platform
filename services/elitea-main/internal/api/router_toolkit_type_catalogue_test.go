@@ -38,15 +38,17 @@ import (
 // there is no `cfg.X != nil` to inspect — the route is present, it just points
 // at the wrong function.
 func TestToolkitsRouteServesTheTypeCatalogueNotTheInstanceList(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
 	// The gated branch's RequireProjectAccess needs a live pool; take the
 	// un-gated branch so the response body is observable. The gated branch's
 	// registration is covered by the source-level test below.
 	t.Setenv("FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS", "false")
-	router := NewRouter(RouterConfig{SkillsRepo: struct{ v2skills.Repository }{}})
+	router := NewRouter(RouterConfig{
+		SkillsRepo:    struct{ v2skills.Repository }{},
+		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+	})
 
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v2/elitea_core/toolkits/prompt_lib/1", nil))
+	router.ServeHTTP(response, testAuthHeader(httptest.NewRequest(http.MethodGet, "/api/v2/elitea_core/toolkits/prompt_lib/1", nil)))
 	// ListTypeSchemas serves a package-level map and never touches the pool, so
 	// 200 is reachable with no database. A 500 here means the route reached a
 	// handler that did query — i.e. it is still pointing at List.

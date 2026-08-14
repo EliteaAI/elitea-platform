@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
@@ -74,22 +75,75 @@ func main() {
 	}
 }
 
+// developmentFlagsFromEnv validates the two development-only environment
+// flags and reports whether the legacy-schema bootstrap was requested. It
+// reads the environment through the injected getenv and has NO side effects,
+// so its invariants are testable without executing startup — calling run() to
+// exercise them would open database pools, contact the object store, and bind
+// the public HTTP port.
+//
+// AUTH_DEV_MODE was an unauthenticated-admin bypass (ADR-0017). It is gone, so
+// the variable is inert — but an operator who still sets it to "true" believes
+// authentication is disabled and may have deployed accordingly, so refuse to
+// start rather than ignoring it silently. A lingering "false" is harmless and
+// stays tolerated.
+//
+// The legacy-schema bootstrap is a developer-machine convenience that runs the
+// unversioned schema against an empty local database. It needs a "this is a
+// developer machine" marker, not an authentication bypass, so it no longer
+// cross-checks AUTH_DEV_MODE. It is self-gating and fail-closed: absent an
+// explicit opt-in, nothing runs.
+func developmentFlagsFromEnv(getenv func(string) string) (bootstrapLegacySchema bool, err error) {
+	if getenv("AUTH_DEV_MODE") == "true" {
+		return false, errors.New("AUTH_DEV_MODE=true is no longer supported: the development authentication bypass was removed (ADR-0017). Authenticate via OIDC or an API token and remove this variable")
+	}
+
+	bootstrapLegacySchema = getenv("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA") == "true"
+	if bootstrapLegacySchema {
+		// Production shared/tenant histories are owned by elitea-migrate. A
+		// deployment that has configured any real authentication mode is not a
+		// developer machine, and must never bootstrap the legacy schema.
+		for _, configured := range []string{"APPLICATION_SECRET_KEY", "OIDC_ISSUER_URL", "ELITEA_AUTH_CONFIG_FILE"} {
+			if getenv(configured) != "" {
+				return false, fmt.Errorf("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA is a local-development flag and must not be set when %s is configured", configured)
+			}
+		}
+	}
+	return bootstrapLegacySchema, nil
+}
+
 func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	publicAddress, err := configuredHTTPAddress(os.LookupEnv)
 	if err != nil {
 		return err
 	}
-	devMode := os.Getenv("AUTH_DEV_MODE") == "true"
-	bootstrapLegacySchema := os.Getenv("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA") == "true"
-	if bootstrapLegacySchema && !devMode {
-		return errors.New("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA requires AUTH_DEV_MODE=true")
+	bootstrapLegacySchema, err := developmentFlagsFromEnv(os.Getenv)
+	if err != nil {
+		return err
 	}
+
+	// Observability (issue #250): exports elitea-main's own request spans to
+	// the same OTLP collector internal/api/v2/tracing proxies UI/worker
+	// traces to, so the ingest pipeline is self-verifying — every request
+	// this process serves produces a span an operator can see land in the
+	// collector, with no separate "did tracing actually work" check needed.
+	obsProvider, err := observability.New(ctx, observability.ConfigFromEnv("elitea-main", ""))
+	if err != nil {
+		return fmt.Errorf("initialize observability: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := obsProvider.Shutdown(shutdownCtx); runErr == nil && err != nil {
+			runErr = fmt.Errorf("shut down observability: %w", err)
+		}
+	}()
 
 	// Database
 	dbDSN := envOr("DATABASE_URL", "postgres://localhost:5432/elitea?sslmode=disable")
-	pool, err := pgxpool.New(ctx, dbDSN)
+	pool, err := openDatabasePool(ctx, dbDSN, os.LookupEnv)
 	if err != nil {
-		return fmt.Errorf("create database pool: %w", err)
+		return err
 	}
 	defer pool.Close()
 
@@ -130,6 +184,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var productionAuth *api.ProductionAuthRoutes
 	var currentProjectList *v2projects.CurrentProjectListRoute
 	var currentSocialAuthors *socialapi.CurrentAuthorsRoute
+	var currentSocialAvatar *socialapi.CurrentAvatarRoute
 	var currentNotifications *notificationsapi.CurrentNotificationAPIRoute
 	var currentNotificationEvents *notificationsapi.CurrentNotificationEventsRoute
 	var formGraph *authcomposition.FormGraph
@@ -197,6 +252,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		)
 		if err != nil {
 			return fmt.Errorf("compose current Social authors route: %w", err)
+		}
+		socialAvatarRepository, repositoryErr := dbrepos.NewCurrentSocialAvatarRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose current Social avatar repository: %w", repositoryErr)
+		}
+		currentSocialAvatar, err = socialapi.NewCurrentAvatarRoute(
+			socialAvatarRepository,
+			objectStore,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Social avatar route: %w", err)
 		}
 		notificationRepository, repositoryErr := dbrepos.NewCurrentNotificationRepository(pool)
 		if repositoryErr != nil {
@@ -629,7 +701,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentIndexScheduleUpdate http.Handler
 	var currentIndexScheduleDelete http.Handler
 	if runtimeConfig.Enabled {
-		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
+		databasePoolLimits, limitsErr := runtimecomposition.DatabasePoolLimitsFromEnv(os.LookupEnv)
+		if limitsErr != nil {
+			return fmt.Errorf("load runtime database pool limits: %w", limitsErr)
+		}
+		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, databasePoolLimits)
 		if openErr != nil {
 			return openErr
 		}
@@ -922,6 +998,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentPromptContextReads:     currentPromptContextReads,
 		CurrentProjectList:            currentProjectList,
 		CurrentSocialAuthors:          currentSocialAuthors,
+		CurrentSocialAvatar:           currentSocialAvatar,
 		CurrentConfigurationAvailable: currentConfigurationAvailable,
 		CurrentConfigurationRead:      currentConfigurationRead,
 		CurrentConfigurationTypes:     currentConfigurationTypes,
@@ -979,6 +1056,16 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// mounted after the deletion either. The chat-dispatch migration it was a
 	// placeholder for is #93; the web client's own socket.io still points at
 	// pylon and is unaffected.
+	// NOT wrapped in otelhttp here: internal/api/router.go already installs
+	// apimw.OtelMiddleware (r.Use at router.go:396) as chi middleware, which
+	// creates a span per request via otel.Tracer("elitea-main") — the same
+	// global tracer provider observability.New (above) installs. otelhttp
+	// would duplicate that instrumentation AND break it: otelhttp's response
+	// writer wrapper has no Unwrap(), unlike apimw's own statusRecorder
+	// (middleware/otel.go), so http.ResponseController.SetWriteDeadline
+	// (used by the SSE writers in internal/api/v2/executions/events.go and
+	// internal/api/v2/notifications/events.go, and by artifact upload/
+	// download deadlines) would stop reaching the real ResponseWriter.
 	srv := newHTTPServer(publicAddress, r)
 
 	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)

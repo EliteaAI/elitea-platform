@@ -139,8 +139,58 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * operation, its route and its callers are all gone); the other four flipped
  * to `source: handwritten` rather than disappearing, because the app still
  * issues those exact requests.
+ * 104 -> 106 when issue #251 added the social-avatar routes: two new spec
+ * operations (`getCurrentSocialAvatar`, `uploadCurrentSocialAvatar`) landed
+ * in v2.yaml alongside internal/api/v2/social/avatar.go. Neither is
+ * in the endpoint manifest yet (it stays handwritten, not yet landed, same
+ * as most P1 API-* items), so MANIFEST_ENTRY_COUNT is unchanged.
+ * 106 -> 117 when issue #249 added skill-level publishing: eleven new spec
+ * operations (publishSkill, unpublishSkill, validateSkillForPublish,
+ * listPublicSkills, getPublicSkill, getPublicSkillVersion, attachPublicSkill,
+ * listSkillCategories, exportSkillFork, exportSkillVersionFork,
+ * listAgentsWithSkill) landed in v2.yaml alongside
+ * internal/api/v2/skillpublish. None is in the endpoint manifest yet — that
+ * PR ships no UI — so MANIFEST_ENTRY_COUNT is again unchanged.
+ * 117 -> 120 when issue #252 added the MCP surface: three new spec operations
+ * (listRegisteredMcpServers, callRegisteredMcpServerTool,
+ * getInternalMcpPatStatus) landed in v2.yaml alongside
+ * internal/api/v2/mcp. The MCP protocol endpoints that change also adds
+ * (/app/{project_id}/mcp and its variants) are JSON-RPC and deliberately not
+ * in v2.yaml, so they do not count. No UI ships with it, so
+ * MANIFEST_ENTRY_COUNT is unchanged.
+ * 120 -> 129 when issue #255 added the admin & tenancy parity surface: nine new
+ * spec operations (listUserModeRoles, assignUserModeRole, removeUserModeRole,
+ * inviteUserGlobally, getUserProjectPermissions, updateUserProjectPermissions,
+ * addProjectGroup, removeProjectGroup, listAdminPublishedAgents) landed in
+ * v2.yaml alongside internal/api/v2/admin, internal/api/v2/projects and
+ * internal/api/v2/eliteacore. `putProjectGroups` was already counted — that PR
+ * reshapes it (it stopped echoing the request body) without adding an
+ * operation. No UI ships with it, so MANIFEST_ENTRY_COUNT is unchanged.
+ * 129 -> 142 when issue #246 ported the budgets/quotas/usage domain: thirteen
+ * new spec operations (getProjectBudget, getProjectBudgetAdmin,
+ * setProjectBudget, listProjectBudgets, getMemberBudget, getMemberBudgetAdmin,
+ * setMemberBudget, listMemberBudgets, listMemberBudgetsAdmin, getProjectUsage,
+ * getProjectQuota, setProjectQuota, getProjectStatistics) landed in v2.yaml
+ * alongside internal/api/v2/budgets and internal/api/v2/projects/quota.go, and
+ * with them the spec's first `budgets` tag. No UI ships with it (#80 tracks the
+ * settings page), so MANIFEST_ENTRY_COUNT is unchanged.
+ * 142 -> 145 when issue #253 added the cost breakdown and the two chat
+ * execution-step trace reads: three new spec operations (getAnalyticsCosts,
+ * listMessageTraces, getMessageTrace) landed in v2.yaml alongside
+ * internal/api/v2/analytics/costs.go and internal/api/v2/messagetraces, and
+ * with them the spec's first `chat` tag. No UI ships with it — the old app's
+ * trace-pin fetch is recorded as unported in
+ * src/processes/chat/model/useLoadMoreMessages.ts — so MANIFEST_ENTRY_COUNT is
+ * unchanged.
+ * 145 -> 151 when issue #250 added the tracing ingest surface: six new spec
+ * operations (collectTracesUngated, collectTraces, proxyOtlpTracesUngated,
+ * proxyOtlpTraces, getTracingStatusForProject, getTracingStatusAdmin) landed
+ * in v2.yaml alongside internal/api/v2/tracing, and with them the spec's
+ * first `tracing` tag. No UI ships with it (the routes exist for the OTel
+ * collector proxy and elitea-main's own span export, not for a settings
+ * page), so MANIFEST_ENTRY_COUNT is unchanged.
  */
-const GENERATED_OPERATION_COUNT = 104;
+const GENERATED_OPERATION_COUNT = 151;
 const MANIFEST_ENTRY_COUNT = 179;
 
 describe('GREEN — the real, checked-in manifest', () => {

@@ -37,18 +37,21 @@ var applicationRoutes = []struct {
 // cmd/elitea-main/main_router_wiring_test.go covers the other half: that
 // main.go actually sets the field.
 //
-// Dev-mode authentication is enabled so requests reach the routing table
-// instead of being answered by the auth middleware, which returns 401 for
-// every path under the group — registered or not — and would make a
-// "not 404" assertion pass for any string at all.
+// Requests carry a real credential (testAuthHeader) validated by an injected
+// testTokenValidator, so they reach the routing table instead of being
+// answered by the auth middleware — which returns 401 for every path under
+// the group, registered or not, and would make a "not 404" assertion pass for
+// any string at all.
 func TestRouterRegistersEveryApplicationRouteWhenAppsRepoIsComposed(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
-	router := NewRouter(RouterConfig{AppsRepo: struct{ applications.Repository }{}})
+	router := NewRouter(RouterConfig{
+		AppsRepo:      struct{ applications.Repository }{},
+		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+	})
 
 	// Control: an unregistered path under the same mounted group still 404s,
 	// so "not 404" below is a real signal.
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v2/elitea_core/not_a_real_route/prompt_lib/1", nil))
+	router.ServeHTTP(response, testAuthHeader(httptest.NewRequest(http.MethodGet, "/api/v2/elitea_core/not_a_real_route/prompt_lib/1", nil)))
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("an unregistered path answers %d, so this test cannot detect a missing route", response.Code)
 	}
@@ -56,7 +59,7 @@ func TestRouterRegistersEveryApplicationRouteWhenAppsRepoIsComposed(t *testing.T
 	for _, route := range applicationRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			router.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+			router.ServeHTTP(response, testAuthHeader(httptest.NewRequest(route.method, route.path, nil)))
 			// 405 matters as much as 404: several of these paths carry more
 			// than one method, so dropping just one verb leaves chi matching
 			// the path and answering Method Not Allowed.
@@ -72,13 +75,15 @@ func TestRouterRegistersEveryApplicationRouteWhenAppsRepoIsComposed(t *testing.T
 // still mounted here (via SkillsRepo), so the 404s below are the AppsRepo gate
 // and not an unmounted /api/v2.
 func TestRouterDropsApplicationRoutesWithoutAppsRepo(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "true")
-	router := NewRouter(RouterConfig{SkillsRepo: struct{ v2skills.Repository }{}})
+	router := NewRouter(RouterConfig{
+		SkillsRepo:    struct{ v2skills.Repository }{},
+		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+	})
 
 	// The group really is mounted: a sibling route registered by SkillsRepo
 	// answers.
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v2/elitea_core/skills/prompt_lib/1", nil))
+	router.ServeHTTP(response, testAuthHeader(httptest.NewRequest(http.MethodGet, "/api/v2/elitea_core/skills/prompt_lib/1", nil)))
 	if response.Code == http.StatusNotFound {
 		t.Fatalf("the prototype group is not mounted, so this test proves nothing")
 	}
@@ -86,7 +91,7 @@ func TestRouterDropsApplicationRoutesWithoutAppsRepo(t *testing.T) {
 	for _, route := range applicationRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			router.ServeHTTP(response, httptest.NewRequest(route.method, route.path, nil))
+			router.ServeHTTP(response, testAuthHeader(httptest.NewRequest(route.method, route.path, nil)))
 			if response.Code != http.StatusNotFound {
 				t.Errorf("status = %d, want 404: the route answers without a repository behind it", response.Code)
 			}

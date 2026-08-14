@@ -35,8 +35,10 @@ WORKDIR /src
 ARG VERSION=dev
 
 # Preserve the repository-relative module layout because elitea-main replaces
-# the generated protobuf module with ../../libs/proto/gen/go.
+# the generated protobuf module with ../../libs/proto/gen/go, and (issue #250)
+# the observability module with ../../libs/go/observability.
 COPY libs/proto/gen/go ./libs/proto/gen/go
+COPY libs/go/observability ./libs/go/observability
 COPY services/elitea-main/go.mod services/elitea-main/go.sum ./services/elitea-main/
 WORKDIR /src/services/elitea-main
 RUN go mod download

@@ -22,10 +22,10 @@ _DISPATCH = (
 _SDK_ROOT = _PROJECTS_ROOT / "elitea-sdk"
 _SDK_CLIENT_PATH = "elitea_sdk/runtime/clients/client.py"
 _WRAPPER_SHA256 = (
-    "2e8f82530d8fcc55a908355028bef9e6e33b4324d27589848f2151611a95635d"
+    "d34cb0fb1c77cf66a254cef796b0a3baeae8d42c327d72ca4ab028b8ffbfef9e"
 )
 _DISPATCH_SHA256 = (
-    "e18d9dd274bd7c569452875370f2978df027ee884c8c6366d69ae78a5858b615"
+    "9e508bd9f0834ae1b7a2f13c7526175c1429ede8dbfc1451d802e4469016256e"
 )
 
 
@@ -91,25 +91,18 @@ def test_index_ingest_boundary_matches_current_index_data_source_evidence() -> N
     assert isinstance(tool_name, ast.Name) and tool_name.id == "tool_name"
 
     dispatch_function = _function(_DISPATCH, "start_index_task")
-    statements = dispatch_function.body
-    admission_statement = next(
-        index
-        for index, node in enumerate(statements)
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "require_pylon_indexing_admission"
-    )
-    first_data_access = next(
-        index
-        for index, node in enumerate(statements)
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "toolkit_config"
-            for target in node.targets
-        )
-    )
-    assert admission_statement < first_data_access
+    # The verified current main checkout no longer contains the previously
+    # recorded Pylon single-owner admission call. Keep this explicit source
+    # evidence aligned with the open cutover gap instead of preserving a stale
+    # security claim in the parity harness.
+    admission_calls = [
+        node
+        for node in ast.walk(dispatch_function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "require_pylon_indexing_admission"
+    ]
+    assert admission_calls == []
 
     start_calls = [
         node

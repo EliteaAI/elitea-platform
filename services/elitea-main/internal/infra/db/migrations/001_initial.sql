@@ -35,6 +35,48 @@ CREATE TABLE IF NOT EXISTS centry.project_group_association (
     PRIMARY KEY (project_id, group_id)
 );
 
+-- Per-project resource ceilings and usage counters (issue #246).
+-- Column-for-column legacy/plugins/projects/models/{quota,statistics}.py, so a
+-- fresh database and a legacy dump present the same table to
+-- /api/v2/projects/{quota,statistics}. The same DDL lands on existing
+-- databases through migrations/shared/0062_budgets_quota_statistics.sql — see
+-- that file for why -1 is the "unlimited" sentinel and why the project_id
+-- index is deliberately NOT unique.
+CREATE TABLE IF NOT EXISTS centry.project_quota (
+    id                        SERIAL PRIMARY KEY,
+    project_id                INTEGER NOT NULL,
+    data_retention_limit      INTEGER,
+    test_duration_limit       INTEGER DEFAULT -1,
+    cpu_limit                 INTEGER DEFAULT -1,
+    memory_limit              INTEGER DEFAULT -1,
+    last_update_time          TIMESTAMP DEFAULT (now() AT TIME ZONE 'utc'),
+    dast_scans                INTEGER DEFAULT -1,
+    sast_scans                INTEGER DEFAULT -1,
+    vcu_hard_limit            INTEGER,
+    vcu_soft_limit            INTEGER,
+    vcu_limit_total_block     BOOLEAN NOT NULL DEFAULT false,
+    storage_hard_limit        INTEGER,
+    storage_soft_limit        INTEGER,
+    storage_limit_total_block BOOLEAN NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS project_quota_project_idx
+    ON centry.project_quota (project_id);
+
+CREATE TABLE IF NOT EXISTS centry.statistic (
+    id                       SERIAL PRIMARY KEY,
+    project_id               INTEGER NOT NULL,
+    start_time               TIMESTAMP DEFAULT (now() AT TIME ZONE 'utc'),
+    vuh_used                 INTEGER DEFAULT 0,
+    performance_test_runs    INTEGER DEFAULT 0,
+    sast_scans               INTEGER DEFAULT 0,
+    dast_scans               INTEGER DEFAULT 0,
+    public_pool_workers      INTEGER DEFAULT 0,
+    ui_performance_test_runs INTEGER DEFAULT 0,
+    tasks_executions         INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS statistic_project_idx
+    ON centry.statistic (project_id);
+
 -- Social users (author profiles)
 CREATE TABLE IF NOT EXISTS centry.social_users (
     id SERIAL PRIMARY KEY,
@@ -68,7 +110,7 @@ CREATE TABLE IF NOT EXISTS centry.secrets_data (
 -- way (#152): THREE Go call sites already query this table and none of them
 -- could ever have worked against a database this file bootstrapped —
 --   internal/api/v2/eliteacore/handler.go:393        (the list endpoint)
---   internal/db/sqlcgen/current_notification_events.sql.go  (HighWater + ListAfter,
+--   internal/db/sqlcgen/notification_events.sql.go  (HighWater + ListAfter,
 --                                                    behind the notification SSE stream)
 -- The list endpoint hid it: it runs the query under `if err == nil` and returns
 -- 200 with an empty array on ANY failure, so a missing table is indistinguishable
@@ -333,8 +375,20 @@ BEGIN
             author_id INTEGER NOT NULL,
             created_at TIMESTAMP NOT NULL DEFAULT now(),
             uuid UUID UNIQUE DEFAULT gen_random_uuid(),
-            meta JSONB DEFAULT ''{}''::jsonb
+            meta JSONB DEFAULT ''{}''::jsonb,
+            shared_owner_id INTEGER,
+            shared_id INTEGER
         )', schema_name);
+
+    -- A published skill has exactly one twin in the public project, keyed by
+    -- (source project, source skill). The partial unique index is what makes a
+    -- concurrent first-publish race lose loudly instead of creating a second
+    -- catalog entry for the same source skill (mirrors pylon's
+    -- uq_skills_shared_owner, legacy/plugins/elitea_core/models/skill.py:39-42).
+    EXECUTE format('
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_shared_owner
+            ON %I.skills (shared_owner_id, shared_id)
+            WHERE shared_owner_id IS NOT NULL', schema_name);
 
     -- Skill versions
     EXECUTE format('
@@ -347,8 +401,13 @@ BEGIN
             created_at TIMESTAMP NOT NULL DEFAULT now(),
             uuid UUID UNIQUE DEFAULT gen_random_uuid(),
             meta JSONB DEFAULT ''{}''::jsonb,
+            status VARCHAR NOT NULL DEFAULT ''draft'',
             CONSTRAINT _skill_version_name_uc UNIQUE (skill_id, name)
         )', schema_name, schema_name);
+
+    EXECUTE format('
+        CREATE INDEX IF NOT EXISTS ix_skill_versions_status
+            ON %I.skill_versions (status)', schema_name);
 
     -- Skill version <-> Tag association
     EXECUTE format('
@@ -731,15 +790,81 @@ JOIN (VALUES
     -- explaining why the page is empty — which is the whole point of the page.
     ('super_admin', 'runtime.airun.serviceproviders'),
     ('super_admin', 'provider_hub.descriptor.register'),
+    -- Issue 255, admin & tenancy parity. `modes.py`, `user_invite.py` and
+    -- `admin_published_agents.py` all declare BARE lists — system/super_admin/
+    -- admin True per the note above — and `user_project_permissions.py`
+    -- declares `{"admin": True, "viewer": False, "editor": False}` in
+    -- administration mode, which leaves super_admin at its default True. So all
+    -- four land on both roles.
+    --
+    -- These grants are not optional decoration: the routes are gated centrally,
+    -- and a permission nobody holds is 403-for-everyone, which is the outcome
+    -- this whole block exists to prevent.
+    ('super_admin', 'modes.users'),
+    ('super_admin', 'configuration.roles.user_project_permissions.view'),
+    ('super_admin', 'configuration.roles.user_project_permissions.edit'),
+    ('super_admin', 'runtime.admin.published_agents'),
     ('admin', 'admin.auth.users'),
     ('admin', 'runtime.plugins'),
     ('admin', 'projects.projects.projects.view'),
     ('admin', 'configuration.roles.permissions.view'),
     ('admin', 'admin.moderation'),
     ('admin', 'runtime.airun.serviceproviders'),
-    ('admin', 'provider_hub.descriptor.register')
+    ('admin', 'provider_hub.descriptor.register'),
+    ('admin', 'modes.users'),
+    ('admin', 'configuration.roles.user_project_permissions.view'),
+    ('admin', 'configuration.roles.user_project_permissions.edit'),
+    ('admin', 'runtime.admin.published_agents'),
+    -- Issue 246, budgets. project_budget.py, project_budgets.py,
+    -- user_budget.py and user_budgets.py declare `{"admin": True,
+    -- "editor": False, "viewer": False}` in administration mode, which leaves
+    -- super_admin at its default True per the note above.
+    ('super_admin', 'models.admin.project_budgets.view'),
+    ('super_admin', 'models.admin.project_budgets.edit'),
+    ('admin', 'models.admin.project_budgets.view'),
+    ('admin', 'models.admin.project_budgets.edit')
 ) AS grant_row(role_name, permission) ON grant_row.role_name = role.name
 WHERE role.mode = 'administration'
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Default-mode grants (issues 246 and 253).
+--
+-- The only ones in this file, and the exception the block above describes
+-- rather than a contradiction of it: `models.project_context.view` IS a
+-- project-scoped permission, declared `{"admin": True, "editor": True,
+-- "viewer": True}` in DEFAULT_MODE by project_budget.py, user_budget.py,
+-- user_budgets.py and usage.py. Granting it to the default-mode roles is what
+-- lets projectPermissions()' central fallback resolve it for a project with no
+-- per-project rows — which is every project on a fresh database. Without it
+-- the project-scoped budget and usage reads are 403 for every user.
+--
+-- It also makes a project member's permission set NON-EMPTY for the first time
+-- on a fresh database, which two things outside the budgets surface react to.
+-- migrations/shared/0062_budgets_quota_statistics.sql documents both, and
+-- internal/infra/legacyrbac/default_mode_grant_postgres_integration_test.go
+-- pins the whole blast radius.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT role.id, 'models.project_context.view'
+FROM auth_core__role AS role
+WHERE role.mode = 'default' AND role.name IN ('admin', 'editor', 'viewer')
+ON CONFLICT (role_id, permission) DO NOTHING;
+
+-- Issue 253: the cost breakdown and the two chat trace reads. Same DEFAULT_MODE
+-- `{"admin": True, "editor": True, "viewer": True}` declaration, transcribed
+-- from analytics_costs.py, message_traces.py and message_trace.py; the same DDL
+-- lands on existing databases through
+-- migrations/shared/0063_trace_and_cost_read_permissions.sql, which carries the
+-- blast-radius note. None of the three strings is read anywhere else in this
+-- service, so the surface they open is exactly those three routes.
+INSERT INTO auth_core__role_permission (role_id, permission)
+SELECT role.id, grant_row.permission
+FROM auth_core__role AS role
+CROSS JOIN (VALUES
+    ('models.monitoring.tracing.view'),
+    ('models.chat.messages.list'),
+    ('models.chat.messages.details')
+) AS grant_row(permission)
+WHERE role.mode = 'default' AND role.name IN ('admin', 'editor', 'viewer')
 ON CONFLICT (role_id, permission) DO NOTHING;
 
 -- Default dev user

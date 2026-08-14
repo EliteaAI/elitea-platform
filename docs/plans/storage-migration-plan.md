@@ -110,7 +110,7 @@ non-zero with no output and would otherwise pass trivially.
 - **Fail closed.** Unknown backend, missing credentials, failed authorization,
   and errored lookups all produce an error, never a permissive fallback.
 - **Do not touch** `internal/infra/storage/content_server.go`,
-  `postgres_content.go`, `postgres_secret_vault.go`, or any `current_*.go` file
+  `postgres_content.go`, `postgres_secret_vault.go`, or any existing Go file
   in `internal/infra/storage/`. Those serve execution input content and
   configuration state, not artifacts.
 - Follow `AGENTS.md`'s other guardrails. Its default of preserving public HTTP
@@ -730,9 +730,14 @@ exactly one caller, `main()`.
   tolerating `ErrNotFound` but not `ErrAccessDenied` or a transport error.
 - Add an `ObjectStore` field to `RouterConfig` and assign it. **Do not assume
   assigning the existing `Storage` field puts the backend on the request path** —
-  it is read only inside `newPrototypeCompatibilityRouter`, and
-  `prototypeCompatibilityRequested` does not include it, so `main.go` never
-  reaches that branch. S11 is what actually mounts the routes.
+  at the time this stage was written, it was read only inside
+  `newProductionRouter` (then `newPrototypeCompatibilityRouter`), reached only
+  when `prototypeCompatibilityRequested(cfg)` held; `main.go` didn't set any
+  triggering field yet, so it never reached that branch. (#243 later deleted
+  that predicate and the separate branch it gated — `NewRouter` now always
+  builds via `newProductionRouter` — but the underlying caution still
+  applies: assigning `ObjectStore` alone doesn't mount routes. S11 is what
+  actually mounts the routes.)
 
 **Acceptance criteria:**
 
@@ -1020,7 +1025,7 @@ resolve to until something registers them, and the test fails with all 13
 unresolved. **This stage must also register a minimal stub route for each of
 the 13 new paths**, so the shape resolves; the *behaviour* is filled in by
 S8/S9. Do this in `internal/api/router.go`, inside
-`newPrototypeCompatibilityRouter`: replace the existing
+`newProductionRouter`: replace the existing
 `r.Route("/artifacts", func(r chi.Router) { ... })` block (currently ~11
 registrations built on `v2artifacts.NewInMemoryHandler()`, around line 670)
 with the 13 new paths from the table above, each pointing at one shared
@@ -1125,7 +1130,7 @@ with the typed error envelope instead of 404.
 **Preconditions:** S5, S6, S7.
 **Read first:** `internal/api/v2/artifacts/handler.go`, `pg_repo.go`,
 `handler_test.go`, and the 13-path stub block S7 added to
-`newPrototypeCompatibilityRouter` in `internal/api/router.go`.
+`newProductionRouter` in `internal/api/router.go`.
 
 Rewrite the bucket half of `internal/api/v2/artifacts/handler.go` against the S6
 repositories and the S1 `ObjectStore`, serving the S7 contract.
@@ -1415,9 +1420,13 @@ ever seems to need one of those, the surface has been reintroduced by mistake.
 `internal/api/oapiserver/conformance_test.go`.
 
 **Extract a single `mountArtifactRoutes(r chi.Router, deps ArtifactDeps)` and
-call it from both `newPrototypeCompatibilityRouter` and the production router.**
-Registering only in production breaks the oapiserver conformance test, which
-walks the prototype router. One shared mount function satisfies both.
+call it from both `newProductionRouter` and `production_router.go`'s
+`NewRouter`.** (#243 later deleted `NewRouter`'s own inline build — it was
+dead code, unreachable in every real deployment — and made it delegate to
+`newProductionRouter` unconditionally, so `mountArtifactRoutes` now has a
+single call site inside `newProductionRouter`.) Registering only in
+production breaks the oapiserver conformance test, which walks the prototype
+router. One shared mount function satisfies both.
 
 - Apply `apimw.Auth` plus `apimw.RequireResolvedPermissionsForProject` to
   **every** route. The current `/api/v2/artifacts/*` routes have authentication
@@ -1674,8 +1683,8 @@ alone.
 **Read first:** `internal/api/v2/artifacts/handler.go` (bucket create/retention
 update, S8) and the object-write path (S9); the S6-created
 `internal/infra/db/repos/artifact_{buckets,objects}.go`;
-`internal/runtimecomposition/current_index_schedule_due_work*.go` and
-`current_index_runtime.go` for the sweeper *shape*; **and
+`internal/runtimecomposition/index_schedule_due_work*.go` and
+`index_runtime.go` for the sweeper *shape*; **and
 `internal/runtimecomposition/composition.go`, specifically the
 `schedulingapp.Registry`/`newPublisherSet` chain around line 985** — this is
 where the pattern files' shape actually gets registered into the running
@@ -1692,7 +1701,7 @@ exercise all four:
    S9 upload path, same package). Neither edit touches
    `internal/runtimecomposition` at all.
 2. **The sweeper `Handler`.** Follow the shape in
-   `current_index_schedule_due_work*.go`/`current_index_runtime.go`: selects
+   `index_schedule_due_work*.go`/`index_runtime.go`: selects
    expired objects in bounded batches via S6's new `ListExpiredObjects`,
    deletes them through `ObjectStore.DeleteBatch`, and removes the metadata
    rows via `DeleteObjectRows` in the same transaction boundary as the delete
@@ -1711,10 +1720,10 @@ exercise all four:
    instead of the router.
 4. **The notification.** A real, wired notification mechanism already exists —
    don't invent a new one and don't just log. `internal/infra/db/repos/
-   current_index_schedule_notification.go`'s `InsertCurrentIndexScheduleNotification`
+   index_schedule_notification.go`'s `InsertCurrentIndexScheduleNotification`
    writes a row into `centry.notifications` (`uuid`, `is_seen`, `project_id`,
    `user_id`, `meta`, `event_type`), which `internal/api/v2/notifications/
-   current_events.go` already streams to the browser over the existing
+   events.go` already streams to the browser over the existing
    `notifications_notify` Socket.IO event — no new transport is needed, only a
    new writer following that file's construction pattern (a new sqlc query, a
    new `event_type` value, e.g. `'artifact_bucket_expiring'`). Emit one insert
@@ -1747,7 +1756,7 @@ exercise all four:
 - If the `user_id` open question above is resolved, a `centry.notifications`
   row with `event_type = 'artifact_bucket_expiring'` is inserted exactly once
   per bucket per expiry cycle, and is visible through the existing
-  `internal/api/v2/notifications/current_events.go` stream — not just that
+  `internal/api/v2/notifications/events.go` stream — not just that
   `MarkBucketNotified` was called, which a no-op stub can also satisfy. If the
   open question is left unresolved for a human owner, this criterion is
   dropped for this landing and the open question is recorded instead of
@@ -1793,7 +1802,7 @@ new sqlc query + `ArtifactBucketsRepository.GetBucketByID`) to resolve it.
 (`currentIndexScheduleDueWork`'s shape), not the simpler self-ticking
 `publisherRunner` pattern `execution_replay_retention.go` also uses in this
 codebase** — both are real, pre-existing patterns; the plan's explicit
-"Follow the shape in `current_index_schedule_due_work*.go`" instruction
+"Follow the shape in `index_schedule_due_work*.go`" instruction
 picks the former. It's registered into the **same** registry/scheduler
 instance the index-scheduling job already uses (a second `schedulingapp.Job`
 argument to the same `schedulingapp.NewRegistry` call), not an independent
@@ -2960,7 +2969,7 @@ Legacy also inserts a `chat_messages_attachment` row (schema
 `c.POSTGRES_TENANT_SCHEMA`, a polymorphic child of `message_items`) so a
 chat message renders its attachments inline. That table is absent from this
 service's current migration baseline
-(`internal/db/schema/current_agent_chat_baseline.sql` has
+(`internal/db/schema/agent_chat_baseline.sql` has
 `chat_conversations`/`chat_message_items`/`chat_messages_text`/
 `chat_messages_context` — no `chat_messages_attachment`) — and unlike
 `centry.project`/`centry.notifications` (externally-owned tables this
@@ -3046,7 +3055,7 @@ namespacing — no Postgres involvement at all beyond what `UploadIcon`/
 **`DownloadIcon` is a standalone function, not a `*Handler` method — the
 auth-group scoping forced this, not style preference.** `coreHandler` (the
 real `eliteacore.Handler` instance `UploadIcon`/`DeleteIcon` are methods on)
-is constructed *inside* `newPrototypeCompatibilityRouter`'s
+is constructed *inside* `newProductionRouter`'s
 `r.Group(func(r chi.Router) { r.Use(apimw.Auth(...)); ... })` closure — a
 Go closure-scoped local variable, not reachable outside it. The route this
 stage adds must sit *outside* that closure, alongside the two sibling

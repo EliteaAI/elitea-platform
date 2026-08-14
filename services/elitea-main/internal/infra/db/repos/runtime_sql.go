@@ -40,6 +40,8 @@ type pgxExecutor struct {
 	queryer pgxQueryer
 }
 
+var _ currentAgentTerminalWriter = pgxExecutor{}
+
 func (e pgxExecutor) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
 	return e.queryer.Exec(ctx, sql, arguments...)
 }
@@ -113,6 +115,13 @@ func (e pgxExecutor) FinalizeCurrentAgentAuthorizationPause(
 	arg sqlcgen.FinalizeCurrentAgentAuthorizationPauseParams,
 ) (int64, error) {
 	return sqlcgen.New(e.queryer).FinalizeCurrentAgentAuthorizationPause(ctx, arg)
+}
+
+func (e pgxExecutor) GetCurrentAgentInvokedSkills(
+	ctx context.Context,
+	messageGroupID int64,
+) (string, error) {
+	return sqlcgen.New(e.queryer).GetCurrentAgentInvokedSkills(ctx, messageGroupID)
 }
 
 func (e pgxExecutor) ResolveCurrentApplicationTurn(

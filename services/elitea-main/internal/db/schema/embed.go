@@ -15,3 +15,11 @@ var AuthCoreBaselineSQLCProjection string
 //
 //go:embed centry_projects_baseline.sql
 var CentryProjectsBaselineSQLCProjection string
+
+// ArtifactStorageBaselineSQLCProjection is the matching projection for the
+// elitea_storage schema. The project statistics endpoint measures a project's
+// stored bytes from it, and a test that stubbed the sum instead would not
+// notice a join that counted soft-deleted buckets.
+//
+//go:embed artifact_storage_baseline.sql
+var ArtifactStorageBaselineSQLCProjection string

@@ -53,7 +53,10 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  ErrorResponse,
+  InternalMcpPatStatus,
   ListToolkitInstancesParams,
+  McpToolCallRequest,
   N400Response,
   N401Response,
   N403Response,
@@ -1179,6 +1182,716 @@ export function useCreateToolkit<
   const queryOptions = getCreateToolkitQueryOptions(
     projectId,
     toolkitCreateRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listRegisteredMcpServersResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type listRegisteredMcpServersResponse403 = {
+  data: ErrorResponse;
+  status: 403;
+};
+
+export type listRegisteredMcpServersResponse501 = {
+  data: ErrorResponse;
+  status: 501;
+};
+
+export type listRegisteredMcpServersResponseError = (
+  | listRegisteredMcpServersResponse401
+  | listRegisteredMcpServersResponse403
+  | listRegisteredMcpServersResponse501
+) & {
+  headers: Headers;
+};
+
+export type listRegisteredMcpServersResponse =
+  listRegisteredMcpServersResponseError;
+
+export const getListRegisteredMcpServersUrl = (projectId: string) => {
+  return `/elitea_core/tools_list/default/${projectId}`;
+};
+
+/**
+ * Always answers 501 with a stated reason. This endpoint does NOT list
+ * this platform's own tools — that is the MCP server at
+ * /app/{project_id}/mcp. It reports the MCP servers an Elitea MCP CLIENT
+ * has registered INTO the project, which the reference implementation
+ * keeps in an in-process dict populated over socket.io and keyed by the
+ * client's socket id. There is no table behind that dict, and this
+ * service runs no socket.io server, so there is nothing to list.
+ *
+ * An empty array is deliberately not returned: it would assert that no
+ * client is connected, which this service has no way to know. See
+ * internal/api/v2/mcp/registry.go for the full reason string, which is
+ * also what the response body carries.
+ * @summary List MCP servers registered into the project by an MCP client
+ */
+export const listRegisteredMcpServers = async (
+  projectId: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listRegisteredMcpServersResponse> => {
+  return eliteaFetch<listRegisteredMcpServersResponse>(
+    getListRegisteredMcpServersUrl(projectId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListRegisteredMcpServersQueryKey = (projectId: string) => {
+  return [`/elitea_core/tools_list/default/${projectId}`] as const;
+};
+
+export const getListRegisteredMcpServersQueryOptions = <
+  TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListRegisteredMcpServersQueryKey(projectId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listRegisteredMcpServers>>
+  > = ({ signal }) =>
+    listRegisteredMcpServers(projectId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListRegisteredMcpServersQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listRegisteredMcpServers>>
+>;
+export type ListRegisteredMcpServersQueryError = N401Response | ErrorResponse;
+
+export function useListRegisteredMcpServers<
+  TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+          TError,
+          Awaited<ReturnType<typeof listRegisteredMcpServers>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListRegisteredMcpServers<
+  TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+          TError,
+          Awaited<ReturnType<typeof listRegisteredMcpServers>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListRegisteredMcpServers<
+  TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List MCP servers registered into the project by an MCP client
+ */
+
+export function useListRegisteredMcpServers<
+  TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listRegisteredMcpServers>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListRegisteredMcpServersQueryOptions(
+    projectId,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type callRegisteredMcpServerToolResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type callRegisteredMcpServerToolResponse403 = {
+  data: ErrorResponse;
+  status: 403;
+};
+
+export type callRegisteredMcpServerToolResponse501 = {
+  data: ErrorResponse;
+  status: 501;
+};
+
+export type callRegisteredMcpServerToolResponseError = (
+  | callRegisteredMcpServerToolResponse401
+  | callRegisteredMcpServerToolResponse403
+  | callRegisteredMcpServerToolResponse501
+) & {
+  headers: Headers;
+};
+
+export type callRegisteredMcpServerToolResponse =
+  callRegisteredMcpServerToolResponseError;
+
+export const getCallRegisteredMcpServerToolUrl = (projectId: string) => {
+  return `/elitea_core/tools_call/default/${projectId}`;
+};
+
+/**
+ * Always answers 501 with a stated reason — the same reason
+ * /elitea_core/tools_list gives, because it is the same absent registry.
+ * Dispatch in the reference implementation is a blocking socket.io call
+ * back down the websocket the client registered on.
+ *
+ * The request body is documented because it is what the reference
+ * accepts, but it is not read: a 400 for a malformed body would imply
+ * that a well-formed one would be dispatched somewhere, and none is.
+ * @summary Invoke a tool on an MCP server registered into the project
+ */
+export const callRegisteredMcpServerTool = async (
+  projectId: string,
+  mcpToolCallRequest?: McpToolCallRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<callRegisteredMcpServerToolResponse> => {
+  return eliteaFetch<callRegisteredMcpServerToolResponse>(
+    getCallRegisteredMcpServerToolUrl(projectId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(mcpToolCallRequest),
+    },
+  );
+};
+
+export const getCallRegisteredMcpServerToolQueryKey = (
+  projectId: string,
+  mcpToolCallRequest?: McpToolCallRequest,
+) => {
+  return [
+    "POST",
+    `/elitea_core/tools_call/default/${projectId}`,
+    mcpToolCallRequest,
+  ] as const;
+};
+
+export const getCallRegisteredMcpServerToolQueryOptions = <
+  TData = Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  mcpToolCallRequest?: McpToolCallRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getCallRegisteredMcpServerToolQueryKey(projectId, mcpToolCallRequest);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof callRegisteredMcpServerTool>>
+  > = ({ signal }) =>
+    callRegisteredMcpServerTool(projectId, mcpToolCallRequest, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type CallRegisteredMcpServerToolQueryResult = NonNullable<
+  Awaited<ReturnType<typeof callRegisteredMcpServerTool>>
+>;
+export type CallRegisteredMcpServerToolQueryError =
+  N401Response | ErrorResponse;
+
+export function useCallRegisteredMcpServerTool<
+  TData = Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  mcpToolCallRequest: undefined | McpToolCallRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+          TError,
+          Awaited<ReturnType<typeof callRegisteredMcpServerTool>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCallRegisteredMcpServerTool<
+  TData = Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  mcpToolCallRequest?: McpToolCallRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+          TError,
+          Awaited<ReturnType<typeof callRegisteredMcpServerTool>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCallRegisteredMcpServerTool<
+  TData = Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  mcpToolCallRequest?: McpToolCallRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Invoke a tool on an MCP server registered into the project
+ */
+
+export function useCallRegisteredMcpServerTool<
+  TData = Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+  TError = N401Response | ErrorResponse,
+>(
+  projectId: string,
+  mcpToolCallRequest?: McpToolCallRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof callRegisteredMcpServerTool>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getCallRegisteredMcpServerToolQueryOptions(
+    projectId,
+    mcpToolCallRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getInternalMcpPatStatusResponse200 = {
+  data: InternalMcpPatStatus;
+  status: 200;
+};
+
+export type getInternalMcpPatStatusResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type getInternalMcpPatStatusResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getInternalMcpPatStatusResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getInternalMcpPatStatusResponse503 = {
+  data: ErrorResponse;
+  status: 503;
+};
+
+export type getInternalMcpPatStatusResponseSuccess =
+  getInternalMcpPatStatusResponse200 & {
+    headers: Headers;
+  };
+export type getInternalMcpPatStatusResponseError = (
+  | getInternalMcpPatStatusResponse400
+  | getInternalMcpPatStatusResponse401
+  | getInternalMcpPatStatusResponse403
+  | getInternalMcpPatStatusResponse503
+) & {
+  headers: Headers;
+};
+
+export type getInternalMcpPatStatusResponse =
+  getInternalMcpPatStatusResponseSuccess | getInternalMcpPatStatusResponseError;
+
+export const getGetInternalMcpPatStatusUrl = (
+  projectId: string,
+  toolkitType: string,
+) => {
+  return `/elitea_core/internal_mcp_pat_status/prompt_lib/${projectId}/${toolkitType}`;
+};
+
+/**
+ * NOTE(W2): internal/api/v2/mcp/patstatus.go:74 (InternalMCPPATStatus).
+ *
+ * An INTERNAL Elitea MCP toolkit points back at this platform's own MCP
+ * endpoint and authenticates with the executing user's personal access
+ * token, which is injected at dispatch time and never stored. Without a
+ * live token the toolkit fails inside an agent run, as an authentication
+ * error against a URL the user never typed; this endpoint lets the
+ * toolkit UI say so first.
+ *
+ * A type is internal when it begins `mcp_` AND the project holds at least
+ * one toolkit of that type whose settings URL points at this platform's
+ * own MCP endpoint — `/app/<project id>/mcp/...`, with the project id
+ * either left as the `{project_id}` marker or already resolved to an
+ * integer. Both forms count: the marker is written only by the reference
+ * implementation's prebuilt-config machinery, which has no counterpart
+ * here, so matching it alone would leave this endpoint unable to report
+ * anything but VALID.
+ *
+ * `state` is reported only about the CALLER's own tokens and is one of
+ * VALID (at least one unexpired token; a token with no expiry never
+ * expires), EXPIRED (tokens exist, all past their expiry) or MISSING (no
+ * tokens). A non-internal type answers `{"internal": false, "state":
+ * "VALID"}` — there is no token requirement to report on. The token value
+ * is never returned and is never read.
+ * @summary Report the caller's personal-access-token state for an internal MCP toolkit
+ */
+export const getInternalMcpPatStatus = async (
+  projectId: string,
+  toolkitType: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getInternalMcpPatStatusResponse> => {
+  return eliteaFetch<getInternalMcpPatStatusResponse>(
+    getGetInternalMcpPatStatusUrl(projectId, toolkitType),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetInternalMcpPatStatusQueryKey = (
+  projectId: string,
+  toolkitType: string,
+) => {
+  return [
+    `/elitea_core/internal_mcp_pat_status/prompt_lib/${projectId}/${toolkitType}`,
+  ] as const;
+};
+
+export const getGetInternalMcpPatStatusQueryOptions = <
+  TData = Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+  TError = N400Response | N401Response | N403Response | ErrorResponse,
+>(
+  projectId: string,
+  toolkitType: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getGetInternalMcpPatStatusQueryKey(projectId, toolkitType);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getInternalMcpPatStatus>>
+  > = ({ signal }) =>
+    getInternalMcpPatStatus(projectId, toolkitType, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      toolkitType !== null &&
+      toolkitType !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetInternalMcpPatStatusQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getInternalMcpPatStatus>>
+>;
+export type GetInternalMcpPatStatusQueryError =
+  N400Response | N401Response | N403Response | ErrorResponse;
+
+export function useGetInternalMcpPatStatus<
+  TData = Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+  TError = N400Response | N401Response | N403Response | ErrorResponse,
+>(
+  projectId: string,
+  toolkitType: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+          TError,
+          Awaited<ReturnType<typeof getInternalMcpPatStatus>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetInternalMcpPatStatus<
+  TData = Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+  TError = N400Response | N401Response | N403Response | ErrorResponse,
+>(
+  projectId: string,
+  toolkitType: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+          TError,
+          Awaited<ReturnType<typeof getInternalMcpPatStatus>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetInternalMcpPatStatus<
+  TData = Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+  TError = N400Response | N401Response | N403Response | ErrorResponse,
+>(
+  projectId: string,
+  toolkitType: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Report the caller's personal-access-token state for an internal MCP toolkit
+ */
+
+export function useGetInternalMcpPatStatus<
+  TData = Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+  TError = N400Response | N401Response | N403Response | ErrorResponse,
+>(
+  projectId: string,
+  toolkitType: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getInternalMcpPatStatus>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetInternalMcpPatStatusQueryOptions(
+    projectId,
+    toolkitType,
     options,
   );
 

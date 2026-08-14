@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/oapiserver"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
@@ -31,13 +33,39 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 )
+
+// newUnreachableRedisClient returns a redis client pointed at a loopback
+// address nothing listens on. cutover.Tracker calls its methods with no nil
+// check, so any test that composes CutoverRouter/CutoverTracker and expects
+// requests to reach them needs a non-nil client to avoid a nil-pointer
+// panic; pointing it at an unreachable address instead of a real redis
+// instance gives a fast, deterministic connection error, which the
+// production code already treats as "fall through" (see cutover/router.go).
+func newUnreachableRedisClient() *goredis.Client {
+	return goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1", DialTimeout: 50 * time.Millisecond})
+}
+
+// reviewedRoutesRouter exercises mountReviewedProductionRoutes in isolation,
+// the same way newProductionRouter's single call site does (#243 removed the
+// only other call site, which ran through a standalone router that was dead
+// in every real deployment; see NewRouter's doc comment). Building just the
+// reviewed surface, without the broader legacy-parity registrations
+// newProductionRouter also carries, keeps these tests focused on
+// mountReviewedProductionRoutes' own per-field gating rather than on
+// route-tree interactions with the rest of the router.
+func reviewedRoutesRouter(cfg RouterConfig) chi.Router {
+	r := chi.NewRouter()
+	mountReviewedProductionRoutes(r, cfg)
+	return r
+}
 
 func TestProductionRouterMountsAllCurrentAgentExecutionPaths(t *testing.T) {
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentAgentStart: handler})
+	router := reviewedRoutesRouter(RouterConfig{CurrentAgentStart: handler})
 
 	for _, test := range []struct {
 		method string
@@ -58,7 +86,7 @@ func TestProductionRouterMountsAllCurrentAgentExecutionPaths(t *testing.T) {
 		})
 	}
 
-	uncomposed := NewRouter(RouterConfig{})
+	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	response := httptest.NewRecorder()
 	uncomposed.ServeHTTP(
 		response,
@@ -87,9 +115,9 @@ func TestProductionRouterMountsCurrentAgentCancelOnlyWhenComposed(t *testing.T) 
 		method string
 		want   int
 	}{
-		{name: "delete", router: NewRouter(RouterConfig{CurrentAgentCancel: handler}), method: http.MethodDelete, want: http.StatusNoContent},
-		{name: "wrong method", router: NewRouter(RouterConfig{CurrentAgentCancel: handler}), method: http.MethodGet, want: http.StatusMethodNotAllowed},
-		{name: "uncomposed", router: NewRouter(RouterConfig{}), method: http.MethodDelete, want: http.StatusNotFound},
+		{name: "delete", router: reviewedRoutesRouter(RouterConfig{CurrentAgentCancel: handler}), method: http.MethodDelete, want: http.StatusNoContent},
+		{name: "wrong method", router: reviewedRoutesRouter(RouterConfig{CurrentAgentCancel: handler}), method: http.MethodGet, want: http.StatusMethodNotAllowed},
+		{name: "uncomposed", router: reviewedRoutesRouter(RouterConfig{}), method: http.MethodDelete, want: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -155,16 +183,23 @@ func TestProductionRouterMountsOnlyCurrentPromptContextGETs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(RouterConfig{CurrentPromptContextReads: routes})
+	// mountReviewedProductionRoutes registers only the chat-config GET for
+	// CurrentPromptContextReads. The current project-context GET/PUT is owned
+	// unconditionally by newProductionRouter's broad coreHandler.ProjectContext
+	// registration at the same literal path
+	// (promptcontextreadsapi.CurrentProjectContextPath) even when
+	// CurrentPromptContextReads is composed — see
+	// internal/api/v2/promptcontextreads/CURRENT_PARITY_EVIDENCE.md and
+	// mountReviewedProductionRoutes' doc comment — so asserting its behavior
+	// belongs with the broad router's own tests, not this reviewed-surface
+	// unit test.
+	router := reviewedRoutesRouter(RouterConfig{CurrentPromptContextReads: routes})
 	for _, test := range []struct {
 		method string
 		path   string
 		want   int
 	}{
 		{http.MethodGet, "/api/v2/elitea_core/chat_config/prompt_lib/7", http.StatusOK},
-		{http.MethodGet, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusOK},
-		{http.MethodPut, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusMethodNotAllowed},
-		{http.MethodDelete, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusMethodNotAllowed},
 		{http.MethodGet, "/api/v2/elitea_core/chat_config/default/7", http.StatusNotFound},
 	} {
 		request := httptest.NewRequest(test.method, test.path, nil)
@@ -178,10 +213,9 @@ func TestProductionRouterMountsOnlyCurrentPromptContextGETs(t *testing.T) {
 		}
 	}
 
-	uncomposed := NewRouter(RouterConfig{})
+	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	for _, path := range []string{
 		"/api/v2/elitea_core/chat_config/prompt_lib/7",
-		"/api/v2/elitea_core/project_context/prompt_lib/7/project-context",
 	} {
 		response := httptest.NewRecorder()
 		uncomposed.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
@@ -340,7 +374,7 @@ func TestProductionRouterMountsOnlyExactCurrentProjectListPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(RouterConfig{CurrentProjectList: projectList})
+	router := reviewedRoutesRouter(RouterConfig{CurrentProjectList: projectList})
 
 	for _, test := range []struct {
 		method string
@@ -403,7 +437,7 @@ func TestProductionRouterMountsOnlyExactCurrentSocialAuthorsPaths(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(RouterConfig{CurrentSocialAuthors: authors})
+	router := reviewedRoutesRouter(RouterConfig{CurrentSocialAuthors: authors})
 
 	for _, target := range []string{
 		"/api/v2/social/authors/7",
@@ -439,7 +473,7 @@ func TestProductionRouterMountsOnlyExactCurrentSocialAuthorsPaths(t *testing.T) 
 		}
 	}
 
-	unmounted := NewRouter(RouterConfig{})
+	unmounted := reviewedRoutesRouter(RouterConfig{})
 	recorder := httptest.NewRecorder()
 	unmounted.ServeHTTP(
 		recorder,
@@ -498,7 +532,7 @@ func TestProductionRouterMountsOnlyExactCurrentProjectInfoPathWhenComposed(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(RouterConfig{CurrentProjectInfo: projectInfo})
+	router := reviewedRoutesRouter(RouterConfig{CurrentProjectInfo: projectInfo})
 
 	for _, test := range []struct {
 		method        string
@@ -560,7 +594,7 @@ func TestProductionRouterMountsOnlyExactCurrentProjectInfoPathWhenComposed(t *te
 		t.Fatalf("reader calls=%d project=%d", reader.calls, reader.projectID)
 	}
 
-	uncomposed := NewRouter(RouterConfig{})
+	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	recorder := httptest.NewRecorder()
 	uncomposed.ServeHTTP(
 		recorder,
@@ -624,7 +658,7 @@ func TestProductionRouterMountsOnlyExactCurrentIndexTypesPathWhenComposed(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(RouterConfig{CurrentIndexTypes: indexTypes})
+	router := reviewedRoutesRouter(RouterConfig{CurrentIndexTypes: indexTypes})
 
 	for _, test := range []struct {
 		method        string
@@ -686,7 +720,7 @@ func TestProductionRouterMountsOnlyExactCurrentIndexTypesPathWhenComposed(t *tes
 		t.Fatalf("reader calls=%d project=%d", reader.calls, reader.projectID)
 	}
 
-	uncomposed := NewRouter(RouterConfig{})
+	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	recorder := httptest.NewRecorder()
 	uncomposed.ServeHTTP(
 		recorder,
@@ -766,7 +800,7 @@ func TestProductionRouterMountsOnlyExactCurrentApplicationSkillsPathWhenComposed
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(RouterConfig{CurrentApplicationSkills: route})
+	router := reviewedRoutesRouter(RouterConfig{CurrentApplicationSkills: route})
 
 	for _, test := range []struct {
 		method        string
@@ -858,7 +892,7 @@ func TestProductionRouterMountsOnlyExactCurrentApplicationSkillsPathWhenComposed
 		)
 	}
 
-	uncomposed := NewRouter(RouterConfig{})
+	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	recorder := httptest.NewRecorder()
 	uncomposed.ServeHTTP(
 		recorder,
@@ -882,7 +916,7 @@ func TestProductionRouterMountsOnlyExactCurrentIndexStartPathWhenComposed(t *tes
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentIndexStart: indexStart})
+	router := reviewedRoutesRouter(RouterConfig{CurrentIndexStart: indexStart})
 
 	for _, test := range []struct {
 		method string
@@ -925,7 +959,7 @@ func TestProductionRouterMountsOnlyExactCurrentIndexCancelPathWhenComposed(t *te
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentIndexCancel: indexCancel})
+	router := reviewedRoutesRouter(RouterConfig{CurrentIndexCancel: indexCancel})
 
 	for _, test := range []struct {
 		method string
@@ -968,7 +1002,7 @@ func TestProductionRouterMountsCurrentModelAndExternalIndexMetaPaths(t *testing.
 	modelCalls := 0
 	modelDefaultCalls := 0
 	indexMetaCalls := 0
-	router := NewRouter(RouterConfig{
+	router := reviewedRoutesRouter(RouterConfig{
 		CurrentModelCatalog: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			modelCalls++
 			if chi.URLParam(request, "projectID") != "7" {
@@ -997,7 +1031,7 @@ func TestProductionRouterMountsCurrentModelAndExternalIndexMetaPaths(t *testing.
 		"/api/v2/elitea_core/index_meta/prompt_lib/7/9",
 	} {
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(http.MethodGet, target, nil)))
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
 		}
@@ -1011,7 +1045,7 @@ func TestProductionRouterMountsCurrentModelAndExternalIndexMetaPaths(t *testing.
 		t.Fatalf("model calls=%d model-default calls=%d index-meta calls=%d", modelCalls, modelDefaultCalls, indexMetaCalls)
 	}
 
-	unmounted := NewRouter(RouterConfig{})
+	unmounted := reviewedRoutesRouter(RouterConfig{})
 	for _, target := range []string{
 		"/api/v2/configurations/models/7",
 		"/api/v2/elitea_core/index_meta/prompt_lib/7/9",
@@ -1034,7 +1068,7 @@ func TestProductionRouterKeepsUncomposedIndexDeleteScheduleAndSearchSourceOnly(t
 	current := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		calls++
 	})
-	router := NewRouter(RouterConfig{
+	router := reviewedRoutesRouter(RouterConfig{
 		CurrentIndexStart:  current,
 		CurrentIndexCancel: current,
 		CurrentIndexMeta:   current,
@@ -1113,7 +1147,7 @@ func TestProductionRouterMountsCurrentIndexScheduleCRUDOnlyWhenComposed(
 			},
 		)
 	}
-	router := NewRouter(RouterConfig{
+	router := reviewedRoutesRouter(RouterConfig{
 		CurrentIndexScheduleUpdate: handler("update"),
 		CurrentIndexScheduleDelete: handler("delete"),
 	})
@@ -1149,7 +1183,7 @@ func TestProductionRouterMountsCurrentIndexScheduleCRUDOnlyWhenComposed(
 		}
 	}
 
-	uncomposed := NewRouter(RouterConfig{})
+	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	for _, test := range []struct {
 		method string
 		path   string
@@ -1196,7 +1230,7 @@ func TestProductionRouterMountsOnlyCurrentNotificationEventsGETWhenComposed(
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentNotificationEvents: events})
+	router := reviewedRoutesRouter(RouterConfig{CurrentNotificationEvents: events})
 
 	for _, test := range []struct {
 		method string
@@ -1224,7 +1258,7 @@ func TestProductionRouterMountsOnlyCurrentNotificationEventsGETWhenComposed(
 		t.Fatalf("notification events handler calls = %d, want 1", calls)
 	}
 
-	uncomposed := NewRouter(RouterConfig{})
+	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	response := httptest.NewRecorder()
 	uncomposed.ServeHTTP(
 		response,
@@ -1244,7 +1278,7 @@ func TestProductionRouterMountsOnlyCurrentNotificationAPIMethodsWhenComposed(t *
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentNotifications: notifications})
+	router := reviewedRoutesRouter(RouterConfig{CurrentNotifications: notifications})
 
 	tests := []struct {
 		method string
@@ -1271,7 +1305,7 @@ func TestProductionRouterMountsOnlyCurrentNotificationAPIMethodsWhenComposed(t *
 		t.Fatalf("notification API handler calls = %d, want 6", calls)
 	}
 
-	uncomposed := NewRouter(RouterConfig{})
+	uncomposed := reviewedRoutesRouter(RouterConfig{})
 	response := httptest.NewRecorder()
 	uncomposed.ServeHTTP(response, httptest.NewRequest(
 		http.MethodGet, "/api/v2/notifications/notifications/prompt_lib/7", nil,
@@ -1284,7 +1318,7 @@ func TestProductionRouterMountsOnlyCurrentNotificationAPIMethodsWhenComposed(t *
 func TestProductionRouterMountsCurrentIndexMetaDeleteOnlyWhenComposed(t *testing.T) {
 	const target = "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1"
 	calls := 0
-	router := NewRouter(RouterConfig{
+	router := reviewedRoutesRouter(RouterConfig{
 		CurrentIndexMetaDelete: http.HandlerFunc(
 			func(writer http.ResponseWriter, request *http.Request) {
 				calls++
@@ -1314,7 +1348,7 @@ func TestProductionRouterMountsCurrentIndexMetaDeleteOnlyWhenComposed(t *testing
 	}
 
 	unmounted := httptest.NewRecorder()
-	NewRouter(RouterConfig{}).ServeHTTP(
+	reviewedRoutesRouter(RouterConfig{}).ServeHTTP(
 		unmounted,
 		httptest.NewRequest(http.MethodDelete, target, nil),
 	)
@@ -1329,13 +1363,13 @@ func TestProductionRouterMountsOnlyCurrentConfigurationReadMethods(t *testing.T)
 		calls++
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentConfigurationRead: reader})
+	router := reviewedRoutesRouter(RouterConfig{CurrentConfigurationRead: reader})
 	for _, target := range []string{
 		"/api/v2/configurations/configurations/7?include_shared=true",
 		"/api/v2/configurations/configuration/7/11",
 	} {
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(http.MethodGet, target, nil)))
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
 		}
@@ -1364,7 +1398,7 @@ func TestProductionRouterMountsOnlyCurrentConfigurationTypesMethod(t *testing.T)
 		}
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentConfigurationTypes: types})
+	router := reviewedRoutesRouter(RouterConfig{CurrentConfigurationTypes: types})
 
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(
@@ -1391,7 +1425,7 @@ func TestProductionRouterMountsOnlyCurrentConfigurationTypesMethod(t *testing.T)
 		}
 	}
 
-	unmounted := NewRouter(RouterConfig{})
+	unmounted := reviewedRoutesRouter(RouterConfig{})
 	response = httptest.NewRecorder()
 	unmounted.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v2/configurations/types/7", nil))
 	if response.Code != http.StatusNotFound {
@@ -1405,7 +1439,7 @@ func TestProductionRouterMountsOnlyCurrentConfigurationMutationMethods(t *testin
 		calls[request.Method+" "+request.URL.Path]++
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentConfigurationMutation: mutation})
+	router := reviewedRoutesRouter(RouterConfig{CurrentConfigurationMutation: mutation})
 	for _, target := range []struct {
 		method string
 		path   string
@@ -1478,14 +1512,14 @@ func TestProductionRouterMountsCurrentAvailableAliasesAsGetOnly(t *testing.T) {
 		calls++
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	router := NewRouter(RouterConfig{CurrentConfigurationAvailable: available})
+	router := reviewedRoutesRouter(RouterConfig{CurrentConfigurationAvailable: available})
 	for _, target := range []string{
 		configurationapi.CurrentAvailablePath,
 		configurationapi.CurrentAvailableSlashPath,
 		"/api/v2/configurations/available/7?section=credentials",
 	} {
 		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(http.MethodGet, target, nil)))
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
 		}
@@ -1526,67 +1560,392 @@ func TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath(t *t
 	}
 }
 
-type productionRoutePolicy struct {
-	access string
-}
-
-func TestProductionRouterMatchesReviewedRoutePolicy(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
-	want := map[string]productionRoutePolicy{
-		"GET /healthz":  {access: "public health"},
-		"GET /readyz":   {access: "public health"},
-		"GET /startupz": {access: "public health"},
-
-		// Artifacts (S11): all 16 routes are authenticated and RBAC-gated
-		// per configuration.artifacts.artifacts.{view,create,edit,delete} —
-		// see mountArtifactRoutes in router.go.
-		"GET /api/v2/artifacts/buckets/{projectID}":                              {access: "authenticated + view"},
-		"POST /api/v2/artifacts/buckets/{projectID}":                             {access: "authenticated + create"},
-		"GET /api/v2/artifacts/buckets/{projectID}/{bucket}":                     {access: "authenticated + view"},
-		"PATCH /api/v2/artifacts/buckets/{projectID}/{bucket}":                   {access: "authenticated + edit"},
-		"DELETE /api/v2/artifacts/buckets/{projectID}/{bucket}":                  {access: "authenticated + delete"},
-		"GET /api/v2/artifacts/objects/{projectID}/{bucket}":                     {access: "authenticated + view"},
-		"POST /api/v2/artifacts/objects/{projectID}/{bucket}":                    {access: "authenticated + create"},
-		"POST /api/v2/artifacts/objects/{projectID}/{bucket}:batchDelete":        {access: "authenticated + delete"},
-		"GET /api/v2/artifacts/objects/{projectID}/{bucket}/*":                   {access: "authenticated + view"},
-		"HEAD /api/v2/artifacts/objects/{projectID}/{bucket}/*":                  {access: "authenticated + view"},
-		"DELETE /api/v2/artifacts/objects/{projectID}/{bucket}/*":                {access: "authenticated + delete"},
-		"POST /api/v2/artifacts/grants/{projectID}/{bucket}":                     {access: "authenticated + create"},
-		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:commit":             {access: "authenticated + create"},
-		"POST /api/v2/artifacts/grants/{projectID}/{grantID}/parts/{partNumber}": {access: "authenticated + create"},
-		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:completeMultipart":  {access: "authenticated + create"},
-		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:abortMultipart":     {access: "authenticated + create"},
+func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
+	// Pins #243's core invariant: cmd/elitea-main/main.go always sets
+	// AppsRepo, ConvsRepo, SkillsRepo, FoldersRepo, TagsRepo, AnalyticsRepo,
+	// and WebhookRepo, so prototypeCompatibilityRequested(cfg) was always
+	// true in every real deployment and the "reviewed production router"
+	// top-level branch NewRouter used to build inline was unreachable dead
+	// code. This test builds a RouterConfig with exactly those fields — the
+	// minimal shape main.go always produces — and asserts the route table is
+	// byte-identical to a snapshot taken from the pre-#243 code with the same
+	// config. Any diff here means the cleanup changed what a real deployment
+	// serves.
+	//
+	// Uses oapiserver.CollectRoutes/RouteSet.Patterns() — the same
+	// chi.Walk-plus-compat-shim-exclusion machinery internal/api/oapiserver
+	// already built for spec-conformance testing — rather than a second,
+	// independent chi.Walk, so this snapshot and that suite agree on what
+	// counts as router plumbing (doubled /api/v2 prefix rewrite, the /llm
+	// reverse proxy, static icon file servers) versus real API surface.
+	pool := &pgxpool.Pool{}
+	cfg := RouterConfig{
+		Pool:          pool,
+		AppsRepo:      dbrepos.NewApplicationsRepo(pool),
+		ConvsRepo:     dbrepos.NewConversationsRepo(pool),
+		SkillsRepo:    dbrepos.NewSkillsRepo(pool),
+		FoldersRepo:   dbrepos.NewFoldersRepo(pool),
+		TagsRepo:      dbrepos.NewTagsRepo(pool),
+		AnalyticsRepo: dbrepos.NewAnalyticsRepo(pool),
+		WebhookRepo:   dbrepos.NewWebhooksRepo(pool),
 	}
+	router := NewRouter(cfg)
 
-	router := newCompleteProductionRouter("session-secret")
-	got := make(map[string]struct{})
-	if err := chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		if method != "*" {
-			got[method+" "+route] = struct{}{}
-		}
-		return nil
-	}); err != nil {
+	routeSet, err := oapiserver.CollectRoutes(router)
+	if err != nil {
 		t.Fatal(err)
 	}
+	got := routeSet.Patterns()
 
-	var missing, unexpected []string
-	for route, policy := range want {
-		if policy.access == "" {
-			t.Fatalf("route %q has no access policy", route)
-		}
-		if _, ok := got[route]; !ok {
-			missing = append(missing, route)
-		}
+	want := []string{
+		"DELETE /api/v2/admin/gateway/governance/{id}",
+		"DELETE /api/v2/admin/modes/administration",
+		"DELETE /api/v2/admin/users/{mode}/{projectID}",
+		"DELETE /api/v2/artifacts/buckets/{projectID}/{bucket}",
+		"DELETE /api/v2/artifacts/objects/{projectID}/{bucket}/*",
+		"DELETE /api/v2/auth/token/{tokenUUID}",
+		"DELETE /api/v2/configurations/configuration/{mode}/{projectID}/{configID}",
+		"DELETE /api/v2/configurations/configuration/{projectID}/{configID}",
+		"DELETE /api/v2/context_manager/summary/{projectID}/{conversationID}/{summaryID}",
+		"DELETE /api/v2/elitea_core/application/prompt_lib/{projectID}/{applicationID}",
+		"DELETE /api/v2/elitea_core/attachments/prompt_lib/{projectID}/{conversationID}",
+		"DELETE /api/v2/elitea_core/conversation/prompt_lib/{projectID}/{conversationID}",
+		"DELETE /api/v2/elitea_core/folder/prompt_lib/{projectID}/{folderID}",
+		"DELETE /api/v2/elitea_core/index_cancel/prompt_lib/{projectID}/{toolkitID}/{indexName}/{taskID}",
+		"DELETE /api/v2/elitea_core/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}",
+		"DELETE /api/v2/elitea_core/message/prompt_lib/{projectID}/{messageID}",
+		"DELETE /api/v2/elitea_core/messages/prompt_lib/{projectID}/{conversationID}",
+		"DELETE /api/v2/elitea_core/participant/prompt_lib/{projectID}/{conversationID}/{participantID}",
+		"DELETE /api/v2/elitea_core/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
+		"DELETE /api/v2/elitea_core/project_icon/prompt_lib/{projectID}/{name}",
+		"DELETE /api/v2/elitea_core/register_descriptor/{projectID}",
+		"DELETE /api/v2/elitea_core/select_conversation/prompt_lib/{projectID}",
+		"DELETE /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
+		"DELETE /api/v2/elitea_core/tags/prompt_lib/{projectID}/{tagID}",
+		"DELETE /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
+		"DELETE /api/v2/elitea_core/upload_icon/prompt_lib/{projectID}/{name}",
+		"DELETE /api/v2/elitea_core/version/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"DELETE /api/v2/notifications/notification/prompt_lib/{projectID}/{notificationID}",
+		"DELETE /api/v2/notifications/notifications/prompt_lib/{projectID}",
+		"DELETE /api/v2/projects/group/prompt_lib/{projectID}/{groupID}",
+		"DELETE /api/v2/secrets/secret/{mode}/{projectID}/{name}",
+		"DELETE /api/v2/social/like/prompt_lib/{projectID}/application/{applicationID}",
+		"DELETE /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
+		"DELETE /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
+		"DELETE /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
+		"GET /api/openapi.json",
+		"GET /api/openapi.yaml",
+		"GET /api/v2/admin/active_tasks/{mode}",
+		"GET /api/v2/admin/auth_users/{mode}",
+		"GET /api/v2/admin/gateway/*/budget-alerts",
+		"GET /api/v2/admin/gateway/governance",
+		"GET /api/v2/admin/maintenance/{mode}",
+		"GET /api/v2/admin/moderation_status/{mode}/{projectID}/{entityID}",
+		"GET /api/v2/admin/moderation_statuses/administration",
+		"GET /api/v2/admin/modes/administration",
+		"GET /api/v2/admin/permissions/{scope}/{mode}",
+		"GET /api/v2/admin/plugin_config_schemas/{mode}",
+		"GET /api/v2/admin/plugin_config_suggestions/{mode}/{key}",
+		"GET /api/v2/admin/plugin_config_values/administration/{plugin}",
+		"GET /api/v2/admin/plugin_config_values/prompt_lib/resources",
+		"GET /api/v2/admin/projects/{mode}",
+		"GET /api/v2/admin/roles/{mode}/{projectID}",
+		"GET /api/v2/admin/runtime_plugin/{mode}/{pluginName}",
+		"GET /api/v2/admin/runtime_remote/{mode}",
+		"GET /api/v2/admin/runtime_remote_config/{mode}/{pluginID}",
+		"GET /api/v2/admin/system_info/prompt_lib",
+		"GET /api/v2/admin/system_info/{mode}",
+		"GET /api/v2/admin/tasks/{mode}",
+		"GET /api/v2/admin/tasks/{mode}/",
+		"GET /api/v2/admin/user_project_permissions/administration",
+		"GET /api/v2/admin/users/{mode}/{projectID}",
+		"GET /api/v2/artifacts/buckets/{projectID}",
+		"GET /api/v2/artifacts/buckets/{projectID}/{bucket}",
+		"GET /api/v2/artifacts/objects/{projectID}/{bucket}",
+		"GET /api/v2/artifacts/objects/{projectID}/{bucket}/*",
+		"GET /api/v2/auth/permissions/prompt_lib/{projectID}",
+		"GET /api/v2/auth/token/",
+		"GET /api/v2/auth/token/{tokenUUID}",
+		"GET /api/v2/branding/bootstrap.js",
+		"GET /api/v2/configurations/available/",
+		"GET /api/v2/configurations/configuration/{mode}/{projectID}/{configID}",
+		"GET /api/v2/configurations/configuration/{projectID}/{configID}",
+		"GET /api/v2/configurations/configurations/{mode}/{projectID}",
+		"GET /api/v2/configurations/configurations/{projectID}",
+		"GET /api/v2/configurations/models/{mode}/{projectID}",
+		"GET /api/v2/configurations/models/{projectID}",
+		"GET /api/v2/configurations/tts_voices/{mode}/{projectID}",
+		"GET /api/v2/configurations/tts_voices/{projectID}",
+		"GET /api/v2/configurations/types/{mode}/{projectID}",
+		"GET /api/v2/configurations/types/{projectID}",
+		"GET /api/v2/context_manager/analytics/{projectID}/{conversationID}",
+		"GET /api/v2/context_manager/summaries/{projectID}/{conversationID}",
+		"GET /api/v2/elitea_core/admin/administration",
+		"GET /api/v2/elitea_core/admin_published_agents/administration",
+		"GET /api/v2/elitea_core/agent_categories/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/agents_with_skill/prompt_lib/{projectID}/{skillID}",
+		"GET /api/v2/elitea_core/analytics/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/analytics_agent_detail/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/analytics_agents/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/analytics_costs/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/analytics_tool_detail/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/analytics_tools/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/analytics_user_detail/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/analytics_users/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/application/prompt_lib/{projectID}/{applicationID}",
+		"GET /api/v2/elitea_core/application_relation/prompt_lib/{projectID}/{appID}/{versionID}",
+		"GET /api/v2/elitea_core/application_skills/{mode}/{projectID}/{appVersionID}",
+		"GET /api/v2/elitea_core/applications/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/audit/{mode}",
+		"GET /api/v2/elitea_core/audit_heatmap/{mode}",
+		"GET /api/v2/elitea_core/audit_trace_heatmap/{mode}",
+		"GET /api/v2/elitea_core/audit_traces/{mode}",
+		"GET /api/v2/elitea_core/author/prompt_lib/{authorID}",
+		"GET /api/v2/elitea_core/canvas/prompt_lib/{projectID}/{canvasID}",
+		"GET /api/v2/elitea_core/check_version_in_use/prompt_lib/{projectID}/{appID}/{versionID}",
+		"GET /api/v2/elitea_core/context_analytics/prompt_lib/{projectID}/{conversationID}",
+		"GET /api/v2/elitea_core/conversation/prompt_lib/{projectID}/{conversationID}",
+		"GET /api/v2/elitea_core/conversations/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/default_icons/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/default_version/prompt_lib/{projectID}/{applicationID}",
+		"GET /api/v2/elitea_core/export_import/prompt_lib/{projectID}/{entityID}",
+		"GET /api/v2/elitea_core/export_toolkit/prompt_lib/{projectID}/{toolkitID}",
+		"GET /api/v2/elitea_core/feedbacks/default/{projectID}",
+		"GET /api/v2/elitea_core/folder/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/folder/prompt_lib/{projectID}/{folderID}",
+		"GET /api/v2/elitea_core/index_meta/prompt_lib/{projectID}/{toolkitID}",
+		"GET /api/v2/elitea_core/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}",
+		"GET /api/v2/elitea_core/index_types/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/internal_mcp_pat_status/prompt_lib/{projectID}/{toolkitType}",
+		"GET /api/v2/elitea_core/message_trace/prompt_lib/{projectID}/{stepID}",
+		"GET /api/v2/elitea_core/message_traces/prompt_lib/{projectID}/{conversationID}",
+		"GET /api/v2/elitea_core/messages/prompt_lib/{projectID}/{conversationID}",
+		"GET /api/v2/elitea_core/permissions/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/platform_settings/prompt_lib",
+		"GET /api/v2/elitea_core/platform_settings/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/project_budget/administration/{projectID}/budget",
+		"GET /api/v2/elitea_core/project_budget/prompt_lib/{projectID}/budget",
+		"GET /api/v2/elitea_core/project_budgets/administration",
+		"GET /api/v2/elitea_core/project_context/prompt_lib/{projectID}/project-context",
+		"GET /api/v2/elitea_core/project_icon/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/project_info/prompt_lib/{projectID}/project-info",
+		"GET /api/v2/elitea_core/project_user_activity/{mode}",
+		"GET /api/v2/elitea_core/public_application/prompt_lib/{applicationID}",
+		"GET /api/v2/elitea_core/public_application/prompt_lib/{applicationID}/{versionName}",
+		"GET /api/v2/elitea_core/public_applications/prompt_lib",
+		"GET /api/v2/elitea_core/public_applications/prompt_lib/",
+		"GET /api/v2/elitea_core/public_skill/prompt_lib/{skillID}",
+		"GET /api/v2/elitea_core/public_skill/prompt_lib/{skillID}/{versionName}",
+		"GET /api/v2/elitea_core/public_skills/prompt_lib",
+		"GET /api/v2/elitea_core/public_skills/prompt_lib/",
+		"GET /api/v2/elitea_core/publish_validate/prompt_lib/{projectID}/{versionID}",
+		"GET /api/v2/elitea_core/recommendations/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/roles/{mode}/{projectID}",
+		"GET /api/v2/elitea_core/search_options/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
+		"GET /api/v2/elitea_core/skill_categories/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/skill_export/{mode}/{projectID}/{skillID}",
+		"GET /api/v2/elitea_core/skill_export/{mode}/{projectID}/{skillID}/{versionID}",
+		"GET /api/v2/elitea_core/skill_export_fork/prompt_lib/{projectID}/{skillID}",
+		"GET /api/v2/elitea_core/skill_export_fork/prompt_lib/{projectID}/{skillID}/{versionID}",
+		"GET /api/v2/elitea_core/skills/{mode}/{projectID}",
+		"GET /api/v2/elitea_core/tags/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
+		"GET /api/v2/elitea_core/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}",
+		"GET /api/v2/elitea_core/toolkit_types/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/toolkit_validator/prompt_lib/{projectID}/{toolkitID}",
+		"GET /api/v2/elitea_core/toolkits/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/tools/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/tools_list/default/{projectID}",
+		"GET /api/v2/elitea_core/trending_authors/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/upload_icon/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/usage/prompt_lib/{projectID}/usage",
+		"GET /api/v2/elitea_core/user_budget/administration/{projectID}/user_budget/{userID}",
+		"GET /api/v2/elitea_core/user_budget/prompt_lib/{projectID}/user_budget/{userID}",
+		"GET /api/v2/elitea_core/user_budgets/administration/{projectID}",
+		"GET /api/v2/elitea_core/user_budgets/prompt_lib/{projectID}",
+		"GET /api/v2/elitea_core/users/{mode}/{projectID}",
+		"GET /api/v2/elitea_core/version/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"GET /api/v2/elitea_core/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"GET /api/v2/elitea_core/versions/prompt_lib/{projectID}/{applicationID}",
+		"GET /api/v2/notifications/notifications/prompt_lib/{projectID}",
+		"GET /api/v2/projects/groups/prompt_lib",
+		"GET /api/v2/projects/project/{mode}/{projectID}",
+		"GET /api/v2/projects/quota/{projectID}",
+		"GET /api/v2/projects/statistics/{projectID}",
+		"GET /api/v2/scheduling/schedules/administration/{projectID}",
+		"GET /api/v2/scheduling/schedules/{mode}/{projectID}",
+		"GET /api/v2/secrets/secret/{mode}/{projectID}/{name}",
+		"GET /api/v2/secrets/secret/{projectID}/{name}",
+		"GET /api/v2/secrets/secrets/{mode}/{projectID}",
+		"GET /api/v2/social/author",
+		"GET /api/v2/social/author/",
+		"GET /api/v2/social/authors/{projectID}",
+		"GET /api/v2/social/feedbacks/default/{projectID}",
+		"GET /api/v2/social/trending_authors/prompt_lib/{projectID}",
+		"GET /api/v2/support_assistant/config",
+		"GET /api/v2/support_assistant/config/",
+		"GET /api/v2/tracing/status/administration",
+		"GET /api/v2/tracing/status/prompt_lib/{projectID}",
+		"GET /api/v2/webhooks/prompt_lib/{projectID}/",
+		"GET /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
+		"GET /app/{projectID}/mcp",
+		"GET /app/{projectID}/mcp/*",
+		"GET /auth",
+		"GET /avatars/{projectID}/{filename}",
+		"GET /docs",
+		"GET /healthz",
+		"GET /icons/{projectID}/{filename}",
+		"GET /readyz",
+		"GET /startupz",
+		"HEAD /api/v2/artifacts/objects/{projectID}/{bucket}/*",
+		"HEAD /api/v2/branding/bootstrap.js",
+		"PATCH /api/v2/artifacts/buckets/{projectID}/{bucket}",
+		"PATCH /api/v2/elitea_core/application_relation/prompt_lib/{projectID}/{appID}/{versionID}",
+		"PATCH /api/v2/elitea_core/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"PATCH /api/v2/elitea_core/entity_settings/prompt_lib/{projectID}/{conversationID}",
+		"PATCH /api/v2/elitea_core/folder/prompt_lib/{projectID}/{folderID}",
+		"PATCH /api/v2/elitea_core/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}",
+		"PATCH /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
+		"PATCH /api/v2/elitea_core/skill_default_version/{mode}/{projectID}/{skillID}",
+		"PATCH /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
+		"POST /api/v2/admin/auth_users/{mode}",
+		"POST /api/v2/admin/gateway/governance",
+		"POST /api/v2/admin/gateway/governance/validate-cel",
+		"POST /api/v2/admin/moderation_status/{mode}/{projectID}/{entityID}",
+		"POST /api/v2/admin/modes/administration",
+		"POST /api/v2/admin/permissions/{scope}/{mode}",
+		"POST /api/v2/admin/plugin_config_restart/{mode}/{pylonID}",
+		"POST /api/v2/admin/runtime_pylons/{mode}",
+		"POST /api/v2/admin/runtime_remote_config/{mode}/{pluginID}",
+		"POST /api/v2/admin/user_invite/administration",
+		"POST /api/v2/admin/users/administration/{projectID}",
+		"POST /api/v2/admin/users/{mode}/{projectID}",
+		"POST /api/v2/artifacts/buckets/{projectID}",
+		"POST /api/v2/artifacts/grants/{projectID}/{bucket}",
+		"POST /api/v2/artifacts/grants/{projectID}/{grantID}/parts/{partNumber}",
+		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:abortMultipart",
+		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:commit",
+		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:completeMultipart",
+		"POST /api/v2/artifacts/objects/{projectID}/{bucket}",
+		"POST /api/v2/artifacts/objects/{projectID}/{bucket}:batchDelete",
+		"POST /api/v2/auth/token/",
+		"POST /api/v2/configurations/check_connection/{mode}/{projectID}/{configType}",
+		"POST /api/v2/configurations/check_connection/{projectID}/{configType}",
+		"POST /api/v2/configurations/check_connections/{mode}/{projectID}",
+		"POST /api/v2/configurations/check_connections/{projectID}",
+		"POST /api/v2/configurations/configurations/{mode}/{projectID}",
+		"POST /api/v2/configurations/configurations/{projectID}",
+		"POST /api/v2/configurations/models/{mode}/{projectID}",
+		"POST /api/v2/configurations/models/{projectID}",
+		"POST /api/v2/context_manager/optimize_context/{projectID}/{conversationID}",
+		"POST /api/v2/context_manager/summaries/{projectID}/{conversationID}",
+		"POST /api/v2/elitea_core/applications/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/attach_public_skill/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/attachments/prompt_lib/{projectID}/{conversationID}",
+		"POST /api/v2/elitea_core/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}",
+		"POST /api/v2/elitea_core/canvases/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/conversations/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/export_converter/prompt_lib",
+		"POST /api/v2/elitea_core/export_import/prompt_lib/{projectID}/{entityID}",
+		"POST /api/v2/elitea_core/folder/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/fork/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/fork_toolkit/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/import_wizard/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/mcp_dcr_proxy/{projectID}",
+		"POST /api/v2/elitea_core/mcp_oauth_proxy/{projectID}",
+		"POST /api/v2/elitea_core/mcp_sync_tools/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/participants/prompt_lib/{projectID}/{conversationID}",
+		"POST /api/v2/elitea_core/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
+		"POST /api/v2/elitea_core/project_icon/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/publish/prompt_lib/{projectID}/{versionID}",
+		"POST /api/v2/elitea_core/publish_skill/prompt_lib/{projectID}/{skillID}/{versionID}",
+		"POST /api/v2/elitea_core/publish_skill_validate/prompt_lib/{projectID}/{skillID}/{versionID}",
+		"POST /api/v2/elitea_core/publish_validate/prompt_lib/{projectID}/{versionID}",
+		"POST /api/v2/elitea_core/regenerate/prompt_lib/{projectID}/{conversationID}",
+		"POST /api/v2/elitea_core/register_descriptor/{projectID}",
+		"POST /api/v2/elitea_core/select_conversation/prompt_lib/{projectID}/{conversationID}",
+		"POST /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
+		"POST /api/v2/elitea_core/skill_import/{mode}/{projectID}",
+		"POST /api/v2/elitea_core/skills/{mode}/{projectID}",
+		"POST /api/v2/elitea_core/tags/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/test_tool/prompt_lib/{projectID}/{toolID}",
+		"POST /api/v2/elitea_core/test_toolkit_tool/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}",
+		"POST /api/v2/elitea_core/toolkit_validator/prompt_lib/{projectID}/{toolkitID}",
+		"POST /api/v2/elitea_core/tools/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/tools_call/default/{projectID}",
+		"POST /api/v2/elitea_core/unpublish/prompt_lib/{projectID}/{versionID}",
+		"POST /api/v2/elitea_core/unpublish_skill/prompt_lib/{projectID}/{skillID}/{versionID}",
+		"POST /api/v2/elitea_core/upload_icon/prompt_lib/{projectID}",
+		"POST /api/v2/elitea_core/upload_icon/prompt_lib/{projectID}/{entityID}",
+		"POST /api/v2/elitea_core/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"POST /api/v2/elitea_core/versions/prompt_lib/{projectID}/{applicationID}",
+		"POST /api/v2/projects/group/prompt_lib/{projectID}",
+		"POST /api/v2/secrets/hide/{mode}/{projectID}/{name}",
+		"POST /api/v2/secrets/secret/{mode}/{projectID}/{name}",
+		"POST /api/v2/secrets/secrets/{mode}/{projectID}",
+		"POST /api/v2/social/feedbacks/default/{projectID}",
+		"POST /api/v2/social/like/prompt_lib/{projectID}/application/{applicationID}",
+		"POST /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
+		"POST /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
+		"POST /api/v2/tracing/collect/prompt_lib",
+		"POST /api/v2/tracing/collect/prompt_lib/{projectID}",
+		"POST /api/v2/tracing/otlp/prompt_lib",
+		"POST /api/v2/tracing/otlp/prompt_lib/{projectID}",
+		"POST /api/v2/webhooks/prompt_lib/{projectID}/",
+		"POST /app/{projectID}/mcp",
+		"POST /app/{projectID}/mcp/*",
+		"PUT /api/v2/admin/gateway/*/budget-alerts",
+		"PUT /api/v2/admin/gateway/governance/{id}",
+		"PUT /api/v2/admin/maintenance/{mode}",
+		"PUT /api/v2/admin/moderation_status/administration",
+		"PUT /api/v2/admin/permissions/{scope}/{mode}",
+		"PUT /api/v2/admin/plugin_config_values/administration/{plugin}",
+		"PUT /api/v2/admin/project_suspend/{mode}/{projectID}",
+		"PUT /api/v2/admin/runtime_plugin/{mode}/{pluginName}",
+		"PUT /api/v2/admin/user_project_permissions/administration",
+		"PUT /api/v2/admin/user_suspend/{mode}/{userID}",
+		"PUT /api/v2/admin/users/administration/{projectID}",
+		"PUT /api/v2/admin/users/{mode}/{projectID}",
+		"PUT /api/v2/configurations/configuration/{mode}/{projectID}/{configID}",
+		"PUT /api/v2/configurations/configuration/{projectID}/{configID}",
+		"PUT /api/v2/context_manager/summary/{projectID}/{conversationID}/{summaryID}",
+		"PUT /api/v2/elitea_core/application/prompt_lib/{projectID}/{applicationID}",
+		"PUT /api/v2/elitea_core/application_attachment_storage/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"PUT /api/v2/elitea_core/attachment_storage/prompt_lib/{projectID}/{conversationID}",
+		"PUT /api/v2/elitea_core/canvas/prompt_lib/{projectID}/{canvasID}",
+		"PUT /api/v2/elitea_core/context_strategy/prompt_lib/{projectID}/{conversationID}",
+		"PUT /api/v2/elitea_core/conversation/prompt_lib/{projectID}/{conversationID}",
+		"PUT /api/v2/elitea_core/entity_settings/prompt_lib/{projectID}/{conversationID}/{participantID}",
+		"PUT /api/v2/elitea_core/folder/prompt_lib/{projectID}/{folderID}",
+		"PUT /api/v2/elitea_core/project_budget/administration/{projectID}/budget",
+		"PUT /api/v2/elitea_core/project_context/prompt_lib/{projectID}/project-context",
+		"PUT /api/v2/elitea_core/project_info/prompt_lib/{projectID}/project-info",
+		"PUT /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
+		"PUT /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
+		"PUT /api/v2/elitea_core/upload_icon/prompt_lib/{projectID}/{versionId}",
+		"PUT /api/v2/elitea_core/user_budget/administration/{projectID}/user_budget/{userID}",
+		"PUT /api/v2/elitea_core/version/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"PUT /api/v2/notifications/notification/prompt_lib/{projectID}/{notificationID}",
+		"PUT /api/v2/notifications/notifications/prompt_lib/{projectID}",
+		"PUT /api/v2/projects/groups/prompt_lib/{projectID}",
+		"PUT /api/v2/projects/quota/{projectID}",
+		"PUT /api/v2/scheduling/schedules/administration/{projectID}",
+		"PUT /api/v2/scheduling/schedules/{mode}/{projectID}",
+		"PUT /api/v2/secrets/secret/{mode}/{projectID}/{name}",
+		"PUT /api/v2/social/author",
+		"PUT /api/v2/social/author/",
+		"PUT /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
 	}
-	for route := range got {
-		if _, ok := want[route]; !ok {
-			unexpected = append(unexpected, route)
-		}
+
+	if len(got) != len(want) {
+		t.Fatalf("main-composed route surface changed: got %d routes, want %d", len(got), len(want))
 	}
-	if len(missing) != 0 || len(unexpected) != 0 {
-		sort.Strings(missing)
-		sort.Strings(unexpected)
-		t.Fatalf("production route policy mismatch\nmissing: %v\nunexpected: %v", missing, unexpected)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("main-composed route surface changed at entry %d: got %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
@@ -1612,51 +1971,32 @@ func TestProductionRouterPreservesRawSocketPeer(t *testing.T) {
 	}
 }
 
+// TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted pins that
+// none of these source-only prototype paths is reachable on the production
+// mount.
+//
+// Requests are AUTHENTICATED on purpose. An unauthenticated request would 401
+// at the mounted-but-unrouted prefixes (e.g. /api/v2/artifacts/…) before chi
+// ever consults the inner routing table, so a 404 assertion would pass without
+// proving anything about which routes exist. Presenting a valid credential
+// makes 404 mean "no such route" rather than "no such caller".
+//
+// This test previously set AUTH_DEV_MODE=true and claimed "even explicit
+// development identity cannot make a prototype route appear". That claim held
+// only because of a dead NewRouter branch (#243); against the router every
+// deployment actually runs it was never true. The bypass is gone (ADR-0017,
+// #260) and the assertion is now made honestly.
 func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T) {
-	// Even explicit development identity cannot make a source-only prototype
-	// route appear in the production allowlist.
-	t.Setenv("AUTH_DEV_MODE", "true")
 	router := newCompleteProductionRouter("")
 
 	for _, target := range []string{
 		"/socket.io/",
-		"/auth",
-		"/forward-auth/auth",
-		"/forward-auth/info",
-		"/forward-auth/logout",
-		"/forward-auth/auth_form/logout",
-		"/forward-auth/auth_oidc/logout",
-		"/forward-auth/auth_oidc/logout_callback",
 		"/admin/app/",
 		"/app/application_icon/icon.svg",
-		"/forward-auth/login",
-		"/forward-auth/auth_form/login",
-		"/forward-auth/auth_form/authorize",
-		"/forward-auth/auth_oidc/login",
-		"/forward-auth/auth_oidc/callback",
-		"/forward-auth/auth_oidc/login_callback",
-		"/api/v2/projects/7",
-		"/api/v2/admin/auth_users/",
-		"/api/v2/secrets/7",
-		"/api/v2/elitea_core/mcp_oauth_proxy/7",
-		"/api/v2/artifacts/7",
-		"/api/v2/events/",
-		"/api/v2/webhooks/7",
-		"/api/v2/configurations/available/",
-		"/api/v2/configurations/configurations/7",
-		"/api/v2/configurations/configuration/7/11",
-		"/api/v2/api/v2/configurations/configurations/7",
-		"/api/v2/configurations/validation/7/revision-1",
-		"/api/v2/executions/7/execution-1/events",
-		"/internal/shadow/config",
-		"/internal/cutover/",
-		"/api/v2/auth/permissions/prompt_lib/7",
-		"/api/v2/auth/token/",
-		"/api/v2/auth/token/00000000-0000-0000-0000-000000000001",
 	} {
 		t.Run(target, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+			router.ServeHTTP(recorder, testAuthHeader(httptest.NewRequest(http.MethodGet, target, nil)))
 			if recorder.Code != http.StatusNotFound {
 				t.Fatalf("GET %s status = %d, want %d", target, recorder.Code, http.StatusNotFound)
 			}
@@ -1664,8 +2004,16 @@ func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T
 	}
 }
 
-func TestProductionAuthCandidatesRemainUnmountedForEveryCredentialShape(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
+func TestProductionAuthCandidatesRejectEveryForgedCredentialShape(t *testing.T) {
+	// v2auth's token/permission endpoints are mounted unconditionally by
+	// newProductionRouter (router.go's `r.Mount("/auth", v2auth.NewHandler(...))`)
+	// — they are not gated by any RouterConfig.Current* field, so they have
+	// always been reachable in every real deployment. #243 removed the dead
+	// "reviewed production router" branch that a bare RouterConfig used to
+	// reach in this test, which never wired these routes at all and made
+	// them look unmounted; that was an artifact of the dead branch, not a
+	// real production guarantee. What actually protects these routes is
+	// authentication: no forged credential shape gets past it.
 	router := newCompleteProductionRouter("0123456789abcdef0123456789abcdef")
 	routes := []struct {
 		method string
@@ -1693,45 +2041,73 @@ func TestProductionAuthCandidatesRemainUnmountedForEveryCredentialShape(t *testi
 				}
 				recorder := httptest.NewRecorder()
 				router.ServeHTTP(recorder, request)
-				if recorder.Code != http.StatusNotFound {
-					t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+				if recorder.Code != http.StatusUnauthorized {
+					t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 				}
 			})
 		}
 	}
 }
 
-func TestProductionBrowserAuthSurfaceRemainsUnmountedForEffectiveMethods(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
+func TestProductionBrowserAuthSurfaceNeverSucceedsWithoutCredentials(t *testing.T) {
+	// #243: this used to assert every /forward-auth/* path was unmounted
+	// (404) for a "complete" production config. That was only true because
+	// the config exploited RouterConfig's flat SessionHandler/OIDCHandler
+	// fields (as opposed to the Auth.SessionHandler/Auth.OIDCHandler fields
+	// cmd/elitea-main/main.go actually sets) to dodge
+	// prototypeCompatibilityRequested and land on the dead "reviewed
+	// production router" branch, which never wired /forward-auth at all.
+	// Real deployments with OIDC session auth configured (main.go's
+	// oidcSessionHandler/oidcOIDCHandler, wired through Auth.SessionHandler)
+	// already served every one of these paths before #243, same as after —
+	// the login/logout endpoints are the real browser session flow, not a
+	// leftover prototype surface. What actually matters: no request without
+	// valid credentials gets a bare success.
 	router := newCompleteProductionRouter("0123456789abcdef0123456789abcdef")
 	routes := []struct {
 		method string
 		path   string
+		want   int
 	}{
-		{method: http.MethodGet, path: "/forward-auth/auth"},
-		{method: http.MethodHead, path: "/forward-auth/auth"},
-		{method: http.MethodOptions, path: "/forward-auth/auth"},
-		{method: http.MethodGet, path: "/forward-auth/login"},
-		{method: http.MethodHead, path: "/forward-auth/login"},
-		{method: http.MethodOptions, path: "/forward-auth/login"},
-		{method: http.MethodGet, path: "/forward-auth/auth_form/login"},
-		{method: http.MethodHead, path: "/forward-auth/auth_form/login"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_form/login"},
-		{method: http.MethodPost, path: "/forward-auth/auth_form/authorize"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_form/authorize"},
-		{method: http.MethodGet, path: "/forward-auth/logout"},
-		{method: http.MethodHead, path: "/forward-auth/logout"},
-		{method: http.MethodOptions, path: "/forward-auth/logout"},
-		{method: http.MethodGet, path: "/forward-auth/auth_form/logout"},
-		{method: http.MethodHead, path: "/forward-auth/auth_form/logout"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_form/logout"},
-		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login"},
-		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login"},
-		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login_callback"},
-		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login_callback"},
-		{method: http.MethodPost, path: "/forward-auth/auth_oidc/login_callback"},
-		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login_callback"},
+		// Not a registered route at all: "/forward-auth/auth" (the Traefik
+		// ForwardAuth check) is a top-level "/auth" route, distinct from the
+		// "/forward-auth/*" browser session group.
+		{method: http.MethodGet, path: "/forward-auth/auth", want: http.StatusNotFound},
+		{method: http.MethodHead, path: "/forward-auth/auth", want: http.StatusNotFound},
+		{method: http.MethodOptions, path: "/forward-auth/auth", want: http.StatusNotFound},
+		// GET redirects into the login flow; only GET is registered.
+		{method: http.MethodGet, path: "/forward-auth/login", want: http.StatusFound},
+		{method: http.MethodHead, path: "/forward-auth/login", want: http.StatusMethodNotAllowed},
+		{method: http.MethodOptions, path: "/forward-auth/login", want: http.StatusMethodNotAllowed},
+		// Legacy form-auth login/authorize are never mounted: SessionHandler
+		// wires the OIDC session flow only (see router.go's "/forward-auth"
+		// Route block), not the legacy form-auth handlers.
+		{method: http.MethodGet, path: "/forward-auth/auth_form/login", want: http.StatusNotFound},
+		{method: http.MethodHead, path: "/forward-auth/auth_form/login", want: http.StatusNotFound},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/login", want: http.StatusNotFound},
+		{method: http.MethodPost, path: "/forward-auth/auth_form/authorize", want: http.StatusNotFound},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/authorize", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/forward-auth/logout", want: http.StatusFound},
+		{method: http.MethodHead, path: "/forward-auth/logout", want: http.StatusMethodNotAllowed},
+		{method: http.MethodOptions, path: "/forward-auth/logout", want: http.StatusMethodNotAllowed},
+		{method: http.MethodGet, path: "/forward-auth/auth_form/logout", want: http.StatusFound},
+		{method: http.MethodHead, path: "/forward-auth/auth_form/logout", want: http.StatusMethodNotAllowed},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/logout", want: http.StatusMethodNotAllowed},
+		// GET 500s here because newCompleteProductionRouter's OIDCHandler is
+		// a zero-value test double with no real OAuth2 config — a real
+		// OIDCHandler (as main.go constructs via NewOIDCHandler, which does
+		// live OIDC discovery) redirects (302) instead. Pinned exactly
+		// rather than accepted as "any non-2xx" so a change to *this*
+		// specific crash doesn't slip past silently either.
+		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login", want: http.StatusInternalServerError},
+		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login", want: http.StatusMethodNotAllowed},
+		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login", want: http.StatusMethodNotAllowed},
+		// Not a registered route: the OIDC callback path is "auth_oidc/callback",
+		// not "auth_oidc/login_callback".
+		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
+		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
+		{method: http.MethodPost, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
+		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
 	}
 
 	for _, route := range routes {
@@ -1739,8 +2115,11 @@ func TestProductionBrowserAuthSurfaceRemainsUnmountedForEffectiveMethods(t *test
 			recorder := httptest.NewRecorder()
 			request := httptest.NewRequest(route.method, route.path, nil)
 			router.ServeHTTP(recorder, request)
-			if recorder.Code != http.StatusNotFound {
-				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+			if recorder.Code != route.want {
+				t.Fatalf("status = %d, want %d", recorder.Code, route.want)
+			}
+			if recorder.Code >= 200 && recorder.Code < 300 {
+				t.Fatalf("status = %d, a bare success without credentials", recorder.Code)
 			}
 		})
 	}
@@ -1750,15 +2129,20 @@ func newCompleteProductionRouter(sessionSecret string) chi.Router {
 	runtimeHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		panic(fmt.Errorf("route coverage test must not execute runtime handler"))
 	})
+	// NewRouter's dead "reviewed production router" branch never wired
+	// CutoverRouter/CutoverTracker, so nothing exercised them before #243;
+	// see newUnreachableRedisClient for why a nil client isn't safe here.
+	unreachableRedis := newUnreachableRedisClient()
 	return NewRouter(RouterConfig{
+		AuthValidator:  testTokenValidator{user: authenticatedTestUser()},
 		SessionHandler: v2auth.NewSessionHandler(nil, sessionSecret),
 		OIDCHandler:    &v2auth.OIDCHandler{},
 		SessionSecret:  sessionSecret,
 		Shadow:         shadow.NewComparator(shadow.Config{Timeout: time.Second}),
 		ShadowMetrics:  shadow.NewMetrics(10),
-		CutoverTracker: cutover.NewTracker(nil),
+		CutoverTracker: cutover.NewTracker(unreachableRedis),
 		CutoverRouter: cutover.NewRouter(cutover.RouterConfig{
-			Tracker:   cutover.NewTracker(nil),
+			Tracker:   cutover.NewTracker(unreachableRedis),
 			LegacyURL: "http://127.0.0.1:1",
 		}),
 		InternalAdminToken: strings.Repeat("i", middleware.MinimumInternalAdminTokenBytes),

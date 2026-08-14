@@ -1,0 +1,43 @@
+# OTEL collector for the local/dev compose stacks (issue #250).
+#
+# Scope boundary from the issue: no Grafana/Tempo/backend-storage deployment —
+# a collector with debug/file exporters is enough to prove the ingest path
+# end-to-end; a real trace sink is a per-environment deploy decision, made by
+# swapping this file (or the ConfigMap it becomes in deploy/helm) for one with
+# an `otlp`/`otlphttp` exporter pointed at that sink.
+#
+# Receives OTLP/HTTP (and OTLP/gRPC) from:
+#   - elitea-main's own spans (libs/go/observability, OTEL_EXPORTER_OTLP_ENDPOINT)
+#   - elitea-scheduler's own spans (same)
+#   - elitea-main's tracing ingest routes (internal/api/v2/tracing), which
+#     proxy browser/worker-originated collect/otlp payloads here
+#
+# Verify with (podman, not docker, on dev machines):
+#   podman compose logs otel-collector | grep -A5 'Span #'
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  # debug only — the file exporter needs its target file to already exist
+  # (it does not create it, verified against otel/opentelemetry-collector-
+  # contrib:0.114.0: "open /path: no such file or directory" on every path
+  # tried, distroless image with no shell to pre-create one from). debug
+  # alone satisfies the issue's scope boundary ("collector with debug/file
+  # exporter is enough" — either one, not both) without that fragility.
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

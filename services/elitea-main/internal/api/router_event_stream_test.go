@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	goredis "github.com/redis/go-redis/v9"
 )
 
 // routePatterns walks every route the router registers, including mounted
@@ -33,12 +32,12 @@ func hasRoute(patterns []string, method, prefix string) bool {
 	return false
 }
 
-// The prototype-compatibility router is the one EVERY deployment gets:
-// NewRouter returns it whenever prototypeCompatibilityRequested(cfg) holds, and
-// main.go always populates several of those fields. Both routes below were
-// unreachable there — the project stream because its two-arm gate had no arm
-// wired, the notification stream because only production_router.go mounted it —
-// so both answered 404 everywhere while their handlers, clients and tests all
+// newProductionRouter (what NewRouter always builds; see production_router.go's
+// NewRouter doc comment, #243) is the one EVERY deployment gets. Both routes
+// below were unreachable there — the project stream because its two-arm
+// gate had no arm wired, the notification stream because only
+// production_router.go's now-deleted dead branch mounted it — so both
+// answered 404 everywhere while their handlers, clients and tests all
 // existed (#152).
 //
 // Asserted structurally (chi.Walk) rather than by driving a request: the defect
@@ -52,12 +51,10 @@ func TestPrototypeRouterRegistersTheSSEStreamsWhenTheirSourcesAreWired(t *testin
 		notificationStream = "/api/v2/notifications/events/prompt_lib/{projectID}"
 	)
 
-	// LLMProxy is one of prototypeCompatibilityRequested's triggers, and the
-	// cheapest one to satisfy — it forces the same router main.go builds.
 	prototypeTrigger := http.NotFoundHandler()
 	// Never dialled: the route registration is what is under test, and go-redis
 	// connects lazily.
-	redisClient := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
+	redisClient := newUnreachableRedisClient()
 	t.Cleanup(func() { _ = redisClient.Close() })
 	notificationEvents := http.NotFoundHandler()
 

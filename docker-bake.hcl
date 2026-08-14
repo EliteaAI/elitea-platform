@@ -58,13 +58,23 @@ target "elitea-web" {
 }
 
 
+# NOTE (issue #244): services/elitea-worker-python has a Containerfile but no
+# bake target here on purpose. The worker plane it belongs to (worker_core /
+# worker_client / indexer_worker / provider_worker) is marked `pending` in the
+# workspace repos.yaml — the runtime transport contract and the Go/Python
+# split aren't settled, so baking/publishing an image now would ship something
+# the runtime work will still reshape. Add a target + publish.yml matrix entry
+# once that plane's status moves off `pending`.
+
 group "pylon" {
   targets = ["pylon-indexer"]
 }
 
 target "elitea-scheduler" {
-  context    = "./services/elitea-scheduler"
-  dockerfile = "Containerfile"
+  # Repo root, not ./services/elitea-scheduler: the Containerfile COPYs
+  # libs/go/observability (issue #250's local replace target) from there.
+  context    = "."
+  dockerfile = "services/elitea-scheduler/Containerfile"
   tags       = ["${REGISTRY}/elitea-scheduler:${TAG}"]
   cache-from = ["type=gha,scope=elitea-scheduler"]
   cache-to   = ["type=gha,mode=max,scope=elitea-scheduler"]

@@ -19,6 +19,10 @@ spec:
       labels:
         {{- include "elitea-llm-gateway.selectorLabels" . | nindent 8 }}
     spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "elitea-llm-gateway.serviceAccountName" . }}
       # §9.5: >=150s so in-flight LLM streams (up to ~120s) drain on rolling
       # deploys instead of being truncated. Rises together with the gateway's
@@ -28,6 +32,10 @@ spec:
         - name: elitea-llm-gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8083
@@ -83,21 +91,27 @@ spec:
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if .Values.mtls.enabled }}
           volumeMounts:
+            # readOnlyRootFilesystem needs a writable /tmp even though this
+            # binary has no application-level temp-file writes today.
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.mtls.enabled }}
             # Server cert (tls.crt/tls.key) + CA bundle (ca.crt) for the mTLS
             # listener; the gateway requires-and-verifies the edge client cert
             # against ca.crt (design §9.1).
             - name: mtls
               mountPath: {{ .Values.mtls.mountPath }}
               readOnly: true
-          {{- end }}
-      {{- if .Values.mtls.enabled }}
+            {{- end }}
       volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.mtls.enabled }}
         - name: mtls
           secret:
             secretName: {{ .Values.mtls.serverSecretName }}
-      {{- end }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

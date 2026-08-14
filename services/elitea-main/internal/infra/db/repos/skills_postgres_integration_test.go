@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,5 +235,51 @@ func TestSkillsRepoPostgres_DeleteCascadesVersionsAndTags(t *testing.T) {
 	}
 	if versionCount != 0 {
 		t.Errorf("expected skill_versions to cascade-delete, got %d rows", versionCount)
+	}
+}
+
+// TestSkillsRepoPostgres_DeleteRefusesWhilePublished — the cascade above is
+// exactly why this guard exists (#249). A published skill's catalog copy lives
+// in the public project and is retracted through the SOURCE skill, so deleting
+// the source would strand the catalog entry with no way left to unpublish it.
+func TestSkillsRepoPostgres_DeleteRefusesWhilePublished(t *testing.T) {
+	pool := newSkillsTestPool(t)
+	repo := NewSkillsRepo(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	created, err := repo.Create(ctx, "1", skills.Skill{Name: "Published Skill", Description: "d", Instructions: "i", Tags: []string{"x"}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// The publish surface writes an ADDITIONAL version with status
+	// 'published'; the 'base' version stays a draft.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO p_1.skill_versions (skill_id, name, instructions, author_id, status)
+		VALUES ($1, 'v1.0-release', 'i', 1, 'published')`, created.ID); err != nil {
+		t.Fatalf("seed published version: %v", err)
+	}
+
+	err = repo.Delete(ctx, "1", created.ID)
+	if err == nil {
+		t.Fatal("delete succeeded while a version is published")
+	}
+	if !strings.Contains(err.Error(), "Unpublish first") {
+		t.Errorf("delete error = %v, want the Unpublish-first refusal", err)
+	}
+	var skillCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM p_1.skills WHERE id = $1`, created.ID).Scan(&skillCount); err != nil {
+		t.Fatalf("count skills: %v", err)
+	}
+	if skillCount != 1 {
+		t.Errorf("skill rows after the refused delete = %d, want 1", skillCount)
+	}
+
+	// Once nothing is published, the ordinary delete works again.
+	if _, err := pool.Exec(ctx, `DELETE FROM p_1.skill_versions WHERE skill_id = $1 AND status = 'published'`, created.ID); err != nil {
+		t.Fatalf("unpublish: %v", err)
+	}
+	if err := repo.Delete(ctx, "1", created.ID); err != nil {
+		t.Fatalf("delete after unpublish: %v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
@@ -16,6 +17,22 @@ import (
 type Handler struct {
 	pool     *pgxpool.Pool
 	projects CurrentProjectLister
+	resolver auth.PermissionResolver
+}
+
+// Option configures a Handler at construction time.
+type Option func(*Handler)
+
+// WithPermissionResolver supplies the resolver the group WRITE routes are gated
+// on. It is an Option rather than middleware applied in router.go because this
+// package is Mount()ed as a subrouter, and chi cannot carry a per-route gate
+// across a mount boundary.
+//
+// Fail-closed: `RequireResolvedPermissionsForProject` answers 403 when its
+// resolver is nil, so a Handler built without this option serves the reads and
+// refuses every write rather than running ungated.
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(h *Handler) { h.resolver = resolver }
 }
 
 const (
@@ -25,12 +42,16 @@ const (
 	CurrentProjectListPermission = "projects.projects.project.view"
 )
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
+func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
 	var projects CurrentProjectLister
 	if pool != nil {
 		projects = sqlcgen.New(pool)
 	}
-	return &Handler{pool: pool, projects: projects}
+	handler := &Handler{pool: pool, projects: projects}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
 }
 
 // CurrentProjectLister is the generated query surface consumed by the one
@@ -49,8 +70,34 @@ func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/project/{mode}/{projectID}", h.GetProject)
 	r.Get("/groups/prompt_lib", h.GroupList)
-	r.Put("/groups/prompt_lib/{projectID}", h.PutProjectGroups)
+	// The three group WRITES, gated on the permissions their pylon originals
+	// declare — `projects.projects.groups.edit` for the set-replacement PUT
+	// (groups.py) and `projects.projects.group.create` / `.delete` for the
+	// singular create and detach (group.py). Resolved in DEFAULT mode against
+	// the project in the path, which is the mode pylon's `recommended_roles`
+	// names for these handlers and the one the `prompt_lib` segment reaches.
+	r.With(h.requireProjectPermission("projects.projects.groups.edit")).
+		Put("/groups/prompt_lib/{projectID}", h.PutProjectGroups)
+	r.With(h.requireProjectPermission("projects.projects.group.create")).
+		Post("/group/prompt_lib/{projectID}", h.GroupCreate)
+	r.With(h.requireProjectPermission("projects.projects.group.delete")).
+		Delete("/group/prompt_lib/{projectID}/{groupID}", h.GroupDelete)
+	// Quota and statistics (issue #246, quota.go). Gated on the permissions
+	// quota.py and statistics.py declare — `projects.projects.project.view` for
+	// the two reads and `…project.edit` for the write — resolved in DEFAULT
+	// mode against the project in the path. Neither pylon module carries a
+	// `{mode}` segment, so neither does the route.
+	r.With(h.requireProjectPermission("projects.projects.project.view")).
+		Get("/quota/{projectID}", h.GetQuota)
+	r.With(h.requireProjectPermission("projects.projects.project.edit")).
+		Put("/quota/{projectID}", h.PutQuota)
+	r.With(h.requireProjectPermission("projects.projects.project.view")).
+		Get("/statistics/{projectID}", h.GetStatistics)
 	return r
+}
+
+func (h *Handler) requireProjectPermission(permission string) func(http.Handler) http.Handler {
+	return apimw.RequireResolvedPermissions(h.resolver, auth.PermissionModeDefault, permission)
 }
 
 type Project struct {
@@ -206,14 +253,10 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": groups, "total": len(groups)})
 }
 
-func (h *Handler) PutProjectGroups(w http.ResponseWriter, r *http.Request) {
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, http.StatusOK, body)
-}
+// PutProjectGroups, GroupCreate and GroupDelete live in groups.go. The PUT used
+// to sit here as a body echo: it decoded the request and wrote it back as the
+// response without touching a table, so every group edit reported success and
+// changed nothing.
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	payload, err := json.Marshal(v)

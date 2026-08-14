@@ -1,5 +1,7 @@
-# PROTOTYPE VALUES ONLY. This chart does not yet define TLS ingress,
-# NetworkPolicy, split database principals, or production secret delivery.
+# PROTOTYPE VALUES ONLY. This chart does not yet define NetworkPolicy,
+# split database principals, or production secret delivery. An opt-in
+# Ingress/HTTPRoute exists (ingress.enabled) but ships with no TLS secret
+# or hostname configured — see ingress.tls / ingress.hosts below.
 replicaCount: 2
 
 image:
@@ -10,6 +12,71 @@ image:
 service:
   type: ClusterIP
   port: 8080
+
+# Legacy-parity hardening (issue #241): the shipped image is already a
+# distroless nonroot build, so runAsNonRoot/readOnlyRootFilesystem cost
+# nothing here — no application-level temp-file writes were found (grepped
+# for os.CreateTemp/os.TempDir); the container still gets a writable /tmp
+# emptyDir (templates/deployment.yaml) for anything the Go runtime itself
+# wants there.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Opt-in external reachability (issue #241; legacy parity with
+# legacy/deploy/charts/charts/pylon's templates/httproute.yaml). Both the
+# standard Ingress and the Gateway API HTTPRoute path are OFF by default —
+# this chart cannot know your ingress controller / Gateway, hostnames, or
+# TLS secret names. Set ingress.gatewayApi: true to render an HTTPRoute
+# instead of a networking.k8s.io/v1 Ingress; the two are mutually exclusive.
+ingress:
+  enabled: false
+  gatewayApi: false
+  className: ""
+  annotations: {}
+  path: /
+  pathType: Prefix
+  hosts: []
+  # TLS termination for the standard Ingress path only — ignored when
+  # gatewayApi: true (HTTPRoute TLS termination is the Gateway's own concern).
+  tls: []
+    # - secretName: elitea-main-tls
+    #   hosts:
+    #     - dev.elitea.ai
+  # Only consulted when gatewayApi: true — the pre-existing Gateway this
+  # HTTPRoute attaches to (not created by this chart).
+  gateway:
+    name: ""
+    namespace: ""
+    sectionName: ""
+
+# Optional file-based config mounts (issue #241), OFF by default. The chart
+# does not build these ConfigMaps for you — point configMapName at a
+# ConfigMap you provision out-of-band (kubectl create configmap / kustomize /
+# a GitOps overlay) and the chart wires the volume + volumeMount + env var
+# pointing at the mounted path. See internal/api/router.go (BRAND_PACK_PATH)
+# and cmd/elitea-main/main.go:1119 (ELITEA_AUTH_CONFIG_FILE).
+fileConfig:
+  authConfig:
+    enabled: false
+    configMapName: ""
+    key: auth-config.json
+    mountPath: /etc/elitea/auth-config.json
+  brandPack:
+    enabled: false
+    configMapName: ""
+    # BRAND_PACK_PATH is one pack file per deployment (branding package doc,
+    # internal/api/v2/branding/pack.go's LoadPack does os.ReadFile) — mounted
+    # via subPath, like authConfig above, not a whole-ConfigMap directory.
+    key: brand-pack.json
+    mountPath: /etc/elitea/brand-pack.json
 
 resources:
   requests:
@@ -95,6 +162,20 @@ env:
   # URL of the elitea-llm-gateway service. Empty disables GatewayProxy.
   LLM_GATEWAY_URL: ""
 
+  # --- Tracing / observability (issue #250) -----------------------------------
+  # OTLP/HTTP collector base URL. Read by both libs/go/observability (elitea-main's
+  # own span export) and internal/api/v2/tracing's otlp proxy target — one var
+  # controls both paths. Empty defers to the OTLP exporter's own env handling
+  # (effectively localhost, i.e. no-op in a cluster) and to tracing's own
+  # "http://otel-collector:4318" default, which only resolves if a service by
+  # that name exists in this namespace (see the otel-collector chart/values).
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  # Standard OTel SDK kill switch (https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/).
+  # Set to "true" to disable span export and make the tracing ingest routes
+  # answer "disabled" instead of forwarding — e.g. an environment with no
+  # collector deployed at all.
+  OTEL_SDK_DISABLED: ""
+
 # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
 # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
 # above — mirrors deploy/helm/elitea-llm-gateway's values.yaml `secrets:`
@@ -159,6 +240,39 @@ secrets:
     secretName: elitea-main-llm-gateway-secrets
     key: llm-gateway-ca-file
     optional: true
+
+# Kubernetes execution path for the versioned migration corpus
+# (services/elitea-main/migrations/{shared,tenant}, applied by the separate
+# cmd/elitea-migrate binary already built into this chart's image) — distinct
+# from the dev-only boot bootstrap (bootstrapLegacySchema /
+# ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA in cmd/elitea-main, which this does NOT
+# touch or replace). Runs as a pre-install/pre-upgrade Helm hook Job so it
+# completes — or the release aborts — before any Deployment pods roll; see
+# templates/migrate-job.yaml for the full ordering-guarantee explanation.
+migrations:
+  enabled: true
+  # -all-tenants mirrors deploy/centry-hybrid/pov-compose.yml's elitea-migrate
+  # invocation: apply the shared history, then the tenant history for every
+  # existing legacy project. Both cmd/elitea-migrate flags are idempotent —
+  # already-applied migration files are skipped — so re-running on every
+  # upgrade is safe.
+  args:
+    - -all-tenants
+  image:
+    # Empty means "use .Values.image.repository/.tag" (the Deployment's own
+    # image) — the normal case, since cmd/elitea-migrate ships in that same
+    # image. Only set these to pin the migration step to a different tag.
+    repository: ""
+    tag: ""
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
 
 probes:
   startup:

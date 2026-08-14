@@ -65,7 +65,9 @@ import type {
   OkResponse,
   Project,
   ProjectContext,
-  ProjectGroupsUpdate,
+  ProjectQuota,
+  ProjectStatistics,
+  ProjectWithGroups,
   PublicApplicationDetail,
   PublicApplicationList,
   PublishSuccessResponse,
@@ -3434,14 +3436,236 @@ export const getListGroupsResponseMock = (
   ...overrideResponse,
 });
 
+export const getAddProjectGroupResponseMock = (
+  overrideResponse: Partial<Extract<ProjectWithGroups, object>> = {},
+): ProjectWithGroups => ({
+  id: faker.number.int(),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  owner_id: faker.number.int(),
+  plugins: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  keycloak_groups: {},
+  create_success: faker.datatype.boolean(),
+  suspended: faker.datatype.boolean(),
+  groups: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.number.int(),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  ...overrideResponse,
+});
+
 export const getPutProjectGroupsResponseMock = (
-  overrideResponse: Partial<Extract<ProjectGroupsUpdate, object>> = {},
-): ProjectGroupsUpdate => ({
-  groups: faker.helpers.arrayElement([
-    Array.from(
-      { length: faker.number.int({ min: 1, max: 10 }) },
-      (_, i) => i + 1,
-    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  overrideResponse: Partial<Extract<ProjectWithGroups, object>> = {},
+): ProjectWithGroups => ({
+  id: faker.number.int(),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  owner_id: faker.number.int(),
+  plugins: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+  keycloak_groups: {},
+  create_success: faker.datatype.boolean(),
+  suspended: faker.datatype.boolean(),
+  groups: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.number.int(),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  })),
+  ...overrideResponse,
+});
+
+export const getGetProjectQuotaResponseProjectQuotaMock = (
+  overrideResponse: Partial<ProjectQuota> = {},
+): ProjectQuota => ({
+  ...{
+    id: faker.number.int(),
+    project_id: faker.number.int(),
+    data_retention_limit: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    test_duration_limit: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    cpu_limit: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    memory_limit: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    last_update_time: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        null,
+      ]),
+      undefined,
+    ]),
+    dast_scans: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    sast_scans: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    vcu_hard_limit: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    vcu_soft_limit: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    vcu_limit_total_block: faker.helpers.arrayElement([
+      faker.datatype.boolean(),
+      undefined,
+    ]),
+    storage_hard_limit: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    storage_soft_limit: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([faker.number.int(), null]),
+      undefined,
+    ]),
+    storage_limit_total_block: faker.helpers.arrayElement([
+      faker.datatype.boolean(),
+      undefined,
+    ]),
+  },
+  ...overrideResponse,
+});
+
+export const getGetProjectQuotaResponseMock = (): ProjectQuota | boolean =>
+  faker.helpers.arrayElement([
+    { ...getGetProjectQuotaResponseProjectQuotaMock() },
+    faker.datatype.boolean(),
+  ]);
+
+export const getSetProjectQuotaResponseMock = (
+  overrideResponse: Partial<Extract<ProjectQuota, object>> = {},
+): ProjectQuota => ({
+  id: faker.number.int(),
+  project_id: faker.number.int(),
+  data_retention_limit: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  test_duration_limit: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  cpu_limit: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  memory_limit: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  last_update_time: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      null,
+    ]),
+    undefined,
+  ]),
+  dast_scans: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  sast_scans: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  vcu_hard_limit: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  vcu_soft_limit: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  vcu_limit_total_block: faker.helpers.arrayElement([
+    faker.datatype.boolean(),
+    undefined,
+  ]),
+  storage_hard_limit: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  storage_soft_limit: faker.helpers.arrayElement([
+    faker.helpers.arrayElement([faker.number.int(), null]),
+    undefined,
+  ]),
+  storage_limit_total_block: faker.helpers.arrayElement([
+    faker.datatype.boolean(),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetProjectStatisticsResponseMock = (
+  overrideResponse: Partial<Extract<ProjectStatistics, object>> = {},
+): ProjectStatistics => ({
+  performance_test_runs: faker.helpers.arrayElement([
+    {
+      current: faker.number.int(),
+      quota: faker.helpers.arrayElement([faker.number.int(), null]),
+    },
+    undefined,
+  ]),
+  ui_performance_test_runs: faker.helpers.arrayElement([
+    {
+      current: faker.number.int(),
+      quota: faker.helpers.arrayElement([faker.number.int(), null]),
+    },
+    undefined,
+  ]),
+  sast_scans: faker.helpers.arrayElement([
+    {
+      current: faker.number.int(),
+      quota: faker.helpers.arrayElement([faker.number.int(), null]),
+    },
+    undefined,
+  ]),
+  dast_scans: faker.helpers.arrayElement([
+    {
+      current: faker.number.int(),
+      quota: faker.helpers.arrayElement([faker.number.int(), null]),
+    },
+    undefined,
+  ]),
+  tasks_executions: faker.helpers.arrayElement([
+    {
+      current: faker.number.int(),
+      quota: faker.helpers.arrayElement([faker.number.int(), null]),
+    },
+    undefined,
+  ]),
+  storage_space: faker.helpers.arrayElement([
+    {
+      current: faker.number.int(),
+      quota: faker.helpers.arrayElement([faker.number.int(), null]),
+    },
+    undefined,
+  ]),
+  data_retention_limit: faker.helpers.arrayElement([
+    {
+      current: faker.number.int(),
+      quota: faker.helpers.arrayElement([faker.number.int(), null]),
+    },
     undefined,
   ]),
   ...overrideResponse,
@@ -4417,12 +4641,60 @@ export const getListGroupsMockHandler = (
   );
 };
 
+export const getAddProjectGroupMockHandler = (
+  overrideResponse?:
+    | ProjectWithGroups
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<ProjectWithGroups> | ProjectWithGroups),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/projects/group/prompt_lib/:projectId",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getAddProjectGroupResponseMock(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveProjectGroupMockHandler = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<Parameters<typeof http.delete>[1]>[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete(
+    "*/projects/group/prompt_lib/:projectId/:groupId",
+    async (info: Parameters<Parameters<typeof http.delete>[1]>[0]) => {
+      await delay(0);
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
 export const getPutProjectGroupsMockHandler = (
   overrideResponse?:
-    | ProjectGroupsUpdate
+    | ProjectWithGroups
     | ((
         info: Parameters<Parameters<typeof http.put>[1]>[0],
-      ) => Promise<ProjectGroupsUpdate> | ProjectGroupsUpdate),
+      ) => Promise<ProjectWithGroups> | ProjectWithGroups),
   options?: RequestHandlerOptions,
 ) => {
   return http.put(
@@ -4436,6 +4708,85 @@ export const getPutProjectGroupsMockHandler = (
             ? await overrideResponse(info)
             : overrideResponse
           : getPutProjectGroupsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetProjectQuotaMockHandler = (
+  overrideResponse?:
+    | ProjectQuota
+    | boolean
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ProjectQuota | boolean> | ProjectQuota | boolean),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/projects/quota/:projectId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetProjectQuotaResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getSetProjectQuotaMockHandler = (
+  overrideResponse?:
+    | ProjectQuota
+    | ((
+        info: Parameters<Parameters<typeof http.put>[1]>[0],
+      ) => Promise<ProjectQuota> | ProjectQuota),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put(
+    "*/projects/quota/:projectId",
+    async (info: Parameters<Parameters<typeof http.put>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSetProjectQuotaResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetProjectStatisticsMockHandler = (
+  overrideResponse?:
+    | ProjectStatistics
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ProjectStatistics> | ProjectStatistics),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/projects/statistics/:projectId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetProjectStatisticsResponseMock(),
         { status: 200 },
       );
     },
@@ -4532,7 +4883,12 @@ export const getApplicationsMock = () => [
   getGetAgentCategoriesMockHandler(),
   getListProjectsMockHandler(),
   getListGroupsMockHandler(),
+  getAddProjectGroupMockHandler(),
+  getRemoveProjectGroupMockHandler(),
   getPutProjectGroupsMockHandler(),
+  getGetProjectQuotaMockHandler(),
+  getSetProjectQuotaMockHandler(),
+  getGetProjectStatisticsMockHandler(),
   getGetProjectContextMockHandler(),
   getUpdateProjectContextMockHandler(),
 ];

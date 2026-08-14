@@ -96,10 +96,12 @@ from elitea_worker.handlers.agent import (
     AgentExecutionHandler,
     AgentExecutionKind,
     AgentExecutionRequest,
+    AgentExecutionResult,
 )
 from elitea_worker.handlers.agent_events import (
     CurrentAgentNodeEventCallback,
     CurrentAgentNodeEventContext,
+    nested_skill_registry_from_payload,
 )
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.protocol.codec import (
@@ -2243,6 +2245,11 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
             ),
             progress.publish_from_sdk,
         )
+        callback.configure_skills(
+            applied_skills=payload.applied_skills,
+            attached_skills=payload.attached_skills,
+            nested_skill_registry=nested_skill_registry_from_payload(payload),
+        )
         adapter = EliteaSdkAgentAdapter.from_context(
             resolved_input.client_context,
             callbacks=[callback],
@@ -2253,7 +2260,20 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
 
         def invoke_agent():
             callback.emit_agent_start(invoked_skills=payload.invoked_skills)
-            result = handler.execute(resolved_input.request)
+            try:
+                result = handler.execute(resolved_input.request)
+            except Exception as error:
+                if not callback.capture_materialization_authorization(error):
+                    raise
+                paused = callback.authorization_pause_result()
+                if paused is None:
+                    raise InvalidInput(
+                        "The delegated authorization request identity is unavailable."
+                    )
+                result = AgentExecutionResult(
+                    request=resolved_input.request,
+                    sdk_result=paused,
+                )
             callback.raise_if_failed()
             completed_content = callback.completed_response_content(result.sdk_result)
             if completed_content is not None:
@@ -2305,12 +2325,52 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
         except WorkerError:
             raise
         except Exception as error:
+            if _is_mcp_dependency_failure(error):
+                _emit_agent_internal_failure(
+                    stage="mcp_materialization",
+                    execution_id=receipt.identity.execution_id,
+                    error=error,
+                )
+                raise DependencyUnavailable() from None
             _emit_agent_internal_failure(
                 stage="execute",
                 execution_id=receipt.identity.execution_id,
                 error=error,
             )
             raise InternalFailure() from None
+
+
+def _is_mcp_dependency_failure(error: BaseException) -> bool:
+    """Classify only bounded SDK MCP failures as dependency outcomes."""
+
+    if error.__class__.__name__ == "McpAuthorizationRequired":
+        return False
+    visited: set[int] = set()
+    pending: list[BaseException] = [error]
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        traceback = current.__traceback__
+        while traceback is not None:
+            module = str(traceback.tb_frame.f_globals.get("__name__", ""))
+            if module.startswith(
+                (
+                    "elitea_sdk.runtime.toolkits.mcp",
+                    "elitea_sdk.runtime.utils.mcp_",
+                    "elitea_sdk.runtime.tools.mcp_",
+                    "langchain_mcp_adapters.",
+                    "mcp.",
+                )
+            ):
+                return True
+            traceback = traceback.tb_next
+        for nested in (current.__cause__, current.__context__):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return False
 
 
 def _emit_agent_internal_failure(

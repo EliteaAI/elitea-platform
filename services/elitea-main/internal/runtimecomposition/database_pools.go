@@ -2,9 +2,23 @@ package runtimecomposition
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+var databasePoolEnvironment = []struct {
+	name string
+	set  func(*DatabasePoolLimits, int32)
+}{
+	{"ELITEA_RUNTIME_DB_ADMISSION_MAX_CONNS", func(l *DatabasePoolLimits, v int32) { l.AdmissionPublisher = v }},
+	{"ELITEA_RUNTIME_DB_CONTROL_MAX_CONNS", func(l *DatabasePoolLimits, v int32) { l.Control = v }},
+	{"ELITEA_RUNTIME_DB_OUTPUT_MAX_CONNS", func(l *DatabasePoolLimits, v int32) { l.Output = v }},
+	{"ELITEA_RUNTIME_DB_REPLAY_MAX_CONNS", func(l *DatabasePoolLimits, v int32) { l.Replay = v }},
+	{"ELITEA_RUNTIME_DB_TERMINAL_MAX_CONNS", func(l *DatabasePoolLimits, v int32) { l.TerminalEffects = v }},
+	{"ELITEA_RUNTIME_DB_CONTENT_MAX_CONNS", func(l *DatabasePoolLimits, v int32) { l.Content = v }},
+}
 
 // DatabasePoolLimits is the fixed phase-one capacity profile. The six pools
 // are intentionally separate so public SSE replay or content load cannot
@@ -28,6 +42,28 @@ func PhaseOneDatabasePoolLimits() DatabasePoolLimits {
 		TerminalEffects:    2,
 		Content:            4,
 	}
+}
+
+// DatabasePoolLimitsFromEnv keeps the phase-one defaults while allowing a
+// mixed deployment to share one PostgreSQL instance with the current Python
+// services. Every override retains the compiled capacity invariant.
+func DatabasePoolLimitsFromEnv(lookup LookupEnv) (DatabasePoolLimits, error) {
+	limits := PhaseOneDatabasePoolLimits()
+	for _, option := range databasePoolEnvironment {
+		raw, ok := lookup(option.name)
+		if !ok || raw == "" {
+			continue
+		}
+		parsed, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || strconv.FormatInt(parsed, 10) != raw {
+			return DatabasePoolLimits{}, fmt.Errorf("%s must be a canonical base-10 integer", option.name)
+		}
+		option.set(&limits, int32(parsed))
+	}
+	if err := limits.Validate(); err != nil {
+		return DatabasePoolLimits{}, err
+	}
+	return limits, nil
 }
 
 func (l DatabasePoolLimits) Validate() error {

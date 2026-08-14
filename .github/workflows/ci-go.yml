@@ -169,8 +169,18 @@ jobs:
           GCS_ENDPOINT: "http://127.0.0.1:4443/storage/v1/"
           ELITEA_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
         run: |
+          root="$PWD"
           for mod in $(go list -m -f '{{.Dir}}'); do
-            (cd "$mod" && go test -race -count=1 -coverprofile=coverage.out ./...)
+            (
+              cd "$mod" && go test -race -count=1 -coverprofile=coverage.out ./...
+              # Generated code is excluded from the profile, not from the test
+              # run: oapi-codegen's internal/api/generated and sqlc's
+              # internal/db/sqlcgen are ~3.4k instrumented blocks nobody writes
+              # tests for, and leaving them in makes the number move on every
+              # regeneration for reasons unrelated to the tests. Their contract
+              # is enforced by the codegen-freshness and conformance gates.
+              [ -f coverage.out ] && "$root/scripts/coverage/strip-generated.sh" coverage.out
+            )
           done
           python3 -m unittest discover \
             -s services/elitea-main/tests/reliability/index_5681 \

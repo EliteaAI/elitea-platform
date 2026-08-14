@@ -60,6 +60,8 @@ tags:
     description: Bucket and artifact (file) storage
   - name: auth
     description: Permissions
+  - name: budgets
+    description: Project and per-member LLM spend limits, and usage reporting
   - name: chat
     description: Conversational / webchat endpoints
   - name: configurations
@@ -82,6 +84,8 @@ tags:
     description: Tag management
   - name: toolkits
     description: Toolkit (integration) management
+  - name: tracing
+    description: OpenTelemetry trace ingest (collect/otlp proxy) and status
 
 # ---------------------------------------------------------------------------
 # Reusable components
@@ -174,6 +178,524 @@ components:
     # below is field-level, sourced from the Go handler that marshals it.
 
     # ---- Error responses ---------------------------------------------------
+    BudgetPeriodWindow:
+      type: object
+      description: |
+        The calendar month a budget accrues over. Derived exactly as the LLM
+        gateway derives it (first instant of the current month, UTC) — the
+        accumulator's key includes the period start, so a period computed any
+        other way would look up a row that does not exist and report zero spend
+        against a real limit.
+      required: [period, period_start, period_end, resets_at]
+      properties:
+        period:
+          type: string
+          description: The period tag, YYYYMM.
+          example: "202608"
+        period_start:
+          type: string
+          description: First day of the period, YYYY-MM-DD.
+          example: "2026-08-01"
+        period_end:
+          type: string
+          description: Last day of the period, YYYY-MM-DD.
+          example: "2026-08-31"
+        resets_at:
+          type: string
+          format: date-time
+          description: When the accumulator rolls over to a new period row.
+
+    BudgetState:
+      description: |
+        The five COST fields — monthly_limit, effective_limit, spend, remaining
+        and currency — are deliberately NOT in `required`. Both project-scoped
+        reads (`getProjectBudget`, `getProjectUsage`) REMOVE them for a caller
+        whose `can_see_amounts` is false, so requiring them would make a
+        correct redacted response fail its own schema. Everything that is not a
+        cost figure — the percentage, the threshold, the period — is required,
+        because redaction never removes those.
+      allOf:
+        - $ref: '#/components/schemas/BudgetPeriodWindow'
+        - type: object
+          required:
+            - limit_source
+            - enabled
+            - warning_pct
+            - percent_used
+            - spend_available
+          properties:
+            can_see_amounts:
+              type: boolean
+              description: |
+                Present on the project-scoped reads only. False means the five
+                cost fields were removed from this payload; percentages, the
+                warning threshold and the period remain.
+
+            monthly_limit:
+              type: number
+              nullable: true
+              description: The AUTHORED ceiling in USD. Null means none was set.
+            effective_limit:
+              type: number
+              nullable: true
+              description: |
+                The ENFORCED ceiling. Null when the scope is unlimited — which
+                includes a scope that has a monthly_limit but is disabled.
+            limit_source:
+              type: string
+              enum: [explicit, unlimited]
+              description: |
+                Where the enforced limit came from. The reference had a third
+                value, `default`, for a platform-wide fallback; this platform
+                has none.
+            currency:
+              type: string
+              enum: [USD]
+              description: |
+                Always USD. The gateway compares limits against a nano-USD
+                counter and nothing converts, so the write path rejects any
+                other value rather than storing a label enforcement ignores.
+            enabled:
+              type: boolean
+              description: |
+                False marks the scope deliberately exempt: it stays unlimited
+                whatever monthly_limit says. Stored separately from the
+                enforcement flag so `enabled with no ceiling yet` and
+                `deliberately exempt` do not read back as the same thing.
+            warning_pct:
+              type: integer
+              description: Percent-of-limit at which this scope warns.
+            spend:
+              type: number
+              description: USD accrued this period. Zero when nothing is recorded.
+            remaining:
+              type: number
+              nullable: true
+              description: Null when the scope is unlimited. Never negative.
+            percent_used:
+              type: number
+              nullable: true
+              description: Null when the scope is unlimited or the limit is zero.
+            spend_available:
+              type: boolean
+              description: |
+                Whether an accumulator row exists for this period at all, which
+                is what separates "nothing billed yet" from "no usage data".
+
+    ProjectBudget:
+      allOf:
+        - type: object
+          required: [project_id, budget_period]
+          properties:
+            project_id:
+              type: integer
+            budget_period:
+              type: string
+              enum: [monthly]
+              description: |
+                Reported, not settable. The gateway derives the period from the
+                calendar month unconditionally, so any other value would be one
+                nothing honours.
+        - $ref: '#/components/schemas/BudgetState'
+
+    MemberBudget:
+      allOf:
+        - type: object
+          required: [project_id, user_id, enforced]
+          properties:
+            project_id:
+              type: integer
+            user_id:
+              type: integer
+            enforced:
+              type: boolean
+              description: |
+                FALSE for as long as the gateway admits and bills by project
+                scope alone. A per-member limit is stored and read back
+                faithfully, but nothing blocks a call on it — render it as
+                authored-but-inactive rather than as a live ceiling.
+        - $ref: '#/components/schemas/BudgetState'
+
+    BudgetWrite:
+      type: object
+      description: The write payload shared by the project and member budget PUTs.
+      properties:
+        monthly_limit:
+          type: number
+          nullable: true
+          minimum: 0
+          description: Ceiling in USD. Null, or absent, means no ceiling.
+        enabled:
+          type: boolean
+          default: true
+          description: |
+            False marks the scope deliberately exempt, so it stays unlimited
+            whatever monthly_limit says.
+        currency:
+          type: string
+          enum: [USD]
+          default: USD
+          description: Anything other than USD is rejected with a 400.
+        soft_alert_pct:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: |
+            Percent-of-limit at which this scope warns. Omitted leaves the
+            stored threshold untouched.
+
+    ProjectBudgetRow:
+      allOf:
+        - type: object
+          required: [project_id, name, display_name, owner_name, owner_email, is_personal]
+          properties:
+            project_id:
+              type: integer
+            name:
+              type: string
+            display_name:
+              type: string
+              description: |
+                The owner's identity for a personal project, the project name
+                otherwise — `project_user_<n>` is not a name anyone searches for.
+            owner_name:
+              type: string
+            owner_email:
+              type: string
+            is_personal:
+              type: boolean
+        - $ref: '#/components/schemas/BudgetState'
+
+    ProjectBudgetListing:
+      type: object
+      required: [rows, total, counts]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectBudgetRow'
+        total:
+          type: integer
+          description: The FILTERED total, which is what the pagination describes.
+        counts:
+          type: object
+          description: |
+            Unfiltered per-type counts, for the tab labels. Deliberately not
+            narrowed by the filters: a tab whose count moved with the search box
+            would be reporting how many rows the other tab currently shows.
+          additionalProperties:
+            type: integer
+
+    MemberBudgetRow:
+      allOf:
+        - type: object
+          required: [project_id, user_id, name, email, roles, enforced]
+          properties:
+            project_id:
+              type: integer
+            user_id:
+              type: integer
+            name:
+              type: string
+            email:
+              type: string
+            roles:
+              type: array
+              items:
+                type: string
+            enforced:
+              type: boolean
+              description: See MemberBudget.enforced — always false today.
+        - $ref: '#/components/schemas/BudgetState'
+
+    MemberBudgetListing:
+      type: object
+      required: [rows, total, warning_pct]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemberBudgetRow'
+        total:
+          type: integer
+        warning_pct:
+          type: integer
+          description: |
+            The PROJECT's threshold, which labels the table. Each row carries
+            its own.
+
+    UsageReport:
+      allOf:
+        - type: object
+          required: [project_id, user_id, scope]
+          properties:
+            project_id:
+              type: integer
+            user_id:
+              type: integer
+              nullable: true
+              description: Null for scope=project.
+            scope:
+              type: string
+              enum: [project, user]
+            enforced:
+              type: boolean
+              description: Present for scope=user only. See MemberBudget.enforced.
+            budget_period:
+              type: string
+              enum: [monthly]
+              description: Present for scope=project only.
+        - $ref: '#/components/schemas/BudgetState'
+
+    AnalyticsCostBreakdown:
+      type: object
+      description: |
+        The cost view over gateway.llm_budget_accumulators. Its shape is the
+        accumulator's own: money per (scope, scope_id, period). The per-model,
+        per-agent, per-user and per-day views the pylon original carried are
+        absent here because nothing in this architecture records those
+        dimensions — see the operation description.
+      required: [kpis, periods, by_scope, periods_truncated, date_from, date_to]
+      properties:
+        kpis:
+          type: object
+          required: [total_cost, currency, periods, spend_available, window_days]
+          properties:
+            total_cost:
+              type: number
+              description: >
+                Sum of PROJECT-scope rows over the window, as an exact decimal.
+                Narrower scopes are excluded so the same spend is not counted
+                twice.
+            currency:
+              type: string
+              description: Always USD; the money path converts nowhere.
+            periods:
+              type: integer
+              description: How many project-scope accumulator rows were summed.
+            spend_available:
+              type: boolean
+              description: >
+                False when the write-back path has persisted nothing for this
+                project in this window, so "no spend yet" stays distinguishable
+                from "no data".
+            window_days:
+              type: integer
+        periods:
+          type: array
+          description: >
+            One entry per accumulator row overlapping the window, capped at 500
+            rows with PROJECT-scope rows ordered first so a truncation never
+            drops the rows behind the headline figure. See periods_truncated.
+          items:
+            $ref: '#/components/schemas/AnalyticsCostPeriod'
+        by_scope:
+          type: array
+          description: >
+            Roll-up per accumulator scope, summed by PostgreSQL over EVERY row
+            in the window — including rows the capped `periods` array omits.
+            Present so a narrower scope is visible without being summed into
+            total_cost.
+          items:
+            type: object
+            required: [scope, total_cost, rows]
+            properties:
+              scope: { type: string }
+              total_cost: { type: number }
+              rows:
+                type: integer
+                description: >
+                  How many accumulator rows the sum covers, so a client can tell
+                  that a scope contributed more rows than `periods` lists.
+        periods_truncated:
+          type: boolean
+          description: >
+            True when `periods` was capped and lists only the first 500 rows.
+            No total is affected: every figure in this response is a SQL
+            aggregate over the whole window, so a truncated response reports the
+            same money as a complete one — what is missing is per-row detail.
+        date_from:
+          type: string
+          format: date-time
+        date_to:
+          type: string
+          format: date-time
+
+    AnalyticsCostPeriod:
+      type: object
+      description: One gateway.llm_budget_accumulators row.
+      required:
+        [scope, scope_id, period_start, period_end, total_cost, last_updated,
+         pending_reconciliation]
+      properties:
+        scope:
+          type: string
+          description: >
+            The accumulator scope the gateway billed against. `project` is the
+            only one its admission path writes today.
+        scope_id:
+          type: string
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        total_cost:
+          type: number
+          description: Accrued spend for this row, an exact decimal.
+        last_updated:
+          type: string
+          format: date-time
+        pending_reconciliation:
+          type: boolean
+          description: >
+            True while the gateway's recovery goroutine still owns the row
+            (outage_mode and not reconciled). The figure is the last durable
+            one and not necessarily the current one.
+
+    MessageTraceListing:
+      type: object
+      required: [total, rows]
+      properties:
+        total:
+          type: integer
+          nullable: true
+          description: Null unless include_total=true was requested.
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageTraceStep'
+
+    MessageTraceStep:
+      type: object
+      description: >
+        The light projection of a chat_message_trace_step row: what a resting
+        chip draws, plus what orders it.
+      required: [id, message_group_id, kind, is_error]
+      properties:
+        id: { type: integer, format: int64 }
+        message_group_id: { type: integer, format: int64 }
+        kind:
+          type: string
+          description: '`tool_call` or `thinking_step`.'
+        tool_name: { type: string, nullable: true }
+        parent_agent_name: { type: string, nullable: true }
+        parent_agent_call_id: { type: string, nullable: true }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        is_error: { type: boolean }
+        step_type: { type: string, nullable: true }
+        model_name: { type: string, nullable: true }
+        finish_reason: { type: string, nullable: true }
+        attrs:
+          type: object
+          nullable: true
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): DB jsonb column `chat_message_trace_step.attrs` is
+            re-emitted verbatim as raw JSON
+            (internal/api/v2/messagetraces/handler.go:246). It is the bounded
+            display sidecar the runtime writes per step type — chip icon,
+            display name, toolkit type — and has no fixed key set across step
+            kinds; the writer is
+            internal/infra/db/repos/agent_trace.go:1108-1116.
+
+    MessageTraceStepDetail:
+      allOf:
+        - $ref: '#/components/schemas/MessageTraceStep'
+        - type: object
+          description: The heavy fields, fetched one step at a time.
+          properties:
+            tool_inputs:
+              nullable: true
+              x-elitea-passthrough: >-
+                NOTE(W2): DB jsonb column
+                `chat_message_trace_step.tool_inputs` is re-emitted verbatim as
+                raw JSON (internal/api/v2/messagetraces/handler.go:296). Its
+                shape is the invoked tool's own argument object, so it is
+                untyped by construction; the writer is
+                internal/infra/db/repos/agent_trace.go:1108-1116.
+            tool_output: { type: string, nullable: true }
+            text: { type: string, nullable: true }
+            thinking: { type: string, nullable: true }
+
+    ProjectQuota:
+      type: object
+      description: |
+        centry.project_quota. `-1` is the unlimited sentinel; a null column was
+        never configured. The vcu_* and storage_* triples are the only ones the
+        PUT writes.
+      required: [id, project_id]
+      properties:
+        id: { type: integer }
+        project_id: { type: integer }
+        data_retention_limit: { type: integer, nullable: true }
+        test_duration_limit: { type: integer, nullable: true }
+        cpu_limit: { type: integer, nullable: true }
+        memory_limit: { type: integer, nullable: true }
+        last_update_time:
+          type: string
+          nullable: true
+          description: Start of the current 30-day quota window, UTC.
+        dast_scans: { type: integer, nullable: true }
+        sast_scans: { type: integer, nullable: true }
+        vcu_hard_limit: { type: integer, nullable: true }
+        vcu_soft_limit: { type: integer, nullable: true }
+        vcu_limit_total_block: { type: boolean }
+        storage_hard_limit:
+          type: integer
+          nullable: true
+          description: Gigabytes.
+        storage_soft_limit:
+          type: integer
+          nullable: true
+          description: Gigabytes.
+        storage_limit_total_block: { type: boolean }
+
+    ProjectQuotaUpdate:
+      type: object
+      description: |
+        Only the triple matching `usage_type` is read. An omitted field CLEARS
+        its column.
+      properties:
+        vcu_hard_limit: { type: integer, nullable: true }
+        vcu_soft_limit: { type: integer, nullable: true }
+        vcu_limit_total_block: { type: boolean, default: false }
+        storage_hard_limit: { type: integer, nullable: true }
+        storage_soft_limit: { type: integer, nullable: true }
+        storage_limit_total_block: { type: boolean, default: false }
+
+    StatisticEntry:
+      type: object
+      required: [current, quota]
+      properties:
+        current:
+          type: integer
+          format: int64
+        quota:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Null where the quota table has no column for this metric, or where
+            it holds the -1 unlimited sentinel.
+
+    ProjectStatistics:
+      type: object
+      description: |
+        One entry per metric. `storage_space` is in BYTES on both sides;
+        `data_retention_limit` reports a current of 0, as the reference does,
+        because nothing measures retention — only configures it.
+      properties:
+        performance_test_runs: { $ref: '#/components/schemas/StatisticEntry' }
+        ui_performance_test_runs: { $ref: '#/components/schemas/StatisticEntry' }
+        sast_scans: { $ref: '#/components/schemas/StatisticEntry' }
+        dast_scans: { $ref: '#/components/schemas/StatisticEntry' }
+        tasks_executions: { $ref: '#/components/schemas/StatisticEntry' }
+        storage_space: { $ref: '#/components/schemas/StatisticEntry' }
+        data_retention_limit: { $ref: '#/components/schemas/StatisticEntry' }
+
     ErrorResponse:
       type: object
       required: [error]
@@ -346,6 +868,104 @@ components:
         UpdateAuthor (:133, 166), Like (:271, plus the no-op shortcuts at
         :253, 258), Unlike (:304, plus :288, 293), Pin (:324, plus :315), and
         Unpin (:344, plus :335).
+
+    # ---- Tracing ingest (issue #250) -----------------------------------------
+    TracingSpan:
+      type: object
+      properties:
+        name:
+          type: string
+        duration_ms:
+          type: number
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): client-authored span attributes, re-emitted verbatim as
+            OTel span attributes prefixed `ui.*`
+            (internal/api/v2/tracing/handler.go:221, 238). The single
+            recognized key `error` sets the span's OTel status
+            (handler.go:225).
+      description: >
+        internal/api/v2/tracing/handler.go's spanData — one child span within
+        a TracingTraceBatch.
+
+    TracingTraceBatch:
+      type: object
+      properties:
+        trace_id:
+          type: string
+        name:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): client-authored trace attributes, re-emitted verbatim as
+            OTel span attributes prefixed `ui.*` (internal/api/v2/tracing/
+            handler.go:211, 238); the recognized key `project_id` is used
+            ONLY when the URL carries no {project_id} (handler.go:200).
+        spans:
+          type: array
+          items:
+            $ref: '#/components/schemas/TracingSpan'
+      description: >
+        internal/api/v2/tracing/handler.go's traceBatch — one entry of the
+        `collect` request body's `traces` array. Port of legacy
+        tracing/api/v2/collect.py's per-trace shape.
+
+    TracingCollectRequest:
+      type: object
+      properties:
+        traces:
+          type: array
+          items:
+            $ref: '#/components/schemas/TracingTraceBatch'
+      description: >
+        internal/api/v2/tracing/handler.go's collectRequest (Collect). Each
+        trace becomes a parent OTel span named `ui:<name>`, each nested span
+        becomes a child span, both exported through the process
+        TracerProvider (libs/go/observability) to the collector `otlp`
+        proxies to.
+
+    TracingCollectResponse:
+      type: object
+      required: [received, spans_created]
+      properties:
+        received:
+          type: integer
+          description: Number of trace batches in the request.
+        spans_created:
+          type: integer
+          description: Total OTel spans created (parents + children).
+      description: internal/api/v2/tracing/handler.go's Collect 200 response.
+
+    TracingStatusResponse:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: >
+            Mirrors libs/go/observability's own kill switch
+            (OTEL_SDK_DISABLED != "true").
+        project_id:
+          type: string
+          description: Echoed back on the prompt_lib (project-scoped) read.
+        config:
+          type: object
+          description: >
+            Present only on the administration read
+            (internal/api/v2/tracing/handler.go:StatusAdmin).
+          properties:
+            collector_endpoint:
+              type: string
+            service_name:
+              type: string
+      description: >
+        internal/api/v2/tracing/handler.go's StatusProject/StatusAdmin. Port
+        of legacy tracing/api/v2/status.py's PromptLibAPI/AdminAPI.
 
     Author:
       type: object
@@ -1735,18 +2355,17 @@ components:
 
     ProjectGroupsUpdate:
       type: object
+      required: [groups]
       properties:
         groups:
           type: array
           items: { type: string }
-      additionalProperties: true
-      x-elitea-passthrough: >-
-        NOTE(W2): decoded into map[string]any; only `groups` is read and the
-        WHOLE body is echoed back as the 200 response
-        (internal/api/v2/projects/handler.go:136-180).
+          description: >
+            The project's WHOLE group set, by name. `no_group` is rejected.
       description: >
-        NOTE(W2): request AND response of putProjectGroups — the handler
-        echoes the parsed body verbatim (projects/handler.go:180).
+        NOTE(W2): request body of putProjectGroups
+        (internal/api/v2/projects/groups.go:186-188). It is no longer echoed
+        back: the response is the project, as the reference serializes it.
 
     ProjectContext:
       type: object
@@ -2314,6 +2933,212 @@ components:
         (repos/skills.go Create/Update). type/config/is_default remain
         silently discarded, and the response Type is hardcoded "skill".
 
+    # ---- Skill publishing (#249) -----------------------------------------
+
+    SkillFieldError:
+      type: object
+      description: >
+        One pydantic-style field error, as the version_name guards emit them
+        (internal/api/v2/skillpublish/publish.go:66-80).
+      properties:
+        loc:
+          type: array
+          items: { type: string }
+        msg: { type: string }
+        type: { type: string }
+
+    SkillValidationIssue:
+      type: object
+      required: [field, issue, fix]
+      properties:
+        field: { type: string }
+        issue: { type: string }
+        fix: { type: string }
+
+    SkillValidationResult:
+      type: object
+      required: [status, critical_issues, warnings, recommendations, summary, counts, ai_validation_available]
+      properties:
+        status:
+          type: string
+          description: PASS, WARN or FAIL.
+        critical_issues:
+          type: array
+          items: { $ref: '#/components/schemas/SkillValidationIssue' }
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/SkillValidationIssue' }
+        recommendations:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              suggestion: { type: string }
+        summary: { type: string }
+        counts:
+          type: object
+          properties:
+            critical: { type: integer }
+            warnings: { type: integer }
+            suggestions: { type: integer }
+        ai_validation_available:
+          type: boolean
+          description: >-
+            Always false here: the reference's AI validation pass has no
+            transport in this service (issues 126 and 194), so only the
+            deterministic checks ran.
+        validation_token:
+          type: string
+          description: >-
+            Present on PASS/WARN. Pins the skill's name, description and
+            instructions; editing any of them invalidates it and the publish
+            re-runs the gate.
+      description: >
+        internal/api/v2/skillpublish/validate.go (runDeterministicChecks).
+
+    PublicSkillVersion:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        tags:
+          type: array
+          items: { type: string }
+
+    PublicSkillListItem:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        owner_id: { type: integer }
+        created_at: { type: string, format: date-time }
+        meta:
+          type: object
+          nullable: true
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the skills.meta jsonb column, echoed verbatim
+            (internal/api/v2/skillpublish/public.go:141-145). Publishing writes
+            one key into it, default_version_id
+            (internal/api/v2/skillpublish/publish.go:208-215); everything else
+            is whatever a project or an import put there, so there is no
+            server-side shape to declare.
+        tags:
+          type: array
+          items: { type: string }
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/PublicSkillVersion' }
+        has_published_version: { type: boolean }
+
+    PublicSkillDetail:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        owner_id: { type: integer }
+        created_at: { type: string, format: date-time }
+        meta:
+          type: object
+          nullable: true
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the skills.meta jsonb column, echoed verbatim
+            (internal/api/v2/skillpublish/public.go:281-289) — same
+            free-form column as PublicSkillListItem.meta.
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/PublicSkillVersion' }
+        version_details:
+          type: object
+          properties:
+            id: { type: integer }
+            name: { type: string }
+            instructions: { type: string }
+            status: { type: string }
+            author_id: { type: integer }
+            created_at: { type: string, format: date-time }
+            tags:
+              type: array
+              items: { type: string }
+            meta:
+              type: object
+              nullable: true
+              additionalProperties: true
+              description: >-
+                Presentation keys only — `source_*`, `parent_*` and
+                `published_by` are stripped before the catalog serves it.
+              x-elitea-passthrough: >-
+                NOTE(W2): the skill_versions.meta jsonb column with the lineage
+                keys removed
+                (internal/api/v2/skillpublish/public.go:257-263). What survives
+                is per-version presentation data this service never writes and
+                cannot type.
+
+    SkillForkPayload:
+      type: object
+      properties:
+        skills:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              description: { type: string }
+              owner_id: { type: integer }
+              project_id: { type: integer }
+              user_id: { type: integer }
+              entity: { type: string }
+              created_at: { type: string, format: date-time }
+              import_uuid:
+                type: string
+                description: uuid5(OID, "skill_fork:{project}:{skill}:{name}") — stable across re-forks.
+              meta:
+                type: object
+                nullable: true
+                additionalProperties: true
+                x-elitea-passthrough: >-
+                  NOTE(W2): the source skills.meta jsonb, copied into the fork
+                  payload unread
+                  (internal/api/v2/skillpublish/export_fork.go:47-77).
+              versions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    name: { type: string }
+                    instructions: { type: string }
+                    author_id: { type: integer }
+                    meta:
+                      type: object
+                      nullable: true
+                      additionalProperties: true
+                      x-elitea-passthrough: >-
+                        NOTE(W2): the source skill_versions.meta jsonb, copied
+                        into the fork payload unread
+                        (internal/api/v2/skillpublish/export_fork.go:88-93).
+                    tags:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name: { type: string }
+                          data:
+                            type: object
+                            additionalProperties: true
+                            x-elitea-passthrough: >-
+                              NOTE(W2): tags.data is an untyped jsonb
+                              round-trip on this platform (see Tag.data); the
+                              fork payload emits it as the empty object
+                              (internal/api/v2/skillpublish/export_fork.go:68-71).
+
     Tag:
       type: object
       required: [id, name, data]
@@ -2760,6 +3585,18 @@ components:
         other body key is silently ignored. A missing name/description/avatar
         upserts as an empty string.
 
+    CurrentAvatarResponse:
+      type: object
+      required: [avatar]
+      properties:
+        avatar:
+          type: string
+          nullable: true
+      description: >
+        internal/api/v2/social/avatar.go. avatar is null when the
+        caller has never uploaded one; otherwise a /avatars/{project_id}/{filename}
+        URL.
+
     SocialAuthorSummary:
       type: object
       required: [id, name, email, avatar, description]
@@ -2993,6 +3830,366 @@ components:
         (internal/api/v2/toolkits/handler.go:526-534). Repository failures are
         returned as a safe 500 error rather than an indistinguishable empty
         successful listing.
+
+    # ---- MCP (issue 252) ---------------------------------------------------
+
+    McpToolCallRequest:
+      type: object
+      required: [server, tool_call_id, params]
+      description: >
+        NOTE(W2): the body pylon's `McpToolCallPostBody` accepts
+        (legacy/plugins/elitea_core/models/mcp.py). Documented for completeness;
+        internal/api/v2/mcp/registry.go:96 does not read it, because the
+        endpoint refuses unconditionally and a 400 for a malformed body would
+        imply a well-formed one would be dispatched.
+      properties:
+        server:
+          type: string
+          description: Name of the registered MCP server to dispatch to.
+        tool_call_id: { type: string }
+        tool_timeout_sec: { type: integer }
+        params:
+          type: object
+          additionalProperties: true
+          description: Arguments forwarded verbatim to the tool.
+          x-elitea-passthrough: >-
+            NOTE(W2): genuinely open. These are the arguments of a tool defined
+            by whichever MCP server the calling client registered, so their
+            shape is not knowable to this service at all — pylon forwards the
+            dict unchanged down the socket. The endpoint does not read the body
+            (internal/api/v2/mcp/registry.go:96).
+
+    InternalMcpPatStatus:
+      type: object
+      required: [internal, state]
+      description: >
+        NOTE(W2): internal/api/v2/mcp/patstatus.go:74 — the exact two-field
+        object both branches write.
+      properties:
+        internal:
+          type: boolean
+          description: >
+            True when the toolkit type is an internal Elitea MCP endpoint, i.e.
+            the project holds a toolkit of that type whose settings URL points
+            at `/app/<project id>/mcp/...` on this platform, with the project id
+            either templated or resolved.
+        state:
+          type: string
+          description: >
+            One of VALID, EXPIRED or MISSING, about the CALLER's own personal
+            access tokens. VALID when at least one token has not expired (a
+            token with no expiry never expires); EXPIRED when tokens exist and
+            all have passed their expiry; MISSING when the caller has none. A
+            non-internal type always reports VALID, because there is no token
+            requirement to report on. Not modelled as an enum: the value is
+            produced by three constants in patstatus.go:58-62, and an enum
+            whose members collide with an existing one makes the Go generator
+            rename both constant sets.
+
+    # ---- Admin & tenancy parity (issue 255) --------------------------------
+
+    ModeRoleAssignment:
+      type: object
+      required: [id, user_id, user_email, user_name, mode, role]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:52-59 — one central
+        (user, mode, role) assignment.
+      properties:
+        id:
+          type: string
+          description: >
+            Composite `<user_id>:<mode>:<role>`. There is no single row id
+            behind an assignment, so this triple IS the identifier, and it is
+            what the DELETE takes back apart.
+        user_id: { type: integer }
+        user_email: { type: string }
+        user_name: { type: string }
+        mode:
+          type: string
+          description: >
+            The pylon mode the role belongs to — `administration`, `developer`,
+            `default`, … Reported for every mode that has roles; only non-default
+            modes are writable here.
+        role: { type: string }
+
+    ModeRoleListing:
+      type: object
+      required: [total, rows]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:104-107.
+      properties:
+        total: { type: integer }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/ModeRoleAssignment' }
+
+    ModeRoleAssignRequest:
+      type: object
+      required: [user_id, mode, role]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:117-126.
+      properties:
+        user_id:
+          oneOf:
+            - type: integer
+            - type: string
+          description: >
+            A user id, or an email address to resolve one by — both spellings
+            the reference accepts. A numeric string is read as an id.
+        mode:
+          type: string
+          description: >
+            Any mode except `default`: default-mode roles are project
+            membership and are written through /admin/users/{mode}/{project_id}.
+        role: { type: string }
+
+    ModeRoleAssignResult:
+      type: object
+      required: [ok, id]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:222-225.
+      properties:
+        ok: { type: boolean }
+        id:
+          type: string
+          description: The composite id of the assignment that now exists.
+
+    ModeRoleRemoveResult:
+      type: object
+      required: [ok, removed]
+      description: >
+        NOTE(W2): internal/api/v2/admin/modes.go:290.
+      properties:
+        ok: { type: boolean }
+        removed:
+          type: integer
+          description: Assignments deleted. Never 0 — an id that matched none is a 404.
+
+    GlobalUserInviteRequest:
+      type: object
+      required: [user_name, user_email]
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_invite.go:62-65. Distinct from
+        UserInviteRequest, which is the PROJECT invite (emails + roles).
+      properties:
+        user_name: { type: string }
+        user_email: { type: string }
+
+    GlobalUserInviteResult:
+      type: object
+      required: [ok, id, email, name, created, invitation_delivered, invitation_delivery]
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_invite.go:112-120.
+      properties:
+        ok: { type: boolean }
+        id:
+          type: integer
+          description: The platform user id, whether it was created now or already existed.
+        email:
+          type: string
+          description: The address, lower-cased and trimmed.
+        name: { type: string }
+        created:
+          type: boolean
+          description: >
+            False when the address already had an account. The existing
+            account is never renamed.
+        invitation_delivered:
+          type: boolean
+          description: >
+            Always false. Sending an invitation is an external
+            identity-provider call with no equivalent in this service, and a
+            bare `{"ok": true}` would be rendered as "invitation sent".
+        invitation_delivery:
+          type: string
+          description: Why nothing was delivered, in full.
+
+    UserProjectRoleMap:
+      type: object
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_project_permissions.go:99-110 —
+        role name → its sorted permission names, for the first personal project.
+      additionalProperties:
+        type: array
+        items: { type: string }
+
+    PermissionMatrixRow:
+      type: object
+      required: [name]
+      description: >
+        NOTE(W2): internal/api/v2/admin/roles.go:139-147 — one permission and
+        one boolean column per role.
+      properties:
+        name:
+          type: string
+          description: The permission name.
+      additionalProperties:
+        type: boolean
+
+    PermissionMatrix:
+      type: object
+      required: [total, rows]
+      description: >
+        NOTE(W2): internal/api/v2/admin/roles.go:148-152. `total` counts the
+        permission CATALOGUE; this endpoint is never paginated.
+      properties:
+        total: { type: integer }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/PermissionMatrixRow' }
+
+    UserProjectPermissionsUpdate:
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_project_permissions.go:373-420 —
+        both shapes the reference accepts: the role map, or the matrix rows the
+        GET returns with ?old_format.
+      oneOf:
+        - $ref: '#/components/schemas/UserProjectRoleMap'
+        - type: array
+          items: { $ref: '#/components/schemas/PermissionMatrixRow' }
+
+    UserProjectPermissionsResult:
+      type: object
+      required: [role_map, projects, roles_created, granted, revoked, roles_assigned]
+      description: >
+        NOTE(W2): internal/api/v2/admin/user_project_permissions.go:180-187.
+        `role_map` is the reference's own response field; the counters are what
+        make a no-op distinguishable from a save.
+      properties:
+        role_map: { $ref: '#/components/schemas/UserProjectRoleMap' }
+        projects:
+          type: integer
+          description: How many projects the save was applied to.
+        roles_created: { type: integer }
+        granted: { type: integer }
+        revoked: { type: integer }
+        roles_assigned:
+          type: integer
+          description: Role assignments added to existing members by ?append_user_role.
+
+    ProjectGroup:
+      type: object
+      required: [id, name]
+      description: >
+        NOTE(W2): internal/api/v2/projects/handler.go — the Group struct.
+      properties:
+        id: { type: integer }
+        name: { type: string }
+
+    ProjectWithGroups:
+      type: object
+      required: [id, name, owner_id, plugins, keycloak_groups, create_success, suspended, groups]
+      description: >
+        NOTE(W2): internal/api/v2/projects/groups.go:295-330 — the body all
+        three group writes return, mirroring the reference's ProjectListModel,
+        so a client re-renders the group chips without re-fetching.
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        owner_id: { type: integer }
+        plugins:
+          type: array
+          items: { type: string }
+        keycloak_groups:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): internal/api/v2/projects/groups.go:310 — the column is
+            copied out as raw JSON and never interpreted by this service; its
+            shape belongs to the Keycloak integration.
+        create_success: { type: boolean }
+        suspended: { type: boolean }
+        groups:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectGroup' }
+
+    ProjectGroupCreate:
+      type: object
+      required: [name]
+      description: >
+        NOTE(W2): internal/api/v2/projects/groups.go:57-59. `no_group` is
+        rejected: it is the sentinel the listing uses for "no group at all".
+      properties:
+        name: { type: string }
+
+    PublishedAgentVersion:
+      type: object
+      required: [version_id, version_name, published_at, published_by]
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:40-45.
+      properties:
+        version_id: { type: integer }
+        version_name: { type: string }
+        published_at:
+          type: string
+          nullable: true
+          description: The version's creation timestamp, `YYYY-MM-DDTHH:MM:SS`.
+        published_by:
+          nullable: true
+          description: >
+            `meta.published_by` of the version, verbatim. Unconstrained because
+            it is whatever the publishing path stored there.
+          x-elitea-passthrough: >-
+            NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:44 —
+            copied straight out of the version's meta JSON.
+
+    PublishedAgentAdoption:
+      type: object
+      required: [conversation_count, project_count]
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:47-54.
+        Both counters are NULL when the agent's `meta.adoption` is absent —
+        nothing in this stack writes that key. The reference defaults them to
+        0, which renders as "nobody uses this" rather than "this platform does
+        not measure that".
+      properties:
+        conversation_count:
+          type: integer
+          nullable: true
+        project_count:
+          type: integer
+          nullable: true
+
+    PublishedAgent:
+      type: object
+      required:
+        [public_agent_id, name, description, author_project_id, published_versions,
+         total_published_versions, adoption, created_at]
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:56-65.
+      properties:
+        public_agent_id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        author_project_id:
+          type: integer
+          nullable: true
+          description: >
+            `applications.shared_owner_id` — the project the agent was published
+            FROM. Null for a row published without one.
+        published_versions:
+          type: array
+          items: { $ref: '#/components/schemas/PublishedAgentVersion' }
+        total_published_versions: { type: integer }
+        adoption: { $ref: '#/components/schemas/PublishedAgentAdoption' }
+        created_at:
+          type: string
+          nullable: true
+
+    PublishedAgentsListing:
+      type: object
+      required: [items, total, page, page_size]
+      description: >
+        NOTE(W2): internal/api/v2/eliteacore/admin_published_agents.go:110-115.
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PublishedAgent' }
+        total:
+          type: integer
+          description: Published agents in the public project, before paging.
+        page: { type: integer }
+        page_size: { type: integer }
 
     # ---- Author detail (eliteacore) ---------------------------------------
     AuthorDetail:
@@ -3305,6 +4502,267 @@ paths:
   # ==========================================================================
   # ADMIN — roles
   # ==========================================================================
+  # ==========================================================================
+  # ADMIN & TENANCY PARITY (issue 255)
+  #
+  # `administration` is a STATIC segment on all three, not a {mode} parameter:
+  # each pylon original registers `mode_handlers = {'administration': AdminAPI}`
+  # and nothing else, so another mode has no handler to reach. A {mode} route
+  # would have to answer something plausible for a mode that does not exist.
+  # ==========================================================================
+  /admin/modes/administration:
+    get:
+      operationId: listUserModeRoles
+      summary: List every central role assignment, across all modes
+      description: |
+        Which user holds which CENTRAL role in which pylon mode — the registry
+        behind the admin console's Modes table. Each row carries the composite
+        `<user_id>:<mode>:<role>` id the DELETE below consumes.
+
+        The reference walks its runtime mode registry and asks for every
+        (user, mode) pair over RPC; this is one join over the assignment table,
+        so the modes reported are the modes that have roles.
+      tags: [admin]
+      responses:
+        '200':
+          description: Every central assignment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModeRoleListing'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    post:
+      operationId: assignUserModeRole
+      summary: Assign a user to a role in a mode
+      description: |
+        SINGLE-ROLE-PER-MODE: every assignment the user holds in that mode is
+        dropped before the new one is written, in one transaction — the rule
+        auth_core's assign_user_to_role enforces. A role the deployment does
+        not define in that mode is a 400 and leaves the user's current role
+        alone, rather than revoking it and granting nothing.
+
+        Granting or revoking `super_admin` additionally requires the caller to
+        hold `admin.auth.users.super_admin`: this endpoint writes the same
+        table /admin/auth_users does, so without the guard it would be a
+        second, unguarded route to the platform's highest role.
+
+        `default` mode is refused. Default-mode roles are project membership,
+        which has no meaning without a project id.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModeRoleAssignRequest'
+      responses:
+        '200':
+          description: The assignment now exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModeRoleAssignResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: >
+            The caller lacks `modes.users`, or is assigning/revoking
+            `super_admin` without `admin.auth.users.super_admin`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404': { $ref: '#/components/responses/404' }
+        '500': { $ref: '#/components/responses/500' }
+
+    delete:
+      operationId: removeUserModeRole
+      summary: Remove a user from a role in a mode
+      description: |
+        Takes the composite id the listing produces. The reference's handler is
+        a `# TODO` that answers `{"ok": true}` having deleted nothing; this one
+        deletes, and answers 404 when the triple names no assignment rather
+        than reporting a removal that did not happen.
+      tags: [admin]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: string }
+          description: '`<user_id>:<mode>:<role>`, as returned by the listing.'
+      responses:
+        '200':
+          description: The assignment was removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModeRoleRemoveResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such assignment — nothing was removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+  /admin/user_invite/administration:
+    post:
+      operationId: inviteUserGlobally
+      summary: Create a platform user record for an address
+      description: |
+        The platform-level counterpart of the project invite
+        (`POST /admin/users/{mode}/{project_id}`): it creates an
+        `auth_core__user` row for an address that has never logged in, with no
+        project and no role, so the console can then place them. The address is
+        resolved by email on first login.
+
+        NO INVITATION IS DELIVERED. The reference calls an external identity
+        service to create and mail an invitation token; that integration has no
+        equivalent here, so `invitation_delivered` is false and
+        `invitation_delivery` says why. Answering a bare `{"ok": true}` would
+        be rendered by a console as "invitation sent".
+
+        Inviting an address that already has an account is not an error and is
+        not a rename: `created` is false and the stored name is untouched.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlobalUserInviteRequest'
+      responses:
+        '200':
+          description: The platform user record exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalUserInviteResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /admin/user_project_permissions/administration:
+    get:
+      operationId: getUserProjectPermissions
+      summary: Read the permission matrix personal projects grant
+      description: |
+        The default every ordinary project gets, as opposed to the named scopes
+        `/admin/permissions/{scope}/{mode}` edits. Read from the FIRST personal
+        project (`project_user_<id>`); with no personal project at all the
+        answer is 400, as it is in the reference.
+
+        Default body is role → sorted permission names. `?old_format` returns
+        the matrix rows instead — one row per permission in the catalogue, one
+        boolean column per role — which is also the shape the PUT accepts back.
+        Either body can be PUT back unchanged; both include the `system` role,
+        which the PUT ignores rather than rejects.
+
+        The grants reported are the project's OWN overrides, falling back to the
+        central `default` matrix only when it has none. The reference reports
+        the central matrix either way, so a project with overrides reads back
+        as something its members do not have.
+      tags: [admin]
+      parameters:
+        - name: old_format
+          in: query
+          schema: { type: boolean }
+          allowEmptyValue: true
+          description: Presence (not value) switches to the matrix-row shape.
+      responses:
+        '200':
+          description: >
+            The personal-project matrix. The schema shown is the DEFAULT body;
+            with `?old_format` the body is a PermissionMatrix instead — the two
+            are not modelled as a `oneOf` because the generated mock for a
+            map-shaped `oneOf` branch does not type-check.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProjectRoleMap'
+        '400':
+          description: This deployment has no personal projects.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: updateUserProjectPermissions
+      summary: Apply a permission matrix across every personal or team project
+      description: |
+        REPLACES each named role's permission set — the submitted set is the
+        whole set, so a permission left out is revoked — across every personal
+        project, or with `?team_projects` across every project that is neither
+        personal nor the public one.
+
+        Everything runs in ONE transaction. The reference walks projects on
+        autocommitting sessions and deletes a role's permissions before
+        re-inserting them, so an interruption leaves part of the estate on the
+        old matrix and can leave a role granting nothing at all.
+
+        Revocation is bounded by the body's shape. The role map IS the role's
+        whole permission set, so anything absent from it is revoked. The MATRIX
+        shape revokes only within the permission rows it carries, so a filtered
+        or paged view of the matrix cannot silently revoke what it never showed
+        — the same rule the /admin/permissions PUT applies to the identical
+        body.
+
+        A role name that any target project does not define is a 400 unless
+        `?create_role_if_not_exist` asks for it to be created; the reference
+        silently skips it FOR THAT PROJECT and reports success for the whole
+        estate. An unknown permission name is always a 400. The `system` role is
+        neither written nor rejected: it appears in every body the GET produces,
+        so rejecting it would make that body unsavable.
+      tags: [admin]
+      parameters:
+        - name: team_projects
+          in: query
+          schema: { type: boolean }
+          allowEmptyValue: true
+          description: >
+            Presence targets every SHARED project (excluding the public one)
+            instead of the personal ones.
+        - name: create_role_if_not_exist
+          in: query
+          schema: { type: boolean }
+          allowEmptyValue: true
+          description: Presence creates roles the target projects do not define.
+        - name: append_user_role
+          in: query
+          schema: { type: boolean }
+          allowEmptyValue: true
+          description: >
+            Presence also grants each named role to every existing member of the
+            target projects who does not already hold it. It only ever adds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProjectPermissionsUpdate'
+      responses:
+        '200':
+          description: What the save changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProjectPermissionsResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
   /admin/roles/default/{project_id}:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -3740,6 +5198,187 @@ paths:
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
 
+  /elitea_core/analytics_costs/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: getAnalyticsCosts
+      summary: LLM cost breakdown for a project
+      description: |
+        Reads gateway.llm_budget_accumulators — the rows elitea-scheduler's
+        budgetwriteback consumer folds the gateway's GATEWAY_BUDGET_DELTAS
+        stream into. That is the platform's single accounting path, and the
+        same rows the usage and project-budget reads report, so the three
+        cannot disagree about money.
+
+        `total_cost` sums PROJECT-scope rows only. A narrower scope (a
+        user-scope row for the same project) is a subset of the project's
+        spend, so summing every row would count the same dollars twice; every
+        scope present is still reported under `by_scope`.
+
+        WHAT IS ABSENT, and deliberately not zero-filled: by_model, by_agent,
+        by_user, a daily trend, token counts, a call count and an average cost
+        per call. A budget delta carries only {event_id, scope, scope_id,
+        project_id, org_id, period_start, period_end, delta_nano_usd}, so no
+        producer records those dimensions; an empty array would read as "this
+        project called no models", which is false. The pylon original answered
+        them from a per-call audit-event ledger that no longer exists.
+
+        Amounts are exact decimals produced by PostgreSQL NUMERIC and are never
+        round-tripped through a float.
+      tags: [analytics]
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          description: >
+            Cost breakdown over the requested window. Accumulator periods
+            OVERLAPPING the window are included, because a period is a whole
+            billing month and the default seven-day window sits inside one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsCostBreakdown'
+        '400':
+          description: The project id was not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  # ==========================================================================
+  # CHAT — execution-step traces
+  # ==========================================================================
+  /elitea_core/message_traces/prompt_lib/{project_id}/{conversation_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: listMessageTraces
+      summary: Trace steps for a conversation — the pin strip under each answer
+      description: |
+        The LIGHT projection: labels, ordering and the bounded `attrs` display
+        sidecar. The heavy fields (tool_inputs, tool_output, text, thinking)
+        are detail-only and are fetched one step at a time through
+        getMessageTrace, so rendering a conversation's chips never detoasts
+        them.
+
+        Rows are ordered by (started_at, id) with null timestamps last. Blank
+        thinking steps — transition markers the runtime emits with an action
+        but no text — are excluded, because the client draws a pin for every
+        row it receives.
+
+        `total` is null unless include_total=true, so "not counted" stays
+        distinguishable from "counted zero".
+      tags: [chat]
+      parameters:
+        - name: message_group_id
+          in: query
+          required: false
+          schema: { type: integer }
+          description: >
+            Scope to a single message group. A value that is not a positive
+            integer is a 400 rather than an ignored filter — dropping it would
+            return the whole conversation to a caller that asked for one
+            message. Omit the parameter to ask for the whole conversation.
+        - name: message_group_ids
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            Comma-separated loaded message-group ids, at most 200. Duplicates
+            are collapsed; a non-integer member is a 400.
+        - name: kind
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            Filter by step kind. Allowed values are `tool_call` and
+            `thinking_step`; anything else is a 400 rather than an empty page.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 2000, maximum: 2000 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+        - name: include_total
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Trace steps for the conversation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageTraceListing'
+        '400':
+          description: >
+            An unsupported kind, a malformed message_group_id, or a malformed
+            message-group id list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/message_trace/prompt_lib/{project_id}/{step_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: step_id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: getMessageTrace
+      summary: One trace step in full, fetched on pin expand
+      description: |
+        The light projection plus the heavy fields.
+
+        `message_group_id` is REQUIRED and is matched together with the step
+        id: it is what confines a numeric step id to the message the caller is
+        reading, so a step from elsewhere is a 404 rather than a body.
+      tags: [chat]
+      parameters:
+        - name: message_group_id
+          in: query
+          required: true
+          schema: { type: integer }
+          description: The owning message group, from the trace-list row.
+      responses:
+        '200':
+          description: The full trace step.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageTraceStepDetail'
+        '400':
+          description: message_group_id was missing or not a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such step within that message group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
   # ==========================================================================
   # APPLICATIONS — list / create
   # ==========================================================================
@@ -3805,6 +5444,49 @@ paths:
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
+
+  /elitea_core/admin_published_agents/administration:
+    get:
+      operationId: listAdminPublishedAgents
+      summary: List the agents this deployment has published
+      description: |
+        The admin dashboard's published-agents view — not the catalogue the
+        product's Agents page reads. It reports every application in the PUBLIC
+        project that has at least one `published` version, with those versions,
+        who published each and when, newest first.
+
+        Draft versions are excluded from `published_versions`, and an
+        application with only drafts does not appear at all.
+
+        `adoption` is null-valued unless the agent's `meta.adoption` has been
+        written; see PublishedAgentAdoption for why it is not defaulted to
+        zeroes.
+      tags: [admin]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+          description: 1-based. A page past the end is an empty page.
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [created_at, name]
+            default: created_at
+          description: Always descending. Any other value falls back to created_at.
+      responses:
+        '200':
+          description: Published agents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishedAgentsListing'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
 
   /elitea_core/public_applications/prompt_lib:
     get:
@@ -4922,6 +6604,372 @@ paths:
                 $ref: '#/components/schemas/AgentCategoriesResponse'
         '401': { $ref: '#/components/responses/401' }
 
+  # ---------------------------------------------------------------------------
+  # BUDGETS & USAGE (issue #246)
+  #
+  # Ported from legacy/plugins/elitea_core/api/v2/{project_budget,
+  # project_budgets,user_budget,user_budgets,usage}.py. The `prompt_lib` and
+  # `administration` segments are LITERAL, not a `{mode}` placeholder: the mode
+  # selects which handler and which permission gate runs, and the per-member
+  # read differs between the two by more than its gate.
+  # ---------------------------------------------------------------------------
+  /elitea_core/project_budget/prompt_lib/{project_id}/budget:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectBudget
+      summary: A project's own monthly budget and current-period spend
+      description: |
+        The limit an operator authored, the spend accrued against it this
+        calendar month, and the derived remaining/percent figures.
+
+        `limit_source` says where the enforced limit came from: `explicit` when
+        one is set and enabled for this project, `unlimited` otherwise. The
+        reference had a third value, `default`, for a platform-wide fallback
+        limit; this platform has none — gateway.project_budget is the only
+        limit there is.
+
+        `spend_available` distinguishes "no calls billed yet this period" from
+        "no usage data": the accrued figure comes from the budget write-back
+        consumer, and its absence is a fact about the pipeline, not about the
+        project.
+
+        Token counts and the per-model / per-day breakdown the reference served
+        from LiteLLM are ABSENT, not zero: the write-back path persists one
+        accumulated USD figure per scope and period, and zero-filling them
+        would read as "this project made no calls".
+
+        Available to project members. A member who is neither a project admin nor
+        the owner of a personal project receives the same payload with
+        `monthly_limit`, `effective_limit`, `spend`, `remaining` and `currency`
+        REMOVED and `can_see_amounts: false` — the same rule `getProjectUsage`
+        applies, because the two serve the same figures behind the same gate and
+        redacting only one of them would leave the other as a way around it.
+
+        The administration-mode twin below serves platform administrators
+        regardless of membership and never redacts.
+      tags: [budgets]
+      responses:
+        '200':
+          description: Budget state and current-period spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudget'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/project_budget/administration/{project_id}/budget:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectBudgetAdmin
+      summary: Any project's budget and current-period spend (admin)
+      description: |
+        The same payload as the project-scoped read, for a platform
+        administrator who is not a member of the project.
+      tags: [budgets]
+      responses:
+        '200':
+          description: Budget state and current-period spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudget'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: setProjectBudget
+      summary: Set a project's monthly budget (admin)
+      description: |
+        Creates or replaces the project's limit. The write lands on the row the
+        LLM gateway reads on every call, so it takes effect on the next call
+        rather than at the next period.
+
+        The response is the resulting state, which can differ from what was
+        sent: a null `monthly_limit` or `enabled: false` leaves the project
+        unlimited, so `effective_limit` and `limit_source` are the fields worth
+        reading back.
+
+        `currency` other than `USD` is rejected rather than stored. Nothing in
+        the money path converts, so an accepted label would sit on a limit the
+        gateway still enforces in dollars.
+      tags: [budgets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetWrite'
+      responses:
+        '200':
+          description: Budget state after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudget'
+        '400':
+          description: Negative or non-numeric limit, unsupported currency, or out-of-range threshold.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/project_budgets/administration:
+    get:
+      operationId: listProjectBudgets
+      summary: Every project's budget and current-period spend (admin)
+      description: |
+        Backs Admin → Budgets. `counts` labels the team/personal tabs and is
+        computed over ALL projects; `total` describes the filtered set the rows
+        come from.
+
+        Only `name` and `id` are orderable. Limit, spend and utilisation are
+        per-row derivations, so ordering by them would sort the page that was
+        already fetched rather than the table; an unsupported `sort_by` falls
+        back to `name`.
+
+        A personal project is reported with its owner's identity as
+        `display_name`, since `project_user_<n>` is not a name anyone searches
+        for.
+      tags: [budgets]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 20 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+        - name: search
+          in: query
+          required: false
+          schema: { type: string }
+          description: Matches project name, project id, or the owner's name or email.
+        - name: project_type
+          in: query
+          required: false
+          schema: { type: string, enum: [team, personal] }
+        - name: sort_by
+          in: query
+          required: false
+          schema: { type: string, enum: [name, id], default: name }
+        - name: sort_order
+          in: query
+          required: false
+          schema: { type: string, enum: [asc, desc], default: asc }
+      responses:
+        '200':
+          description: One page of project budgets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectBudgetListing'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/user_budget/prompt_lib/{project_id}/user_budget/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getMemberBudget
+      summary: One member's budget within a project
+      description: |
+        A member may read only their OWN row; asking for another member's
+        returns 403 unless the caller is an admin of the project.
+
+        `enforced` is FALSE, and that is a statement about the platform, not
+        this project: the gateway's admission check is project-scoped only, so
+        a per-member limit is an authored intention that nothing currently
+        blocks a call on. Render it as authored-but-inactive.
+      tags: [budgets]
+      responses:
+        '200':
+          description: The member's budget state and current-period spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudget'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: The caller asked for another member's budget and is not a project admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/user_budget/administration/{project_id}/user_budget/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getMemberBudgetAdmin
+      summary: Any member's budget within any project (admin)
+      tags: [budgets]
+      responses:
+        '200':
+          description: The member's budget state and current-period spend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudget'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: setMemberBudget
+      summary: Set one member's budget within a project (admin)
+      description: |
+        Caps a single member's share without changing the project's own limit.
+
+        NOT ENFORCED: see `enforced` on the response. The row is stored and read
+        back faithfully, but nothing in the gateway blocks a call on it today.
+      tags: [budgets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetWrite'
+      responses:
+        '200':
+          description: The member's budget state after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudget'
+        '400':
+          description: Negative or non-numeric limit, unsupported currency, or out-of-range threshold.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/user_budgets/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listMemberBudgets
+      summary: Per-member budgets and spend for a project
+      description: |
+        Backs the Members section of Settings → Usage.
+
+        Restricted to admins OF THIS PROJECT: an ordinary member may see their
+        own usage and not their colleagues', so the whole table is admin-only
+        and other members receive 403.
+      tags: [budgets]
+      responses:
+        '200':
+          description: One row per project member, plus the project's warning threshold
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudgetListing'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: The caller is not an admin of this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/user_budgets/administration/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listMemberBudgetsAdmin
+      summary: Per-member budgets and spend for any project (admin)
+      tags: [budgets]
+      responses:
+        '200':
+          description: One row per project member, plus the project's warning threshold
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberBudgetListing'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/usage/prompt_lib/{project_id}/usage:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectUsage
+      summary: Current-period usage against the applicable budget
+      description: |
+        Backs Settings → Usage. The period is the current calendar month and is
+        reported back in `period_start`, `period_end` and `resets_at`, so no
+        date range is accepted.
+
+        `scope=project` reports the whole project; `scope=user` reports only the
+        calling member's own budget within it — which is NOT enforced (see
+        `enforced`) and reports no spend of its own, because the billing path
+        accrues by project.
+
+        A member who may not see platform cost figures receives the same payload
+        with `monthly_limit`, `effective_limit`, `spend`, `remaining` and
+        `currency` REMOVED and `can_see_amounts: false`; percentages, the
+        warning threshold and the period are still present, so the usage bar
+        still renders. Project admins, and the owner of a personal project, see
+        the amounts.
+      tags: [budgets]
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          schema: { type: string, enum: [project, user], default: project }
+      responses:
+        '200':
+          description: Usage and budget state for the requested scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageReport'
+        '400':
+          description: scope was neither 'project' nor 'user'.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
   # NOTE(#126): generateAgentDraft (POST
   # /elitea_core/generate_application_draft/prompt_lib/{project_id}) was
   # removed along with the sibling generate_project_context_draft and
@@ -4978,16 +7026,102 @@ paths:
                 $ref: '#/components/schemas/GroupsListResponse'
         '401': { $ref: '#/components/responses/401' }
 
+  /projects/group/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: addProjectGroup
+      summary: Create a group if needed and attach it to a project
+      description: |
+        Creates the `centry.project_group` row when the name is new and attaches
+        it to the project, in one transaction — so a rejected create cannot
+        leave a group row behind with nothing attached to it. An existing name
+        is REUSED rather than duplicated: the column is unique, and two projects
+        in the same group is the point.
+
+        `no_group` is rejected: it is the sentinel the listing uses for a
+        project with no group at all.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectGroupCreate'
+      responses:
+        '201':
+          description: The project, with its groups
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWithGroups'
+        '400':
+          description: Unvalidatable body, reserved name, or unknown project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /projects/group/prompt_lib/{project_id}/{group_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: group_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    delete:
+      operationId: removeProjectGroup
+      summary: Detach a group from a project
+      description: |
+        Removes the ASSOCIATION. The group row survives — it may be attached to
+        other projects, and it belongs to the deployment rather than to the
+        project detaching from it.
+
+        A group that is not attached to this project is a 404. The reference
+        answers 204, having swallowed the error its list removal raises, so
+        "detached" and "nothing happened" were indistinguishable.
+      tags: [applications]
+      responses:
+        '204':
+          description: Detached.
+        '400':
+          description: Unknown project or unknown group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: The group is not attached to this project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
   /projects/groups/prompt_lib/{project_id}:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
 
     put:
       operationId: putProjectGroups
-      summary: Set group membership for a project
+      summary: Replace a project's group membership
       description: |
-        NOTE(W2): internal/api/v2/projects/handler.go:132-181 — the parsed
-        request body is echoed back verbatim as the 200 response.
+        REPLACES the project's groups with the named ones, creating any that do
+        not exist yet; a group left out of the list is detached. An empty list
+        detaches everything and deletes no group rows. Both statements run in
+        one transaction, so an interrupted save cannot leave the project with no
+        groups at all.
+
+        Until issue 255 this handler decoded the body and echoed it back as the
+        200 response without touching a table, so every group edit reported
+        success and changed nothing.
       tags: [applications]
       requestBody:
         required: true
@@ -4997,14 +7131,157 @@ paths:
               $ref: '#/components/schemas/ProjectGroupsUpdate'
       responses:
         '200':
-          description: Echo of the request body
+          description: The project, with its groups
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProjectGroupsUpdate'
+                $ref: '#/components/schemas/ProjectWithGroups'
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  # ---------------------------------------------------------------------------
+  # PROJECT QUOTA & STATISTICS (issue #246)
+  #
+  # legacy/plugins/projects/api/v2/{quota,statistics}.py. Neither carries a
+  # `{mode}` segment — both are plain flask_restful Resources with
+  # `url_params = ['<int:project_id>']`.
+  # ---------------------------------------------------------------------------
+  /projects/quota/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectQuota
+      summary: A project's resource quota, or one quota check
+      description: |
+        Without `quota`, answers the project's whole quota row. With it, answers
+        the bare JSON boolean "is this project still under that ceiling?".
+
+        `-1` is the quota tables' unlimited sentinel.
+
+        The `quota` form also ROLLS THE WINDOW OVER when it is due: after 30
+        days it advances `last_update_time` by one window and zeroes the
+        per-window counters. That is a write on a read, and it is the reference's
+        behaviour — it is the only thing that ever resets those counters, so
+        without it a project that hit its ceiling would be denied forever.
+      tags: [applications]
+      parameters:
+        - name: quota
+          in: query
+          required: false
+          schema: { type: string, enum: [dast_scans, sast_scans] }
+          description: |
+            Check one ceiling instead of returning the row. Only metrics that
+            exist in BOTH the quota table and the counter table are checkable;
+            the reference raises KeyError on anything else.
+      responses:
+        '200':
+          description: The quota row, or the bare boolean result of one check
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ProjectQuota'
+                  - type: boolean
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such project, or the project has no quota row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: setProjectQuota
+      summary: Update a project's VCU or storage limits
+      description: |
+        `usage_type` selects which triple of columns the body writes; the other
+        triple is untouched. An omitted field CLEARS its column rather than
+        leaving it alone, matching the reference's `update_*_limits` — the form
+        always sends all three, and treating omission as "leave alone" would
+        make a limit impossible to clear.
+
+        The reference answers 500 for a missing `usage_type` (it calls `.lower()`
+        on None) and a bodiless 200 for an unknown one; both are 400 here.
+      tags: [applications]
+      parameters:
+        - name: usage_type
+          in: query
+          required: true
+          schema: { type: string, enum: [vcu, storage] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectQuotaUpdate'
+      responses:
+        '200':
+          description: The quota row after the write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectQuota'
+        '400':
+          description: Missing or unknown usage_type, or an unvalidatable body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: The project has no quota row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500': { $ref: '#/components/responses/500' }
+
+  /projects/statistics/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectStatistics
+      summary: A project's usage counters against its quota
+      description: |
+        One `{current, quota}` pair per metric.
+
+        `quota` is NULL where the quota table has no column for that metric.
+        The reference indexes the quota row with every counter's name and raises
+        KeyError on the first one that is missing, so this endpoint cannot run
+        there at all; reporting null is the deliberate replacement.
+
+        `tasks_count` is NOT reported. The reference resolves it through a
+        `tasks_count` RPC that no plugin registers, and nothing in this platform
+        counts tasks.
+
+        `storage_space` is measured live from the artifact store, in BYTES on
+        both sides. The reference reported megabytes on the current side and
+        paired them with a gigabyte quota column that does not exist.
+      tags: [applications]
+      responses:
+        '200':
+          description: Counters and their ceilings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectStatistics'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404':
+          description: No such project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500': { $ref: '#/components/responses/500' }
 
   # APPLICATIONS — project context
@@ -5905,6 +8182,468 @@ paths:
   # 2-segment path to it) and the UI has no call site for the 2-segment shape.
 
   # ==========================================================================
+  # SKILLS — publishing (#249)
+  # internal/api/v2/skillpublish, registered in internal/api/router.go beside
+  # the application publish block. The publish/unpublish/validate trio mirrors
+  # the application-level one; the catalog reads serve the PUBLIC project's
+  # schema (PUBLIC_PROJECT_ID, default 1) and expose published versions only.
+  # ==========================================================================
+  /elitea_core/publish_skill/prompt_lib/{project_id}/{skill_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: publishSkill
+      summary: Publish a skill version to the public skill catalog
+      description: |
+        Snapshots the version into a new source version named `version_name`
+        and copies it into the public project as a twin skill's published
+        version. Publishing from the public project itself publishes in place.
+        Requires the version to pass pre-publish validation; call
+        /publish_skill_validate first to receive a `validation_token` that
+        skips re-validation.
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version_name]
+              properties:
+                version_name:
+                  type: string
+                  pattern: '^[a-zA-Z0-9._-]{1,50}$'
+                validation_token:
+                  type: string
+                  description: Token issued by /publish_skill_validate for this exact content.
+                category:
+                  type: string
+                  description: One of /skill_categories; an omitted category falls back to "Other".
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  msg: { type: string }
+                  public_skill_id: { type: integer }
+                  public_version_id: { type: integer }
+                  version_name: { type: string }
+                  source_version_id: { type: integer }
+        '400':
+          description: |
+            Bad request. `error` is one of `invalid_category`,
+            `version_name_exists`, `version_name_conflict`, `limit_reached`, or
+            `validation_token_invalid` — the last carrying `validation_result`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    oneOf:
+                      - type: string
+                      - type: array
+                        items:
+                          $ref: '#/components/schemas/SkillFieldError'
+                    description: >-
+                      A refusal code, or the pydantic-style field-error list
+                      the version_name checks emit
+                      (internal/api/v2/skillpublish/publish.go:66-80).
+                  msg: { type: string }
+                  validation_result:
+                    $ref: '#/components/schemas/SkillValidationResult'
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: Publishing is blocked for this project by platform policy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  msg: { type: string }
+        '404': { $ref: '#/components/responses/404' }
+        '409': { $ref: '#/components/responses/409' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/unpublish_skill/prompt_lib/{project_id}/{skill_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: unpublishSkill
+      summary: Remove a published skill version from the public catalog
+      description: |
+        Deletes the catalog copy and reverts the source version to draft. A
+        twin skill left with no published versions is removed with it; an
+        in-place original keeps its drafts.
+      tags: [skills]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Unpublished
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  msg: { type: string }
+                  status: { type: string }
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '409': { $ref: '#/components/responses/409' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/publish_skill_validate/prompt_lib/{project_id}/{skill_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: validateSkillForPublish
+      summary: Validate a skill version before publishing
+      description: |
+        Runs the deterministic pre-publish checks. 200 on PASS/WARN (with a
+        `validation_token`), 422 on FAIL. `ai_validation_available` is always
+        false in this stack — the AI half of the reference's gate has no
+        transport here (issues 126 and 194).
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version_name: { type: string }
+                category: { type: string }
+      responses:
+        '200':
+          description: Validation PASS or WARN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillValidationResult'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '422':
+          description: Validation FAIL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillValidationResult'
+
+  /elitea_core/public_skills/prompt_lib:
+    get:
+      operationId: listPublicSkills
+      summary: List published skills in the public catalog
+      description: |
+        Reads the public project's schema; only skills with a published
+        version appear. `my_liked` and the trend window are not implemented
+        (they depend on the social like store).
+      tags: [skills]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - name: query
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: tags
+          in: query
+          description: Comma-separated tag ids; a skill must carry ALL of them.
+          schema: { type: string }
+        - name: sort_by
+          in: query
+          description: created_at (default) or name.
+          schema: { type: string }
+        - name: sort_order
+          in: query
+          description: asc or desc (default).
+          schema: { type: string }
+      responses:
+        '200':
+          description: Published skills
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PublicSkillListItem'
+
+  /elitea_core/public_skill/prompt_lib/{skill_id}:
+    parameters:
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getPublicSkill
+      summary: Retrieve one public catalog skill and its newest published version
+      tags: [skills]
+      responses:
+        '200':
+          description: Public skill detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSkillDetail'
+        '400': { $ref: '#/components/responses/400' }
+        '404': { $ref: '#/components/responses/404' }
+
+  /elitea_core/public_skill/prompt_lib/{skill_id}/{version_name}:
+    parameters:
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_name
+        in: path
+        required: true
+        schema: { type: string }
+
+    get:
+      operationId: getPublicSkillVersion
+      summary: Retrieve one public catalog skill pinned to a published version name
+      tags: [skills]
+      responses:
+        '200':
+          description: Public skill detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSkillDetail'
+        '400': { $ref: '#/components/responses/400' }
+        '404': { $ref: '#/components/responses/404' }
+
+  /elitea_core/attach_public_skill/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: attachPublicSkill
+      summary: Fork a published skill into a project and attach it to agent versions
+      description: |
+        Forks the published (skill, version) into this project once, reusing an
+        existing local copy when one exists, then writes one
+        entity_skill_mapping row per agent version. Partial success is carried
+        per agent in `results`, not in the HTTP status.
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_skill_id, public_version_id, agent_version_ids]
+              properties:
+                public_skill_id: { type: integer }
+                public_version_id: { type: integer }
+                agent_version_ids:
+                  type: array
+                  items: { type: integer }
+                entity_type:
+                  type: string
+                  default: agent
+                  description: >-
+                    Only "agent" is accepted; pylon's SkillEntityTypes enum has
+                    no other member
+                    (internal/api/v2/skillpublish/attach.go:66-72).
+      responses:
+        '200':
+          description: Per-agent attach outcomes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        agent_version_id: { type: integer }
+                        ok: { type: boolean }
+                        http_status: { type: integer }
+                        error: { type: string }
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+
+  /elitea_core/skill_categories/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listSkillCategories
+      summary: List the predefined skill categories available for publishing
+      description: |
+        The nine predefined categories, "Other" last. Admin-added extras
+        (the reference's `skill_publishing_guardrail.skill_categories`) are not
+        served: this platform's admin config schema has no such field.
+      tags: [skills]
+      responses:
+        '200':
+          description: Skill categories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        is_default: { type: boolean }
+        '400': { $ref: '#/components/responses/400' }
+
+  /elitea_core/skill_export_fork/prompt_lib/{project_id}/{skill_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: exportSkillFork
+      summary: Build the JSON fork payload for a skill's default version
+      description: |
+        Distinct from /skill_export, which downloads Markdown. The copied
+        version is always emitted as the target's single 'base' version.
+      tags: [skills]
+      responses:
+        '200':
+          description: Fork payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillForkPayload'
+        '400': { $ref: '#/components/responses/400' }
+        '404': { $ref: '#/components/responses/404' }
+
+  /elitea_core/skill_export_fork/prompt_lib/{project_id}/{skill_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: exportSkillVersionFork
+      summary: Build the JSON fork payload for a specific skill version
+      tags: [skills]
+      responses:
+        '200':
+          description: Fork payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillForkPayload'
+        '400': { $ref: '#/components/responses/400' }
+        '404': { $ref: '#/components/responses/404' }
+
+  /elitea_core/agents_with_skill/prompt_lib/{project_id}/{skill_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: skill_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          description: The PUBLIC catalog skill id, not a local one.
+
+    get:
+      operationId: listAgentsWithSkill
+      summary: List agent versions in this project that use a public skill
+      description: |
+        Reverse lookup through the fork lineage: every local copy of the public
+        skill (`parent_project_id` + `parent_entity_id` in the version meta),
+        then every agent version mapped to one.
+      tags: [skills]
+      responses:
+        '200':
+          description: Agent versions using the skill
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        application_id: { type: integer }
+                        name: { type: string }
+                        entity_version_id: { type: integer }
+                        icon_meta:
+                          type: object
+                          nullable: true
+                          additionalProperties: true
+                          x-elitea-passthrough: >-
+                            NOTE(W2): applications.meta->'icon_meta', forwarded
+                            as stored
+                            (internal/api/v2/skillpublish/attach.go:281-287) —
+                            the icon payload's shape is owned by the writer, not
+                            by this route.
+        '400': { $ref: '#/components/responses/400' }
+
+  # ==========================================================================
   # SOCIAL
   # NOTE(W2): internal/api/v2/social/handler.go, mounted at router.go:606
   # `r.Mount("/social", v2social.NewHandler(cfg.Pool).Routes())`. CORRECTION
@@ -5990,6 +8729,63 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/SocialAuthorSummary'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /social/avatar/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getCurrentSocialAvatar
+      summary: Get the authenticated user's own avatar URL
+      description: |
+        internal/api/v2/social/avatar.go (CurrentAvatarRoute.get).
+        centry.social_users.avatar is per-user, not per-project; {project_id}
+        is used only to resolve project-scoped RBAC, matching every other
+        current_* social route.
+      tags: [social]
+      responses:
+        '200':
+          description: The caller's current avatar
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentAvatarResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+    put:
+      operationId: uploadCurrentSocialAvatar
+      summary: Upload/replace the authenticated user's own avatar
+      description: |
+        internal/api/v2/social/avatar.go (CurrentAvatarRoute.upload).
+        Multipart field is `file`; the object lands in the configured
+        ObjectStore under the reserved "avatars" bucket and is served back at
+        the returned /avatars/{project_id}/{filename} URL (public, unauthenticated,
+        the same posture as /icons/{project_id}/{filename}).
+      tags: [social]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Avatar stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentAvatarResponse'
+        '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }
@@ -6277,6 +9073,189 @@ paths:
                 $ref: '#/components/schemas/SocialActionErrorResponse'
 
   # ==========================================================================
+  # TRACING (issue #250)
+  #
+  # Port of legacy/plugins/tracing/api/v2/{collect,otlp,status}.py —
+  # internal/api/v2/tracing/handler.go. Option (a) of the two the issue
+  # offers: elitea-main proxies collect/otlp to an OTEL collector rather than
+  # pointing clients straight at a collector service (see that file's package
+  # doc comment for the full rationale).
+  # ==========================================================================
+  /tracing/collect/prompt_lib:
+    post:
+      operationId: collectTracesUngated
+      summary: Collect UI/worker trace spans (no project context)
+      description: >
+        internal/api/v2/tracing/handler.go's Collect, mounted without a
+        {project_id} — legacy collect.py's PromptLibAPI.post(project_id=None)
+        equivalent, for callers that have not resolved a project yet.
+        Authenticated only.
+      tags: [tracing]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TracingCollectRequest'
+      responses:
+        '200':
+          description: Spans created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracingCollectResponse'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '503':
+          description: Tracing is disabled (OTEL_SDK_DISABLED=true)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tracing/collect/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      operationId: collectTraces
+      summary: Collect UI/worker trace spans for a project
+      description: >
+        internal/api/v2/tracing/handler.go's Collect. Gated by
+        apimw.RequireProjectAccess (project membership), the same gate
+        internal/api/v2/social's plugin routes use — see the handler
+        package's doc comment for why this does not reuse legacy's
+        `models.monitoring.tracing.collect` permission.
+      tags: [tracing]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TracingCollectRequest'
+      responses:
+        '200':
+          description: Spans created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracingCollectResponse'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '503':
+          description: >
+            Tracing is disabled, or project authorization is unavailable
+            (nil connection pool)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tracing/otlp/prompt_lib:
+    post:
+      operationId: proxyOtlpTracesUngated
+      summary: Reverse-proxy an OTLP/HTTP trace payload to the collector (no project context)
+      description: >
+        internal/api/v2/tracing/handler.go's OTLP. Byte-for-byte reverse
+        proxy of the request body to
+        `<OTEL_EXPORTER_OTLP_ENDPOINT>/v1/traces`, avoiding a
+        browser-to-collector CORS hop — port of legacy otlp.py's proxy to
+        Jaeger. Authenticated only.
+      tags: [tracing]
+      requestBody:
+        content:
+          application/x-protobuf: {}
+          application/json: {}
+      responses:
+        '200':
+          description: Relayed collector response (status/body/content-type passed through)
+        '401': { $ref: '#/components/responses/401' }
+        '503':
+          description: Tracing is disabled, or the collector is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Collector request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tracing/otlp/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      operationId: proxyOtlpTraces
+      summary: Reverse-proxy an OTLP/HTTP trace payload to the collector
+      description: >
+        internal/api/v2/tracing/handler.go's OTLP, project-scoped variant.
+        Same RequireProjectAccess gate as the collect route above.
+      tags: [tracing]
+      requestBody:
+        content:
+          application/x-protobuf: {}
+          application/json: {}
+      responses:
+        '200':
+          description: Relayed collector response (status/body/content-type passed through)
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '503':
+          description: >
+            Tracing is disabled, the collector is unreachable, or project
+            authorization is unavailable (nil connection pool)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Collector request timed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tracing/status/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: getTracingStatusForProject
+      summary: Tracing ingest status (project-scoped)
+      description: >
+        internal/api/v2/tracing/handler.go's StatusProject. Port of legacy
+        status.py's PromptLibAPI (models.monitoring.tracing.view).
+      tags: [tracing]
+      responses:
+        '200':
+          description: Tracing status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracingStatusResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+
+  /tracing/status/administration:
+    get:
+      operationId: getTracingStatusAdmin
+      summary: Tracing ingest status and configuration (admin)
+      description: >
+        internal/api/v2/tracing/handler.go's StatusAdmin. Port of legacy
+        status.py's AdminAPI (models.admin.tracing.view), gated here on the
+        already-seeded "runtime.plugins" central permission instead — see
+        the handler package's doc comment.
+      tags: [tracing]
+      responses:
+        '200':
+          description: Tracing status and configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracingStatusResponse'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+
+  # ==========================================================================
   # TAGS
   # ==========================================================================
   /elitea_core/tags/prompt_lib/{project_id}:
@@ -6404,6 +9383,157 @@ paths:
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }
+
+  # ==========================================================================
+  # MCP (issue 252)
+  #
+  # Three REST endpoints. The MCP PROTOCOL endpoints this change also adds —
+  # GET|POST /app/{project_id}/mcp and its category/resource variants — are
+  # deliberately NOT in this document: they carry JSON-RPC 2.0 envelopes whose
+  # request and response shapes are selected by a `method` string, so a
+  # generated typed client for them would be one operation returning a union of
+  # every MCP result. The protocol they speak is the Model Context Protocol
+  # specification, and internal/api/v2/mcp/server.go is the implementation note.
+  #
+  # `mode` is pylon's dispatch key, not decoration: tools_list and tools_call
+  # register `default` only and internal_mcp_pat_status registers `prompt_lib`
+  # only, so those are the literal segments here rather than a {mode} parameter.
+  # ==========================================================================
+  /elitea_core/tools_list/default/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listRegisteredMcpServers
+      summary: List MCP servers registered into the project by an MCP client
+      description: |
+        Always answers 501 with a stated reason. This endpoint does NOT list
+        this platform's own tools — that is the MCP server at
+        /app/{project_id}/mcp. It reports the MCP servers an Elitea MCP CLIENT
+        has registered INTO the project, which the reference implementation
+        keeps in an in-process dict populated over socket.io and keyed by the
+        client's socket id. There is no table behind that dict, and this
+        service runs no socket.io server, so there is nothing to list.
+
+        An empty array is deliberately not returned: it would assert that no
+        client is connected, which this service has no way to know. See
+        internal/api/v2/mcp/registry.go for the full reason string, which is
+        also what the response body carries.
+      tags: [toolkits]
+      responses:
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: |
+            MCP exposure is switched off for this deployment
+            (centry.platform_config mcp_configuration.mcp_enabled), or the
+            caller has no role in the project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: Not implemented, with the reason in `error`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /elitea_core/tools_call/default/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: callRegisteredMcpServerTool
+      summary: Invoke a tool on an MCP server registered into the project
+      description: |
+        Always answers 501 with a stated reason — the same reason
+        /elitea_core/tools_list gives, because it is the same absent registry.
+        Dispatch in the reference implementation is a blocking socket.io call
+        back down the websocket the client registered on.
+
+        The request body is documented because it is what the reference
+        accepts, but it is not read: a 400 for a malformed body would imply
+        that a well-formed one would be dispatched somewhere, and none is.
+      tags: [toolkits]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpToolCallRequest'
+      responses:
+        '401': { $ref: '#/components/responses/401' }
+        '403':
+          description: |
+            MCP exposure is switched off for this deployment, or the caller has
+            no role in the project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: Not implemented, with the reason in `error`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /elitea_core/internal_mcp_pat_status/prompt_lib/{project_id}/{toolkit_type}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: toolkit_type
+        in: path
+        required: true
+        schema: { type: string }
+        description: |
+          Toolkit TYPE, not a toolkit id. Only types beginning `mcp_` can be
+          internal.
+
+    get:
+      operationId: getInternalMcpPatStatus
+      summary: Report the caller's personal-access-token state for an internal MCP toolkit
+      description: |
+        NOTE(W2): internal/api/v2/mcp/patstatus.go:74 (InternalMCPPATStatus).
+
+        An INTERNAL Elitea MCP toolkit points back at this platform's own MCP
+        endpoint and authenticates with the executing user's personal access
+        token, which is injected at dispatch time and never stored. Without a
+        live token the toolkit fails inside an agent run, as an authentication
+        error against a URL the user never typed; this endpoint lets the
+        toolkit UI say so first.
+
+        A type is internal when it begins `mcp_` AND the project holds at least
+        one toolkit of that type whose settings URL points at this platform's
+        own MCP endpoint — `/app/<project id>/mcp/...`, with the project id
+        either left as the `{project_id}` marker or already resolved to an
+        integer. Both forms count: the marker is written only by the reference
+        implementation's prebuilt-config machinery, which has no counterpart
+        here, so matching it alone would leave this endpoint unable to report
+        anything but VALID.
+
+        `state` is reported only about the CALLER's own tokens and is one of
+        VALID (at least one unexpired token; a token with no expiry never
+        expires), EXPIRED (tokens exist, all past their expiry) or MISSING (no
+        tokens). A non-internal type answers `{"internal": false, "state":
+        "VALID"}` — there is no token requirement to report on. The token value
+        is never returned and is never read.
+      tags: [toolkits]
+      responses:
+        '200':
+          description: Token state for this toolkit type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalMcpPatStatus'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '503':
+          description: The toolkit or token lookup could not be performed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==========================================================================
   # SECRETS (issue 151)

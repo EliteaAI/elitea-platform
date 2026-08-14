@@ -28,6 +28,23 @@ tasks:
           (cd "$mod" && go test -race -count=1 ./...)
         done
 
+  coverage:
+    desc: Run Go tests with a coverage profile per module (generated code excluded)
+    cmds:
+      # Same module iteration as `test`, plus the profile CI produces. The
+      # strip step drops generated files (oapi-codegen, sqlc) from the profile
+      # — they are compiled and instrumented like any package, and counting
+      # ~3.4k blocks nobody tests makes the number a function of the last
+      # regeneration rather than of the tests.
+      - |
+        root="$PWD"
+        for mod in $(go list -m -f '{{`{{.Dir}}`}}'); do
+          (
+            cd "$mod" && go test -count=1 -coverprofile=coverage.out ./...
+            [ -f coverage.out ] && "$root/scripts/coverage/strip-generated.sh" coverage.out
+          )
+        done
+
   lint:
     desc: Run golangci-lint on Go code
     dir: "{{.SERVICE}}"
@@ -147,6 +164,17 @@ tasks:
     cmds:
       - podman compose -f deploy/docker-compose.yml logs -f --tail=50
 
+  standalone:up:
+    desc: Bring up the standalone full stack (Go + Bifrost gateway, no pylon) — see README's "Standalone full stack"
+    cmds:
+      - deploy/scripts/standalone-stack.sh certs
+      - deploy/scripts/standalone-stack.sh up
+
+  standalone:down:
+    desc: Tear down the standalone full stack
+    cmds:
+      - deploy/scripts/standalone-stack.sh down
+
   hybrid:config:
     desc: Validate the mixed Centry and selected Go-slice deployment
     cmds:
@@ -209,7 +237,10 @@ tasks:
     desc: Build all container images
     cmds:
       - task: images:go
+      - task: images:scheduler
+      - task: images:gateway
       - task: images:ui
+      - task: images:web
       - task: images:pylon
 
   images:go:
@@ -217,10 +248,27 @@ tasks:
     cmds:
       - podman build -t ghcr.io/eliteaai/elitea-main:dev -f services/elitea-main/Containerfile .
 
+  images:scheduler:
+    desc: Build elitea-scheduler image
+    cmds:
+      # Repo root, not services/elitea-scheduler: the Containerfile COPYs
+      # libs/go/observability (issue #250's local replace target) from there.
+      - podman build -t ghcr.io/eliteaai/elitea-scheduler:dev -f services/elitea-scheduler/Containerfile .
+
+  images:gateway:
+    desc: Build elitea-llm-gateway image
+    cmds:
+      - podman build -t ghcr.io/eliteaai/elitea-llm-gateway:dev -f services/elitea-llm-gateway/Containerfile services/elitea-llm-gateway
+
   images:ui:
     desc: Build UI image
     cmds:
       - podman build -t ghcr.io/eliteaai/elitea-ui:dev -f deploy/docker/Containerfile.elitea-ui .
+
+  images:web:
+    desc: Build elitea-web image
+    cmds:
+      - podman build -t ghcr.io/eliteaai/elitea-web:dev -f apps/elitea-web/Containerfile .
 
   images:pylon:
     desc: Build pylon-indexer image

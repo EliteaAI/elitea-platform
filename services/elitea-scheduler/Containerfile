@@ -1,9 +1,18 @@
 # syntax=docker/dockerfile:1.7
+#
+# Build context is the REPO ROOT (see deploy/docker-compose.yml,
+# docker-bake.hcl, .github/workflows/publish.yml) — issue #250 added a
+# `replace github.com/EliteaAI/elitea-platform/libs/go/observability =>
+# ../../libs/go/observability` to go.mod, which needs that directory reachable
+# from the build context; a context scoped to services/elitea-scheduler alone
+# cannot see it. Mirrors services/elitea-main/Containerfile's builder stage.
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY libs/go/observability ./libs/go/observability
+COPY services/elitea-scheduler/go.mod services/elitea-scheduler/go.sum ./services/elitea-scheduler/
+WORKDIR /src/services/elitea-scheduler
 RUN go mod download
-COPY . .
+COPY services/elitea-scheduler/ ./
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 # VERSION is declared for build-time labelling; no version symbol exists in the

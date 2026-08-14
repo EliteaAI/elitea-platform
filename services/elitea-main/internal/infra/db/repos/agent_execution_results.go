@@ -45,14 +45,16 @@ type currentAgentFullMessage struct {
 }
 
 type currentAgentHITLPause struct {
-	ThreadID   string
-	Interrupt  json.RawMessage
-	Interrupts json.RawMessage
+	ThreadID      string
+	Interrupt     json.RawMessage
+	Interrupts    json.RawMessage
+	InvokedSkills json.RawMessage
 }
 
 type currentAgentAuthorizationPause struct {
-	ThreadID string
-	Requests json.RawMessage
+	ThreadID      string
+	Requests      json.RawMessage
+	InvokedSkills json.RawMessage
 }
 
 type currentAgentTerminal struct {
@@ -91,6 +93,10 @@ type currentAgentTerminalWriter interface {
 		context.Context,
 		sqlcgen.FinalizeCurrentAgentAuthorizationPauseParams,
 	) (int64, error)
+	GetCurrentAgentInvokedSkills(
+		context.Context,
+		int64,
+	) (string, error)
 }
 
 func (r *AgentExecutionResultsRepository) ProjectAgentExecution(ctx context.Context, projection outputapp.AgentExecutionProjection) (outputapp.ProjectionOutcome, error) {
@@ -286,11 +292,15 @@ func decodeCurrentAgentFullMessage(contentJSON, references, responseMetadata jso
 		len(content) > 4*1024*1024 || strings.ContainsRune(content, '\x00') {
 		return currentAgentFullMessage{}, outputapp.ErrAgentExecutionResultMismatch
 	}
+	invokedSkills, err := mergeCurrentAgentInvokedSkills(nil, metadata.InvokedSkills)
+	if err != nil {
+		return currentAgentFullMessage{}, outputapp.ErrAgentExecutionResultMismatch
+	}
 	return currentAgentFullMessage{
 		Content:          content,
 		ThreadID:         metadata.ThreadID,
 		References:       cloneJSONOrDefault(references, []byte("[]")),
-		InvokedSkills:    cloneJSONOrDefault(metadata.InvokedSkills, []byte("[]")),
+		InvokedSkills:    invokedSkills,
 		ResponseMetadata: append(json.RawMessage(nil), responseMetadata...),
 	}, nil
 }
@@ -301,6 +311,7 @@ func decodeCurrentAgentHITLPause(contentJSON, responseMetadata json.RawMessage) 
 		ThreadID       string          `json:"thread_id"`
 		HITLInterrupt  json.RawMessage `json:"hitl_interrupt"`
 		HITLInterrupts json.RawMessage `json:"hitl_interrupts"`
+		InvokedSkills  json.RawMessage `json:"invoked_skills"`
 	}
 	if json.Unmarshal(contentJSON, &content) != nil || content == "" || len(content) > 64*1024 ||
 		strings.ContainsRune(content, '\x00') || json.Unmarshal(responseMetadata, &metadata) != nil || metadata.ThreadID == "" {
@@ -328,10 +339,15 @@ func decodeCurrentAgentHITLPause(contentJSON, responseMetadata json.RawMessage) 
 		}
 		seen[pendingID] = struct{}{}
 	}
+	invokedSkills, err := mergeCurrentAgentInvokedSkills(nil, metadata.InvokedSkills)
+	if err != nil {
+		return currentAgentHITLPause{}, outputapp.ErrAgentExecutionResultMismatch
+	}
 	return currentAgentHITLPause{
-		ThreadID:   metadata.ThreadID,
-		Interrupt:  append(json.RawMessage(nil), metadata.HITLInterrupt...),
-		Interrupts: append(json.RawMessage(nil), metadata.HITLInterrupts...),
+		ThreadID:      metadata.ThreadID,
+		Interrupt:     append(json.RawMessage(nil), metadata.HITLInterrupt...),
+		Interrupts:    append(json.RawMessage(nil), metadata.HITLInterrupts...),
+		InvokedSkills: invokedSkills,
 	}, nil
 }
 
@@ -341,6 +357,7 @@ func decodeCurrentAgentAuthorizationPause(contentJSON, responseMetadata json.Raw
 		ThreadID              string          `json:"thread_id"`
 		ToolRunID             string          `json:"tool_run_id"`
 		AuthorizationRequests json.RawMessage `json:"authorization_requests"`
+		InvokedSkills         json.RawMessage `json:"invoked_skills"`
 	}
 	if json.Unmarshal(contentJSON, &content) != nil || content == "" || len(content) > 64*1024 ||
 		strings.ContainsRune(content, '\x00') || json.Unmarshal(responseMetadata, &metadata) != nil ||
@@ -374,9 +391,14 @@ func decodeCurrentAgentAuthorizationPause(contentJSON, responseMetadata json.Raw
 	if metadata.ToolRunID != lastID {
 		return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
 	}
+	invokedSkills, err := mergeCurrentAgentInvokedSkills(nil, metadata.InvokedSkills)
+	if err != nil {
+		return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
+	}
 	return currentAgentAuthorizationPause{
-		ThreadID: metadata.ThreadID,
-		Requests: append(json.RawMessage(nil), metadata.AuthorizationRequests...),
+		ThreadID:      metadata.ThreadID,
+		Requests:      append(json.RawMessage(nil), metadata.AuthorizationRequests...),
+		InvokedSkills: invokedSkills,
 	}, nil
 }
 
@@ -475,8 +497,16 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 	if err != nil {
 		return fmt.Errorf("lock current agent response message group: %w", err)
 	}
+	existingSkills, err := writer.GetCurrentAgentInvokedSkills(ctx, int64(messageGroupID))
+	if err != nil {
+		return fmt.Errorf("load current agent invoked skills: %w", err)
+	}
 	if terminal.FullMessage != nil && terminal.HITLPause == nil && terminal.AuthorizationPause == nil {
 		message := terminal.FullMessage
+		invokedSkills, err := mergeCurrentAgentInvokedSkills([]byte(existingSkills), message.InvokedSkills)
+		if err != nil {
+			return outputapp.ErrAgentExecutionResultMismatch
+		}
 		itemID, err := writer.InsertCurrentAgentTextItem(ctx, int64(messageGroupID))
 		if err != nil {
 			return fmt.Errorf("insert current agent text item: %w", err)
@@ -492,7 +522,7 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 			sqlcgen.FinalizeCurrentAgentFullMessageParams{
 				ThreadID:       message.ThreadID,
 				ReferencesJson: []byte(message.References),
-				InvokedSkills:  []byte(message.InvokedSkills),
+				InvokedSkills:  []byte(invokedSkills),
 				MessageGroupID: int64(messageGroupID),
 			},
 		)
@@ -503,12 +533,17 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 	}
 	if terminal.HITLPause != nil && terminal.FullMessage == nil && terminal.AuthorizationPause == nil {
 		pause := terminal.HITLPause
+		invokedSkills, err := mergeCurrentAgentInvokedSkills([]byte(existingSkills), pause.InvokedSkills)
+		if err != nil {
+			return outputapp.ErrAgentExecutionResultMismatch
+		}
 		rows, err := writer.FinalizeCurrentAgentHITLPause(
 			ctx,
 			sqlcgen.FinalizeCurrentAgentHITLPauseParams{
 				ThreadID:       pause.ThreadID,
 				HitlInterrupt:  []byte(pause.Interrupt),
 				HitlInterrupts: []byte(pause.Interrupts),
+				InvokedSkills:  []byte(invokedSkills),
 				MessageGroupID: int64(messageGroupID),
 			},
 		)
@@ -519,11 +554,16 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 	}
 	if terminal.AuthorizationPause != nil && terminal.FullMessage == nil && terminal.HITLPause == nil {
 		pause := terminal.AuthorizationPause
+		invokedSkills, err := mergeCurrentAgentInvokedSkills([]byte(existingSkills), pause.InvokedSkills)
+		if err != nil {
+			return outputapp.ErrAgentExecutionResultMismatch
+		}
 		rows, err := writer.FinalizeCurrentAgentAuthorizationPause(
 			ctx,
 			sqlcgen.FinalizeCurrentAgentAuthorizationPauseParams{
 				ThreadID:              pause.ThreadID,
 				AuthorizationRequests: []byte(pause.Requests),
+				InvokedSkills:         []byte(invokedSkills),
 				MessageGroupID:        int64(messageGroupID),
 			},
 		)

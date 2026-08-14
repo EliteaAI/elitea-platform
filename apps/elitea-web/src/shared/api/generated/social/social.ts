@@ -55,6 +55,7 @@ import type {
 import type {
   AuthorUpdateRequest,
   CreateFeedbackResponse,
+  CurrentAvatarResponse,
   FeedbackCreateRequest,
   FeedbackListResponse,
   N400Response,
@@ -66,6 +67,7 @@ import type {
   SocialAuthorProfile,
   SocialAuthorSummary,
   SocialTrendingAuthor,
+  UploadCurrentSocialAvatarBody,
 } from "../model";
 
 import { eliteaFetch } from ".././mutator";
@@ -679,6 +681,471 @@ export function useListSocialAuthors<
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
   const queryOptions = getListSocialAuthorsQueryOptions(projectId, options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getCurrentSocialAvatarResponse200 = {
+  data: CurrentAvatarResponse;
+  status: 200;
+};
+
+export type getCurrentSocialAvatarResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getCurrentSocialAvatarResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getCurrentSocialAvatarResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type getCurrentSocialAvatarResponseSuccess =
+  getCurrentSocialAvatarResponse200 & {
+    headers: Headers;
+  };
+export type getCurrentSocialAvatarResponseError = (
+  | getCurrentSocialAvatarResponse401
+  | getCurrentSocialAvatarResponse403
+  | getCurrentSocialAvatarResponse500
+) & {
+  headers: Headers;
+};
+
+export type getCurrentSocialAvatarResponse =
+  getCurrentSocialAvatarResponseSuccess | getCurrentSocialAvatarResponseError;
+
+export const getGetCurrentSocialAvatarUrl = (projectId: string) => {
+  return `/social/avatar/${projectId}`;
+};
+
+/**
+ * internal/api/v2/social/avatar.go (CurrentAvatarRoute.get).
+ * centry.social_users.avatar is per-user, not per-project; {project_id}
+ * is used only to resolve project-scoped RBAC, matching every other
+ * current_* social route.
+ * @summary Get the authenticated user's own avatar URL
+ */
+export const getCurrentSocialAvatar = async (
+  projectId: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getCurrentSocialAvatarResponse> => {
+  return eliteaFetch<getCurrentSocialAvatarResponse>(
+    getGetCurrentSocialAvatarUrl(projectId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetCurrentSocialAvatarQueryKey = (projectId: string) => {
+  return [`/social/avatar/${projectId}`] as const;
+};
+
+export const getGetCurrentSocialAvatarQueryOptions = <
+  TData = Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetCurrentSocialAvatarQueryKey(projectId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getCurrentSocialAvatar>>
+  > = ({ signal }) =>
+    getCurrentSocialAvatar(projectId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetCurrentSocialAvatarQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getCurrentSocialAvatar>>
+>;
+export type GetCurrentSocialAvatarQueryError =
+  N401Response | N403Response | N500Response;
+
+export function useGetCurrentSocialAvatar<
+  TData = Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+          TError,
+          Awaited<ReturnType<typeof getCurrentSocialAvatar>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetCurrentSocialAvatar<
+  TData = Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+          TError,
+          Awaited<ReturnType<typeof getCurrentSocialAvatar>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetCurrentSocialAvatar<
+  TData = Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Get the authenticated user's own avatar URL
+ */
+
+export function useGetCurrentSocialAvatar<
+  TData = Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+  TError = N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetCurrentSocialAvatarQueryOptions(
+    projectId,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type uploadCurrentSocialAvatarResponse200 = {
+  data: CurrentAvatarResponse;
+  status: 200;
+};
+
+export type uploadCurrentSocialAvatarResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type uploadCurrentSocialAvatarResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type uploadCurrentSocialAvatarResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type uploadCurrentSocialAvatarResponse500 = {
+  data: N500Response;
+  status: 500;
+};
+
+export type uploadCurrentSocialAvatarResponseSuccess =
+  uploadCurrentSocialAvatarResponse200 & {
+    headers: Headers;
+  };
+export type uploadCurrentSocialAvatarResponseError = (
+  | uploadCurrentSocialAvatarResponse400
+  | uploadCurrentSocialAvatarResponse401
+  | uploadCurrentSocialAvatarResponse403
+  | uploadCurrentSocialAvatarResponse500
+) & {
+  headers: Headers;
+};
+
+export type uploadCurrentSocialAvatarResponse =
+  | uploadCurrentSocialAvatarResponseSuccess
+  | uploadCurrentSocialAvatarResponseError;
+
+export const getUploadCurrentSocialAvatarUrl = (projectId: string) => {
+  return `/social/avatar/${projectId}`;
+};
+
+/**
+ * internal/api/v2/social/avatar.go (CurrentAvatarRoute.upload).
+ * Multipart field is `file`; the object lands in the configured
+ * ObjectStore under the reserved "avatars" bucket and is served back at
+ * the returned /avatars/{project_id}/{filename} URL (public, unauthenticated,
+ * the same posture as /icons/{project_id}/{filename}).
+ * @summary Upload/replace the authenticated user's own avatar
+ */
+export const uploadCurrentSocialAvatar = async (
+  projectId: string,
+  uploadCurrentSocialAvatarBody: UploadCurrentSocialAvatarBody,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<uploadCurrentSocialAvatarResponse> => {
+  const formData = new FormData();
+  formData.append(`file`, uploadCurrentSocialAvatarBody.file);
+
+  return eliteaFetch<uploadCurrentSocialAvatarResponse>(
+    getUploadCurrentSocialAvatarUrl(projectId),
+    {
+      ...options,
+      method: "PUT",
+      body: formData,
+    },
+  );
+};
+
+export const getUploadCurrentSocialAvatarQueryKey = (
+  projectId: string,
+  uploadCurrentSocialAvatarBody?: UploadCurrentSocialAvatarBody,
+) => {
+  return [
+    "PUT",
+    `/social/avatar/${projectId}`,
+    uploadCurrentSocialAvatarBody,
+  ] as const;
+};
+
+export const getUploadCurrentSocialAvatarQueryOptions = <
+  TData = Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  uploadCurrentSocialAvatarBody: UploadCurrentSocialAvatarBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getUploadCurrentSocialAvatarQueryKey(
+      projectId,
+      uploadCurrentSocialAvatarBody,
+    );
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>
+  > = ({ signal }) =>
+    uploadCurrentSocialAvatar(projectId, uploadCurrentSocialAvatarBody, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: projectId !== null && projectId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type UploadCurrentSocialAvatarQueryResult = NonNullable<
+  Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>
+>;
+export type UploadCurrentSocialAvatarQueryError =
+  N400Response | N401Response | N403Response | N500Response;
+
+export function useUploadCurrentSocialAvatar<
+  TData = Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  uploadCurrentSocialAvatarBody: UploadCurrentSocialAvatarBody,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+          TError,
+          Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUploadCurrentSocialAvatar<
+  TData = Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  uploadCurrentSocialAvatarBody: UploadCurrentSocialAvatarBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+          TError,
+          Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useUploadCurrentSocialAvatar<
+  TData = Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  uploadCurrentSocialAvatarBody: UploadCurrentSocialAvatarBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Upload/replace the authenticated user's own avatar
+ */
+
+export function useUploadCurrentSocialAvatar<
+  TData = Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+  TError = N400Response | N401Response | N403Response | N500Response,
+>(
+  projectId: string,
+  uploadCurrentSocialAvatarBody: UploadCurrentSocialAvatarBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof uploadCurrentSocialAvatar>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getUploadCurrentSocialAvatarQueryOptions(
+    projectId,
+    uploadCurrentSocialAvatarBody,
+    options,
+  );
 
   const query = useQuery(queryOptions, queryClient) as UseQueryResult<
     TData,

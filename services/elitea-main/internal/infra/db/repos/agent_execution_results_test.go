@@ -1,12 +1,103 @@
 package repos
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
 
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
+
+type currentAgentTerminalWriterStub struct {
+	scriptedExecutor
+	existingSkills string
+	hitl           sqlcgen.FinalizeCurrentAgentHITLPauseParams
+	full           sqlcgen.FinalizeCurrentAgentFullMessageParams
+}
+
+func (s *currentAgentTerminalWriterStub) LockCurrentAgentResponseForTerminal(
+	context.Context,
+	sqlcgen.LockCurrentAgentResponseForTerminalParams,
+) (int32, error) {
+	return 17, nil
+}
+
+func (s *currentAgentTerminalWriterStub) InsertCurrentAgentTextItem(context.Context, int64) (int32, error) {
+	return 23, nil
+}
+
+func (s *currentAgentTerminalWriterStub) InsertCurrentAgentTextContent(
+	context.Context,
+	sqlcgen.InsertCurrentAgentTextContentParams,
+) error {
+	return nil
+}
+
+func (s *currentAgentTerminalWriterStub) FinalizeCurrentAgentFullMessage(
+	_ context.Context,
+	arg sqlcgen.FinalizeCurrentAgentFullMessageParams,
+) (int64, error) {
+	s.full = arg
+	return 1, nil
+}
+
+func (s *currentAgentTerminalWriterStub) FinalizeCurrentAgentHITLPause(
+	_ context.Context,
+	arg sqlcgen.FinalizeCurrentAgentHITLPauseParams,
+) (int64, error) {
+	s.hitl = arg
+	return 1, nil
+}
+
+func (s *currentAgentTerminalWriterStub) FinalizeCurrentAgentAuthorizationPause(
+	context.Context,
+	sqlcgen.FinalizeCurrentAgentAuthorizationPauseParams,
+) (int64, error) {
+	return 1, nil
+}
+
+func (s *currentAgentTerminalWriterStub) GetCurrentAgentInvokedSkills(context.Context, int64) (string, error) {
+	return s.existingSkills, nil
+}
+
+func TestPersistCurrentAgentTerminalPreservesSkillsAcrossPauseReloadAndContinuation(t *testing.T) {
+	existing := `[{"skill_id":1,"name":"Existing","icon_meta":null}]`
+	pauseWriter := &currentAgentTerminalWriterStub{existingSkills: existing}
+	err := persistCurrentAgentTerminal(t.Context(), pauseWriter, outputapp.ExpectedAgentExecution{}, currentAgentTerminal{
+		HITLPause: &currentAgentHITLPause{
+			ThreadID:      "thread-1",
+			Interrupt:     json.RawMessage(`{"interrupt_id":"interrupt-1"}`),
+			Interrupts:    json.RawMessage(`[{"interrupt_id":"interrupt-1"}]`),
+			InvokedSkills: json.RawMessage(`[{"skill_id":2,"name":"Loaded","icon_meta":{"name":"book"}}]`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPaused := `[{"skill_id":2,"name":"Loaded","icon_meta":{"name":"book"}},{"skill_id":1,"name":"Existing","icon_meta":null}]`
+	if string(pauseWriter.hitl.InvokedSkills) != wantPaused {
+		t.Fatalf("paused invoked skills = %s", pauseWriter.hitl.InvokedSkills)
+	}
+
+	continuationWriter := &currentAgentTerminalWriterStub{existingSkills: string(pauseWriter.hitl.InvokedSkills)}
+	err = persistCurrentAgentTerminal(t.Context(), continuationWriter, outputapp.ExpectedAgentExecution{}, currentAgentTerminal{
+		FullMessage: &currentAgentFullMessage{
+			Content:       "done",
+			ThreadID:      "thread-1",
+			References:    json.RawMessage(`[]`),
+			InvokedSkills: json.RawMessage(`[{"skill_id":3,"name":"LOADED","icon_meta":{"name":"updated"}},{"skill_id":4,"name":"Final","icon_meta":null}]`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFinal := `[{"skill_id":3,"name":"LOADED","icon_meta":{"name":"updated"}},{"skill_id":4,"name":"Final","icon_meta":null},{"skill_id":1,"name":"Existing","icon_meta":null}]`
+	if string(continuationWriter.full.InvokedSkills) != wantFinal {
+		t.Fatalf("continued invoked skills = %s", continuationWriter.full.InvokedSkills)
+	}
+}
 
 func TestDecodeCurrentAgentHITLPauseAcceptsOneSequentialNestedInterrupt(t *testing.T) {
 	interrupt := map[string]any{
@@ -146,6 +237,10 @@ func TestDecodeCurrentAgentAuthorizationPausePreservesExactInvocationHierarchy(t
 		"thread_id":              "thread-parent-1",
 		"tool_run_id":            "tool-run-sharepoint-1",
 		"authorization_requests": requests,
+		"invoked_skills": []map[string]any{{
+			"skill_id": 41, "name": "SharePoint operations", "icon_meta": nil,
+			"instructions": "must not persist",
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +256,9 @@ func TestDecodeCurrentAgentAuthorizationPausePreservesExactInvocationHierarchy(t
 	if err := json.Unmarshal(pause.Requests, &persisted); err != nil || len(persisted) != 1 ||
 		persisted[0]["tool_run_id"] != "tool-run-sharepoint-1" {
 		t.Fatalf("persisted=%#v error=%v", persisted, err)
+	}
+	if string(pause.InvokedSkills) != `[{"skill_id":41,"name":"SharePoint operations","icon_meta":null}]` {
+		t.Fatalf("compact invoked skills = %s", pause.InvokedSkills)
 	}
 }
 
@@ -232,6 +330,9 @@ func hitlMetadataForInterruptsForTest(t *testing.T, interrupts []map[string]any)
 		"thread_id":       "thread-parent-1",
 		"hitl_interrupt":  interrupts[0],
 		"hitl_interrupts": interrupts,
+		"invoked_skills": []map[string]any{{
+			"skill_id": 31, "name": "Safe changes", "icon_meta": map[string]any{"name": "shield"},
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)

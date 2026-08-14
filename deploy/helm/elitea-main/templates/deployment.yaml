@@ -21,12 +21,20 @@ spec:
       labels:
         {{- include "elitea-main.selectorLabels" . | nindent 8 }}
     spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "elitea-main.serviceAccountName" . }}
       terminationGracePeriodSeconds: 30
       containers:
         - name: elitea-main
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -34,7 +42,6 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "elitea-main.fullname" . }}-config
-          {{- if .Values.secrets }}
           env:
             {{- range $name, $ref := .Values.secrets }}
             # Sensitive vars from Kubernetes Secrets (never plaintext in the
@@ -46,7 +53,18 @@ spec:
                   key: {{ $ref.key }}
                   optional: {{ $ref.optional | default false }}
             {{- end }}
-          {{- end }}
+            {{- if .Values.fileConfig.authConfig.enabled }}
+            # ELITEA_AUTH_CONFIG_FILE has no entry in the ConfigMap above (it
+            # is unset by default); this sets it. Env entries win over
+            # envFrom on name clash, same mechanism BRAND_PACK_PATH below
+            # relies on to override its ConfigMap default.
+            - name: ELITEA_AUTH_CONFIG_FILE
+              value: {{ .Values.fileConfig.authConfig.mountPath }}
+            {{- end }}
+            {{- if .Values.fileConfig.brandPack.enabled }}
+            - name: BRAND_PACK_PATH
+              value: {{ .Values.fileConfig.brandPack.mountPath }}
+            {{- end }}
           startupProbe:
             httpGet:
               path: {{ .Values.probes.startup.path }}
@@ -68,6 +86,40 @@ spec:
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # readOnlyRootFilesystem needs a writable /tmp (Go's os.CreateTemp
+            # default dir, crypto/tls session cache, etc.) even though this
+            # binary has no application-level temp-file writes today.
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.fileConfig.authConfig.enabled }}
+            - name: auth-config
+              mountPath: {{ .Values.fileConfig.authConfig.mountPath }}
+              subPath: {{ .Values.fileConfig.authConfig.key }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.fileConfig.brandPack.enabled }}
+            # BRAND_PACK_PATH is "one pack file per deployment" (branding
+            # package doc), read with os.ReadFile — a subPath mount, same as
+            # auth-config above, not a whole-ConfigMap directory mount.
+            - name: brand-pack
+              mountPath: {{ .Values.fileConfig.brandPack.mountPath }}
+              subPath: {{ .Values.fileConfig.brandPack.key }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.fileConfig.authConfig.enabled }}
+        - name: auth-config
+          configMap:
+            name: {{ required "fileConfig.authConfig.configMapName is required when fileConfig.authConfig.enabled=true" .Values.fileConfig.authConfig.configMapName }}
+        {{- end }}
+        {{- if .Values.fileConfig.brandPack.enabled }}
+        - name: brand-pack
+          configMap:
+            name: {{ required "fileConfig.brandPack.configMapName is required when fileConfig.brandPack.enabled=true" .Values.fileConfig.brandPack.configMapName }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -9,6 +9,28 @@ http:
       service: elitea-main
       entryPoints:
         - web
+    # The MCP SERVER (issue 252) shares the /app prefix with the SPA but is
+    # served by elitea-main: pylon serves it from the app blueprint, and the
+    # internal-toolkit URLs already written into projects hardcode
+    # `.../app/{project_id}/mcp/...`, so the path is not ours to move. Without
+    # this router the `app` rule below swallows it and an MCP client gets the
+    # SPA's nginx 405.
+    #
+    # Explicit priority because traefik ranks by rule length and PathPrefix(`/app`)
+    # would otherwise be able to win.
+    #
+    # This CARVES A HOLE in the SPA's own namespace: `/app/<numeric>/<rest>` is
+    # its project-switch deep link (apps/elitea-web/src/routes/$projectId.$.tsx),
+    # so a first segment of exactly `mcp` no longer reaches the app. Nothing
+    # collides today (`mcps`, `mcp-auth-callback`), and
+    # apps/elitea-web/src/routes/__tests__/mcpPathReservation.test.ts fails if a
+    # route ever claims it — narrow this rule before deleting that test.
+    mcp:
+      rule: "PathRegexp(`^/app/[0-9]+/mcp(/.*)?$`)"
+      priority: 100
+      service: elitea-main
+      entryPoints:
+        - web
     app:
       rule: "PathPrefix(`/app`)"
       service: elitea-web

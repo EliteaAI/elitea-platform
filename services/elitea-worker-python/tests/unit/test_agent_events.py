@@ -16,6 +16,7 @@ from elitea_worker.execution.delivery import _validate_pending_output
 from elitea_worker.handlers.agent_events import (
     CurrentAgentNodeEventCallback,
     CurrentAgentNodeEventContext,
+    nested_skill_registry_from_payload,
 )
 from elitea_worker.protocol.codec import (
     VerifiedWorkerCommand,
@@ -343,6 +344,23 @@ def test_completed_response_content_excludes_hitl_and_authorization_pauses() -> 
     )
 
 
+def test_completed_response_content_keeps_only_current_visible_text_blocks() -> None:
+    callback, _ = _callback()
+
+    assert callback.completed_response_content(
+        {
+            "output": [
+                {"type": "text", "text": "First"},
+                {"type": "output_text", "text": " second"},
+                {"type": "reasoning", "text": "must remain private"},
+                {"type": "tool_use", "name": "search"},
+                {},
+                17,
+            ]
+        }
+    ) == "First second"
+
+
 def test_next_input_suggestion_rejects_empty_and_oversized_text() -> None:
     callback, events = _callback()
 
@@ -472,6 +490,95 @@ def test_sdk_authorization_tool_error_becomes_an_exact_pause() -> None:
     assert "provided_settings" not in authorization["authorization_requests"][0]["resource_metadata"]
 
 
+def test_saved_mcp_authorization_pause_remains_at_the_root_scope() -> None:
+    callback, events = _callback()
+
+    class McpAuthorizationRequired(RuntimeError):
+        server_url = "https://mcp.example.test/events"
+        resource_metadata_url = "https://login.example.test/discovery"
+        resource_metadata = {"resource_name": "Documentation MCP"}
+        authorization_servers = ["https://login.example.test"]
+        tool_name = "search_docs"
+
+    callback.on_tool_start(
+        {
+            "name": "mcp_authorize_documentation",
+            "metadata": {
+                "display_name": "Documentation MCP",
+                "toolkit_name": "documentation-mcp",
+                "toolkit_type": "mcp",
+            },
+        },
+        "ignored",
+        run_id="root-mcp-auth-call",
+        metadata={},
+        inputs={},
+    )
+    callback.on_tool_error(
+        McpAuthorizationRequired("Documentation MCP authorization is required."),
+        run_id="root-mcp-auth-call",
+    )
+
+    terminal = callback.emit_terminal(
+        callback.authorization_pause_result(),
+        _request_payload(),
+    )
+    decoded = [_json(event) for event in events]
+    assert [event["type"] for event in decoded] == [
+        "agent_tool_start",
+        "partial_message",
+        "mcp_authorization_required",
+        "mcp_authorization_required",
+    ]
+    authorization = _json(terminal)["response_metadata"]
+    assert authorization["tool_run_id"] == "root-mcp-auth-call"
+    assert authorization["tool_name"] == "search_docs"
+    assert authorization["toolkit_name"] == "documentation-mcp"
+    assert authorization["toolkit_type"] == "mcp"
+    assert "parent_agent_name" not in authorization
+    assert "parent_agent_call_id" not in authorization
+    assert "parent_agent_path" not in authorization
+    assert "child_thread_id" not in authorization
+    assert "checkpoint_ns" not in authorization
+
+
+def test_materialization_authorization_uses_a_deterministic_guardrail_identity() -> None:
+    callback, events = _callback()
+
+    class McpAuthorizationRequired(RuntimeError):
+        server_url = "https://mcp.example.test/events"
+        resource_metadata_url = "https://login.example.test/discovery"
+        resource_metadata = {
+            "resource_name": "Documentation MCP",
+            "provided_settings": {"client_secret": "must-not-cross-output"},
+        }
+        authorization_servers = ["https://login.example.test"]
+        tool_name = "search_docs"
+        toolkit_name = "documentation-mcp"
+        toolkit_type = "mcp"
+
+    assert callback.capture_materialization_authorization(
+        McpAuthorizationRequired("Documentation MCP authorization is required.")
+    )
+    pause = callback.authorization_pause_result()
+    assert pause is not None
+    terminal = callback.emit_terminal(pause, _request_payload())
+
+    decoded = [_json(event) for event in events]
+    assert [event["type"] for event in decoded] == [
+        "mcp_authorization_required",
+        "mcp_authorization_required",
+    ]
+    authorization = _json(terminal)["response_metadata"]
+    assert authorization["tool_run_id"] == (
+        "mcp-auth-materialization:execution-1"
+    )
+    assert authorization["tool_name"] == "search_docs"
+    assert authorization["toolkit_name"] == "documentation-mcp"
+    assert authorization["toolkit_type"] == "mcp"
+    assert "provided_settings" not in authorization["resource_metadata"]
+
+
 def test_delegated_authorization_terminal_requires_callback_identity() -> None:
     callback, _ = _callback()
 
@@ -571,6 +678,29 @@ def test_large_transition_omits_only_duplicate_transcript_state() -> None:
     assert len(encode_current_node_event_json(events[0])) <= 60 * 1024
 
 
+def test_small_transition_also_omits_duplicate_transcript_state() -> None:
+    callback, events = _callback()
+
+    callback.on_custom_event(
+        "on_transitional_edge",
+        {
+            "next_step": "agent",
+            "state": {
+                "messages": ["private skill instructions"],
+                "chat_history": "private skill instructions",
+                "business_state": {"preserved": True},
+            },
+        },
+        run_id="transition-small",
+    )
+
+    event = _json(events[0])
+    assert event["response_metadata"]["state"] == {
+        "business_state": {"preserved": True}
+    }
+    assert "private skill instructions" not in str(event)
+
+
 def test_agent_event_frame_uses_durable_execution_fence_and_sequence() -> None:
     callback, events = _callback()
     callback.emit_agent_start(invoked_skills=[{"name": "review"}])
@@ -633,3 +763,199 @@ def test_agent_event_frame_uses_durable_execution_fence_and_sequence() -> None:
         command=command,
         receipt=receipt,
     ) is False
+
+
+def test_load_skill_projects_cumulative_compact_applied_skills() -> None:
+    callback, events = _callback()
+    callback.configure_skills(
+        applied_skills=[
+            {"skill_id": 1, "name": "Review", "icon_meta": {"icon": "review"}}
+        ],
+        attached_skills=[
+            {
+                "skill_id": 2,
+                "name": "Deploy",
+                "description": "Deployment rules",
+                "icon_meta": {"icon": "deploy"},
+                "instructions": "must not enter browser events",
+            }
+        ],
+    )
+
+    callback.on_tool_start(
+        {"name": "load_skill", "metadata": {"display_name": "Skills"}},
+        "ignored",
+        run_id="load-deploy",
+        metadata={"toolkit_name": "skills"},
+        inputs={"skill": "deploy"},
+    )
+    callback.on_tool_end(
+        'Skill "Deploy" is now active\n\nmust not enter browser events',
+        run_id="load-deploy",
+    )
+    callback.emit_terminal(
+        {"response": "done", "thread_id": "thread-1"},
+        _request_payload(),
+    )
+
+    decoded = [_json(event) for event in events]
+    start = next(event for event in decoded if event["type"] == "agent_tool_start")
+    assert start["response_metadata"]["tool_meta"]["loaded_skill"] == "Deploy"
+    assert start["response_metadata"]["tool_meta"]["icon_meta"] == {
+        "icon": "deploy"
+    }
+    expected = [
+        {"skill_id": 1, "name": "Review", "icon_meta": {"icon": "review"}},
+        {"skill_id": 2, "name": "Deploy", "icon_meta": {"icon": "deploy"}},
+    ]
+    partial = [event for event in decoded if event["type"] == "partial_message"][-1]
+    terminal = decoded[-1]
+    assert partial["response_metadata"]["invoked_skills"] == expected
+    assert terminal["type"] == "full_message"
+    assert terminal["response_metadata"]["invoked_skills"] == expected
+    assert "must not enter browser events" not in str(
+        partial["response_metadata"]["invoked_skills"]
+    )
+    assert "must not enter browser events" not in str(
+        terminal["response_metadata"]["invoked_skills"]
+    )
+    assert decoded[2]["response_metadata"]["tool_output"] == (
+        'Skill "Deploy" is active.'
+    )
+    assert "must not enter browser events" not in str(decoded)
+
+
+def test_nested_load_skill_uses_admission_frozen_child_identity() -> None:
+    callback, events = _callback()
+    callback.configure_skills(
+        applied_skills=[],
+        attached_skills=[],
+        nested_skill_registry=[
+            {
+                "application_id": 31,
+                "application_version_id": 41,
+                "application_name": "child-agent",
+                "skills": [
+                    {
+                        "skill_id": 7,
+                        "name": "Deploy",
+                        "icon_meta": {"icon": "deploy"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    callback.on_tool_start(
+        {"name": "load_skill", "metadata": {"display_name": "Skills"}},
+        "ignored",
+        run_id="nested-load-deploy",
+        metadata={
+            "parent_agent_name": "child-agent",
+            "parent_agent_path": [{"name": "child-agent", "call_id": "call-1"}],
+        },
+        inputs={"skill": "deploy"},
+    )
+    callback.on_tool_end(
+        'Skill "Deploy" is now active\n\nchild instructions must not enter events',
+        run_id="nested-load-deploy",
+    )
+
+    decoded = [_json(event) for event in events]
+    start = decoded[0]
+    assert start["response_metadata"]["tool_meta"]["loaded_skill"] == "Deploy"
+    assert start["response_metadata"]["tool_meta"]["icon_meta"] == {
+        "icon": "deploy"
+    }
+    partial = decoded[-1]
+    assert partial["response_metadata"]["invoked_skills"] == [
+        {"skill_id": 7, "name": "Deploy", "icon_meta": {"icon": "deploy"}}
+    ]
+    assert "child instructions" not in str(decoded)
+
+
+def test_nested_skill_registry_is_collected_from_adhoc_and_saved_roots() -> None:
+    registry = [
+        {
+            "application_id": 31,
+            "application_version_id": 41,
+            "application_name": "child-agent",
+            "skills": [{"skill_id": 7, "name": "Deploy", "icon_meta": None}],
+        }
+    ]
+    payload = SimpleNamespace(
+        tools=[
+            {
+                "type": "application",
+                "nested_skill_registry": registry,
+            }
+        ],
+        application={
+            "version_details": {
+                "tools": [
+                    {
+                        "type": "application",
+                        "nested_skill_registry": registry,
+                    }
+                ]
+            }
+        },
+    )
+
+    assert nested_skill_registry_from_payload(payload) == registry + registry
+
+
+def test_terminal_application_details_omit_skill_instruction_bodies() -> None:
+    callback, events = _callback()
+    payload = _request_payload()
+    payload.application = {
+        "id": 11,
+        "version_id": 22,
+        "version_details": {
+            "skills": [
+                {
+                    "skill_id": 2,
+                    "name": "Deploy",
+                    "description": "Deployment rules",
+                    "instructions": "must not enter browser events",
+                }
+            ]
+        },
+    }
+
+    callback.emit_terminal(
+        {"response": "done", "thread_id": "thread-1"},
+        payload,
+    )
+
+    event = _json(events[-1])
+    skill = event["response_metadata"]["application_details"][
+        "version_details"
+    ]["skills"][0]
+    assert skill["name"] == "Deploy"
+    assert skill["description"] == "Deployment rules"
+    assert "instructions" not in skill
+    assert "must not enter browser events" not in str(event)
+
+
+def test_load_skill_already_active_is_deduplicated() -> None:
+    callback, events = _callback()
+    callback.configure_skills(
+        applied_skills=[{"skill_id": 2, "name": "Deploy", "icon_meta": None}],
+        attached_skills=[{"skill_id": 2, "name": "Deploy", "icon_meta": None}],
+    )
+    callback.on_tool_start(
+        {"name": "load_skill"},
+        "ignored",
+        run_id="load-deploy",
+        inputs={"skill": "Deploy"},
+    )
+    callback.on_tool_end(
+        'Skill "Deploy" is already active for this conversation.',
+        run_id="load-deploy",
+    )
+
+    partial = [_json(event) for event in events if event.type == "partial_message"][-1]
+    assert partial["response_metadata"]["invoked_skills"] == [
+        {"skill_id": 2, "name": "Deploy", "icon_meta": None}
+    ]

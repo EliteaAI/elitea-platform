@@ -1,4 +1,4 @@
-import { forwardRef } from 'react';
+import { forwardRef, useCallback } from 'react';
 
 import MuiCheckbox, { type CheckboxProps } from '@mui/material/Checkbox';
 import MuiRadio, { type RadioProps } from '@mui/material/Radio';
@@ -54,6 +54,40 @@ export const BaseCheckbox = forwardRef<HTMLButtonElement, BaseCheckboxProps>(fun
     ...(ariaLabelledBy !== undefined ? { 'aria-labelledby': ariaLabelledBy } : {}),
   };
 
+  // Second accessibility fix, same shape as the `aria-label` one above and
+  // found the same way — by a real component being rendered, not by review.
+  //
+  // MUI's `Checkbox` sets `aria-checked="mixed"` on the input when
+  // `indeterminate`, and deliberately does NOT set the native `indeterminate`
+  // DOM property (its own prop docs say so; it emits `data-indeterminate`
+  // instead). axe's `aria-conditional-attr` then correctly rejects the pair: on
+  // a native checkbox `aria-checked` must agree with the element's own state,
+  // and that state is `false` while `aria-checked` claims `mixed`.
+  //
+  // Setting the native property is the fix rather than stripping the ARIA:
+  // `input.indeterminate = true` is what screen readers actually announce as
+  // "mixed", and with it set, MUI's `aria-checked="mixed"` becomes true rather
+  // than contradictory. So the control gains the state it was only ever
+  // claiming to have.
+  //
+  // This surfaced when issue #246's migration put the first rows into the
+  // admin permission matrix's `default` mode: its group checkboxes render
+  // indeterminate for a partially-granted group, and until there was a single
+  // default-mode grant, that branch had no data to render and the defect had
+  // never been reachable. See PermissionMatrixRows.tsx.
+  // The ref goes on the `input` SLOT rather than through an `inputRef` prop:
+  // MUI 9 moved that plumbing into slotProps, and the input is the element
+  // whose DOM property has to be set.
+  const indeterminate = rest.indeterminate === true;
+  const attachInput = useCallback(
+    (node: HTMLInputElement | null) => {
+      if (node !== null) {
+        node.indeterminate = indeterminate;
+      }
+    },
+    [indeterminate],
+  );
+
   if (mode === CHECKBOX_MODES.radio) {
     return (
       <MuiRadio
@@ -87,7 +121,7 @@ export const BaseCheckbox = forwardRef<HTMLButtonElement, BaseCheckboxProps>(fun
           inheritViewBox
         />
       }
-      slotProps={{ input: inputSlotProps }}
+      slotProps={{ input: { ...inputSlotProps, ref: attachInput } }}
       {...rest}
     />
   );

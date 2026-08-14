@@ -150,7 +150,6 @@ type indexRBACSpies struct {
 }
 
 func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 
@@ -337,7 +336,6 @@ func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
 }
 
 func TestIndexEventsPostgresAuthorizeBeforeCursorAndBindEveryTenantDimension(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 
@@ -385,7 +383,6 @@ func TestIndexEventsPostgresAuthorizeBeforeCursorAndBindEveryTenantDimension(t *
 }
 
 func TestIndexStopPostgresBindsDurableTransitionToExactTenantAndTarget(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 
@@ -500,8 +497,7 @@ func TestIndexStopPostgresBindsDurableTransitionToExactTenantAndTarget(t *testin
 	}
 }
 
-func TestIndexAdditionalContractsResolveLegacyRolesAndKeepScheduleSearchUnmounted(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
+func TestIndexAdditionalContractsResolveLegacyRolesAndRejectUnauthenticatedScheduleSearch(t *testing.T) {
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
 	resolver := legacyrbac.NewPostgresResolver(pool)
@@ -550,6 +546,17 @@ func TestIndexAdditionalContractsResolveLegacyRolesAndKeepScheduleSearchUnmounte
 		}
 	}
 
+	// PATCH .../index_meta/... and GET .../search_options/... are NOT
+	// unmounted: internal/api/router.go registers toolkitHandler.IndexMetaUpdate
+	// and coreHandler.SearchOptions for these exact paths unconditionally
+	// (not gated on any RouterConfig.*Repo field), inside the router's own
+	// auth-wrapped /api/v2 group. newIndexRBACRouter doesn't wire
+	// RouterConfig.Auth's ForwardedIdentityVerifier/PrincipalValidator (only
+	// the per-route ones passed into the CurrentIndex* constructors below),
+	// so the outer Auth middleware can't validate the X-Auth-Type/X-Auth-ID
+	// headers newIndexRBACRequest sends and 401s before reaching either
+	// handler — same as production would for a caller with no valid
+	// credentials, not evidence the routes are absent.
 	_, router := newIndexRBACRouter(t, pool, nil)
 	for _, test := range []struct {
 		request *http.Request
@@ -557,11 +564,11 @@ func TestIndexAdditionalContractsResolveLegacyRolesAndKeepScheduleSearchUnmounte
 	}{
 		{
 			request: newIndexRBACRequest(indexingapi.SourceOnlyIndexScheduleMethod, "/api/v2/elitea_core/index_meta/prompt_lib/1/9/meta-1", "3", nil),
-			want:    http.StatusMethodNotAllowed,
+			want:    http.StatusUnauthorized,
 		},
 		{
 			request: newIndexRBACRequest(indexingapi.SourceOnlyIndexSearchMethod, "/api/v2/elitea_core/search_options/prompt_lib/1", "5", nil),
-			want:    http.StatusNotFound,
+			want:    http.StatusUnauthorized,
 		},
 	} {
 		response := newIndexRBACStreamingRecorder()

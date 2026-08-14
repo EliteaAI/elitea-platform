@@ -19,19 +19,20 @@ export const Checked: Story = {
   args: { checked: true },
 };
 
+// This story used to disable `aria-conditional-attr`, on the grounds that the
+// `aria-checked="mixed"` / native-`checked=false` mismatch was upstream MUI
+// behaviour "not something this wrapper sets or can change". That was wrong on
+// the second half: the wrapper CAN set the native `indeterminate` DOM property,
+// which is both what screen readers announce and what makes MUI's
+// `aria-checked="mixed"` truthful, and it now does (BaseCheckbox.tsx).
+//
+// The exception is therefore gone rather than re-justified — a disabled rule
+// that has stopped being necessary is a gate quietly covering for a defect. It
+// went unnoticed because the only call site that renders an indeterminate
+// checkbox, the admin permission matrix's group row, had no data to render it
+// with until issue #246 seeded the first default-mode grant.
 export const Indeterminate: Story = {
   args: { indeterminate: true },
-  parameters: {
-    // MUI's own `Checkbox` (not this wrapper) sets `aria-checked="mixed"`
-    // on the `<input>` while the native `checked` DOM property stays
-    // `false` (indeterminate is a visual-only state on native checkboxes).
-    // axe's `aria-conditional-attr` flags that combination as an
-    // ARIA/native-state mismatch — a real, upstream MUI behaviour, not
-    // something this wrapper sets or can change. Narrow, documented
-    // exception, scoped to this one story/rule; every other check still
-    // runs at `a11y.test: 'error'`.
-    a11y: { config: { rules: [{ id: 'aria-conditional-attr', enabled: false }] } },
-  },
 };
 
 export const Disabled: Story = {

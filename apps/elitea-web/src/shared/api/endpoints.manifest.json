@@ -1029,7 +1029,7 @@
             ]
         },
         {
-            "$comment": "Issue #93 \u2014 SSE dispatch for a chat message. `execution_contract` is agent.execute.application.v1 or agent.execute.adhoc.v1 (services/elitea-main/internal/api/v2/agentexecution/current_route.go). The response's `events_url` is the stream to follow. REST LAYER ONLY, NO UI CALL SITE YET: the chat surface has no consumer for the streamed execution.node_event envelope (the chat_predict streaming reducer was never ported), so widgets/chat-box deliberately still sends over socket.io. Note the Go route wants the prompt at payload.user_input with a numeric project_id \u2014 a caller must build that body, not reuse the socket predict payload.",
+            "$comment": "Issue #93 \u2014 SSE dispatch for a chat message. `execution_contract` is agent.execute.application.v1 or agent.execute.adhoc.v1 (services/elitea-main/internal/api/v2/agentexecution/route.go). The response's `events_url` is the stream to follow. REST LAYER ONLY, NO UI CALL SITE YET: the chat surface has no consumer for the streamed execution.node_event envelope (the chat_predict streaming reducer was never ported), so widgets/chat-box deliberately still sends over socket.io. Note the Go route wants the prompt at payload.user_input with a numeric project_id \u2014 a caller must build that body, not reuse the socket predict payload.",
             "id": "conversation.startAgentExecution",
             "method": "POST",
             "path": "/elitea_core/messages/prompt_lib/{projectId}/{conversationUuid}",
@@ -1055,7 +1055,7 @@
             ]
         },
         {
-            "$comment": "Server-Sent Events stream, not a request/response call (issue #92): opened with EventSource via features/notifications' useNotificationsSSE, served by services/elitea-main/internal/api/v2/notifications/current_events.go. It replaces the notifications_notify socket.io push. Events: notifications_ready (cursor handshake / oversized-payload substitute) and notifications_notify (one new notification). No response body schema exists to name \u2014 the payload is a text/event-stream, and the durable list endpoint above stays authoritative for content.",
+            "$comment": "Server-Sent Events stream, not a request/response call (issue #92): opened with EventSource via features/notifications' useNotificationsSSE, served by services/elitea-main/internal/api/v2/notifications/events.go. It replaces the notifications_notify socket.io push. Events: notifications_ready (cursor handshake / oversized-payload substitute) and notifications_notify (one new notification). No response body schema exists to name \u2014 the payload is a text/event-stream, and the durable list endpoint above stays authoritative for content.",
             "id": "notifications.eventStream",
             "method": "GET",
             "path": "/notifications/events/prompt_lib/{projectId}",
