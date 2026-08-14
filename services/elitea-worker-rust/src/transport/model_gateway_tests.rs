@@ -232,7 +232,7 @@ async fn request_profile_and_local_bounds_fail_before_network() {
             }
             2 => request
                 .contents
-                .push(adk_rust::Content::new("user").with_text("second")),
+                .push(adk_rust::Content::new("system").with_text("forbidden")),
             3 => request.config.as_mut().expect("generation config").top_p = Some(0.9),
             4 => request.contents[0] = adk_rust::Content::new("user").with_text(""),
             _ => unreachable!("bounded mutation corpus"),

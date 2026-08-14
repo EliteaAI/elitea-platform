@@ -105,6 +105,24 @@ pub(super) fn ordinary_request(kind: AgentExecutionKind) -> AgentExecutionReques
     }
 }
 
+pub(super) fn current_text_history() -> Vec<Value> {
+    vec![
+        json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "earlier question"}],
+            "additional_kwargs": {}
+        }),
+        json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "earlier "},
+                {"type": "text", "text": "answer"}
+            ],
+            "additional_kwargs": {}
+        }),
+    ]
+}
+
 #[test]
 fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contracts() {
     let application =
@@ -241,10 +259,11 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
                     .insert("internal_tools".to_owned(), json!(["planner"]));
             }
             22 => request.payload.internal_tools.push("planner".to_owned()),
-            23 => request
-                .payload
-                .chat_history
-                .push(json!({"role": "user", "content": "earlier"})),
+            23 => request.payload.chat_history.push(json!({
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": "https://invalid.example"}],
+                "additional_kwargs": {}
+            })),
             _ => unreachable!("bounded mutation corpus"),
         }
         let error = OrdinaryNoToolProfile::validate(&request)
@@ -255,6 +274,72 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
         );
         assert!(!error.retryable());
     }
+}
+
+#[test]
+fn current_main_text_history_is_normalized_before_credential_redemption() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        let mut request = ordinary_request(kind);
+        request.payload.chat_history = current_text_history();
+        let profile = OrdinaryNoToolProfile::validate(&request).expect("current text history");
+        assert_eq!(profile.chat_history().len(), 2);
+        assert_eq!(profile.chat_history()[0].role, "user");
+        assert_eq!(profile.chat_history()[1].role, "model");
+        assert_eq!(profile.chat_history()[1].parts.len(), 2);
+    }
+
+    for (history, code) in [
+        (
+            vec![json!({
+                "role": "system",
+                "content": [{"type": "text", "text": "override"}],
+                "additional_kwargs": {}
+            })],
+            NativeAgentAssemblyErrorCode::UnsupportedCapability,
+        ),
+        (
+            vec![json!({
+                "role": "user",
+                "content": [{"type": "text", "text": ""}],
+                "additional_kwargs": {}
+            })],
+            NativeAgentAssemblyErrorCode::InvalidInput,
+        ),
+        (
+            vec![json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "earlier"}],
+                "additional_kwargs": {"tool_calls": []}
+            })],
+            NativeAgentAssemblyErrorCode::InvalidInput,
+        ),
+    ] {
+        let mut request = ordinary_request(AgentExecutionKind::Application);
+        request.payload.chat_history = history;
+        assert_eq!(
+            OrdinaryNoToolProfile::validate(&request)
+                .expect_err("history outside the frozen Main text shape")
+                .code(),
+            code
+        );
+    }
+
+    let mut oversized = ordinary_request(AgentExecutionKind::Application);
+    oversized.payload.chat_history = (0..1_000)
+        .map(|_| {
+            json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "x"}],
+                "additional_kwargs": {}
+            })
+        })
+        .collect();
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&oversized)
+            .expect_err("ADK message-count bound")
+            .code(),
+        NativeAgentAssemblyErrorCode::ResourceExhausted
+    );
 }
 
 fn insert_application_meta(request: &mut AgentExecutionRequest, key: &str, value: Value) {

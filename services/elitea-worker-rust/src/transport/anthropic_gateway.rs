@@ -224,11 +224,38 @@ fn build_anthropic_body(
     invocation: &ModelGatewayInvocation,
     config: &super::model_gateway::ModelGatewayConfig,
 ) -> Result<Bytes, AdkError> {
-    let user_text = validate_llm_request(request, stream, invocation)?;
+    let contents = validate_llm_request(request, stream, invocation)?;
     let generation = native_generation(invocation)?;
+    let messages = contents
+        .iter()
+        .enumerate()
+        .map(|(index, content)| {
+            let role = match content.role.as_str() {
+                "user" => MessageRole::User,
+                "model" => MessageRole::Assistant,
+                _ => return Err(invalid_anthropic_request()),
+            };
+            if index + 1 == contents.len() {
+                let Some(Part::Text { text }) = content.parts.first() else {
+                    return Err(invalid_anthropic_request());
+                };
+                Ok(MessageParam::new_with_string(text.clone(), role))
+            } else {
+                let blocks = content
+                    .parts
+                    .iter()
+                    .map(|part| match part {
+                        Part::Text { text } => Ok(ContentBlock::Text(TextBlock::new(text))),
+                        _ => Err(invalid_anthropic_request()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(MessageParam::new_with_blocks(blocks, role))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut params = MessageCreateParams::new_streaming(
         generation.max_tokens,
-        vec![MessageParam::user(user_text)],
+        messages,
         Model::Custom(invocation.model_name.clone()),
     );
     params.system = Some(SystemPrompt::from_blocks(vec![

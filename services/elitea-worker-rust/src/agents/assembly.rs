@@ -7,6 +7,7 @@
 
 #![allow(dead_code)] // Production provider/session assembly remains disabled.
 
+use adk_rust::Content;
 use serde_json::{Map, Value};
 
 use super::request::{AgentExecutionKind, AgentExecutionRequest, UserInput};
@@ -14,6 +15,7 @@ use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 
 const MAX_MODEL_NAME_BYTES: usize = 256;
 const MAX_USER_INPUT_BYTES: usize = 512 * 1_024;
+const MAX_CHAT_HISTORY_MESSAGES: usize = 999;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReasoningEffort {
@@ -30,8 +32,8 @@ pub(crate) enum OrdinaryModelProvider {
     NativeAnthropic,
 }
 
-/// Frozen model and execution controls for the first no-tool profile.
-#[derive(Debug, PartialEq)]
+/// Frozen model, history, and execution controls for the strict no-tool profile.
+#[derive(Debug)]
 pub(crate) struct OrdinaryNoToolProfile {
     kind: AgentExecutionKind,
     instructions: String,
@@ -41,6 +43,7 @@ pub(crate) struct OrdinaryNoToolProfile {
     max_tokens: u32,
     reasoning_effort: Option<ReasoningEffort>,
     temperature: Option<f32>,
+    chat_history: Vec<Content>,
 }
 
 impl OrdinaryNoToolProfile {
@@ -48,7 +51,7 @@ impl OrdinaryNoToolProfile {
     pub(crate) fn validate(
         request: &AgentExecutionRequest,
     ) -> Result<Self, NativeAgentAssemblyError> {
-        validate_common_profile(request)?;
+        let chat_history = validate_common_profile(request)?;
         let model = match request.kind {
             AgentExecutionKind::Application => application_model(request)?,
             AgentExecutionKind::Adhoc => adhoc_model(request)?,
@@ -62,6 +65,7 @@ impl OrdinaryNoToolProfile {
             max_tokens: model.max_tokens,
             reasoning_effort: model.reasoning_effort,
             temperature: model.temperature,
+            chat_history,
         })
     }
 
@@ -104,11 +108,16 @@ impl OrdinaryNoToolProfile {
     pub(crate) const fn temperature(&self) -> Option<f32> {
         self.temperature
     }
+
+    #[must_use]
+    pub(crate) fn chat_history(&self) -> &[Content] {
+        &self.chat_history
+    }
 }
 
 fn validate_common_profile(
     request: &AgentExecutionRequest,
-) -> Result<(), NativeAgentAssemblyError> {
+) -> Result<Vec<Content>, NativeAgentAssemblyError> {
     let payload = &request.payload;
     match &payload.user_input {
         UserInput::ContentBlocks(_) => return Err(unsupported_profile()),
@@ -120,8 +129,8 @@ fn validate_common_profile(
         }
         UserInput::Text(_) => {}
     }
-    if !payload.chat_history.is_empty()
-        || !payload.tools.is_empty()
+    let chat_history = current_text_history(&payload.chat_history)?;
+    if !payload.tools.is_empty()
         || !payload.internal_tools.is_empty()
         || !payload.mcp_tokens.is_empty()
         || !payload.ignored_mcp_servers.is_empty()
@@ -168,7 +177,56 @@ fn validate_common_profile(
     {
         return Err(invalid_profile());
     }
-    Ok(())
+    Ok(chat_history)
+}
+
+fn current_text_history(history: &[Value]) -> Result<Vec<Content>, NativeAgentAssemblyError> {
+    if history.len() > MAX_CHAT_HISTORY_MESSAGES {
+        return Err(resource_exhausted_profile());
+    }
+    history.iter().map(current_text_history_message).collect()
+}
+
+fn current_text_history_message(value: &Value) -> Result<Content, NativeAgentAssemblyError> {
+    let message = value.as_object().ok_or_else(invalid_profile)?;
+    if message.len() != 3
+        || !message
+            .get("additional_kwargs")
+            .and_then(Value::as_object)
+            .is_some_and(Map::is_empty)
+    {
+        return Err(invalid_profile());
+    }
+    let role = match message.get("role").and_then(Value::as_str) {
+        Some("user") => "user",
+        Some("assistant") => "model",
+        Some(_) => return Err(unsupported_profile()),
+        None => return Err(invalid_profile()),
+    };
+    let parts = message
+        .get("content")
+        .and_then(Value::as_array)
+        .filter(|parts| !parts.is_empty())
+        .ok_or_else(invalid_profile)?;
+    let mut content = Content::new(role);
+    for part in parts {
+        let part = part.as_object().ok_or_else(invalid_profile)?;
+        if part.len() != 2 {
+            return Err(invalid_profile());
+        }
+        match part.get("type").and_then(Value::as_str) {
+            Some("text") => {}
+            Some(_) => return Err(unsupported_profile()),
+            None => return Err(invalid_profile()),
+        }
+        let text = part
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty() && !text.contains('\0'))
+            .ok_or_else(invalid_profile)?;
+        content = content.with_text(text);
+    }
+    Ok(content)
 }
 
 fn application_model(

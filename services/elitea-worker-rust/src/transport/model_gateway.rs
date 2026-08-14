@@ -433,19 +433,42 @@ fn build_request_body(
     invocation: &ModelGatewayInvocation,
     config: &ModelGatewayConfig,
 ) -> Result<Bytes, AdkError> {
-    let user_text = validate_llm_request(request, stream, invocation)?;
+    let contents = validate_llm_request(request, stream, invocation)?;
     let mut body = serde_json::Map::new();
     body.insert(
         "model".to_owned(),
         serde_json::Value::String(invocation.model_name.clone()),
     );
-    body.insert(
-        "messages".to_owned(),
-        serde_json::json!([
-            {"role": instruction_role(&invocation.model_name), "content": invocation.system_instruction},
-            {"role": "user", "content": user_text},
-        ]),
-    );
+    let mut messages = Vec::with_capacity(contents.len() + 1);
+    messages.push(serde_json::json!({
+        "role": instruction_role(&invocation.model_name),
+        "content": invocation.system_instruction,
+    }));
+    for (index, content) in contents.iter().enumerate() {
+        let role = if content.role == "user" {
+            "user"
+        } else {
+            "assistant"
+        };
+        let content_value = if index + 1 == contents.len() {
+            let Part::Text { text } = &content.parts[0] else {
+                return Err(invalid_llm_request());
+            };
+            serde_json::Value::String(text.clone())
+        } else {
+            let parts = content
+                .parts
+                .iter()
+                .map(|part| match part {
+                    Part::Text { text } => Ok(serde_json::json!({"type": "text", "text": text})),
+                    _ => Err(invalid_llm_request()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            serde_json::Value::Array(parts)
+        };
+        messages.push(serde_json::json!({"role": role, "content": content_value}));
+    }
+    body.insert("messages".to_owned(), serde_json::Value::Array(messages));
     body.insert("stream".to_owned(), serde_json::Value::Bool(true));
     body.insert(
         "stream_options".to_owned(),
@@ -488,25 +511,34 @@ pub(super) fn validate_llm_request<'a>(
     request: &'a LlmRequest,
     stream: bool,
     invocation: &ModelGatewayInvocation,
-) -> Result<&'a str, AdkError> {
+) -> Result<&'a [Content], AdkError> {
     let config = request.config.as_ref().ok_or_else(invalid_llm_request)?;
     if !stream
         || request.model != invocation.model_name
         || !request.tools.is_empty()
         || request.previous_response_id.is_some()
-        || request.contents.len() != 1
+        || request.contents.is_empty()
         || !generation_config_matches(config, invocation)
     {
         return Err(invalid_llm_request());
     }
-    let content = &request.contents[0];
-    if content.role != "user" || content.parts.len() != 1 {
+    let Some(current) = request.contents.last() else {
+        return Err(invalid_llm_request());
+    };
+    if current.role != "user" || current.parts.len() != 1 {
         return Err(invalid_llm_request());
     }
-    match &content.parts[0] {
-        Part::Text { text } if !text.is_empty() && !text.contains('\0') => Ok(text),
-        _ => Err(invalid_llm_request()),
+    for content in &request.contents {
+        if !matches!(content.role.as_str(), "user" | "model")
+            || content.parts.is_empty()
+            || content.parts.iter().any(|part| {
+                !matches!(part, Part::Text { text } if !text.is_empty() && !text.contains('\0'))
+            })
+        {
+            return Err(invalid_llm_request());
+        }
     }
+    Ok(&request.contents)
 }
 
 fn instruction_role(model_name: &str) -> &'static str {

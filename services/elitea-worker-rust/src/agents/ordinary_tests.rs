@@ -8,7 +8,7 @@ use http::{Request, Response, StatusCode, Version};
 use http_body_util::Full;
 use tonic::body::Body;
 
-use super::assembly_tests::ordinary_request;
+use super::assembly_tests::{current_text_history, ordinary_request};
 use super::ordinary::OrdinaryNativeAgentAssembler;
 use super::request::AgentExecutionKind;
 use super::runtime::{
@@ -148,7 +148,8 @@ fn use_native_anthropic(request: &mut super::request::AgentExecutionRequest) {
 #[tokio::test(flavor = "current_thread")]
 async fn application_and_adhoc_share_authorized_redemption_model_session_and_projection() {
     for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
-        let request = ordinary_request(kind);
+        let mut request = ordinary_request(kind);
+        request.payload.chat_history = current_text_history();
         let (runtime_context, context_calls) = runtime_context_client();
         let (model_gateway, captured) = test_model_gateway_client(
             vec![TestModelGatewayOutcome::Response(model_response())],
@@ -196,7 +197,15 @@ async fn application_and_adhoc_share_authorized_redemption_model_session_and_pro
         assert_eq!(captured.len(), 1);
         let body: serde_json::Value =
             serde_json::from_slice(&captured[0].body).expect("model request JSON");
-        assert_eq!(body["messages"][1]["content"], "current");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(
+            body["messages"][1]["content"][0]["text"],
+            "earlier question"
+        );
+        assert_eq!(body["messages"][2]["role"], "assistant");
+        assert_eq!(body["messages"][2]["content"][0]["text"], "earlier ");
+        assert_eq!(body["messages"][2]["content"][1]["text"], "answer");
+        assert_eq!(body["messages"][3]["content"], "current");
         assert_eq!(
             body["messages"][0]["content"],
             match kind {
@@ -213,6 +222,7 @@ async fn application_and_adhoc_share_authorized_redemption_model_session_and_pro
 async fn application_and_adhoc_select_native_anthropic_without_changing_the_lifecycle() {
     for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
         let mut request = ordinary_request(kind);
+        request.payload.chat_history = current_text_history();
         use_native_anthropic(&mut request);
         let (runtime_context, context_calls) = runtime_context_client();
         let (model_gateway, captured) = test_model_gateway_client(
@@ -263,7 +273,15 @@ async fn application_and_adhoc_select_native_anthropic_without_changing_the_life
         let body: serde_json::Value =
             serde_json::from_slice(&captured[0].body).expect("native request JSON");
         assert_eq!(body["model"], "claude-sonnet-4-5");
-        assert_eq!(body["messages"][0]["content"], "current");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(
+            body["messages"][0]["content"][0]["text"],
+            "earlier question"
+        );
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(body["messages"][1]["content"][0]["text"], "earlier ");
+        assert_eq!(body["messages"][1]["content"][1]["text"], "answer");
+        assert_eq!(body["messages"][2]["content"], "current");
         assert_eq!(captured[0].headers["openai-organization"], "17");
         assert!(captured[0].headers["authorization"].is_sensitive());
         assert!(captured[0].headers["x-api-key"].is_sensitive());

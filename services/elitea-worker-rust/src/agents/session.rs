@@ -1,11 +1,12 @@
 //! Invocation-local ADK-Rust session and Runner assembly.
 //!
-//! The first ordinary profile treats Main's frozen input as the complete turn
+//! The ordinary profile treats Main's frozen input as the complete turn
 //! snapshot. It therefore creates one in-memory session and one exclusive
 //! Runner per authorized invocation. Stable, pseudonymous ADK identities keep
 //! tenant and principal references out of provider/session diagnostics while
-//! preserving the current thread boundary. Durable history and continuation
-//! remain closed until an Elitea-owned `SessionService` is proven.
+//! preserving the current thread boundary. The exact frozen text history is
+//! seeded without persistent checkpoints; rich history and durable continuation
+//! remain closed until their Elitea-owned contracts are proven.
 
 #![allow(dead_code)] // Production capability registration remains disabled.
 
@@ -13,8 +14,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use adk_rust::agent::LlmAgentBuilder;
-use adk_rust::session::{CreateRequest, InMemorySessionService, SessionService};
-use adk_rust::{Content, GenerateContentConfig, Llm, SessionId, UserId};
+use adk_rust::session::{
+    AppendEventRequest, CreateRequest, InMemorySessionService, SessionService,
+};
+use adk_rust::{Content, Event, GenerateContentConfig, Llm, SessionId, UserId};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -112,6 +115,7 @@ pub(crate) struct OrdinaryNativeAgentPlan {
     generation_config: GenerateContentConfig,
     projection: AgentEventProjectionContext,
     thread_id: String,
+    chat_history: Vec<Content>,
 }
 
 impl OrdinaryNativeAgentPlan {
@@ -175,6 +179,7 @@ impl OrdinaryNativeAgentPlan {
             },
             projection,
             thread_id,
+            chat_history: profile.chat_history().to_vec(),
         })
     }
 
@@ -228,6 +233,7 @@ where
         generation_config,
         projection,
         thread_id,
+        chat_history,
     } = plan;
     let adk_model = model.adk_model();
     let agent = LlmAgentBuilder::new(ROOT_AGENT_NAME)
@@ -239,7 +245,7 @@ where
         .build()
         .map_err(|_| invalid_configuration())?;
     let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
-    sessions
+    let session = sessions
         .create(CreateRequest {
             app_name: APP_NAME.to_owned(),
             user_id: user_id.to_string(),
@@ -248,6 +254,25 @@ where
         })
         .await
         .map_err(|_| dependency_unavailable())?;
+    let identity = session
+        .try_identity()
+        .map_err(|_| invalid_configuration())?;
+    for content in chat_history {
+        let mut event = Event::new("frozen-current-history");
+        event.author = if content.role == "user" {
+            "user".to_owned()
+        } else {
+            ROOT_AGENT_NAME.to_owned()
+        };
+        event.llm_response.content = Some(content);
+        sessions
+            .append_event_for_identity(AppendEventRequest {
+                identity: identity.clone(),
+                event,
+            })
+            .await
+            .map_err(|_| dependency_unavailable())?;
+    }
     let runner = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
         .agent(Arc::new(agent))
