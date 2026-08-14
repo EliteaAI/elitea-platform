@@ -2,10 +2,11 @@
 """Synchronize Main's built-in toolkit settings projection from the worker SDK.
 
 The current indexer publishes ``elitea_sdk.runtime.toolkits.tools.get_toolkits``
-schemas to Main. Main consumes only the top-level annotations used to expand
-configuration references and derive a stable toolkit name. This script runs
-that exact SDK registry from the source revision admitted by the worker lock
-and emits only those consumed annotations.
+schemas to Main. Main consumes the top-level annotations used to expand
+configuration references and derive a stable toolkit name, plus the per-tool
+argument schemas it serves to toolkit tool forms. This script runs that exact
+SDK registry from the source revision admitted by the worker lock and emits
+only those consumed parts.
 
 Deployment-defined MCP servers are intentionally excluded from this immutable
 built-in snapshot. They remain actor/project-visible dynamic schemas in Main.
@@ -45,6 +46,15 @@ ANNOTATION_FIELDS = (
     "toolkit_name",
 )
 MAX_TOOLKIT_NAME_LENGTH = 4096
+# The SDK publishes each toolkit's per-tool argument schemas as a
+# ``json_schema_extra`` payload on the tool-selection field, which Pydantic
+# merges verbatim into that property's JSON Schema. Main needs those argument
+# schemas to render toolkit tool forms, so they are projected as a sibling of
+# ``properties`` instead of being folded into ANNOTATION_FIELDS: the annotation
+# projection is a fixed, flat allowlist of scalar hints, while an argument
+# schema is an arbitrarily nested JSON Schema document with its own ``$defs``.
+TOOL_SELECTION_FIELD = "selected_tools"
+ARGUMENT_SCHEMAS_FIELD = "args_schemas"
 
 
 class ContractSyncError(RuntimeError):
@@ -188,6 +198,54 @@ def _annotation_projection(
     return projected, {"field": name_field, "max_length": max_length}
 
 
+def _argument_schema_projection(
+    properties: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project each tool's argument schema from the tool-selection property.
+
+    The payload is carried verbatim: an argument schema is a self-contained
+    JSON Schema whose internal ``$ref`` pointers resolve against its own
+    ``$defs``, so narrowing it the way ``_annotation_projection`` narrows
+    annotations would produce documents that no longer describe their own
+    inputs. Toolkits without a tool-selection field legitimately publish no
+    argument schemas and project an empty mapping; a tool-selection field whose
+    payload is present but malformed is a contract break and fails closed.
+    """
+
+    selection = properties.get(TOOL_SELECTION_FIELD)
+    if selection is None:
+        return {}
+    if not isinstance(selection, Mapping):
+        raise ContractSyncError("toolkit tool selection property is invalid")
+    raw_schemas = selection.get(ARGUMENT_SCHEMAS_FIELD)
+    if raw_schemas is None:
+        return {}
+    if not isinstance(raw_schemas, Mapping):
+        raise ContractSyncError("toolkit argument schemas are not a tool mapping")
+
+    projected: dict[str, Any] = {}
+    for tool_name, schema in raw_schemas.items():
+        if not isinstance(tool_name, str) or not tool_name:
+            raise ContractSyncError("toolkit argument schema has an invalid tool name")
+        if not isinstance(schema, Mapping):
+            raise ContractSyncError(
+                f"toolkit argument schema for tool {tool_name!r} is not an object"
+            )
+        # Reject anything the canonical encoder cannot represent here rather
+        # than at write time, so the failure names the offending tool.
+        try:
+            _canonical(schema)
+        except (TypeError, ValueError) as exc:
+            raise ContractSyncError(
+                f"toolkit argument schema for tool {tool_name!r} is not canonical JSON"
+            ) from exc
+        projected[tool_name] = schema
+    # The canonical encoder already sorts keys, but the in-memory document is
+    # compared directly by the tests and by --check callers, so keep the
+    # mapping ordered here too.
+    return {name: projected[name] for name in sorted(projected)}
+
+
 def project_toolkit_schemas(
     models: Iterable[Any],
     revision: str,
@@ -218,6 +276,7 @@ def project_toolkit_schemas(
             {
                 "type": type_name,
                 "properties": projected,
+                "args_schemas": _argument_schema_projection(properties),
                 "naming": naming,
             }
         )
