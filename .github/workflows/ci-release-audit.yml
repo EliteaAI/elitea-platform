@@ -105,8 +105,18 @@ jobs:
         if: steps.release.outputs.released == 'true'
         with:
           go-version: "1.25"
-          # uictl has no external deps (no go.sum); key on the workspace sum.
-          cache-dependency-path: go.work.sum
+          # Caching is OFF, deliberately. setup-go caches by default, and this
+          # workflow runs on `workflow_run` — the privileged context, with write
+          # access to the repository's shared Actions cache — while checking out
+          # the commit it is auditing. A cache written there is readable by
+          # every other workflow, so the pair is the cache-poisoning shape
+          # CodeQL flags as `actions/cache-poisoning/poisonable-step` (alerts
+          # #93 and #94 on this workflow's two `go run` steps).
+          #
+          # Nothing is lost: uictl has no external dependencies and no go.sum,
+          # so the cache would hold the toolchain and little else, for two short
+          # commands that run once per release.
+          cache: false
 
       # ── BLOCKING ────────────────────────────────────────────────────────
       # The same two commands ci-web.yml runs on every PR, re-run against the

@@ -280,16 +280,31 @@ describe('EditApplication', () => {
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
     const user = userEvent.setup();
 
-    const nameInput = await screen.findByTestId('agent-name-input', {}, { timeout: 5_000 });
+    // 3s, NOT the 5s this used to carry. A query timeout equal to the whole
+    // test budget means one slow first paint consumes 100% of it and the
+    // failure surfaces as "Test timed out" rather than naming the element that
+    // never arrived. Kept well under the scoped budget below so a genuinely
+    // missing input still fails as a query error.
+    const nameInput = await screen.findByTestId('agent-name-input', {}, { timeout: 3_000 });
     await waitFor(() => expect(nameInput).toHaveValue('My Agent'));
+
+    // paste, not type. `user.type('Renamed Agent')` dispatches 13 keystrokes
+    // and re-renders this page's whole accordion tree on each one; the claim
+    // under test is that the name reaches the PUT body, which one input event
+    // proves just as well. Measured on CI: this test reported 5172ms against
+    // the 5000ms default and reddened shard 10, while taking ~900ms locally.
     await user.clear(nameInput);
-    await user.type(nameInput, 'Renamed Agent');
+    await user.click(nameInput);
+    await user.paste('Renamed Agent');
 
     await user.click(await screen.findByTestId('agent-save-button'));
 
     await waitFor(() => expect(applicationBodies).toHaveLength(1));
     expect(applicationBodies[0]?.['name']).toBe('Renamed Agent');
-  });
+    // A scoped budget rather than a global testTimeout bump: raising the
+    // default in vitest.config.ts would hide slowness creep across the whole
+    // suite. CI runs this file roughly 7x slower than a laptop.
+  }, 15_000);
 
   /*
    * #307 — the conversation-starters field was the ONE field this page
