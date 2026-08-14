@@ -461,9 +461,8 @@ async fn authorization_carries_the_matching_prepared_request_to_submission() {
         let InvocationAuthorizationDecision::AuthorizedNow(authorized) = decision else {
             panic!("the fixture must authorize exactly once")
         };
-        let (payload, _output) = authorized.into_test_parts();
-        let observed_kind = payload.execution_kind();
-        let (request, reservation, lease) = payload.into_test_parts();
+        let (request, reservation, lease) = authorized.into_test_cleanup();
+        let observed_kind = request.kind;
         let request_kind = request.kind;
         assert_eq!(observed_kind, kind);
         assert_eq!(request_kind, kind);
@@ -478,7 +477,7 @@ async fn authorization_carries_the_matching_prepared_request_to_submission() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn every_non_authorized_outcome_retains_the_same_payload_without_submission() {
+async fn every_non_authorized_outcome_is_closed_without_submission() {
     #[derive(Clone, Copy)]
     enum Case {
         Already,
@@ -519,19 +518,23 @@ async fn every_non_authorized_outcome_retains_the_same_payload_without_submissio
             .authorize_agent_invocation((*prepared).into_authorization_candidate())
             .await;
 
-        let (observed_kind, failure, reservation, lease, error) = match decision {
+        let (observed_kind, failure, cleanup, error_retryable) = match decision {
             InvocationAuthorizationDecision::AlreadyAuthorized(terminal)
             | InvocationAuthorizationDecision::Rejected(terminal) => {
                 let (kind, failure, reservation, lease) = terminal.into_test_cleanup();
-                (kind, Some(failure), reservation, lease, None)
+                (kind, Some(failure), Some((reservation, lease)), None)
             }
             InvocationAuthorizationDecision::Unknown(unknown) => {
                 assert!(matches!(unknown.error(), AgentControlError::Transport(_)));
                 assert!(!unknown.error().to_string().contains("not exposed"));
-                let (payload, error) = unknown.into_test_parts();
-                let kind = payload.execution_kind();
-                let (_, reservation, lease) = payload.into_test_parts();
-                (kind, None, reservation, lease, Some(error))
+                let completion = unknown.close_no_ack().await;
+                assert!(completion.lease_error().is_none());
+                (
+                    completion.execution_kind(),
+                    None,
+                    None,
+                    Some(completion.authorization_error().retryable()),
+                )
             }
             InvocationAuthorizationDecision::AuthorizedNow(_) => {
                 panic!("the configured response must not grant submission")
@@ -545,11 +548,13 @@ async fn every_non_authorized_outcome_retains_the_same_payload_without_submissio
             }
             Case::Unknown => assert_eq!(failure, None),
         }
-        if let Some(error) = error {
-            assert!(error.retryable());
+        if let Some(retryable) = error_retryable {
+            assert!(retryable);
         }
-        lease.close().await.expect("lease close");
-        drop(reservation);
+        if let Some((reservation, lease)) = cleanup {
+            lease.close().await.expect("lease close");
+            drop(reservation);
+        }
         assert_eq!(admission.available_capacity(), 1);
     }
 }

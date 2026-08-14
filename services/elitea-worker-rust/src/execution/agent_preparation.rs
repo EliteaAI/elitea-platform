@@ -29,8 +29,9 @@ use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
     AgentControlClient, AgentControlError, AgentExecutionOutputAuthority, BeginAgentExecution,
-    InvocationAuthorizationCandidate, InvocationAuthorizationPayload,
-    InvocationAuthorizationTerminalCause, LeaseMonitoredAgentExecution,
+    InvocationAuthorizationCandidate, InvocationAuthorizationNoAckAuthority,
+    InvocationAuthorizationPayload, InvocationAuthorizationTerminalCause,
+    InvocationSubmissionPermit, LeaseMonitoredAgentExecution,
 };
 use crate::protocol::elitea::runtime::v1::{DigestAlgorithmV1, DigestV1};
 use crate::transport::redis_commands::RedisCommandDelivery;
@@ -256,21 +257,37 @@ impl PreparedAgentAuthorizationPayload {
     pub(crate) const fn execution_kind(&self) -> AgentExecutionKind {
         self.request.kind
     }
-
-    #[cfg(test)]
-    pub(crate) fn into_test_parts(
-        self,
-    ) -> (
-        AgentExecutionRequest,
-        InvocationReservation,
-        ClaimLeaseMonitor,
-    ) {
-        (self.request, self.reservation, self.lease)
-    }
 }
 
 impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
+    type Authorized = AuthorizedAgentRun;
     type Terminal = AgentFailureTerminal;
+    type Unknown = AgentAuthorizationUnknown;
+
+    fn into_authorized(
+        self,
+        permit: InvocationSubmissionPermit,
+        output_authority: AgentExecutionOutputAuthority,
+    ) -> Self::Authorized {
+        let Self {
+            delivery,
+            verified,
+            request,
+            output_spool,
+            reservation,
+            lease,
+        } = self;
+        AuthorizedAgentRun {
+            delivery,
+            verified,
+            request,
+            output_authority,
+            output: output_spool,
+            reservation,
+            lease,
+            permit,
+        }
+    }
 
     fn into_authorization_terminal(
         self,
@@ -294,6 +311,132 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
             lease,
             proposed_failure: cause.runtime_failure_kind(),
         }
+    }
+
+    fn into_authorization_unknown(
+        self,
+        authority: InvocationAuthorizationNoAckAuthority,
+        error: AgentControlError,
+    ) -> Self::Unknown {
+        let Self {
+            delivery: _,
+            verified: _,
+            request,
+            output_spool,
+            reservation,
+            lease,
+        } = self;
+        AgentAuthorizationUnknown {
+            execution_kind: request.kind,
+            authority,
+            output: output_spool,
+            reservation,
+            lease,
+            error,
+        }
+    }
+}
+
+/// Complete authorized run retained as one submission/output ownership unit.
+///
+/// No production method exposes its permit, request, output authority, lease,
+/// or reservation independently. The native ADK coordinator must consume this
+/// value at the actual supervised submission boundary.
+#[allow(dead_code)] // Consumed by the next native ADK invocation slice.
+pub(crate) struct AuthorizedAgentRun {
+    delivery: RedisCommandDelivery,
+    verified: VerifiedAgentCommand,
+    request: AgentExecutionRequest,
+    output_authority: AgentExecutionOutputAuthority,
+    output: PreparedAgentOutput,
+    reservation: InvocationReservation,
+    lease: ClaimLeaseMonitor,
+    permit: InvocationSubmissionPermit,
+}
+
+#[cfg(test)]
+impl AuthorizedAgentRun {
+    pub(crate) fn into_test_cleanup(
+        self,
+    ) -> (
+        AgentExecutionRequest,
+        InvocationReservation,
+        ClaimLeaseMonitor,
+    ) {
+        (self.request, self.reservation, self.lease)
+    }
+}
+
+/// Request-free cleanup ownership for an authorization RPC with unknown effect.
+///
+/// The accepted claim can no longer create output or submission authority. The
+/// empty spool lock and capacity reservation remain owned until lease shutdown
+/// completes, while Redis remains deliberately unacknowledged for recovery.
+#[allow(dead_code)] // Consumed by the next supervised authorization coordinator.
+pub(crate) struct AgentAuthorizationUnknown {
+    execution_kind: AgentExecutionKind,
+    authority: InvocationAuthorizationNoAckAuthority,
+    output: PreparedAgentOutput,
+    reservation: InvocationReservation,
+    lease: ClaimLeaseMonitor,
+    error: AgentControlError,
+}
+
+impl AgentAuthorizationUnknown {
+    #[must_use]
+    #[allow(dead_code)] // Used by the next supervised authorization coordinator.
+    pub(crate) const fn error(&self) -> &AgentControlError {
+        &self.error
+    }
+
+    /// Close only local authority after an unknown authorization effect.
+    ///
+    /// No terminal, settlement, or Redis retirement authority is returned.
+    #[allow(dead_code)] // Used by the next supervised authorization coordinator.
+    pub(crate) async fn close_no_ack(self) -> AgentAuthorizationUnknownCompletion {
+        let Self {
+            execution_kind,
+            authority,
+            output,
+            reservation,
+            lease,
+            error,
+        } = self;
+        let lease_error = lease.close().await.err();
+        drop(output);
+        drop(authority);
+        drop(reservation);
+        AgentAuthorizationUnknownCompletion {
+            execution_kind,
+            authorization_error: error,
+            lease_error,
+        }
+    }
+}
+
+/// Data-free disposition retained after local unknown-effect cleanup.
+#[allow(dead_code)] // Returned by the next supervised authorization coordinator.
+pub(crate) struct AgentAuthorizationUnknownCompletion {
+    execution_kind: AgentExecutionKind,
+    authorization_error: AgentControlError,
+    lease_error: Option<ClaimLeaseError>,
+}
+
+#[allow(dead_code)] // Read by the next supervised authorization coordinator.
+impl AgentAuthorizationUnknownCompletion {
+    #[must_use]
+    pub(crate) const fn execution_kind(&self) -> AgentExecutionKind {
+        self.execution_kind
+    }
+
+    #[must_use]
+    pub(crate) const fn authorization_error(&self) -> &AgentControlError {
+        &self.authorization_error
+    }
+
+    #[must_use]
+    pub(crate) const fn lease_error(&self) -> Option<&ClaimLeaseError> {
+        self.lease_error.as_ref()
     }
 }
 

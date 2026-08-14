@@ -826,10 +826,10 @@ pub enum BeginAgentExecution {
 /// The only value that permits one native ADK submission.
 ///
 /// It is deliberately opaque and non-cloneable. The invocation coordinator
-/// must consume the enclosing [`AuthorizedAgentInvocation`] at the actual
+/// must consume the enclosing execution-layer authorized run at the actual
 /// runner submission boundary; the permit is never exposed independently.
 #[allow(dead_code)] // Constructed by the next owned invocation coordinator.
-struct InvocationSubmissionPermit {
+pub(crate) struct InvocationSubmissionPermit {
     _sealed: (),
 }
 
@@ -854,32 +854,13 @@ impl LeaseMonitoredAgentExecution {
     }
 }
 
-/// Paired authority for exactly one native ADK submission, its output, and the
-/// complete request/run state that was carried through authorization.
+/// Opaque claim ownership retained only long enough to close an authorization
+/// attempt whose transport outcome is unknown.
 ///
-/// Keeping all three in one non-cloneable value prevents replay and prevents a
-/// coordinator from authorizing claim A while submitting claim B's request.
-#[allow(dead_code)] // Consumed by the next native ADK invocation slice.
-pub(crate) struct AuthorizedAgentInvocation<T> {
-    permit: InvocationSubmissionPermit,
-    output: AgentExecutionOutputAuthority,
-    payload: T,
-}
-
-impl<T> AuthorizedAgentInvocation<T> {
-    /// Inspect carry-through state only inside this module's unit-test build.
-    ///
-    /// Production intentionally has no unwrapping method until the native ADK
-    /// driver can consume the value without returning raw components.
-    #[cfg(test)]
-    pub(crate) fn into_test_parts(self) -> (T, AgentExecutionOutputAuthority) {
-        let Self {
-            permit: InvocationSubmissionPermit { _sealed: () },
-            output,
-            payload,
-        } = self;
-        (payload, output)
-    }
+/// It grants neither output nor submission access and deliberately exposes no
+/// raw claim/fence fields to the execution coordinator.
+pub(crate) struct InvocationAuthorizationNoAckAuthority {
+    _claim: AcceptedAgentClaim,
 }
 
 /// Canonical terminal cause when Main answered the authorization attempt but
@@ -981,37 +962,27 @@ const fn authorization_failure_kind(error: &AgentControlError) -> RuntimeFailure
 /// exposes a generic tuple/map operation that could separate or cross-swap
 /// those values.
 pub(crate) trait InvocationAuthorizationPayload: Sized {
+    type Authorized;
     type Terminal;
+    type Unknown;
+
+    fn into_authorized(
+        self,
+        permit: InvocationSubmissionPermit,
+        output: AgentExecutionOutputAuthority,
+    ) -> Self::Authorized;
 
     fn into_authorization_terminal(
         self,
         output: AgentExecutionOutputAuthority,
         cause: InvocationAuthorizationTerminalCause,
     ) -> Self::Terminal;
-}
 
-/// No-ACK ownership retained when the authorization RPC outcome is unknown.
-///
-/// The accepted claim remains sealed inside this value so callers cannot turn
-/// transport uncertainty into either a fresh submission or a new terminal.
-#[allow(dead_code)] // Consumed by the next no-ACK recovery coordinator.
-pub(crate) struct InvocationAuthorizationUnknown<T> {
-    _claim: AcceptedAgentClaim,
-    error: AgentControlError,
-    payload: T,
-}
-
-impl<T> InvocationAuthorizationUnknown<T> {
-    #[must_use]
-    #[allow(dead_code)] // Used by the next no-ACK recovery coordinator.
-    pub const fn error(&self) -> &AgentControlError {
-        &self.error
-    }
-
-    #[cfg(test)]
-    pub(crate) fn into_test_parts(self) -> (T, AgentControlError) {
-        (self.payload, self.error)
-    }
+    fn into_authorization_unknown(
+        self,
+        authority: InvocationAuthorizationNoAckAuthority,
+        error: AgentControlError,
+    ) -> Self::Unknown;
 }
 
 /// Exhaustive result of the final durable fence before native ADK execution.
@@ -1020,10 +991,10 @@ impl<T> InvocationAuthorizationUnknown<T> {
 /// responses cannot construct any of these opaque values.
 #[allow(dead_code)] // Exhausted by the next owned invocation coordinator.
 pub(crate) enum InvocationAuthorizationDecision<T: InvocationAuthorizationPayload> {
-    AuthorizedNow(Box<AuthorizedAgentInvocation<T>>),
+    AuthorizedNow(Box<T::Authorized>),
     AlreadyAuthorized(Box<T::Terminal>),
     Rejected(Box<T::Terminal>),
-    Unknown(Box<InvocationAuthorizationUnknown<T>>),
+    Unknown(Box<T::Unknown>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1248,23 +1219,19 @@ impl<R: ControlRpc> AgentControlClient<R> {
             Ok(response) => response,
             Err(error) => {
                 return InvocationAuthorizationDecision::Unknown(Box::new(
-                    InvocationAuthorizationUnknown {
-                        _claim: claim,
-                        error: error.into(),
-                        payload,
-                    },
+                    payload.into_authorization_unknown(
+                        InvocationAuthorizationNoAckAuthority { _claim: claim },
+                        error.into(),
+                    ),
                 ));
             }
         };
         match parse_authorize_invocation_response(&response) {
             Ok(AuthorizeInvocationDecision::AuthorizedNow) => {
-                InvocationAuthorizationDecision::AuthorizedNow(Box::new(
-                    AuthorizedAgentInvocation {
-                        permit: InvocationSubmissionPermit { _sealed: () },
-                        output: AgentExecutionOutputAuthority { claim },
-                        payload,
-                    },
-                ))
+                InvocationAuthorizationDecision::AuthorizedNow(Box::new(payload.into_authorized(
+                    InvocationSubmissionPermit { _sealed: () },
+                    AgentExecutionOutputAuthority { claim },
+                )))
             }
             Ok(AuthorizeInvocationDecision::AlreadyAuthorized) => {
                 InvocationAuthorizationDecision::AlreadyAuthorized(Box::new(
