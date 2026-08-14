@@ -1072,8 +1072,23 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					})
 				}
 
-				// Agent categories
-				r.With(projectScoped).Get("/agent_categories/prompt_lib/{projectID}", coreHandler.AgentCategories)
+				// Agent categories — deliberately NOT project-scoped.
+				//
+				// This is a global taxonomy, not project data: the handler
+				// returns nine hardcoded defaults merged with a globally
+				// authored extras row, and its own comment records that the
+				// per-project `publishing_guardrail` read "could only ever
+				// miss" because no surface writes one. So a project gate here
+				// protects nothing.
+				//
+				// It also breaks a cross-project surface. The Agent HUB renders
+				// this list beside the PUBLIC published-agent catalogue, which
+				// is itself ungated below; gating the categories emptied the
+				// hub's rail while the catalogue beside it kept working. Caught
+				// by the @visual agents-hub snapshot, whose oracle is a category
+				// name — no unit test covers a route that answers correctly for
+				// a member and is simply unreachable from a public page.
+				r.Get("/agent_categories/prompt_lib/{projectID}", coreHandler.AgentCategories)
 
 				// Skills (UI calls /skill/ and /skills/ paths)
 				if cfg.SkillsRepo != nil {

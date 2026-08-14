@@ -89,7 +89,6 @@ var eliteaCoreProjectScopedRoutes = []eliteaCoreProjectScopedRoute{
 	{http.MethodDelete, "/api/v2/elitea_core/application/prompt_lib/7/1", "/api/v2/elitea_core/application/prompt_lib/8/1"},
 	{http.MethodDelete, "/api/v2/elitea_core/version/prompt_lib/7/1/2", "/api/v2/elitea_core/version/prompt_lib/8/1/2"},
 	{http.MethodPatch, "/api/v2/elitea_core/default_version/prompt_lib/7/1/2", "/api/v2/elitea_core/default_version/prompt_lib/8/1/2"},
-	{http.MethodGet, "/api/v2/elitea_core/agent_categories/prompt_lib/7", "/api/v2/elitea_core/agent_categories/prompt_lib/8"},
 	{http.MethodGet, "/api/v2/elitea_core/skills/prompt_lib/7", "/api/v2/elitea_core/skills/prompt_lib/8"},
 	{http.MethodPost, "/api/v2/elitea_core/skills/prompt_lib/7", "/api/v2/elitea_core/skills/prompt_lib/8"},
 	{http.MethodDelete, "/api/v2/elitea_core/skill/prompt_lib/7/1", "/api/v2/elitea_core/skill/prompt_lib/8/1"},
@@ -230,6 +229,34 @@ func TestEliteaCoreProjectScopeRejectsMalformedProjectID(t *testing.T) {
 // #302's acceptance notes forbid tightening routes legacy leaves open. If the
 // gate were applied group-wide instead of per-family these would start
 // answering 403 with no project to check.
+// TestAgentCategoriesStayUnscopedDespiteHavingAProjectInThePath is the case the
+// boundary test above could not see. It only covers routes with NO project in
+// their path; agent_categories HAS one, so it looks scopable — and gating it
+// emptied the Agent HUB's category rail, because the hub renders that list
+// beside the ungated public catalogue and a non-member of the named project got
+// a 403 where the catalogue beside it answered fine.
+//
+// The route serves a global taxonomy: nine hardcoded defaults plus a globally
+// authored extras row. Its only project-shaped read is a `publishing_guardrail`
+// lookup the handler itself documents as one that "could only ever miss",
+// because no surface writes one. So there is nothing here to protect, and a
+// caller who is not a member must still be served.
+func TestAgentCategoriesStayUnscopedDespiteHavingAProjectInThePath(t *testing.T) {
+	querier := &memberOfProject{project: "7"}
+	router := newEliteaCoreProjectScopeRouter(querier)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, testAuthHeader(
+		httptest.NewRequest(http.MethodGet, "/api/v2/elitea_core/agent_categories/prompt_lib/8", nil)))
+
+	if recorder.Code == http.StatusForbidden {
+		t.Fatalf("a non-member got 403 from the global category taxonomy; body=%s", recorder.Body.String())
+	}
+	if len(querier.asked) != 0 {
+		t.Fatalf("the membership query ran for a global taxonomy route: %v", querier.asked)
+	}
+}
+
 func TestEliteaCorePublicRoutesStayUnscoped(t *testing.T) {
 	querier := &memberOfProject{project: "7"}
 	router := newEliteaCoreProjectScopeRouter(querier)

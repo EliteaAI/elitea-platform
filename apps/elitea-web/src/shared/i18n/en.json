@@ -1952,5 +1952,6 @@
   "pages.admin.nav.serviceDescriptors": "Service Descriptors",
   "pages.admin.nav.title": "Elitea Admin",
   "pages.admin.nav.toggle": "Toggle navigation",
-  "pages.admin.nav.users": "Users"
+  "pages.admin.nav.users": "Users",
+  "features.toolkits.modelSelect.refresh": "Refresh the models"
 }

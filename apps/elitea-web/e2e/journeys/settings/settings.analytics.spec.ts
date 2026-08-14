@@ -276,67 +276,52 @@ test('J24c: a failing analytics load shows the error state instead of empty char
  * the UI reports is checked against the row count the backend actually
  * returned for the same project.
  * ──────────────────────────────────────────────────────────────────────── */
-test('J24d: the Agents/Tools/Users tabs render tables sized by the backend', async ({ page }) => {
+test('J24d: the Agents/Tools/Users tabs report the missing source, not an empty table', async ({ page }) => {
   await page.goto(BASE_URL + '/app/settings/analytics');
   await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toBeVisible();
 
+  // This test used to assert each tab rendered a table SIZED BY the endpoint:
+  // status 200, then `items.length` echoed in the count label and the pagination
+  // footer. That oracle was the response body, and the body was fabricated —
+  // the three detail branches answered before consulting the repository at all,
+  // and the tables they described were built from queries naming tables no
+  // migration creates (issue #303).
+  //
+  // With the fabrication removed those routes answer 500 and say why, so the
+  // claim inverts: a tab must SURFACE the missing source rather than render a
+  // convincing empty table. That is the stricter half — "0 agents" with five
+  // column headers is producible by a stub, by a broken query and by a genuinely
+  // idle project alike, whereas a 500 naming the absent producer is producible
+  // only by the handler actually asking its repository.
+  //
+  // The populated-table rendering is not lost: J24b drives it with a crafted
+  // payload, as it did before this change.
   const tabs = [
-    {
-      tab: 'Agents',
-      path: `${API_BASE}/elitea_core/analytics_agents/prompt_lib/${DEFAULT_PROJECT_ID}`,
-      title: 'Agent Activity',
-      noun: 'agents',
-      columns: ['Agent', 'Events', 'Users', 'Avg Latency', 'Errors'],
-      search: 'Search by agent name',
-    },
-    {
-      tab: 'Tools',
-      path: `${API_BASE}/elitea_core/analytics_tools/prompt_lib/${DEFAULT_PROJECT_ID}`,
-      title: 'Tool Details',
-      noun: 'tools',
-      columns: ['Tool', 'Calls', 'Users', 'Avg Latency', 'Errors'],
-      search: 'Search by tool name',
-    },
-    {
-      tab: 'Users',
-      path: `${API_BASE}/elitea_core/analytics_users/prompt_lib/${DEFAULT_PROJECT_ID}`,
-      title: 'User Activity',
-      noun: 'users',
-      columns: ['User', 'Events', 'Days', 'LLM', 'Tool', 'Agent', 'Chat Msg', 'Errors'],
-      search: 'Search by email',
-    },
+    { tab: 'Agents', path: `${API_BASE}/elitea_core/analytics_agents/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'Agent Activity', columns: ['Agent', 'Events', 'Users', 'Avg Latency', 'Errors'] },
+    { tab: 'Tools', path: `${API_BASE}/elitea_core/analytics_tools/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'Tool Details', columns: ['Tool', 'Calls', 'Users', 'Avg Latency', 'Errors'] },
+    { tab: 'Users', path: `${API_BASE}/elitea_core/analytics_users/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'User Activity', columns: ['User', 'Events', 'Days', 'LLM', 'Tool', 'Agent', 'Chat Msg', 'Errors'] },
   ] as const;
 
   for (const spec of tabs) {
     // The oracle: the same endpoint the tab reads, called directly with the
     // browser context's own session.
     const resp = await page.request.get(spec.path);
-    expect(resp.status(), `${spec.path} must be a registered route`).toBe(200);
-    const items = ((await resp.json()) as { items: unknown[] }).items;
-    expect(Array.isArray(items), `${spec.path} must return an items array`).toBe(true);
+    expect(resp.status(), `${spec.path} must report its missing source`).toBe(500);
+    const failure = (await resp.json()) as { detail?: string };
+    expect(failure.detail ?? '', `${spec.path} must name the absent producer`).toContain(
+      'analytics: no data source',
+    );
 
     await page.getByRole('tab', { name: spec.tab, exact: true }).click();
 
-    const title = page.getByText(spec.title, { exact: true });
-    await expect(title).toBeVisible();
-    // The card Box wrapping title + subtitle + PaginatedEntityTable. Scoped
-    // deliberately: bare `getByText('Users')` also matches the "Users" TAB and
-    // the settings-sidebar link, so an unscoped column assertion would pass
-    // against a page that renders no table at all.
-    const card = title.locator('..');
-    // "{{count}} agents|tools|users" — the count the component derives from
-    // `data.items.length` must equal what the endpoint just returned.
-    await expect(card.getByText(`${items.length} ${spec.noun}`, { exact: true })).toBeVisible();
+    // The error branch, and NOT a table. Asserting only the error text would
+    // still pass against a page that rendered both, which is the failure this
+    // half exists to catch.
+    await expect(page.getByText('Failed to load analytics data.', { exact: true })).toBeVisible();
+    await expect(page.getByText(spec.title, { exact: true })).toHaveCount(0);
     for (const column of spec.columns) {
-      await expect(card.getByText(column, { exact: true })).toBeVisible();
+      await expect(page.getByText(column, { exact: true })).toHaveCount(0);
     }
-    await expect(card.getByPlaceholder(spec.search)).toBeVisible();
-    // MUI TablePagination's count label, driven by the same array.
-    await expect(
-      card.getByText(items.length === 0 ? '0–0 of 0' : `1–${Math.min(20, items.length)} of ${items.length}`, {
-        exact: true,
-      }),
-    ).toBeVisible();
   }
 
   await checkA11y(page);
@@ -363,8 +348,14 @@ test('J24e: a date preset re-queries the backend with the selected range', async
   const sevenDayUrl = new URL((await refetch).url());
   expect(spanDays(sevenDayUrl)).toBeLessThan(7.1);
 
-  // The re-query lands: the tiles are still rendered after the range change.
-  await expect(kpi(page, 'LLM CALLS')).toBeVisible();
+  // The re-query lands and the page is still alive after the range change.
+  // This used to wait on a KPI tile, which the live stack no longer renders:
+  // the usage endpoint reports its missing data source (issue #303), so the
+  // error branch is what a real range change settles into. The claim this
+  // journey makes is about the REQUEST — the two assertions above, on the
+  // second URL's span — so the tile was only ever a liveness check, and the
+  // error branch serves that purpose without asserting a fabricated number.
+  await expect(page.getByText('Failed to load analytics data.', { exact: true })).toBeVisible();
 
   await checkA11y(page);
 });
