@@ -4,7 +4,10 @@ import {
   checkCoverageExclusions,
   declaresTagTrigger,
   findDeadTagTriggers,
+  findMissingWorkflowRunTargets,
   tagGatedConditions,
+  workflowName,
+  workflowRunTargets,
 } from './ci-dormancy-core.mjs';
 
 // Each case below is the real defect from issue #309 reduced to its smallest
@@ -84,6 +87,104 @@ describe('rule 1 — unreachable tag triggers', () => {
       ['a.yml', 'dead-tag-trigger'],
       ['b.yml', 'dead-tag-condition'],
     ]);
+  });
+});
+
+describe('rule 3 — workflow_run targets that name no real workflow', () => {
+  const publish = { file: '.github/workflows/publish.yml', text: 'name: Release & Publish\n\non:\n  push:\n    branches: [main]\n' };
+
+  it('reads the top-level workflow name, not a job or step name', () => {
+    const text = ['name: Release & Publish', 'jobs:', '  release:', '    name: Semantic Release', '    steps:', '      - name: Checkout'].join('\n');
+    expect(workflowName(text, 'publish.yml')).toBe('Release & Publish');
+  });
+
+  it('strips quotes and falls back to the file path when there is no name', () => {
+    expect(workflowName('name: "CI — Web"\n')).toBe('CI — Web');
+    expect(workflowName('on:\n  push:\n', '.github/workflows/anon.yml')).toBe('.github/workflows/anon.yml');
+  });
+
+  it('ignores a name that only appears in a comment', () => {
+    expect(workflowName('# name: Not The Name\nname: Real\n')).toBe('Real');
+  });
+
+  it('reads flow-style and block-style `workflows:` lists', () => {
+    const flow = ['on:', '  workflow_run:', '    workflows: ["Release & Publish", CI — Web]', '    types: [completed]'].join('\n');
+    expect(workflowRunTargets(flow)).toEqual([
+      { line: 3, name: 'Release & Publish' },
+      { line: 3, name: 'CI — Web' },
+    ]);
+
+    const block = ['on:', '  workflow_run:', '    workflows:', '      - "Release & Publish"', '    types: [completed]'].join('\n');
+    expect(workflowRunTargets(block)).toEqual([{ line: 4, name: 'Release & Publish' }]);
+  });
+
+  it('stops at the end of the workflow_run block and at the end of the list', () => {
+    // `workflows:` under a LATER, unrelated key must not be collected, and the
+    // list walk must stop at the dedent rather than swallowing `types:`.
+    const text = [
+      'on:',
+      '  workflow_run:',
+      '    workflows:',
+      '      - Release & Publish',
+      '    types: [completed]',
+      'jobs:',
+      '  x:',
+      '    with:',
+      '      workflows: ["Not A Trigger"]',
+    ].join('\n');
+    expect(workflowRunTargets(text)).toEqual([{ line: 4, name: 'Release & Publish' }]);
+  });
+
+  it('skips blank lines inside the list, and stops at a line that is not an item', () => {
+    const text = [
+      'on:',
+      '  workflow_run:',
+      '    workflows:',
+      '      - Release & Publish',
+      '',
+      '      - CI — Web',
+      '      types: [completed]', // over-indented, not a `-` item: end of list
+      '      - Never Reached',
+    ].join('\n');
+    expect(workflowRunTargets(text)).toEqual([
+      { line: 4, name: 'Release & Publish' },
+      { line: 6, name: 'CI — Web' },
+    ]);
+  });
+
+  it('finds no targets in a workflow that has no workflow_run trigger', () => {
+    expect(workflowRunTargets('on:\n  pull_request:\n')).toEqual([]);
+    // A workflow_run block with no `workflows:` key at all (listens to every
+    // workflow) is legal and references nothing to break.
+    expect(workflowRunTargets('on:\n  workflow_run:\n    types: [completed]\n')).toEqual([]);
+    // An empty flow list contributes no names rather than one empty one.
+    expect(workflowRunTargets('on:\n  workflow_run:\n    workflows: []\n')).toEqual([]);
+  });
+
+  it('passes when the target workflow exists — the real ci-release-audit/publish pair', () => {
+    const audit = {
+      file: '.github/workflows/ci-release-audit.yml',
+      text: 'name: CI — Release Audit\n\non:\n  workflow_run:\n    workflows: ["Release & Publish"]\n    types: [completed]\n',
+    };
+    expect(findMissingWorkflowRunTargets([audit, publish])).toEqual([]);
+  });
+
+  it('flags the rename that would silently disarm Gate 2', () => {
+    // The regression this rule exists for: publish.yml gets renamed, the
+    // release audit stops firing, and GitHub reports nothing at all.
+    const renamed = { ...publish, text: 'name: Publish Images\n' };
+    const audit = {
+      file: '.github/workflows/ci-release-audit.yml',
+      text: 'name: CI — Release Audit\non:\n  workflow_run:\n    workflows: ["Release & Publish"]\n',
+    };
+    const offences = findMissingWorkflowRunTargets([audit, renamed]);
+    expect(offences).toHaveLength(1);
+    expect(offences[0].rule).toBe('workflow-run-target-missing');
+    expect(offences[0].file).toBe('.github/workflows/ci-release-audit.yml');
+    expect(offences[0].detail).toContain('"Release & Publish"');
+    // The message must name what IS available, or the next reader has to go
+    // and grep for it themselves.
+    expect(offences[0].detail).toContain('Publish Images');
   });
 });
 

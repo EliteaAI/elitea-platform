@@ -16,7 +16,12 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { checkCoverageExclusions, findDeadTagTriggers } from './lib/ci-dormancy-core.mjs';
+import {
+  checkCoverageExclusions,
+  findDeadTagTriggers,
+  findMissingWorkflowRunTargets,
+  workflowRunTargets,
+} from './lib/ci-dormancy-core.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(appRoot, '../..');
@@ -35,6 +40,12 @@ if (workflows.length === 0) {
 }
 
 const triggerOffences = findDeadTagTriggers(workflows);
+
+// ── rule 3: workflow_run triggers pointing at a workflow that isn't there ────
+// Gate 2 of #309 is armed by ci-release-audit.yml's `workflow_run` on "Release
+// & Publish". That coupling is a bare string; renaming the target would make
+// the release audit dormant with no error from anywhere.
+const workflowRunOffences = findMissingWorkflowRunTargets(workflows);
 
 // ── rule 2: stale coverage exclusions ───────────────────────────────────────
 // The exclusion list is read out of the real vitest.config.ts, so a glob added
@@ -133,7 +144,7 @@ const coverageOffences = checkCoverageExclusions({
 
 // ── report ──────────────────────────────────────────────────────────────────
 let failed = false;
-for (const o of triggerOffences) {
+for (const o of [...triggerOffences, ...workflowRunOffences]) {
   failed = true;
   console.error(`check-ci-dormancy: FAIL [${o.rule}] ${o.file} ${o.detail}`);
 }
@@ -146,8 +157,13 @@ if (failed) process.exit(1);
 // The counts are printed so a run that checked nothing is visible in the log
 // rather than looking identical to a run that checked everything.
 const waivedCount = Object.keys(waivers).length;
+// The workflow_run count is printed separately and deliberately: if it ever
+// reads 0, Gate 2's release trigger has been deleted rather than merely
+// renamed, and this line is the only place that would show it.
+const workflowRunRefs = workflows.reduce((n, w) => n + workflowRunTargets(w.text).length, 0);
 console.log(
   `check-ci-dormancy: OK — ${workflows.length} workflows scanned for unreachable tag gates, ` +
+    `${workflowRunRefs} workflow_run target reference(s) resolved to a real workflow, ` +
     `${exclusions.length} coverage exclusions verified against ${sourceFiles.length} source files ` +
     `(${waivedCount} declared waiver(s))`,
 );

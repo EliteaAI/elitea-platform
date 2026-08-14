@@ -117,6 +117,107 @@ export function findDeadTagTriggers(workflows) {
 }
 
 /**
+ * The workflow's own `name:` — the string other workflows must use to target it
+ * in `workflow_run.workflows:`. A workflow with no `name:` is addressed by its
+ * path, so that is the fallback.
+ *
+ * Only a top-level (column-0) `name:` counts. Jobs and steps carry `name:` too,
+ * and taking the first match anywhere would let a step name satisfy a
+ * workflow_run reference.
+ */
+export function workflowName(workflowText, file = '') {
+  for (const line of stripComments(workflowText).split('\n')) {
+    const m = /^name:\s*(.+?)\s*$/.exec(line);
+    if (m) return m[1].replace(/^['"]|['"]$/g, '');
+  }
+  return file;
+}
+
+/**
+ * The workflow names this file listens to via `workflow_run.workflows:`.
+ *
+ * Handles the flow form (`workflows: ["A", "B"]`) and the block form
+ * (`workflows:` followed by `- A` items), because a rule that understood only
+ * one of them would pass a file written in the other — silently, which is the
+ * failure this module exists to stop.
+ */
+export function workflowRunTargets(workflowText) {
+  const lines = stripComments(workflowText).split('\n');
+  const out = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const opened = /^(\s*)workflow_run:\s*$/.exec(lines[i]);
+    if (!opened) continue;
+    const runIndent = opened[1].length;
+
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+      const lead = line.length - line.trimStart().length;
+      if (lead <= runIndent) break; // the workflow_run block ended
+
+      const flow = /^\s*workflows:\s*\[(.*)\]\s*$/.exec(line);
+      if (flow) {
+        for (const raw of flow[1].split(',')) {
+          const name = raw.trim().replace(/^['"]|['"]$/g, '');
+          if (name) out.push({ line: j + 1, name });
+        }
+        continue;
+      }
+
+      const block = /^(\s*)workflows:\s*$/.exec(line);
+      if (!block) continue;
+      const listIndent = block[1].length;
+      for (let k = j + 1; k < lines.length; k++) {
+        const item = lines[k];
+        if (item.trim() === '') continue;
+        const itemLead = item.length - item.trimStart().length;
+        if (itemLead <= listIndent) break;
+        const entry = /^\s*-\s*(.+?)\s*$/.exec(item);
+        if (!entry) break;
+        out.push({ line: k + 1, name: entry[1].replace(/^['"]|['"]$/g, '') });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Rule 3 — BROKEN workflow_run REFERENCES.
+ *
+ * Issue #309's Gate 2 is now armed by ci-release-audit.yml, which fires on
+ * `workflow_run` against the workflow *named* "Release & Publish". That string
+ * is the whole coupling: rename publish.yml's `name:`, and the release audit
+ * stops running, forever, while nothing anywhere reports an error — GitHub does
+ * not warn about a workflow_run target that matches no workflow. It is exactly
+ * the shape of the check-playwright-image-tag.mjs regression in #157, where a
+ * gate kept passing because the path it watched had moved out from under it.
+ *
+ * @param {{file: string, text: string}[]} workflows
+ * @returns {{file: string, rule: string, detail: string}[]}
+ */
+export function findMissingWorkflowRunTargets(workflows) {
+  const known = new Set(workflows.map(({ file, text }) => workflowName(text, file)));
+  const offences = [];
+
+  for (const { file, text } of workflows) {
+    for (const { line, name } of workflowRunTargets(text)) {
+      if (known.has(name)) continue;
+      offences.push({
+        file,
+        rule: 'workflow-run-target-missing',
+        detail:
+          `line ${line}: listens for \`workflow_run\` on a workflow named "${name}", and no workflow ` +
+          `in .github/workflows declares that name. This trigger can never fire, and GitHub reports ` +
+          `nothing when it doesn't. Fix the name, or delete the trigger (issue #309, Gate 2). ` +
+          `Known workflow names: ${[...known].sort().join(', ')}.`,
+      });
+    }
+  }
+  return offences;
+}
+
+/**
  * Rule 2. Every argument is already-gathered fact so the decision is testable
  * without a filesystem.
  *
