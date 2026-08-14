@@ -22,7 +22,19 @@ import { useAddParticipantMutation } from '@/entities/participant';
 // Deep, still-legal import: `UploadedAttachment` is deliberately not on the
 // entities barrel (its 20 slots are exactly spent — see that file's own note
 // naming this exact path).
-import type { UploadAttachmentsOutcome, UploadAttachmentsParams } from '@/entities/conversation/lib/hooks/useUploadAttachments';
+import type { useUploadAttachments } from '@/entities/conversation';
+
+// Derived from the barrel-exported hook rather than deep-imported from its
+// source file. `entities/conversation/index.ts` documents a 20-slot export cap
+// and deliberately leaves the ~15 narrow param/result types out of it, telling
+// consumers to import them from the concrete file — but that advice only holds
+// WITHIN the slice. This widget is a different slice, so the deep path is a
+// no-deep-slice-import-cross-slice violation (dependency-cruiser, "Layer +
+// cycle gate"). Deriving keeps the single public entry point without spending
+// two of the cap's remaining slots on types only this call site needs.
+type UploadAttachments = ReturnType<typeof useUploadAttachments>['uploadAttachments'];
+type UploadAttachmentsParams = Parameters<UploadAttachments>[0];
+type UploadAttachmentsOutcome = Awaited<ReturnType<UploadAttachments>>;
 import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
 
