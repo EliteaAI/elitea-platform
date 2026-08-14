@@ -389,7 +389,8 @@ async fn pending_terminal_recovery() -> (
     let AgentOutputPreflightOutcome::Empty(empty) = empty else {
         panic!("new execution spool must be empty");
     };
-    let (fresh, mut spool) = empty.into_parts();
+    let (fresh, output) = empty.into_parts();
+    let mut spool = output.into_test_spool();
     let frame = terminal_frame(&fresh);
     spool.persist(frame.clone()).expect("durable terminal");
     drop(spool);
@@ -584,7 +585,8 @@ async fn sole_claim_bound_pending_progress_routes_to_recovery_not_fresh_work() {
     let AgentOutputPreflightOutcome::Empty(empty) = empty else {
         panic!("new execution spool must be empty");
     };
-    let (fresh, mut spool) = empty.into_parts();
+    let (fresh, output) = empty.into_parts();
+    let mut spool = output.into_test_spool();
     let fence = claim_response()
         .receipt
         .expect("claim receipt")
@@ -614,7 +616,8 @@ async fn authenticated_handoff_reconciles_a_covered_stale_progress_frame() {
     let AgentOutputPreflightOutcome::Empty(empty) = empty else {
         panic!("new execution spool must be empty");
     };
-    let (accepted, mut spool) = empty.into_parts();
+    let (accepted, output) = empty.into_parts();
+    let mut spool = output.into_test_spool();
     let mut old_fence = claim_response()
         .receipt
         .expect("claim receipt")
@@ -661,7 +664,8 @@ async fn sole_claim_bound_pending_terminal_routes_to_recovery_not_fresh_work() {
     let AgentOutputPreflightOutcome::Empty(empty) = empty else {
         panic!("new execution spool must be empty");
     };
-    let (fresh, mut spool) = empty.into_parts();
+    let (fresh, output) = empty.into_parts();
+    let mut spool = output.into_test_spool();
     let frame = terminal_frame(&fresh);
     let sequence = frame.sequence;
     spool.persist(frame).expect("durable terminal");
@@ -682,7 +686,8 @@ async fn terminal_reopener_rejects_changed_bytes_between_attempts() {
     let AgentOutputPreflightOutcome::Empty(empty) = empty else {
         panic!("new execution spool must be empty");
     };
-    let (fresh, mut spool) = empty.into_parts();
+    let (fresh, output) = empty.into_parts();
+    let mut spool = output.into_test_spool();
     let frame = terminal_frame(&fresh);
     spool
         .persist(frame.clone())
@@ -718,7 +723,8 @@ async fn restored_terminal_payload_digest_is_revalidated_before_recovery() {
     let AgentOutputPreflightOutcome::Empty(empty) = empty else {
         panic!("new execution spool must be empty");
     };
-    let (fresh, mut spool) = empty.into_parts();
+    let (fresh, output) = empty.into_parts();
+    let mut spool = output.into_test_spool();
     let mut frame = terminal_frame(&fresh);
     frame
         .payload_digest
@@ -747,7 +753,8 @@ async fn restored_terminal_must_match_the_admitted_request_binding() {
     let AgentOutputPreflightOutcome::Empty(empty) = empty else {
         panic!("new execution spool must be empty");
     };
-    let (fresh, mut spool) = empty.into_parts();
+    let (fresh, output) = empty.into_parts();
+    let mut spool = output.into_test_spool();
     let mut frame = terminal_frame(&fresh);
     let Some(execution_output_frame_v1::Payload::AgentExecution(result)) = frame.payload.as_mut()
     else {
@@ -786,7 +793,8 @@ async fn pending_frame_from_another_fence_fails_closed() {
     let AgentOutputPreflightOutcome::Empty(empty) = empty else {
         panic!("new execution spool must be empty");
     };
-    let (fresh, mut spool) = empty.into_parts();
+    let (fresh, output) = empty.into_parts();
+    let mut spool = output.into_test_spool();
     let mut fence = claim_response()
         .receipt
         .expect("claim receipt")

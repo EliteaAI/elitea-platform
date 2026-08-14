@@ -21,7 +21,7 @@ use super::agent_lease::{
 use super::invocation_admission::{
     InvocationAdmission, InvocationAdmissionError, InvocationReservation,
 };
-use super::output_delivery::EmptyAgentOutput;
+use super::output_delivery::{EmptyAgentOutput, PreparedAgentOutput};
 use crate::agents::{
     AgentExecutionKind, AgentExecutionRequest, AgentInputBinding, parse_agent_execution_input,
 };
@@ -33,9 +33,7 @@ use crate::protocol::control::{
 };
 use crate::protocol::elitea::runtime::v1::{DigestAlgorithmV1, DigestV1};
 use crate::transport::redis_commands::RedisCommandDelivery;
-use crate::transport::{
-    ControlRpc, InputContentClient, InputContentError, MaterializedInput, PreparedOutputSpool,
-};
+use crate::transport::{ControlRpc, InputContentClient, InputContentError, MaterializedInput};
 
 /// Immutable preparation policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,7 +181,7 @@ pub struct PreparedAgentInvocation {
     verified: VerifiedAgentCommand,
     request: AgentExecutionRequest,
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
-    output_spool: PreparedOutputSpool,
+    output_spool: PreparedAgentOutput,
     #[allow(dead_code)] // Consumed by the next authorize-and-run slice.
     execution: LeaseMonitoredAgentExecution,
     #[allow(dead_code)] // Consumed by the next authorize-and-run slice.
@@ -246,7 +244,7 @@ pub(crate) struct PreparedAgentAuthorizationPayload {
     verified: VerifiedAgentCommand,
     request: AgentExecutionRequest,
     #[allow(dead_code)] // Consumed by the output coordinator after authorization.
-    output_spool: PreparedOutputSpool,
+    output_spool: PreparedAgentOutput,
     reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,
 }
@@ -280,7 +278,7 @@ pub struct PreInvocationTerminal {
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
     output_authority: AgentExecutionOutputAuthority,
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
-    output_spool: PreparedOutputSpool,
+    output_spool: PreparedAgentOutput,
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
     reservation: InvocationReservation,
     #[allow(dead_code)] // Consumed by the next output-coordination slice.
@@ -301,7 +299,7 @@ impl PreInvocationTerminal {
         RedisCommandDelivery,
         VerifiedAgentCommand,
         AgentExecutionOutputAuthority,
-        PreparedOutputSpool,
+        PreparedAgentOutput,
         InvocationReservation,
         ClaimLeaseMonitor,
         PreInvocationTerminalCause,
@@ -548,7 +546,7 @@ struct ActiveAgentPreparation {
     kind: AgentExecutionKind,
     delivery: RedisCommandDelivery,
     verified: VerifiedAgentCommand,
-    output_spool: PreparedOutputSpool,
+    output_spool: PreparedAgentOutput,
     execution: LeaseMonitoredAgentExecution,
     reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,
@@ -714,7 +712,7 @@ fn is_terminal_lease(error: &ClaimLeaseError) -> bool {
 fn pre_invocation_terminal(
     delivery: RedisCommandDelivery,
     verified: VerifiedAgentCommand,
-    output_spool: PreparedOutputSpool,
+    output_spool: PreparedAgentOutput,
     execution: LeaseMonitoredAgentExecution,
     reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,

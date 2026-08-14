@@ -62,7 +62,7 @@ pub enum AgentOutputRecoveryRequiredKind {
 /// non-cloneable and non-debug so the exclusive spool owner cannot be copied.
 pub struct EmptyAgentOutput {
     fresh: FreshAgentDelivery,
-    spool: PreparedOutputSpool,
+    output: PreparedAgentOutput,
 }
 
 impl EmptyAgentOutput {
@@ -71,8 +71,8 @@ impl EmptyAgentOutput {
         self.fresh.execution_kind()
     }
 
-    pub(crate) fn into_parts(self) -> (FreshAgentDelivery, PreparedOutputSpool) {
-        (self.fresh, self.spool)
+    pub(crate) fn into_parts(self) -> (FreshAgentDelivery, PreparedAgentOutput) {
+        (self.fresh, self.output)
     }
 }
 
@@ -168,18 +168,54 @@ struct AgentOutputSpoolPolicy {
     output_config: OutputGrpcConfig,
 }
 
-/// Sealed execution-bound spool factory retained across bounded reconnects.
-pub(crate) struct AgentOutputSpoolReopener {
+/// Empty, validated output state plus its inseparable execution-bound reopen
+/// capability. Fresh preparation carries this value through authorization so
+/// later reconnects never reconstruct path, key, identity, or transport policy
+/// from loose caller-selected values.
+pub(crate) struct PreparedAgentOutput {
+    #[allow(dead_code)] // Consumed by the next fresh-output publication slice.
+    prepared: PreparedOutputSpool,
+    #[allow(dead_code)] // Consumed by the next fresh-output publication slice.
+    factory: AgentOutputSpoolFactory,
+}
+
+impl PreparedAgentOutput {
+    #[cfg(test)]
+    pub(crate) fn into_test_spool(self) -> PreparedOutputSpool {
+        self.prepared
+    }
+}
+
+/// Unique execution-bound factory. It carries no frame proof until a durable
+/// terminal is sealed into an [`AgentOutputSpoolReopener`].
+struct AgentOutputSpoolFactory {
     policy: Arc<AgentOutputSpoolPolicy>,
     binding: Arc<crate::spool::ExecutionSpoolIdentity>,
+}
+
+impl AgentOutputSpoolFactory {
+    async fn reopen(&self) -> Result<PreparedOutputSpool, AgentOutputPreflightError> {
+        open_prepared_spool(Arc::clone(&self.policy), Arc::clone(&self.binding)).await
+    }
+
+    fn seal_terminal(self, expected_terminal: Vec<u8>) -> AgentOutputSpoolReopener {
+        AgentOutputSpoolReopener {
+            factory: self,
+            expected_terminal,
+        }
+    }
+}
+
+/// Sealed execution-bound spool factory retained across bounded reconnects.
+pub(crate) struct AgentOutputSpoolReopener {
+    factory: AgentOutputSpoolFactory,
     expected_terminal: Vec<u8>,
 }
 
 impl AgentOutputSpoolReopener {
     #[allow(dead_code)] // Used by the next bounded reconnect slice.
     pub(crate) async fn reopen(&self) -> Result<PreparedOutputSpool, AgentOutputPreflightError> {
-        let prepared =
-            open_prepared_spool(Arc::clone(&self.policy), Arc::clone(&self.binding)).await?;
+        let prepared = self.factory.reopen().await?;
         let is_exact_terminal = prepared.pending_frame_count() == 1
             && prepared
                 .pending_replay_frame()
@@ -589,14 +625,17 @@ impl AgentOutputPreflight {
             ));
         }
         let binding = Arc::new(fresh.spool_identity());
-        let mut prepared =
-            open_prepared_spool(Arc::clone(&self.policy), Arc::clone(&binding)).await?;
+        let factory = AgentOutputSpoolFactory {
+            policy: Arc::clone(&self.policy),
+            binding,
+        };
+        let mut prepared = factory.reopen().await?;
 
         let Some(frame) = prepared.pending_replay_frame() else {
             return Ok(AgentOutputPreflightOutcome::Empty(Box::new(
                 EmptyAgentOutput {
                     fresh,
-                    spool: prepared,
+                    output: PreparedAgentOutput { prepared, factory },
                 },
             )));
         };
@@ -622,11 +661,7 @@ impl AgentOutputPreflight {
                             claim,
                             spool: prepared,
                             frame,
-                            reopener: AgentOutputSpoolReopener {
-                                policy: Arc::clone(&self.policy),
-                                binding,
-                                expected_terminal,
-                            },
+                            reopener: factory.seal_terminal(expected_terminal),
                         },
                     )))
                 }
