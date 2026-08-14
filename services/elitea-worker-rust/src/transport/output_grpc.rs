@@ -1,11 +1,12 @@
 use std::fmt;
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use prost::Message;
+use ring::digest;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -759,6 +760,7 @@ pub struct OutputGrpcSession {
     commands: mpsc::Sender<SessionCommand>,
     admission: Arc<Semaphore>,
     acknowledged_sequence: Arc<AtomicU64>,
+    completed_progress: Arc<Mutex<Option<CompletedProgress>>>,
     max_frame_bytes: usize,
     shutdown: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
@@ -775,6 +777,69 @@ pub struct DurablyAckedTerminal {
     proposal: SettlementProposalV1,
     stable_delivery_id: String,
     exact_signed_envelope: Box<[u8]>,
+}
+
+/// Proof that Main durably acknowledged one exact nonterminal frame.
+///
+/// The type has no public constructor, accessors, `Clone`, or `Debug`. It can
+/// only be produced by [`OutputGrpcSession::send`] after the bound ACK is
+/// applied. The execution output cursor consumes it to advance exactly the
+/// frame whose canonical protobuf bytes were sent.
+pub struct DurablyAckedProgress {
+    sequence: u64,
+    frame_sha256: [u8; 32],
+    _permit: Option<OwnedSemaphorePermit>,
+}
+
+struct PendingProgress {
+    sequence: u64,
+    frame_sha256: [u8; 32],
+}
+
+impl PendingProgress {
+    fn new(frame: &ExecutionOutputFrameV1) -> Self {
+        Self {
+            sequence: frame.sequence,
+            frame_sha256: progress_frame_sha256(frame),
+        }
+    }
+
+    fn into_completed(self, permit: OwnedSemaphorePermit) -> CompletedProgress {
+        CompletedProgress {
+            acknowledged: DurablyAckedProgress {
+                sequence: self.sequence,
+                frame_sha256: self.frame_sha256,
+                _permit: Some(permit),
+            },
+        }
+    }
+}
+
+struct CompletedProgress {
+    acknowledged: DurablyAckedProgress,
+}
+
+impl CompletedProgress {
+    fn matches(&self, sequence: u64, frame_sha256: &[u8; 32]) -> bool {
+        self.acknowledged.sequence == sequence && self.acknowledged.frame_sha256 == *frame_sha256
+    }
+
+    fn into_acknowledged(self) -> DurablyAckedProgress {
+        self.acknowledged
+    }
+}
+
+impl DurablyAckedProgress {
+    pub(crate) fn into_binding(self) -> (u64, [u8; 32]) {
+        (self.sequence, self.frame_sha256)
+    }
+}
+
+pub(crate) fn progress_frame_sha256(frame: &ExecutionOutputFrameV1) -> [u8; 32] {
+    let value = digest::digest(&digest::SHA256, &frame.encode_to_vec());
+    let mut binding = [0_u8; 32];
+    binding.copy_from_slice(value.as_ref());
+    binding
 }
 
 /// Validated terminal settlement material which is not authority until the
@@ -864,6 +929,22 @@ pub(crate) fn test_acknowledged_terminal(
     PendingTerminalSettlement::new(verified, frame).map(PendingTerminalSettlement::into_acked)
 }
 
+#[cfg(test)]
+pub(crate) fn test_acknowledged_progress(
+    frame: &ExecutionOutputFrameV1,
+) -> Result<DurablyAckedProgress, OutputGrpcError> {
+    if frame.terminal {
+        return Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+            "terminal output does not produce progress ACK authority",
+        )));
+    }
+    Ok(DurablyAckedProgress {
+        sequence: frame.sequence,
+        frame_sha256: progress_frame_sha256(frame),
+        _permit: None,
+    })
+}
+
 impl OutputGrpcSession {
     /// Open the bounded stream, validate bootstrap credit, and replay the
     /// encrypted spool before returning admission to the caller.
@@ -897,23 +978,68 @@ impl OutputGrpcSession {
     ///
     /// Returns a typed protocol, spool, or transport error. A failure never
     /// deletes an unacknowledged frame.
-    pub async fn send(&mut self, frame: ExecutionOutputFrameV1) -> Result<u64, OutputGrpcError> {
+    pub async fn send(
+        &mut self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<DurablyAckedProgress, OutputGrpcError> {
         if frame.terminal {
             return Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
                 "terminal output requires the settlement-authority send path",
             )));
         }
-        self.send_frame(frame).await
-    }
-
-    async fn send_frame(&mut self, frame: ExecutionOutputFrameV1) -> Result<u64, OutputGrpcError> {
-        if frame.encoded_len() > self.max_frame_bytes {
+        self.validate_frame_size(frame)?;
+        let pending = PendingProgress::new(frame);
+        let sequence = self.send_frame(frame.clone()).await?;
+        if sequence != pending.sequence {
             return Err(OutputGrpcError::Protocol(
-                OutputSessionError::ResourceExhausted(
-                    "the output frame exceeds the transport limit",
+                OutputSessionError::AuthorizationFailed(
+                    "the progress ACK does not cover the transmitted frame",
                 ),
             ));
         }
+        self.take_completed_progress(pending.sequence, &pending.frame_sha256)?
+            .ok_or(OutputGrpcError::Unavailable(
+                "the durable progress ACK proof is unavailable",
+            ))
+    }
+
+    /// Consume a durable ACK proof retained after a cancelled send waiter.
+    ///
+    /// The supplied frame must be byte-identical to the frame whose ACK was
+    /// applied. A mismatched frame cannot consume the retained proof, and no
+    /// proof exists when cancellation happened before durable completion.
+    #[allow(dead_code)] // Consumed by the capability-disabled progress coordinator.
+    pub(crate) fn take_acknowledged_progress(
+        &self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<Option<DurablyAckedProgress>, OutputGrpcError> {
+        let pending = PendingProgress::new(frame);
+        self.take_completed_progress(pending.sequence, &pending.frame_sha256)
+    }
+
+    fn take_completed_progress(
+        &self,
+        sequence: u64,
+        frame_sha256: &[u8; 32],
+    ) -> Result<Option<DurablyAckedProgress>, OutputGrpcError> {
+        let mut completed = self.completed_progress.lock().map_err(|_| {
+            OutputGrpcError::Unavailable("the durable progress ACK proof is unavailable")
+        })?;
+        let Some(current) = completed.as_ref() else {
+            return Ok(None);
+        };
+        if !current.matches(sequence, frame_sha256) {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "the retained progress ACK does not match the expected frame",
+                ),
+            ));
+        }
+        Ok(completed.take().map(CompletedProgress::into_acknowledged))
+    }
+
+    async fn send_frame(&mut self, frame: ExecutionOutputFrameV1) -> Result<u64, OutputGrpcError> {
+        self.validate_frame_size(&frame)?;
         let permit = Arc::clone(&self.admission)
             .acquire_owned()
             .await
@@ -930,6 +1056,17 @@ impl OutputGrpcSession {
         result
             .await
             .map_err(|_| OutputGrpcError::Unavailable("the output session task is unavailable"))?
+    }
+
+    fn validate_frame_size(&self, frame: &ExecutionOutputFrameV1) -> Result<(), OutputGrpcError> {
+        if frame.encoded_len() > self.max_frame_bytes {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::ResourceExhausted(
+                    "the output frame exceeds the transport limit",
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Persist and publish one terminal frame, returning settlement authority
@@ -987,6 +1124,8 @@ where
     let (shutdown, mut shutdown_receiver) = watch::channel(false);
     let acknowledged_sequence = Arc::new(AtomicU64::new(inner.state.acknowledged_sequence()));
     let actor_acknowledged = Arc::clone(&acknowledged_sequence);
+    let completed_progress = Arc::new(Mutex::new(None));
+    let actor_completed_progress = Arc::clone(&completed_progress);
     let task = tokio::spawn(async move {
         loop {
             if *shutdown_receiver.borrow() {
@@ -1005,12 +1144,39 @@ where
             match command {
                 SessionCommand::Send {
                     frame,
-                    permit: _permit,
+                    permit,
                     response,
                 } => {
+                    let pending_progress = (!frame.terminal).then(|| PendingProgress::new(&frame));
                     let result = inner
                         .send_with_shutdown(*frame, &mut shutdown_receiver)
                         .await;
+                    if result.is_ok()
+                        && let Some(pending) = pending_progress
+                    {
+                        let completed = pending.into_completed(permit);
+                        let stored = actor_completed_progress.lock().is_ok_and(|mut slot| {
+                            if slot.is_some() {
+                                false
+                            } else {
+                                *slot = Some(completed);
+                                true
+                            }
+                        });
+                        if !stored {
+                            let _ignored = response.send(Err(OutputGrpcError::Unavailable(
+                                "the durable progress ACK proof is unavailable",
+                            )));
+                            break;
+                        }
+                        actor_acknowledged
+                            .store(inner.state.acknowledged_sequence(), Ordering::Release);
+                        let _ignored = response.send(result);
+                        if *shutdown_receiver.borrow() {
+                            break;
+                        }
+                        continue;
+                    }
                     actor_acknowledged
                         .store(inner.state.acknowledged_sequence(), Ordering::Release);
                     let _ignored = response.send(result);
@@ -1026,6 +1192,7 @@ where
         commands,
         admission,
         acknowledged_sequence,
+        completed_progress,
         max_frame_bytes,
         shutdown,
         task: Some(task),
@@ -2095,17 +2262,28 @@ mod tests {
         let mut session = spawn_output_actor(inner, config().max_frame_bytes);
         let first = frame(1, false);
         {
-            let first_wait = session.send(first.clone());
+            let first_wait = session.send(&first);
             tokio::pin!(first_wait);
             tokio::select! {
-                result = &mut first_wait => panic!("send returned before its ACK: {result:?}"),
+                _result = &mut first_wait => panic!("send returned before its ACK"),
                 () = wrote.notified() => {}
             }
         }
+        acknowledgements
+            .send(bound_ack(&first))
+            .await
+            .expect("first bound ACK");
+        timeout(Duration::from_secs(1), async {
+            while session.acknowledged_sequence() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first ACK applied");
 
         let second = frame(2, false);
-        let second_result = {
-            let second_wait = session.send(second.clone());
+        {
+            let second_wait = session.send(&second);
             tokio::pin!(second_wait);
             assert!(
                 timeout(Duration::from_millis(10), &mut second_wait)
@@ -2114,17 +2292,45 @@ mod tests {
                 "the next command bypassed the first command's actor permit"
             );
             assert_eq!(writes.lock().expect("writes lock").len(), 1);
-            acknowledgements
-                .send(bound_ack(&first))
-                .await
-                .expect("first bound ACK");
+        }
+        assert!(matches!(
+            session.take_acknowledged_progress(&second),
+            Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(_)
+            ))
+        ));
+        let first_proof = session
+            .take_acknowledged_progress(&first)
+            .expect("proof lookup")
+            .expect("cancelled wait retained its proof");
+        assert_eq!(first_proof.into_binding().0, 1);
+        assert!(
+            session
+                .take_acknowledged_progress(&first)
+                .expect("consumed proof lookup")
+                .is_none()
+        );
+        assert!(
+            session
+                .take_acknowledged_progress(&second)
+                .expect("cancelled-before-admission lookup")
+                .is_none()
+        );
+
+        let second_result = {
+            let second_wait = session.send(&second);
+            tokio::pin!(second_wait);
+            tokio::select! {
+                _result = &mut second_wait => panic!("second send returned before its ACK"),
+                () = wrote.notified() => {}
+            }
             acknowledgements
                 .send(bound_ack(&second))
                 .await
                 .expect("second bound ACK");
             second_wait.await
         };
-        assert_eq!(second_result.expect("second commit"), 2);
+        assert_eq!(second_result.expect("second commit").into_binding().0, 2);
         assert_eq!(session.acknowledged_sequence(), 2);
         assert_eq!(*writes.lock().expect("writes lock"), vec![first, second]);
         session.close().await.expect("close actor");
@@ -2150,10 +2356,11 @@ mod tests {
             .expect("session");
         let mut session = spawn_output_actor(inner, config().max_frame_bytes);
         {
-            let wait = session.send(frame(1, false));
+            let current = frame(1, false);
+            let wait = session.send(&current);
             tokio::pin!(wait);
             tokio::select! {
-                result = &mut wait => panic!("send returned before close: {result:?}"),
+                _result = &mut wait => panic!("send returned before close"),
                 () = wrote.notified() => {}
             }
         }
@@ -2185,10 +2392,11 @@ mod tests {
             .expect("session");
         let mut session = spawn_output_actor(inner, config().max_frame_bytes);
         {
-            let wait = session.send(frame(1, false));
+            let current = frame(1, false);
+            let wait = session.send(&current);
             tokio::pin!(wait);
             tokio::select! {
-                result = &mut wait => panic!("send returned before drop: {result:?}"),
+                _result = &mut wait => panic!("send returned before drop"),
                 () = wrote.notified() => {}
             }
         }
@@ -2229,7 +2437,7 @@ mod tests {
         let mut oversized = frame(1, false);
         oversized.logical_output_id = "x".repeat(2_048);
         assert!(matches!(
-            session.send(oversized).await,
+            session.send(&oversized).await,
             Err(OutputGrpcError::Protocol(
                 OutputSessionError::ResourceExhausted(_)
             ))

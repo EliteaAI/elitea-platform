@@ -13,16 +13,21 @@ use super::elitea::runtime::v1::{
     BeginExecutionResponseV1, ClaimCommandRequestV1, ClaimCommandResponseV1, ClaimDispositionV1,
     ClaimReceiptV1, DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1,
     ExecutionIdentityV1, ExecutionInputBundleReferenceV1, ExecutionInputBundleV1,
-    ExecutionInputEntryV1, ExecutionOutcomeV1, ExecutionOutputFrameV1,
+    ExecutionInputEntryV1, ExecutionOutcomeV1, ExecutionOutputFrameV1, NodeEventV1,
     ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1, PrepareSettlementRequestV1,
     PrepareSettlementResponseV1, RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1,
     RuntimeErrorV1, ScopedContentReferenceV1, SettlementProposalV1, SettlementRecoveryV1,
     worker_command_v1,
 };
-use super::output::{AgentTerminalOutput, RuntimeFailureKind, build_agent_terminal_output_frame};
+use super::output::{
+    AgentTerminalOutput, RuntimeFailureKind, build_agent_terminal_output_frame,
+    build_node_event_output_frame,
+};
+use crate::agents::result::BoundAgentExecutionResult;
+use crate::transport::output_grpc::progress_frame_sha256;
 use crate::transport::{
-    ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, DurablyAckedTerminal,
-    TonicControlRpc,
+    ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, DurablyAckedProgress,
+    DurablyAckedTerminal, TonicControlRpc,
 };
 
 const MAX_CONTROL_IDENTITY_BYTES: usize = 256;
@@ -195,6 +200,7 @@ impl fmt::Display for RuntimeControlRejection {
 /// authority. The type is intentionally not `Clone`.
 pub struct AcceptedAgentClaim {
     identity: ExecutionIdentityV1,
+    command_binding: [u8; 32],
     fence: ExecutionFenceV1,
     lease_expires_at_unix_millis: i64,
     claim_id: String,
@@ -255,6 +261,13 @@ impl AcceptedAgentClaim {
     }
 
     #[must_use]
+    fn matches_verified_command(&self, verified: &VerifiedAgentCommand) -> bool {
+        let binding = verified_command_binding(verified);
+        self.identity == identity_from_command(verified)
+            && bool::from(self.command_binding.ct_eq(&binding))
+    }
+
+    #[must_use]
     pub(crate) const fn input_bundle_ref(&self) -> &ExecutionInputBundleReferenceV1 {
         &self.input_bundle_ref
     }
@@ -288,6 +301,7 @@ impl AcceptedAgentClaim {
             lease_expires_at_unix_millis,
             claim_id,
             claim_handoff_watermark,
+            command_binding: _,
             input_bundle_ref: _,
             input_bundle: _,
             request_entry: _,
@@ -668,6 +682,27 @@ pub struct AgentExecutionOutputAuthority {
 }
 
 impl AgentExecutionOutputAuthority {
+    /// Consume the exact claim into an ACK-driven output cursor.
+    ///
+    /// The cursor owns the raw fence and authenticated handoff watermark. A
+    /// caller can only obtain claim-bound progress or terminal values and can
+    /// advance the sequence after the exact frame ACK is observed.
+    pub(crate) fn into_output_cursor(
+        self,
+        verified: &VerifiedAgentCommand,
+    ) -> Result<AgentExecutionOutputCursor, ProtocolError> {
+        if !self.claim.matches_verified_command(verified) {
+            return Err(ProtocolError::AuthorizationFailed(
+                "the output authority does not match its command",
+            ));
+        }
+        let next_sequence = next_output_sequence(self.claim.claim_handoff_watermark)?;
+        Ok(AgentExecutionOutputCursor {
+            claim: self.claim,
+            state: AgentOutputCursorState::Ready(next_sequence),
+        })
+    }
+
     /// Consume the exact claim authority into one canonical failure terminal.
     ///
     /// The fence token never leaves this boundary. The sequence is derived
@@ -679,28 +714,233 @@ impl AgentExecutionOutputAuthority {
         failure: RuntimeFailureKind,
         occurred_at_unix_millis: i64,
     ) -> Result<ExecutionOutputFrameV1, ProtocolError> {
-        if self.claim.identity != identity_from_command(verified) {
-            return Err(ProtocolError::AuthorizationFailed(
-                "the terminal output authority does not match its command",
-            ));
+        self.into_output_cursor(verified)?
+            .bind_failure_terminal(verified, failure, occurred_at_unix_millis)
+            .map(ClaimBoundAgentTerminal::into_frame)
+    }
+}
+
+/// One claim-bound nonterminal output which cannot be mixed with a raw fence.
+///
+/// The complete frame remains private until the execution-owned delivery
+/// coordinator consumes it. This type is intentionally neither cloneable nor
+/// formattable.
+#[allow(dead_code)] // Consumed by the capability-disabled fresh progress publisher.
+pub(crate) struct ClaimBoundAgentProgress {
+    frame: ExecutionOutputFrameV1,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled fresh progress publisher.
+impl ClaimBoundAgentProgress {
+    #[must_use]
+    pub(crate) const fn sequence(&self) -> u64 {
+        self.frame.sequence
+    }
+
+    pub(crate) fn into_frame(self) -> ExecutionOutputFrameV1 {
+        self.frame
+    }
+}
+
+/// One claim-bound terminal output which consumes all remaining cursor
+/// authority. Only the delivery coordinator may unwrap it for durable send.
+pub(crate) struct ClaimBoundAgentTerminal {
+    frame: ExecutionOutputFrameV1,
+}
+
+impl ClaimBoundAgentTerminal {
+    pub(crate) fn into_frame(self) -> ExecutionOutputFrameV1 {
+        self.frame
+    }
+}
+
+/// Claim-bound, ACK-driven output sequence owner.
+///
+/// The cursor retains the only fence copy used by fresh progress and terminal
+/// construction. It never speculatively advances: a caller must provide the
+/// exact sequence returned by the bound output ACK before another event can be
+/// allocated.
+pub(crate) struct AgentExecutionOutputCursor {
+    claim: AcceptedAgentClaim,
+    state: AgentOutputCursorState,
+}
+
+enum AgentOutputCursorState {
+    Ready(u64),
+    Pending {
+        sequence: u64,
+        frame_sha256: [u8; 32],
+    },
+    Exhausted,
+}
+
+#[allow(dead_code)] // Progress/result methods land before native lifecycle registration.
+impl AgentExecutionOutputCursor {
+    #[must_use]
+    pub(crate) const fn next_sequence(&self) -> Option<u64> {
+        match self.state {
+            AgentOutputCursorState::Ready(sequence) => Some(sequence),
+            AgentOutputCursorState::Pending { .. } | AgentOutputCursorState::Exhausted => None,
         }
-        let sequence = self
-            .claim
-            .claim_handoff_watermark
-            .checked_add(1)
-            .filter(|value| i64::try_from(*value).is_ok())
-            .ok_or(ProtocolError::ResourceExhausted(
-                "the terminal output sequence exceeds the durable counter limit",
-            ))?;
-        build_agent_terminal_output_frame(
+    }
+
+    /// Bind one current-compatible `NodeEvent` to the exact live claim.
+    pub(crate) fn bind_progress(
+        &mut self,
+        verified: &VerifiedAgentCommand,
+        event: NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<ClaimBoundAgentProgress, ProtocolError> {
+        self.require_command(verified)?;
+        let sequence = self.require_ready_sequence()?;
+        let frame = build_node_event_output_frame(
             verified,
             &self.claim.fence,
-            AgentTerminalOutput::Failure(failure),
+            event,
             sequence,
             occurred_at_unix_millis,
             self.claim.claim_handoff_watermark,
+        )?;
+        self.state = AgentOutputCursorState::Pending {
+            sequence,
+            frame_sha256: progress_frame_sha256(&frame),
+        };
+        Ok(ClaimBoundAgentProgress { frame })
+    }
+
+    /// Advance only after Main's bound ACK commits the current progress frame.
+    pub(crate) fn commit_progress(
+        &mut self,
+        acknowledged: DurablyAckedProgress,
+    ) -> Result<(), ProtocolError> {
+        let (acknowledged_sequence, acknowledged_sha256) = acknowledged.into_binding();
+        let AgentOutputCursorState::Pending {
+            sequence,
+            frame_sha256,
+        } = &self.state
+        else {
+            return Err(ProtocolError::AuthorizationFailed(
+                "the output cursor has no pending progress frame",
+            ));
+        };
+        if acknowledged_sequence != *sequence
+            || !bool::from(acknowledged_sha256.ct_eq(frame_sha256))
+        {
+            return Err(ProtocolError::AuthorizationFailed(
+                "the progress ACK does not cover the exact pending frame",
+            ));
+        }
+        match next_output_sequence(acknowledged_sequence) {
+            Ok(next) => {
+                self.state = AgentOutputCursorState::Ready(next);
+                Ok(())
+            }
+            Err(error) => {
+                self.state = AgentOutputCursorState::Exhausted;
+                Err(error)
+            }
+        }
+    }
+
+    /// Consume the cursor into one request-bound successful terminal.
+    pub(crate) fn bind_result_terminal(
+        self,
+        verified: &VerifiedAgentCommand,
+        result: BoundAgentExecutionResult,
+        occurred_at_unix_millis: i64,
+    ) -> Result<ClaimBoundAgentTerminal, ProtocolError> {
+        self.bind_terminal(
+            verified,
+            AgentTerminalOutput::Result(Box::new(result)),
+            occurred_at_unix_millis,
         )
     }
+
+    /// Consume the cursor into one canonical safe failure terminal.
+    pub(crate) fn bind_failure_terminal(
+        self,
+        verified: &VerifiedAgentCommand,
+        failure: RuntimeFailureKind,
+        occurred_at_unix_millis: i64,
+    ) -> Result<ClaimBoundAgentTerminal, ProtocolError> {
+        self.bind_terminal(
+            verified,
+            AgentTerminalOutput::Failure(failure),
+            occurred_at_unix_millis,
+        )
+    }
+
+    fn bind_terminal(
+        self,
+        verified: &VerifiedAgentCommand,
+        terminal: AgentTerminalOutput,
+        occurred_at_unix_millis: i64,
+    ) -> Result<ClaimBoundAgentTerminal, ProtocolError> {
+        self.require_command(verified)?;
+        let frame = build_agent_terminal_output_frame(
+            verified,
+            &self.claim.fence,
+            terminal,
+            self.require_ready_sequence()?,
+            occurred_at_unix_millis,
+            self.claim.claim_handoff_watermark,
+        )?;
+        Ok(ClaimBoundAgentTerminal { frame })
+    }
+
+    fn require_command(&self, verified: &VerifiedAgentCommand) -> Result<(), ProtocolError> {
+        if self.claim.matches_verified_command(verified) {
+            Ok(())
+        } else {
+            Err(ProtocolError::AuthorizationFailed(
+                "the output cursor does not match its command",
+            ))
+        }
+    }
+
+    fn require_ready_sequence(&self) -> Result<u64, ProtocolError> {
+        match self.state {
+            AgentOutputCursorState::Ready(sequence) => Ok(sequence),
+            AgentOutputCursorState::Pending { .. } => Err(ProtocolError::AuthorizationFailed(
+                "a progress frame remains unacknowledged",
+            )),
+            AgentOutputCursorState::Exhausted => Err(ProtocolError::ResourceExhausted(
+                "the output sequence exceeds the durable counter limit",
+            )),
+        }
+    }
+}
+
+fn verified_command_binding(verified: &VerifiedAgentCommand) -> [u8; 32] {
+    let value = digest::digest(&digest::SHA256, verified.exact_signed_envelope());
+    let mut binding = [0_u8; 32];
+    binding.copy_from_slice(value.as_ref());
+    binding
+}
+
+fn next_output_sequence(current: u64) -> Result<u64, ProtocolError> {
+    current
+        .checked_add(1)
+        .filter(|value| i64::try_from(*value).is_ok())
+        .ok_or(ProtocolError::ResourceExhausted(
+            "the output sequence exceeds the durable counter limit",
+        ))
+}
+
+#[cfg(test)]
+pub(crate) fn test_agent_output_authority(
+    claim: AcceptedAgentClaim,
+) -> AgentExecutionOutputAuthority {
+    AgentExecutionOutputAuthority { claim }
+}
+
+#[cfg(test)]
+pub(crate) fn test_agent_output_authority_with_handoff(
+    mut claim: AcceptedAgentClaim,
+    claim_handoff_watermark: u64,
+) -> AgentExecutionOutputAuthority {
+    claim.claim_handoff_watermark = claim_handoff_watermark;
+    AgentExecutionOutputAuthority { claim }
 }
 
 #[cfg(test)]
@@ -727,6 +967,7 @@ pub(crate) fn test_lease_monitored_input_execution(
                 generation: 2,
                 ..ExecutionIdentityV1::default()
             },
+            command_binding: [0_u8; 32],
             fence: ExecutionFenceV1 {
                 fence_token: vec![b'f'; 32],
                 ..ExecutionFenceV1::default()
@@ -1907,6 +2148,7 @@ fn parse_accepted_agent_claim(
 
     Ok(AcceptedAgentClaim {
         identity,
+        command_binding: verified_command_binding(verified),
         fence,
         lease_expires_at_unix_millis: receipt.lease_expires_at_unix_millis,
         claim_id: receipt.claim_id,

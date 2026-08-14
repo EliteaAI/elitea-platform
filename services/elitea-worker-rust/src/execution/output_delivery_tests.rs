@@ -36,7 +36,10 @@ use crate::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
     parse_and_verify_agent_command,
 };
-use crate::protocol::control::{AgentControlClient, test_accepted_agent_claim};
+use crate::protocol::control::{
+    AgentControlClient, test_accepted_agent_claim, test_agent_output_authority,
+    test_agent_output_authority_with_handoff, test_lease_monitored_input_execution,
+};
 use crate::protocol::elitea::runtime::v1::{
     AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1,
     BeginExecutionDispositionV1, BeginExecutionRequestV1, BeginExecutionResponseV1,
@@ -49,7 +52,7 @@ use crate::protocol::elitea::runtime::v1::{
 use crate::protocol::node_event::decode_current_node_event_json;
 use crate::protocol::output::{OUTPUT_SCHEMA_REVISION, RuntimeFailureKind};
 use crate::spool::{SpoolError, SpoolLimits, SpoolMasterKey};
-use crate::transport::output_grpc::test_acknowledged_terminal;
+use crate::transport::output_grpc::{test_acknowledged_progress, test_acknowledged_terminal};
 use crate::transport::redis_commands::{
     RedisCommandDelivery, RedisCommandLimits, RedisCommandRetirer, RedisRetirementClient,
     RedisRetirementClientError, RedisRetirementConfig, RedisRetirementRequest,
@@ -732,6 +735,146 @@ fn terminal_frame(fresh: &FreshAgentDelivery) -> ExecutionOutputFrameV1 {
         .expect("terminal settlement proposal")
         .terminal_payload_digest = Some(payload_digest);
     frame
+}
+
+#[test]
+fn claim_bound_output_cursor_advances_only_after_the_exact_progress_ack() {
+    let fresh = fresh();
+    let handoff = fresh.claim_handoff_watermark();
+    let (_delivery, verified, claim) = fresh.into_parts();
+    let authority = test_agent_output_authority(claim);
+    let mut cursor = authority
+        .into_output_cursor(&verified)
+        .expect("matching output authority");
+    assert_eq!(cursor.next_sequence(), Some(handoff + 1));
+
+    let event = decode_current_node_event_json(
+        br#"{"type":"agent_response","content":"claim-bound progress"}"#,
+    )
+    .expect("valid current NodeEvent");
+    let progress = cursor
+        .bind_progress(&verified, event, NOW)
+        .expect("claim-bound progress");
+    let progress_sequence = progress.sequence();
+    assert_eq!(progress_sequence, handoff + 1);
+    let frame = progress.into_frame();
+    assert_eq!(frame.sequence, progress_sequence);
+    assert_eq!(frame.claim_handoff_watermark, handoff);
+    assert!(frame.fence.is_some());
+    assert_eq!(cursor.next_sequence(), None);
+
+    let second_event =
+        decode_current_node_event_json(br#"{"type":"agent_response","content":"must wait"}"#)
+            .expect("valid current NodeEvent");
+    let Err(error) = cursor.bind_progress(&verified, second_event, NOW + 1) else {
+        panic!("a second frame cannot be allocated before the first ACK");
+    };
+    assert!(matches!(
+        error,
+        crate::protocol::ProtocolError::AuthorizationFailed(_)
+    ));
+
+    let mut substituted = frame.clone();
+    substituted.occurred_at_unix_millis += 1;
+    let wrong_ack = test_acknowledged_progress(&substituted).expect("synthetic bound ACK");
+    let error = cursor
+        .commit_progress(wrong_ack)
+        .expect_err("a same-sequence ACK for different bytes cannot advance the cursor");
+    assert!(matches!(
+        error,
+        crate::protocol::ProtocolError::AuthorizationFailed(_)
+    ));
+    assert_eq!(cursor.next_sequence(), None);
+
+    let exact_ack = test_acknowledged_progress(&frame).expect("synthetic bound ACK");
+    cursor
+        .commit_progress(exact_ack)
+        .expect("exact progress ACK");
+    assert_eq!(cursor.next_sequence(), Some(progress_sequence + 1));
+    let terminal = cursor
+        .bind_failure_terminal(&verified, RuntimeFailureKind::Internal, NOW + 1)
+        .expect("next claim-bound terminal")
+        .into_frame();
+    assert!(terminal.terminal);
+    assert_eq!(terminal.sequence, progress_sequence + 1);
+    assert_eq!(terminal.claim_handoff_watermark, handoff);
+}
+
+#[test]
+fn output_cursor_rejects_same_identity_changed_intent_before_exposing_a_fence() {
+    let fresh = fresh();
+    let (_delivery, original, claim) = fresh.into_parts();
+    let changed = parse_and_verify_agent_command(
+        &bytes("signed_command_same_identity_changed_intent"),
+        Some(&TestOnlyConformanceHmacAuthenticator as &dyn SignedCommandAuthenticator),
+    )
+    .expect("verified changed-intent command");
+    assert_eq!(original.command().command_id, changed.command().command_id);
+    assert_ne!(
+        original.command().deadline_unix_millis,
+        changed.command().deadline_unix_millis
+    );
+
+    let authority = test_agent_output_authority(claim);
+    let Err(error) = authority.into_output_cursor(&changed) else {
+        panic!("changed immutable command intent must not reuse output authority");
+    };
+    assert!(matches!(
+        error,
+        crate::protocol::ProtocolError::AuthorizationFailed(_)
+    ));
+}
+
+#[test]
+fn output_cursor_rejects_a_different_valid_claim_before_exposing_a_fence() {
+    let fresh = fresh();
+    let (_delivery, verified, _claim) = fresh.into_parts();
+    let authority = test_lease_monitored_input_execution(1, [0x61; 32]).into_output_authority();
+
+    let Err(error) = authority.into_output_cursor(&verified) else {
+        panic!("cross-execution output authority must fail");
+    };
+    assert!(matches!(
+        error,
+        crate::protocol::ProtocolError::AuthorizationFailed(_)
+    ));
+}
+
+#[test]
+fn output_cursor_latches_exhaustion_after_the_largest_durable_progress_ack() {
+    let fresh = fresh();
+    let (_delivery, verified, claim) = fresh.into_parts();
+    let authority = test_agent_output_authority_with_handoff(claim, i64::MAX as u64 - 1);
+    let mut cursor = authority
+        .into_output_cursor(&verified)
+        .expect("largest durable progress sequence");
+    assert_eq!(cursor.next_sequence(), Some(i64::MAX as u64));
+
+    let event = decode_current_node_event_json(br#"{"type":"agent_response"}"#)
+        .expect("valid current NodeEvent");
+    let progress = cursor
+        .bind_progress(&verified, event, NOW)
+        .expect("largest durable progress frame");
+    let frame = progress.into_frame();
+    let acknowledged = test_acknowledged_progress(&frame).expect("synthetic bound ACK");
+    let error = cursor
+        .commit_progress(acknowledged)
+        .expect_err("the ACKed maximum has no contiguous successor");
+    assert!(matches!(
+        error,
+        crate::protocol::ProtocolError::ResourceExhausted(_)
+    ));
+    assert_eq!(cursor.next_sequence(), None);
+
+    let event = decode_current_node_event_json(br#"{"type":"agent_response"}"#)
+        .expect("valid current NodeEvent");
+    let Err(error) = cursor.bind_progress(&verified, event, NOW) else {
+        panic!("an exhausted cursor must not reuse the ACKed sequence");
+    };
+    assert!(matches!(
+        error,
+        crate::protocol::ProtocolError::ResourceExhausted(_)
+    ));
 }
 
 #[tokio::test]

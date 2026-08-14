@@ -12,6 +12,7 @@ pub use control_grpc::{
 };
 pub use input_content::{InputContentClient, InputContentError, MaterializedInput};
 pub use output_grpc::{
-    DurablyAckedTerminal, OutputGrpcConfig, OutputGrpcError, OutputGrpcSession, PreparedOutputSpool,
+    DurablyAckedProgress, DurablyAckedTerminal, OutputGrpcConfig, OutputGrpcError,
+    OutputGrpcSession, PreparedOutputSpool,
 };
 pub use output_session::OutputSessionError as OutputProtocolError;
