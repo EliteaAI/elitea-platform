@@ -58,6 +58,10 @@ export interface EditApplicationVersionControlsState {
   readonly canSaveNewVersion: boolean;
   readonly handleSelectVersion: (version: EditApplicationVersionOption) => void;
   readonly handleNewVersionSaved: (created: ApplicationVersionDetail) => void;
+  /** #307 — version delete: the active version's name for the confirm dialog, plus what to do once it is gone. */
+  readonly versionDelete:
+    | { readonly applicationVersionId: number | undefined; readonly versionName: string; readonly onVersionDeleted: () => void }
+    | undefined;
 }
 
 /** `conversation_starters` is typed as a loose array on the form input; the write body takes `string[]`. */
@@ -138,7 +142,35 @@ export function useEditApplicationVersionControls(
     [queryClient, projectId, applicationId, goToVersion],
   );
 
+  /*
+   * #307 — after the open version is deleted the URL still points at it, and
+   * `useEditApplicationData` would 404 on the next fetch. Navigate to the
+   * agent's version-less route (its default version) and invalidate the
+   * detail, whose `versions[]` is now stale by exactly the deleted entry —
+   * the mirror image of `handleNewVersionSaved` above.
+   */
+  const handleVersionDeleted = useCallback(() => {
+    if (projectId !== undefined && applicationId !== undefined) {
+      void queryClient.invalidateQueries({ queryKey: getGetApplicationQueryKey(projectId, applicationId) });
+    }
+    if (applicationId === undefined) return;
+    void navigate({
+      to: '/agents/$tab/$agentId',
+      params: { tab: tab ?? 'latest', agentId: String(applicationId) },
+    });
+  }, [queryClient, navigate, projectId, applicationId, tab]);
+
+  const versionDelete = useMemo(() => {
+    if (activeVersion === undefined) return undefined;
+    return {
+      applicationVersionId: Number(activeVersion.id),
+      versionName: activeVersion.name,
+      onVersionDeleted: handleVersionDeleted,
+    };
+  }, [activeVersion, handleVersionDeleted]);
+
   return {
+    versionDelete,
     showVersionControls: !isFetching && applicationId !== undefined,
     applicationIdText: applicationId === undefined ? '' : String(applicationId),
     versionOptions,

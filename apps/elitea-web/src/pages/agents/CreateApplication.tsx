@@ -242,6 +242,11 @@ export function CreateApplication(): ReactNode {
 
   const name = form.watch('name') ?? '';
   const description = form.watch('description') ?? '';
+  // #307 — routing the path is only half of it: `CreateAgentForm` renders the
+  // starters editor from `values`, so without this read the editor shows an
+  // empty list forever and every "add" is invisible (caught by this page's own
+  // test, which clicks Add and then looks for the row).
+  const conversationStarters = form.watch('version_details.conversation_starters');
 
   // The small adapter this file's doc comment describes: bridges RHF `form`
   // + `extraFields` into `CreateAgentForm`'s plain `values`/`onFieldChange`
@@ -251,6 +256,7 @@ export function CreateApplication(): ReactNode {
     name,
     description,
     version_details: {
+      conversation_starters: (conversationStarters ?? []).filter((entry): entry is string => typeof entry === 'string'),
       instructions: extraFields.instructions,
       welcome_message: extraFields.welcomeMessage,
       variables: extraFields.variables,
@@ -269,6 +275,16 @@ export function CreateApplication(): ReactNode {
             shouldValidate: true,
             shouldDirty: true,
           });
+          return;
+        // #307 — routed to the RHF form, not `extraFields`:
+        // `applicationCreationSchema` DOES validate this field and
+        // `handleSave` below already reads it off the submitted values.
+        case 'version_details.conversation_starters':
+          form.setValue(
+            'version_details.conversation_starters',
+            Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [],
+            { shouldValidate: true, shouldDirty: true },
+          );
           return;
         case 'version_details.instructions':
           setExtraFields((previous) => ({ ...previous, instructions: typeof value === 'string' ? value : '' }));

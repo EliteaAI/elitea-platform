@@ -23,6 +23,7 @@ import { useEditApplicationVersionControls } from './lib/useEditApplicationVersi
 import { useEditApplicationVersionFields } from './lib/useEditApplicationVersionFields';
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
+import { EditApplicationActions } from './ui/EditApplicationActions';
 import { useDiscardApplicationChanges } from './useDiscardApplicationChanges';
 
 const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
@@ -323,15 +324,30 @@ export function EditApplication(): ReactNode {
               onSelectVersion={versionControls.handleSelectVersion}
               versionBody={versionControls.versionBody}
               canSaveNewVersion={versionControls.canSaveNewVersion}
+              versionDelete={versionControls.versionDelete}
               onNewVersionSaved={versionControls.handleNewVersionSaved}
             />
           )}
+          {/*
+           * #307 — the entity-level actions (export, delete). Both were
+           * ported, tested, and imported by nothing at all; see
+           * `./ui/EditApplicationActions.tsx` for the baseline placement and
+           * for why they are writer-only.
+           */}
           {!isFetching && !isReadOnlyView && (
-            <EditApplicationSaveBar
-              onSave={handleSave}
-              canSave={form.formState.isValid && !isSaving}
-              isSaving={isSaving}
-            />
+            <>
+              <EditApplicationActions
+                applicationId={params.agentId}
+                detail={detail}
+                activeVersion={activeVersion}
+                tab={params.tab}
+              />
+              <EditApplicationSaveBar
+                onSave={handleSave}
+                canSave={form.formState.isValid && !isSaving}
+                isSaving={isSaving}
+              />
+            </>
           )}
         </Box>
         <Box sx={contentSx}>

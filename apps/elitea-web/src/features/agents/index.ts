@@ -55,6 +55,18 @@ export { VersionReplacementModal } from './ui/VersionReplacementModal';
 export { AgentVersionControls } from './ui/AgentVersionControls';
 
 /**
+ * #307 — the agent editor's own delete and export affordances. Both were
+ * fully ported, fully tested and imported by NOTHING: the issue lists them
+ * among the "correctly-wired components with no mount point", and the page
+ * that is supposed to host them (`pages/agents/EditApplication.tsx`) could
+ * not reach them from outside this slice. The three slots they and their
+ * host needed came from repacking the four validation hooks into
+ * `applicationValidationHooks` (see that file) — no export was dropped.
+ */
+export { DeleteApplicationButton } from './ui/DeleteApplicationButton';
+export { ExportApplicationButton } from './ui/ExportApplicationButton';
+
+/**
  * Sub-unit A1a's ("Application data layer + version-lifecycle hooks")
  * contribution — the application/version data layer + tool change-diffing +
  * validation + chat-version-switch hooks (see each file's own doc comment
@@ -74,12 +86,7 @@ export { useSaveVersion } from './model/useSaveVersion';
 export { useSaveNewVersion } from './model/useSaveNewVersion';
 export { useDeleteVersion } from './model/useDeleteVersion';
 export { useSaveChangedTools } from './model/useSaveChangedTools';
-export {
-  useValidateApplicationVersion,
-  useManualValidateApplicationVersion,
-  useToolsValidationInfo,
-  useToolValidationInfo,
-} from './model/useValidateApplicationVersion';
+export { applicationValidationHooks } from './model/applicationValidationHooks';
 export { useApplicationChatSwitchVersion } from './model/useApplicationChatSwitchVersion';
 export { useCreateConfiguration } from './model/useCreateConfiguration';
 

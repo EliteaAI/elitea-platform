@@ -17,6 +17,7 @@ import type { AgentDraftValues, AgentFieldChange } from '../model/types';
 
 import { ApplicationAdvanceSettings } from './ApplicationAdvanceSettings';
 import { ApplicationVariables } from './ApplicationVariables';
+import { ConversationStartersEditor } from './ConversationStartersEditor';
 import { InstructionsInput } from './InstructionsInput';
 import { WelcomeMessageInput } from './WelcomeMessageInput';
 
@@ -54,11 +55,12 @@ import { WelcomeMessageInput } from './WelcomeMessageInput';
  *    with no `shared/ui` port anywhere in this worktree
  *    (`find shared/ui -iname '*Tag*'` — only `HeadingChip`, a read-only
  *    display chip, no editable tag-input equivalent).
- *  - `conversationStartersSlot` — the baseline's `ConversationStarters`
- *    (`components/ConversationStarters.jsx`, 370 lines, consumed by 5 files
- *    across the agent/pipeline/chat domains). Only its pure helper half
- *    (`../lib/helpers/conversationStarters.helpers.ts`) had landed in this
- *    worktree; the UI component itself had not.
+ *  - `conversationStartersSlot` — CLOSED, and the prop is GONE (#307). Every
+ *    caller left that slot empty, so the one field the agent edit page did
+ *    save had no input anywhere in the app. `./ConversationStartersEditor
+ *    .tsx` is the port, rendered DIRECTLY here — which is what the baseline
+ *    does too (`CreateAgentForm.jsx:206`, reading the same
+ *    `version_details.conversation_starters` off its form context).
  *
  * Each slot keeps this file's LAYOUT position faithful to the baseline
  * (same accordion, same ordering) even where its CONTENT cannot be filled
@@ -209,7 +211,6 @@ export interface CreateAgentFormProps {
   readonly generateAgentButtonSlot?: ReactNode | undefined;
   readonly iconSlot?: ReactNode | undefined;
   readonly tagsSlot?: ReactNode | undefined;
-  readonly conversationStartersSlot?: ReactNode | undefined;
   readonly sx?: SxProps<Theme> | undefined;
 }
 
@@ -222,7 +223,6 @@ export function CreateAgentForm({
   generateAgentButtonSlot,
   iconSlot,
   tagsSlot,
-  conversationStartersSlot,
   sx,
 }: CreateAgentFormProps): ReactNode {
   const versionDetails = values.version_details;
@@ -318,7 +318,12 @@ export function CreateAgentForm({
           disabled={disabled}
         />
       </Box>
-      <Box sx={conversationStartersSx}>{conversationStartersSlot}</Box>
+      <ConversationStartersEditor
+        starters={versionDetails?.conversation_starters}
+        onStartersChange={state.onConversationStartersChange}
+        disabled={disabled}
+        sx={conversationStartersSx}
+      />
       <Box sx={advanceSettingsSx}>
         <ApplicationAdvanceSettings
           stepLimit={versionDetails?.meta?.step_limit}

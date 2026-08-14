@@ -290,4 +290,93 @@ describe('EditApplication', () => {
     await waitFor(() => expect(applicationBodies).toHaveLength(1));
     expect(applicationBodies[0]?.['name']).toBe('Renamed Agent');
   });
+
+  /*
+   * #307 — the conversation-starters field was the ONE field this page
+   * always sent and the ONE field it had no input for: `CreateAgentForm`
+   * carried an empty `conversationStartersSlot`. Typing into the now-mounted
+   * editor and reading the PUT body is the assertion that fails if either
+   * the mount or the `version_details.conversation_starters` routing
+   * regresses; `getByTestId(...)` alone would pass against an editor wired
+   * to nothing.
+   */
+  it('persists an edited conversation starter: the keystroke reaches the version PUT body', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const versionBodies: Record<string, unknown>[] = [];
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        versionBodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+      }),
+      http.put('*/elitea_core/application/prompt_lib/:projectId/:id', () =>
+        HttpResponse.json({ id: '42' }, { status: 201 }),
+      ),
+    );
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    const starterInput = await screen.findByTestId('agent-conversation-starter-input', {}, { timeout: 5_000 });
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    // Seeded from the fixture — proof the editor READS the version, before
+    // anything is proved about writing it.
+    expect(starterInput).toBeVisible();
+    expect(starterInput).toHaveValue('Hi there');
+
+    await user.type(starterInput, ' friend');
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(versionBodies).toHaveLength(1));
+    expect(versionBodies[0]?.['conversation_starters']).toEqual(['Hi there friend']);
+  });
+
+  it('adds a new conversation starter and sends both of them', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const versionBodies: Record<string, unknown>[] = [];
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        versionBodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+      }),
+      http.put('*/elitea_core/application/prompt_lib/:projectId/:id', () =>
+        HttpResponse.json({ id: '42' }, { status: 201 }),
+      ),
+    );
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByTestId('agent-conversation-starter-add', {}, { timeout: 5_000 });
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await user.click(screen.getByTestId('agent-conversation-starter-add'));
+    await user.type(screen.getAllByTestId('agent-conversation-starter-input')[1]!, 'Second');
+
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(versionBodies).toHaveLength(1));
+    expect(versionBodies[0]?.['conversation_starters']).toEqual(['Hi there', 'Second']);
+  });
+
+  /*
+   * #307 — export/delete/version-delete were fully built with zero
+   * importers. These assert the mount and its read-only gate; the controls'
+   * own behaviour is covered by their own suites.
+   */
+  it('mounts the export, delete and version-delete controls for a writer', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    expect(await screen.findByRole('button', { name: /export agent/i }, { timeout: 5_000 })).toBeVisible();
+    expect(screen.getByRole('button', { name: /delete entity/i })).toBeVisible();
+    expect(screen.getByTestId('agent-version-delete')).toBeVisible();
+  });
+
+  it('hides the export, delete and version-delete controls from a read-only viewer of a public agent', async () => {
+    setPublicProjectId('42');
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/latest/42', { projectId: '42' });
+
+    await screen.findByText('My Agent');
+    expect(screen.queryByRole('button', { name: /export agent/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /delete entity/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-version-delete')).not.toBeInTheDocument();
+  });
 });

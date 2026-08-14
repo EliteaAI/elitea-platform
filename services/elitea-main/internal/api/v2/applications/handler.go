@@ -826,6 +826,28 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 	if meta, ok := body["meta"].(map[string]any); ok {
 		v.Meta = meta
 	}
+	// #307 — `variables` had NO branch here at all, so the agent editor's
+	// variables were accepted with a 201 and silently discarded on every
+	// save; only CreateVersion persisted them, and only into `meta`.
+	//
+	// Presence-based, not `len(vars) > 0` as on the create path: on an
+	// update, an empty array is a real, distinguishable user action
+	// ("I deleted my last variable"), and dropping it would leave exactly
+	// the silent no-op this branch exists to fix. A body with no
+	// `variables` key at all still leaves the stored value alone.
+	variables, hasVariables := body["variables"].([]any)
+	// The write-side fold `versionFromBody` performs (variables have no
+	// column on application_versions), kept so this endpoint's own 201 echo
+	// — built by `versionDetailsResponse`, which reads `meta["variables"]`
+	// — reports what was actually saved. It must run AFTER the `meta`
+	// assignment above or the client's stale `meta.variables` (which it
+	// spreads from the stored blob) would win over the edit.
+	if hasVariables {
+		if v.Meta == nil {
+			v.Meta = map[string]any{}
+		}
+		v.Meta["variables"] = variables
+	}
 	// Pipeline flow-graph layout. Without this the pipeline editor's Save
 	// returned 200 while silently discarding every node/edge edit (#135) —
 	// the graph itself round-trips through `instructions` (the pipeline
@@ -840,7 +862,75 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, err)
 		return
 	}
+	// #307, second half — the meta fold above is NOT enough on its own, and a
+	// green "the row's meta now holds my variables" assertion hides why: the
+	// two sides of the round trip read different stores. Every write path
+	// puts variables in `meta`, but the READ path (`fetchVersionDetails`,
+	// which serves GET /version/... and therefore the editor's own reload)
+	// SELECTs them from the `application_variables` table and ignores `meta`
+	// entirely. So a save whose only effect was on `meta` still came back
+	// empty on reload — the same 200-that-lies shape the field already had.
+	// This replaces the version's rows in that table, the pylon-shaped store
+	// `eliteacore`'s own version-create path already writes
+	// (eliteacore/handler.go:2485-2497).
+	if hasVariables {
+		if err := h.replaceVersionVariables(r.Context(), projectID, versionID, variables); err != nil {
+			apierr.Write(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, strconv.FormatInt(ownerID, 10)))
+}
+
+// replaceVersionVariables makes `application_variables` match the list the
+// caller sent, exactly — deleting the rows they dropped, not only upserting
+// the ones they kept. Transactional: a partial application would leave the
+// version showing a mixture of the old and new lists with nothing reporting
+// a failure. A nil pool (the unit-test/repo-only wiring) is a no-op, matching
+// every other pool-guarded branch in this file.
+func (h *Handler) replaceVersionVariables(ctx context.Context, projectID, versionID string, variables []any) error {
+	if h.pool == nil {
+		return nil
+	}
+	s, ok := tenantSchema(projectID)
+	if !ok {
+		return apierr.BadRequest("invalid project id")
+	}
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return apierr.Internal("could not save variables")
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, fmt.Sprintf(
+		`DELETE FROM %s.application_variables WHERE application_version_id = $1`, s), versionID); err != nil {
+		return apierr.Internal("could not save variables")
+	}
+	for _, raw := range variables {
+		entry, _ := raw.(map[string]any)
+		if entry == nil {
+			continue
+		}
+		name, _ := entry["name"].(string)
+		if name == "" {
+			// The table's own UNIQUE (application_version_id, name) makes a
+			// nameless variable meaningless, and the editor emits a blank
+			// row the moment a user clicks "add" — skipping it here is what
+			// keeps that half-typed row from failing the whole save.
+			continue
+		}
+		value, _ := entry["value"].(string)
+		if _, err := tx.Exec(ctx, fmt.Sprintf(
+			`INSERT INTO %s.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)
+			 ON CONFLICT (application_version_id, name) DO UPDATE SET value = EXCLUDED.value`, s),
+			versionID, name, value); err != nil {
+			return apierr.Internal("could not save variables")
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return apierr.Internal("could not save variables")
+	}
+	return nil
 }
 
 func (h *Handler) DeleteVersion(w http.ResponseWriter, r *http.Request) {

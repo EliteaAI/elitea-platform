@@ -26,6 +26,7 @@ export interface EditApplicationEditorBridge {
     readonly name: string;
     readonly description: string;
     readonly version_details: {
+      readonly conversation_starters: readonly string[];
       readonly instructions: string;
       readonly welcome_message: string;
       readonly variables: readonly { readonly name: string; readonly value: string }[];
@@ -41,6 +42,20 @@ export function useEditApplicationEditorBridge(
 ): EditApplicationEditorBridge {
   const name = useWatch({ control: form.control, name: 'name' }) ?? '';
   const description = useWatch({ control: form.control, name: 'description' }) ?? '';
+  /*
+   * #307 — `conversation_starters` IS an RHF field (it is the one field
+   * `applicationCreationSchema` validates beyond name/description, and the
+   * one the save payload always read), but nothing put it into `values`, so
+   * the newly-mounted editor would have rendered an empty list over a
+   * version that had starters and then overwritten them on the first edit.
+   * Same `useWatch` subscription as the two fields above, for the same
+   * reason: the values arrive asynchronously with the agent detail.
+   */
+  const conversationStarters = useWatch({ control: form.control, name: 'version_details.conversation_starters' });
+  const starters = useMemo(
+    () => (conversationStarters ?? []).filter((entry): entry is string => typeof entry === 'string'),
+    [conversationStarters],
+  );
 
   const { fields, applyFieldChange } = versionFields;
 
@@ -49,13 +64,14 @@ export function useEditApplicationEditorBridge(
       name,
       description,
       version_details: {
+        conversation_starters: starters,
         instructions: fields.instructions,
         welcome_message: fields.welcomeMessage,
         variables: fields.variables,
         meta: { step_limit: fields.stepLimit },
       },
     }),
-    [name, description, fields],
+    [name, description, starters, fields],
   );
 
   /*
@@ -73,6 +89,14 @@ export function useEditApplicationEditorBridge(
   const onFieldChange = useCallback(
     (path: string, value: unknown) => {
       if (applyFieldChange(path, value)) return;
+      if (path === 'version_details.conversation_starters') {
+        form.setValue(
+          'version_details.conversation_starters',
+          Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [],
+          { shouldValidate: true, shouldDirty: true },
+        );
+        return;
+      }
       if (path !== 'name' && path !== 'description') return;
       form.setValue(path, typeof value === 'string' ? value : '', { shouldValidate: true, shouldDirty: true });
     },

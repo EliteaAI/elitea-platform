@@ -1,3 +1,6 @@
+import type { ReactNode } from 'react';
+import { useState } from 'react';
+
 import { fireEvent } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -5,6 +8,37 @@ import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 
 import { ToolFormContainer } from './ToolFormContainer';
 import type { ToolFormContainerProperty } from './ToolFormContainer';
+
+/**
+ * The dict-owning parent `ToolFormContainer` is always mounted under — a
+ * faithful copy of `IndexesTab.tsx`'s `IndexToolFormField` merge
+ * (`{...currentValues, [changedKey]: value}`), which is the ONLY merge in
+ * the app. #311 lives in that round trip, not in a single render: clearing
+ * emits `undefined` for a key that then EXISTS in the dict, and the old
+ * `resolveFieldValue` could not tell that from "never set". A test that
+ * renders the container once, with a hand-written dict, cannot reach the
+ * defect at all.
+ */
+function StatefulField({ property, onSave }: { readonly property: ToolFormContainerProperty; readonly onSave: (values: Readonly<Record<string, unknown>>) => void }): ReactNode {
+  const [values, setValues] = useState<Readonly<Record<string, unknown>>>({});
+  return (
+    <>
+      <ToolFormContainer
+        fieldKey="output_format"
+        property={property}
+        toolInputVariables={values}
+        schema={undefined}
+        onChangeInputVariables={(fieldKey, value) => setValues({ ...values, [fieldKey]: value })}
+      />
+      <button
+        type="button"
+        onClick={() => onSave(values)}
+      >
+        Save
+      </button>
+    </>
+  );
+}
 
 /** jsdom has no `ResizeObserver` — `AnyOfPatternField`'s array-of-values editor mounts a `ResizableCodeMirrorEditor` (`shared/ui`), which needs one. Same stub `CategorySection.test.tsx` already documents for this exact gap. */
 class ResizeObserverStub {
@@ -170,6 +204,56 @@ describe('ToolFormContainer', () => {
       />,
     );
     expect(getByText('Sub field')).toBeInTheDocument();
+  });
+
+  /**
+   * #311 — clearing a field that carries a schema `default` must persist the
+   * cleared value. The old `resolveFieldValue` re-applied the default the
+   * moment the emptied field's `undefined` came back through the dict, so the
+   * field snapped back to `json` and `json` is what a save would carry.
+   */
+  it('keeps a field the user cleared empty, and saves the cleared value rather than the schema default', () => {
+    const onSave = vi.fn();
+    const { getByRole } = renderWithTheme(
+      <StatefulField
+        property={{ type: 'string', title: 'Output Format', default: 'json' }}
+        onSave={onSave}
+      />,
+    );
+
+    const input = getByRole('textbox');
+    // The default DOES fill an untouched field — the fix must not cost this.
+    expect(input).toBeVisible();
+    expect(input).toHaveValue('json');
+
+    fireEvent.change(input, { target: { value: '' } });
+
+    expect(getByRole('textbox')).toBeVisible();
+    expect(getByRole('textbox')).toHaveValue('');
+
+    fireEvent.click(getByRole('button', { name: 'Save' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0]?.[0] as Readonly<Record<string, unknown>>;
+    expect(Object.hasOwn(saved, 'output_format')).toBe(true);
+    expect(saved['output_format']).toBeUndefined();
+    expect(saved['output_format']).not.toBe('json');
+  });
+
+  it('re-applies the schema default only while the key is absent — a retyped value is not overwritten either', () => {
+    const onSave = vi.fn();
+    const { getByRole } = renderWithTheme(
+      <StatefulField
+        property={{ type: 'string', title: 'Output Format', default: 'json' }}
+        onSave={onSave}
+      />,
+    );
+
+    fireEvent.change(getByRole('textbox'), { target: { value: 'csv' } });
+    expect(getByRole('textbox')).toHaveValue('csv');
+
+    fireEvent.click(getByRole('button', { name: 'Save' }));
+    const saved = onSave.mock.calls[0]?.[0] as Readonly<Record<string, unknown>> | undefined;
+    expect(saved?.['output_format']).toBe('csv');
   });
 
   it('resolves the Optional-type (anyOf) branch type when property.type is absent', () => {

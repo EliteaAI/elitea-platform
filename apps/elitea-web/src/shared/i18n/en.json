@@ -1953,5 +1953,17 @@
   "pages.admin.nav.title": "Elitea Admin",
   "pages.admin.nav.toggle": "Toggle navigation",
   "pages.admin.nav.users": "Users",
-  "features.toolkits.modelSelect.refresh": "Refresh the models"
+  "features.toolkits.modelSelect.refresh": "Refresh the models",
+  "features.agents.conversationStarters.add": "+ Starter",
+  "features.agents.conversationStarters.delete": "Delete",
+  "features.agents.conversationStarters.deleteStarter": "delete starter",
+  "features.agents.conversationStarters.limitReached": "You have reached the limit of chat starters",
+  "features.agents.conversationStarters.placeholder": "Chat message",
+  "features.agents.conversationStarters.starterLabel": "Starter",
+  "features.agents.conversationStarters.title": "Chat starters",
+  "features.agents.deleteVersion.ariaLabel": "delete version",
+  "features.agents.deleteVersion.error": "Failed to delete this version.",
+  "features.agents.deleteVersion.title": "Delete version",
+  "pages.agents.editApplication.deleteError": "Failed to delete this agent.",
+  "pages.agents.editApplication.exportError": "Failed to export this agent."
 }

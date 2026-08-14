@@ -316,6 +316,71 @@ func TestHandlerPostgres_UpdateVersionPersists(t *testing.T) {
 	}
 }
 
+// TestHandlerPostgres_UpdateVersionPersistsVariables covers #307: the agent
+// editor sends `variables` on every save and UpdateVersion had no branch for
+// the key, so the PUT answered 201 and the edit was gone. Asserted by
+// reading the row back (and by re-GETting the version), not by the 201 —
+// a 201 is exactly what passed while the field was being dropped.
+func TestHandlerPostgres_UpdateVersionPersistsVariables(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	_, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("variable-editor"))
+	applicationID := created["id"].(string)
+	versionDetails := created["version_details"].(map[string]any)
+	versionID := versionDetails["id"].(string)
+
+	// The body the web client actually sends: `meta` spread from the stored
+	// blob (so it still carries the OLD variables) plus a separate, edited
+	// `variables` list. See pages/agents/lib/editApplicationMappers.ts.
+	storedMeta, _ := versionDetails["meta"].(map[string]any)
+	if storedMeta == nil {
+		storedMeta = map[string]any{}
+	}
+	recorder, updated := do(t, router, http.MethodPut,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID),
+		map[string]any{
+			"name": "base",
+			"meta": storedMeta,
+			"variables": []any{
+				map[string]any{"name": "region", "value": "emea"},
+				map[string]any{"name": "tier", "value": "gold"},
+			},
+		})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	echoed, _ := updated["variables"].([]any)
+	if len(echoed) != 2 {
+		t.Errorf("update response variables = %v, want the 2 edited variables", updated["variables"])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var meta string
+	if err := pool.QueryRow(ctx,
+		`SELECT meta::text FROM p_1.application_versions WHERE id = $1`, versionID).Scan(&meta); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.Contains(meta, "region") || !strings.Contains(meta, "emea") {
+		t.Errorf("stored meta = %s, want the edited variables", meta)
+	}
+	if strings.Contains(meta, `"k"`) {
+		t.Errorf("stored meta = %s, still carries the pre-edit variable", meta)
+	}
+	if !strings.Contains(meta, "step_limit") {
+		t.Errorf("stored meta = %s, folding variables dropped the rest of meta", meta)
+	}
+
+	_, reread := do(t, router, http.MethodGet,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID), nil)
+	rereadVariables, _ := reread["variables"].([]any)
+	if len(rereadVariables) != 2 {
+		t.Errorf("GET after save returned variables = %v, want the 2 saved variables", reread["variables"])
+	}
+}
+
 // TestHandlerPostgres_UpdateReportsTheRowOwner pins that editing an
 // application does not transfer or misreport its ownership: the prototype
 // echoed whoever was making the request back as owner_id.
