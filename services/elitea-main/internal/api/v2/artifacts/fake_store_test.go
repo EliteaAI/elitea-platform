@@ -3,6 +3,7 @@ package artifacts_test
 import (
 	"bytes"
 	"context"
+	"crypto/md5" //nolint:gosec // ETag identity, not a security digest
 	"fmt"
 	"io"
 	"sort"
@@ -150,8 +151,19 @@ func (s *fakeStore) seedContent(projectID, bucket, key string, data []byte, cont
 	storageKey := ref.StorageKey("")
 	s.objects[storageKey] = storage.ObjectInfo{
 		Key: key, Size: int64(len(data)), LastModified: time.Now(), ContentType: contentType,
+		ETag: contentETag(data),
 	}
 	s.data[storageKey] = data
+}
+
+// contentETag is the content-addressed ETag every real backend reports for a
+// single-shot write (S3, Azure and the local disk backend all derive it from
+// the bytes). This fake previously reported none at all, which left every
+// ETag assertion vacuous: a handler that dropped the header entirely, or
+// reported one object's ETag for another, looked identical to a correct one.
+// Quoted, as HTTP requires for an opaque validator.
+func contentETag(data []byte) string {
+	return fmt.Sprintf("%q", fmt.Sprintf("%x", md5.Sum(data))) //nolint:gosec // ETag identity, not a security digest
 }
 
 func (s *fakeStore) Put(_ context.Context, ref storage.ObjectRef, body io.Reader, opts storage.PutOptions) (storage.ObjectInfo, error) {
@@ -164,7 +176,10 @@ func (s *fakeStore) Put(_ context.Context, ref storage.ObjectRef, body io.Reader
 	if err != nil {
 		return storage.ObjectInfo{}, err
 	}
-	info := storage.ObjectInfo{Key: ref.Key(), Size: int64(len(data)), LastModified: time.Now(), ContentType: opts.ContentType}
+	info := storage.ObjectInfo{
+		Key: ref.Key(), Size: int64(len(data)), LastModified: time.Now(),
+		ContentType: opts.ContentType, ETag: contentETag(data),
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	storageKey := ref.StorageKey("")

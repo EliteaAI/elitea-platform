@@ -1651,6 +1651,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
+		// The S3-shaped write verbs, root-mounted and wildcard-captured for
+		// the same reasons as the reads below.
+		"DELETE /artifacts/s3/{bucket}/*",
 		"GET /api/openapi.json",
 		"GET /api/openapi.yaml",
 		"GET /api/v2/admin/active_tasks/{mode}",
@@ -1825,6 +1828,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /startupz",
 		"HEAD /api/v2/artifacts/objects/{projectID}/{bucket}/*",
 		"HEAD /api/v2/branding/bootstrap.js",
+		"HEAD /artifacts/s3/{bucket}/*",
 		"PATCH /api/v2/artifacts/buckets/{projectID}/{bucket}",
 		"PATCH /api/v2/elitea_core/application_relation/prompt_lib/{projectID}/{appID}/{versionID}",
 		"PATCH /api/v2/elitea_core/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}",
@@ -1962,6 +1966,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PUT /api/v2/social/author",
 		"PUT /api/v2/social/author/",
 		"PUT /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
+		"PUT /artifacts/s3/{bucket}/*",
 	}
 
 	if len(got) != len(want) {

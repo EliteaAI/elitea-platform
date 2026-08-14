@@ -9,14 +9,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 )
 
-// This file serves the S3-shaped representation of a bucket listing — the
-// one the Python SDK's artifact toolkit speaks, and the only listing an
-// index run ever performs.
+// This file serves the S3-shaped representation of the object surface — the
+// one the Python SDK's artifact toolkit speaks. The listing and the object
+// read are what an index run performs; the write verbs at the bottom (PUT,
+// DELETE, HEAD) are what an agent's toolkit calls to produce, check and
+// remove files.
 //
-// The route is deliberately NOT under /api/v2. The worker builds the URL as
+// The routes are deliberately NOT under /api/v2. The worker builds the URL as
 // `{platform_origin}/artifacts/s3/{bucket}` (elitea-sdk
 // runtime/clients/client.py:115, :1105) where platform_origin is validated
 // to be a bare origin carrying no path at all (elitea-worker-python
@@ -88,10 +91,19 @@ type s3ListResponse struct {
 // (NoSuchKey). Each caller passes the one that is true for it — collapsing
 // them into a single mapping here would tell the SDK the bucket is gone every
 // time a file is merely absent.
+//
+// "TooLarge" maps to S3's own EntityTooLarge even though the SDK's table
+// cannot phrase it (it degrades to "S3 error: EntityTooLarge"). That is
+// deliberate: the alternative is the InternalError fallback, which would tell
+// the caller the server broke when in fact its object exceeded a limit it can
+// do something about. A vague-but-true code beats a precise lie, and both the
+// per-object cap and the project quota (storeObject, objects.go) surface
+// through it.
 var s3ErrorCodes = map[string]string{
 	"AccessDenied":    "AccessDenied",
 	"InvalidKey":      "InvalidArgument",
 	"InvalidArgument": "InvalidArgument",
+	"TooLarge":        "EntityTooLarge",
 }
 
 func s3ErrorCode(code, notFoundAs string) string {
@@ -122,10 +134,22 @@ func s3ErrorCode(code, notFoundAs string) string {
 // the original string for storage refs — and writes the error itself when it
 // is unusable.
 func s3ProjectID(w http.ResponseWriter, r *http.Request) (int64, string, bool) {
+	projectID, projectIDStr, ok := parseS3ProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", "project_id is required")
+		return 0, "", false
+	}
+	return projectID, projectIDStr, true
+}
+
+// parseS3ProjectID is s3ProjectID without the response write, for HEAD, whose
+// response must not carry a body at all — the SDK's head_artifact_s3 reads
+// only the status and the entity headers (client.py:1206-1233), and a JSON
+// error envelope on a HEAD is a body no client can read.
+func parseS3ProjectID(r *http.Request) (int64, string, bool) {
 	projectIDStr := r.URL.Query().Get("project_id")
 	projectID, err := strconv.ParseInt(projectIDStr, 10, 64)
 	if err != nil || projectID <= 0 {
-		writeError(w, http.StatusBadRequest, "InvalidArgument", "project_id is required")
 		return 0, "", false
 	}
 	return projectID, projectIDStr, true
@@ -140,17 +164,21 @@ func s3Bucket(r *http.Request) string {
 
 // requireS3Bucket is requireBucket rendered in the S3 error vocabulary: the
 // SDK phrases NoSuchBucket specifically (S3_ERROR_MESSAGES, client.py:1061).
-// Callers return immediately when ok is false.
-func (h *Handler) requireS3Bucket(w http.ResponseWriter, r *http.Request, projectID int64, bucket string) bool {
-	if _, err := h.repo.GetBucket(r.Context(), projectID, bucket); err != nil {
+// Callers return immediately when ok is false. It returns the fetched row for
+// the same reason requireBucket does: the write verbs below need the bucket's
+// database ID (object metadata upsert/delete) and its expires_at, and looking
+// it up a second time could observe a different row.
+func (h *Handler) requireS3Bucket(w http.ResponseWriter, r *http.Request, projectID int64, bucket string) (repos.BucketRow, bool) {
+	row, err := h.repo.GetBucket(r.Context(), projectID, bucket)
+	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NoSuchBucket", "bucket not found")
-			return false
+			return repos.BucketRow{}, false
 		}
 		writeError(w, http.StatusInternalServerError, "InternalError", "get bucket: "+err.Error())
-		return false
+		return repos.BucketRow{}, false
 	}
-	return true
+	return row, true
 }
 
 // ListObjectsS3 answers the SDK's bucket listing.
@@ -163,7 +191,7 @@ func (h *Handler) ListObjectsS3(w http.ResponseWriter, r *http.Request) {
 
 	// Same bucket resolution as the native route. A listing can only ever
 	// fail on the bucket, never on a key.
-	if !h.requireS3Bucket(w, r, projectID, bucket) {
+	if _, ok := h.requireS3Bucket(w, r, projectID, bucket); !ok {
 		return
 	}
 
@@ -255,7 +283,7 @@ func (h *Handler) DownloadObjectS3(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.requireS3Bucket(w, r, projectID, bucket) {
+	if _, ok := h.requireS3Bucket(w, r, projectID, bucket); !ok {
 		return
 	}
 
@@ -265,4 +293,257 @@ func (h *Handler) DownloadObjectS3(w http.ResponseWriter, r *http.Request) {
 	if code, message := h.streamObject(w, r, ref, key); code != "" {
 		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), message)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Object write verbs — PUT, DELETE, HEAD.
+//
+// These complete the S3-shaped surface the SDK speaks. Unlike the two read
+// routes above, which an index run drives, these are what an agent's artifact
+// toolkit calls when it produces a file, replaces it, checks for it, or
+// removes it (elitea-sdk runtime/clients/client.py: upload_artifact_s3,
+// delete_artifact_s3, head_artifact_s3).
+//
+// Key sanitization is NOT performed here, on purpose. upload_artifact_s3 runs
+// the key through _sanitize_artifact_name BEFORE building the URL
+// (client.py:1140) and reports filepath/filename/sanitized_name/was_sanitized
+// computed entirely from its own inputs — the server never sees the
+// pre-sanitized key and could not report was_sanitized even if it wanted to.
+// That split is right: sanitization is a lossy rewrite chosen for the
+// indexer's benefit, while the server's job is to REJECT what it cannot store
+// safely (storage.NewObjectRef's validateKey: traversal segments, leading and
+// trailing slashes, empty segments). Rewriting a key server-side would also
+// mean writing to a key the caller did not ask for and cannot predict, which
+// a later download by the original key would then miss.
+// ---------------------------------------------------------------------------
+
+// s3PutResponse is the PUT success envelope.
+//
+// The SDK reads none of it — upload_artifact_s3 checks only status < 400 and
+// then synthesises its own dict from the arguments it already has
+// (client.py:1154-1163). The body is emitted anyway because the route is
+// otherwise indistinguishable from a silent no-op to any other client, and
+// the camelCase names keep it in the same vocabulary as the listing rather
+// than inventing a third.
+//
+// LastModified is a pointer so it can be OMITTED rather than emitted as the
+// zero instant. Not hypothetical: the S3 backend's Put reports no
+// modification time at all (only List and Stat do), so a plain time.Time
+// renders "0001-01-01T00:00:00Z" — a value a client would read as the object's
+// real mtime. Measured against the running standalone stack, which is the only
+// place the difference shows.
+type s3PutResponse struct {
+	Key          string     `json:"key"`
+	Bucket       string     `json:"bucket"`
+	Size         int64      `json:"size"`
+	LastModified *time.Time `json:"lastModified,omitempty"`
+	ETag         string     `json:"etag,omitempty"`
+}
+
+// UploadObjectS3 writes an object from a RAW request body.
+//
+// The wire shape differs from the native route's and only there: the SDK
+// sends the bytes as the body itself with the Content-Type header carrying
+// the media type (requests.put(url, data=data), client.py:1150-1151), where
+// the native route takes a multipart "file" part. Everything downstream of
+// that decode — the per-object cap, the read deadline, the streaming Put, the
+// metadata row, and the project quota with its rollback — is the SAME code
+// (resolveObjectSizeLimit + storeObject, objects.go), so this verb cannot
+// become a way to write past a limit the native route enforces. Nothing here
+// buffers the body: r.Body goes straight to Put, so ADR-0016's "never spill an
+// upload to memory or os.TempDir" holds unchanged.
+//
+// Two deliberate differences from the native POST:
+//
+//   - It overwrites unconditionally. S3 PUT is an upsert and the SDK sends no
+//     overwrite flag, so the native route's pre-existing-key Stat check (409
+//     AlreadyExists) is skipped rather than translated. Keeping it would make
+//     every second upload of the same key fail with a code the SDK's table
+//     cannot phrase ("S3 error: AlreadyExists") and no way to opt out. The
+//     `create` permission already authorizes the same overwrite natively, via
+//     ?overwrite=true.
+//   - It answers 200, not 201, matching S3's own PUT. The SDK accepts any
+//     status below 400.
+func (h *Handler) UploadObjectS3(w http.ResponseWriter, r *http.Request) {
+	projectID, projectIDStr, ok := s3ProjectID(w, r)
+	if !ok {
+		return
+	}
+	bucket := s3Bucket(r)
+	key := objectKeyFromRequest(r)
+
+	// Before the bucket lookup, matching the native route and the S3
+	// download: a malformed key is caller error whether or not the bucket
+	// exists.
+	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
+		return
+	}
+
+	bucketRow, ok := h.requireS3Bucket(w, r, projectID, bucket)
+	if !ok {
+		return
+	}
+
+	policy, maxObjectBytes, err := h.resolveObjectSizeLimit(r.Context(), projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "get project storage policy: "+err.Error())
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxObjectBytes)
+
+	// Best-effort, exactly as in UploadObject: httptest.ResponseRecorder and
+	// similar test writers don't support deadlines, which is harmless — this
+	// is a defense-in-depth ceiling, not a correctness requirement.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(artifactStreamDeadline))
+
+	// The SDK always sends a Content-Type it detected itself
+	// (detect_mime_type, client.py:1147); the extension fallback covers any
+	// other client that does not.
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = mimeFromExtension(key)
+	}
+
+	info, code, message := h.storeObject(r.Context(), storeObjectInput{
+		projectID:   projectID,
+		bucketRow:   bucketRow,
+		ref:         ref,
+		body:        r.Body,
+		contentType: contentType,
+		policy:      policy,
+	})
+	if code != "" {
+		// Past the bucket check, a NotFound could only be the key.
+		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), message)
+		return
+	}
+
+	if info.ETag != "" {
+		w.Header().Set("ETag", info.ETag)
+	}
+	resp := s3PutResponse{
+		Key:    info.Key,
+		Bucket: bucket,
+		Size:   info.Size,
+		ETag:   info.ETag,
+	}
+	if !info.LastModified.IsZero() {
+		resp.LastModified = &info.LastModified
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// DeleteObjectS3 removes one object.
+//
+// Like the native DeleteObject it stats first, so deleting a key that is not
+// there is a 404 NoSuchKey rather than a success. That diverges from real S3,
+// whose DELETE is idempotent and answers 204 for an absent key — the
+// divergence is deliberate and follows the native route, which is this
+// surface's behavioural reference: the SDK phrases a delete's success as
+// "File '<key>' deleted successfully" (client.py:1204) with no way to tell
+// the caller nothing was there, and an agent toolkit reporting that for a
+// mistyped key would feed a false premise straight into the model's next
+// step. NoSuchKey is a code the SDK's table can phrase exactly.
+//
+// 204 with no body, matching both S3 and the native route. delete_artifact_s3
+// never reads the body.
+func (h *Handler) DeleteObjectS3(w http.ResponseWriter, r *http.Request) {
+	projectID, projectIDStr, ok := s3ProjectID(w, r)
+	if !ok {
+		return
+	}
+	bucket := s3Bucket(r)
+	key := objectKeyFromRequest(r)
+
+	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
+		return
+	}
+
+	bucketRow, ok := h.requireS3Bucket(w, r, projectID, bucket)
+	if !ok {
+		return
+	}
+
+	if _, err := h.store.Stat(r.Context(), ref); err != nil {
+		code := storageErrorCode(err)
+		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), err.Error())
+		return
+	}
+
+	if err := h.store.Delete(r.Context(), ref); err != nil {
+		code := storageErrorCode(err)
+		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), err.Error())
+		return
+	}
+
+	// The metadata row must go too, or the project's quota accounting keeps
+	// counting bytes that no longer exist and a project that deleted
+	// everything it uploaded stays permanently near its limit (S12).
+	if err := h.repo.DeleteObjects(r.Context(), bucketRow.ID, []string{key}); err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "delete object metadata: "+err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// StatObjectS3 answers the existence check.
+//
+// head_artifact_s3 reads the status and four entity headers and nothing else:
+// 404 means {"exists": False} — its most common answer, and not an error to
+// the caller — while any other 4xx/5xx goes through _handle_s3_error, which
+// on a bodyless response falls back to the code "HTTP_<status>"
+// (client.py:1084-1085, the except branch). So this handler writes NO body at
+// all, in every branch: a HEAD response's body is unreadable by definition,
+// and a JSON envelope here would only inflate Content-Length and misreport
+// the object's size to a client that trusts it.
+//
+// Content-Length, Last-Modified, Content-Type and ETag are all set because
+// the SDK reads all four by name (client.py:1227-1232).
+func (h *Handler) StatObjectS3(w http.ResponseWriter, r *http.Request) {
+	projectID, projectIDStr, ok := parseS3ProjectID(r)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	bucket := s3Bucket(r)
+	key := objectKeyFromRequest(r)
+
+	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// requireBucketNoBody, not requireS3Bucket: the S3 variant renders a JSON
+	// envelope, which a HEAD must not carry. A missing bucket therefore
+	// reaches the SDK as a bare 404, which it reports as {"exists": False} —
+	// true, if less specific than the listing's NoSuchBucket.
+	if _, ok := h.requireBucketNoBody(w, r, projectID, bucket); !ok {
+		return
+	}
+
+	info, err := h.store.Stat(r.Context(), ref)
+	if err != nil {
+		w.WriteHeader(statusForCode(storageErrorCode(err)))
+		return
+	}
+
+	contentType := info.ContentType
+	if contentType == "" {
+		contentType = mimeFromExtension(key)
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	if info.ETag != "" {
+		w.Header().Set("ETag", info.ETag)
+	}
+	if !info.LastModified.IsZero() {
+		w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
+	}
+	w.WriteHeader(http.StatusOK)
 }

@@ -257,8 +257,9 @@ type ArtifactDeps struct {
 	Resolver     platformauth.PermissionResolver
 }
 
-// mountArtifactRoutes registers all 16 artifact routes (13 from S7, plus
-// S16's 3 native-multipart continuation routes) on r, wrapped in
+// mountArtifactRoutes registers all 21 artifact routes (13 from S7, plus
+// S16's 3 native-multipart continuation routes, plus the 5 S3-shaped ones
+// the Python SDK speaks: list, download, upload, delete, stat) on r, wrapped in
 // deps.Authenticate and per-route RBAC (S11). Called once, from
 // newProductionRouter, so the oapiserver conformance suite and production
 // see an identical route shape. Deliberately NOT nested inside the
@@ -272,23 +273,40 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 	edit := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionEdit)
 	del := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionDelete)
 
-	// viewByQueryProject is the `view` gate for the one artifact route whose
-	// project arrives as a QUERY parameter rather than a path segment (the
-	// S3-shaped listing below). It is deliberately the same resolver, mode
-	// and permission as `view` — only the extractor differs — so the S3
-	// representation cannot be a softer way in than the native route.
-	viewByQueryProject := apimw.RequireResolvedPermissionsForProject(
-		deps.Resolver,
-		platformauth.PermissionModeDefault,
-		apimw.ProjectIDFromQuery("project_id"),
-		artifactPermissionView,
-	)
+	// The S3-shaped routes below name their project in a QUERY parameter
+	// rather than a path segment, so RequireResolvedPermissions (whose
+	// extractor reads the {projectID} PATH param, and which fails closed —
+	// gating nothing — when there is none) cannot express their gate. Each
+	// tier below is deliberately the same resolver, mode and permission
+	// string as its path-based counterpart above; only the extractor differs,
+	// so the S3 representation cannot be a softer way in than the native
+	// route it mirrors.
+	byQueryProject := func(permission string) func(http.Handler) http.Handler {
+		return apimw.RequireResolvedPermissionsForProject(
+			deps.Resolver,
+			platformauth.PermissionModeDefault,
+			apimw.ProjectIDFromQuery("project_id"),
+			permission,
+		)
+	}
+	viewByQueryProject := byQueryProject(artifactPermissionView)
+	// PUT is gated on `create`, the same tier as the native POST upload it
+	// mirrors — not `edit`. An S3 PUT both creates and replaces, but so does
+	// the native upload (?overwrite=true), which S11 maps to create; adding
+	// edit here would let an edit-only principal create objects it cannot
+	// create natively, because RequireResolvedPermissionsForProject takes the
+	// INTERSECTION of the required set (any-of, see hasIntersection in
+	// middleware/rbac.go) — listing two permissions widens the gate, it does
+	// not narrow it.
+	createByQueryProject := byQueryProject(artifactPermissionCreate)
+	deleteByQueryProject := byQueryProject(artifactPermissionDelete)
 
 	listBuckets, createBucket, getBucket, updateBucket, deleteBucket := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	createTransferGrant, commitTransferGrant := notImplementedArtifact, notImplementedArtifact
 	presignUploadPart, completeMultipartUpload, abortMultipartUpload := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	listObjectsS3, downloadObjectS3 := notImplementedArtifact, notImplementedArtifact
+	uploadObjectS3, deleteObjectS3, statObjectS3 := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	if deps.Handler != nil {
 		listBuckets, createBucket, getBucket, updateBucket, deleteBucket =
 			deps.Handler.ListBuckets, deps.Handler.CreateBucket, deps.Handler.GetBucket, deps.Handler.UpdateBucket, deps.Handler.DeleteBucket
@@ -298,6 +316,8 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 		presignUploadPart, completeMultipartUpload, abortMultipartUpload =
 			deps.Handler.PresignUploadPart, deps.Handler.CompleteMultipartUpload, deps.Handler.AbortMultipartUpload
 		listObjectsS3, downloadObjectS3 = deps.Handler.ListObjectsS3, deps.Handler.DownloadObjectS3
+		uploadObjectS3, deleteObjectS3, statObjectS3 =
+			deps.Handler.UploadObjectS3, deps.Handler.DeleteObjectS3, deps.Handler.StatObjectS3
 	}
 
 	r.Group(func(r chi.Router) {
@@ -364,6 +384,20 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 		// listing and as the native download route — reading an object's
 		// bytes is the same act as reading its metadata.
 		r.With(viewByQueryProject).Get("/artifacts/s3/{bucket}/*", downloadObjectS3)
+
+		// The object write verbs, on the same wildcard-key path as the read.
+		// They complete the surface the SDK speaks: upload_artifact_s3 PUTs
+		// raw bytes, delete_artifact_s3 DELETEs, head_artifact_s3 HEADs for
+		// existence (elitea-sdk client.py:1123, :1186, :1206).
+		//
+		// The permission tiers mirror the native object plane exactly —
+		// upload is `create`, delete is `delete`, and an existence check is
+		// `view` because it reveals only what the native HEAD (statObject)
+		// already reveals at the same tier. A write authorized by `view`
+		// would make this surface strictly weaker than /api/v2.
+		r.With(createByQueryProject).Put("/artifacts/s3/{bucket}/*", uploadObjectS3)
+		r.With(deleteByQueryProject).Delete("/artifacts/s3/{bucket}/*", deleteObjectS3)
+		r.With(viewByQueryProject).Head("/artifacts/s3/{bucket}/*", statObjectS3)
 	})
 }
 

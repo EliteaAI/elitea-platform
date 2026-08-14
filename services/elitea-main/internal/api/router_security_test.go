@@ -169,6 +169,15 @@ var artifactRoutePermissions = []artifactRoutePermission{
 	// project and therefore the same risk, and it carries bytes rather than
 	// metadata, so it is the one that must not be a softer way in.
 	{method: http.MethodGet, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionView},
+	// The S3-shaped write verbs. Same query-parameter project, same risk, and
+	// higher stakes than the reads: an unauthenticated or unpermissioned
+	// caller reaching these would not merely read another tenant's artifacts
+	// but create or destroy them. Their permission tiers mirror the native
+	// object plane exactly — upload is create, delete is delete, an existence
+	// check is view.
+	{method: http.MethodPut, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionCreate},
+	{method: http.MethodDelete, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionDelete},
+	{method: http.MethodHead, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionView},
 }
 
 // allArtifactPermissions is used where a test wants authorization to be a
@@ -241,6 +250,15 @@ func artifactJSONBody(body string) func(t *testing.T) (io.Reader, string) {
 	}
 }
 
+// artifactRawBody returns a body-builder for a raw (non-multipart) request
+// body — the shape the SDK's S3 PUT sends (requests.put(url, data=data)),
+// where the native upload route sends multipart/form-data.
+func artifactRawBody(body string) func(t *testing.T) (io.Reader, string) {
+	return func(t *testing.T) (io.Reader, string) {
+		return strings.NewReader(body), "application/octet-stream"
+	}
+}
+
 // artifactMultipartUploadBody builds a genuine multipart/form-data body with
 // a "file" field carrying a filename, matching what UploadObject
 // (internal/api/v2/artifacts/objects.go) requires before it ever reaches the
@@ -302,6 +320,18 @@ var artifactSuccessCases = []artifactSuccessCase{
 	// 404'd, which the SDK logs and swallows — leaving an index run that
 	// listed the right files and indexed every one of them empty.
 	{desc: "download object (s3)", method: http.MethodGet, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionView, wantStatus: http.StatusOK},
+	// The write verbs, at their real root-level paths. Before these routes
+	// existed each of these requests 404'd, which the SDK turns into an
+	// unactionable "S3 error: HTTP_404" (upload/delete) or a plain
+	// {"exists": False} (head) — the last of which is the dangerous one, since
+	// it reads as "nothing is there" rather than "the server has no such
+	// route". No overwrite parameter appears here, unlike the native upload
+	// case above: an S3 PUT is an upsert by contract, so it must reach a 200
+	// even though alwaysSucceedsArtifactStore.Stat reports the key as already
+	// present.
+	{desc: "upload object (s3)", method: http.MethodPut, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionCreate, wantStatus: http.StatusOK, newBody: artifactRawBody("payload")},
+	{desc: "delete object (s3)", method: http.MethodDelete, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionDelete, wantStatus: http.StatusNoContent},
+	{desc: "stat object (s3)", method: http.MethodHead, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionView, wantStatus: http.StatusOK},
 }
 
 // TestArtifactRoutesSucceedWithExactRequiredPermission proves S11's second

@@ -306,6 +306,99 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// resolveObjectSizeLimit reads the project's storage policy and derives the
+// per-object byte cap from it, in the precedence S12 fixed: an explicit
+// project policy first, then ARTIFACT_MAX_OBJECT_BYTES, then the legacy
+// 150 MiB default. The policy itself is returned alongside because the
+// caller needs its MaxTotalBytes for the post-write quota check, and reading
+// it twice would let the two halves of the same decision disagree.
+//
+// Shared by both upload representations — the native multipart route
+// (UploadObject) and the S3-shaped raw-body one (UploadObjectS3, s3.go) — so
+// the S3 verb cannot become a way to write past a limit the native route
+// enforces.
+func (h *Handler) resolveObjectSizeLimit(ctx context.Context, projectID int64) (repos.ProjectStoragePolicy, int64, error) {
+	policy, err := h.repo.GetProjectStoragePolicy(ctx, projectID)
+	if err != nil {
+		return repos.ProjectStoragePolicy{}, 0, err
+	}
+	maxObjectBytes := defaultMaxObjectBytes
+	if policy.MaxObjectBytes != nil {
+		maxObjectBytes = *policy.MaxObjectBytes
+	} else if envLimit, ok := artifactMaxObjectBytesFromEnv(); ok {
+		maxObjectBytes = envLimit
+	}
+	return policy, maxObjectBytes, nil
+}
+
+// storeObjectInput is everything storeObject needs that the two upload
+// representations resolve differently: only how the bytes and the key are
+// carried on the wire differs between them (a multipart "file" part with a
+// Content-Disposition filename versus a raw body with the key in the path).
+type storeObjectInput struct {
+	projectID   int64
+	bucketRow   repos.BucketRow
+	ref         storage.ObjectRef
+	body        io.Reader
+	contentType string
+	policy      repos.ProjectStoragePolicy
+}
+
+// storeObject performs the write half shared by both upload representations:
+// the streaming Put, the object's metadata row, and the project-wide quota
+// check with its two-part rollback. Everything that decides whether bytes
+// survive a request lives here, so the S3 verb cannot silently skip the
+// quota accounting the native route takes seriously.
+//
+// Like streamObject, it writes nothing itself: on failure it returns a code
+// in THIS package's vocabulary and the caller renders it in its own (the
+// native artifact codes, or the S3 codes the SDK can phrase). A non-empty
+// code means nothing has been written to the response yet.
+//
+// The caller has already resolved and authorized the project, confirmed the
+// bucket exists, validated the key, and wrapped the body in
+// http.MaxBytesReader — the cap can only be enforced where the raw
+// http.Request is in scope, which is the caller.
+//
+// The quota check runs after the write, not before, because the object's
+// exact byte length isn't known until the stream has been fully read.
+func (h *Handler) storeObject(ctx context.Context, in storeObjectInput) (storage.ObjectInfo, string, string) {
+	info, err := h.store.Put(ctx, in.ref, in.body, storage.PutOptions{
+		ContentType:   in.contentType,
+		ContentLength: -1,
+	})
+	if err != nil {
+		if isMaxBytesError(err) {
+			return storage.ObjectInfo{}, "TooLarge", "object exceeds the project's max_object_bytes limit"
+		}
+		return storage.ObjectInfo{}, storageErrorCode(err), err.Error()
+	}
+
+	if _, err := h.repo.UpsertObject(ctx, repos.NewObjectInput{
+		BucketID:   in.bucketRow.ID,
+		Key:        info.Key,
+		ByteLength: info.Size,
+		MediaType:  in.contentType,
+		ExpiresAt:  in.bucketRow.ExpiresAt,
+	}); err != nil {
+		return storage.ObjectInfo{}, "Internal", "record object metadata: " + err.Error()
+	}
+
+	if in.policy.MaxTotalBytes != nil {
+		total, err := h.repo.SumProjectBytes(ctx, in.projectID)
+		if err != nil {
+			return storage.ObjectInfo{}, "Internal", "sum project bytes: " + err.Error()
+		}
+		if total > *in.policy.MaxTotalBytes {
+			_ = h.repo.DeleteObjects(ctx, in.bucketRow.ID, []string{info.Key})
+			_ = h.store.Delete(ctx, in.ref)
+			return storage.ObjectInfo{}, "TooLarge", "upload would exceed the project's storage quota"
+		}
+	}
+
+	return info, "", ""
+}
+
 // UploadObject streams the multipart "file" part straight into
 // ObjectStore.Put. It deliberately avoids every net/http form-parsing helper
 // that buffers the body to memory or spills it to os.TempDir (ADR-0016) —
@@ -315,9 +408,8 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 // per-request read deadline, then — after a successful write — records the
 // object's metadata row (UpsertObject) and enforces the project-wide quota
 // against the resulting SumProjectBytes, rolling back both the physical
-// object and its metadata row on violation. The quota check runs after the
-// write, not before, because the object's exact byte length isn't known
-// until the stream has been fully read.
+// object and its metadata row on violation. That post-decode half lives in
+// storeObject above, shared with the S3-shaped PUT.
 func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseProjectID(r)
 	if !ok {
@@ -331,16 +423,10 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policy, err := h.repo.GetProjectStoragePolicy(r.Context(), projectID)
+	policy, maxObjectBytes, err := h.resolveObjectSizeLimit(r.Context(), projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Internal", "get project storage policy: "+err.Error())
 		return
-	}
-	maxObjectBytes := defaultMaxObjectBytes
-	if policy.MaxObjectBytes != nil {
-		maxObjectBytes = *policy.MaxObjectBytes
-	} else if envLimit, ok := artifactMaxObjectBytesFromEnv(); ok {
-		maxObjectBytes = envLimit
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxObjectBytes)
 
@@ -416,42 +502,17 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 		contentType = mimeFromExtension(filename)
 	}
 
-	info, err := h.store.Put(r.Context(), ref, part, storage.PutOptions{
-		ContentType:   contentType,
-		ContentLength: -1,
+	info, code, message := h.storeObject(r.Context(), storeObjectInput{
+		projectID:   projectID,
+		bucketRow:   bucketRow,
+		ref:         ref,
+		body:        part,
+		contentType: contentType,
+		policy:      policy,
 	})
-	if err != nil {
-		if isMaxBytesError(err) {
-			writeError(w, http.StatusRequestEntityTooLarge, "TooLarge", "object exceeds the project's max_object_bytes limit")
-			return
-		}
-		writeStorageError(w, err)
+	if code != "" {
+		writeError(w, statusForCode(code), code, message)
 		return
-	}
-
-	if _, err := h.repo.UpsertObject(r.Context(), repos.NewObjectInput{
-		BucketID:   bucketRow.ID,
-		Key:        info.Key,
-		ByteLength: info.Size,
-		MediaType:  contentType,
-		ExpiresAt:  bucketRow.ExpiresAt,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "record object metadata: "+err.Error())
-		return
-	}
-
-	if policy.MaxTotalBytes != nil {
-		total, err := h.repo.SumProjectBytes(r.Context(), projectID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Internal", "sum project bytes: "+err.Error())
-			return
-		}
-		if total > *policy.MaxTotalBytes {
-			_ = h.repo.DeleteObjects(r.Context(), bucketRow.ID, []string{info.Key})
-			_ = h.store.Delete(r.Context(), ref)
-			writeError(w, http.StatusRequestEntityTooLarge, "TooLarge", "upload would exceed the project's storage quota")
-			return
-		}
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{

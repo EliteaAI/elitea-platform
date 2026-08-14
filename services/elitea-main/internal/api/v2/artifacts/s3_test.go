@@ -31,6 +31,11 @@ func newS3TestRouter(h *artifacts.Handler) chi.Router {
 	// internal/api/router.go): a trailing wildcard, so a key containing
 	// slashes is one key rather than an unmatched path.
 	r.Get("/artifacts/s3/{bucket}/*", h.DownloadObjectS3)
+	// The write verbs share that wildcard path exactly as production mounts
+	// them, so a key containing slashes is one key for every verb.
+	r.Put("/artifacts/s3/{bucket}/*", h.UploadObjectS3)
+	r.Delete("/artifacts/s3/{bucket}/*", h.DeleteObjectS3)
+	r.Head("/artifacts/s3/{bucket}/*", h.StatObjectS3)
 	return r
 }
 

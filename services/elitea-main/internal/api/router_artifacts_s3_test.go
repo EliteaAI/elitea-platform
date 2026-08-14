@@ -2,8 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
@@ -226,4 +228,167 @@ func TestS3ListingIsMountedAtRootNotUnderAPIV2(t *testing.T) {
 			t.Fatalf("the listing answered under /api/v2, where the SDK never looks; body=%s", rec.Body.String())
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// The S3-shaped WRITE verbs. Everything above applies to them and more: a
+// query parameter that is trusted as an authorization claim on a read leaks
+// another tenant's artifacts, but on a write it lets one tenant create or
+// destroy another's.
+// ---------------------------------------------------------------------------
+
+// s3WriteVerbs is the write surface under test, with the permission the
+// router assigns each. Kept as a table so a verb added later without a
+// deliberate permission decision shows up as a compile-time gap here rather
+// than as a silently ungated route.
+var s3WriteVerbs = []struct {
+	name       string
+	method     string
+	permission string
+	// wantStatus is what the real handler chain returns once RBAC allows the
+	// request through (alwaysSucceedsArtifactRepo/Store answer for anything).
+	wantStatus int
+	body       string
+}{
+	{name: "PUT", method: http.MethodPut, permission: artifactPermissionCreate, wantStatus: http.StatusOK, body: "payload"},
+	{name: "DELETE", method: http.MethodDelete, permission: artifactPermissionDelete, wantStatus: http.StatusNoContent},
+	{name: "HEAD", method: http.MethodHead, permission: artifactPermissionView, wantStatus: http.StatusOK},
+}
+
+func newS3WriteRequest(method, target, body string) *http.Request {
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := testAuthHeader(httptest.NewRequest(method, target, reader))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+	return req
+}
+
+// TestS3WriteVerbsRefuseAnotherProjectsBucket is the central authorization
+// claim for the write half. The principal is genuinely entitled to project 7
+// and holds every permission the routes require — the only thing that changes
+// between the subtests is the project_id in the query string.
+//
+// alwaysSucceedsArtifactRepo/Store answer for ANY project, so the handler
+// itself would happily write into (or delete out of) project 8. That is what
+// makes this meaningful: a 403 here can only come from the RBAC gate in front
+// of the handler, and if that gate were dropped — or given the path-based
+// extractor, which finds no {projectID} param and therefore gates nothing —
+// this would be a 200 that had actually modified another tenant's bucket.
+func TestS3WriteVerbsRefuseAnotherProjectsBucket(t *testing.T) {
+	for _, verb := range s3WriteVerbs {
+		t.Run(verb.name, func(t *testing.T) {
+			router := newS3ListingRouter(fakePermissionResolver{
+				granted:    allArtifactPermissions,
+				forProject: "7",
+			})
+
+			t.Run("own project is allowed", func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, newS3WriteRequest(verb.method, "/artifacts/s3/reports/folder/sub/file.txt?project_id=7", verb.body))
+				if rec.Code != verb.wantStatus {
+					t.Fatalf("status = %d, want %d for the caller's own project; body=%s", rec.Code, verb.wantStatus, rec.Body.String())
+				}
+			})
+
+			t.Run("another project is refused", func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, newS3WriteRequest(verb.method, "/artifacts/s3/reports/folder/sub/file.txt?project_id=8", verb.body))
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403 — the query parameter must not be trusted as an authorization claim; body=%s",
+						rec.Code, rec.Body.String())
+				}
+			})
+		})
+	}
+}
+
+// TestS3WriteVerbsRejectMalformedProjectID proves each write route's extractor
+// fails closed independently. It matters per-route because each is its own
+// mount: only a test that names this method proves the gate was applied to it.
+func TestS3WriteVerbsRejectMalformedProjectID(t *testing.T) {
+	// The resolver grants everything, so a 403 can only come from the
+	// extractor rejecting the value, never from a missing grant.
+	router := newS3ListingRouter(fakePermissionResolver{granted: allArtifactPermissions})
+
+	for _, verb := range s3WriteVerbs {
+		for _, query := range []string{
+			"",              // absent entirely
+			"?project_id=",  // present but empty
+			"?project_id=0", // not positive
+			"?project_id=-1",
+			"?project_id=01", // non-canonical leading zero
+			"?project_id=abc",
+		} {
+			t.Run(verb.name+" project_id="+query, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, newS3WriteRequest(verb.method, "/artifacts/s3/reports/a.txt"+query, verb.body))
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403 for a malformed project id; body=%s", rec.Code, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// TestS3WriteVerbsRequireTheirOwnPermissionTier is the "a write must not be
+// authorized by a view permission" claim, stated exhaustively: for every
+// (verb, single granted permission) pair, the request succeeds if and only if
+// the granted permission is the one that verb requires.
+//
+// The view-only row is the one that matters most — before these routes
+// existed the only S3 gate in the router was `view`, so reusing it here would
+// have made an agent that can merely read a project's artifacts able to
+// overwrite and delete them. The delete/create rows are the other half: they
+// forbid the two write tiers from standing in for each other.
+func TestS3WriteVerbsRequireTheirOwnPermissionTier(t *testing.T) {
+	const target = "/artifacts/s3/reports/folder/sub/file.txt?project_id=1"
+
+	for _, verb := range s3WriteVerbs {
+		for _, granted := range allArtifactPermissions {
+			wantStatus := http.StatusForbidden
+			if granted == verb.permission {
+				wantStatus = verb.wantStatus
+			}
+			t.Run(verb.name+" with "+granted, func(t *testing.T) {
+				router := newS3ListingRouter(fakePermissionResolver{granted: []string{granted}})
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, newS3WriteRequest(verb.method, target, verb.body))
+				if rec.Code != wantStatus {
+					t.Fatalf("granted %q on %s: status = %d, want %d; body=%s",
+						granted, verb.name, rec.Code, wantStatus, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// TestS3WriteVerbsAreMountedAtRootNotUnderAPIV2 pins each write verb's prefix
+// and its wildcard key capture — the two ways a route can be mounted wrong.
+// Both produce a 404 the SDK cannot act on, and for HEAD specifically a 404 is
+// not an error at all: head_artifact_s3 reports {"exists": False}, so a
+// missing route reads as "the file is not there" and an agent's next step
+// proceeds on a false premise.
+func TestS3WriteVerbsAreMountedAtRootNotUnderAPIV2(t *testing.T) {
+	router := newS3ListingRouter(fakePermissionResolver{granted: allArtifactPermissions})
+
+	for _, verb := range s3WriteVerbs {
+		t.Run(verb.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, newS3WriteRequest(verb.method, "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", verb.body))
+			if rec.Code != verb.wantStatus {
+				t.Fatalf("root path: status = %d, want %d at the path the SDK actually requests; body=%s",
+					rec.Code, verb.wantStatus, rec.Body.String())
+			}
+
+			underAPIV2 := httptest.NewRecorder()
+			router.ServeHTTP(underAPIV2, newS3WriteRequest(verb.method, "/api/v2/artifacts/s3/reports/file.txt?project_id=1", verb.body))
+			if underAPIV2.Code == verb.wantStatus {
+				t.Fatalf("the verb answered under /api/v2, where the SDK never looks; body=%s", underAPIV2.Body.String())
+			}
+		})
+	}
 }
