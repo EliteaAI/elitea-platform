@@ -152,10 +152,11 @@ func New(pool *pgxpool.Pool, migrator TenantMigrator, logger *slog.Logger, optio
 // Provision creates the project row, its tenant schema, its tenant migration
 // state and its RBAC rows, then marks it created.
 //
-// On any step failure it runs the completed steps' compensations in reverse and
-// returns the error together with both status lists, so the caller can report
-// what was attempted and what was undone — the information AdminAPI.post's 400
-// branch carries.
+// On any step failure it compensates every ATTEMPTED step in reverse — the one
+// that failed included, because a step can fail halfway through its own work —
+// and returns the error together with both status lists, so the caller can
+// report what was attempted and what was undone. That is the information
+// AdminAPI.post's 400 branch carries.
 func (p *Provisioner) Provision(ctx context.Context, request Request) (Result, error) {
 	if strings.TrimSpace(request.Name) == "" {
 		return Result{}, ErrNameRequired
