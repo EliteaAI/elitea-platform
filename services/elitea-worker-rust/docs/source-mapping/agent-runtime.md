@@ -47,6 +47,30 @@ message fields.
 | Python worker `handlers/agent_events.py::CurrentAgentNodeEventCallback` | Ordered current-compatible events, pause projection, terminal browser artifact | `src/agents/events.rs::{AgentEventProjector,ProjectedAgentEventBatch,CompletedAgentBrowserOutput}` | ADK `Event` is semantic input only; Elitea owns browser compatibility, identity and durability | `src/agents/events_tests.rs`: cumulative/delta ordinary text, content-less ADK SSE finish, thinking, multiple completed turns through EOS, explicit terminal-output selection, invocation substitution, state-only non-completion, artifact/tool/provider fail-closed and redacted-error corpus; full differential HITL/MCP/tool/skill corpus remains planned | Foundation: a closed, capability-disabled ordinary root-text profile emits `agent_start`, ordered LLM start/chunk/end and `partial_message`; only an explicit sanitized completion selected after stream EOS can emit optional `pipeline_finish`, `agent_response` and `full_message`. It does not infer an application result from ADK's last model message. Each ADK event produces at most four inline values and the future lifecycle must durably ACK the whole batch before polling ADK again. Invocation ID, author, branch, event ID, part count and current 64 KiB codec bounds are enforced. Function calls/results/progress, artifacts, provider errors, transfers/routes/escalation, confirmation/HITL, MCP auth, citations, compaction and non-root branches fail closed without exposing payloads. State-only deltas may update ADK state but cannot become a browser completion. Production completion construction, skills metadata sanitization and progress output remain gates; this is not conflated with the generic codec |
 | `libs/proto/elitea/runtime/v1/node_event.proto`, Python `protocol/node_event.py`, and Main `runtimegrpc/nodeevent/codec.go` | Exact 13-field browser event, arbitrary JSON fragments, defaults, bounds and Go escaping | `src/protocol/node_event.rs`, closed rules in `src/protocol/wire.rs` | None | `tests/node_event_contract.rs`, existing two-case/36-type corpus, Python exact vectors and malformed/mutation cases | Implemented generic codec; unknown protobuf tags and noncanonical replay bytes intentionally fail earlier in Rust. Rust retains compact raw fragment number/escape spellings like authoritative Go `json.Compact`; Python currently normalizes those spellings while preserving semantics |
 
+### Browser SSE envelope
+
+The current UI contract is LangChain-inspired but Elitea-owned; workers do not
+send raw LangChain or ADK custom-event JSON to browsers. Python
+`CurrentAgentNodeEventCallback._emit` first builds the bounded current
+`NodeEventV1` JSON object. Rust encodes the same protobuf inside a nonterminal
+`ExecutionOutputFrameV1`. Go Main then:
+
+1. validates and encodes the protobuf in
+   `internal/transport/runtimegrpc/nodeevent/codec.go`;
+2. claim/fence-checks and atomically stores the browser JSON as an
+   `execution.node_event` replay row in
+   `internal/infra/db/repos/node_events.go`; and
+3. writes `id: <cursor>`, `event: execution.node_event`, and the compact current
+   NodeEvent JSON as the SSE `data:` value from
+   `internal/api/v2/executions/events.go::writeDurableEvent`.
+
+ADK graph `TaskContext::emit(StreamEvent::custom(...))`, `NodeOutput.events`,
+and `ToolContext::emit_progress` are useful semantic inputs, including for the
+later indexing slice. They still require an allowlisted Rust adapter before
+this data plane. In particular, functional `TaskContext::emit` uses Tokio
+broadcast and has no durable/backpressure guarantee, so it cannot replace the
+Elitea spool, Main ACK, replay repository, or SSE cursor.
+
 ### Intentional NodeEvent codec deviations
 
 The committed Python and Go codecs disagree on noncanonical-but-valid JSON
