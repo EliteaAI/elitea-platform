@@ -221,6 +221,16 @@ func (p *Provisioner) markCreated(ctx context.Context, projectID int64) error {
 
 // compensate undoes the steps that ran, in reverse order.
 //
+// EVERY ATTEMPTED STEP IS COMPENSATED, including the one that failed. This is
+// not defensive padding — it is the difference between a clean rollback and a
+// surviving tenant. project_schema creates the schema and THEN applies the
+// corpus; when the corpus fails, the schema is already there while the step
+// reports failure. Compensating only the steps that reported success left that
+// schema behind, which the integration test caught. pylon appends each step to
+// its progress list BEFORE calling create for the same reason, so this matches
+// the reference as well as being correct. Every remove is written to tolerate a
+// step that never ran.
+//
 // Unlike pylon's rollback loop — which has no per-step try/except, so the first
 // undo that raises aborts every remaining undo and discards the progress report
 // — every compensation here is isolated. One failing undo cannot strand the
@@ -234,18 +244,16 @@ func (p *Provisioner) compensate(ctx context.Context, state *provisionState, att
 	// half-created. WithoutCancel keeps the deadline off but the values on.
 	ctx = context.WithoutCancel(ctx)
 
-	completed := make(map[string]struct{}, len(attempted))
+	touched := make(map[string]struct{}, len(attempted))
 	for _, status := range attempted {
-		if status.OK != nil && *status.OK {
-			completed[status.Step] = struct{}{}
-		}
+		touched[status.Step] = struct{}{}
 	}
 
 	steps := createSteps()
 	rollback := make([]StepStatus, 0, len(steps))
 	for i := len(steps) - 1; i >= 0; i-- {
 		step := steps[i]
-		if _, ok := completed[step.name]; !ok {
+		if _, ok := touched[step.name]; !ok {
 			continue
 		}
 		status := StepStatus{Step: step.name, Initialized: true}

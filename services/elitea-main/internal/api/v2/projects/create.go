@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -173,6 +174,52 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		RollbackSteps: nonNilSteps(result.RollbackSteps),
 		ID:            &projectID,
 	})
+}
+
+// DeleteProjectPermission gates the delete route. Same provenance and the same
+// administration-mode-only grant as CreateProjectPermission.
+const DeleteProjectPermission = "projects.projects.project.delete"
+
+// deleteProjectResponse is `delete_project`'s body: one status per step, under
+// the key `steps`.
+type deleteProjectResponse struct {
+	Steps []projectprovisioning.StepStatus `json:"steps"`
+}
+
+// DeleteProject serves `DELETE /api/v2/projects/project/{mode}/{projectID}`.
+//
+// Destructive and irreversible: it drops the tenant schema with CASCADE. It is
+// gated on the same administration-mode permission the reference declares, and
+// answers 404 for any other `{mode}`.
+func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
+	if chi.URLParam(r, "mode") != administrationMode {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	if h.provisioner == nil {
+		http.Error(w, `{"error":"service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	projectID, err := strconv.ParseInt(chi.URLParam(r, "projectID"), 10, 64)
+	if err != nil || projectID <= 0 {
+		http.Error(w, `{"error":"invalid project id"}`, http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.provisioner.Deprovision(r.Context(), projectID)
+	switch {
+	case errors.Is(err, projectprovisioning.ErrProjectNotFound):
+		http.Error(w, `{"error":"project not found"}`, http.StatusNotFound)
+		return
+	case err != nil:
+		// The reference answers 200 even when every step failed. Reporting a
+		// project that still exists as deleted is the failure mode this route
+		// exists to avoid, so the per-step detail is returned with a 500.
+		writeJSON(w, http.StatusInternalServerError,
+			deleteProjectResponse{Steps: nonNilSteps(result.RollbackSteps)})
+		return
+	}
+	writeJSON(w, http.StatusOK, deleteProjectResponse{Steps: nonNilSteps(result.RollbackSteps)})
 }
 
 // limits applies ProjectCreatePD's defaults to the fields the body omitted.

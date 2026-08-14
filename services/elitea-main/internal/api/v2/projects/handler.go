@@ -27,6 +27,7 @@ type Handler struct {
 // this package does not depend on the provisioner's concrete constructor.
 type ProjectProvisioner interface {
 	Provision(ctx context.Context, request projectprovisioning.Request) (projectprovisioning.Result, error)
+	Deprovision(ctx context.Context, projectID int64) (projectprovisioning.Result, error)
 }
 
 // WithProvisioner supplies the project-create pipeline. Without it the create
@@ -94,6 +95,11 @@ func (h *Handler) Routes() chi.Router {
 	r.With(apimw.RequireCentralPermissions(
 		h.resolver, auth.PermissionModeAdministration, CreateProjectPermission,
 	)).Post("/project/{mode}", h.CreateProject)
+	// Project DELETE (#333), the symmetric half. Same central gate, same mode
+	// restriction. It drops the tenant schema with CASCADE.
+	r.With(apimw.RequireCentralPermissions(
+		h.resolver, auth.PermissionModeAdministration, DeleteProjectPermission,
+	)).Delete("/project/{mode}/{projectID}", h.DeleteProject)
 	// The three group WRITES, gated on the permissions their pylon originals
 	// declare — `projects.projects.groups.edit` for the set-replacement PUT
 	// (groups.py) and `projects.projects.group.create` / `.delete` for the
