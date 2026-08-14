@@ -8,6 +8,8 @@
  *   chat-stream   — the #284 chat journey, against the FULL standalone stack
  *                   (runtime plane + worker + mock LLM); see that project's
  *                   own note and `scripts/chat-stream-e2e.sh`
+ *   index-stream  — the #93 index journey, same stack plus `seed-index`;
+ *                   see `scripts/index-stream-e2e.sh`
  *
  * The `setup` project runs once before the browser projects; each browser
  * project depends on it so the storageState files are always fresh.
@@ -155,7 +157,47 @@ export default defineConfig({
         launchOptions: CHROMIUM_LAUNCH_OPTIONS,
       },
       dependencies: ['setup'],
-      testMatch: /streaming\/.+\.spec\.ts/,
+      // Pinned to `chat.*` rather than all of `streaming/**`: this directory now
+      // holds two journeys with DIFFERENT seeding needs, and a broad match here
+      // would hand the index journey to a runner that never ran `seed-index`.
+      testMatch: /streaming\/chat\..+\.spec\.ts/,
+    },
+
+    /*
+     * ── index-stream (#93 Surface A) — the index definition-of-done journey ──
+     *
+     * Its own project for the same reason `chat-stream` is: it needs the FULL
+     * standalone stack (runtime plane + agent worker), plus the `seed-index`
+     * rows. `scripts/index-stream-e2e.sh` provisions both and points this
+     * project at the result, so it never runs by accident against a stack that
+     * would fail it for the wrong reason.
+     *
+     * Shares `STORAGE_STATE.chat`: that persona OWNS a personal project, and
+     * the index permissions — including `models.applications.index_meta.details`,
+     * which project 1 does NOT grant — are seeded there.
+     *
+     * Chromium only: this asserts a transport and a render, not a rasteriser.
+     */
+    {
+      name: 'index-stream',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.chat,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: /streaming\/index\..+\.spec\.ts/,
+      /*
+       * Serial, overriding the top-level `fullyParallel`. These two tests drive
+       * the SAME toolkit through the SAME single-consumer execution plane, so
+       * running them against each other measures the stack's concurrency, not
+       * the feature. Measured on the standalone stack: with the suite spread
+       * over three workers, elitea-main's pool saturated and
+       * `list project configurations` timed out, which surfaced as the start
+       * POST never being answered — a 40s `waitForResponse` timeout that reads
+       * exactly like "the Index button does nothing". Serially, 3x3 green.
+       */
+      fullyParallel: false,
     },
   ],
 
