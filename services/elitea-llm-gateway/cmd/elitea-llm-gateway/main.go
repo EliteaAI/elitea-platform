@@ -191,6 +191,27 @@ func main() {
 	// endpoints — see issue #242. govStore is nil when enforcement is
 	// disabled, in which case the route reports ready unconditionally.
 	//
+	// Issue #304: "unconditionally" was wrong for one specific case — NATS
+	// CONFIGURED but never reachable, so server.New left the client nil and
+	// govStore was never built. That pod serves /llm with no budget gate and
+	// no billing for the whole life of the process (server.New connects once;
+	// nats.MaxReconnects(-1) only ever resurrects a connection that succeeded
+	// at least once, and there is no later re-wire), yet reported ready.
+	//
+	// This is NOT a new fail-open/closed policy — it removes an inconsistency.
+	// Lose NATS one second AFTER boot and Ping already fails, so /readyz
+	// already answers 503 and the pod already drains, in EVERY fail mode. Lose
+	// it one second BEFORE boot and the same outage produced the opposite
+	// outcome: ready, serving, unmetered. The gate below makes the two agree.
+	//
+	// Scoped to GATEWAY_NATS_URL being set, so the NATS-less dev/CI posture
+	// (URL unset ⇒ enforcement deliberately off) still reports ready.
+	unwired := budgetEnforcementUnwired(cfg, govStore)
+	if unwired {
+		logger.Error("READINESS GATED: budget enforcement is configured but was not wired; /readyz will report not_ready",
+			"reason", budgetDisabledReason(cfg, nc, pool))
+	}
+	//
 	// Passing govStore straight into the pinger parameter puts a typed nil
 	// *GovernanceStore into a non-nil interface, so makeReadyzHandler's
 	// `p != nil` guard stays true and this dispatches to Ping. That used to
@@ -200,7 +221,7 @@ func main() {
 	// which is the one guard this needs: any future caller that boxes a typed
 	// nil *GovernanceStore into an interface is covered too, not just this
 	// call site. Measured against the standalone compose stack.
-	mux.HandleFunc("/readyz", makeReadyzHandler(govStore))
+	mux.HandleFunc("/readyz", makeReadyzHandler(govStore, unwired))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert
@@ -482,6 +503,24 @@ func buildGovernance(
 	return govStore, calc, nil
 }
 
+// budgetEnforcementUnwired reports whether this process was CONFIGURED to
+// enforce budgets but could not wire enforcement at startup (issue #304).
+//
+// GATEWAY_NATS_URL being set is the operator's statement that this deployment
+// enforces budgets; a nil govStore is the statement that it does not. When the
+// two disagree the pod is serving /llm with no budget gate and no billing, and
+// it will keep doing so until it is restarted — server.New dials NATS exactly
+// once, and nothing rebuilds govStore afterwards. Callers use this to gate
+// /readyz so the pod drains instead of silently serving unmetered traffic.
+//
+// govStore is a concrete pointer rather than an interface on purpose: the
+// caller's variable is a typed *governance.GovernanceStore, and taking it as
+// an interface here would reintroduce the typed-nil-in-non-nil-interface trap
+// that already produced a /readyz panic once.
+func budgetEnforcementUnwired(cfg config.Config, govStore *governance.GovernanceStore) bool {
+	return cfg.NATSURL != "" && govStore == nil
+}
+
 // budgetDisabledReason returns a human-readable explanation for why enforcement
 // is off (for the startup warning log line).
 func budgetDisabledReason(cfg config.Config, nc server.NATSClient, pool *pgxpool.Pool) string {
@@ -589,8 +628,23 @@ func livenessHandler(w http.ResponseWriter, _ *http.Request) {
 // NATS circuit breaker (govStore); a nil p means budget enforcement is
 // disabled, so readiness is unconditional. This is the handler that used to
 // be mounted at /healthz.
-func makeReadyzHandler(p pinger) http.HandlerFunc {
+//
+// enforcementUnwired (issue #304) is the one case a nil p must NOT be read as
+// "deliberately disabled": NATS was configured, the connect failed at boot,
+// and nothing re-wires enforcement for the life of the process. It is decided
+// once at startup because that is exactly how long it stays true — a nil
+// govStore never becomes non-nil. Checked BEFORE the p == nil guard because
+// the disabled path passes a typed-nil *GovernanceStore, which is non-nil as
+// an interface and whose Ping is nil-receiver safe and returns success.
+func makeReadyzHandler(p pinger, enforcementUnwired bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if enforcementUnwired {
+			writeHealthJSON(w, http.StatusServiceUnavailable, healthStatus{
+				Status: "not_ready",
+				Checks: map[string]string{"budget_enforcement": "unwired"},
+			})
+			return
+		}
 		if p == nil {
 			writeHealthJSON(w, http.StatusOK, healthStatus{Status: "ready"})
 			return

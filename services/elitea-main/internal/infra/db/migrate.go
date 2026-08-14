@@ -5,22 +5,27 @@ import (
 	"embed"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// gatewayMigrations hold the LLM-gateway governance/budget/price-catalog schema
-// (BF0.4). Unlike the baseline migrations they are applied UNCONDITIONALLY —
-// they must land even on dump-loaded instances (where the p_% dump-guard skips
-// the baseline set), so every statement in them is idempotent
-// (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS).
+// gatewayMigrationPath is the LLM-gateway governance/budget/price-catalog
+// schema (BF0.4), inside the LEDGERED corpus.
 //
-//go:embed gateway_migrations/*.sql
-var gatewayMigrations embed.FS
+// It used to be a private directory under this package, applied only by
+// RunMigrations — i.e. only when ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA=true, which
+// production never sets. The Helm migration hook runs elitea-migrate, which
+// applies only the ledgered histories, so a Helm-deployed database never got
+// these tables while three services read them (issue #306). The DDL now lives
+// in migrations/shared/0067 and this file points at it, so the dev bootstrap
+// and the production migration apply the exact same bytes — a second copy is
+// how the two silently diverge.
+const gatewayMigrationPath = "shared/0067_gateway_budget_schema.sql"
 
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	// Skip the baseline migrations if the database already has tenant schemas
@@ -41,35 +46,34 @@ func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 	}
 
-	// Gateway migrations are idempotent and dump-guard-exempt (BF0.4).
-	return applyMigrationDir(ctx, pool, gatewayMigrations, "gateway_migrations")
+	// The gateway schema is idempotent and dump-guard-exempt (BF0.4): it must
+	// land even on dump-loaded instances, where the p_% guard above skipped the
+	// baseline set. Applying it here leaves NO ledger row — elitea-migrate will
+	// re-apply and record 0067 later, which is safe precisely because every
+	// statement in it is guarded.
+	gatewaySQL, err := GatewayMigrationSQL()
+	if err != nil {
+		return err
+	}
+	slog.Info("applying migration", "dir", "shared", "file", gatewayMigrationPath)
+	if _, err := pool.Exec(ctx, gatewaySQL); err != nil {
+		return fmt.Errorf("migrate: exec %s: %w", gatewayMigrationPath, err)
+	}
+	return nil
 }
 
-// GatewayMigrationSQL returns every gateway migration concatenated in apply
-// order.
+// GatewayMigrationSQL returns the gateway schema migration as SQL.
 //
 // It exists for integration tests that need the gateway budget tables:
-// applying the REAL migration means a schema change cannot pass a test against
+// reading the REAL migration means a schema change cannot pass a test against
 // a hand-copied DDL and then fail against production. Runtime code must call
 // RunMigrations instead — this returns SQL, it does not run it.
 func GatewayMigrationSQL() (string, error) {
-	entries, err := gatewayMigrations.ReadDir("gateway_migrations")
+	data, err := platformmigrations.Files.ReadFile(gatewayMigrationPath)
 	if err != nil {
-		return "", fmt.Errorf("migrate: read gateway_migrations: %w", err)
+		return "", fmt.Errorf("migrate: read %s: %w", gatewayMigrationPath, err)
 	}
-	var builder strings.Builder
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		data, err := gatewayMigrations.ReadFile("gateway_migrations/" + entry.Name())
-		if err != nil {
-			return "", fmt.Errorf("migrate: read %s: %w", entry.Name(), err)
-		}
-		builder.Write(data)
-		builder.WriteString("\n")
-	}
-	return builder.String(), nil
+	return string(data), nil
 }
 
 // applyMigrationDir executes every *.sql file in dir (lexical order) from fsys.
