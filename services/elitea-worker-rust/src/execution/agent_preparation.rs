@@ -209,9 +209,9 @@ impl PreparedAgentInvocation {
     /// operation carries this complete payload through to the exact native ADK
     /// submission boundary.
     #[allow(dead_code)] // Called by the next owned invocation coordinator.
-    pub(crate) fn into_authorization_candidate(
+    pub(crate) fn into_supervised_authorization(
         self,
-    ) -> InvocationAuthorizationCandidate<PreparedAgentAuthorizationPayload> {
+    ) -> (InvocationReservation, PreparedAgentAuthorization) {
         let Self {
             delivery,
             verified,
@@ -221,19 +221,68 @@ impl PreparedAgentInvocation {
             reservation,
             lease,
         } = self;
-        execution.bind_invocation(PreparedAgentAuthorizationPayload {
-            delivery,
-            verified,
-            request,
-            output_spool,
+        (
             reservation,
-            lease,
-        })
+            PreparedAgentAuthorization {
+                execution,
+                payload: PreparedAgentAuthorizationPayload {
+                    delivery,
+                    verified,
+                    request,
+                    output_spool,
+                    lease,
+                },
+            },
+        )
     }
 
     #[cfg(test)]
     pub(crate) fn into_test_cleanup(self) -> (InvocationReservation, ClaimLeaseMonitor) {
         (self.reservation, self.lease)
+    }
+}
+
+/// Unpolled authorization state transferred synchronously to the supervisor.
+///
+/// The claim is converted into an RPC candidate only on the owned task's first
+/// poll. If worker drain wins the synchronous transfer race, this complete
+/// state can instead close its lease and release the empty spool without ever
+/// attempting authorization.
+#[allow(dead_code)] // Consumed by the next supervised authorization coordinator.
+pub(crate) struct PreparedAgentAuthorization {
+    execution: LeaseMonitoredAgentExecution,
+    payload: PreparedAgentAuthorizationPayload,
+}
+
+impl PreparedAgentAuthorization {
+    #[allow(dead_code)] // Called only after synchronous supervisor ownership succeeds.
+    pub(crate) fn into_candidate(
+        self,
+    ) -> InvocationAuthorizationCandidate<PreparedAgentAuthorizationPayload> {
+        self.execution.bind_invocation(self.payload)
+    }
+
+    /// Close an operation rejected by the process supervisor before first poll.
+    #[allow(dead_code)] // Used by the next supervisor stop-race coordinator.
+    pub(crate) async fn close_no_ack(self) -> Option<ClaimLeaseError> {
+        let Self {
+            execution,
+            payload:
+                PreparedAgentAuthorizationPayload {
+                    delivery,
+                    verified,
+                    request,
+                    output_spool,
+                    lease,
+                },
+        } = self;
+        let lease_error = lease.close().await.err();
+        drop(output_spool);
+        drop(execution);
+        drop(request);
+        drop(verified);
+        drop(delivery);
+        lease_error
     }
 }
 
@@ -247,7 +296,6 @@ pub(crate) struct PreparedAgentAuthorizationPayload {
     request: AgentExecutionRequest,
     #[allow(dead_code)] // Consumed by the output coordinator after authorization.
     output_spool: PreparedAgentOutput,
-    reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,
 }
 
@@ -274,7 +322,6 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
             verified,
             request,
             output_spool,
-            reservation,
             lease,
         } = self;
         AuthorizedAgentRun {
@@ -283,7 +330,6 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
             request,
             output_authority,
             output: output_spool,
-            reservation,
             lease,
             permit,
         }
@@ -299,7 +345,6 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
             verified,
             request: _,
             output_spool,
-            reservation,
             lease,
         } = self;
         AgentFailureTerminal {
@@ -307,7 +352,6 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
             verified,
             output_authority,
             output: output_spool,
-            reservation,
             lease,
             proposed_failure: cause.runtime_failure_kind(),
         }
@@ -323,14 +367,12 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
             verified: _,
             request,
             output_spool,
-            reservation,
             lease,
         } = self;
         AgentAuthorizationUnknown {
             execution_kind: request.kind,
             authority,
             output: output_spool,
-            reservation,
             lease,
             error,
         }
@@ -349,35 +391,34 @@ pub(crate) struct AuthorizedAgentRun {
     request: AgentExecutionRequest,
     output_authority: AgentExecutionOutputAuthority,
     output: PreparedAgentOutput,
-    reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,
     permit: InvocationSubmissionPermit,
 }
 
+impl AuthorizedAgentRun {
+    #[must_use]
+    pub(crate) const fn execution_kind(&self) -> AgentExecutionKind {
+        self.request.kind
+    }
+}
+
 #[cfg(test)]
 impl AuthorizedAgentRun {
-    pub(crate) fn into_test_cleanup(
-        self,
-    ) -> (
-        AgentExecutionRequest,
-        InvocationReservation,
-        ClaimLeaseMonitor,
-    ) {
-        (self.request, self.reservation, self.lease)
+    pub(crate) fn into_test_cleanup(self) -> (AgentExecutionRequest, ClaimLeaseMonitor) {
+        (self.request, self.lease)
     }
 }
 
 /// Request-free cleanup ownership for an authorization RPC with unknown effect.
 ///
 /// The accepted claim can no longer create output or submission authority. The
-/// empty spool lock and capacity reservation remain owned until lease shutdown
-/// completes, while Redis remains deliberately unacknowledged for recovery.
+/// empty spool lock remains owned until lease shutdown completes, while the
+/// supervisor retains capacity and Redis remains deliberately unacknowledged.
 #[allow(dead_code)] // Consumed by the next supervised authorization coordinator.
 pub(crate) struct AgentAuthorizationUnknown {
     execution_kind: AgentExecutionKind,
     authority: InvocationAuthorizationNoAckAuthority,
     output: PreparedAgentOutput,
-    reservation: InvocationReservation,
     lease: ClaimLeaseMonitor,
     error: AgentControlError,
 }
@@ -398,14 +439,12 @@ impl AgentAuthorizationUnknown {
             execution_kind,
             authority,
             output,
-            reservation,
             lease,
             error,
         } = self;
         let lease_error = lease.close().await.err();
         drop(output);
         drop(authority);
-        drop(reservation);
         AgentAuthorizationUnknownCompletion {
             execution_kind,
             authorization_error: error,
@@ -464,16 +503,18 @@ impl PreInvocationTerminal {
         &self.cause
     }
 
-    pub(super) fn into_failure_terminal(self) -> AgentFailureTerminal {
-        AgentFailureTerminal {
-            delivery: self.delivery,
-            verified: self.verified,
-            output_authority: self.output_authority,
-            output: self.output_spool,
-            reservation: self.reservation,
-            lease: self.lease,
-            proposed_failure: self.cause.runtime_failure_kind(),
-        }
+    pub(super) fn into_failure_terminal(self) -> (AgentFailureTerminal, InvocationReservation) {
+        (
+            AgentFailureTerminal {
+                delivery: self.delivery,
+                verified: self.verified,
+                output_authority: self.output_authority,
+                output: self.output_spool,
+                lease: self.lease,
+                proposed_failure: self.cause.runtime_failure_kind(),
+            },
+            self.reservation,
+        )
     }
 
     #[cfg(test)]
@@ -503,14 +544,14 @@ impl PreInvocationTerminal {
 /// Sealed pre-authorization failure state consumed only by output delivery.
 ///
 /// The type exposes neither request input nor fence material. Keeping delivery,
-/// command, output, capacity and lease ownership together prevents a terminal
-/// from being published or retired under another admitted invocation.
+/// command, output and lease ownership together prevents a terminal from being
+/// published or retired under another admitted invocation. Capacity remains
+/// with either the pre-invocation caller or the process supervisor.
 pub(crate) struct AgentFailureTerminal {
     pub(super) delivery: RedisCommandDelivery,
     pub(super) verified: VerifiedAgentCommand,
     pub(super) output_authority: AgentExecutionOutputAuthority,
     pub(super) output: PreparedAgentOutput,
-    pub(super) reservation: InvocationReservation,
     pub(super) lease: ClaimLeaseMonitor,
     pub(super) proposed_failure: crate::protocol::output::RuntimeFailureKind,
 }
@@ -522,15 +563,9 @@ impl AgentFailureTerminal {
     ) -> (
         AgentExecutionKind,
         crate::protocol::output::RuntimeFailureKind,
-        InvocationReservation,
         ClaimLeaseMonitor,
     ) {
-        (
-            self.verified.kind(),
-            self.proposed_failure,
-            self.reservation,
-            self.lease,
-        )
+        (self.verified.kind(), self.proposed_failure, self.lease)
     }
 }
 

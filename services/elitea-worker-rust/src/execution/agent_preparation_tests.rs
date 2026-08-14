@@ -455,13 +455,14 @@ async fn authorization_carries_the_matching_prepared_request_to_submission() {
             prepared_for_authorization(Arc::clone(&control), Arc::clone(&state), &admission, kind)
                 .await;
 
+        let (reservation, prepared) = (*prepared).into_supervised_authorization();
         let decision = control
-            .authorize_agent_invocation((*prepared).into_authorization_candidate())
+            .authorize_agent_invocation(prepared.into_candidate())
             .await;
         let InvocationAuthorizationDecision::AuthorizedNow(authorized) = decision else {
             panic!("the fixture must authorize exactly once")
         };
-        let (request, reservation, lease) = authorized.into_test_cleanup();
+        let (request, lease) = authorized.into_test_cleanup();
         let observed_kind = request.kind;
         let request_kind = request.kind;
         assert_eq!(observed_kind, kind);
@@ -514,15 +515,16 @@ async fn every_non_authorized_outcome_is_closed_without_submission() {
             AgentExecutionKind::Application,
         )
         .await;
+        let (reservation, prepared) = (*prepared).into_supervised_authorization();
         let decision = control
-            .authorize_agent_invocation((*prepared).into_authorization_candidate())
+            .authorize_agent_invocation(prepared.into_candidate())
             .await;
 
-        let (observed_kind, failure, cleanup, error_retryable) = match decision {
+        let (observed_kind, failure, lease, error_retryable) = match decision {
             InvocationAuthorizationDecision::AlreadyAuthorized(terminal)
             | InvocationAuthorizationDecision::Rejected(terminal) => {
-                let (kind, failure, reservation, lease) = terminal.into_test_cleanup();
-                (kind, Some(failure), Some((reservation, lease)), None)
+                let (kind, failure, lease) = terminal.into_test_cleanup();
+                (kind, Some(failure), Some(lease), None)
             }
             InvocationAuthorizationDecision::Unknown(unknown) => {
                 assert!(matches!(unknown.error(), AgentControlError::Transport(_)));
@@ -551,10 +553,10 @@ async fn every_non_authorized_outcome_is_closed_without_submission() {
         if let Some(retryable) = error_retryable {
             assert!(retryable);
         }
-        if let Some((reservation, lease)) = cleanup {
+        if let Some(lease) = lease {
             lease.close().await.expect("lease close");
-            drop(reservation);
         }
+        drop(reservation);
         assert_eq!(admission.available_capacity(), 1);
     }
 }
@@ -578,13 +580,14 @@ async fn mixed_authorization_response_carries_payload_to_terminal_only() {
         AgentExecutionKind::Adhoc,
     )
     .await;
+    let (reservation, prepared) = (*prepared).into_supervised_authorization();
     let InvocationAuthorizationDecision::Rejected(terminal) = control
-        .authorize_agent_invocation((*prepared).into_authorization_candidate())
+        .authorize_agent_invocation(prepared.into_candidate())
         .await
     else {
         panic!("a mixed response must not mint submission authority")
     };
-    let (kind, failure, reservation, lease) = terminal.into_test_cleanup();
+    let (kind, failure, lease) = terminal.into_test_cleanup();
     assert_eq!(kind, AgentExecutionKind::Adhoc);
     assert_eq!(failure, RuntimeFailureKind::InvalidInput);
     lease.close().await.expect("lease close");

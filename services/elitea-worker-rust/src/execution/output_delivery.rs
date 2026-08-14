@@ -567,14 +567,20 @@ where
     T: AgentTerminalReplay + 'a,
     K: UnixMillisClock,
 {
-    publish_agent_failure_terminal(
-        control,
-        retirer,
-        replay,
-        terminal.into_failure_terminal(),
-        clock,
-        recovery_config,
-    )
+    let (terminal, reservation) = terminal.into_failure_terminal();
+    Box::pin(async move {
+        let result = publish_agent_failure_terminal(
+            control,
+            retirer,
+            replay,
+            terminal,
+            clock,
+            recovery_config,
+        )
+        .await;
+        drop(reservation);
+        result
+    })
 }
 
 /// Publish any sealed failure terminal created before native ADK submission.
@@ -603,7 +609,6 @@ where
             verified,
             output_authority,
             output,
-            reservation,
             lease,
             proposed_failure,
         } = terminal;
@@ -672,7 +677,6 @@ where
                 "claim lease supervision ended after failure terminal publication"
             );
         }
-        drop(reservation);
         result
     })
 }

@@ -10,29 +10,33 @@ use std::time::Duration;
 use async_trait::async_trait;
 use prost::Message;
 use ring::digest;
+use tokio::sync::{Semaphore, oneshot};
 use tonic::{Request, Response, Status};
 
 use super::agent_delivery::{FreshAgentDelivery, test_fresh_agent_delivery};
+use super::agent_invocation::{
+    AgentAuthorizationJob, AgentAuthorizationJobCompletion, AgentAuthorizedLifecycleCompletion,
+    AuthorizedAgentLifecycle,
+};
 use super::agent_lease::ClaimLeaseMonitorConfig;
 use super::agent_preparation::{
     AgentInputMaterializer, AgentPreparationConfig, AgentPreparationOutcome, PreInvocationTerminal,
     prepare_fresh_agent_invocation_with,
 };
 use super::invocation_admission::{InvocationAdmission, InvocationAdmissionConfig};
+use super::invocation_supervisor::InvocationSupervisor;
 use super::output_delivery::{
     AcceptedTerminalOutputRecovery, AgentOutputPreflight, AgentOutputPreflightError,
     AgentOutputPreflightKind, AgentOutputPreflightOutcome, AgentOutputRecoveryRequiredKind,
     AgentTerminalRecoveryConfig, AgentTerminalRecoveryError, AgentTerminalReplay,
-    publish_agent_failure_terminal, publish_pre_invocation_terminal, recover_accepted_terminal,
+    publish_pre_invocation_terminal, recover_accepted_terminal,
 };
 use crate::agents::AgentExecutionKind;
 use crate::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
     parse_and_verify_agent_command,
 };
-use crate::protocol::control::{
-    AgentControlClient, InvocationAuthorizationDecision, test_accepted_agent_claim,
-};
+use crate::protocol::control::{AgentControlClient, test_accepted_agent_claim};
 use crate::protocol::elitea::runtime::v1::{
     AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1,
     BeginExecutionDispositionV1, BeginExecutionRequestV1, BeginExecutionResponseV1,
@@ -241,7 +245,8 @@ impl AgentTerminalReplay for FakeReplay {
 struct RecoveryControl {
     trace: Arc<Mutex<Vec<&'static str>>>,
     settlement_fails: bool,
-    authorize_already: bool,
+    authorize_disposition: Option<AuthorizeInvocationDispositionV1>,
+    authorize_unavailable: bool,
     renew_fail_after: Option<usize>,
     renew_attempts: AtomicUsize,
     observe_states: Mutex<VecDeque<i32>>,
@@ -271,13 +276,17 @@ impl ControlRpc for RecoveryControl {
         &self,
         _request: Request<AuthorizeInvocationRequestV1>,
     ) -> Result<Response<AuthorizeInvocationResponseV1>, Status> {
-        assert!(
-            self.authorize_already,
-            "terminal recovery must not authorize"
-        );
         self.trace.lock().expect("trace").push("authorize");
+        if self.authorize_unavailable {
+            return Err(Status::unavailable(
+                "test authorization transport unavailable",
+            ));
+        }
+        let disposition = self
+            .authorize_disposition
+            .expect("terminal recovery must not authorize");
         Ok(Response::new(AuthorizeInvocationResponseV1 {
-            disposition: AuthorizeInvocationDispositionV1::AlreadyAuthorized as i32,
+            disposition: disposition as i32,
             rejection: None,
         }))
     }
@@ -390,7 +399,8 @@ fn recovery_control_with_policy(
             RecoveryControl {
                 trace,
                 settlement_fails,
-                authorize_already: false,
+                authorize_disposition: None,
+                authorize_unavailable: false,
                 renew_fail_after,
                 renew_attempts: AtomicUsize::new(0),
                 observe_states: Mutex::new(
@@ -410,15 +420,17 @@ fn recovery_control_with_policy(
     )
 }
 
-fn authorization_control(
+fn authorization_control_with_disposition(
     trace: Arc<Mutex<Vec<&'static str>>>,
+    disposition: AuthorizeInvocationDispositionV1,
 ) -> Arc<AgentControlClient<RecoveryControl>> {
     Arc::new(
         AgentControlClient::new(
             RecoveryControl {
                 trace,
                 settlement_fails: false,
-                authorize_already: true,
+                authorize_disposition: Some(disposition),
+                authorize_unavailable: false,
                 renew_fail_after: None,
                 renew_attempts: AtomicUsize::new(0),
                 observe_states: Mutex::new(VecDeque::new()),
@@ -431,6 +443,79 @@ fn authorization_control(
         )
         .expect("authorization control"),
     )
+}
+
+fn authorization_control(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+) -> Arc<AgentControlClient<RecoveryControl>> {
+    authorization_control_with_disposition(
+        trace,
+        AuthorizeInvocationDispositionV1::AlreadyAuthorized,
+    )
+}
+
+fn authorized_control(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+) -> Arc<AgentControlClient<RecoveryControl>> {
+    authorization_control_with_disposition(trace, AuthorizeInvocationDispositionV1::AuthorizedNow)
+}
+
+fn unavailable_authorization_control(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+) -> Arc<AgentControlClient<RecoveryControl>> {
+    Arc::new(
+        AgentControlClient::new(
+            RecoveryControl {
+                trace,
+                settlement_fails: false,
+                authorize_disposition: None,
+                authorize_unavailable: true,
+                renew_fail_after: None,
+                renew_attempts: AtomicUsize::new(0),
+                observe_states: Mutex::new(VecDeque::new()),
+            },
+            ControlGrpcConfig {
+                deadline: Duration::from_secs(1),
+                workload_session_id: "workload-1".to_owned(),
+                producer_id: "worker-1".to_owned(),
+            },
+        )
+        .expect("unavailable authorization control"),
+    )
+}
+
+struct GatedAuthorizedLifecycle {
+    trace: Arc<Mutex<Vec<&'static str>>>,
+    started: Mutex<Option<oneshot::Sender<()>>>,
+    release: Arc<Semaphore>,
+}
+
+impl AuthorizedAgentLifecycle for GatedAuthorizedLifecycle {
+    fn run(
+        &self,
+        run: super::agent_preparation::AuthorizedAgentRun,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = AgentAuthorizedLifecycleCompletion> + Send + 'static>,
+    > {
+        let trace = Arc::clone(&self.trace);
+        let started = self.started.lock().expect("started").take();
+        let release = Arc::clone(&self.release);
+        Box::pin(async move {
+            trace.lock().expect("trace").push("authorized");
+            let execution_kind = run.execution_kind();
+            if let Some(started) = started {
+                let _ignored = started.send(());
+            }
+            release
+                .acquire()
+                .await
+                .expect("authorized lifecycle release")
+                .forget();
+            let (_request, lease) = run.into_test_cleanup();
+            lease.close().await.expect("authorized lease close");
+            AgentAuthorizedLifecycleCompletion::for_test(execution_kind)
+        })
+    }
 }
 
 fn recovery_control_with_renew_failure(
@@ -1041,6 +1126,7 @@ async fn already_authorized_drops_request_authority_and_publishes_one_bound_inte
     let admission = InvocationAdmission::new(
         InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
     );
+    let supervisor = InvocationSupervisor::new(admission.clone());
     let prepared = prepare_fresh_agent_invocation_with(
         *empty,
         Arc::clone(&control),
@@ -1056,32 +1142,41 @@ async fn already_authorized_drops_request_authority_and_publishes_one_bound_inte
     let AgentPreparationOutcome::Prepared(prepared) = prepared else {
         panic!("valid application input must reach authorization");
     };
-    let decision = control
-        .authorize_agent_invocation((*prepared).into_authorization_candidate())
-        .await;
-    let InvocationAuthorizationDecision::AlreadyAuthorized(terminal) = decision else {
-        panic!("the scripted response must not grant invocation authority");
-    };
-    let replay = FakeReplay::new([ReplayResult::Acknowledged], Arc::clone(&trace));
-    let retirer = recovery_retirer(
+    let replay = Arc::new(FakeReplay::new(
+        [ReplayResult::Acknowledged],
+        Arc::clone(&trace),
+    ));
+    let retirer = Arc::new(recovery_retirer(
         Arc::clone(&trace),
         Ok(RedisRetirementResponse {
             acknowledged: 1,
             deleted: 1,
             unmapped: 1,
         }),
-    );
-
-    let completion = publish_agent_failure_terminal(
+    ));
+    let lifecycle = Arc::new(GatedAuthorizedLifecycle {
+        trace: Arc::clone(&trace),
+        started: Mutex::new(None),
+        release: Arc::new(Semaphore::new(1)),
+    });
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
         control,
-        &retirer,
-        &replay,
-        *terminal,
+        retirer,
+        Arc::clone(&replay),
         Arc::new(|| NOW),
         recovery_config(1),
-    )
-    .await
-    .expect("authorization terminal completion");
+        lifecycle,
+    );
+    let invocation = match supervisor.submit(reservation, job) {
+        Ok(invocation) => invocation,
+        Err(rejected) => panic!("authorization supervision failed: {}", rejected.error()),
+    };
+    let completion = invocation.wait().await.expect("authorization job result");
+    let AgentAuthorizationJobCompletion::Terminal(Ok(completion)) = completion else {
+        panic!("the scripted response must publish a terminal without running ADK");
+    };
+    supervisor.close().await.expect("supervisor drain");
 
     assert_eq!(completion.execution_kind(), AgentExecutionKind::Application);
     assert_eq!(completion.sequence(), 5);
@@ -1103,6 +1198,249 @@ async fn already_authorized_drops_request_authority_and_publishes_one_bound_inte
             "settlement",
             "redis",
         ]
+    );
+    drop(temporary);
+}
+
+#[tokio::test]
+async fn dropped_authorization_waiter_cannot_cancel_the_owned_authorized_lifecycle() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, root) = root();
+    let preflight = preflight(root, "worker-1");
+    let outcome = preflight.prepare(fresh()).await.expect("empty preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new execution spool must be empty");
+    };
+    let control = authorized_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let supervisor = Arc::new(InvocationSupervisor::new(admission.clone()));
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &ValidAgentInput {
+            trace: Arc::clone(&trace),
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid application input must reach authorization");
+    };
+    let (started_sender, started_receiver) = oneshot::channel();
+    let release = Arc::new(Semaphore::new(0));
+    let lifecycle = Arc::new(GatedAuthorizedLifecycle {
+        trace: Arc::clone(&trace),
+        started: Mutex::new(Some(started_sender)),
+        release: Arc::clone(&release),
+    });
+    let replay = Arc::new(FakeReplay::new(
+        [ReplayResult::Acknowledged],
+        Arc::clone(&trace),
+    ));
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
+        control,
+        retirer,
+        replay,
+        Arc::new(|| NOW),
+        recovery_config(1),
+        lifecycle,
+    );
+    let invocation = match supervisor.submit(reservation, job) {
+        Ok(invocation) => invocation,
+        Err(rejected) => panic!("authorization supervision failed: {}", rejected.error()),
+    };
+    started_receiver.await.expect("authorized lifecycle start");
+    assert_eq!(supervisor.active_count(), 1);
+    assert_eq!(admission.available_capacity(), 0);
+
+    drop(invocation);
+    let closing = Arc::clone(&supervisor);
+    let close = tokio::spawn(async move { closing.close().await });
+    tokio::task::yield_now().await;
+    assert!(!close.is_finished());
+    assert_eq!(supervisor.active_count(), 1);
+    assert_eq!(admission.available_capacity(), 0);
+
+    release.add_permits(1);
+    close.await.expect("close task").expect("supervisor drain");
+    assert_eq!(supervisor.active_count(), 0);
+    assert_eq!(admission.available_capacity(), 1);
+    assert_eq!(
+        *trace.lock().expect("trace"),
+        [
+            "begin",
+            "renew",
+            "observe",
+            "input",
+            "authorize",
+            "authorized",
+        ]
+    );
+    drop(temporary);
+}
+
+#[tokio::test]
+async fn supervisor_stop_race_returns_unpolled_authorization_for_noack_cleanup() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, root) = root();
+    let preflight = preflight(root, "worker-1");
+    let outcome = preflight.prepare(fresh()).await.expect("empty preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new execution spool must be empty");
+    };
+    let control = authorized_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let supervisor = InvocationSupervisor::new(admission.clone());
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &ValidAgentInput {
+            trace: Arc::clone(&trace),
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid application input must reach authorization");
+    };
+    let (started_sender, started_receiver) = oneshot::channel();
+    let lifecycle = Arc::new(GatedAuthorizedLifecycle {
+        trace: Arc::clone(&trace),
+        started: Mutex::new(Some(started_sender)),
+        release: Arc::new(Semaphore::new(0)),
+    });
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
+        control,
+        Arc::new(recovery_retirer(
+            Arc::clone(&trace),
+            Ok(RedisRetirementResponse {
+                acknowledged: 1,
+                deleted: 1,
+                unmapped: 1,
+            }),
+        )),
+        Arc::new(FakeReplay::new(
+            [ReplayResult::Acknowledged],
+            Arc::clone(&trace),
+        )),
+        Arc::new(|| NOW),
+        recovery_config(1),
+        lifecycle,
+    );
+    supervisor.stop().expect("stop supervisor");
+
+    let Err(rejected) = supervisor.submit(reservation, job) else {
+        panic!("stopped supervisor must return unpolled authorization");
+    };
+    let (error, reservation, job) = rejected.into_parts();
+    assert_eq!(error.code(), "invocation_supervision.closed");
+    assert!(
+        job.close_unstarted()
+            .await
+            .expect("unstarted cleanup")
+            .is_none()
+    );
+    drop(reservation);
+    assert!(started_receiver.await.is_err());
+    assert_eq!(admission.available_capacity(), 1);
+    assert_eq!(
+        *trace.lock().expect("trace"),
+        ["begin", "renew", "observe", "input"]
+    );
+    supervisor.close().await.expect("close supervisor");
+    drop(temporary);
+}
+
+#[tokio::test]
+async fn unknown_authorization_effect_closes_locally_without_output_or_redis_ack() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, root) = root();
+    let preflight = preflight(root, "worker-1");
+    let outcome = preflight.prepare(fresh()).await.expect("empty preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new execution spool must be empty");
+    };
+    let control = unavailable_authorization_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let supervisor = InvocationSupervisor::new(admission.clone());
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &ValidAgentInput {
+            trace: Arc::clone(&trace),
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid application input must reach authorization");
+    };
+    let lifecycle = Arc::new(GatedAuthorizedLifecycle {
+        trace: Arc::clone(&trace),
+        started: Mutex::new(None),
+        release: Arc::new(Semaphore::new(1)),
+    });
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
+        control,
+        Arc::new(recovery_retirer(
+            Arc::clone(&trace),
+            Ok(RedisRetirementResponse {
+                acknowledged: 1,
+                deleted: 1,
+                unmapped: 1,
+            }),
+        )),
+        Arc::new(FakeReplay::new(
+            [ReplayResult::Acknowledged],
+            Arc::clone(&trace),
+        )),
+        Arc::new(|| NOW),
+        recovery_config(1),
+        lifecycle,
+    );
+    let invocation = match supervisor.submit(reservation, job) {
+        Ok(invocation) => invocation,
+        Err(rejected) => panic!("authorization supervision failed: {}", rejected.error()),
+    };
+    let completion = invocation.wait().await.expect("authorization job result");
+    let AgentAuthorizationJobCompletion::Unknown(completion) = completion else {
+        panic!("transport uncertainty must remain a no-ACK cleanup outcome");
+    };
+    assert_eq!(completion.execution_kind(), AgentExecutionKind::Application);
+    assert!(completion.authorization_error().retryable());
+    assert!(completion.lease_error().is_none());
+    supervisor.close().await.expect("supervisor drain");
+
+    assert_eq!(admission.available_capacity(), 1);
+    assert_eq!(
+        *trace.lock().expect("trace"),
+        ["begin", "renew", "observe", "input", "authorize"]
     );
     drop(temporary);
 }
