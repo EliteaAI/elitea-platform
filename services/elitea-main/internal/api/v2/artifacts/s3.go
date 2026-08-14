@@ -468,16 +468,26 @@ func (h *Handler) DeleteObjectS3(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S3 DELETE is idempotent: an absent key is success, not 404. The native
+	// route answers 404 because a browser deleting one selected row wants to
+	// know the row was stale, but the S3 caller is a toolkit replaying a key it
+	// already believes is gone, and a 404 there means only "already deleted".
+	//
+	// The metadata delete below still runs when the object is absent, so a row
+	// orphaned by a partial earlier delete is healed rather than left to count
+	// against the project's quota forever.
 	if _, err := h.store.Stat(r.Context(), ref); err != nil {
-		code := storageErrorCode(err)
-		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), err.Error())
-		return
-	}
-
-	if err := h.store.Delete(r.Context(), ref); err != nil {
-		code := storageErrorCode(err)
-		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), err.Error())
-		return
+		if code := storageErrorCode(err); code != "NotFound" {
+			writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), err.Error())
+			return
+		}
+	} else if err := h.store.Delete(r.Context(), ref); err != nil {
+		// A concurrent delete between Stat and Delete lands here; it reached
+		// the caller's intended state, so it is success too.
+		if code := storageErrorCode(err); code != "NotFound" {
+			writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), err.Error())
+			return
+		}
 	}
 
 	// The metadata row must go too, or the project's quota accounting keeps

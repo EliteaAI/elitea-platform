@@ -451,11 +451,13 @@ func TestDeleteObjectS3_KeyWithSlashes(t *testing.T) {
 
 // TestDeleteObjectS3_ScopesDeleteToQueryProject is the cross-tenant guarantee
 // at the handler level for a destructive verb: project 2 has a same-named
-// bucket, so the request gets past the bucket check and the 404 can only come
-// from the object lookup being scoped to the project. Crucially it also
-// asserts project 1's object SURVIVES — a 404 with the file deleted anyway
-// would be the worst possible outcome and a status assertion alone would miss
-// it.
+// bucket, so the request gets past the bucket check and only the object lookup
+// being project-scoped keeps project 1's bytes safe.
+//
+// Since DELETE became idempotent this answers 204 either way, so the status
+// carries NO information here and the survival check below is the entire
+// assertion — a cross-tenant delete that succeeded in destroying the file
+// would return exactly the same 204. Do not "simplify" this test to its status.
 func TestDeleteObjectS3_ScopesDeleteToQueryProject(t *testing.T) {
 	h, repo, store := newObjectTestHandler(t)
 	store.seedContent("1", "reports", "secret.txt", []byte("classified"), "text/plain")
@@ -465,24 +467,47 @@ func TestDeleteObjectS3_ScopesDeleteToQueryProject(t *testing.T) {
 		t.Fatalf("seed CreateBucket: %v", err)
 	}
 
-	rr := s3Delete(h, "/artifacts/s3/reports/secret.txt?project_id=2")
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 for another project's object; body=%s", rr.Code, rr.Body.String())
+	if rr := s3Delete(h, "/artifacts/s3/reports/secret.txt?project_id=2"); rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (absent in project 2, idempotent); body=%s", rr.Code, rr.Body.String())
 	}
-	if got := errorCodeOf(t, decodeS3JSON(t, rr)); got != "NoSuchKey" {
-		t.Errorf("error.code = %q, want NoSuchKey", got)
-	}
-	if back := getS3Object(t, h, "/artifacts/s3/reports/secret.txt?project_id=1"); back.Code != http.StatusOK {
+	back := getS3Object(t, h, "/artifacts/s3/reports/secret.txt?project_id=1")
+	if back.Code != http.StatusOK {
 		t.Fatalf("project 1's object was destroyed by project 2's delete: status = %d", back.Code)
+	}
+	if got := back.Body.String(); got != "classified" {
+		t.Errorf("project 1's object body = %q, want it intact", got)
+	}
+}
+
+// TestDeleteObjectS3_IsIdempotent pins the S3 contract: deleting a key that is
+// not there is success, and deleting twice is the same as deleting once. The
+// second DELETE is the one that would have failed before — the first leaves the
+// object genuinely absent, so a non-idempotent handler 404s on the repeat.
+func TestDeleteObjectS3_IsIdempotent(t *testing.T) {
+	h, _, store := newObjectTestHandler(t)
+	store.seedContent("1", "reports", "twice.txt", []byte("payload"), "text/plain")
+
+	for _, attempt := range []string{"first", "second"} {
+		rr := s3Delete(h, "/artifacts/s3/reports/twice.txt?project_id=1")
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("%s delete: status = %d, want 204; body=%s", attempt, rr.Code, rr.Body.String())
+		}
+		if body := rr.Body.String(); body != "" {
+			t.Errorf("%s delete: body = %q, want empty", attempt, body)
+		}
+	}
+
+	// A key that never existed at all, in an existing bucket.
+	if rr := s3Delete(h, "/artifacts/s3/reports/never-existed.txt?project_id=1"); rr.Code != http.StatusNoContent {
+		t.Fatalf("absent key: status = %d, want 204; body=%s", rr.Code, rr.Body.String())
 	}
 }
 
 // TestDeleteObjectS3_ErrorEnvelopeMatchesWhatTheSDKReads pins the delete's
-// error vocabulary, including the deliberate non-idempotence: an absent key is
-// NoSuchKey ("File 'x' not found"), not a success. Real S3 answers 204 here;
-// this surface follows the native route instead, because the SDK phrases a
-// delete's success as "deleted successfully" and an agent toolkit reporting
-// that for a key that never existed feeds a false premise into the next step.
+// error vocabulary for the failures that remain once an absent key is success
+// (TestDeleteObjectS3_IsIdempotent). A missing BUCKET is still an error: the
+// bucket is addressed by the caller's own configuration rather than by a key it
+// is iterating, so silence there would hide a misconfigured toolkit.
 func TestDeleteObjectS3_ErrorEnvelopeMatchesWhatTheSDKReads(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -490,12 +515,6 @@ func TestDeleteObjectS3_ErrorEnvelopeMatchesWhatTheSDKReads(t *testing.T) {
 		wantStatus int
 		wantCode   string
 	}{
-		{
-			name:       "missing key in an existing bucket",
-			target:     "/artifacts/s3/reports/absent.txt?project_id=1",
-			wantStatus: http.StatusNotFound,
-			wantCode:   "NoSuchKey",
-		},
 		{
 			name:       "missing bucket",
 			target:     "/artifacts/s3/nope/a.txt?project_id=1",
