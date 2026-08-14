@@ -20,6 +20,7 @@ import { useEditApplicationData } from './lib/useEditApplicationData';
 import { useEditApplicationEditorBridge } from './lib/useEditApplicationEditorBridge';
 import { useEditApplicationForm } from './lib/useEditApplicationForm';
 import { useEditApplicationVersionControls } from './lib/useEditApplicationVersionControls';
+import { useEditApplicationVersionFields } from './lib/useEditApplicationVersionFields';
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { useDiscardApplicationChanges } from './useDiscardApplicationChanges';
@@ -98,7 +99,8 @@ function EditApplicationSaveBar({ onSave, canSave, isSaving }: EditApplicationSa
  *    ConfigurationTab.jsx`) owns the six `ApplicationConfigurationLayout`
  *    slots (instructions, tools, welcome message, advance settings, editor
  *    notes, information) and still has no port. PARTIALLY CLOSED: the panel
- *    below no longer renders an empty `<Box/>` — it renders
+ *    below no longer renders an empty `<Box/>`, and (#307) is no longer
+ *    read-only — it renders
  *    `features/agents`' `CreateAgentForm`, the same component the baseline
  *    shares between its create and edit pages, so the agent's real
  *    name/description/instructions are on screen. The remaining slots
@@ -124,12 +126,12 @@ function EditApplicationSaveBar({ onSave, canSave, isSaving }: EditApplicationSa
  *    outside the chat process, so a dirty agent edit was silently lost on
  *    any nav-link click. This page now arms it through
  *    `useUnsavedChangesNavBlocker` (see the call site below).
- *  - Only the version-level fields `useSaveApplicationVersion` can actually
- *    carry (`conversation_starters` here, since name/description are
- *    APPLICATION-level fields — `ApplicationUpdateRequest`, a different,
- *    not-wired-in-this-pass endpoint) are saved. See `entities/
- *    application-form/model/mutations.ts`'s own doc comment for the
- *    `tags`/`tools`/`pipeline_settings` gap on this same endpoint.
+ *  - Saving is CLOSED (#307). This used to disclose that only
+ *    `conversation_starters` was persisted, which was true and meant the
+ *    page saved nothing a user could type. It now routes every field it
+ *    renders — see the save-scope comment on the `useEditApplicationForm`
+ *    call below for the two remaining, backend-side gaps (`variables` is a
+ *    no-op on UPDATE; `conversation_starters` still has no input mounted).
  *
  * **Read-only (public-viewer) gating, save-failure feedback, and the
  * detail-404 page** (adversarial-review fixes): the baseline's
@@ -175,7 +177,22 @@ export function EditApplication(): ReactNode {
 
   useCorrectUserNameInUrl(detail?.name);
 
-  const { form, handleSave, isSaving, saveError } = useEditApplicationForm(detail, activeVersion, projectId, applicationId);
+  /*
+   * #307 — the version-level fields `CreateAgentForm` renders (instructions,
+   * welcome message, variables, step limit) live here rather than in the RHF
+   * form: `applicationCreationSchema` does not validate them (same split
+   * `CreateApplication.tsx` already makes for the create page). Resolved
+   * BEFORE the form hook because the save payload reads them.
+   */
+  const versionFields = useEditApplicationVersionFields(activeVersion);
+
+  const { form, handleSave, isSaving, saveError, isDirty } = useEditApplicationForm(
+    detail,
+    activeVersion,
+    projectId,
+    applicationId,
+    versionFields,
+  );
 
   /*
    * #133 — arm the app-wide unsaved-changes guard from this page's own dirty
@@ -189,8 +206,14 @@ export function EditApplication(): ReactNode {
    * `useEditApplicationEditorBridge`'s `shouldDirty: true`. The hook
    * disarms on unmount; `useEditApplicationForm` clears dirtiness after a
    * successful save so saving is not itself prompted about.
+   *
+   * #307 — `versionFields.isDirty` is the other half: instructions/welcome
+   * message/variables/step limit are held outside the form (see below), so
+   * `formState.isDirty` cannot see them and a user who edited only those
+   * would have navigated away without a prompt. Same two-part dirty check
+   * `CreateApplication.tsx` already builds from its own `extraFields`.
    */
-  useUnsavedChangesNavBlocker(form.formState.isDirty);
+  useUnsavedChangesNavBlocker(isDirty);
 
   // Old app: `useViewMode.js` — `viewMode` defaults to `ViewMode.Public`
   // whenever the currently selected project equals `PUBLIC_PROJECT_ID`.
@@ -223,6 +246,7 @@ export function EditApplication(): ReactNode {
     versions,
     activeVersion,
     control: form.control,
+    versionFields: versionFields.fields,
     isReadOnly: isReadOnlyView,
     isFetching,
   });
@@ -238,36 +262,29 @@ export function EditApplication(): ReactNode {
    * `pages/agents/CreateApplication.tsx` already renders; the baseline shares
    * that same component between its create and edit pages.
    *
-   * SAVE SCOPE, unchanged and disclosed: `useEditApplicationForm` persists
-   * version-level fields only (`conversation_starters`). `name`/`description`
-   * are APPLICATION-level (`ApplicationUpdateRequest`, PUT
-   * /elitea_core/application/… — routed since #117, but not wired into this
-   * page's save path). They render populated and editable because showing the
-   * agent's real identity is the point of the page; edits to them are NOT yet
-   * persisted. Wiring that endpoint is its own change.
+   * SAVE SCOPE (#307, closed): the panel is now writable as well as
+   * readable. `useEditApplicationForm` sends the application-level
+   * `name`/`description` through `editApplication` (PUT
+   * /elitea_core/application/…, routed since #117) and the version-level
+   * `instructions`/`welcome_message`/`variables`/`meta.step_limit`/
+   * `conversation_starters` through `updateApplicationVersion` — the two
+   * real endpoints `features/agents`' `useSaveVersion` already issues. This
+   * comment used to disclose that only `conversation_starters` was sent,
+   * which was true and meant the page saved nothing a user could type.
+   *
+   * TWO GAPS REMAIN, both backend-side and neither closable from here:
+   *  - `variables` is sent but silently discarded on UPDATE — the Go
+   *    `UpdateVersion` handler (applications/handler.go:807-836) reads
+   *    `name`/`instructions`/`welcome_message`/`agent_type`/`llm_settings`/
+   *    `conversation_starters`/`meta`/`pipeline_settings` and has no
+   *    `variables` branch at all; only `CreateVersion` persists them.
+   *  - `conversation_starters` has no input mounted (see the
+   *    `conversationStartersSlot` note on `CreateAgentForm`) — the editor
+   *    component itself has no port in this app, so the value round-trips
+   *    from the server but cannot be changed.
    */
-  const editor = useEditApplicationEditorBridge(form, activeVersion);
+  const editor = useEditApplicationEditorBridge(form, versionFields);
 
-  /*
-   * The configuration panel used to be `<Box data-testid=… />` — self-closing
-   * and empty — on the grounds that the baseline's `ConfigurationTab` belonged
-   * to a sibling sub-unit. The consequence was that opening ANY agent showed a
-   * page with no fields on it at all: J14 created an agent, navigated to it,
-   * and found nothing to read back.
-   *
-   * `CreateAgentForm` is a public export of `features/agents` and is what
-   * `pages/agents/CreateApplication.tsx` already renders; the baseline shares
-   * that same component between its create and edit pages. Bridging it to the
-   * form this page already owns is the smallest faithful fill.
-   *
-   * SAVE SCOPE, unchanged and disclosed: `useEditApplicationForm` persists
-   * version-level fields only (`conversation_starters`). `name`/`description`
-   * are APPLICATION-level (`ApplicationUpdateRequest`, PUT
-   * /elitea_core/application/... — now routed since #117 but not wired into
-   * this page's save path). They render populated and editable here because
-   * showing the agent's real identity is the point of the page, but edits to
-   * them are NOT yet persisted. Wiring that endpoint is its own change.
-   */
   if (isDetailNotFound) {
     return (
       <Box sx={pageSx}>

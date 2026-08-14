@@ -221,4 +221,73 @@ describe('EditApplication', () => {
 
     expect(await screen.findByText('Failed to save your changes.')).toBeInTheDocument();
   });
+
+  /*
+   * #307, end to end through the page's REAL composition — the half
+   * `lib/useEditApplicationForm.test.tsx`'s payload tests cannot reach.
+   * Those drive `applyFieldChange` directly, so they prove the SAVE carries
+   * an edit but not that a keystroke ever gets there; the actual reported
+   * defect was in between, in `useEditApplicationEditorBridge`'s
+   * `if (path !== 'name' && path !== 'description') return`. Typing into the
+   * rendered input and reading the request body off the wire is the only
+   * assertion that fails if EITHER half regresses.
+   */
+  it('persists a typed welcome message: the keystroke reaches the version PUT body, not just the screen', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const versionBodies: Record<string, unknown>[] = [];
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        versionBodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+      }),
+      http.put('*/elitea_core/application/prompt_lib/:projectId/:id', () =>
+        HttpResponse.json({ id: '42' }, { status: 201 }),
+      ),
+    );
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    const welcomeInput = await screen.findByTestId('agent-welcome-message-input', {}, { timeout: 5_000 });
+    // The whole form renders `disabled` while the detail fetch is in flight,
+    // and the panel mounts before it settles — typing into it at that point
+    // is silently dropped. Wait for a field the response populates, which is
+    // the only observable "the agent has loaded" signal on this page.
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await user.type(welcomeInput, 'Hello!');
+    // `toHaveValue` alone is exactly the assertion that used to pass against
+    // the broken page: `WelcomeMessageInput` keeps its own local mirror, so
+    // the text appeared on screen whether or not anything received it.
+    expect(welcomeInput).toHaveValue('Hello!');
+
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(versionBodies).toHaveLength(1));
+    expect(versionBodies[0]?.['welcome_message']).toBe('Hello!');
+  });
+
+  it('persists a renamed agent through the application PUT, which the page never called before issue 307', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const applicationBodies: Record<string, unknown>[] = [];
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', () =>
+        HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 }),
+      ),
+      http.put('*/elitea_core/application/prompt_lib/:projectId/:id', async ({ request }) => {
+        applicationBodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '42' }, { status: 201 });
+      }),
+    );
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    const nameInput = await screen.findByTestId('agent-name-input', {}, { timeout: 5_000 });
+    await waitFor(() => expect(nameInput).toHaveValue('My Agent'));
+    await user.clear(nameInput);
+    await user.type(nameInput, 'Renamed Agent');
+
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(applicationBodies).toHaveLength(1));
+    expect(applicationBodies[0]?.['name']).toBe('Renamed Agent');
+  });
 });

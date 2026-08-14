@@ -11,6 +11,7 @@ import type { ApplicationDetail, ApplicationVersionDetail } from '@/shared/api/g
 import { server } from '@/test/setup';
 
 import { useEditApplicationForm } from './useEditApplicationForm';
+import { useEditApplicationVersionFields } from './useEditApplicationVersionFields';
 
 const DETAIL: ApplicationDetail = {
   id: '42',
@@ -29,7 +30,23 @@ const VERSION: ApplicationVersionDetail = {
   status: 'draft',
   instructions: 'Be helpful.',
   conversation_starters: ['Hi there'],
+  // A second `meta` key, so the step-limit test can prove the save MERGES
+  // into the stored blob instead of replacing it.
+  meta: { category: 'support' },
 };
+
+/**
+ * Drives the two hooks the page composes, in the page's own order — the
+ * version-level fields hook first, then the form hook that reads its state.
+ * Calling `useEditApplicationForm` with a hand-built `versionFields` stub
+ * would let a save payload regression pass: #307 was precisely a bridge that
+ * looked correct in isolation and routed nothing in the real composition.
+ */
+function useEditApplicationFormHarness(detail: ApplicationDetail | undefined, version: ApplicationVersionDetail | undefined) {
+  const versionFields = useEditApplicationVersionFields(version);
+  const form = useEditApplicationForm(detail, version, '9', 42, versionFields);
+  return { ...form, applyFieldChange: versionFields.applyFieldChange, versionFields };
+}
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
@@ -46,7 +63,7 @@ afterEach(() => {
 
 describe('useEditApplicationForm', () => {
   it('seeds the form from detail/activeVersion', () => {
-    const { result } = renderHook(() => useEditApplicationForm(DETAIL, VERSION, '9', 42), { wrapper });
+    const { result } = renderHook(() => useEditApplicationFormHarness(DETAIL, VERSION), { wrapper });
     expect(result.current.form.getValues()).toEqual({
       name: 'My Agent',
       description: 'A helpful agent',
@@ -55,7 +72,7 @@ describe('useEditApplicationForm', () => {
   });
 
   it('seeds empty defaults while detail has not loaded yet', () => {
-    const { result } = renderHook(() => useEditApplicationForm(undefined, undefined, '9', 42), { wrapper });
+    const { result } = renderHook(() => useEditApplicationFormHarness(undefined, undefined), { wrapper });
     expect(result.current.form.getValues()).toEqual({
       name: '',
       description: '',
@@ -71,7 +88,7 @@ describe('useEditApplicationForm', () => {
       status: 'draft',
     }));
     server.use(getUpdateApplicationVersionMockHandler(saveSpy));
-    const { result } = renderHook(() => useEditApplicationForm(DETAIL, undefined, '9', 42), { wrapper });
+    const { result } = renderHook(() => useEditApplicationFormHarness(DETAIL, undefined), { wrapper });
 
     act(() => {
       result.current.handleSave();
@@ -88,7 +105,7 @@ describe('useEditApplicationForm', () => {
       status: 'draft',
     }));
     server.use(getUpdateApplicationVersionMockHandler(saveSpy));
-    const { result } = renderHook(() => useEditApplicationForm(DETAIL, VERSION, '9', 42), { wrapper });
+    const { result } = renderHook(() => useEditApplicationFormHarness(DETAIL, VERSION), { wrapper });
 
     act(() => {
       result.current.handleSave();
@@ -105,13 +122,13 @@ describe('useEditApplicationForm', () => {
       status: 'draft',
     }));
     server.use(getUpdateApplicationVersionMockHandler(saveSpy));
-    const { result } = renderHook(() => useEditApplicationForm(DETAIL, VERSION, '9', 42), { wrapper });
+    const { result } = renderHook(() => useEditApplicationFormHarness(DETAIL, VERSION), { wrapper });
 
     expect(result.current.isSaving).toBe(false);
   });
 
   it('saveError is undefined before any save attempt', () => {
-    const { result } = renderHook(() => useEditApplicationForm(DETAIL, VERSION, '9', 42), { wrapper });
+    const { result } = renderHook(() => useEditApplicationFormHarness(DETAIL, VERSION), { wrapper });
     expect(result.current.saveError).toBeUndefined();
   });
 
@@ -121,7 +138,7 @@ describe('useEditApplicationForm', () => {
         HttpResponse.json({ error: 'boom' }, { status: 500 }),
       ),
     );
-    const { result } = renderHook(() => useEditApplicationForm(DETAIL, VERSION, '9', 42), { wrapper });
+    const { result } = renderHook(() => useEditApplicationFormHarness(DETAIL, VERSION), { wrapper });
 
     act(() => {
       result.current.handleSave();
@@ -139,7 +156,7 @@ describe('useEditApplicationForm', () => {
     );
     const { result, rerender } = renderHook(
       ({ detail, version }: { detail: ApplicationDetail; version: ApplicationVersionDetail }) =>
-        useEditApplicationForm(detail, version, '9', 42),
+        useEditApplicationFormHarness(detail, version),
       { wrapper, initialProps: { detail: DETAIL, version: VERSION } },
     );
 
@@ -162,5 +179,81 @@ describe('useEditApplicationForm', () => {
       result.current.handleSave();
     });
     await waitFor(() => expect(result.current.saveError).toBeUndefined());
+  });
+
+  /*
+   * #307 — the discriminating tests. Every assertion above this point passes
+   * against the broken hook: they check that the endpoint was CALLED, never
+   * what it was called WITH. The page's whole defect was that the call went
+   * out carrying `conversation_starters` and nothing else, so Save reported
+   * success while discarding the user's edit.
+   *
+   * Each test below therefore reads the real request BODY off the wire.
+   */
+  async function captureSave(mutate: (harness: ReturnType<typeof useEditApplicationFormHarness>) => void) {
+    const versionBodies: unknown[] = [];
+    const applicationBodies: unknown[] = [];
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        versionBodies.push(await request.json());
+        return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+      }),
+      http.put('*/elitea_core/application/prompt_lib/:projectId/:id', async ({ request }) => {
+        applicationBodies.push(await request.json());
+        return HttpResponse.json({ id: '42' }, { status: 201 });
+      }),
+    );
+    const { result } = renderHook(() => useEditApplicationFormHarness(DETAIL, VERSION), { wrapper });
+
+    act(() => {
+      mutate(result.current);
+    });
+    act(() => {
+      result.current.handleSave();
+    });
+
+    await waitFor(() => expect(versionBodies).toHaveLength(1));
+    return { versionBody: versionBodies[0] as Record<string, unknown>, applicationBodies, result };
+  }
+
+  it('sends an edited welcome message in the version PUT body — the whole point of issue 307, and the assertion the old suite lacked', async () => {
+    const { versionBody } = await captureSave((harness) => {
+      harness.applyFieldChange('version_details.welcome_message', 'Welcome aboard');
+    });
+    expect(versionBody['welcome_message']).toBe('Welcome aboard');
+  });
+
+  it('sends edited instructions in the version PUT body rather than the version the server returned', async () => {
+    const { versionBody } = await captureSave((harness) => {
+      harness.applyFieldChange('version_details.instructions', 'Be extremely helpful.');
+    });
+    expect(versionBody['instructions']).toBe('Be extremely helpful.');
+    expect(versionBody['instructions']).not.toBe(VERSION.instructions);
+  });
+
+  it('merges an edited step limit into `meta` WITHOUT dropping the keys the stored version already carried', async () => {
+    const { versionBody } = await captureSave((harness) => {
+      harness.applyFieldChange('version_details.meta.step_limit', 40);
+    });
+    // The Go handler assigns the whole `meta` map it receives, so a payload
+    // of `{step_limit}` alone would silently blank every other stored key.
+    expect(versionBody['meta']).toEqual({ category: 'support', step_limit: 40 });
+  });
+
+  it('sends the application-level name/description to the application PUT — a different endpoint, never called at all before issue 307', async () => {
+    const { applicationBodies, result } = await captureSave((harness) => {
+      harness.form.setValue('name', 'Renamed Agent', { shouldValidate: true, shouldDirty: true });
+    });
+    await waitFor(() => expect(applicationBodies).toHaveLength(1));
+    expect(applicationBodies[0]).toEqual({ name: 'Renamed Agent', description: DETAIL.description });
+    expect(result.current.saveError).toBeUndefined();
+  });
+
+  it('leaves an unedited field at the value the server holds, so a save cannot blank a field the user never touched', async () => {
+    const { versionBody } = await captureSave(() => {
+      /* no edit at all */
+    });
+    expect(versionBody['instructions']).toBe(VERSION.instructions);
+    expect(versionBody['conversation_starters']).toEqual(VERSION.conversation_starters);
   });
 });

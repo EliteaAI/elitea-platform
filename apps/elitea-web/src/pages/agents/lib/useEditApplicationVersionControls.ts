@@ -17,6 +17,7 @@ import {
   toVersionWriteBody,
   type EditApplicationVersionOption,
 } from './editApplicationMappers';
+import type { EditApplicationVersionFields } from './useEditApplicationVersionFields';
 
 export interface EditApplicationVersionControlsArgs {
   readonly projectId: string | undefined;
@@ -32,6 +33,14 @@ export interface EditApplicationVersionControlsArgs {
    * travel with it.
    */
   readonly control: Control<ApplicationCreationInput>;
+  /**
+   * The live version-level edits, for the same reason `control` is taken
+   * above: they are cloned onto the new version. #307 — until those fields
+   * were routed anywhere they could not differ from `activeVersion`, so
+   * omitting them was invisible; now a "Save As Version" taken after
+   * editing the instructions would otherwise clone the STORED ones.
+   */
+  readonly versionFields: EditApplicationVersionFields;
   /** Public-project viewer: the selector stays, the write affordance goes (`ApplicationTabBar.jsx:65`). */
   readonly isReadOnly: boolean;
   /** While the detail is in flight there is neither a version list nor an active version to show. */
@@ -89,7 +98,7 @@ const EMPTY_VERSION_BODY: Omit<VersionWriteRequest, 'name'> = {};
 export function useEditApplicationVersionControls(
   args: EditApplicationVersionControlsArgs,
 ): EditApplicationVersionControlsState {
-  const { projectId, applicationId, tab, versions, activeVersion, control, isReadOnly, isFetching } = args;
+  const { projectId, applicationId, tab, versions, activeVersion, control, versionFields, isReadOnly, isFetching } = args;
 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -100,8 +109,8 @@ export function useEditApplicationVersionControls(
 
   const versionBody = useMemo(() => {
     if (activeVersion === undefined) return EMPTY_VERSION_BODY;
-    return toVersionWriteBody(activeVersion, (watchedStarters ?? []).filter(isString));
-  }, [activeVersion, watchedStarters]);
+    return toVersionWriteBody(activeVersion, (watchedStarters ?? []).filter(isString), versionFields);
+  }, [activeVersion, watchedStarters, versionFields]);
 
   const goToVersion = useCallback(
     (versionId: number) => {
