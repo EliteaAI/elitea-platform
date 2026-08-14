@@ -504,8 +504,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentConfigurationMutation http.Handler
 	var currentModelCatalog http.Handler
 	var currentModelDefault http.Handler
-	var currentLLMFacade http.Handler
-	var currentLLMRoot *runtimecomposition.CurrentLLMRuntime
 	var currentPromptContextReads *promptcontextreadsapi.CurrentRoutes
 	if currentConfigurationsConfig.Enabled {
 		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
@@ -575,21 +573,14 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose current Configurations model-default route: %w", err)
 		}
-		if currentConfigurationsConfig.LiteLLMBaseURL != "" {
-			currentLLMRoot, err = runtimecomposition.NewCurrentLLMRuntime(
-				pool,
-				currentConfigurationsRoot,
-				runtimecomposition.CurrentLLMConfig{
-					BaseURL:       currentConfigurationsConfig.LiteLLMBaseURL,
-					MasterKeyFile: currentConfigurationsConfig.LiteLLMMasterKeyFile,
-				},
-			)
-			if err != nil {
-				return fmt.Errorf("compose current LiteLLM facade: %w", err)
-			}
-			defer currentLLMRoot.Close()
-			currentLLMFacade = apimw.Auth(currentAuth)(currentLLMRoot.Handler())
-		}
+		// No /llm data plane is composed here. This block used to build the
+		// LiteLLM facade (an authenticated reverse proxy plus an administration
+		// client holding the proxy's master key) whenever ELITEA_LITELLM_BASE_URL
+		// was set. The Bifrost gateway replaced it: it resolves each project's
+		// provider credentials and model definitions from
+		// p_{projectID}.configuration itself, so Main has nothing to proxy on
+		// its behalf beyond the mTLS gateway proxy composed on LLM_GATEWAY_URL
+		// below, which is the sole /llm backend.
 		if currentPromptContextReadsSettings.Enabled {
 			chatConfigReader, readerErr :=
 				promptcontextreadsapi.NewCurrentChatConfigVaultReader(
@@ -622,8 +613,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// `ChatService` gate on the prototype eliteacore handler, and the current
 	// implementation above is reachable only under
 	// ELITEA_PROMPT_CONTEXT_READS_ENABLED, which itself requires
-	// ELITEA_CONFIGURATIONS_ENABLED + ELITEA_AI_PROJECT_ID +
-	// ELITEA_LITELLM_*. None of those is set in any deployment, so
+	// ELITEA_CONFIGURATIONS_ENABLED + ELITEA_AI_PROJECT_ID. Neither of those
+	// is set in any deployment, so
 	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` has
 	// answered 404 everywhere for as long as the gate has existed — while
 	// `features/artifacts`' chatConfigApi has been querying it on every
@@ -726,10 +717,14 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		defer runtimePools.Close()
 		var configurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
 		if currentConfigurationsConfig.MutationEnabled {
+			// No LLM runtime here: the lifecycle is database-side. It once
+			// pushed every credential and model into the LiteLLM proxy, which
+			// meant configuration mutation could not run without that proxy.
+			// The Bifrost gateway pulls the same configuration rows, so the
+			// lifecycle now only resolves references and writes status_ok.
 			configurationLifecycleReconciler, err = runtimecomposition.NewCurrentConfigurationLifecycleReconciler(
 				runtimePools.Control,
 				currentConfigurationsRoot,
-				currentLLMRoot,
 				currentConfigurationsConfig.AllowProjectOwnLLMs,
 			)
 			if err != nil {
@@ -744,7 +739,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			TerminalEffectsPool:              runtimePools.TerminalEffects,
 			ContentPool:                      runtimePools.Content,
 			CurrentConfigurations:            currentConfigurationsRoot,
-			CurrentEmbeddingRuntime:          currentLLMRoot,
 			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,
 			ActorTokenIssuer:                 formGraph,
 			ProjectTokenValidator:            formGraph,
@@ -1050,7 +1044,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentNotificationEvents:     currentNotificationEvents,
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,
-		CurrentLLMFacade:              currentLLMFacade,
 		GatewayProxy:                  gatewayProxy,
 		GatewayProjectResolver:        gatewayProjectResolver,
 		ObjectStore:                   objectStore,

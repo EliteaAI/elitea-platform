@@ -17,6 +17,17 @@ import (
 const (
 	CurrentEmbeddingBindingSchema = "elitea.index.embedding-binding.v2"
 	maxEmbeddingBindingIdentity   = 1024
+
+	// currentEmbeddingBindingRoute is the only route the Bifrost gateway can be
+	// bound to. The "project"/"public" routes carried a `{projectID}_` model
+	// group prefix, which existed solely because LiteLLM held one flat global
+	// registry and had to disambiguate identically named per-project models
+	// inside it. The gateway has no such registry: the wire name sent upstream
+	// is the plain model name and the project is carried by the edge's signed
+	// identity (services/elitea-llm-gateway/internal/llmproxy/handler.go,
+	// modelsProjectID), from which the gateway resolves that project's own
+	// configuration row. A prefixed name would therefore not resolve at all.
+	currentEmbeddingBindingRoute = "raw"
 )
 
 var (
@@ -27,7 +38,7 @@ var (
 
 // CurrentEmbeddingConfiguration is the non-secret identity of one current
 // Configurations row. Data must remain the saved model configuration, not an
-// unsecreted or LiteLLM-expanded value.
+// unsecreted or gateway-expanded value.
 type CurrentEmbeddingConfiguration struct {
 	UUID      string
 	ProjectID int32
@@ -48,27 +59,13 @@ type CurrentEmbeddingConfigurationReader interface {
 	) (CurrentEmbeddingConfiguration, bool, error)
 }
 
-// CurrentEmbeddingRuntimeGroup is the exact non-secret LiteLLM model-group
-// identity observed during admission. It deliberately excludes deployment,
-// endpoint and credential metadata: the current proxy resolves those values
-// again when the SDK invokes it.
-type CurrentEmbeddingRuntimeGroup struct {
-	Name string
-}
-
-type CurrentEmbeddingRuntimeReader interface {
-	GetCurrentEmbeddingRuntimeGroup(
-		context.Context,
-		string,
-	) (CurrentEmbeddingRuntimeGroup, bool, error)
-}
-
 // EmbeddingBinding is an immutable, non-secret admission record. It preserves
-// the authoritative default (model_name, model_project_id) tuple and records
-// the current proxy's project -> public -> raw route observed at admission.
+// the authoritative default (model_name, model_project_id) tuple and the
+// identity of the Configurations row that backed the model at admission.
 //
 // It is not a deployment pin: the worker passes ModelName to the unchanged SDK,
-// and the proxy resolves deployments, endpoints and credentials at execution.
+// and the gateway resolves provider, endpoint and credentials at execution from
+// the same p_{project}.configuration rows this binding was resolved against.
 type EmbeddingBinding struct {
 	SchemaVersion          string
 	ModelName              string
@@ -87,6 +84,11 @@ func (b EmbeddingBinding) Validate() error {
 		return ErrInvalidCurrentEmbeddingBinding
 	}
 	switch b.Route {
+	// "project"/"public" are no longer produced: only LiteLLM needed the
+	// `{projectID}_` group prefix. They stay accepted because the v2 schema is a
+	// cross-process contract shared with the Python worker
+	// (protocol/indexing.py) and pins already-admitted bindings that are still
+	// replayable; rejecting them here would be a schema break, not a cleanup.
 	case "project", "public":
 		if !validPrefixedEmbeddingGroup(b.ResolvedModelGroup, b.ModelName) {
 			return ErrInvalidCurrentEmbeddingBinding
@@ -153,29 +155,32 @@ func (b EmbeddingBinding) Clone() EmbeddingBinding {
 
 type CurrentEmbeddingBindingResolver struct {
 	configurations CurrentEmbeddingConfigurationReader
-	runtime        CurrentEmbeddingRuntimeReader
 	publicProject  int32
 }
 
 func NewCurrentEmbeddingBindingResolver(
 	configurations CurrentEmbeddingConfigurationReader,
-	runtime CurrentEmbeddingRuntimeReader,
 	publicProjectID int32,
 ) (*CurrentEmbeddingBindingResolver, error) {
-	if configurations == nil || runtime == nil || publicProjectID <= 0 {
+	if configurations == nil || publicProjectID <= 0 {
 		return nil, errors.New("current embedding binding dependencies are required")
 	}
 	return &CurrentEmbeddingBindingResolver{
 		configurations: configurations,
-		runtime:        runtime,
 		publicProject:  publicProjectID,
 	}, nil
 }
 
-// Resolve records the current proxy route without changing it: caller project
-// first, shared public project second, then the raw name. preferredProjectID is
-// present only when the current model catalog supplied an authoritative default
-// tuple; it is retained independently from the observed proxy route.
+// Resolve performs exactly one caller-project -> shared-public-project search,
+// against the Configurations rows themselves. It used to perform that search
+// twice: once against the LiteLLM administration API purely to learn which
+// model group name existed, and once against the database for the configuration
+// identity. The registry search is gone with LiteLLM — the gateway pulls the
+// same p_{project}.configuration rows this search reads, so a second registry
+// that has to be told about models separately no longer exists to disagree.
+//
+// preferredProjectID is present only when the current model catalog supplied an
+// authoritative default tuple; it scopes the single search to that owner.
 func (r *CurrentEmbeddingBindingResolver) Resolve(
 	ctx context.Context,
 	projectID int32,
@@ -193,15 +198,11 @@ func (r *CurrentEmbeddingBindingResolver) Resolve(
 		return EmbeddingBinding{}, err
 	}
 
-	groupName, route, err := r.resolveCurrentEmbeddingRoute(ctx, projectID, modelName)
-	if err != nil {
-		return EmbeddingBinding{}, err
-	}
 	binding := EmbeddingBinding{
 		SchemaVersion:      CurrentEmbeddingBindingSchema,
 		ModelName:          modelName,
-		ResolvedModelGroup: groupName,
-		Route:              route,
+		ResolvedModelGroup: modelName,
+		Route:              currentEmbeddingBindingRoute,
 	}
 	if preferredProjectID != nil {
 		binding.ModelProjectID = *preferredProjectID
@@ -235,51 +236,11 @@ func (r *CurrentEmbeddingBindingResolver) Resolve(
 	return binding, nil
 }
 
-func (r *CurrentEmbeddingBindingResolver) resolveCurrentEmbeddingRoute(
-	ctx context.Context,
-	projectID int32,
-	modelName string,
-) (string, string, error) {
-	projectGroup := strconv.FormatInt(int64(projectID), 10) + "_" + modelName
-	found, err := r.currentEmbeddingGroupExists(ctx, projectGroup)
-	if err != nil {
-		return "", "", err
-	}
-	if found {
-		return projectGroup, "project", nil
-	}
-	if projectID != r.publicProject {
-		publicGroup := strconv.FormatInt(int64(r.publicProject), 10) + "_" + modelName
-		found, err = r.currentEmbeddingGroupExists(ctx, publicGroup)
-		if err != nil {
-			return "", "", err
-		}
-		if found {
-			return publicGroup, "public", nil
-		}
-	}
-	// The current proxy deliberately forwards the raw name without first
-	// proving that an externally managed LiteLLM group exists.
-	return modelName, "raw", nil
-}
-
-func (r *CurrentEmbeddingBindingResolver) currentEmbeddingGroupExists(
-	ctx context.Context,
-	groupName string,
-) (bool, error) {
-	group, found, err := r.runtime.GetCurrentEmbeddingRuntimeGroup(ctx, groupName)
-	if err != nil {
-		return false, currentEmbeddingDependencyError(ctx, err)
-	}
-	if !found {
-		return false, nil
-	}
-	if group.Name != groupName || !validEmbeddingBindingIdentity(group.Name) {
-		return false, ErrInvalidCurrentEmbeddingBinding
-	}
-	return true, nil
-}
-
+// resolveCurrentEmbeddingConfiguration is the single project -> public search.
+// A caller-project row always wins over an identically named shared row in the
+// public project, and the public project is consulted only when the caller's
+// project has no match — and then only with sharedOnly, so a private
+// public-project row can never be bound by another tenant.
 func (r *CurrentEmbeddingBindingResolver) resolveCurrentEmbeddingConfiguration(
 	ctx context.Context,
 	projectID int32,
@@ -405,6 +366,17 @@ func currentEmbeddingDependencyError(ctx context.Context, err error) error {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
+	}
+	// The reader's duplicate sentinel (two mutable rows share one model name)
+	// is a distinct admission outcome the caller switches on
+	// (resolver.resolveCurrentEmbeddingBinding), not an upstream failure. It is
+	// returned bare rather than wrapped so the reader's message — which may
+	// quote row content — never reaches the caller.
+	if errors.Is(err, ErrCurrentEmbeddingBindingAmbiguous) {
+		return ErrCurrentEmbeddingBindingAmbiguous
+	}
+	if errors.Is(err, ErrInvalidCurrentEmbeddingBinding) {
+		return ErrInvalidCurrentEmbeddingBinding
 	}
 	return fmt.Errorf("%w", ErrCurrentEmbeddingBindingUnavailable)
 }

@@ -45,6 +45,9 @@ func (indexBindingToolkitReader) GetCurrentToolkit(
 }
 
 type indexBindingModelCatalog struct {
+	// ownerProjectID is the project that owns the authoritative default
+	// embedding model: the shared public project, or the caller's own project.
+	ownerProjectID   int32
 	embeddingQueries []configurationapp.CurrentModelCatalogQuery
 }
 
@@ -57,12 +60,12 @@ func (c *indexBindingModelCatalog) Get(
 	}
 	c.embeddingQueries = append(c.embeddingQueries, query)
 	name := "embedding-current"
-	ownerProjectID := int32(1)
+	ownerProjectID := c.ownerProjectID
 	return configurationapp.CurrentModelCatalogResponse{
 		Items: []configurationapp.CurrentModelCatalogItem{{
 			Name:      name,
 			ProjectID: ownerProjectID,
-			Shared:    true,
+			Shared:    ownerProjectID == 1,
 			Default:   true,
 		}},
 		DefaultModelName:      &name,
@@ -88,7 +91,11 @@ func (indexBindingSettingsResolver) Resolve(
 }
 
 type indexBindingConfigurationReader struct {
-	calls []indexBindingConfigurationCall
+	// ownerProjectID is the only project holding the embedding row, and its
+	// uuid differs per owner so a binding that bound the wrong scope carries a
+	// different configuration identity and digest.
+	ownerProjectID int32
+	calls          []indexBindingConfigurationCall
 }
 
 type indexBindingConfigurationCall struct {
@@ -108,33 +115,19 @@ func (r *indexBindingConfigurationReader) FindCurrentEmbeddingConfiguration(
 		modelName:  modelName,
 		sharedOnly: sharedOnly,
 	})
-	if projectID != 1 || modelName != "embedding-current" || !sharedOnly {
+	shared := r.ownerProjectID == 1
+	if projectID != r.ownerProjectID || modelName != "embedding-current" ||
+		sharedOnly != shared {
 		return indexingapp.CurrentEmbeddingConfiguration{}, false, nil
 	}
 	return indexingapp.CurrentEmbeddingConfiguration{
-		UUID:      "00000000-0000-0000-0000-000000000107",
-		ProjectID: 1,
+		UUID:      fmt.Sprintf("00000000-0000-0000-0000-0000000001%02d", r.ownerProjectID),
+		ProjectID: r.ownerProjectID,
 		Type:      "embedding_model",
 		Section:   "embedding",
 		Data:      json.RawMessage(`{"name":"embedding-current"}`),
-		Shared:    true,
+		Shared:    shared,
 	}, true, nil
-}
-
-type indexBindingRuntimeReader struct {
-	groups map[string]bool
-	calls  []string
-}
-
-func (r *indexBindingRuntimeReader) GetCurrentEmbeddingRuntimeGroup(
-	_ context.Context,
-	groupName string,
-) (indexingapp.CurrentEmbeddingRuntimeGroup, bool, error) {
-	r.calls = append(r.calls, groupName)
-	if !r.groups[groupName] {
-		return indexingapp.CurrentEmbeddingRuntimeGroup{}, false, nil
-	}
-	return indexingapp.CurrentEmbeddingRuntimeGroup{Name: groupName}, true, nil
 }
 
 type indexBindingNoopAppender struct{}
@@ -173,8 +166,10 @@ type indexBindingCrossProcessResult struct {
 
 // TestIndexEmbeddingBindingMainWorkerCrossProcess proves the migration
 // boundary with two real language processes. Main resolves the authoritative
-// default (model, owner project) tuple and observes the unchanged
-// project -> public -> raw LiteLLM proxy route. The production Go producer
+// default (model, owner project) tuple and binds the Configurations row that
+// backs it — the same row the Bifrost gateway pulls per project at request
+// time, which is why the admitted wire name is the plain model name and not a
+// LiteLLM-style `{projectID}_` group. The production Go producer
 // signs only a reference command. The real Python delivery processor verifies
 // the Ed25519 signature, rejects a correctly signed stale capability v1 before
 // claim, and reaches claim for v2. The worker then validates the claim-scoped
@@ -197,45 +192,36 @@ func TestIndexEmbeddingBindingMainWorkerCrossProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The model group prefix is gone with LiteLLM: every binding now carries the
+	// plain model name, and the project scope survives only in the bound
+	// configuration identity. The scenarios therefore vary the project that owns
+	// the authoritative default model, not a proxy registry.
 	scenarios := []struct {
-		name          string
-		groups        map[string]bool
-		expectedCalls []string
-		expectedGroup string
-		expectedRoute string
+		name                 string
+		ownerProjectID       int32
+		expectedSharedOnly   bool
+		expectedConfigUUID   string
+		expectedConfigDigest bool
 	}{
 		{
-			name:          "project",
-			groups:        map[string]bool{"42_embedding-current": true},
-			expectedCalls: []string{"42_embedding-current"},
-			expectedGroup: "42_embedding-current",
-			expectedRoute: "project",
+			name:               "public shared default",
+			ownerProjectID:     1,
+			expectedSharedOnly: true,
+			expectedConfigUUID: "00000000-0000-0000-0000-000000000101",
 		},
 		{
-			name: "public",
-			groups: map[string]bool{
-				"1_embedding-current": true,
-			},
-			expectedCalls: []string{"42_embedding-current", "1_embedding-current"},
-			expectedGroup: "1_embedding-current",
-			expectedRoute: "public",
-		},
-		{
-			name:          "raw",
-			groups:        map[string]bool{},
-			expectedCalls: []string{"42_embedding-current", "1_embedding-current"},
-			expectedGroup: "embedding-current",
-			expectedRoute: "raw",
+			name:               "project owned default",
+			ownerProjectID:     42,
+			expectedSharedOnly: false,
+			expectedConfigUUID: "00000000-0000-0000-0000-000000000142",
 		},
 	}
 	vectors := make([]indexBindingCrossProcessVector, 0, len(scenarios))
 	for index, scenario := range scenarios {
-		catalog := &indexBindingModelCatalog{}
-		configurations := &indexBindingConfigurationReader{}
-		runtimeGroups := &indexBindingRuntimeReader{groups: scenario.groups}
+		catalog := &indexBindingModelCatalog{ownerProjectID: scenario.ownerProjectID}
+		configurations := &indexBindingConfigurationReader{ownerProjectID: scenario.ownerProjectID}
 		embeddingResolver, resolverErr := indexingapp.NewCurrentEmbeddingBindingResolver(
 			configurations,
-			runtimeGroups,
 			1,
 		)
 		if resolverErr != nil {
@@ -263,10 +249,12 @@ func TestIndexEmbeddingBindingMainWorkerCrossProcess(t *testing.T) {
 		}
 		if inputs.EmbeddingBinding == nil ||
 			inputs.EmbeddingBinding.ModelName != "embedding-current" ||
-			inputs.EmbeddingBinding.ModelProjectID != 1 ||
-			inputs.EmbeddingBinding.ConfigurationProjectID != 1 ||
-			inputs.EmbeddingBinding.ResolvedModelGroup != scenario.expectedGroup ||
-			inputs.EmbeddingBinding.Route != scenario.expectedRoute {
+			inputs.EmbeddingBinding.ModelProjectID != scenario.ownerProjectID ||
+			inputs.EmbeddingBinding.ConfigurationProjectID != scenario.ownerProjectID ||
+			inputs.EmbeddingBinding.ConfigurationUUID != scenario.expectedConfigUUID ||
+			inputs.EmbeddingBinding.ConfigurationDigest.IsZero() ||
+			inputs.EmbeddingBinding.ResolvedModelGroup != "embedding-current" ||
+			inputs.EmbeddingBinding.Route != "raw" {
 			t.Fatalf("%s binding=%+v", scenario.name, inputs.EmbeddingBinding)
 		}
 		expectedCatalogQuery := configurationapp.CurrentModelCatalogQuery{
@@ -278,13 +266,11 @@ func TestIndexEmbeddingBindingMainWorkerCrossProcess(t *testing.T) {
 		if !reflect.DeepEqual(catalog.embeddingQueries, []configurationapp.CurrentModelCatalogQuery{expectedCatalogQuery}) {
 			t.Fatalf("%s embedding catalog queries=%+v", scenario.name, catalog.embeddingQueries)
 		}
-		if !reflect.DeepEqual(runtimeGroups.calls, scenario.expectedCalls) {
-			t.Fatalf("%s LiteLLM route probes=%v, want %v", scenario.name, runtimeGroups.calls, scenario.expectedCalls)
-		}
+		// Exactly one configuration search backs the whole binding now.
 		if !reflect.DeepEqual(configurations.calls, []indexBindingConfigurationCall{{
-			projectID:  1,
+			projectID:  scenario.ownerProjectID,
 			modelName:  "embedding-current",
-			sharedOnly: true,
+			sharedOnly: scenario.expectedSharedOnly,
 		}}) {
 			t.Fatalf("%s configuration owner lookups=%+v", scenario.name, configurations.calls)
 		}
@@ -312,10 +298,10 @@ func TestIndexEmbeddingBindingMainWorkerCrossProcess(t *testing.T) {
 			Binding:                 bindingContent,
 			BindingRaw:              base64.StdEncoding.EncodeToString(bindingContent),
 			ExpectedModelName:       "embedding-current",
-			ExpectedGroup:           scenario.expectedGroup,
-			ExpectedRoute:           scenario.expectedRoute,
-			ExpectedModelProjectID:  1,
-			ExpectedConfigProjectID: 1,
+			ExpectedGroup:           "embedding-current",
+			ExpectedRoute:           "raw",
+			ExpectedModelProjectID:  scenario.ownerProjectID,
+			ExpectedConfigProjectID: scenario.ownerProjectID,
 		}
 		if index == 0 {
 			vector.SignedV1 = base64.StdEncoding.EncodeToString(
@@ -350,9 +336,13 @@ func TestIndexEmbeddingBindingMainWorkerCrossProcess(t *testing.T) {
 	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatalf("decode Python worker result: %v\n%s", err, output)
 	}
+	wantRoutes := make([]string, 0, len(scenarios))
+	for range scenarios {
+		wantRoutes = append(wantRoutes, "raw")
+	}
 	if !result.V1RejectedBeforeClaim ||
 		result.V2ClaimCalls != len(scenarios) ||
-		!reflect.DeepEqual(result.AcceptedRoutes, []string{"project", "public", "raw"}) {
+		!reflect.DeepEqual(result.AcceptedRoutes, wantRoutes) {
 		t.Fatalf("unexpected Python worker result: %+v", result)
 	}
 }
@@ -672,5 +662,4 @@ var _ indexingapp.CurrentToolkitReader = indexBindingToolkitReader{}
 var _ indexingapp.CurrentModelCatalog = (*indexBindingModelCatalog)(nil)
 var _ indexingapp.CurrentToolkitSettingsValidator = indexBindingSettingsResolver{}
 var _ indexingapp.CurrentEmbeddingConfigurationReader = (*indexBindingConfigurationReader)(nil)
-var _ indexingapp.CurrentEmbeddingRuntimeReader = (*indexBindingRuntimeReader)(nil)
 var _ redisdispatch.StreamAppender = indexBindingNoopAppender{}

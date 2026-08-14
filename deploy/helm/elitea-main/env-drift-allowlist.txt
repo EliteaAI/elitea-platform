@@ -100,3 +100,14 @@ FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS
 # --- the correct production default. COOKIE_SECURE=false is only appropriate
 # --- for plain-HTTP localhost E2E runs and must never appear in production values.
 COOKIE_SECURE
+
+# --- Rename tripwire, NOT a knob — same inverted reading as AUTH_DEV_MODE
+# --- above. The project-own-LLM policy survived the LiteLLM removal; only its
+# --- env var did not, becoming ELITEA_ALLOW_PROJECT_OWN_LLMS.
+# --- cmd/elitea-main reads the old name for exactly one reason: to REFUSE TO
+# --- START if a stale manifest still sets it, because silently ignoring a
+# --- `false` would fail OPEN — every project would regain permission to define
+# --- its own LLM credentials, and status_ok would start admitting rows the
+# --- operator meant to exclude. The chart must never set it. Delete this line
+# --- when the rejection guard itself goes.
+ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS

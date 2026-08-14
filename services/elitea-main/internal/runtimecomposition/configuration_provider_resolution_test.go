@@ -10,7 +10,7 @@ import (
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 )
 
-func TestCurrentLiteLLMConfigurationMaterializerUsesOwningVaultThenGenericExpansion(t *testing.T) {
+func TestCurrentProviderConfigurationResolutionUsesOwningVaultThenGenericExpansion(t *testing.T) {
 	callOrder := []string{}
 	unsecreter := currentLifecycleUnsecreterStub{unsecret: func(
 		_ context.Context,
@@ -47,7 +47,7 @@ func TestCurrentLiteLLMConfigurationMaterializerUsesOwningVaultThenGenericExpans
 			},
 		}, nil
 	}}
-	materializer, err := newCurrentLiteLLMConfigurationMaterializer(expander, unsecreter)
+	resolution, err := newCurrentProviderConfigurationResolution(expander, unsecreter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,50 +61,63 @@ func TestCurrentLiteLLMConfigurationMaterializerUsesOwningVaultThenGenericExpans
 			},
 		},
 	}
-	configuration, err := materializer.MaterializeCurrentLiteLLMConfiguration(context.Background(), snapshot)
-	if err != nil {
+	if err := resolution.ResolveCurrentProviderConfiguration(
+		context.Background(),
+		configurationapp.CurrentProviderConfigurationResolution{
+			EffectID: "event-1:provider:resolve", Revision: 4, ProjectID: 7,
+			ConfigurationUUID: "model-uuid", Section: "llm", Configuration: snapshot,
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
-	if configuration.UUID != snapshot.UUID || configuration.ProjectID != 7 || configuration.Type != snapshot.Type ||
-		configuration.Data["api_key"] != "resolved-root" ||
-		!reflect.DeepEqual(callOrder, []string{"unsecret", "expand"}) {
-		t.Fatalf("configuration=%#v calls=%#v", configuration, callOrder)
+	// Owning-project unsecreting must precede expansion, so each nested
+	// configuration is redeemed through its own project's vault.
+	if !reflect.DeepEqual(callOrder, []string{"unsecret", "expand"}) {
+		t.Fatalf("calls=%#v", callOrder)
 	}
 	if snapshot.Data["api_key"] != "{{secret.key}}" {
 		t.Fatalf("snapshot was mutated: %#v", snapshot.Data)
 	}
 }
 
-func TestCurrentLiteLLMConfigurationMaterializerRedactsDependenciesAndPreservesCancellation(t *testing.T) {
+// The check is the reason a row reaches status_ok at all, so an unresolvable
+// reference or an unredeemable secret has to surface as a failure — and it must
+// surface without carrying provider text out of the boundary.
+func TestCurrentProviderConfigurationResolutionRedactsDependenciesAndPreservesCancellation(t *testing.T) {
 	secret := "provider-token-must-not-escape"
 	for name, test := range map[string]struct {
-		ctx        context.Context
 		expander   currentConfigurationLifecycleExpander
 		unsecreter currentConfigurationLifecycleUnsecreter
 		want       error
 	}{
 		"unsecret failure": {
-			ctx: context.Background(),
 			expander: currentLifecycleExpanderStub{expand: func(context.Context, configurationapp.CurrentExpansionRequest) (map[string]any, error) {
 				return map[string]any{}, nil
 			}},
 			unsecreter: currentLifecycleUnsecreterStub{unsecret: func(context.Context, int32, map[string]any) (map[string]any, error) {
 				return nil, errors.New(secret)
 			}},
-			want: errCurrentLiteLLMConfigurationMaterialization,
+			want: errCurrentProviderConfigurationResolution,
 		},
 		"expansion failure": {
-			ctx: context.Background(),
 			expander: currentLifecycleExpanderStub{expand: func(context.Context, configurationapp.CurrentExpansionRequest) (map[string]any, error) {
 				return nil, errors.New(secret)
 			}},
 			unsecreter: currentLifecycleUnsecreterStub{unsecret: func(_ context.Context, _ int32, input map[string]any) (map[string]any, error) {
 				return input, nil
 			}},
-			want: errCurrentLiteLLMConfigurationMaterialization,
+			want: errCurrentProviderConfigurationResolution,
+		},
+		"missing expansion result": {
+			expander: currentLifecycleExpanderStub{expand: func(context.Context, configurationapp.CurrentExpansionRequest) (map[string]any, error) {
+				return nil, nil
+			}},
+			unsecreter: currentLifecycleUnsecreterStub{unsecret: func(_ context.Context, _ int32, input map[string]any) (map[string]any, error) {
+				return input, nil
+			}},
+			want: errCurrentProviderConfigurationResolution,
 		},
 		"dependency cancellation": {
-			ctx: context.Background(),
 			expander: currentLifecycleExpanderStub{expand: func(context.Context, configurationapp.CurrentExpansionRequest) (map[string]any, error) {
 				return nil, context.DeadlineExceeded
 			}},
@@ -115,13 +128,19 @@ func TestCurrentLiteLLMConfigurationMaterializerRedactsDependenciesAndPreservesC
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			materializer, err := newCurrentLiteLLMConfigurationMaterializer(test.expander, test.unsecreter)
+			resolution, err := newCurrentProviderConfigurationResolution(test.expander, test.unsecreter)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = materializer.MaterializeCurrentLiteLLMConfiguration(test.ctx, configurationapp.CurrentConfigurationLifecycleSnapshot{
-				UUID: "uuid", ProjectID: 7, Type: "open_ai", Data: map[string]any{},
-			})
+			err = resolution.ResolveCurrentProviderConfiguration(
+				context.Background(),
+				configurationapp.CurrentProviderConfigurationResolution{
+					ProjectID: 7, ConfigurationUUID: "uuid", Section: "ai_credentials",
+					Configuration: configurationapp.CurrentConfigurationLifecycleSnapshot{
+						UUID: "uuid", ProjectID: 7, Type: "open_ai", Data: map[string]any{},
+					},
+				},
+			)
 			if !errors.Is(err, test.want) || (err != nil && strings.Contains(err.Error(), secret)) {
 				t.Fatalf("error=%v want=%v", err, test.want)
 			}
@@ -129,24 +148,27 @@ func TestCurrentLiteLLMConfigurationMaterializerRedactsDependenciesAndPreservesC
 	}
 }
 
-func TestCurrentLiteLLMConfigurationMaterializerRejectsIncompleteGraphAndSnapshot(t *testing.T) {
+func TestCurrentProviderConfigurationResolutionRejectsIncompleteGraphAndSnapshot(t *testing.T) {
 	validExpander := currentLifecycleExpanderStub{expand: func(context.Context, configurationapp.CurrentExpansionRequest) (map[string]any, error) {
 		return map[string]any{}, nil
 	}}
 	validUnsecreter := currentLifecycleUnsecreterStub{unsecret: func(_ context.Context, _ int32, input map[string]any) (map[string]any, error) {
 		return input, nil
 	}}
-	if materializer, err := newCurrentLiteLLMConfigurationMaterializer(nil, validUnsecreter); err == nil || materializer != nil {
-		t.Fatalf("materializer=%#v error=%v", materializer, err)
+	if resolution, err := newCurrentProviderConfigurationResolution(nil, validUnsecreter); err == nil || resolution != nil {
+		t.Fatalf("resolution=%#v error=%v", resolution, err)
 	}
-	if materializer, err := newCurrentLiteLLMConfigurationMaterializer(validExpander, nil); err == nil || materializer != nil {
-		t.Fatalf("materializer=%#v error=%v", materializer, err)
+	if resolution, err := newCurrentProviderConfigurationResolution(validExpander, nil); err == nil || resolution != nil {
+		t.Fatalf("resolution=%#v error=%v", resolution, err)
 	}
-	materializer, err := newCurrentLiteLLMConfigurationMaterializer(validExpander, validUnsecreter)
+	resolution, err := newCurrentProviderConfigurationResolution(validExpander, validUnsecreter)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := materializer.MaterializeCurrentLiteLLMConfiguration(context.Background(), configurationapp.CurrentConfigurationLifecycleSnapshot{}); !errors.Is(err, errCurrentLiteLLMConfigurationMaterialization) {
+	if err := resolution.ResolveCurrentProviderConfiguration(
+		context.Background(),
+		configurationapp.CurrentProviderConfigurationResolution{},
+	); !errors.Is(err, errCurrentProviderConfigurationResolution) {
 		t.Fatalf("error=%v", err)
 	}
 }

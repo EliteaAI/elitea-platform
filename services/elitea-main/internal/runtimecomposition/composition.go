@@ -75,7 +75,6 @@ type Dependencies struct {
 	TerminalEffectsPool              *pgxpool.Pool
 	ContentPool                      *pgxpool.Pool
 	CurrentConfigurations            *CurrentConfigurationsRuntime
-	CurrentEmbeddingRuntime          indexingapp.CurrentEmbeddingRuntimeReader
 	ConfigurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
 	ActorTokenIssuer                 storage.ActorTokenIssuer
 	ProjectTokenValidator            storage.ProjectTokenValidator
@@ -112,9 +111,12 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			"runtime index scheduling project-system token source is required",
 		)
 	}
-	if config.IndexIngestDispatchEnabled &&
-		(dependencies.CurrentConfigurations == nil || dependencies.CurrentEmbeddingRuntime == nil) {
-		return nil, errors.New("runtime index ingest current Configurations and embedding runtimes are required")
+	// Index ingest needs the Configurations runtime and nothing else on the LLM
+	// side: the embedding binding is resolved from those same configuration rows
+	// the Bifrost gateway reads. It used to also require an LLM facade, which
+	// gated the whole index plane on ELITEA_LITELLM_BASE_URL being set.
+	if config.IndexIngestDispatchEnabled && dependencies.CurrentConfigurations == nil {
+		return nil, errors.New("runtime index ingest current Configurations runtime is required")
 	}
 	if dependencies.ConfigurationLifecycleReconciler != nil && dependencies.CurrentConfigurations == nil {
 		return nil, errors.New("configuration lifecycle requires current Configurations runtime")
@@ -902,7 +904,6 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		currentIndex, err = newCurrentIndexRuntime(
 			dependencies.AdmissionPool,
 			dependencies.CurrentConfigurations,
-			dependencies.CurrentEmbeddingRuntime,
 			config,
 			indexDispatchPolicy,
 			currentIndexMetaWriter,

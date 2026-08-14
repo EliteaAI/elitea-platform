@@ -163,7 +163,6 @@ type RouterConfig struct {
 	CurrentNotificationEvents     http.Handler
 	CurrentModelCatalog           http.Handler
 	CurrentModelDefault           http.Handler
-	CurrentLLMFacade              http.Handler
 	LLMProxy                      http.Handler
 	LLMProjectResolver            apimw.PersonalProjectResolver
 	// GatewayProxy is the mTLS streaming reverse proxy to elitea-llm-gateway-svc
@@ -1557,9 +1556,21 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		})
 	})
 
-	// /llm has two possible backends. GatewayProxy is the Bifrost gateway
-	// (LLM_GATEWAY_URL); LLMProxy is the older LiteLLM facade, reachable only
-	// under ELITEA_CONFIGURATIONS_ENABLED, which no deployment sets.
+	// /llm has one composed backend: GatewayProxy, the mTLS reverse proxy to
+	// elitea-llm-gateway-svc (LLM_GATEWAY_URL). The gateway is the only LLM
+	// data plane — it pulls per-project credentials and model definitions from
+	// p_{projectID}.configuration itself, so there is no second proxy for Main
+	// to compose and no LiteLLM facade to fall back to (that facade, its
+	// administration client and its ELITEA_LITELLM_* env surface were deleted;
+	// nothing may reintroduce a fallback here).
+	//
+	// LLMProxy survives as a deliberately unwired seam: it is a plain
+	// http.Handler with no composition site in cmd/elitea-main, declared
+	// optional-by-design in router_nil_gate_test.go, and exists so an
+	// alternative LLM backend can be mounted with the same Auth+Project
+	// middleware without reopening this routing decision. It is NOT the old
+	// facade. Gateway wins when both are set: it is the migration target, and
+	// preferring anything else over it would be a silent downgrade.
 	//
 	// The gateway arm is mounted HERE, not in production_router.go's
 	// mountReviewedProductionRoutes: NewRouter always builds this router
@@ -1568,9 +1579,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	// matters now — mountReviewedProductionRoutes explicitly defers to this
 	// registration rather than mounting /llm itself.
 	//
-	// Gateway wins when both are composed: it is the migration target, and
-	// serving the superseded facade in preference to it would be a silent
-	// downgrade.
 	// Each backend keeps its own literal per-field nil gate rather than being
 	// collapsed into one nil-check over a local. TestNilGatedRouterFieldsAreWiredOrDeclared
 	// reads this file as SOURCE to prove no route group is gated behind a field

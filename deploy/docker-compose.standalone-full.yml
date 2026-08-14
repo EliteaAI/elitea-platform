@@ -18,8 +18,14 @@
 # fix here is complete, and vice versa.
 #
 # There is no pylon, no centry, no LiteLLM in this stack. LiteLLM is superseded
-# by the gateway: elitea-main only reads ELITEA_LITELLM_* under
-# ELITEA_CONFIGURATIONS_ENABLED=true, which nothing here sets.
+# by the gateway, and elitea-main can no longer talk to it at all: the facade,
+# its administration client and the ELITEA_LITELLM_BASE_URL /
+# ELITEA_LITELLM_MASTER_KEY_FILE env surface are deleted. The gateway is the
+# sole /llm backend, and it pulls each project's credentials and models from
+# p_{projectID}.configuration itself. (The one surviving setting from that era
+# is the project-own-LLM policy, renamed to ELITEA_ALLOW_PROJECT_OWN_LLMS; it
+# only applies under ELITEA_CONFIGURATIONS_ENABLED=true, which nothing here
+# sets.)
 #
 # ── What works ───────────────────────────────────────────────────────────────
 #   Everything the E2E stack does, plus real chat completions through Bifrost at

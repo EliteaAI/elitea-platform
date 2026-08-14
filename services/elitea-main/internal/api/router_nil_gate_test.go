@@ -89,7 +89,12 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 		// within the gated block yields zero and the field looks inert. The five
 		// routes live in the handler's Routes(). Any future audit of this pattern
 		// has to follow Mount targets, or it will undercount exactly here.
-		"LLMProxy": "optional by design: the LLM proxy is a separate deployment (services/elitea-llm-gateway)",
+		// Never assigned by cmd/elitea-main: GatewayProxy is what every real
+		// deployment composes, and the LiteLLM facade that once could have
+		// filled this field is deleted. It stays as an unwired seam for an
+		// alternative backend behind the same Auth+Project middleware — see
+		// router.go's "/llm has one composed backend" comment.
+		"LLMProxy": "optional by design: the LLM data plane is a separate deployment (services/elitea-llm-gateway), reached via GatewayProxy",
 		// EventSource is the NATS arm of the project-SSE fallback pair. It is
 		// genuinely optional — but ONLY because RedisClient, the other arm, is
 		// now wired (see the fallback-pair check below, which is what makes

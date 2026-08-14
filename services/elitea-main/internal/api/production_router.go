@@ -210,13 +210,16 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	if cfg.CurrentModelDefault != nil {
 		r.Method(http.MethodPost, configurationapi.CurrentModelDefaultPath, cfg.CurrentModelDefault)
 	}
-	// GatewayProxy and LLMProxy are mounted at /llm directly inside
-	// newProductionRouter (router.go's "/llm has two possible backends"
-	// comment) — the sole caller of this function, so a second /llm
-	// registration here would double-mount and panic (chi disallows
-	// mounting the same pattern twice). CurrentLLMFacade only gets to serve
-	// /llm when neither of those backends is composed.
-	if cfg.GatewayProxy == nil && cfg.LLMProxy == nil && cfg.CurrentLLMFacade != nil {
-		r.Handle("/llm/*", cfg.CurrentLLMFacade)
-	}
+	// /llm is mounted exclusively by newProductionRouter (see its "/llm has one
+	// composed backend" comment) — the sole caller of this function, so a
+	// second /llm registration here would double-mount and panic (chi
+	// disallows mounting the same pattern twice).
+	//
+	// This function used to add a last-resort `r.Handle("/llm/*", ...)` for the
+	// LiteLLM facade whenever neither gateway backend was composed. That facade
+	// is gone: the Bifrost gateway reads per-project credentials and models
+	// from p_{projectID}.configuration directly, so there is no push-model
+	// proxy left to fall back to. With no backend composed, /llm is simply not
+	// registered and answers 404 — deliberately, so a missing LLM_GATEWAY_URL
+	// fails visibly instead of silently routing to a superseded data plane.
 }

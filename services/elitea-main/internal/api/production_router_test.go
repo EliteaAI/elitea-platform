@@ -1535,28 +1535,46 @@ func TestProductionRouterMountsCurrentAvailableAliasesAsGetOnly(t *testing.T) {
 	}
 }
 
-func TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath(t *testing.T) {
-	calls := 0
-	facade := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		calls++
-		if request.URL.Path != "/llm/v1/embeddings" || request.Method != http.MethodPost {
-			t.Fatalf("facade request = %s %s", request.Method, request.URL.Path)
+// The /llm routing contract after the LiteLLM removal.
+//
+// This replaces TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath,
+// which pinned the opposite contract: a bare RouterConfig carrying only a
+// CurrentLLMFacade served /llm from that facade. There is no facade and no
+// last-resort arm any more — the Bifrost gateway is the only backend, and with
+// nothing composed /llm must not be registered at all. A reintroduced fallback
+// would turn the second half of this test from 404 into a served response.
+func TestProductionRouterLLMRouteHasNoLastResortBackend(t *testing.T) {
+	// Registered patterns are the discriminating signal here: the routes
+	// GatewayProxy mounts sit behind Auth+Project middleware, so a bare
+	// unauthenticated request cannot tell "mounted but rejecting" from
+	// "never mounted" — both answer non-2xx.
+	uncomposed := routePatterns(t, NewRouter(RouterConfig{}))
+	for _, pattern := range uncomposed {
+		if strings.Contains(pattern, "/llm") {
+			t.Fatalf("uncomposed router registered %q — /llm must have no backend when none is composed", pattern)
 		}
-		writer.WriteHeader(http.StatusNoContent)
-	})
-	router := NewRouter(RouterConfig{CurrentLLMFacade: facade})
-
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", strings.NewReader(`{"model":"embed"}`)))
-	if recorder.Code != http.StatusNoContent || calls != 1 {
-		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
 	}
 
-	unmounted := NewRouter(RouterConfig{})
-	recorder = httptest.NewRecorder()
-	unmounted.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", nil))
+	recorder := httptest.NewRecorder()
+	NewRouter(RouterConfig{}).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`)),
+	)
 	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("uncomposed facade status=%d", recorder.Code)
+		t.Fatalf("uncomposed /llm status=%d body=%s (want 404: no LiteLLM fallback exists)", recorder.Code, recorder.Body.String())
+	}
+
+	// With the gateway composed the pattern appears, so the assertion above is
+	// reading a real registration and not a router that never mounts /llm.
+	withGateway := routePatterns(t, NewRouter(RouterConfig{GatewayProxy: http.NotFoundHandler()}))
+	mounted := false
+	for _, pattern := range withGateway {
+		if strings.Contains(pattern, "/llm") {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("GatewayProxy composed but no /llm pattern registered; patterns=%v", withGateway)
 	}
 }
 
