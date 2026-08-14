@@ -47,15 +47,17 @@ on:
     types: [completed]
   # Repeatable by hand — #309's acceptance criterion asks for a dispatch path
   # so the audit can be re-run against a release without cutting another one.
+  # No `ref` input, deliberately. An arbitrary caller-supplied ref that this
+  # workflow then CHECKS OUT AND EXECUTES (`go run ./tools/uictl`) is a
+  # privileged-context code-execution vector: workflow_run and dispatch both
+  # run against the default branch, so anyone who can dispatch could have any
+  # ref's code run there. CodeQL flags exactly that pair as
+  # actions/cache-poisoning/poisonable-step (alerts #93, #94).
+  #
+  # To re-audit a past release, dispatch this workflow WITH THAT TAG SELECTED —
+  # github.ref then carries it, and GitHub restricts the choice to refs that
+  # already exist in this repository, which an input does not.
   workflow_dispatch:
-    inputs:
-      ref:
-        description: >-
-          Commit, tag or branch to audit. Defaults to the branch this is
-          dispatched on. Use a release tag (e.g. v1.16.0) to re-audit a past
-          release.
-        type: string
-        required: false
 
 permissions:
   contents: read
@@ -77,7 +79,7 @@ jobs:
           # workflow_run checks out the default branch unless told otherwise.
           # Auditing main instead of the released commit would make this gate
           # a different check than it claims to be.
-          ref: ${{ inputs.ref || github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
           fetch-depth: 0
           submodules: recursive # apps/elitea-ui is the pinned parity baseline
 
