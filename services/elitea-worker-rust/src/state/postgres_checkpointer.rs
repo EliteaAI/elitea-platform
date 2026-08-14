@@ -11,6 +11,8 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+mod parallel_children;
+
 const CHECKPOINT_FAMILY: &str = "adk-graph.2.0.0.v1";
 const MAX_DATABASE_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DATABASE_PENDING_NODES: usize = 4096;
@@ -247,6 +249,29 @@ impl CheckpointWriterAuthority {
             ));
         }
         Ok(())
+    }
+
+    fn for_thread(&self, thread_id: String) -> Result<Self, PostgresCheckpointError> {
+        let mut fence_token = [0_u8; 32];
+        fence_token.copy_from_slice(self.fence_token.as_slice());
+        let authority = Self {
+            tenant_id: self.tenant_id.clone(),
+            resource_project_id: self.resource_project_id,
+            projection_project_id: self.projection_project_id,
+            capability_id: self.capability_id,
+            definition_digest: self.definition_digest,
+            thread_id,
+            execution_id: self.execution_id.clone(),
+            generation: self.generation,
+            claim_id: self.claim_id.clone(),
+            claim_attempt: self.claim_attempt,
+            lease_epoch: self.lease_epoch,
+            workload_session_id: self.workload_session_id.clone(),
+            producer_id: self.producer_id.clone(),
+            fence_token: Zeroizing::new(fence_token),
+        };
+        authority.validate()?;
+        Ok(authority)
     }
 }
 

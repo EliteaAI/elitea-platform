@@ -1,5 +1,6 @@
 //! Language-neutral agent execution contracts.
 
+pub mod graph;
 pub mod protocol;
 pub mod request;
 pub mod result;

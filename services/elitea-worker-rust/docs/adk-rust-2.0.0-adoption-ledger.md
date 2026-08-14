@@ -41,25 +41,46 @@ passing upstream test does not register a production worker capability.
 ## Parallel node decision
 
 The new YAML node is a graph construct, not concurrent subagent dispatch. Its
-compiler will create a bounded fork, stable branch IDs and one deterministic
-join. The first supported policy is `wait: all` and fail-after-drain: already
-started siblings complete under the same lease, every branch outcome is
-recorded, and the reducer receives results in declared branch order.
+strict definition, bounded runner and deterministic join are implemented in
+`src/agents/graph/{yaml,parallel}.rs`. The first supported policy is
+`wait: all` and fail-after-drain: already admitted siblings complete under the
+same outer lease, and the reducer receives results in declared branch order.
+The full YAML compiler still has to build branch graph plans before this node is
+reachable from a production application.
 
 ADK 2.0.0's deferred tracker and timeout origins are not part of `Checkpoint`.
-Elitea therefore adds a versioned fan-in ledger to native checkpoint state with
-the graph-definition digest, parallel-node ID, branch ID/order, completion
-status, result digest, join policy and any absolute deadline. Resume validates
-that ledger against the admitted immutable graph before scheduling unfinished
-branches or the join. The release gate is a process restart after the short
-branch of an unequal fork and before the long branch arrives; the join must run
-once with both exact results.
+Elitea therefore does not compile this feature as native deferred fan-in and
+does not use `NodeContext::run_node_with`, whose child ledger is saved only
+after the parent returns. Each branch is a small ADK `CompiledGraph` with a
+claim-fenced descendant checkpoint thread. ADK writes the child's terminal
+empty-frontier checkpoint before its invocation returns. After a crash, the
+same parent activation reopens completed children at terminal state and runs
+only unfinished children. The child thread digest binds the opaque execution,
+generation and graph definition, root thread, parent step, complete parallel
+configuration, branch ID, target, ordinal and bounded canonical projected-input
+digest. A later loop visit or changed branch input therefore cannot consume an
+earlier result.
+
+The upstream action `WaitAll` implementation is not used as the reducer. It
+accepts whatever `branch:*` keys happen to exist, does not prove the expected
+branch set, and collects hash-map iteration order rather than YAML declaration
+order. Elitea keeps the useful wait-all concept while enforcing the stronger
+expected-set and deterministic-order contract at its adapter boundary.
 
 Action `WaitAny` and `WaitN` only inspect results already present after a graph
 frontier. They do not wake early or cancel siblings. YAML `wait: one` and
 `wait: many` therefore fail validation until a separate scheduler persists its
 completed set/deadline, provides a timer wakeup, and defines durable sibling
 cancellation and late-result handling.
+
+V1 requires the future production branch compiler to reject plans that can
+pause for HITL, sensitive-tool approval or MCP authorization; the compiler seam
+and pre-execution rejection proof are present in this core slice. ADK can
+persist an inner interrupt before the parent has durably published it;
+supporting that crash gap requires the later Elitea interrupt ledger keyed by
+the current interrupt identity. External side effects remain at-least-once
+between an effect and the following child checkpoint, so tool and effect
+fencing remains mandatory.
 
 ## Performance and operations
 

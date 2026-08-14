@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adk_rust::graph::checkpoint::RetentionPolicy;
-use adk_rust::graph::{Checkpoint, Checkpointer};
+use adk_rust::graph::{
+    Checkpoint, Checkpointer, END, ExecutionConfig, NodeOutput, START, State, StateGraph,
+};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -13,6 +16,9 @@ use sqlx::{ConnectOptions, PgPool};
 
 use super::postgres_checkpointer::{
     APPLICATION_CAPABILITY_ID, CheckpointLimits, CheckpointWriterAuthority, PostgresCheckpointer,
+};
+use crate::agents::graph::{
+    ParallelActivation, ParallelChildCheckpointerFactory, ParallelNodeDefinition,
 };
 
 const TEST_DATABASE_URL: &str = "ELITEA_TEST_DATABASE_URL";
@@ -384,6 +390,99 @@ async fn postgres_checkpointer_round_trips_scopes_fences_prunes_and_releases_poo
             .expect("scoped lookup")
             .is_none()
     );
+
+    let parallel_definition = ParallelNodeDefinition::from_yaml(
+        r"
+id: gather
+type: parallel
+branches:
+  - id: short
+    node: fetch_short
+  - id: long
+    node: fetch_long
+max_concurrency: 2
+wait: all
+error_policy: fail_after_drain
+output: [gathered]
+transition: END
+        ",
+    )
+    .expect("valid PostgreSQL parallel fixture");
+    let parallel_activation = ParallelActivation {
+        root_thread_id: "thread-1".to_owned(),
+        node_id: parallel_definition.id().to_owned(),
+        step: 4,
+        config_digest: parallel_definition.config_digest(),
+    };
+    let short_branch = &parallel_definition.branches()[0];
+    let child_input_digest = [0x42_u8; 32];
+    let first_child = first
+        .for_branch(&parallel_activation, short_branch, 0, &child_input_digest)
+        .await
+        .expect("activate first parallel child checkpoint");
+    let child_runs = Arc::new(AtomicUsize::new(0));
+    let first_runs = Arc::clone(&child_runs);
+    let first_child_graph = StateGraph::with_channels(&["result"])
+        .add_node_fn("work", move |_| {
+            let first_runs = Arc::clone(&first_runs);
+            async move {
+                first_runs.fetch_add(1, Ordering::SeqCst);
+                Ok(NodeOutput::new().with_update("result", json!({"value": "short"})))
+            }
+        })
+        .add_edge(START, "work")
+        .add_edge("work", END)
+        .compile()
+        .expect("compile first parallel child")
+        .with_checkpointer_arc(first_child.checkpointer);
+    first_child_graph
+        .invoke(State::new(), ExecutionConfig::new(&first_child.thread_id))
+        .await
+        .expect("run first parallel child");
+
+    let recreated_child = first
+        .for_branch(&parallel_activation, short_branch, 0, &child_input_digest)
+        .await
+        .expect("recreate parallel child checkpoint");
+    assert_eq!(recreated_child.thread_id, first_child.thread_id);
+    let replay_runs = Arc::clone(&child_runs);
+    let recreated_child_graph = StateGraph::with_channels(&["result"])
+        .add_node_fn("work", move |_| {
+            let replay_runs = Arc::clone(&replay_runs);
+            async move {
+                replay_runs.fetch_add(1, Ordering::SeqCst);
+                Ok(NodeOutput::new().with_update("result", json!({"value": "unexpected"})))
+            }
+        })
+        .add_edge(START, "work")
+        .add_edge("work", END)
+        .compile()
+        .expect("compile recreated parallel child")
+        .with_checkpointer_arc(recreated_child.checkpointer);
+    let replayed = recreated_child_graph
+        .invoke(
+            State::new(),
+            ExecutionConfig::new(&recreated_child.thread_id),
+        )
+        .await
+        .expect("replay terminal parallel child");
+    assert_eq!(replayed.get("result"), Some(&json!({"value": "short"})));
+    assert_eq!(child_runs.load(Ordering::SeqCst), 1);
+
+    let later_activation = ParallelActivation {
+        step: parallel_activation.step + 1,
+        ..parallel_activation.clone()
+    };
+    let later_child = first
+        .for_branch(&later_activation, short_branch, 0, &child_input_digest)
+        .await
+        .expect("activate later loop child checkpoint");
+    assert_ne!(later_child.thread_id, first_child.thread_id);
+    let changed_input_child = first
+        .for_branch(&parallel_activation, short_branch, 0, &[0x43_u8; 32])
+        .await
+        .expect("activate changed-input child checkpoint");
+    assert_ne!(changed_input_child.thread_id, first_child.thread_id);
 
     sqlx::raw_sql(
         r"

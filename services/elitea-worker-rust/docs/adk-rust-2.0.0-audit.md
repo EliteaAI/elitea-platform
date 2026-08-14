@@ -107,10 +107,14 @@ ADK-Rust 2.0.0 does not yet make its deferred fan-in durable. The executor's
 the native `Checkpoint` persists state, pending nodes, step, cleared interrupt,
 attempts and the child ledger. A crash after the short side of an unequal fork
 has reached a deferred join can therefore restore only the still-pending long
-branch and lose the earlier arrival. Elitea will solve that at its adapter
-boundary by storing a versioned fan-in ledger in native checkpoint state and
-reconstructing it before graph resume. The restart-between-arrivals test is a
-production blocker for the new node.
+branch and lose the earlier arrival. Elitea solves this without fabricating an
+upstream parent checkpoint: the custom node runs each branch as a separately
+checkpointed child `CompiledGraph`. A child's terminal empty-frontier checkpoint
+is durable before its future resolves, so a parent restart reuses completed
+children and runs only unfinished ones. The claim-fenced PostgreSQL adapter
+mints opaque, fixed-size descendant thread IDs from the execution, generation,
+definition, parent thread/step, complete branch identity and bounded canonical
+projected-input digest.
 
 The first YAML `parallel` node will consequently expose only `wait: all` with a
 bounded maximum concurrency, stable branch IDs, deterministic reduction and a
@@ -120,6 +124,22 @@ early-release scheduler. `wait: one` and `wait: many` stay rejected until an
 Elitea scheduler durably records the completed set and absolute deadline and
 defines replay-safe sibling cancellation. ADK `ParallelAgent` remains a
 separate primitive for fixed subagents and does not implement this graph node.
+
+Stock action `WaitAll` is not the final projection implementation either: it
+accepts all currently present `branch:*` keys without checking an immutable
+expected set and iterates hash-map state rather than declared branch order. The
+Elitea node validates the exact branch set, bounds concurrency to 32 and branch
+count to 64, drains admitted siblings after a failure, and projects no more than
+1 MiB per branch or 8 MiB joined JSON.
+
+The V1 contract reserves pausing branch plans as invalid. The branch compiler
+seam validates before execution and its rejection is tested, while the full
+production compiler remains a gate. An inner ADK interrupt can be checkpointed
+before the outer worker durably publishes the corresponding current interrupt,
+so HITL, sensitive-tool confirmation and MCP authorization need an Elitea
+interrupt ledger before they can safely execute in this node. External effect
+idempotency and fencing remain required for the smaller
+effect-to-child-checkpoint crash window.
 
 ## PostgreSQL checkpointer implementation
 
@@ -166,6 +186,12 @@ its Rust owner and is never persisted in checkpoint tables. A newer claim
 fences the old adapter; deleting checkpoint history deliberately retains the
 writer row so deletion cannot resurrect stale authority.
 
+The adapter can now mint typed parallel-child adapters through
+`ParallelChildCheckpointerFactory`; it exposes no arbitrary public thread
+constructor. Descendant IDs are `p1:` plus base64url SHA-256 over the opaque
+scope and complete activation/branch identity, remain within the 512-byte
+thread bound, and are fenced by the same live Main claim on every operation.
+
 The adapter receives a caller-owned `PgPool`; it never opens a pool per agent or
 per checkpoint. Each operation borrows a pooled connection through a SQLx
 transaction and returns it on commit or cancellation/drop. Deployment owns the
@@ -192,8 +218,9 @@ stable effect identities and effect-boundary deduplication/fencing.
 The isolated PostgreSQL 18 component test applies the real migration and proves
 complete-field/nanosecond/arbitrary-number round trip, exact-save replay,
 save-order preservation across timestamp ties, wrong-thread isolation,
-graph-definition isolation, release-race/newer-claim fencing, prune/delete and
-reuse of a four-connection pool. Production composition still
+graph-definition isolation, parallel-child terminal replay and loop-identity
+separation, release-race/newer-claim fencing, prune/delete and reuse of a
+four-connection pool. Production composition still
 must derive the graph-definition digest from the admitted immutable graph,
 authorize existing Python lineages for Python-only continuation or explicit
 migration, grant a restricted worker database role, and run the same test on

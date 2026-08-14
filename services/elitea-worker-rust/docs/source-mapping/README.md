@@ -44,6 +44,14 @@ A row is never `ported` based only on compilation or final-answer similarity.
 The proof must cover the relevant wire shape, state transition, event ordering,
 authorization, failure behavior, and recovery boundary.
 
+Detailed ledgers:
+
+- `agent-runtime.md` maps language-neutral worker delivery and agent execution.
+- `pipeline-nodes.md` maps every current Python pipeline node/edge branch and
+  the new durable Rust `parallel` node.
+- `configuration-toolsets.md` maps saved configuration and toolkit families.
+- `indexing.md` maps indexing behavior and its later Rust capability.
+
 Workspace-relative Python paths are included because the Python sources live in
 independent repositories. The Rust targets all live in this package and are
 repository-relative to `services/elitea-worker-rust/`.
