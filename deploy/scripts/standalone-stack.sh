@@ -505,6 +505,86 @@ SQL
     runtime_failures=0
     fail() { echo "  ✗ $1" >&2; runtime_failures=$((runtime_failures + 1)); }
 
+    # ── Edge identity-header strip (#326) ────────────────────────────────────
+    # elitea-main accepts X-Auth-Type + X-Auth-Id as a finished identity from
+    # any source address inside auth.form.yml's trusted_proxy_cidrs, which is
+    # the whole compose network. The browser edge sits on that network, so
+    # without deploy/traefik/dynamic.e2e.yml's strip-client-identity middleware
+    # a caller with no credential at all picks its own user id. Measured on this
+    # stack before the fix: `curl -H 'X-Auth-ID: 4'` returned that user's
+    # /social/author record with HTTP 200.
+    #
+    # Written to be DISCRIMINATING. A bare "spoof gets 401" would also pass on a
+    # stack where the edge is down, the route is unmounted, or nothing is
+    # seeded — every one of those answers 401 too. So each spoof is paired with
+    # the same request carrying a real PAT, which must return 200 AND must
+    # report the PAT's own user. Two things therefore have to hold: the
+    # legitimate path still works through the middleware, and the forged header
+    # neither authenticates on its own nor overrides a genuine credential.
+    echo "→ edge identity-header strip (#326):"
+    spoof_uuid="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT uuid FROM public.auth_core__token
+          WHERE uuid IS NOT NULL ORDER BY user_id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+    spoof_user="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT user_id FROM public.auth_core__token
+          WHERE uuid = '${spoof_uuid}'" 2>/dev/null | tr -d '[:space:]')"
+    if [ -z "$spoof_uuid" ] || [ -z "$spoof_user" ]; then
+      echo "  ~ SKIPPED: no PAT to contrast the spoof against (run: $0 seed-runtime)"
+    else
+      # Spelled out rather than $RUNTIME_CERTS: that variable is assigned below
+      # this block, and under `set -u` reading it here aborts the whole check.
+      spoof_jwt="$(python3 - "$spoof_uuid" "${REPO_ROOT}/deploy/certs/runtime/auth-pat-signing-key" <<'PY'
+import base64, hashlib, hmac, json, pathlib, sys
+key = pathlib.Path(sys.argv[2]).read_bytes()
+b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+header = b64(json.dumps({"alg": "HS512", "typ": "JWT"}, separators=(",", ":")).encode())
+payload = b64(json.dumps({"uuid": sys.argv[1], "expires": None}, separators=(",", ":")).encode())
+print(f"{header}.{payload}." + b64(hmac.new(key, f"{header}.{payload}".encode(), hashlib.sha512).digest()))
+PY
+)"
+      # /social/author is the probe because it ECHOES the caller: a status code
+      # alone cannot tell "authenticated as the right user" from
+      # "authenticated as somebody else", which is the entire defect.
+      spoof_route="http://localhost:${PORT}/api/v2/social/author"
+
+      code="$(curl -s -o /dev/null -w '%{http_code}' \
+                -H 'X-Auth-Type: user' -H "X-Auth-ID: ${spoof_user}" "$spoof_route" || true)"
+      case "$code" in
+        401|403) echo "  ✓ forged X-Auth-ID alone is rejected (HTTP ${code})" ;;
+        *) fail "forged X-Auth-ID alone got HTTP ${code} — the edge is forwarding client identity headers (#326)" ;;
+      esac
+
+      body="$(curl -s -H "Authorization: Bearer ${spoof_jwt}" "$spoof_route" || true)"
+      case "$body" in
+        *"\"id\":\"${spoof_user}\""*) echo "  ✓ a real PAT still authenticates through the middleware" ;;
+        *) fail "PAT ${spoof_user} did not authenticate through the edge — the strip broke the legitimate path" ;;
+      esac
+
+      # The impersonation that is easiest to miss: the header used to WIN over a
+      # genuine bearer, so a real low-privilege user could act as anyone.
+      #
+      # The victim id is queried rather than hardcoded to `1`. `1` is the lowest
+      # user_id, which is also what the PAT query above picks — so a hardcoded
+      # `1` forges the caller's OWN identity and the assertion passes against a
+      # completely unstripped edge. Verified: it did.
+      spoof_other="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT id FROM public.auth_core__user
+            WHERE id <> ${spoof_user} ORDER BY id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+      if [ -z "$spoof_other" ]; then
+        echo "  ~ SKIPPED: only one user exists, so there is nobody to impersonate"
+      else
+        body="$(curl -s -H "Authorization: Bearer ${spoof_jwt}" \
+                  -H 'X-Auth-Type: user' -H "X-Auth-ID: ${spoof_other}" "$spoof_route" || true)"
+        case "$body" in
+          *"\"id\":\"${spoof_user}\""*) echo "  ✓ a forged X-Auth-ID cannot override a genuine bearer" ;;
+          *) fail "PAT ${spoof_user} + forged X-Auth-ID: ${spoof_other} did not resolve to ${spoof_user} — the header still overrides the credential (#326)" ;;
+        esac
+      fi
+    fi
+
     # One-off container on the stack's network with the host material mounted.
     # `compose run` is not usable for these probes: both candidate services
     # declare an entrypoint script, and `run` appends the command as arguments

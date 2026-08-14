@@ -430,7 +430,25 @@ services:
       GATEWAY_EGRESS_ALLOWLIST: "${GATEWAY_EGRESS_ALLOWLIST-llm-mock:8090}"
       GATEWAY_LOG_LEVEL: "${GATEWAY_LOG_LEVEL:-info}"
     volumes:
-      - ./certs:/run/certs:ro
+      # Three FILES, never the ./certs directory (#327). The gateway is the
+      # egress-facing service; ./certs is also the parent of ./certs/runtime,
+      # which holds the PAT signing key, the command signing key + keyring, the
+      # worker client key, the content/control/output server keys, the vault
+      # master key and all four Redis passwords — plus ca.key at the top level,
+      # which would let a compromised gateway mint its own elitea-main client
+      # certificate. None of that is gateway material.
+      #
+      # Nothing else reads the gateway's copy: elitea-main takes client.crt/key
+      # from its own mount, and the runtime consumers get per-consumer named
+      # volumes from `runtime-material`, so narrowing this affects no other
+      # service. These paths must stay in step with GATEWAY_TLS_*_FILE above.
+      #
+      # A missing host file makes podman create a DIRECTORY at these paths and
+      # the gateway then fails to load its keypair; run
+      # `deploy/scripts/standalone-stack.sh certs` first.
+      - ./certs/gateway-server.crt:/run/certs/gateway-server.crt:ro
+      - ./certs/gateway-server.key:/run/certs/gateway-server.key:ro
+      - ./certs/ca.crt:/run/certs/ca.crt:ro
     ports:
       # Direct access for debugging with curl --cert/--key. Traffic that must
       # carry a project identity has to go through elitea-main, which is what
@@ -668,7 +686,16 @@ services:
       ELITEA_RUNTIME_CONTENT_TLS_KEY_FILE: /run/elitea-runtime/content-server.key
       ELITEA_RUNTIME_CONTENT_TLS_CLIENT_CA_FILE: /run/elitea-runtime/runtime-ca.crt
     volumes:
-      - ./certs:/run/certs:ro
+      # Only the gateway-client keypair and its CA — three files, not the
+      # ./certs directory. Bind-mounting the parent handed elitea-main the whole
+      # of ./certs/runtime, which is exactly the material
+      # deploy/runtime/install-material.sh deliberately withholds from it (the
+      # worker client key, redis-worker-password, runtime-ca.key) plus ca.key.
+      # Same defect class as the gateway's mount above (#327); the named volume
+      # below stays the only source of runtime material.
+      - ./certs/client.crt:/run/certs/client.crt:ro
+      - ./certs/client.key:/run/certs/client.key:ro
+      - ./certs/ca.crt:/run/certs/ca.crt:ro
       # Installed by runtime-material with per-file owner/mode; NOT a bind mount
       # of deploy/certs/runtime, which securefile would reject.
       - standalone_runtime_main:/run/elitea-runtime:ro

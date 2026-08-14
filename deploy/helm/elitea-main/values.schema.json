@@ -45,6 +45,12 @@
             }
           }
         },
+        "stripIdentityHeaders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "gateway": {
           "type": "object",
           "additionalProperties": false,

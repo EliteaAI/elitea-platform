@@ -50,6 +50,34 @@ ingress:
     # - secretName: elitea-main-tls
     #   hosts:
     #     - dev.elitea.ai
+  # Client-supplied identity headers stripped on the way in (#326). elitea-main
+  # treats X-Auth-Type + X-Auth-Id from a trusted-proxy source address as a
+  # finished identity, and in a cluster the whole pod network is typically
+  # inside trusted_proxy_cidrs — so anything reaching the Service with these
+  # headers set by the CALLER is an impersonation. Emptying this list re-opens
+  # that; extend it, do not shorten it.
+  #
+  # APPLIES TO THE HTTPRoute PATH ONLY (ingress.gatewayApi: true), where it
+  # renders a RequestHeaderModifier filter. A networking.k8s.io/v1 Ingress has
+  # no portable header-removal field, so on that path the strip MUST be
+  # configured on the ingress controller itself (ingress-nginx:
+  # `more_clear_input_headers` in a configuration-snippet, which many clusters
+  # disallow) or by fronting elitea-main with a Gateway. Do not assume the
+  # plain-Ingress path is covered by this chart.
+  stripIdentityHeaders:
+    - X-Auth-Type
+    - X-Auth-Id
+    - X-Auth-User-Id
+    - X-Auth-Reference
+    - X-Auth-Avatar
+    - X-Auth-Avatar-State
+    - X-Auth-Session-Id
+    - X-Auth-Session-Name
+    - X-Auth-Session-Endpoint
+    - X-Elitea-Identity-Signature
+    - X-Elitea-Project-Id
+    - X-Elitea-User-Id
+    - X-Elitea-Tenant-Id
   # Only consulted when gatewayApi: true — the pre-existing Gateway this
   # HTTPRoute attaches to (not created by this chart).
   gateway:
