@@ -23,7 +23,7 @@ use super::events::{
     ProjectedAgentEventBatch,
 };
 use super::request::AgentExecutionRequest;
-use super::session::AuthorizedNativeCommandBinding;
+use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::transport::runtime_context::{
     ClaimScopedEliteaContext, RuntimeContextClient, RuntimeContextError,
@@ -168,11 +168,12 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         self,
     ) -> Result<AdmittedOrdinaryNativeAssembly<'a>, NativeAgentAssemblyError> {
         let profile = OrdinaryNoToolProfile::validate(self.request)?;
+        let plan = OrdinaryNativeAgentPlan::from_authorized(self.request, &profile, &self.command)?;
         Ok(AdmittedOrdinaryNativeAssembly {
             request: self.request,
             runtime_context: self.runtime_context,
-            command: self.command,
             profile,
+            plan,
         })
     }
 }
@@ -181,11 +182,11 @@ impl<'a> AuthorizedNativeAssembly<'a> {
 pub(crate) struct AdmittedOrdinaryNativeAssembly<'a> {
     request: &'a AgentExecutionRequest,
     runtime_context: ClaimBoundRuntimeContextAuthority,
-    command: AuthorizedNativeCommandBinding,
     profile: OrdinaryNoToolProfile,
+    plan: OrdinaryNativeAgentPlan,
 }
 
-impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
+impl AdmittedOrdinaryNativeAssembly<'_> {
     #[must_use]
     pub(crate) const fn request(&self) -> &AgentExecutionRequest {
         self.request
@@ -194,11 +195,6 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
     #[must_use]
     pub(crate) const fn profile(&self) -> &OrdinaryNoToolProfile {
         &self.profile
-    }
-
-    #[must_use]
-    pub(crate) const fn command(&self) -> &AuthorizedNativeCommandBinding {
-        &self.command
     }
 
     /// Redeem the ephemeral execution actor only after `AUTHORIZED_NOW`.
@@ -209,50 +205,38 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
     pub(crate) async fn redeem_runtime_context(
         self,
         client: &RuntimeContextClient,
-    ) -> Result<RedeemedOrdinaryNativeAssembly<'a>, RuntimeContextError> {
+    ) -> Result<RedeemedOrdinaryNativeAssembly, RuntimeContextError> {
         let Self {
-            request,
             runtime_context,
-            command,
             profile,
+            plan,
+            ..
         } = self;
         let context = client.redeem(runtime_context).await?;
         Ok(RedeemedOrdinaryNativeAssembly {
-            request,
-            command,
             profile,
+            plan,
             context,
         })
     }
 }
 
 /// Admitted ordinary assembly after its sole claim-scoped PAT redemption.
-pub(crate) struct RedeemedOrdinaryNativeAssembly<'a> {
-    request: &'a AgentExecutionRequest,
-    command: AuthorizedNativeCommandBinding,
+pub(crate) struct RedeemedOrdinaryNativeAssembly {
     profile: OrdinaryNoToolProfile,
+    plan: OrdinaryNativeAgentPlan,
     context: ClaimScopedEliteaContext,
 }
 
-impl RedeemedOrdinaryNativeAssembly<'_> {
-    #[must_use]
-    pub(crate) const fn request(&self) -> &AgentExecutionRequest {
-        self.request
-    }
-
-    #[must_use]
-    pub(crate) const fn profile(&self) -> &OrdinaryNoToolProfile {
-        &self.profile
-    }
-
-    #[must_use]
-    pub(crate) const fn command(&self) -> &AuthorizedNativeCommandBinding {
-        &self.command
-    }
-
-    #[must_use]
-    pub(crate) const fn context(&self) -> &ClaimScopedEliteaContext {
-        &self.context
+impl RedeemedOrdinaryNativeAssembly {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        OrdinaryNoToolProfile,
+        OrdinaryNativeAgentPlan,
+        ClaimScopedEliteaContext,
+    ) {
+        (self.profile, self.plan, self.context)
     }
 }
 

@@ -284,7 +284,7 @@ impl RuntimeContextClient {
     }
 
     #[cfg(test)]
-    pub(super) fn with_rpc(
+    pub(crate) fn with_rpc(
         rpc: impl RuntimeContextRpc + 'static,
         mut config: RuntimeContextConfig,
     ) -> Result<Self, RuntimeContextError> {

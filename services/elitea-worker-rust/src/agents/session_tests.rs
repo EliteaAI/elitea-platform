@@ -80,7 +80,7 @@ async fn invocation_local_session_runs_one_real_adk_turn_and_projects_the_exact_
             assert_eq!(value["content"], "native response");
             assert_eq!(value["stream_id"], "conversation-1");
             assert_eq!(value["message_id"], "message-1");
-            assert_eq!(value["response_metadata"]["project_id"], 7);
+            assert_eq!(value["response_metadata"]["project_id"], 17);
             assert_eq!(value["response_metadata"]["chat_project_id"], 9);
         }
     }

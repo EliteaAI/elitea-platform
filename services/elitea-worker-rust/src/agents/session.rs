@@ -94,7 +94,7 @@ impl AuthorizedNativeCommandBinding {
         Self {
             tenant_id: "tenant-1".to_owned(),
             principal_ref: "user:42".to_owned(),
-            resource_project_id: "7".to_owned(),
+            resource_project_id: "17".to_owned(),
             projection_project_id: "9".to_owned(),
             generation: 3,
             client_stream_id: "conversation-1".to_owned(),

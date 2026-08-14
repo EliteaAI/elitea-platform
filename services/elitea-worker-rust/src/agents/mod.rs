@@ -3,6 +3,7 @@
 pub(crate) mod assembly;
 pub(crate) mod events;
 pub mod graph;
+pub(crate) mod ordinary;
 pub mod protocol;
 pub mod request;
 pub mod result;
@@ -13,6 +14,8 @@ pub(crate) mod session;
 mod assembly_tests;
 #[cfg(test)]
 mod events_tests;
+#[cfg(test)]
+mod ordinary_tests;
 #[cfg(test)]
 mod runtime_tests;
 #[cfg(test)]

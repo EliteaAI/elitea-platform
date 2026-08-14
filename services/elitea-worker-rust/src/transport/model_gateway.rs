@@ -1165,19 +1165,19 @@ fn bounded_header_text(value: &str, maximum: usize) -> bool {
 }
 
 #[cfg(test)]
-pub(super) struct CapturedModelRequest {
-    pub(super) method: Method,
-    pub(super) uri: http::Uri,
-    pub(super) version: Version,
-    pub(super) headers: HeaderMap,
-    pub(super) body: Bytes,
+pub(crate) struct CapturedModelRequest {
+    pub(crate) method: Method,
+    pub(crate) uri: http::Uri,
+    pub(crate) version: Version,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Bytes,
 }
 
 #[cfg(test)]
-pub(super) type CapturedModelRequests = Arc<Mutex<Vec<CapturedModelRequest>>>;
+pub(crate) type CapturedModelRequests = Arc<Mutex<Vec<CapturedModelRequest>>>;
 
 #[cfg(test)]
-pub(super) enum TestModelGatewayOutcome {
+pub(crate) enum TestModelGatewayOutcome {
     Response(Response<Body>),
     Unavailable,
     Pending,
@@ -1227,7 +1227,7 @@ impl ModelGatewayTransport for TestModelGatewayTransport {
 }
 
 #[cfg(test)]
-pub(super) fn test_model_gateway_config() -> ModelGatewayConfig {
+pub(crate) fn test_model_gateway_config() -> ModelGatewayConfig {
     ModelGatewayConfig {
         origin: "https://platform.internal".to_owned(),
         connect_timeout: Duration::from_secs(1),
@@ -1241,7 +1241,7 @@ pub(super) fn test_model_gateway_config() -> ModelGatewayConfig {
 }
 
 #[cfg(test)]
-pub(super) fn test_model_gateway_client(
+pub(crate) fn test_model_gateway_client(
     outcomes: Vec<TestModelGatewayOutcome>,
     config: ModelGatewayConfig,
 ) -> Result<(ModelGatewayClient, CapturedModelRequests), ModelGatewayError> {
@@ -1282,7 +1282,7 @@ pub(super) fn test_model_gateway_request(user: &str) -> LlmRequest {
 }
 
 #[cfg(test)]
-pub(super) fn test_model_gateway_response(body: Body) -> Response<Body> {
+pub(crate) fn test_model_gateway_response(body: Body) -> Response<Body> {
     Response::builder()
         .status(StatusCode::OK)
         .version(Version::HTTP_2)
