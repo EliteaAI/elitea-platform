@@ -52,7 +52,10 @@ use crate::protocol::elitea::runtime::v1::{
 use crate::protocol::node_event::decode_current_node_event_json;
 use crate::protocol::output::{OUTPUT_SCHEMA_REVISION, RuntimeFailureKind};
 use crate::spool::{SpoolError, SpoolLimits, SpoolMasterKey};
-use crate::transport::output_grpc::{test_acknowledged_progress, test_acknowledged_terminal};
+use crate::transport::output_grpc::{
+    ProgressRejectionWinner, test_acknowledged_progress, test_acknowledged_terminal,
+    test_rejected_progress,
+};
 use crate::transport::redis_commands::{
     RedisCommandDelivery, RedisCommandLimits, RedisCommandRetirer, RedisRetirementClient,
     RedisRetirementClientError, RedisRetirementConfig, RedisRetirementRequest,
@@ -798,6 +801,74 @@ fn claim_bound_output_cursor_advances_only_after_the_exact_progress_ack() {
     assert!(terminal.terminal);
     assert_eq!(terminal.sequence, progress_sequence + 1);
     assert_eq!(terminal.claim_handoff_watermark, handoff);
+}
+
+#[test]
+fn only_an_exact_bound_winner_can_replace_pending_progress_at_the_same_sequence() {
+    for (winner, expected_code) in [
+        (
+            ProgressRejectionWinner::Cancelled,
+            RuntimeErrorCodeV1::Cancelled,
+        ),
+        (
+            ProgressRejectionWinner::DeadlineExceeded,
+            RuntimeErrorCodeV1::DeadlineExceeded,
+        ),
+    ] {
+        let fresh = fresh();
+        let handoff = fresh.claim_handoff_watermark();
+        let (_delivery, verified, claim) = fresh.into_parts();
+        let authority = test_agent_output_authority(claim);
+        let mut cursor = authority
+            .into_output_cursor(&verified)
+            .expect("matching output authority");
+        let event = decode_current_node_event_json(
+            br#"{"type":"agent_response","content":"rejected progress"}"#,
+        )
+        .expect("valid current NodeEvent");
+        let progress = cursor
+            .bind_progress(&verified, event, NOW)
+            .expect("claim-bound progress");
+        let frame = progress.into_frame();
+        let rejected = test_rejected_progress(&frame, winner).expect("bound Main winner");
+        let terminal = cursor
+            .bind_rejected_progress_terminal(&verified, rejected, NOW + 25)
+            .expect("same-sequence failure terminal")
+            .into_frame();
+
+        assert!(terminal.terminal);
+        assert_eq!(terminal.sequence, frame.sequence);
+        assert_eq!(terminal.claim_handoff_watermark, handoff);
+        assert_eq!(terminal.occurred_at_unix_millis, NOW + 25);
+        let Some(execution_output_frame_v1::Payload::RuntimeError(error)) = terminal.payload else {
+            panic!("bound winner must create a runtime failure terminal");
+        };
+        assert_eq!(error.code, expected_code as i32);
+    }
+
+    let fresh = fresh();
+    let (_delivery, verified, claim) = fresh.into_parts();
+    let authority = test_agent_output_authority(claim);
+    let mut cursor = authority
+        .into_output_cursor(&verified)
+        .expect("matching output authority");
+    let event = decode_current_node_event_json(br#"{"type":"agent_response"}"#)
+        .expect("valid current NodeEvent");
+    let progress = cursor
+        .bind_progress(&verified, event, NOW)
+        .expect("claim-bound progress");
+    let frame = progress.into_frame();
+    let mut substituted = frame.clone();
+    substituted.occurred_at_unix_millis += 1;
+    let wrong = test_rejected_progress(&substituted, ProgressRejectionWinner::Cancelled)
+        .expect("different frame winner");
+    let Err(error) = cursor.bind_rejected_progress_terminal(&verified, wrong, NOW + 25) else {
+        panic!("a same-sequence decision for different bytes cannot replace progress");
+    };
+    assert!(matches!(
+        error,
+        crate::protocol::ProtocolError::AuthorizationFailed(_)
+    ));
 }
 
 #[test]

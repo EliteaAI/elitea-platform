@@ -380,14 +380,19 @@ impl PreparedOutputSpool {
         self.replace_rebound_pending(expected, replacement)
     }
 
-    /// Connect only after recovery policy has authorized exact replay.
+    /// Connect a fresh session only while the encrypted spool is empty.
+    ///
+    /// Restored progress requires an owned replay coordinator which can retain
+    /// its exact ACK proof across caller cancellation. Restored terminals use
+    /// the separate settlement-authority replay path. This generic entry point
+    /// therefore never transmits pending durable output.
     ///
     /// # Errors
     ///
-    /// Returns a stable transport or replay error. Unacknowledged bytes remain
-    /// durable on every failure.
+    /// Returns a stable authorization error for any pending frame before
+    /// opening the endpoint, or a typed transport error for a fresh session.
     pub async fn connect(self, channel: Channel) -> Result<OutputGrpcSession, OutputGrpcError> {
-        self.require_unreconciled()?;
+        self.require_empty_session_start()?;
         let max_frame_bytes = self.config.max_frame_bytes;
         let io = TonicOutputStream::open(channel, &self.config).await?;
         let inner = OutputSession::from_prepared(io, self).await?;
@@ -447,6 +452,18 @@ impl PreparedOutputSpool {
             return Err(OutputGrpcError::Protocol(
                 OutputSessionError::AuthorizationFailed(
                     "the durable output spool changed before recovery",
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_empty_session_start(&self) -> Result<(), OutputGrpcError> {
+        self.require_unreconciled()?;
+        if !self.pending.is_empty() {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "pending output requires the owned recovery coordinator",
                 ),
             ));
         }
@@ -760,7 +777,8 @@ pub struct OutputGrpcSession {
     commands: mpsc::Sender<SessionCommand>,
     admission: Arc<Semaphore>,
     acknowledged_sequence: Arc<AtomicU64>,
-    completed_progress: Arc<Mutex<Option<CompletedProgress>>>,
+    completed_progress_sequence: Arc<AtomicU64>,
+    completed_progress: Arc<Mutex<Option<CompletedProgressOutcome>>>,
     max_frame_bytes: usize,
     shutdown: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
@@ -791,6 +809,35 @@ pub struct DurablyAckedProgress {
     _permit: Option<OwnedSemaphorePermit>,
 }
 
+/// Main-owned winner which may replace one exact rejected progress frame.
+///
+/// This transport-local value records only the authenticated decision. The
+/// execution lifecycle remains responsible for final lease priority, business
+/// error mapping, and sampling the terminal occurrence time.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ProgressRejectionWinner {
+    Cancelled,
+    DeadlineExceeded,
+}
+
+/// Exact frame-bound Main decision authorizing a same-sequence failure.
+///
+/// The type has no public constructor, accessors, `Clone`, or `Debug`. A plain
+/// transport error is never replacement authority; only the output actor can
+/// mint this proof after validating Main's complete rejection ACK.
+pub(crate) struct FrameBoundProgressRejection {
+    sequence: u64,
+    frame_sha256: [u8; 32],
+    winner: ProgressRejectionWinner,
+    _permit: Option<OwnedSemaphorePermit>,
+}
+
+impl FrameBoundProgressRejection {
+    pub(crate) fn into_binding(self) -> (u64, [u8; 32], ProgressRejectionWinner) {
+        (self.sequence, self.frame_sha256, self.winner)
+    }
+}
+
 struct PendingProgress {
     sequence: u64,
     frame_sha256: [u8; 32],
@@ -804,28 +851,62 @@ impl PendingProgress {
         }
     }
 
-    fn into_completed(self, permit: OwnedSemaphorePermit) -> CompletedProgress {
-        CompletedProgress {
-            acknowledged: DurablyAckedProgress {
-                sequence: self.sequence,
-                frame_sha256: self.frame_sha256,
-                _permit: Some(permit),
-            },
+    fn into_completed(self, permit: OwnedSemaphorePermit) -> CompletedProgressOutcome {
+        CompletedProgressOutcome::Acknowledged(DurablyAckedProgress {
+            sequence: self.sequence,
+            frame_sha256: self.frame_sha256,
+            _permit: Some(permit),
+        })
+    }
+
+    fn into_rejected(
+        self,
+        permit: Option<OwnedSemaphorePermit>,
+        winner: ProgressRejectionWinner,
+    ) -> FrameBoundProgressRejection {
+        FrameBoundProgressRejection {
+            sequence: self.sequence,
+            frame_sha256: self.frame_sha256,
+            winner,
+            _permit: permit,
         }
     }
 }
 
-struct CompletedProgress {
-    acknowledged: DurablyAckedProgress,
+enum CompletedProgressOutcome {
+    Acknowledged(DurablyAckedProgress),
+    Rejected(FrameBoundProgressRejection),
 }
 
-impl CompletedProgress {
+impl CompletedProgressOutcome {
     fn matches(&self, sequence: u64, frame_sha256: &[u8; 32]) -> bool {
-        self.acknowledged.sequence == sequence && self.acknowledged.frame_sha256 == *frame_sha256
+        match self {
+            Self::Acknowledged(acknowledged) => {
+                acknowledged.sequence == sequence && acknowledged.frame_sha256 == *frame_sha256
+            }
+            Self::Rejected(rejected) => {
+                rejected.sequence == sequence && rejected.frame_sha256 == *frame_sha256
+            }
+        }
     }
 
-    fn into_acknowledged(self) -> DurablyAckedProgress {
-        self.acknowledged
+    const fn sequence(&self) -> u64 {
+        match self {
+            Self::Acknowledged(acknowledged) => acknowledged.sequence,
+            Self::Rejected(rejected) => rejected.sequence,
+        }
+    }
+}
+
+fn progress_rejection_winner(error: &OutputGrpcError) -> Option<ProgressRejectionWinner> {
+    match error {
+        OutputGrpcError::Protocol(OutputSessionError::CancellationWon) => {
+            Some(ProgressRejectionWinner::Cancelled)
+        }
+        OutputGrpcError::Protocol(OutputSessionError::DeadlineWon) => {
+            Some(ProgressRejectionWinner::DeadlineExceeded)
+        }
+        _ => None,
     }
 }
 
@@ -945,9 +1026,26 @@ pub(crate) fn test_acknowledged_progress(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn test_rejected_progress(
+    frame: &ExecutionOutputFrameV1,
+    winner: ProgressRejectionWinner,
+) -> Result<FrameBoundProgressRejection, OutputGrpcError> {
+    if frame.terminal {
+        return Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+            "terminal output does not produce progress rejection authority",
+        )));
+    }
+    Ok(PendingProgress::new(frame).into_rejected(None, winner))
+}
+
 impl OutputGrpcSession {
-    /// Open the bounded stream, validate bootstrap credit, and replay the
-    /// encrypted spool before returning admission to the caller.
+    /// Open a bounded fresh stream and validate bootstrap credit before
+    /// returning admission to the caller.
+    ///
+    /// A nonempty encrypted spool is rejected before network access. Restored
+    /// output must enter its typed owned recovery coordinator so a durable ACK
+    /// cannot lose its continuation authority to caller cancellation.
     ///
     /// The supplied channel must already enforce the deployment's mTLS trust
     /// policy. TLS material loading and endpoint construction are owned by the
@@ -977,7 +1075,9 @@ impl OutputGrpcSession {
     /// # Errors
     ///
     /// Returns a typed protocol, spool, or transport error. A failure never
-    /// deletes an unacknowledged frame.
+    /// deletes an unacknowledged frame. When Main's exact cancellation or
+    /// deadline decision wins, the typed error remains descriptive while the
+    /// separate opaque proof is retained for the owned delivery coordinator.
     pub async fn send(
         &mut self,
         frame: &ExecutionOutputFrameV1,
@@ -997,7 +1097,7 @@ impl OutputGrpcSession {
                 ),
             ));
         }
-        self.take_completed_progress(pending.sequence, &pending.frame_sha256)?
+        self.take_completed_acknowledgement(pending.sequence, &pending.frame_sha256)?
             .ok_or(OutputGrpcError::Unavailable(
                 "the durable progress ACK proof is unavailable",
             ))
@@ -1014,10 +1114,10 @@ impl OutputGrpcSession {
         frame: &ExecutionOutputFrameV1,
     ) -> Result<Option<DurablyAckedProgress>, OutputGrpcError> {
         let pending = PendingProgress::new(frame);
-        self.take_completed_progress(pending.sequence, &pending.frame_sha256)
+        self.take_completed_acknowledgement(pending.sequence, &pending.frame_sha256)
     }
 
-    fn take_completed_progress(
+    fn take_completed_acknowledgement(
         &self,
         sequence: u64,
         frame_sha256: &[u8; 32],
@@ -1035,7 +1135,58 @@ impl OutputGrpcSession {
                 ),
             ));
         }
-        Ok(completed.take().map(CompletedProgress::into_acknowledged))
+        if !matches!(current, CompletedProgressOutcome::Acknowledged(_)) {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "the retained progress outcome is not a durable ACK",
+                ),
+            ));
+        }
+        let Some(CompletedProgressOutcome::Acknowledged(acknowledged)) = completed.take() else {
+            return Err(OutputGrpcError::Unavailable(
+                "the durable progress ACK proof is unavailable",
+            ));
+        };
+        Ok(Some(acknowledged))
+    }
+
+    /// Consume an exact frame-bound cancellation or deadline decision retained
+    /// after the send waiter completed or was cancelled.
+    ///
+    /// A plain transport error cannot authorize replacement. The supplied
+    /// frame must be byte-identical to the frame rejected by Main.
+    #[allow(dead_code)] // Consumed by the capability-disabled progress coordinator.
+    pub(crate) fn take_rejected_progress(
+        &self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<Option<FrameBoundProgressRejection>, OutputGrpcError> {
+        let pending = PendingProgress::new(frame);
+        let mut completed = self.completed_progress.lock().map_err(|_| {
+            OutputGrpcError::Unavailable("the durable progress decision proof is unavailable")
+        })?;
+        let Some(current) = completed.as_ref() else {
+            return Ok(None);
+        };
+        if !current.matches(pending.sequence, &pending.frame_sha256) {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "the retained progress decision does not match the expected frame",
+                ),
+            ));
+        }
+        if !matches!(current, CompletedProgressOutcome::Rejected(_)) {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "the retained progress outcome is not a rejection",
+                ),
+            ));
+        }
+        let Some(CompletedProgressOutcome::Rejected(rejected)) = completed.take() else {
+            return Err(OutputGrpcError::Unavailable(
+                "the durable progress decision proof is unavailable",
+            ));
+        };
+        Ok(Some(rejected))
     }
 
     async fn send_frame(&mut self, frame: ExecutionOutputFrameV1) -> Result<u64, OutputGrpcError> {
@@ -1093,6 +1244,16 @@ impl OutputGrpcSession {
         self.acknowledged_sequence.load(Ordering::Acquire)
     }
 
+    /// Return the sequence whose exact ACK or bound rejection proof is ready.
+    ///
+    /// The actor publishes this value only after storing the corresponding
+    /// one-shot proof. It is a cancellation-recovery signal, not authority by
+    /// itself.
+    #[allow(dead_code)] // Consumed by the capability-disabled progress coordinator.
+    pub(crate) fn completed_progress_sequence(&self) -> u64 {
+        self.completed_progress_sequence.load(Ordering::Acquire)
+    }
+
     /// Close the outbound half without changing any unacknowledged spool data.
     ///
     /// # Errors
@@ -1124,6 +1285,8 @@ where
     let (shutdown, mut shutdown_receiver) = watch::channel(false);
     let acknowledged_sequence = Arc::new(AtomicU64::new(inner.state.acknowledged_sequence()));
     let actor_acknowledged = Arc::clone(&acknowledged_sequence);
+    let completed_progress_sequence = Arc::new(AtomicU64::new(0));
+    let actor_completed_progress_sequence = Arc::clone(&completed_progress_sequence);
     let completed_progress = Arc::new(Mutex::new(None));
     let actor_completed_progress = Arc::clone(&completed_progress);
     let task = tokio::spawn(async move {
@@ -1151,10 +1314,16 @@ where
                     let result = inner
                         .send_with_shutdown(*frame, &mut shutdown_receiver)
                         .await;
-                    if result.is_ok()
-                        && let Some(pending) = pending_progress
-                    {
-                        let completed = pending.into_completed(permit);
+                    let completed = pending_progress.and_then(|pending| match &result {
+                        Ok(_) => Some(pending.into_completed(permit)),
+                        Err(error) => progress_rejection_winner(error).map(|winner| {
+                            CompletedProgressOutcome::Rejected(
+                                pending.into_rejected(Some(permit), winner),
+                            )
+                        }),
+                    });
+                    if let Some(completed) = completed {
+                        let completed_sequence = completed.sequence();
                         let stored = actor_completed_progress.lock().is_ok_and(|mut slot| {
                             if slot.is_some() {
                                 false
@@ -1171,6 +1340,8 @@ where
                         }
                         actor_acknowledged
                             .store(inner.state.acknowledged_sequence(), Ordering::Release);
+                        actor_completed_progress_sequence
+                            .store(completed_sequence, Ordering::Release);
                         let _ignored = response.send(result);
                         if *shutdown_receiver.borrow() {
                             break;
@@ -1192,6 +1363,7 @@ where
         commands,
         admission,
         acknowledged_sequence,
+        completed_progress_sequence,
         completed_progress,
         max_frame_bytes,
         shutdown,
@@ -1611,6 +1783,37 @@ mod tests {
         rejection
     }
 
+    fn progress_winner(
+        frame: &ExecutionOutputFrameV1,
+        winner: ProgressRejectionWinner,
+    ) -> ExecutionOutputAckV1 {
+        let mut rejection = bound_ack(frame);
+        rejection.committed_contiguous_sequence = frame.sequence.saturating_sub(1);
+        rejection.credit_frames = 0;
+        rejection.credit_bytes = 0;
+        let (desired_state, code, safe_message, retryable) = match winner {
+            ProgressRejectionWinner::Cancelled => (
+                DesiredExecutionStateV1::Cancelled,
+                RuntimeErrorCodeV1::Cancelled,
+                "Execution cancellation won before this output became durable.",
+                false,
+            ),
+            ProgressRejectionWinner::DeadlineExceeded => (
+                DesiredExecutionStateV1::Running,
+                RuntimeErrorCodeV1::DeadlineExceeded,
+                "The execution deadline was exceeded.",
+                true,
+            ),
+        };
+        rejection.desired_state = desired_state as i32;
+        rejection.rejection = Some(RuntimeErrorV1 {
+            code: code as i32,
+            safe_message: safe_message.to_owned(),
+            retryable,
+        });
+        rejection
+    }
+
     fn recovery_frame(
         expected: &ExecutionOutputFrameV1,
         kind: RecoveryKind,
@@ -1752,6 +1955,33 @@ mod tests {
                 .expect("pending")
                 .is_empty()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_session_open_cannot_transmit_or_delete_restored_progress() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-generic-restored-progress");
+        let progress = frame(1, false);
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(progress.clone())
+            .expect("durable progress");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored progress");
+        let channel = tonic::transport::Endpoint::from_static("https://127.0.0.1:9").connect_lazy();
+        assert!(matches!(
+            restored.connect(channel).await,
+            Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(_)
+            ))
+        ));
+        let mut recovered = spool(&root);
+        let pending = recovered.pending().expect("preserved progress spool");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].payload, progress.encode_to_vec());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2299,6 +2529,12 @@ mod tests {
                 OutputSessionError::AuthorizationFailed(_)
             ))
         ));
+        assert!(matches!(
+            session.take_rejected_progress(&first),
+            Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(_)
+            ))
+        ));
         let first_proof = session
             .take_acknowledged_progress(&first)
             .expect("proof lookup")
@@ -2333,6 +2569,83 @@ mod tests {
         assert_eq!(second_result.expect("second commit").into_binding().0, 2);
         assert_eq!(session.acknowledged_sequence(), 2);
         assert_eq!(*writes.lock().expect("writes lock"), vec![first, second]);
+        session.close().await.expect("close actor");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_wait_retains_the_exact_bound_rejection_before_signalling_completion() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (acknowledgements, receiver) = mpsc::channel(2);
+        acknowledgements
+            .send(bootstrap())
+            .await
+            .expect("bootstrap ACK");
+        let wrote = Arc::new(Notify::new());
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let io = GatedStream {
+            acknowledgements: receiver,
+            writes: Arc::clone(&writes),
+            wrote: Arc::clone(&wrote),
+        };
+        let inner = OutputSession::open(io, spool(&temp.path().join("root")), config())
+            .await
+            .expect("session");
+        let mut session = spawn_output_actor(inner, config().max_frame_bytes);
+        let progress = frame(1, false);
+        {
+            let wait = session.send(&progress);
+            tokio::pin!(wait);
+            tokio::select! {
+                _result = &mut wait => panic!("send returned before rejection"),
+                () = wrote.notified() => {}
+            }
+        }
+
+        acknowledgements
+            .send(progress_winner(
+                &progress,
+                ProgressRejectionWinner::Cancelled,
+            ))
+            .await
+            .expect("bound cancellation winner");
+        timeout(Duration::from_secs(1), async {
+            while session.completed_progress_sequence() != progress.sequence {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("rejection proof stored before completion signal");
+        assert_eq!(session.acknowledged_sequence(), 0);
+        assert!(matches!(
+            session.take_acknowledged_progress(&progress),
+            Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(_)
+            ))
+        ));
+
+        let mut substituted = progress.clone();
+        substituted.occurred_at_unix_millis += 1;
+        assert!(matches!(
+            session.take_rejected_progress(&substituted),
+            Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(_)
+            ))
+        ));
+        let rejected = session
+            .take_rejected_progress(&progress)
+            .expect("rejection lookup")
+            .expect("cancelled wait retained its exact rejection proof");
+        let (sequence, frame_sha256, winner) = rejected.into_binding();
+        assert_eq!(sequence, progress.sequence);
+        assert_eq!(frame_sha256, progress_frame_sha256(&progress));
+        assert!(winner == ProgressRejectionWinner::Cancelled);
+        assert!(
+            session
+                .take_rejected_progress(&progress)
+                .expect("consumed rejection lookup")
+                .is_none()
+        );
+        assert_eq!(*writes.lock().expect("writes lock"), vec![progress]);
         session.close().await.expect("close actor");
     }
 

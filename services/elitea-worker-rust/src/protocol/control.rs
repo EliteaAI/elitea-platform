@@ -24,7 +24,9 @@ use super::output::{
     build_node_event_output_frame,
 };
 use crate::agents::result::BoundAgentExecutionResult;
-use crate::transport::output_grpc::progress_frame_sha256;
+use crate::transport::output_grpc::{
+    FrameBoundProgressRejection, ProgressRejectionWinner, progress_frame_sha256,
+};
 use crate::transport::{
     ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, DurablyAckedProgress,
     DurablyAckedTerminal, TonicControlRpc,
@@ -868,6 +870,49 @@ impl AgentExecutionOutputCursor {
             AgentTerminalOutput::Failure(failure),
             occurred_at_unix_millis,
         )
+    }
+
+    /// Consume an exact Main rejection into a same-sequence failure terminal.
+    ///
+    /// The opaque proof must cover the cursor's sole pending progress frame.
+    /// The terminal occurrence time is sampled by the execution lifecycle after
+    /// its final lease/deadline priority check; it is not inherited from the
+    /// rejected progress event.
+    pub(crate) fn bind_rejected_progress_terminal(
+        self,
+        verified: &VerifiedAgentCommand,
+        rejected: FrameBoundProgressRejection,
+        occurred_at_unix_millis: i64,
+    ) -> Result<ClaimBoundAgentTerminal, ProtocolError> {
+        self.require_command(verified)?;
+        let (rejected_sequence, rejected_sha256, winner) = rejected.into_binding();
+        let AgentOutputCursorState::Pending {
+            sequence,
+            frame_sha256,
+        } = &self.state
+        else {
+            return Err(ProtocolError::AuthorizationFailed(
+                "the output cursor has no rejected progress frame",
+            ));
+        };
+        if rejected_sequence != *sequence || !bool::from(rejected_sha256.ct_eq(frame_sha256)) {
+            return Err(ProtocolError::AuthorizationFailed(
+                "the progress rejection does not cover the exact pending frame",
+            ));
+        }
+        let failure = match winner {
+            ProgressRejectionWinner::Cancelled => RuntimeFailureKind::Cancelled,
+            ProgressRejectionWinner::DeadlineExceeded => RuntimeFailureKind::DeadlineExceeded,
+        };
+        let frame = build_agent_terminal_output_frame(
+            verified,
+            &self.claim.fence,
+            AgentTerminalOutput::Failure(failure),
+            rejected_sequence,
+            occurred_at_unix_millis,
+            self.claim.claim_handoff_watermark,
+        )?;
+        Ok(ClaimBoundAgentTerminal { frame })
     }
 
     fn bind_terminal(
