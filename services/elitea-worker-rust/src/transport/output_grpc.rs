@@ -393,6 +393,50 @@ impl PreparedOutputSpool {
         Ok(spawn_output_actor(inner, max_frame_bytes))
     }
 
+    /// Replay the sole exact terminal and return settlement authority only
+    /// after Main's bound ACK removes it from the durable spool.
+    ///
+    /// This crate-private operation is consumed only by the owned delivery
+    /// coordinator. Callers must not regenerate or append a terminal while a
+    /// replay attempt is in flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable binding, transport, ACK, or spool error. Before a
+    /// bound ACK, the exact terminal remains durable for a later reopener.
+    #[allow(dead_code)] // Consumed by the next accepted-output coordinator slice.
+    pub(crate) async fn replay_terminal(
+        self,
+        channel: Channel,
+        verified: &VerifiedAgentCommand,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<DurablyAckedTerminal, OutputGrpcError> {
+        self.require_single_expected(expected)?;
+        let pending = PendingTerminalSettlement::new(verified, expected)?;
+        let io = TonicOutputStream::open(channel, &self.config).await?;
+        self.replay_terminal_over(io, pending, expected.sequence)
+            .await
+    }
+
+    #[allow(dead_code)] // Production caller lands with replay_terminal above.
+    async fn replay_terminal_over<S: OutputStreamIo>(
+        self,
+        io: S,
+        pending: PendingTerminalSettlement,
+        expected_sequence: u64,
+    ) -> Result<DurablyAckedTerminal, OutputGrpcError> {
+        let mut session = OutputSession::from_prepared(io, self).await?;
+        if !session.terminal_committed || session.state.acknowledged_sequence() != expected_sequence
+        {
+            return Err(OutputGrpcError::Unavailable(
+                "the terminal replay did not reach its bound durable ACK",
+            ));
+        }
+        // A close failure cannot revoke the already applied durable ACK.
+        let _ignored = session.io.close().await;
+        Ok(pending.into_acked())
+    }
+
     fn require_single_expected(
         &self,
         expected: &ExecutionOutputFrameV1,
@@ -733,6 +777,65 @@ pub struct DurablyAckedTerminal {
     exact_signed_envelope: Box<[u8]>,
 }
 
+/// Validated terminal settlement material which is not authority until the
+/// corresponding frame receives its bound durable ACK.
+struct PendingTerminalSettlement {
+    identity: ExecutionIdentityV1,
+    fence: ExecutionFenceV1,
+    proposal: SettlementProposalV1,
+    stable_delivery_id: String,
+    exact_signed_envelope: Box<[u8]>,
+}
+
+impl PendingTerminalSettlement {
+    fn new(
+        verified: &VerifiedAgentCommand,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<Self, OutputGrpcError> {
+        validate_terminal_settlement_binding(frame)?;
+        let identity = frame.identity.clone().ok_or(OutputGrpcError::Protocol(
+            OutputSessionError::InvalidInput(
+                "the terminal output identity is missing before settlement",
+            ),
+        ))?;
+        let fence = frame.fence.clone().ok_or(OutputGrpcError::Protocol(
+            OutputSessionError::InvalidInput(
+                "the terminal output fence is missing before settlement",
+            ),
+        ))?;
+        let proposal = frame
+            .settlement_proposal
+            .clone()
+            .ok_or(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+                "the terminal settlement proposal is missing",
+            )))?;
+        if !terminal_identity_matches_command(&identity, verified) {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "the terminal output identity does not match its verified command",
+                ),
+            ));
+        }
+        Ok(Self {
+            identity,
+            fence,
+            proposal,
+            stable_delivery_id: verified.command().idempotency_key.clone(),
+            exact_signed_envelope: verified.exact_signed_envelope().into(),
+        })
+    }
+
+    fn into_acked(self) -> DurablyAckedTerminal {
+        DurablyAckedTerminal {
+            identity: self.identity,
+            fence: self.fence,
+            proposal: self.proposal,
+            stable_delivery_id: self.stable_delivery_id,
+            exact_signed_envelope: self.exact_signed_envelope,
+        }
+    }
+}
+
 impl DurablyAckedTerminal {
     pub(crate) fn into_settlement_parts(
         self,
@@ -833,38 +936,9 @@ impl OutputGrpcSession {
         verified: &VerifiedAgentCommand,
         frame: ExecutionOutputFrameV1,
     ) -> Result<DurablyAckedTerminal, OutputGrpcError> {
-        validate_terminal_settlement_binding(&frame)?;
-        let identity = frame.identity.clone().ok_or(OutputGrpcError::Protocol(
-            OutputSessionError::InvalidInput(
-                "the terminal output identity is missing before settlement",
-            ),
-        ))?;
-        let fence = frame.fence.clone().ok_or(OutputGrpcError::Protocol(
-            OutputSessionError::InvalidInput(
-                "the terminal output fence is missing before settlement",
-            ),
-        ))?;
-        let proposal = frame
-            .settlement_proposal
-            .clone()
-            .ok_or(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
-                "the terminal settlement proposal is missing",
-            )))?;
-        if !terminal_identity_matches_command(&identity, verified) {
-            return Err(OutputGrpcError::Protocol(
-                OutputSessionError::AuthorizationFailed(
-                    "the terminal output identity does not match its verified command",
-                ),
-            ));
-        }
+        let pending = PendingTerminalSettlement::new(verified, &frame)?;
         self.send_frame(frame).await?;
-        Ok(DurablyAckedTerminal {
-            identity,
-            fence,
-            proposal,
-            stable_delivery_id: verified.command().idempotency_key.clone(),
-            exact_signed_envelope: verified.exact_signed_envelope().into(),
-        })
+        Ok(pending.into_acked())
     }
 
     /// Return the highest sequence whose bound Main ACK was durably applied to
@@ -1303,6 +1377,24 @@ mod tests {
         }
     }
 
+    fn terminal_frame() -> ExecutionOutputFrameV1 {
+        let mut terminal = frame(1, true);
+        terminal.payload_digest = Some(DigestV1 {
+            algorithm: DigestAlgorithmV1::Sha256 as i32,
+            value: vec![b'p'; 32],
+        });
+        terminal.settlement_proposal = Some(SettlementProposalV1 {
+            proposal_id: "command-1:settlement".to_owned(),
+            requested_outcome: ExecutionOutcomeV1::Succeeded as i32,
+            terminal_logical_output_id: terminal.logical_output_id.clone(),
+            terminal_event_id: terminal.event_id.clone(),
+            terminal_sequence: terminal.sequence,
+            terminal_payload_digest: terminal.payload_digest.clone(),
+            prepare_idempotency_key: "command-1:prepare-settlement".to_owned(),
+        });
+        terminal
+    }
+
     fn bootstrap() -> ExecutionOutputAckV1 {
         ExecutionOutputAckV1 {
             credit_frames: 2,
@@ -1485,6 +1577,89 @@ mod tests {
                 .expect("pending")
                 .is_empty()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn restored_terminal_ack_mints_the_same_settlement_authority() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-terminal-proof");
+        let verified = verified_agent_command("signed_command_output_session");
+        let terminal = terminal_frame();
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(terminal.clone())
+            .expect("durable terminal");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored terminal");
+        let pending =
+            PendingTerminalSettlement::new(&verified, &terminal).expect("terminal binding");
+        let io = FakeStream {
+            acknowledgements: VecDeque::from([
+                Ok(Some(bootstrap())),
+                Ok(Some(bound_ack(&terminal))),
+            ]),
+            writes: Vec::new(),
+            closed: false,
+        };
+        let acknowledged = restored
+            .replay_terminal_over(io, pending, terminal.sequence)
+            .await
+            .expect("durably acknowledged restored terminal");
+        let (identity, fence, proposal, stable_delivery_id, exact_envelope) =
+            acknowledged.into_settlement_parts();
+        assert_eq!(identity, terminal.identity.expect("terminal identity"));
+        assert_eq!(fence, terminal.fence.expect("terminal fence"));
+        assert_eq!(
+            proposal,
+            terminal
+                .settlement_proposal
+                .expect("terminal settlement proposal")
+        );
+        assert_eq!(stable_delivery_id, verified.command().idempotency_key);
+        assert_eq!(exact_envelope.as_ref(), verified.exact_signed_envelope());
+        assert!(
+            spool(&root)
+                .pending()
+                .expect("empty acknowledged spool")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn restored_terminal_without_a_bound_ack_retains_the_exact_spool() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-terminal-no-ack");
+        let verified = verified_agent_command("signed_command_output_session");
+        let terminal = terminal_frame();
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(terminal.clone())
+            .expect("durable terminal");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored terminal");
+        let pending =
+            PendingTerminalSettlement::new(&verified, &terminal).expect("terminal binding");
+        let io = FakeStream {
+            acknowledgements: VecDeque::from([Ok(Some(bootstrap())), Ok(None)]),
+            writes: Vec::new(),
+            closed: false,
+        };
+        assert!(matches!(
+            restored
+                .replay_terminal_over(io, pending, terminal.sequence)
+                .await,
+            Err(OutputGrpcError::Unavailable(_))
+        ));
+        let mut recovered = spool(&root);
+        let pending = recovered.pending().expect("preserved terminal spool");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].payload, terminal.encode_to_vec());
     }
 
     #[test]
@@ -1763,20 +1938,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary directory");
         let verified = verified_agent_command("signed_command_output_session");
         let mismatched = verified_agent_command("signed_command");
-        let mut terminal = frame(1, true);
-        terminal.payload_digest = Some(DigestV1 {
-            algorithm: DigestAlgorithmV1::Sha256 as i32,
-            value: vec![b'p'; 32],
-        });
-        terminal.settlement_proposal = Some(SettlementProposalV1 {
-            proposal_id: "command-1:settlement".to_owned(),
-            requested_outcome: ExecutionOutcomeV1::Succeeded as i32,
-            terminal_logical_output_id: terminal.logical_output_id.clone(),
-            terminal_event_id: terminal.event_id.clone(),
-            terminal_sequence: terminal.sequence,
-            terminal_payload_digest: terminal.payload_digest.clone(),
-            prepare_idempotency_key: "command-1:prepare-settlement".to_owned(),
-        });
+        let terminal = terminal_frame();
         let io = FakeStream {
             acknowledgements: VecDeque::from([
                 Ok(Some(bootstrap())),
