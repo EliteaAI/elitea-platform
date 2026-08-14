@@ -147,26 +147,38 @@ func TestToolsRouteStillServesTheToolkitInstanceList(t *testing.T) {
 	t.Parallel()
 
 	source := readRouterSource(t)
-	if !regexp.MustCompile(`r\.Get\("/tools/prompt_lib/\{projectID\}", toolkitHandler\.List\)`).MatchString(source) {
+	if !regexp.MustCompile(`Get\("/tools/prompt_lib/\{projectID\}", toolkitHandler\.List\)`).MatchString(source) {
 		t.Error("no GET /tools/prompt_lib/{projectID} -> toolkitHandler.List registration remains in router.go")
 	}
 }
 
-// A source-level guard so BOTH feature-flag branches are covered — the gated
-// branch (the production default) cannot be exercised behaviourally without a
-// database, and the two blocks are copy-pasted, so a fix applied to one and not
-// the other is exactly the mistake to expect.
+// A source-level guard, because the gated branch (the production default)
+// cannot be exercised behaviourally without a database.
+//
+// It used to demand TWO registrations: the FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS
+// block was written out once per branch, so a fix applied to one copy and not
+// the other was the mistake to expect — and this test was the only thing that
+// would have caught it. #313 removed the duplication rather than keeping the
+// two copies in step: one registration list now serves both settings of the
+// flag, which the middleware factory selects. So the count is one, and the
+// property the old test approximated ("no copy of this route is wired to the
+// instance list") is now structural.
+//
+// The count is still asserted, not just the handler name. A second registration
+// reappearing would mean the branches were split again, and this file is where
+// that has to be noticed.
 func TestEveryToolkitsRouteRegistrationNamesListTypeSchemas(t *testing.T) {
 	t.Parallel()
 
 	source := readRouterSource(t)
-	registrations := regexp.MustCompile(`r\.Get\("/toolkits/prompt_lib/\{projectID\}", toolkitHandler\.(\w+)\)`).
+	registrations := regexp.MustCompile(`Get\("/toolkits/prompt_lib/\{projectID\}", toolkitHandler\.(\w+)\)`).
 		FindAllStringSubmatch(source, -1)
 
-	// router.go registers the toolkit block twice: once behind
-	// RequireProjectAccess, once un-gated.
-	if len(registrations) != 2 {
-		t.Fatalf("found %d GET /toolkits/prompt_lib/{projectID} registrations in router.go, want 2", len(registrations))
+	if len(registrations) != 1 {
+		t.Fatalf("found %d GET /toolkits/prompt_lib/{projectID} registrations in router.go, want 1 — "+
+			"the feature-flag branches share one registration list since #313; if they were split "+
+			"again, every route in the block needs the copy-versus-copy check this test used to make",
+			len(registrations))
 	}
 	for _, registration := range registrations {
 		if registration[1] != "ListTypeSchemas" {

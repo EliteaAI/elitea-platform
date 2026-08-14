@@ -518,7 +518,62 @@ CROSS JOIN (VALUES
     -- Both were unreachable before A14 — the routes existed but answered from a
     -- constant — so neither string had ever needed to be granted anywhere.
     ('admin.moderation.view'),
-    ('admin.moderation.create')
+    ('admin.moderation.create'),
+    -- #302/#313: the /elitea_core group no longer enforces membership alone —
+    -- every route now resolves the permission its pylon module declares
+    -- (services/elitea-main/internal/api/router.go). This project carries
+    -- per-project rows, which SUPPRESSES the central default-mode fallback
+    -- that shared/0068 seeds, so each of those strings has to be listed here
+    -- explicitly or the route 403s for every persona. Same reasoning, and the
+    -- same measured symptom, as the index_meta pair above.
+    ('configuration.roles.roles.view'),
+    ('models.applications.application.details'),
+    ('models.applications.application_relation.patch'),
+    ('models.applications.applications.details'),
+    ('models.applications.applications.list'),
+    ('models.applications.export_import.import'),
+    ('models.applications.export_toolkit.export'),
+    ('models.applications.index_meta.delete'),
+    ('models.applications.index_types.details'),
+    ('models.applications.skills.create'),
+    ('models.applications.skills.delete'),
+    ('models.applications.skills.details'),
+    ('models.applications.skills.export'),
+    ('models.applications.skills.list'),
+    ('models.applications.skills.publish'),
+    ('models.applications.skills.update'),
+    ('models.applications.task.delete'),
+    ('models.applications.toolkit_validator.check'),
+    ('models.applications.toolkits.details'),
+    ('models.applications.trending_authors.list'),
+    ('models.applications.unpublish.post'),
+    ('models.applications.upload_icon.delete'),
+    ('models.applications.upload_icon.get'),
+    ('models.applications.upload_icon.post'),
+    ('models.applications.upload_icon.update'),
+    ('models.applications.version.delete'),
+    ('models.applications.version.details'),
+    ('models.applications.version.update'),
+    ('models.applications.version_validator.check'),
+    ('models.applications.versions.create'),
+    ('models.applications.versions.get'),
+    ('models.chat.attachments.create'),
+    ('models.chat.attachments.delete'),
+    ('models.chat.canvas.create'),
+    ('models.chat.canvas.details'),
+    ('models.chat.canvas.update'),
+    ('models.chat.conversation.edit'),
+    ('models.chat.conversation.update'),
+    ('models.chat.conversations.delete'),
+    ('models.chat.entity_settings.update'),
+    ('models.chat.messages.delete'),
+    ('models.chat.messages.details'),
+    ('models.chat.messages.list'),
+    ('models.chat.participant.delete'),
+    ('models.chat.participants.create'),
+    ('models.monitoring.tracing.view'),
+    ('models.promptlib_shared.search'),
+    ('models.promptlib_shared.tags.list')
 ) AS p(permission)
 WHERE r.project_id = 1
 ON CONFLICT (project_id, role_id, permission) DO NOTHING;
@@ -646,7 +701,74 @@ CROSS JOIN (VALUES
     -- reads. The singular form below is a DIFFERENT permission (one config's
     -- details), and granting only that leaves the picker empty behind a 403.
     ('configurations.configurations.list'),
-    ('configurations.configuration.details')
+    ('configurations.configuration.details'),
+    -- #302/#313: the /elitea_core group no longer enforces membership alone —
+    -- every route now resolves the permission its pylon module declares
+    -- (services/elitea-main/internal/api/router.go). This project carries
+    -- per-project rows, which SUPPRESSES the central default-mode fallback
+    -- that shared/0068 seeds, so each of those strings has to be listed here
+    -- explicitly or the route 403s for every persona. Same reasoning, and the
+    -- same measured symptom, as the index_meta pair above.
+    ('configuration.roles.roles.view'),
+    ('configuration.users.users.view'),
+    ('models.applications.application.delete'),
+    ('models.applications.application.details'),
+    ('models.applications.application.update'),
+    ('models.applications.application_relation.patch'),
+    ('models.applications.applications.create'),
+    ('models.applications.applications.details'),
+    ('models.applications.applications.list'),
+    ('models.applications.export_import.export'),
+    ('models.applications.export_import.import'),
+    ('models.applications.export_toolkit.export'),
+    ('models.applications.fork.post'),
+    ('models.applications.index_types.details'),
+    ('models.applications.publish.post'),
+    ('models.applications.skills.create'),
+    ('models.applications.skills.delete'),
+    ('models.applications.skills.details'),
+    ('models.applications.skills.export'),
+    ('models.applications.skills.list'),
+    ('models.applications.skills.publish'),
+    ('models.applications.skills.update'),
+    ('models.applications.task.delete'),
+    ('models.applications.tool.delete'),
+    ('models.applications.toolkit_validator.check'),
+    ('models.applications.toolkits.details'),
+    ('models.applications.trending_authors.list'),
+    ('models.applications.unpublish.post'),
+    ('models.applications.upload_icon.delete'),
+    ('models.applications.upload_icon.get'),
+    ('models.applications.upload_icon.post'),
+    ('models.applications.upload_icon.update'),
+    ('models.applications.version.delete'),
+    ('models.applications.version.details'),
+    ('models.applications.version.update'),
+    ('models.applications.version_validator.check'),
+    ('models.applications.versions.create'),
+    ('models.applications.versions.get'),
+    ('models.chat.attachments.create'),
+    ('models.chat.attachments.delete'),
+    ('models.chat.canvas.create'),
+    ('models.chat.canvas.details'),
+    ('models.chat.canvas.update'),
+    ('models.chat.conversation.edit'),
+    ('models.chat.conversation.update'),
+    ('models.chat.conversations.delete'),
+    ('models.chat.entity_settings.update'),
+    ('models.chat.folders.create'),
+    ('models.chat.folders.delete'),
+    ('models.chat.folders.update'),
+    ('models.chat.messages.delete'),
+    ('models.chat.messages.details'),
+    ('models.chat.messages.list'),
+    ('models.chat.participant.delete'),
+    ('models.chat.participants.create'),
+    ('models.monitoring.tracing.view'),
+    ('models.project_context.edit'),
+    ('models.project_context.view'),
+    ('models.promptlib_shared.search'),
+    ('models.promptlib_shared.tags.list')
 ) AS p(permission)
 WHERE u.email = 'e2e-chat@autotest.local'
 ON CONFLICT (project_id, role_id, permission) DO NOTHING;
