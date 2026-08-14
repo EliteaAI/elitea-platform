@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod capabilities;
+pub mod diagnostics;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod execution;
 pub mod protocol;

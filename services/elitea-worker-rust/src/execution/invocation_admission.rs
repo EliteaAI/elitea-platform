@@ -161,7 +161,10 @@ impl InvocationAdmission {
             drop(permit);
             return Err(draining());
         }
-        Ok(InvocationReservation { _permit: permit })
+        Ok(InvocationReservation {
+            _permit: permit,
+            owner: Arc::clone(&self.state),
+        })
     }
 
     /// Stop new admission and wake every waiter. Existing reservations remain
@@ -186,6 +189,10 @@ impl InvocationAdmission {
     pub fn configured_capacity(&self) -> usize {
         self.state.configured_capacity
     }
+
+    pub(crate) fn owns(&self, reservation: &InvocationReservation) -> bool {
+        Arc::ptr_eq(&self.state, &reservation.owner)
+    }
 }
 
 /// One non-cloneable slot reserved for a future native ADK invocation.
@@ -195,6 +202,7 @@ impl InvocationAdmission {
 /// including any caller-cancellation wait for real completion.
 pub struct InvocationReservation {
     _permit: OwnedSemaphorePermit,
+    owner: Arc<AdmissionState>,
 }
 
 fn saturated() -> InvocationAdmissionError {

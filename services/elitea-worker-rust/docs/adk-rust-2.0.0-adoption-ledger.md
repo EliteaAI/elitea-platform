@@ -86,10 +86,16 @@ fencing remains mandatory.
 
 The scaling foundation is bounded asynchronous admission, shared pools,
 per-resource concurrency ceilings, backpressure and one owner for each durable
-delivery. `smallvec`, `crossbeam` and lock-free queues are not architecture
-requirements. Add them only after representative profiles identify an
-allocation or contention hot path and a benchmark proves an end-to-end gain
-without weakening cancellation or durability.
+delivery. The internal invocation supervisor now accepts work only with a
+non-cloneable reservation from its exact bounded admission pool, keeps accepted
+work alive when a result waiter disappears, closes admission during drain and
+returns an unaccepted authority-bearing future intact. The process panic hook
+also replaces arbitrary panic payloads with one static diagnostic. This does
+not yet authorize or execute a production capability; the complete lifecycle
+owner remains the next composition gate. `smallvec`, `crossbeam` and lock-free
+queues are not architecture requirements. Add them only after representative
+profiles identify an allocation or contention hot path and a benchmark proves
+an end-to-end gain without weakening cancellation or durability.
 
 Tracing is added at the orchestration owner as functionality lands. Stable
 span fields include execution/generation/claim attempt, capability, graph/node,

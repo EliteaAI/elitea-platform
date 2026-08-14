@@ -4,6 +4,7 @@ pub mod agent_delivery;
 pub mod agent_lease;
 pub mod agent_preparation;
 pub mod invocation_admission;
+mod invocation_supervisor;
 
 #[cfg(test)]
 mod agent_lease_tests;
@@ -11,6 +12,8 @@ mod agent_lease_tests;
 mod agent_preparation_tests;
 #[cfg(test)]
 mod invocation_admission_tests;
+#[cfg(test)]
+mod invocation_supervisor_tests;
 
 pub use agent_delivery::{
     AgentDeliveryCompletion, AgentDeliveryCompletionKind, AgentDeliveryError, AgentDeliveryRoute,
