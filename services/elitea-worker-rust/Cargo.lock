@@ -582,11 +582,13 @@ name = "elitea-worker-rust"
 version = "0.1.0"
 dependencies = [
  "adk-rust",
+ "async-stream",
  "async-trait",
  "base64",
  "bytes",
  "chrono",
  "http",
+ "http-body",
  "http-body-util",
  "percent-encoding",
  "prost",

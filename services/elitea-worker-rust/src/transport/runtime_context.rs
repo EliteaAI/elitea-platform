@@ -200,6 +200,10 @@ pub(crate) struct ClaimScopedEliteaContext {
 }
 
 impl ClaimScopedEliteaContext {
+    pub(super) fn into_model_gateway_parts(self) -> (u64, Zeroizing<String>) {
+        (self.project_id, self.token)
+    }
+
     #[cfg(test)]
     pub(super) const fn project_id(&self) -> u64 {
         self.project_id
@@ -208,6 +212,14 @@ impl ClaimScopedEliteaContext {
     #[cfg(test)]
     pub(super) fn token(&self) -> &str {
         self.token.as_str()
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture(project_id: u64, token: &str) -> Self {
+        Self {
+            project_id,
+            token: Zeroizing::new(token.to_owned()),
+        }
     }
 }
 

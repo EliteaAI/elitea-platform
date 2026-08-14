@@ -127,6 +127,35 @@ fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contract
     assert_eq!(adhoc.max_tokens(), 2048);
     assert_eq!(adhoc.reasoning_effort(), None);
     assert_eq!(adhoc.temperature(), Some(0.7));
+
+    let mut multiline = ordinary_request(AgentExecutionKind::Application);
+    multiline
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version")
+        .insert(
+            "instructions".to_owned(),
+            json!("review carefully\nreturn a concise answer"),
+        );
+    assert!(OrdinaryNoToolProfile::validate(&multiline).is_ok());
+
+    let mut disabled_reasoning = ordinary_request(AgentExecutionKind::Adhoc);
+    let kwargs = disabled_reasoning
+        .payload
+        .llm
+        .get_mut("kwargs")
+        .and_then(Value::as_object_mut)
+        .expect("ad-hoc model settings");
+    kwargs.insert("reasoning_effort".to_owned(), json!("none"));
+    let disabled_reasoning = OrdinaryNoToolProfile::validate(&disabled_reasoning)
+        .expect("disabled reasoning retains temperature");
+    assert_eq!(
+        disabled_reasoning.reasoning_effort(),
+        Some(ReasoningEffort::None)
+    );
+    assert_eq!(disabled_reasoning.temperature(), Some(0.7));
 }
 
 #[test]

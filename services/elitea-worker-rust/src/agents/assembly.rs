@@ -165,7 +165,7 @@ fn application_model(
     let instructions = version
         .get("instructions")
         .and_then(Value::as_str)
-        .filter(|value| bounded_text(value, 64 * 1_024))
+        .filter(|value| bounded_instruction(value))
         .ok_or_else(invalid_profile)?;
     if ["{{", "{%", "{#"]
         .iter()
@@ -239,7 +239,7 @@ fn adhoc_model(
         .application
         .get("instructions")
         .and_then(Value::as_str)
-        .filter(|value| bounded_text(value, 64 * 1_024))
+        .filter(|value| bounded_instruction(value))
         .ok_or_else(invalid_profile)?;
     if ["{{", "{%", "{#"]
         .iter()
@@ -383,6 +383,10 @@ fn parse_temperature(value: &Value) -> Result<f64, NativeAgentAssemblyError> {
 
 fn bounded_runtime_identity(value: &str) -> bool {
     bounded_text(value, 256)
+}
+
+fn bounded_instruction(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 64 * 1_024 && !value.contains('\0')
 }
 
 fn bounded_text(value: &str, maximum: usize) -> bool {
