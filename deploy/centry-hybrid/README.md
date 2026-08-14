@@ -24,6 +24,57 @@ and its original host port is replaced with
 generated local default certificate in this PoV. Production certificate
 delivery, rotation and trust are separate release gates.
 
+## The edge, and what it needs
+
+Two Traefik configurations exist here, and they load different files. Know
+which one you are changing.
+
+| Stack | Command | Traefik gets | Middleware definitions |
+|---|---|---|---|
+| Foundation | `task hybrid:up` | the whole `traefik/` directory at `/etc/traefik/dynamic` | `traefik/middlewares.yml` in this repository |
+| Full PoV | `./compose.sh up` | only `traefik/index-routes.yml`, as `/etc/traefik/dynamic/index.yml` | `hybrid_auth/traefik-dynamic.yml` in the private centry repository |
+
+Every router in `traefik/index-routes.yml` names three middlewares:
+`strip-caller-auth-context`, `normalize-runtime-public-authority` and
+`go-main-forward-auth`. Read `traefik/middlewares.yml` for what each one does
+and why the order is fixed.
+
+Traefik does not fail a stack whose router names a middleware that no loaded
+file defines. It logs the error, drops the router, and keeps serving. In this
+deployment the dropped routers are the ones that select Go, and `base.yml`
+holds a `PathPrefix("/")` catch-all to pylon at priority 1. The result is
+HTTP 200 from pylon on a path the configuration says goes to elitea-main, and
+the header-stripping middleware never runs either. Run
+`task deploy:check-edge` to catch this before you deploy. The No Binaries
+workflow runs the same gate on every pull request.
+
+## Inputs that stay in the private centry repository
+
+`compose.sh` needs seven inputs it cannot provide. It checks each one and
+exits 2 with the missing path. Only the full PoV stack needs them; the
+foundation stack does not.
+
+| Input | What it provides |
+|---|---|
+| `$CENTRY/docker-compose.yml` | The current Centry compose model. Every overlay here applies on top of it. |
+| `$CENTRY/hybrid_auth/docker-compose.pov.yml` | The hybrid Auth overlay. It defines the `auth_gateway` Traefik service and the `elitea-main-auth` target that the private middleware definitions name. |
+| `$CENTRY/hybrid_auth/docker-compose.indexing-checkpoint.yml` | The indexing checkpoint overlay. |
+| `$CENTRY/hybrid_auth/bootstrap-auth-pov.sh` | Auth PoV bootstrap. |
+| `$CENTRY/hybrid_auth/bootstrap-runtime.sh` | Runtime bootstrap. |
+| `$CENTRY/envs/default.env` | Shared compose and shell environment. |
+| `$CENTRY/envs/override.env` | Local secrets. It stays untracked, and the scripts never copy or print it. |
+
+Two more private inputs are used but not checked for existence:
+
+| Input | What it provides |
+|---|---|
+| `$CENTRY/hybrid_auth/Containerfile.litellm` | The standalone LiteLLM image that `pov-compose.yml` builds. |
+| `$CENTRY/hybrid_auth/traefik-dynamic.yml` | The PoV edge base file. It defines the three middlewares and points them at `elitea-main-auth`. |
+
+`traefik/middlewares.yml` in this repository does not replace the private file
+and does not collide with it. The PoV stack mounts one file only, so the two
+never load together.
+
 ## Validate
 
 From the `elitea-platform` repository:
