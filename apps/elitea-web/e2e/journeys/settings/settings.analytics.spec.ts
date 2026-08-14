@@ -297,9 +297,9 @@ test('J24d: the Agents/Tools/Users tabs report the missing source, not an empty 
   // The populated-table rendering is not lost: J24b drives it with a crafted
   // payload, as it did before this change.
   const tabs = [
-    { tab: 'Agents', path: `${API_BASE}/elitea_core/analytics_agents/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'Agent Activity', columns: ['Agent', 'Events', 'Users', 'Avg Latency', 'Errors'] },
-    { tab: 'Tools', path: `${API_BASE}/elitea_core/analytics_tools/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'Tool Details', columns: ['Tool', 'Calls', 'Users', 'Avg Latency', 'Errors'] },
-    { tab: 'Users', path: `${API_BASE}/elitea_core/analytics_users/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'User Activity', columns: ['User', 'Events', 'Days', 'LLM', 'Tool', 'Agent', 'Chat Msg', 'Errors'] },
+    { tab: 'Agents', path: `${API_BASE}/elitea_core/analytics_agents/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'Agent Activity', count: '0 agents' },
+    { tab: 'Tools', path: `${API_BASE}/elitea_core/analytics_tools/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'Tool Details', count: '0 tools' },
+    { tab: 'Users', path: `${API_BASE}/elitea_core/analytics_users/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'User Activity', count: '0 users' },
   ] as const;
 
   for (const spec of tabs) {
@@ -318,10 +318,15 @@ test('J24d: the Agents/Tools/Users tabs report the missing source, not an empty 
     // still pass against a page that rendered both, which is the failure this
     // half exists to catch.
     await expect(page.getByText('Failed to load analytics data.', { exact: true })).toBeVisible();
+    // The card TITLE and the count label, not the raw column names. The
+    // original J24d scoped its column assertions to the card for a reason its
+    // comment spelled out: a bare `getByText('Users')` also matches the Users
+    // TAB and the settings-sidebar link, so an unscoped absence check can never
+    // reach 0 — it counted 2 when this was first written the naive way. The
+    // title and the count are unique to the table's own card, so their absence
+    // is the honest way to say "no table rendered".
     await expect(page.getByText(spec.title, { exact: true })).toHaveCount(0);
-    for (const column of spec.columns) {
-      await expect(page.getByText(column, { exact: true })).toHaveCount(0);
-    }
+    await expect(page.getByText(spec.count, { exact: true })).toHaveCount(0);
   }
 
   await checkA11y(page);
