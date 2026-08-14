@@ -1004,9 +1004,21 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		logger.Info("project SSE stream enabled (redis transport)")
 	}
 
+	// The toolkit TYPE catalogue (GET /elitea_core/toolkits/prompt_lib/
+	// {projectID}) serves each tool's argument schema from the digest-pinned SDK
+	// snapshot. It is loaded unconditionally and here, in the composition root,
+	// because internal/api must not import internal/runtimecomposition. A
+	// snapshot that will not load is an embedded-asset defect, so it stops
+	// startup rather than degrading the endpoint to schema-less tool lists.
+	toolkitArgumentSchemas, err := runtimecomposition.LoadPinnedCurrentToolkitSchemaSnapshot()
+	if err != nil {
+		return fmt.Errorf("load pinned current toolkit schema snapshot: %w", err)
+	}
+
 	r := api.NewRouter(api.RouterConfig{
-		AdminUI: adminUICfg,
-		Pool:    pool,
+		AdminUI:                adminUICfg,
+		Pool:                   pool,
+		ToolkitArgumentSchemas: toolkitArgumentSchemas,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,

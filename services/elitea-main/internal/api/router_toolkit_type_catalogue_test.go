@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
 // GET /elitea_core/toolkits/prompt_lib/{projectID} is the toolkit TYPE
@@ -42,9 +44,14 @@ func TestToolkitsRouteServesTheTypeCatalogueNotTheInstanceList(t *testing.T) {
 	// un-gated branch so the response body is observable. The gated branch's
 	// registration is covered by the source-level test below.
 	t.Setenv("FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS", "false")
+	snapshot, err := runtimecomposition.LoadPinnedCurrentToolkitSchemaSnapshot()
+	if err != nil {
+		t.Fatalf("load pinned toolkit schema snapshot: %v", err)
+	}
 	router := NewRouter(RouterConfig{
-		SkillsRepo:    struct{ v2skills.Repository }{},
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		SkillsRepo:             struct{ v2skills.Repository }{},
+		AuthValidator:          testTokenValidator{user: authenticatedTestUser()},
+		ToolkitArgumentSchemas: snapshot,
 	})
 
 	response := httptest.NewRecorder()
@@ -75,8 +82,61 @@ func TestToolkitsRouteServesTheTypeCatalogueNotTheInstanceList(t *testing.T) {
 	if !ok {
 		t.Fatalf("response has no \"github\" toolkit type: %s", response.Body.String())
 	}
-	if _, ok := github["properties"].(map[string]any); !ok {
-		t.Errorf("the \"github\" entry is not a JSON-Schema-shaped settings descriptor: %v", github)
+	properties, ok := github["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("the \"github\" entry is not a JSON-Schema-shaped settings descriptor: %v", github)
+	}
+
+	// The catalogue's payload is the per-tool ARGUMENT schemas the web client
+	// renders forms from, and they must arrive through the route, not merely
+	// exist in the snapshot. Until the SDK snapshot started carrying them, every
+	// one was the placeholder {"type":"object"} — which is why this asserts on
+	// real content. create_issue is a github tool at SDK revision b5113a1; its
+	// title argument is the one a form needs to draw a text field.
+	selectedTools, ok := properties["selected_tools"].(map[string]any)
+	if !ok {
+		t.Fatalf("the \"github\" entry declares no selected_tools property: %v", properties)
+	}
+	argsSchemas, ok := selectedTools["args_schemas"].(map[string]any)
+	if !ok {
+		t.Fatalf("github selected_tools carries no args_schemas: %v", selectedTools)
+	}
+	createIssue, ok := argsSchemas["create_issue"].(map[string]any)
+	if !ok {
+		t.Fatalf("github exposes no create_issue argument schema: %v", argsSchemas)
+	}
+	createIssueProperties, ok := createIssue["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("create_issue is still a placeholder with no properties: %v", createIssue)
+	}
+	if _, ok := createIssueProperties["title"].(map[string]any); !ok {
+		t.Errorf("create_issue takes no title argument: %v", createIssueProperties)
+	}
+}
+
+// The catalogue's argument schemas reach the handler only if the composition
+// root fills RouterConfig.ToolkitArgumentSchemas and router.go passes it on.
+// Neither step is nil-gated, so nothing 404s or errors when one is missing: the
+// endpoint keeps answering 200 with settings-only schemas and every tool form in
+// the web client silently renders empty — the exact defect this wiring fixes.
+// That is the invisible-wiring class of #115/#123/#126, so it gets a source-level
+// gate like they did.
+func TestToolkitArgumentSchemasAreWiredFromTheCompositionRoot(t *testing.T) {
+	t.Parallel()
+
+	if !regexp.MustCompile(`v2toolkits\.WithArgumentSchemas\(cfg\.ToolkitArgumentSchemas\)`).
+		MatchString(readRouterSource(t)) {
+		t.Error("router.go builds the toolkit handler without cfg.ToolkitArgumentSchemas, " +
+			"so GET /elitea_core/toolkits/prompt_lib/{projectID} serves no tool argument schemas")
+	}
+
+	main, err := os.ReadFile(filepath.Join("..", "..", "cmd", "elitea-main", "main.go"))
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if !regexp.MustCompile(`ToolkitArgumentSchemas:\s*toolkitArgumentSchemas`).Match(main) {
+		t.Error("cmd/elitea-main/main.go never assigns RouterConfig.ToolkitArgumentSchemas, " +
+			"so the pinned SDK snapshot never reaches the toolkit type catalogue in production")
 	}
 }
 

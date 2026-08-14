@@ -20,6 +20,7 @@ import (
 	v2artifacts "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
+	v2budgets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/budgets"
 	v2configs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2contextmgr "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/contextmgr"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
@@ -32,7 +33,6 @@ import (
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
 	v2openapidocs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/openapidocs"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
-	v2budgets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/budgets"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
@@ -112,19 +112,26 @@ type RouterConfig struct {
 	// other way to supply a working fake Repository/ObjectStore pair.
 	ArtifactHandler *v2artifacts.Handler
 	AppsRepo        applications.Repository
-	SkillsRepo      v2skills.Repository
-	FoldersRepo     v2folders.Repository
-	TagsRepo        v2tags.Repository
-	AnalyticsRepo   v2analytics.Repository
-	ConvsRepo       v2convs.Repository
-	WebhookRepo     webhook.Repository
-	RedisClient     *goredis.Client
-	EventSource     v2events.EventSource
-	Shadow          *shadow.Comparator
-	ShadowMetrics   *shadow.Metrics
-	CutoverTracker  *cutover.Tracker
-	CutoverRouter   *cutover.Router
-	AdminUI         *adminui.Config
+	// ToolkitArgumentSchemas supplies GET /elitea_core/toolkits/prompt_lib/
+	// {projectID} with the per-tool argument schemas from the digest-pinned SDK
+	// snapshot. It is injected rather than constructed here because the snapshot
+	// is owned by internal/runtimecomposition, which imports this layer.
+	// Unassigned, the endpoint serves settings schemas with no argument schemas
+	// and every tool form in the web client renders empty.
+	ToolkitArgumentSchemas v2toolkits.ToolkitArgumentSchemaSource
+	SkillsRepo             v2skills.Repository
+	FoldersRepo            v2folders.Repository
+	TagsRepo               v2tags.Repository
+	AnalyticsRepo          v2analytics.Repository
+	ConvsRepo              v2convs.Repository
+	WebhookRepo            webhook.Repository
+	RedisClient            *goredis.Client
+	EventSource            v2events.EventSource
+	Shadow                 *shadow.Comparator
+	ShadowMetrics          *shadow.Metrics
+	CutoverTracker         *cutover.Tracker
+	CutoverRouter          *cutover.Router
+	AdminUI                *adminui.Config
 	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
 	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
 	// DELETE cascade, but only inside newProductionRouter — it is
@@ -953,7 +960,10 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				}
 
 				// Toolkits
-				toolkitHandler := v2toolkits.NewHandler(cfg.Pool)
+				toolkitHandler := v2toolkits.NewHandler(
+					cfg.Pool,
+					v2toolkits.WithArgumentSchemas(cfg.ToolkitArgumentSchemas),
+				)
 				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills).
 				//
 				// NOTE the split, which was wrong until #129: /tools/ is the
