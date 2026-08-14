@@ -104,6 +104,13 @@ type RouterConfig struct {
 	// other route keeps using the Pool-backed resolver regardless of this
 	// field.
 	ArtifactPermissionResolver platformauth.PermissionResolver
+	// ProjectAccessQuerier overrides the Pool-backed membership query that
+	// apimw.RequireProjectAccess runs for the /elitea_core project-scoped
+	// routes (#302) — tests inject one here to control the membership answer
+	// without a live database. With a nil Pool the middleware can only answer
+	// 503, which proves nothing about cross-tenant refusal. Production leaves
+	// this unset and keeps the Pool-backed query.
+	ProjectAccessQuerier apimw.ProjectAccessQuerier
 	// ArtifactHandler overrides newArtifactHandler's Pool/ObjectStore-backed
 	// construction (S11) — newArtifactHandler always builds real
 	// Postgres-backed repositories from Pool with no injection seam, so a
@@ -1000,41 +1007,92 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 
 			// === elitea_core plugin routes ===
 			r.Route("/elitea_core", func(r chi.Router) {
+				// projectScoped closes the cross-project hole measured in #302.
+				// 116 of this group's registrations named {projectID} in the
+				// path and ran on the group's Auth middleware alone. Every
+				// handler behind them derives its tenant schema straight from
+				// that path parameter — v2apps.Handler.Delete calls
+				// tenantSchema(projectID), eliteacore's Unpublish builds
+				// fmt.Sprintf("p_%s", projectID) — and none of them reads the
+				// caller's membership. Any authenticated principal, including
+				// any PAT holder, could therefore read and mutate any project
+				// by editing one path segment.
+				//
+				// MEMBERSHIP, not a permission tier, is what is enforced here,
+				// and deliberately so. Legacy gates each of these routes with a
+				// named check_api permission and those names are recoverable
+				// (testdata/legacy/legacy-rbac-static-catalog.json), but gating
+				// on them today would answer 403 to EVERYONE: a Go-bootstrapped
+				// database grants exactly six default-mode permissions (0062,
+				// 0063, 0066) and these routes need roughly fifty. 0063's
+				// header states the rule — "gating a route on a permission
+				// nothing grants is 403-for-everyone, which reads as a broken
+				// page rather than as a missing grant". The per-route
+				// permission tiers wait on the seeding migration that has to
+				// precede them. The cross-tenant hole does not, and this closes
+				// it with the same middleware the toolkit, skill-publish and
+				// tools_list blocks in this file already use — including the
+				// gap the skill-publish block at "Everything project-scoped
+				// goes behind RequireProjectAccess" below explicitly deferred.
+				// Resolved through a local, exactly as artifactResolver is
+				// above, and for a reason beyond style:
+				// TestNilGatedRouterFieldsAreWiredOrDeclared scans router.go
+				// for nil-comparisons against a config field and demands every
+				// such field be wired in main.go or allowlisted (note: it
+				// scans TEXT, so naming the pattern literally in a comment
+				// trips it), because those gates normally decide
+				// whether routes get REGISTERED. This one does not — the same
+				// routes are registered either way, only the membership query
+				// behind them changes — so writing it as a cfg gate would file
+				// a false "silently unregistered, answers 404" report against a
+				// field production is meant to leave unset.
+				projectAccessQuerier := cfg.ProjectAccessQuerier
+				projectScoped := apimw.RequireProjectAccess(cfg.Pool)
+				if projectAccessQuerier != nil {
+					projectScoped = apimw.RequireProjectAccessWith(projectAccessQuerier)
+				}
+
 				// Applications
 				if cfg.AppsRepo != nil {
 					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
-					r.Get("/applications/prompt_lib/{projectID}", appHandler.List)
-					r.Post("/applications/prompt_lib/{projectID}", appHandler.Create)
-					r.Get("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Get)
-					r.Put("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Update)
-					r.Delete("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Delete)
-					r.Get("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.ListVersions)
-					r.Post("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.CreateVersion)
-					r.Get("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.GetVersion)
-					r.Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.UpdateVersion)
-					r.Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.DeleteVersion)
-					r.Get("/default_version/prompt_lib/{projectID}/{applicationID}", appHandler.GetDefaultVersion)
-					r.Patch("/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.SetDefaultVersion)
+					r.Group(func(r chi.Router) {
+						r.Use(projectScoped)
+						r.Get("/applications/prompt_lib/{projectID}", appHandler.List)
+						r.Post("/applications/prompt_lib/{projectID}", appHandler.Create)
+						r.Get("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Get)
+						r.Put("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Update)
+						r.Delete("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Delete)
+						r.Get("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.ListVersions)
+						r.Post("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.CreateVersion)
+						r.Get("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.GetVersion)
+						r.Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.UpdateVersion)
+						r.Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.DeleteVersion)
+						r.Get("/default_version/prompt_lib/{projectID}/{applicationID}", appHandler.GetDefaultVersion)
+						r.Patch("/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.SetDefaultVersion)
+					})
 				}
 
 				// Agent categories
-				r.Get("/agent_categories/prompt_lib/{projectID}", coreHandler.AgentCategories)
+				r.With(projectScoped).Get("/agent_categories/prompt_lib/{projectID}", coreHandler.AgentCategories)
 
 				// Skills (UI calls /skill/ and /skills/ paths)
 				if cfg.SkillsRepo != nil {
 					skillHandler := v2skills.NewHandler(cfg.SkillsRepo)
-					r.Get("/skills/{mode}/{projectID}", skillHandler.List)
-					r.Post("/skills/{mode}/{projectID}", skillHandler.Create)
-					r.Get("/skill/{mode}/{projectID}/{skillID}", skillHandler.Get)
-					r.Post("/skill/{mode}/{projectID}/{skillID}", skillHandler.Create)
-					r.Put("/skill/{mode}/{projectID}/{skillID}", skillHandler.Update)
-					r.Patch("/skill/{mode}/{projectID}/{skillID}", skillHandler.Update)
-					r.Delete("/skill/{mode}/{projectID}/{skillID}", skillHandler.Delete)
-					r.Patch("/skill_default_version/{mode}/{projectID}/{skillID}", skillHandler.Update)
-					r.Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.List)
-					r.Post("/skill_import/{mode}/{projectID}", skillHandler.Import)
-					r.Get("/skill_export/{mode}/{projectID}/{skillID}", skillHandler.Export)
-					r.Get("/skill_export/{mode}/{projectID}/{skillID}/{versionID}", skillHandler.Export)
+					r.Group(func(r chi.Router) {
+						r.Use(projectScoped)
+						r.Get("/skills/{mode}/{projectID}", skillHandler.List)
+						r.Post("/skills/{mode}/{projectID}", skillHandler.Create)
+						r.Get("/skill/{mode}/{projectID}/{skillID}", skillHandler.Get)
+						r.Post("/skill/{mode}/{projectID}/{skillID}", skillHandler.Create)
+						r.Put("/skill/{mode}/{projectID}/{skillID}", skillHandler.Update)
+						r.Patch("/skill/{mode}/{projectID}/{skillID}", skillHandler.Update)
+						r.Delete("/skill/{mode}/{projectID}/{skillID}", skillHandler.Delete)
+						r.Patch("/skill_default_version/{mode}/{projectID}/{skillID}", skillHandler.Update)
+						r.Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.List)
+						r.Post("/skill_import/{mode}/{projectID}", skillHandler.Import)
+						r.Get("/skill_export/{mode}/{projectID}/{skillID}", skillHandler.Export)
+						r.Get("/skill_export/{mode}/{projectID}/{skillID}/{versionID}", skillHandler.Export)
+					})
 				}
 
 				// Toolkits
@@ -1121,20 +1179,26 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					// date_groups for a project with nine conversations
 					// (#128 defects 1 and 2).
 					folderHandler := v2folders.NewHandler(cfg.FoldersRepo).WithPool(cfg.Pool)
-					r.Get("/folder/prompt_lib/{projectID}", folderHandler.List)
-					r.Post("/folder/prompt_lib/{projectID}", folderHandler.Create)
-					r.Get("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Get)
-					r.Put("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Update)
-					r.Patch("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Update)
-					r.Delete("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Delete)
+					r.Group(func(r chi.Router) {
+						r.Use(projectScoped)
+						r.Get("/folder/prompt_lib/{projectID}", folderHandler.List)
+						r.Post("/folder/prompt_lib/{projectID}", folderHandler.Create)
+						r.Get("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Get)
+						r.Put("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Update)
+						r.Patch("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Update)
+						r.Delete("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Delete)
+					})
 				}
 
 				// Tags
 				if cfg.TagsRepo != nil {
 					tagHandler := v2tags.NewHandler(cfg.TagsRepo)
-					r.Get("/tags/prompt_lib/{projectID}", tagHandler.List)
-					r.Post("/tags/prompt_lib/{projectID}", tagHandler.Create)
-					r.Delete("/tags/prompt_lib/{projectID}/{tagID}", tagHandler.Delete)
+					r.Group(func(r chi.Router) {
+						r.Use(projectScoped)
+						r.Get("/tags/prompt_lib/{projectID}", tagHandler.List)
+						r.Post("/tags/prompt_lib/{projectID}", tagHandler.Create)
+						r.Delete("/tags/prompt_lib/{projectID}/{tagID}", tagHandler.Delete)
+					})
 				}
 
 				// Conversations
@@ -1148,29 +1212,32 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						WithPool(cfg.Pool).
 						WithObjectStore(cfg.ObjectStore).
 						WithAttachmentStore(newAttachmentStore(cfg.Pool))
-					r.Get("/conversations/prompt_lib/{projectID}", convHandler.List)
-					r.Post("/conversations/prompt_lib/{projectID}", convHandler.Create)
-					r.Get("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Get)
-					r.Put("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Update)
-					r.Delete("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Delete)
-					r.Get("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.ListMessages)
-					r.Delete("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteMessages)
-					r.Delete("/message/prompt_lib/{projectID}/{messageID}", convHandler.DeleteMessage)
-					r.Post("/participants/prompt_lib/{projectID}/{conversationID}", convHandler.AddParticipant)
-					r.Delete("/participant/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.RemoveParticipant)
-					r.Put("/entity_settings/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.UpdateEntitySettings)
-					r.Patch("/entity_settings/prompt_lib/{projectID}/{conversationID}", convHandler.BatchUpdateEntitySettings)
-					r.Post("/select_conversation/prompt_lib/{projectID}/{conversationID}", convHandler.SelectConversation)
-					r.Delete("/select_conversation/prompt_lib/{projectID}", convHandler.DeselectConversation)
-					r.Post("/regenerate/prompt_lib/{projectID}/{conversationID}", convHandler.Regenerate)
-					r.Post("/canvases/prompt_lib/{projectID}", convHandler.CreateCanvas)
-					r.Get("/canvas/prompt_lib/{projectID}/{canvasID}", convHandler.GetCanvas)
-					r.Put("/canvas/prompt_lib/{projectID}/{canvasID}", convHandler.UpdateCanvas)
-					r.Put("/attachment_storage/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateAttachmentStorage)
-					r.Post("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.AddAttachments)
-					r.Delete("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteAttachments)
-					r.Get("/context_analytics/prompt_lib/{projectID}/{conversationID}", convHandler.GetContextAnalytics)
-					r.Put("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateContextStrategy)
+					r.Group(func(r chi.Router) {
+						r.Use(projectScoped)
+						r.Get("/conversations/prompt_lib/{projectID}", convHandler.List)
+						r.Post("/conversations/prompt_lib/{projectID}", convHandler.Create)
+						r.Get("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Get)
+						r.Put("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Update)
+						r.Delete("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Delete)
+						r.Get("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.ListMessages)
+						r.Delete("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteMessages)
+						r.Delete("/message/prompt_lib/{projectID}/{messageID}", convHandler.DeleteMessage)
+						r.Post("/participants/prompt_lib/{projectID}/{conversationID}", convHandler.AddParticipant)
+						r.Delete("/participant/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.RemoveParticipant)
+						r.Put("/entity_settings/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.UpdateEntitySettings)
+						r.Patch("/entity_settings/prompt_lib/{projectID}/{conversationID}", convHandler.BatchUpdateEntitySettings)
+						r.Post("/select_conversation/prompt_lib/{projectID}/{conversationID}", convHandler.SelectConversation)
+						r.Delete("/select_conversation/prompt_lib/{projectID}", convHandler.DeselectConversation)
+						r.Post("/regenerate/prompt_lib/{projectID}/{conversationID}", convHandler.Regenerate)
+						r.Post("/canvases/prompt_lib/{projectID}", convHandler.CreateCanvas)
+						r.Get("/canvas/prompt_lib/{projectID}/{canvasID}", convHandler.GetCanvas)
+						r.Put("/canvas/prompt_lib/{projectID}/{canvasID}", convHandler.UpdateCanvas)
+						r.Put("/attachment_storage/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateAttachmentStorage)
+						r.Post("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.AddAttachments)
+						r.Delete("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteAttachments)
+						r.Get("/context_analytics/prompt_lib/{projectID}/{conversationID}", convHandler.GetContextAnalytics)
+						r.Put("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateContextStrategy)
+					})
 				}
 
 				// NOTE(#126): the Predict/LLM, Chat and Pipeline-trigger route
@@ -1191,11 +1258,11 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// Batch version replacement
 				if cfg.AppsRepo != nil {
 					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
-					r.Post("/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}", appHandler.BatchReplaceVersion)
+					r.With(projectScoped).Post("/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}", appHandler.BatchReplaceVersion)
 				}
 
 				// Application attachment storage
-				r.Put("/application_attachment_storage/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.UpdateAttachmentStorage)
+				r.With(projectScoped).Put("/application_attachment_storage/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.UpdateAttachmentStorage)
 
 				// NOTE(#126): webchat and the three AI-draft-generation routes
 				// stood here behind the same nil gate on RouterConfig.Predictor,
@@ -1208,16 +1275,24 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// on a narrow Predictor interface the current runtime could
 				// supply — but it now has no caller. #194 records that.
 
-				// Fork
-				r.Post("/fork/prompt_lib/{projectID}", coreHandler.ExportImportPost)
-
-				// Publishing
-				r.Post("/publish/prompt_lib/{projectID}/{versionID}", coreHandler.Publish)
-				r.Post("/unpublish/prompt_lib/{projectID}/{versionID}", coreHandler.Unpublish)
-				r.Get("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
-				r.Post("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
-				r.Post("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
-				r.Get("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
+				// Fork, and the application publish plane. These are the
+				// routes #302 names explicitly: publish writes a catalogue row
+				// for {projectID}, unpublish reverts that project's version to
+				// draft with a bare `UPDATE p_<projectID>.application_versions`,
+				// and fork imports an entity INTO the named project. The only
+				// caller-related read any of them performed was
+				// publishGuardrail, which is a deployment-wide kill switch plus
+				// a project whitelist — not a membership check.
+				r.Group(func(r chi.Router) {
+					r.Use(projectScoped)
+					r.Post("/fork/prompt_lib/{projectID}", coreHandler.ExportImportPost)
+					r.Post("/publish/prompt_lib/{projectID}/{versionID}", coreHandler.Publish)
+					r.Post("/unpublish/prompt_lib/{projectID}/{versionID}", coreHandler.Unpublish)
+					r.Get("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
+					r.Post("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
+					r.Post("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
+					r.Get("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
+				})
 
 				// Public applications
 				r.Get("/public_applications/prompt_lib", coreHandler.PublicApplications)

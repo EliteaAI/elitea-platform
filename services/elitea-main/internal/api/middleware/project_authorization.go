@@ -18,6 +18,13 @@ type projectAccessQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// ProjectAccessQuerier is the one query this middleware runs, exposed so a
+// router-level test can supply an answer without a live database. The
+// membership decision is the whole point of the middleware, so a test that
+// cannot control it can only ever observe the nil-pool 503 — which proves
+// nothing about cross-tenant refusal (#302).
+type ProjectAccessQuerier = projectAccessQuerier
+
 // RequireProjectAccess rejects requests whose project path parameter does not
 // belong to the authenticated user. Authentication establishes identity; this
 // middleware establishes tenant scope before a handler may select p_<id> data.
@@ -26,6 +33,17 @@ func RequireProjectAccess(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 		return unavailableProjectAccess
 	}
 	return requireProjectAccess(pool)
+}
+
+// RequireProjectAccessWith is RequireProjectAccess over an injected querier.
+// It takes the interface rather than *pgxpool.Pool, so — unlike the exported
+// constructor above — it cannot perform the nil-pool guard: a nil pool boxed
+// into an interface is non-nil. Callers pass a real querier or nothing.
+func RequireProjectAccessWith(querier ProjectAccessQuerier) func(http.Handler) http.Handler {
+	if querier == nil {
+		return unavailableProjectAccess
+	}
+	return requireProjectAccess(querier)
 }
 
 // unavailableProjectAccess fails closed with 503 when no pool is configured.

@@ -665,18 +665,21 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if readerErr != nil {
 			return fmt.Errorf("compose ungated project-context reader: %w", readerErr)
 		}
-		chatConfigAuth := apimw.AuthConfig{SessionSecret: os.Getenv("APPLICATION_SECRET_KEY")}
-		if formGraph != nil {
-			chatConfigAuth = apimw.AuthConfig{
-				Validator:                 formGraph,
-				PrincipalValidator:        principalValidator,
-				ForwardedIdentityVerifier: forwardedIdentityVerifier,
-			}
-		}
+		// authsvc.NewPrincipalValidator(pool) is built here rather than reusing
+		// the `principalValidator` variable because that variable is nil in
+		// exactly the branch that needs it: it is only assigned inside the
+		// `authEnabled` block, which is also the only place formGraph is set.
+		// See chatConfigAuthConfig for why nil is not survivable (#301).
 		currentPromptContextReads, err = promptcontextreadsapi.NewCurrentRoutes(
 			chatConfigReader,
 			projectContextReader,
-			chatConfigAuth,
+			chatConfigAuthConfig(
+				formGraph,
+				principalValidator,
+				forwardedIdentityVerifier,
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
 			legacyrbac.NewPostgresResolver(pool),
 		)
 		if err != nil {
