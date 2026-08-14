@@ -257,7 +257,7 @@ pub struct RedisStreamsError {
 }
 
 impl RedisStreamsError {
-    const fn configuration(message: &'static str) -> Self {
+    pub(crate) const fn configuration(message: &'static str) -> Self {
         Self {
             kind: RedisStreamsErrorKind::Configuration,
             message,
@@ -265,7 +265,7 @@ impl RedisStreamsError {
         }
     }
 
-    const fn protocol(message: &'static str) -> Self {
+    pub(crate) const fn protocol(message: &'static str) -> Self {
         Self {
             kind: RedisStreamsErrorKind::Protocol,
             message,
@@ -273,7 +273,7 @@ impl RedisStreamsError {
         }
     }
 
-    const fn authentication(message: &'static str) -> Self {
+    pub(crate) const fn authentication(message: &'static str) -> Self {
         Self {
             kind: RedisStreamsErrorKind::Authentication,
             message,
@@ -281,7 +281,7 @@ impl RedisStreamsError {
         }
     }
 
-    const fn unavailable(message: &'static str) -> Self {
+    pub(crate) const fn unavailable(message: &'static str) -> Self {
         Self {
             kind: RedisStreamsErrorKind::DependencyUnavailable,
             message,
@@ -289,7 +289,7 @@ impl RedisStreamsError {
         }
     }
 
-    const fn timeout(message: &'static str) -> Self {
+    pub(crate) const fn timeout(message: &'static str) -> Self {
         Self {
             kind: RedisStreamsErrorKind::Timeout,
             message,
@@ -297,7 +297,7 @@ impl RedisStreamsError {
         }
     }
 
-    const fn resource_exhausted(message: &'static str) -> Self {
+    pub(crate) const fn resource_exhausted(message: &'static str) -> Self {
         Self {
             kind: RedisStreamsErrorKind::ResourceExhausted,
             message,
@@ -305,7 +305,7 @@ impl RedisStreamsError {
         }
     }
 
-    const fn closed() -> Self {
+    pub(crate) const fn closed() -> Self {
         Self {
             kind: RedisStreamsErrorKind::Closed,
             message: "the Redis command transport is closed",
@@ -424,6 +424,11 @@ pub struct RedisStreamsClient {
 }
 
 impl RedisStreamsClient {
+    #[must_use]
+    pub(crate) const fn delivery_batch_size(&self) -> u64 {
+        self.config.read_count
+    }
+
     /// Build two mTLS Redis connections and wait for both to authenticate.
     ///
     /// # Errors

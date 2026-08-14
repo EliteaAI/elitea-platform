@@ -5,6 +5,9 @@ mod input_content_tests;
 pub mod output_grpc;
 mod output_session;
 pub mod redis_commands;
+mod redis_generation;
+#[cfg(test)]
+mod redis_generation_tests;
 pub mod redis_streams;
 
 pub use control_grpc::{
