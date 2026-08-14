@@ -252,8 +252,18 @@ async fn a_fatal_failure_after_cancellation_becomes_authoritative() {
         Arc::new(|| NOW),
         config(Duration::from_secs(10)),
     );
+    let mut probe = monitor.state_probe();
+    probe.ensure_running().expect("initial probe state");
     assert_eq!(
         monitor.check_now().await.expect_err("cancelled").code(),
+        ClaimLeaseErrorCode::Cancelled
+    );
+    assert_eq!(
+        probe
+            .wait_for_change()
+            .await
+            .expect_err("probe observes cancellation")
+            .code(),
         ClaimLeaseErrorCode::Cancelled
     );
 
@@ -280,6 +290,14 @@ async fn a_fatal_failure_after_cancellation_becomes_authoritative() {
         monitor.ensure_running(),
         Err(ClaimLeaseError::Control(_))
     ));
+    assert_eq!(
+        probe
+            .wait_for_change()
+            .await
+            .expect_err("probe observes later fatal state")
+            .code(),
+        ClaimLeaseErrorCode::Control
+    );
     assert!(monitor.close().await.is_err());
 }
 

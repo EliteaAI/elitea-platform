@@ -242,6 +242,57 @@ pub struct ClaimLeaseMonitor {
     activation: Option<PendingLeaseActivation>,
 }
 
+/// Cloneable read-only view of one supervised claim lease.
+///
+/// The probe carries no claim, fence, input, output, or renewal authority. A
+/// post-authorization lifecycle uses it to signal cooperative ADK cancellation
+/// after durable Stop while continuing to observe a later fatal lease loss.
+/// Each call to [`Self::wait_for_change`] consumes exactly one watch revision,
+/// so a latched cancellation cannot create a busy loop or hide a newer fatal
+/// state.
+#[allow(dead_code)] // Consumed by the capability-disabled native invocation lifecycle.
+pub(crate) struct ClaimLeaseStateProbe {
+    state: watch::Receiver<MonitorState>,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled native invocation lifecycle.
+impl Clone for ClaimLeaseStateProbe {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+        }
+    }
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled native invocation lifecycle.
+impl ClaimLeaseStateProbe {
+    /// Read the current authoritative state without consuming a watch revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns the latched durable Stop or fatal lease cause.
+    pub(crate) fn ensure_running(&self) -> Result<(), ClaimLeaseError> {
+        monitor_state_result(&self.state.borrow())
+    }
+
+    /// Wait for and consume the next authoritative state transition.
+    ///
+    /// Cancellation is returned as a typed error but leaves this probe usable;
+    /// a subsequent call can therefore observe fatal lease loss after Stop.
+    ///
+    /// # Errors
+    ///
+    /// Returns the new cancellation/fatal state, or a stable closed-monitor
+    /// error when the actor disappears without publishing a transition.
+    pub(crate) async fn wait_for_change(&mut self) -> Result<(), ClaimLeaseError> {
+        self.state
+            .changed()
+            .await
+            .map_err(|_| ClaimLeaseError::closed())?;
+        monitor_state_result(&self.state.borrow_and_update())
+    }
+}
+
 impl ClaimLeaseMonitor {
     /// Start periodic supervision for one exact, non-cloneable execution.
     pub fn start<R, K>(
@@ -358,6 +409,15 @@ impl ClaimLeaseMonitor {
         self.current_error().map_or(Ok(()), Err)
     }
 
+    /// Create a read-only post-authorization state observer.
+    #[must_use]
+    #[allow(dead_code)] // Consumed by the capability-disabled native invocation lifecycle.
+    pub(crate) fn state_probe(&self) -> ClaimLeaseStateProbe {
+        ClaimLeaseStateProbe {
+            state: self.state.clone(),
+        }
+    }
+
     /// Wait until the server requests Stop or supervision fails.
     ///
     /// # Errors
@@ -440,6 +500,15 @@ impl ClaimLeaseMonitor {
             MonitorState::Failed(error) => Some(error.clone()),
             MonitorState::Running | MonitorState::Cancelled => None,
         }
+    }
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled native invocation lifecycle.
+fn monitor_state_result(state: &MonitorState) -> Result<(), ClaimLeaseError> {
+    match state {
+        MonitorState::Running => Ok(()),
+        MonitorState::Cancelled => Err(ClaimLeaseError::cancelled()),
+        MonitorState::Failed(error) => Err(error.clone()),
     }
 }
 

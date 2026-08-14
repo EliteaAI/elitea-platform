@@ -4,6 +4,10 @@ pub mod graph;
 pub mod protocol;
 pub mod request;
 pub mod result;
+pub(crate) mod runtime;
+
+#[cfg(test)]
+mod runtime_tests;
 
 pub use crate::protocol::ProtocolError as AgentProtocolError;
 pub use protocol::{AGENT_INPUT_SCHEMA_REVISION, parse_agent_execution_input, request_from};
