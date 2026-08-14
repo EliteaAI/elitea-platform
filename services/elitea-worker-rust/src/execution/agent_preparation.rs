@@ -21,7 +21,11 @@ use super::agent_lease::{
 use super::invocation_admission::{
     InvocationAdmission, InvocationAdmissionError, InvocationReservation,
 };
-use super::output_delivery::{EmptyAgentOutput, PreparedAgentOutput};
+use super::output_delivery::{
+    AgentProgressConnector, AgentProgressPublishError, AgentProgressPublishOutcome,
+    AgentProgressPublisherConfig, EmptyAgentOutput, FreshAgentProgressPublisher,
+    PreparedAgentOutput,
+};
 use crate::agents::{
     AgentExecutionKind, AgentExecutionRequest, AgentInputBinding, parse_agent_execution_input,
 };
@@ -399,6 +403,123 @@ impl AuthorizedAgentRun {
     #[must_use]
     pub(crate) const fn execution_kind(&self) -> AgentExecutionKind {
         self.request.kind
+    }
+
+    /// Bind the exact accepted claim to the sole progress publisher before ADK
+    /// submission can begin.
+    ///
+    /// On failure, the returned value still owns the complete unstarted run and
+    /// connector so the coordinator can close it without losing output,
+    /// submission, lease, or Redis authority.
+    #[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+    pub(crate) fn bind_progress_publisher<C: AgentProgressConnector>(
+        self,
+        connector: C,
+        max_output_sessions: usize,
+    ) -> Result<CursorBoundAuthorizedAgentRun<C>, Box<AuthorizedAgentProgressBindError<C>>> {
+        let config = match AgentProgressPublisherConfig::new(max_output_sessions) {
+            Ok(config) => config,
+            Err(error) => {
+                return Err(Box::new(AuthorizedAgentProgressBindError {
+                    run: self,
+                    connector,
+                    error,
+                }));
+            }
+        };
+        let Self {
+            delivery,
+            verified,
+            request,
+            output_authority,
+            output,
+            lease,
+            permit,
+        } = self;
+        match output_authority.try_into_output_cursor(&verified) {
+            Ok(cursor) => Ok(CursorBoundAuthorizedAgentRun {
+                delivery,
+                verified,
+                request,
+                publisher: FreshAgentProgressPublisher::new(cursor, output, connector, config),
+                lease,
+                permit,
+            }),
+            Err(failure) => {
+                let (output_authority, error) = failure.into_parts();
+                Err(Box::new(AuthorizedAgentProgressBindError {
+                    run: Self {
+                        delivery,
+                        verified,
+                        request,
+                        output_authority,
+                        output,
+                        lease,
+                        permit,
+                    },
+                    connector,
+                    error: AgentProgressPublishError::InvalidFrame(error),
+                }))
+            }
+        }
+    }
+}
+
+/// Failed publisher admission with the complete unstarted run preserved.
+#[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+pub(crate) struct AuthorizedAgentProgressBindError<C> {
+    run: AuthorizedAgentRun,
+    connector: C,
+    error: AgentProgressPublishError,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+impl<C> AuthorizedAgentProgressBindError<C> {
+    #[must_use]
+    pub(crate) const fn error(&self) -> &AgentProgressPublishError {
+        &self.error
+    }
+
+    pub(crate) fn into_parts(self) -> (AuthorizedAgentRun, C, AgentProgressPublishError) {
+        (self.run, self.connector, self.error)
+    }
+}
+
+/// Authorized application/ad-hoc run with inseparable progress ownership.
+///
+/// No method exposes the request, submission permit, raw cursor, output
+/// session, lease, or Redis delivery independently.
+#[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+pub(crate) struct CursorBoundAuthorizedAgentRun<C: AgentProgressConnector> {
+    delivery: RedisCommandDelivery,
+    verified: VerifiedAgentCommand,
+    request: AgentExecutionRequest,
+    publisher: FreshAgentProgressPublisher<C>,
+    lease: ClaimLeaseMonitor,
+    permit: InvocationSubmissionPermit,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
+    #[must_use]
+    pub(crate) const fn execution_kind(&self) -> AgentExecutionKind {
+        self.request.kind
+    }
+
+    pub(crate) async fn publish_progress(
+        &mut self,
+        event: crate::protocol::elitea::runtime::v1::NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        self.publisher
+            .publish(&self.verified, event, occurred_at_unix_millis)
+            .await
+    }
+
+    pub(crate) async fn resume_pending_progress(
+        &mut self,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        self.publisher.resume_pending().await
     }
 }
 

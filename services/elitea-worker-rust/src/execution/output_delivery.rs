@@ -20,8 +20,9 @@ use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
     AcceptedTerminalClaimRecovery, AgentControlClient, AgentControlError,
+    AgentExecutionOutputCursor, AgentProgressCommit,
 };
-use crate::protocol::elitea::runtime::v1::ExecutionOutputFrameV1;
+use crate::protocol::elitea::runtime::v1::{ExecutionOutputFrameV1, NodeEventV1};
 use crate::protocol::output::{
     AgentTerminalOutput, RuntimeFailureKind, ValidatedAgentOutputFrameKind,
     build_agent_terminal_output_frame, restored_terminal_failure_kind,
@@ -29,12 +30,15 @@ use crate::protocol::output::{
 use crate::spool::{
     EncryptedOutputSpool, ExecutionSpoolBinding, SpoolError, SpoolLimits, SpoolMasterKey,
 };
+use crate::transport::output_grpc::{
+    FrameBoundProgressRejection, ProgressReplayDecision, ProgressReplaySession,
+};
 use crate::transport::redis_commands::{
     RedisCommandError, RedisCommandRetirer, RedisRetirementClient,
 };
 use crate::transport::{
-    ControlRpc, DurablyAckedTerminal, OutputGrpcConfig, OutputGrpcError, OutputProtocolError,
-    PreparedOutputSpool,
+    ControlRpc, DurablyAckedTerminal, OutputGrpcConfig, OutputGrpcError, OutputGrpcSession,
+    OutputProtocolError, PreparedOutputSpool,
 };
 
 use super::agent_delivery::FreshAgentDelivery;
@@ -233,6 +237,666 @@ impl AgentOutputSpoolFactory {
             factory: self,
             expected_terminal,
         }
+    }
+
+    #[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+    async fn reopen_progress(
+        &self,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<ReopenedAgentProgress, AgentOutputPreflightError> {
+        let prepared = self.reopen().await?;
+        match prepared.pending_frame_count() {
+            0 => Ok(ReopenedAgentProgress::Empty(prepared)),
+            1 if !expected.terminal && prepared.replays(expected) => {
+                Ok(ReopenedAgentProgress::Pending(prepared))
+            }
+            _ => Err(AgentOutputPreflightError::InvalidDurableState(
+                "the pending progress output changed after publication admission",
+            )),
+        }
+    }
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+enum ReopenedAgentProgress {
+    Empty(PreparedOutputSpool),
+    Pending(PreparedOutputSpool),
+}
+
+/// Bounded complete output-stream attempts for one progress frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+pub(crate) struct AgentProgressPublisherConfig {
+    max_output_sessions: usize,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+impl AgentProgressPublisherConfig {
+    /// Validate the complete session budget for one exact progress frame.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero and values above the deployed v1 ceiling of eight.
+    pub(crate) fn new(max_output_sessions: usize) -> Result<Self, AgentProgressPublishError> {
+        if !(MIN_OUTPUT_SESSIONS..=MAX_OUTPUT_SESSIONS).contains(&max_output_sessions) {
+            return Err(AgentProgressPublishError::InvalidConfiguration(
+                "the progress output session limit is outside the approved range",
+            ));
+        }
+        Ok(Self {
+            max_output_sessions,
+        })
+    }
+}
+
+/// Result of publishing one exact progress frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+pub(crate) enum AgentProgressPublishOutcome {
+    Acknowledged { sequence: u64 },
+    Rejected { sequence: u64 },
+}
+
+/// Stable, data-free progress publication failure.
+#[derive(Debug)]
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+pub(crate) enum AgentProgressPublishError {
+    InvalidConfiguration(&'static str),
+    InvalidState(&'static str),
+    InvalidFrame(ProtocolError),
+    Preflight(AgentOutputPreflightError),
+    Output(OutputGrpcError),
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+impl AgentProgressPublishError {
+    #[must_use]
+    pub(crate) const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidConfiguration(_) => "agent_progress.invalid_configuration",
+            Self::InvalidState(_) | Self::InvalidFrame(_) => "agent_progress.invalid_state",
+            Self::Preflight(error) => error.code(),
+            Self::Output(error) if reconnectable_output(error) => {
+                "agent_progress.output_unavailable"
+            }
+            Self::Output(_) => "agent_progress.output_rejected",
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn retryable(&self) -> bool {
+        match self {
+            Self::Preflight(error) => error.retryable(),
+            Self::Output(error) => reconnectable_output(error),
+            Self::InvalidConfiguration(_) | Self::InvalidState(_) | Self::InvalidFrame(_) => false,
+        }
+    }
+}
+
+impl fmt::Display for AgentProgressPublishError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfiguration(message) | Self::InvalidState(message) => {
+                formatter.write_str(message)
+            }
+            Self::InvalidFrame(error) => {
+                write!(formatter, "the progress frame is invalid: {error}")
+            }
+            Self::Preflight(error) => write!(formatter, "progress spool recovery failed: {error}"),
+            Self::Output(error) => write!(formatter, "progress output delivery failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AgentProgressPublishError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidFrame(error) => Some(error),
+            Self::Preflight(error) => Some(error),
+            Self::Output(error) => Some(error),
+            Self::InvalidConfiguration(_) | Self::InvalidState(_) => None,
+        }
+    }
+}
+
+/// One live output session used by the bounded progress publisher.
+#[async_trait]
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+pub(crate) trait AgentProgressSession: Send {
+    async fn publish_progress(
+        &mut self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<ProgressReplayDecision, OutputGrpcError>;
+
+    fn take_progress_decision(
+        &self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<Option<ProgressReplayDecision>, OutputGrpcError>;
+
+    async fn close(&mut self) -> Result<(), OutputGrpcError>;
+}
+
+#[async_trait]
+impl AgentProgressSession for OutputGrpcSession {
+    async fn publish_progress(
+        &mut self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<ProgressReplayDecision, OutputGrpcError> {
+        match self.send(frame).await {
+            Ok(acknowledged) => Ok(ProgressReplayDecision::Acknowledged(acknowledged)),
+            Err(error) => match self.take_progress_decision(frame)? {
+                Some(decision) => Ok(decision),
+                None => Err(error),
+            },
+        }
+    }
+
+    fn take_progress_decision(
+        &self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<Option<ProgressReplayDecision>, OutputGrpcError> {
+        OutputGrpcSession::take_progress_decision(self, frame)
+    }
+
+    async fn close(&mut self) -> Result<(), OutputGrpcError> {
+        OutputGrpcSession::close(self).await
+    }
+}
+
+/// One owned restored-progress attempt retained across cancelled waits.
+#[async_trait]
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+pub(crate) trait AgentProgressReplaySession: Send {
+    async fn wait(&mut self) -> Result<ProgressReplayDecision, OutputGrpcError>;
+
+    async fn close(&mut self) -> Result<(), OutputGrpcError>;
+}
+
+#[async_trait]
+impl AgentProgressReplaySession for ProgressReplaySession {
+    async fn wait(&mut self) -> Result<ProgressReplayDecision, OutputGrpcError> {
+        ProgressReplaySession::wait(self).await
+    }
+
+    async fn close(&mut self) -> Result<(), OutputGrpcError> {
+        ProgressReplaySession::close(self).await
+    }
+}
+
+/// Factory for fresh and restored progress sessions.
+#[async_trait]
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+pub(crate) trait AgentProgressConnector: Send + Sync {
+    type Session: AgentProgressSession;
+    type Replay: AgentProgressReplaySession;
+
+    async fn connect_progress(
+        &self,
+        prepared: PreparedOutputSpool,
+    ) -> Result<Self::Session, OutputGrpcError>;
+
+    async fn start_progress_replay(
+        &self,
+        prepared: PreparedOutputSpool,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<Self::Replay, OutputGrpcError>;
+}
+
+#[async_trait]
+impl AgentProgressConnector for Channel {
+    type Session = OutputGrpcSession;
+    type Replay = ProgressReplaySession;
+
+    async fn connect_progress(
+        &self,
+        prepared: PreparedOutputSpool,
+    ) -> Result<Self::Session, OutputGrpcError> {
+        prepared.connect(self.clone()).await
+    }
+
+    async fn start_progress_replay(
+        &self,
+        prepared: PreparedOutputSpool,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<Self::Replay, OutputGrpcError> {
+        prepared.start_progress_replay(self.clone(), expected).await
+    }
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+struct PendingAgentProgress {
+    frame: ExecutionOutputFrameV1,
+    attempts: usize,
+    rejection: Option<FrameBoundProgressRejection>,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+enum LiveAgentProgressSession<S> {
+    Ready(S),
+    InFlight(S),
+}
+
+enum ProgressDrive {
+    Continue,
+    Complete(AgentProgressPublishOutcome),
+}
+
+/// One claim-bound, bounded progress publisher shared by application and ad-hoc.
+///
+/// The cursor, exact pending frame, live session, encrypted-spool factory and
+/// retry budget never separate. A frame is bound and retained synchronously
+/// before the first await. Successful streams stay open across events; only an
+/// uncertain attempt closes and reopens the exact execution spool.
+#[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+pub(crate) struct FreshAgentProgressPublisher<C: AgentProgressConnector> {
+    cursor: AgentExecutionOutputCursor,
+    first: Option<PreparedOutputSpool>,
+    factory: AgentOutputSpoolFactory,
+    connector: C,
+    live: Option<LiveAgentProgressSession<C::Session>>,
+    replay: Option<C::Replay>,
+    replay_result: Option<Result<ProgressReplayDecision, OutputGrpcError>>,
+    pending: Option<PendingAgentProgress>,
+    failed_closed: bool,
+    max_output_sessions: usize,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
+    pub(crate) fn new(
+        cursor: AgentExecutionOutputCursor,
+        output: PreparedAgentOutput,
+        connector: C,
+        config: AgentProgressPublisherConfig,
+    ) -> Self {
+        let PreparedAgentOutput { prepared, factory } = output;
+        Self {
+            cursor,
+            first: Some(prepared),
+            factory,
+            connector,
+            live: None,
+            replay: None,
+            replay_result: None,
+            pending: None,
+            failed_closed: false,
+            max_output_sessions: config.max_output_sessions,
+        }
+    }
+
+    /// Bind and durably publish one browser-compatible `NodeEvent`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable error without replacing or discarding a previously
+    /// pending frame. Retryable uncertainty retains its exact canonical bytes
+    /// for [`Self::resume_pending`].
+    pub(crate) async fn publish(
+        &mut self,
+        verified: &VerifiedAgentCommand,
+        event: NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        if self.failed_closed {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher failed closed after a nonretryable outcome",
+            ));
+        }
+        if self.pending.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher already owns a pending frame",
+            ));
+        }
+        let progress = self
+            .cursor
+            .bind_progress(verified, event, occurred_at_unix_millis)
+            .map_err(AgentProgressPublishError::InvalidFrame)?;
+        self.pending = Some(PendingAgentProgress {
+            frame: progress.into_frame(),
+            attempts: 0,
+            rejection: None,
+        });
+        self.drive_retained_progress().await
+    }
+
+    /// Resume only the exact frame retained after retryable uncertainty.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable invalid-state error when no unresolved frame exists.
+    pub(crate) async fn resume_pending(
+        &mut self,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        if self.failed_closed {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher failed closed after a nonretryable outcome",
+            ));
+        }
+        if self.pending.is_none() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher has no pending frame",
+            ));
+        }
+        self.drive_retained_progress().await
+    }
+
+    async fn drive_retained_progress(
+        &mut self,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        let result = self.deliver_pending().await;
+        if result.as_ref().is_err_and(|error| !error.retryable()) {
+            self.failed_closed = true;
+        }
+        result
+    }
+
+    async fn deliver_pending(
+        &mut self,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        loop {
+            if let Some(outcome) = self.finish_rejected_progress().await? {
+                return Ok(outcome);
+            }
+            if self.replay.is_some() {
+                match self.drive_replay().await? {
+                    ProgressDrive::Continue => continue,
+                    ProgressDrive::Complete(outcome) => return Ok(outcome),
+                }
+            }
+            if self.live.is_none() {
+                self.start_next_session().await?;
+                continue;
+            }
+            if let ProgressDrive::Complete(outcome) = self.drive_live().await? {
+                return Ok(outcome);
+            }
+        }
+    }
+
+    async fn finish_rejected_progress(
+        &mut self,
+    ) -> Result<Option<AgentProgressPublishOutcome>, AgentProgressPublishError> {
+        if self
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.rejection.is_none())
+        {
+            return Ok(None);
+        }
+        self.close_live().await;
+        let sequence = self
+            .pending
+            .as_ref()
+            .ok_or(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its rejected frame",
+            ))?
+            .frame
+            .sequence;
+        Ok(Some(AgentProgressPublishOutcome::Rejected { sequence }))
+    }
+
+    async fn drive_replay(&mut self) -> Result<ProgressDrive, AgentProgressPublishError> {
+        if self.replay_result.is_none() {
+            let result = self
+                .replay
+                .as_mut()
+                .ok_or(AgentProgressPublishError::InvalidState(
+                    "the progress publisher lost its replay session",
+                ))?
+                .wait()
+                .await;
+            self.replay_result = Some(result);
+            return Ok(ProgressDrive::Continue);
+        }
+
+        let close = self
+            .replay
+            .as_mut()
+            .ok_or(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its replay session",
+            ))?
+            .close()
+            .await;
+        self.replay = None;
+        let result = self
+            .replay_result
+            .take()
+            .ok_or(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its replay result",
+            ))?;
+        match result {
+            Ok(decision) => {
+                if close.is_err() {
+                    tracing::warn!(
+                        "progress replay stream close failed after a bound Main decision"
+                    );
+                }
+                self.commit_progress_decision(decision)
+                    .map(ProgressDrive::Complete)
+            }
+            Err(error) if self.can_retry(&error) => {
+                if close.is_err() {
+                    tracing::warn!(
+                        "progress replay stream close failed after delivery uncertainty"
+                    );
+                }
+                Ok(ProgressDrive::Continue)
+            }
+            Err(error) => Err(AgentProgressPublishError::Output(error)),
+        }
+    }
+
+    async fn start_next_session(&mut self) -> Result<(), AgentProgressPublishError> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.attempts >= self.max_output_sessions)
+        {
+            return Err(AgentProgressPublishError::Output(
+                OutputGrpcError::Unavailable("the bounded progress output attempts were exhausted"),
+            ));
+        }
+        let expected = &self
+            .pending
+            .as_ref()
+            .ok_or(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its pending frame",
+            ))?
+            .frame;
+        let reopened = match self.first.take() {
+            Some(prepared) => ReopenedAgentProgress::Empty(prepared),
+            None => self
+                .factory
+                .reopen_progress(expected)
+                .await
+                .map_err(AgentProgressPublishError::Preflight)?,
+        };
+        let pending = self
+            .pending
+            .as_mut()
+            .ok_or(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its pending frame",
+            ))?;
+        pending.attempts += 1;
+        let result = match reopened {
+            ReopenedAgentProgress::Empty(prepared) => {
+                match self.connector.connect_progress(prepared).await {
+                    Ok(session) => {
+                        self.live = Some(LiveAgentProgressSession::Ready(session));
+                        return Ok(());
+                    }
+                    Err(error) => error,
+                }
+            }
+            ReopenedAgentProgress::Pending(prepared) => {
+                match self
+                    .connector
+                    .start_progress_replay(prepared, &pending.frame)
+                    .await
+                {
+                    Ok(replay) => {
+                        self.replay = Some(replay);
+                        return Ok(());
+                    }
+                    Err(error) => error,
+                }
+            }
+        };
+        if self.can_retry(&result) {
+            Ok(())
+        } else {
+            Err(AgentProgressPublishError::Output(result))
+        }
+    }
+
+    async fn drive_live(&mut self) -> Result<ProgressDrive, AgentProgressPublishError> {
+        if matches!(self.live, Some(LiveAgentProgressSession::InFlight(_))) {
+            return match self.recover_inflight_decision().await? {
+                Some(decision) => self
+                    .commit_progress_decision(decision)
+                    .map(ProgressDrive::Complete),
+                None => Ok(ProgressDrive::Continue),
+            };
+        }
+
+        let pending = self
+            .pending
+            .as_mut()
+            .ok_or(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its pending frame",
+            ))?;
+        if pending.attempts == 0 {
+            pending.attempts = 1;
+        }
+        let Some(LiveAgentProgressSession::Ready(session)) = self.live.take() else {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its ready output session",
+            ));
+        };
+        self.live = Some(LiveAgentProgressSession::InFlight(session));
+        let decision = match self.live.as_mut() {
+            Some(LiveAgentProgressSession::InFlight(session)) => {
+                session.publish_progress(&pending.frame).await
+            }
+            Some(LiveAgentProgressSession::Ready(_)) | None => {
+                return Err(AgentProgressPublishError::InvalidState(
+                    "the progress publisher lost its in-flight output session",
+                ));
+            }
+        };
+        match decision {
+            Ok(ProgressReplayDecision::Acknowledged(acknowledged)) => {
+                let Some(LiveAgentProgressSession::InFlight(session)) = self.live.take() else {
+                    return Err(AgentProgressPublishError::InvalidState(
+                        "the progress publisher lost its acknowledged output session",
+                    ));
+                };
+                self.live = Some(LiveAgentProgressSession::Ready(session));
+                self.commit_progress_decision(ProgressReplayDecision::Acknowledged(acknowledged))
+                    .map(ProgressDrive::Complete)
+            }
+            Ok(ProgressReplayDecision::Rejected(rejected)) => {
+                let outcome =
+                    self.commit_progress_decision(ProgressReplayDecision::Rejected(rejected))?;
+                self.close_live().await;
+                Ok(ProgressDrive::Complete(outcome))
+            }
+            Err(error) => {
+                self.close_live().await;
+                if self.can_retry(&error) {
+                    Ok(ProgressDrive::Continue)
+                } else {
+                    Err(AgentProgressPublishError::Output(error))
+                }
+            }
+        }
+    }
+
+    fn can_retry(&self, error: &OutputGrpcError) -> bool {
+        reconnectable_output(error)
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.attempts < self.max_output_sessions)
+    }
+
+    fn commit_progress_decision(
+        &mut self,
+        decision: ProgressReplayDecision,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        let sequence = self
+            .pending
+            .as_ref()
+            .ok_or(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its pending frame",
+            ))?
+            .frame
+            .sequence;
+        match decision {
+            ProgressReplayDecision::Acknowledged(acknowledged) => {
+                match self.cursor.commit_progress_durable(acknowledged) {
+                    Ok(AgentProgressCommit::Advanced) => {
+                        self.pending = None;
+                        Ok(AgentProgressPublishOutcome::Acknowledged { sequence })
+                    }
+                    Ok(AgentProgressCommit::Exhausted(error)) => {
+                        self.pending = None;
+                        self.failed_closed = true;
+                        Err(AgentProgressPublishError::InvalidFrame(error))
+                    }
+                    Err(error) => Err(AgentProgressPublishError::InvalidFrame(error)),
+                }
+            }
+            ProgressReplayDecision::Rejected(rejected) => {
+                let pending =
+                    self.pending
+                        .as_mut()
+                        .ok_or(AgentProgressPublishError::InvalidState(
+                            "the progress publisher lost its pending frame",
+                        ))?;
+                pending.rejection = Some(rejected);
+                Ok(AgentProgressPublishOutcome::Rejected { sequence })
+            }
+        }
+    }
+
+    async fn close_live(&mut self) {
+        if let Some(session) = self.live.as_mut() {
+            let session = match session {
+                LiveAgentProgressSession::Ready(session)
+                | LiveAgentProgressSession::InFlight(session) => session,
+            };
+            if session.close().await.is_err() {
+                tracing::warn!("progress output session close failed after delivery uncertainty");
+            }
+        }
+        self.live = None;
+    }
+
+    async fn recover_inflight_decision(
+        &mut self,
+    ) -> Result<Option<ProgressReplayDecision>, AgentProgressPublishError> {
+        let frame = &self
+            .pending
+            .as_ref()
+            .ok_or(AgentProgressPublishError::InvalidState(
+                "the progress publisher lost its in-flight frame",
+            ))?
+            .frame;
+        let Some(LiveAgentProgressSession::InFlight(session)) = self.live.as_mut() else {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher has no in-flight output session",
+            ));
+        };
+        let close = session.close().await;
+        let decision = session
+            .take_progress_decision(frame)
+            .map_err(AgentProgressPublishError::Output)?;
+        self.live = None;
+        if decision.is_none() && close.is_err() {
+            tracing::warn!("progress output session closed without a retained bound decision");
+        }
+        Ok(decision)
     }
 }
 

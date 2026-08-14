@@ -693,12 +693,36 @@ impl AgentExecutionOutputAuthority {
         self,
         verified: &VerifiedAgentCommand,
     ) -> Result<AgentExecutionOutputCursor, ProtocolError> {
+        self.try_into_output_cursor(verified)
+            .map_err(AgentOutputCursorBindFailure::into_error)
+    }
+
+    /// Preserve the unique claim authority when cursor admission fails.
+    ///
+    /// The authorized-run publisher transition uses this form so a local
+    /// configuration or binding failure can return the complete unstarted run
+    /// for explicit no-ACK cleanup instead of silently dropping authority.
+    pub(crate) fn try_into_output_cursor(
+        self,
+        verified: &VerifiedAgentCommand,
+    ) -> Result<AgentExecutionOutputCursor, Box<AgentOutputCursorBindFailure>> {
         if !self.claim.matches_verified_command(verified) {
-            return Err(ProtocolError::AuthorizationFailed(
-                "the output authority does not match its command",
-            ));
+            return Err(Box::new(AgentOutputCursorBindFailure {
+                authority: self,
+                error: ProtocolError::AuthorizationFailed(
+                    "the output authority does not match its command",
+                ),
+            }));
         }
-        let next_sequence = next_output_sequence(self.claim.claim_handoff_watermark)?;
+        let next_sequence = match next_output_sequence(self.claim.claim_handoff_watermark) {
+            Ok(next_sequence) => next_sequence,
+            Err(error) => {
+                return Err(Box::new(AgentOutputCursorBindFailure {
+                    authority: self,
+                    error,
+                }));
+            }
+        };
         Ok(AgentExecutionOutputCursor {
             claim: self.claim,
             state: AgentOutputCursorState::Ready(next_sequence),
@@ -719,6 +743,24 @@ impl AgentExecutionOutputAuthority {
         self.into_output_cursor(verified)?
             .bind_failure_terminal(verified, failure, occurred_at_unix_millis)
             .map(ClaimBoundAgentTerminal::into_frame)
+    }
+}
+
+/// Failed cursor admission which still owns the unique output authority.
+#[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+pub(crate) struct AgentOutputCursorBindFailure {
+    authority: AgentExecutionOutputAuthority,
+    error: ProtocolError,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled native lifecycle.
+impl AgentOutputCursorBindFailure {
+    pub(crate) fn into_parts(self: Box<Self>) -> (AgentExecutionOutputAuthority, ProtocolError) {
+        (self.authority, self.error)
+    }
+
+    fn into_error(self: Box<Self>) -> ProtocolError {
+        self.error
     }
 }
 
@@ -776,6 +818,12 @@ enum AgentOutputCursorState {
     Exhausted,
 }
 
+/// Result of consuming an exact durable progress ACK.
+pub(crate) enum AgentProgressCommit {
+    Advanced,
+    Exhausted(ProtocolError),
+}
+
 #[allow(dead_code)] // Progress/result methods land before native lifecycle registration.
 impl AgentExecutionOutputCursor {
     #[must_use]
@@ -815,6 +863,17 @@ impl AgentExecutionOutputCursor {
         &mut self,
         acknowledged: DurablyAckedProgress,
     ) -> Result<(), ProtocolError> {
+        match self.commit_progress_durable(acknowledged)? {
+            AgentProgressCommit::Advanced => Ok(()),
+            AgentProgressCommit::Exhausted(error) => Err(error),
+        }
+    }
+
+    /// Consume one exact ACK while distinguishing durable sequence exhaustion.
+    pub(crate) fn commit_progress_durable(
+        &mut self,
+        acknowledged: DurablyAckedProgress,
+    ) -> Result<AgentProgressCommit, ProtocolError> {
         let (acknowledged_sequence, acknowledged_sha256) = acknowledged.into_binding();
         let AgentOutputCursorState::Pending {
             sequence,
@@ -835,11 +894,11 @@ impl AgentExecutionOutputCursor {
         match next_output_sequence(acknowledged_sequence) {
             Ok(next) => {
                 self.state = AgentOutputCursorState::Ready(next);
-                Ok(())
+                Ok(AgentProgressCommit::Advanced)
             }
             Err(error) => {
                 self.state = AgentOutputCursorState::Exhausted;
-                Err(error)
+                Ok(AgentProgressCommit::Exhausted(error))
             }
         }
     }

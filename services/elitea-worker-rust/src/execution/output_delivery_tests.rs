@@ -28,7 +28,9 @@ use super::invocation_supervisor::InvocationSupervisor;
 use super::output_delivery::{
     AcceptedTerminalOutputRecovery, AgentOutputPreflight, AgentOutputPreflightError,
     AgentOutputPreflightKind, AgentOutputPreflightOutcome, AgentOutputRecoveryRequiredKind,
-    AgentTerminalRecoveryConfig, AgentTerminalRecoveryError, AgentTerminalReplay,
+    AgentProgressConnector, AgentProgressPublishOutcome, AgentProgressPublisherConfig,
+    AgentProgressReplaySession, AgentProgressSession, AgentTerminalRecoveryConfig,
+    AgentTerminalRecoveryError, AgentTerminalReplay, FreshAgentProgressPublisher,
     publish_pre_invocation_terminal, recover_accepted_terminal,
 };
 use crate::agents::AgentExecutionKind;
@@ -53,8 +55,8 @@ use crate::protocol::node_event::decode_current_node_event_json;
 use crate::protocol::output::{OUTPUT_SCHEMA_REVISION, RuntimeFailureKind};
 use crate::spool::{SpoolError, SpoolLimits, SpoolMasterKey};
 use crate::transport::output_grpc::{
-    ProgressRejectionWinner, test_acknowledged_progress, test_acknowledged_terminal,
-    test_rejected_progress,
+    ProgressRejectionWinner, ProgressReplayDecision, test_acknowledged_progress,
+    test_acknowledged_terminal, test_rejected_progress,
 };
 use crate::transport::redis_commands::{
     RedisCommandDelivery, RedisCommandLimits, RedisCommandRetirer, RedisRetirementClient,
@@ -738,6 +740,603 @@ fn terminal_frame(fresh: &FreshAgentDelivery) -> ExecutionOutputFrameV1 {
         .expect("terminal settlement proposal")
         .terminal_payload_digest = Some(payload_digest);
     frame
+}
+
+#[derive(Clone, Copy)]
+enum LiveProgressAction {
+    Acknowledge,
+    PersistThenUnavailable,
+    PersistChangedFrameThenUnavailable,
+    AuthorizationFailed,
+    RejectCancellation,
+    RetainAcknowledgementThenWait,
+}
+
+#[derive(Clone, Copy)]
+enum ReplayProgressAction {
+    Acknowledge,
+    AuthorizationFailed,
+    RetainAcknowledgementThenWait,
+}
+
+struct FakeProgressState {
+    live_actions: Mutex<VecDeque<LiveProgressAction>>,
+    replay_actions: Mutex<VecDeque<ReplayProgressAction>>,
+    connects: AtomicUsize,
+    sends: AtomicUsize,
+    replays: AtomicUsize,
+    live_closes: AtomicUsize,
+    replay_closes: AtomicUsize,
+    frames: Mutex<Vec<ExecutionOutputFrameV1>>,
+    live_started: Semaphore,
+    live_release: Semaphore,
+    replay_started: Semaphore,
+    replay_release: Semaphore,
+}
+
+impl FakeProgressState {
+    fn new(
+        live_actions: impl IntoIterator<Item = LiveProgressAction>,
+        replay_actions: impl IntoIterator<Item = ReplayProgressAction>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            live_actions: Mutex::new(live_actions.into_iter().collect()),
+            replay_actions: Mutex::new(replay_actions.into_iter().collect()),
+            connects: AtomicUsize::new(0),
+            sends: AtomicUsize::new(0),
+            replays: AtomicUsize::new(0),
+            live_closes: AtomicUsize::new(0),
+            replay_closes: AtomicUsize::new(0),
+            frames: Mutex::new(Vec::new()),
+            live_started: Semaphore::new(0),
+            live_release: Semaphore::new(0),
+            replay_started: Semaphore::new(0),
+            replay_release: Semaphore::new(0),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct FakeProgressConnector {
+    state: Arc<FakeProgressState>,
+}
+
+struct FakeProgressSession {
+    prepared: Option<PreparedOutputSpool>,
+    state: Arc<FakeProgressState>,
+    retained: Mutex<Option<ProgressReplayDecision>>,
+}
+
+#[async_trait]
+impl AgentProgressSession for FakeProgressSession {
+    async fn publish_progress(
+        &mut self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<ProgressReplayDecision, OutputGrpcError> {
+        self.state.sends.fetch_add(1, Ordering::SeqCst);
+        self.state
+            .frames
+            .lock()
+            .expect("progress frames")
+            .push(frame.clone());
+        let action = self
+            .state
+            .live_actions
+            .lock()
+            .expect("live actions")
+            .pop_front()
+            .expect("scripted live progress action");
+        match action {
+            LiveProgressAction::Acknowledge => Ok(ProgressReplayDecision::Acknowledged(
+                test_acknowledged_progress(frame).expect("synthetic live progress ACK"),
+            )),
+            LiveProgressAction::PersistThenUnavailable => {
+                self.prepared
+                    .as_mut()
+                    .expect("fresh prepared spool")
+                    .persist(frame.clone())?;
+                Err(OutputGrpcError::Unavailable(
+                    "the scripted live progress stream is unavailable",
+                ))
+            }
+            LiveProgressAction::PersistChangedFrameThenUnavailable => {
+                let mut changed = frame.clone();
+                changed.occurred_at_unix_millis += 1;
+                self.prepared
+                    .as_mut()
+                    .expect("fresh prepared spool")
+                    .persist(changed)?;
+                Err(OutputGrpcError::Unavailable(
+                    "the scripted changed progress stream is unavailable",
+                ))
+            }
+            LiveProgressAction::AuthorizationFailed => Err(OutputGrpcError::Protocol(
+                OutputProtocolError::AuthorizationFailed(
+                    "the scripted progress session is not authorized",
+                ),
+            )),
+            LiveProgressAction::RejectCancellation => Ok(ProgressReplayDecision::Rejected(
+                test_rejected_progress(frame, ProgressRejectionWinner::Cancelled)
+                    .expect("synthetic progress rejection"),
+            )),
+            LiveProgressAction::RetainAcknowledgementThenWait => {
+                *self.retained.lock().expect("retained progress decision") =
+                    Some(ProgressReplayDecision::Acknowledged(
+                        test_acknowledged_progress(frame).expect("synthetic retained progress ACK"),
+                    ));
+                self.state.live_started.add_permits(1);
+                self.state
+                    .live_release
+                    .acquire()
+                    .await
+                    .expect("live progress release")
+                    .forget();
+                self.retained
+                    .lock()
+                    .expect("retained progress decision")
+                    .take()
+                    .ok_or(OutputGrpcError::Unavailable(
+                        "the scripted retained progress decision is unavailable",
+                    ))
+            }
+        }
+    }
+
+    fn take_progress_decision(
+        &self,
+        _frame: &ExecutionOutputFrameV1,
+    ) -> Result<Option<ProgressReplayDecision>, OutputGrpcError> {
+        Ok(self
+            .retained
+            .lock()
+            .map_err(|_| {
+                OutputGrpcError::Unavailable(
+                    "the scripted retained progress decision is unavailable",
+                )
+            })?
+            .take())
+    }
+
+    async fn close(&mut self) -> Result<(), OutputGrpcError> {
+        self.state.live_closes.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct FakeProgressReplaySession {
+    prepared: Option<PreparedOutputSpool>,
+    expected: ExecutionOutputFrameV1,
+    state: Arc<FakeProgressState>,
+    action: ReplayProgressAction,
+    retained: Option<ProgressReplayDecision>,
+}
+
+#[async_trait]
+impl AgentProgressReplaySession for FakeProgressReplaySession {
+    async fn wait(&mut self) -> Result<ProgressReplayDecision, OutputGrpcError> {
+        if self.retained.is_none() {
+            if matches!(self.action, ReplayProgressAction::AuthorizationFailed) {
+                return Err(OutputGrpcError::Protocol(
+                    OutputProtocolError::AuthorizationFailed(
+                        "the scripted progress replay is not authorized",
+                    ),
+                ));
+            }
+            let prepared = self.prepared.as_mut().ok_or(OutputGrpcError::Unavailable(
+                "the scripted replay spool is unavailable",
+            ))?;
+            assert!(prepared.replays(&self.expected));
+            prepared.reconcile_pending_through(self.expected.sequence)?;
+            self.retained = Some(ProgressReplayDecision::Acknowledged(
+                test_acknowledged_progress(&self.expected)
+                    .expect("synthetic restored progress ACK"),
+            ));
+            if matches!(
+                self.action,
+                ReplayProgressAction::RetainAcknowledgementThenWait
+            ) {
+                self.state.replay_started.add_permits(1);
+                self.state
+                    .replay_release
+                    .acquire()
+                    .await
+                    .expect("replay progress release")
+                    .forget();
+            }
+        }
+        self.retained.take().ok_or(OutputGrpcError::Unavailable(
+            "the scripted replay decision is unavailable",
+        ))
+    }
+
+    async fn close(&mut self) -> Result<(), OutputGrpcError> {
+        self.state.replay_closes.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentProgressConnector for FakeProgressConnector {
+    type Session = FakeProgressSession;
+    type Replay = FakeProgressReplaySession;
+
+    async fn connect_progress(
+        &self,
+        prepared: PreparedOutputSpool,
+    ) -> Result<Self::Session, OutputGrpcError> {
+        assert_eq!(prepared.pending_frame_count(), 0);
+        self.state.connects.fetch_add(1, Ordering::SeqCst);
+        Ok(FakeProgressSession {
+            prepared: Some(prepared),
+            state: Arc::clone(&self.state),
+            retained: Mutex::new(None),
+        })
+    }
+
+    async fn start_progress_replay(
+        &self,
+        prepared: PreparedOutputSpool,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<Self::Replay, OutputGrpcError> {
+        assert_eq!(prepared.pending_frame_count(), 1);
+        assert!(prepared.replays(expected));
+        self.state.replays.fetch_add(1, Ordering::SeqCst);
+        let action = self
+            .state
+            .replay_actions
+            .lock()
+            .expect("replay actions")
+            .pop_front()
+            .expect("scripted replay progress action");
+        Ok(FakeProgressReplaySession {
+            prepared: Some(prepared),
+            expected: expected.clone(),
+            state: Arc::clone(&self.state),
+            action,
+            retained: None,
+        })
+    }
+}
+
+async fn fresh_progress_publisher(
+    state: Arc<FakeProgressState>,
+    max_output_sessions: usize,
+) -> (
+    tempfile::TempDir,
+    crate::protocol::command::VerifiedAgentCommand,
+    FreshAgentProgressPublisher<FakeProgressConnector>,
+) {
+    fresh_progress_publisher_with_handoff(state, max_output_sessions, None).await
+}
+
+async fn fresh_progress_publisher_with_handoff(
+    state: Arc<FakeProgressState>,
+    max_output_sessions: usize,
+    handoff: Option<u64>,
+) -> (
+    tempfile::TempDir,
+    crate::protocol::command::VerifiedAgentCommand,
+    FreshAgentProgressPublisher<FakeProgressConnector>,
+) {
+    let (temporary, output_root) = root();
+    let outcome = preflight(output_root, "worker-1")
+        .prepare(fresh())
+        .await
+        .expect("fresh progress preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new progress spool must be empty");
+    };
+    let (fresh, output) = empty.into_parts();
+    let (_delivery, verified, claim) = fresh.into_parts();
+    let authority = match handoff {
+        Some(handoff) => test_agent_output_authority_with_handoff(claim, handoff),
+        None => test_agent_output_authority(claim),
+    };
+    let cursor = authority
+        .into_output_cursor(&verified)
+        .expect("claim-bound output cursor");
+    let publisher = FreshAgentProgressPublisher::new(
+        cursor,
+        output,
+        FakeProgressConnector { state },
+        AgentProgressPublisherConfig::new(max_output_sessions).expect("progress publisher config"),
+    );
+    (temporary, verified, publisher)
+}
+
+fn browser_progress(content: &'static str) -> crate::protocol::elitea::runtime::v1::NodeEventV1 {
+    let raw = format!(r#"{{"type":"agent_response","content":"{content}"}}"#);
+    decode_current_node_event_json(raw.as_bytes()).expect("valid browser progress event")
+}
+
+#[test]
+fn progress_session_budget_matches_the_deployed_v1_bounds() {
+    assert!(AgentProgressPublisherConfig::new(1).is_ok());
+    assert!(AgentProgressPublisherConfig::new(8).is_ok());
+    for invalid in [0, 9] {
+        let error = AgentProgressPublisherConfig::new(invalid)
+            .expect_err("progress session budget must be bounded");
+        assert_eq!(error.code(), "agent_progress.invalid_configuration");
+        assert!(!error.retryable());
+    }
+}
+
+#[tokio::test]
+async fn fresh_progress_keeps_one_live_session_across_exact_acked_events() {
+    let state = FakeProgressState::new(
+        [
+            LiveProgressAction::Acknowledge,
+            LiveProgressAction::Acknowledge,
+        ],
+        [],
+    );
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+
+    let first = publisher
+        .publish(&verified, browser_progress("first"), NOW)
+        .await
+        .expect("first progress ACK");
+    let second = publisher
+        .publish(&verified, browser_progress("second"), NOW + 1)
+        .await
+        .expect("second progress ACK");
+
+    assert_eq!(
+        first,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 5 }
+    );
+    assert_eq!(
+        second,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 6 }
+    );
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.sends.load(Ordering::SeqCst), 2);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn uncertain_live_progress_reopens_and_replays_the_exact_durable_frame() {
+    let state = FakeProgressState::new(
+        [LiveProgressAction::PersistThenUnavailable],
+        [ReplayProgressAction::Acknowledge],
+    );
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+
+    let outcome = publisher
+        .publish(&verified, browser_progress("recover me"), NOW)
+        .await
+        .expect("restored progress ACK");
+
+    assert_eq!(
+        outcome,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 5 }
+    );
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(state.live_closes.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replay_closes.load(Ordering::SeqCst), 1);
+    let frames = state.frames.lock().expect("progress frames");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].sequence, 5);
+}
+
+#[tokio::test]
+async fn changed_durable_progress_is_rejected_before_a_replay_session_starts() {
+    let state = FakeProgressState::new(
+        [LiveProgressAction::PersistChangedFrameThenUnavailable],
+        [ReplayProgressAction::Acknowledge],
+    );
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+
+    let error = publisher
+        .publish(&verified, browser_progress("bind exact bytes"), NOW)
+        .await
+        .expect_err("changed durable bytes must fail closed");
+
+    assert_eq!(error.code(), "agent_output.invalid_durable_state");
+    assert!(!error.retryable());
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn nonretryable_live_failure_latches_without_a_second_attempt() {
+    let state = FakeProgressState::new(
+        [
+            LiveProgressAction::AuthorizationFailed,
+            LiveProgressAction::Acknowledge,
+        ],
+        [],
+    );
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+
+    let error = publisher
+        .publish(&verified, browser_progress("fail closed"), NOW)
+        .await
+        .expect_err("authorization failure must fail closed");
+    assert!(!error.retryable());
+    let resumed = publisher
+        .resume_pending()
+        .await
+        .expect_err("failed-closed progress must not retry");
+    assert_eq!(resumed.code(), "agent_progress.invalid_state");
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn nonretryable_replay_failure_latches_without_a_second_replay() {
+    let state = FakeProgressState::new(
+        [LiveProgressAction::PersistThenUnavailable],
+        [
+            ReplayProgressAction::AuthorizationFailed,
+            ReplayProgressAction::Acknowledge,
+        ],
+    );
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 3).await;
+
+    let error = publisher
+        .publish(&verified, browser_progress("replay fail closed"), NOW)
+        .await
+        .expect_err("replay authorization failure must fail closed");
+    assert!(!error.retryable());
+    let resumed = publisher
+        .resume_pending()
+        .await
+        .expect_err("failed-closed replay must not retry");
+    assert_eq!(resumed.code(), "agent_progress.invalid_state");
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn durable_ack_at_bigint_limit_cannot_be_resent_after_cursor_exhaustion() {
+    let state = FakeProgressState::new([LiveProgressAction::Acknowledge], []);
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher_with_handoff(Arc::clone(&state), 2, Some(i64::MAX as u64 - 1))
+            .await;
+
+    let error = publisher
+        .publish(&verified, browser_progress("last durable sequence"), NOW)
+        .await
+        .expect_err("the ACKed BIGINT ceiling must exhaust future output");
+    assert_eq!(error.code(), "agent_progress.invalid_state");
+    assert!(!error.retryable());
+    let resumed = publisher
+        .resume_pending()
+        .await
+        .expect_err("an ACKed exhausted frame must not be resent");
+    assert_eq!(resumed.code(), "agent_progress.invalid_state");
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        state.frames.lock().expect("progress frames")[0].sequence,
+        i64::MAX as u64
+    );
+}
+
+#[tokio::test]
+async fn retryable_progress_exhaustion_never_exceeds_the_session_budget() {
+    let state = FakeProgressState::new([LiveProgressAction::PersistThenUnavailable], []);
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 1).await;
+
+    let first = publisher
+        .publish(&verified, browser_progress("bounded retry"), NOW)
+        .await
+        .expect_err("one unavailable attempt must exhaust the budget");
+    assert!(first.retryable());
+    let second = publisher
+        .resume_pending()
+        .await
+        .expect_err("exhausted publisher must retain the exact frame");
+    assert!(second.retryable());
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn frame_bound_main_rejection_is_retained_without_resending() {
+    let state = FakeProgressState::new([LiveProgressAction::RejectCancellation], []);
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 1).await;
+
+    let outcome = publisher
+        .publish(&verified, browser_progress("stop wins"), NOW)
+        .await
+        .expect("bound Main rejection");
+    assert_eq!(
+        outcome,
+        AgentProgressPublishOutcome::Rejected { sequence: 5 }
+    );
+    assert_eq!(
+        publisher
+            .resume_pending()
+            .await
+            .expect("retained bound Main rejection"),
+        AgentProgressPublishOutcome::Rejected { sequence: 5 }
+    );
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cancelled_live_wait_recovers_the_retained_ack_without_resending() {
+    let state = FakeProgressState::new([LiveProgressAction::RetainAcknowledgementThenWait], []);
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+
+    {
+        let publish = publisher.publish(&verified, browser_progress("cancel wait"), NOW);
+        tokio::pin!(publish);
+        tokio::select! {
+            permit = state.live_started.acquire() => {
+                permit.expect("live progress started").forget();
+            }
+            result = &mut publish => {
+                panic!("live progress unexpectedly completed: {}", result.is_ok());
+            }
+        }
+    }
+
+    let outcome = publisher
+        .resume_pending()
+        .await
+        .expect("retained live progress ACK");
+    assert_eq!(
+        outcome,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 5 }
+    );
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 0);
+    assert_eq!(state.live_closes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cancelled_replay_wait_resumes_the_same_owned_replay_session() {
+    let state = FakeProgressState::new(
+        [LiveProgressAction::PersistThenUnavailable],
+        [ReplayProgressAction::RetainAcknowledgementThenWait],
+    );
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+
+    {
+        let publish = publisher.publish(&verified, browser_progress("replay wait"), NOW);
+        tokio::pin!(publish);
+        tokio::select! {
+            permit = state.replay_started.acquire() => {
+                permit.expect("progress replay started").forget();
+            }
+            result = &mut publish => {
+                panic!("progress replay unexpectedly completed: {}", result.is_ok());
+            }
+        }
+    }
+
+    let outcome = publisher
+        .resume_pending()
+        .await
+        .expect("retained restored progress ACK");
+    assert_eq!(
+        outcome,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 5 }
+    );
+    assert_eq!(state.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(state.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replays.load(Ordering::SeqCst), 1);
+    assert_eq!(state.replay_closes.load(Ordering::SeqCst), 1);
 }
 
 #[test]

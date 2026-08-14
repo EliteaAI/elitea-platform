@@ -1323,6 +1323,45 @@ impl OutputGrpcSession {
         Ok(Some(rejected))
     }
 
+    /// Consume whichever exact bound progress decision the actor retained.
+    ///
+    /// The fresh progress publisher uses this after a response-channel loss so
+    /// a durable ACK and a Main cancellation/deadline winner remain distinct
+    /// from an ordinary uncertain transport failure.
+    #[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+    pub(crate) fn take_progress_decision(
+        &self,
+        frame: &ExecutionOutputFrameV1,
+    ) -> Result<Option<ProgressReplayDecision>, OutputGrpcError> {
+        let pending = PendingProgress::new(frame);
+        let mut completed = self.completed_progress.lock().map_err(|_| {
+            OutputGrpcError::Unavailable("the durable progress decision proof is unavailable")
+        })?;
+        let Some(current) = completed.as_ref() else {
+            return Ok(None);
+        };
+        if !current.matches(pending.sequence, &pending.frame_sha256) {
+            return Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "the retained progress decision does not match the expected frame",
+                ),
+            ));
+        }
+        let Some(current) = completed.take() else {
+            return Err(OutputGrpcError::Unavailable(
+                "the durable progress decision proof is unavailable",
+            ));
+        };
+        Ok(Some(match current {
+            CompletedProgressOutcome::Acknowledged(acknowledged) => {
+                ProgressReplayDecision::Acknowledged(acknowledged)
+            }
+            CompletedProgressOutcome::Rejected(rejected) => {
+                ProgressReplayDecision::Rejected(rejected)
+            }
+        }))
+    }
+
     async fn send_frame(&mut self, frame: ExecutionOutputFrameV1) -> Result<u64, OutputGrpcError> {
         self.validate_frame_size(&frame)?;
         let permit = Arc::clone(&self.admission)

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use prost::Message;
+use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 use super::agent_delivery::test_fresh_agent_delivery;
@@ -471,6 +472,38 @@ async fn authorization_carries_the_matching_prepared_request_to_submission() {
             *state.calls.lock().expect("calls"),
             ["begin", "renew", "observe", "input", "authorize"]
         );
+        lease.close().await.expect("lease close");
+        drop(reservation);
+        assert_eq!(admission.available_capacity(), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_progress_policy_returns_the_complete_unstarted_run_for_cleanup() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        let (control, state) = control();
+        let admission = admission(1, Duration::from_secs(1));
+        let prepared =
+            prepared_for_authorization(Arc::clone(&control), state, &admission, kind).await;
+        let (reservation, prepared) = (*prepared).into_supervised_authorization();
+        let InvocationAuthorizationDecision::AuthorizedNow(authorized) = control
+            .authorize_agent_invocation(prepared.into_candidate())
+            .await
+        else {
+            panic!("the fixture must authorize exactly once")
+        };
+        let connector = Channel::from_static("https://output.invalid").connect_lazy();
+        let Err(failure) = authorized.bind_progress_publisher(connector, 0) else {
+            panic!("an invalid progress policy must not consume the authorized run")
+        };
+        assert_eq!(
+            failure.error().code(),
+            "agent_progress.invalid_configuration"
+        );
+        let (authorized, _connector, error) = (*failure).into_parts();
+        assert_eq!(error.code(), "agent_progress.invalid_configuration");
+        assert_eq!(authorized.execution_kind(), kind);
+        let (_request, lease) = authorized.into_test_cleanup();
         lease.close().await.expect("lease close");
         drop(reservation);
         assert_eq!(admission.available_capacity(), 1);
