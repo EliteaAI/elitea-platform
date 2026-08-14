@@ -1,14 +1,18 @@
 package artifacts_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 )
 
 // These tests pin the S3-shaped listing the SDK's artifact toolkit consumes.
@@ -23,6 +27,10 @@ import (
 func newS3TestRouter(h *artifacts.Handler) chi.Router {
 	r := chi.NewRouter()
 	r.Get("/artifacts/s3/{bucket}", h.ListObjectsS3)
+	// Mounted exactly as production mounts it (mountArtifactRoutes in
+	// internal/api/router.go): a trailing wildcard, so a key containing
+	// slashes is one key rather than an unmatched path.
+	r.Get("/artifacts/s3/{bucket}/*", h.DownloadObjectS3)
 	return r
 }
 
@@ -273,6 +281,203 @@ func TestListObjectsS3_AcceptsLowercasedBucketName(t *testing.T) {
 	}
 	if contents, _ := body["contents"].([]any); len(contents) != 1 {
 		t.Errorf("contents = %v, want the seeded object", body["contents"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Object GET — the other half of an index run. The listing enumerates the
+// bucket; this reads each listed key's bytes (elitea-sdk
+// runtime/tools/artifact.py: _base_loader lists, _extend_data downloads).
+// Without this route a run lists files correctly and indexes every one of
+// them with empty content.
+// ---------------------------------------------------------------------------
+
+// getS3Object performs the request and returns the recorder, so tests can
+// assert on the RAW body and headers. Deliberately not decoded: the success
+// contract here is bytes, not JSON.
+func getS3Object(t *testing.T, h *artifacts.Handler, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rr := httptest.NewRecorder()
+	newS3TestRouter(h).ServeHTTP(rr, req)
+	return rr
+}
+
+// TestDownloadObjectS3_ServesRawBytes pins the success contract the SDK
+// actually consumes: download_artifact_s3 returns response.content verbatim
+// (client.py:1184) and hands it to a binary parser. A JSON envelope — even a
+// correct-looking one — would be indexed as its own serialisation, so this
+// asserts the body is the exact stored bytes AND that it is not JSON-shaped.
+func TestDownloadObjectS3_ServesRawBytes(t *testing.T) {
+	h, _, store := newObjectTestHandler(t)
+	content := []byte("the quick brown fox\n")
+	store.seedContent("1", "reports", "notes.txt", content, "text/plain; charset=utf-8")
+
+	rr := getS3Object(t, h, "/artifacts/s3/reports/notes.txt?project_id=1&format=json")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Body.Bytes(); !bytes.Equal(got, content) {
+		t.Errorf("body = %q, want the stored bytes %q", got, content)
+	}
+	// format=json is sent on every S3 call (_s3_params, client.py:1074) and
+	// must NOT switch the representation — the SDK never decodes a success.
+	var envelope map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &envelope); err == nil {
+		t.Errorf("body decoded as a JSON object (%v); the SDK expects raw bytes", envelope)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want the stored type", got)
+	}
+	if got := rr.Header().Get("Content-Length"); got != strconv.Itoa(len(content)) {
+		t.Errorf("Content-Length = %q, want %d", got, len(content))
+	}
+}
+
+// TestDownloadObjectS3_FallsBackToExtensionContentType covers a stored object
+// with no recorded type — the local backend's common case. requests never
+// needs it, but a wrong type here would reach the SDK's parse_file_content
+// fallback path, so it is pinned rather than left incidental.
+func TestDownloadObjectS3_FallsBackToExtensionContentType(t *testing.T) {
+	h, _, store := newObjectTestHandler(t)
+	store.seedContent("1", "reports", "diagram.png", []byte("\x89PNG"), "")
+
+	rr := getS3Object(t, h, "/artifacts/s3/reports/diagram.png?project_id=1")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "image/png") {
+		t.Errorf("Content-Type = %q, want image/png derived from the extension", got)
+	}
+}
+
+// TestDownloadObjectS3_KeyWithSlashes is the route-shape guard. The SDK quotes
+// the key with safe='/' (client.py:1176), so a nested key arrives as literal
+// path segments; a route capturing a single {key} segment would 404 every
+// file in a folder — and the indexer's own comment (artifact.py:_extend_data)
+// says it downloads by full key precisely because folders are the normal
+// case.
+func TestDownloadObjectS3_KeyWithSlashes(t *testing.T) {
+	h, _, store := newObjectTestHandler(t)
+	content := []byte("nested content")
+	store.seedContent("1", "reports", "folder/sub/file.txt", content, "text/plain")
+
+	rr := getS3Object(t, h, "/artifacts/s3/reports/folder/sub/file.txt?project_id=1")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a key containing slashes; body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Body.Bytes(); !bytes.Equal(got, content) {
+		t.Errorf("body = %q, want %q — the whole remaining path must be the key", got, content)
+	}
+}
+
+// TestDownloadObjectS3_AcceptsLowercasedBucketName mirrors the SDK, which
+// lower-cases the bucket before building the URL (client.py:1176).
+func TestDownloadObjectS3_AcceptsLowercasedBucketName(t *testing.T) {
+	h, _, store := newObjectTestHandler(t)
+	store.seedContent("1", "reports", "a.txt", []byte("x"), "text/plain")
+
+	rr := getS3Object(t, h, "/artifacts/s3/REPORTS/a.txt?project_id=1")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestDownloadObjectS3_ScopesObjectLookupToQueryProject proves the handler
+// reads within the project named by project_id and nowhere else. The object
+// exists only in project 1; asking for it as project 2 must miss. This is the
+// handler-level half of the cross-tenant guarantee — the RBAC half (a caller
+// who cannot even name project 2) is proven at the router level in
+// internal/api.
+func TestDownloadObjectS3_ScopesObjectLookupToQueryProject(t *testing.T) {
+	h, repo, store := newObjectTestHandler(t)
+	store.seedContent("1", "reports", "secret.txt", []byte("classified"), "text/plain")
+	// Give project 2 a same-named bucket, so the request gets PAST the bucket
+	// check and the 404 can only come from the object lookup being scoped to
+	// the project — otherwise this would pass for the weaker reason that
+	// project 2 has no bucket at all.
+	if _, err := repo.CreateBucket(t.Context(), repos.NewBucketInput{
+		ProjectID: 2, Name: "reports", DisplayName: "reports", BucketType: "local",
+	}); err != nil {
+		t.Fatalf("seed CreateBucket: %v", err)
+	}
+
+	rr := getS3Object(t, h, "/artifacts/s3/reports/secret.txt?project_id=2")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for another project's object; body=%s", rr.Code, rr.Body.String())
+	}
+	if body := rr.Body.String(); strings.Contains(body, "classified") {
+		t.Fatalf("response leaked the other project's bytes: %s", body)
+	}
+}
+
+// TestDownloadObjectS3_ErrorEnvelopeMatchesWhatTheSDKReads pins the error
+// shape _handle_s3_error parses (client.py:1078-1089): a JSON body with
+// error.code, in the vocabulary S3_ERROR_MESSAGES can phrase. Note the
+// missing-key case in particular: a download has already confirmed the
+// bucket, so a miss is NoSuchKey ("File 'x' not found"), never the
+// NoSuchBucket the listing reports for the same underlying storage error.
+func TestDownloadObjectS3_ErrorEnvelopeMatchesWhatTheSDKReads(t *testing.T) {
+	cases := []struct {
+		name       string
+		target     string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "missing key in an existing bucket",
+			target:     "/artifacts/s3/reports/absent.txt?project_id=1",
+			wantStatus: http.StatusNotFound,
+			wantCode:   "NoSuchKey",
+		},
+		{
+			name:       "missing bucket",
+			target:     "/artifacts/s3/nope/a.txt?project_id=1",
+			wantStatus: http.StatusNotFound,
+			wantCode:   "NoSuchBucket",
+		},
+		{
+			// A traversal key is rejected by storage.NewObjectRef and must
+			// reach the SDK as the S3 InvalidArgument it knows how to phrase,
+			// not as an unmapped code that degrades to "S3 error: ...".
+			// Written unescaped on purpose: nothing in the chain cleans the
+			// path (Go's http server only cleans through ServeMux, which this
+			// router does not use), so this is the form that actually
+			// reaches the handler.
+			name:       "traversal key",
+			target:     "/artifacts/s3/reports/../../etc/passwd?project_id=1",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "InvalidArgument",
+		},
+		{
+			name:       "missing project_id",
+			target:     "/artifacts/s3/reports/a.txt",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "InvalidArgument",
+		},
+		{
+			name:       "non-numeric project_id",
+			target:     "/artifacts/s3/reports/a.txt?project_id=notanumber",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "InvalidArgument",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, _ := newObjectTestHandler(t)
+			rr := getS3Object(t, h, tc.target)
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("error body is not JSON: %v (body=%s)", err, rr.Body.String())
+			}
+			if got := errorCodeOf(t, body); got != tc.wantCode {
+				t.Errorf("error.code = %q, want %q", got, tc.wantCode)
+			}
+		})
 	}
 }
 

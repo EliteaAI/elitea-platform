@@ -165,6 +165,10 @@ var artifactRoutePermissions = []artifactRoutePermission{
 	// than the path — the whole risk of that route is that it becomes a
 	// softer way in, and these two tests are what forbid it.
 	{method: http.MethodGet, path: "/artifacts/s3/reports?project_id=1", permission: artifactPermissionView},
+	// The S3-shaped object read, with a nested key — same query-parameter
+	// project and therefore the same risk, and it carries bytes rather than
+	// metadata, so it is the one that must not be a softer way in.
+	{method: http.MethodGet, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionView},
 }
 
 // allArtifactPermissions is used where a test wants authorization to be a
@@ -294,6 +298,10 @@ var artifactSuccessCases = []artifactSuccessCase{
 	// empty listing, so a 200 here is exactly the behaviour change that
 	// turns a vacuously green index run into a real one.
 	{desc: "list objects (s3)", method: http.MethodGet, path: "/artifacts/s3/reports?project_id=1", permission: artifactPermissionView, wantStatus: http.StatusOK},
+	// The S3-shaped object read. Before this route existed the same request
+	// 404'd, which the SDK logs and swallows — leaving an index run that
+	// listed the right files and indexed every one of them empty.
+	{desc: "download object (s3)", method: http.MethodGet, path: "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", permission: artifactPermissionView, wantStatus: http.StatusOK},
 }
 
 // TestArtifactRoutesSucceedWithExactRequiredPermission proves S11's second

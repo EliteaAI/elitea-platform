@@ -104,6 +104,91 @@ func TestS3ListingRejectsMalformedProjectID(t *testing.T) {
 	}
 }
 
+// TestS3DownloadRefusesAnotherProjectsObject is the same central claim for
+// the object read, which is the route that actually carries bytes: a caller
+// entitled to project 7 must not be able to read project 8's file by editing
+// the query string. As above, alwaysSucceedsArtifactRepo/Store answer for ANY
+// project, so a 403 can only come from the RBAC gate — if the download route
+// were mounted without viewByQueryProject, or with the path-based extractor
+// (which finds no {projectID} param and gates nothing), this would be a 200
+// carrying the other tenant's object.
+func TestS3DownloadRefusesAnotherProjectsObject(t *testing.T) {
+	resolver := fakePermissionResolver{granted: []string{artifactPermissionView}, forProject: "7"}
+	router := newS3ListingRouter(resolver)
+
+	t.Run("own project is allowed", func(t *testing.T) {
+		req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/artifacts/s3/reports/folder/sub/file.txt?project_id=7", nil))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 for the caller's own project; body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("another project is refused", func(t *testing.T) {
+		req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/artifacts/s3/reports/folder/sub/file.txt?project_id=8", nil))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 — the query parameter must not be trusted as an authorization claim; body=%s",
+				rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestS3DownloadRejectsMalformedProjectID is the download half of the
+// fail-closed extractor check. It matters independently of the listing's:
+// the two routes are separate mounts, and only a test that names this one
+// proves the gate was applied to it.
+func TestS3DownloadRejectsMalformedProjectID(t *testing.T) {
+	router := newS3ListingRouter(fakePermissionResolver{granted: []string{artifactPermissionView}})
+
+	for _, query := range []string{
+		"",              // absent entirely
+		"?project_id=",  // present but empty
+		"?project_id=0", // not positive
+		"?project_id=-1",
+		"?project_id=01",
+		"?project_id=abc",
+	} {
+		t.Run("project_id="+query, func(t *testing.T) {
+			req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/artifacts/s3/reports/a.txt"+query, nil))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 for a malformed project id; body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestS3DownloadIsMountedAtRootNotUnderAPIV2 pins the download route's prefix
+// and its wildcard key capture in one place — the two ways it can be mounted
+// wrong, both of which produce a 404 that the SDK logs and swallows
+// (artifact.py:_extend_data yields the document with no content), leaving a
+// run green having indexed empty files.
+func TestS3DownloadIsMountedAtRootNotUnderAPIV2(t *testing.T) {
+	router := newS3ListingRouter(fakePermissionResolver{granted: []string{artifactPermissionView}})
+
+	t.Run("root path serves a nested key", func(t *testing.T) {
+		req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/artifacts/s3/reports/folder/sub/file.txt?project_id=1", nil))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 at the path the SDK actually requests; body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("api/v2 path does not serve it", func(t *testing.T) {
+		req := testAuthHeader(httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/s3/reports/file.txt?project_id=1", nil))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code == http.StatusOK {
+			t.Fatalf("the download answered under /api/v2, where the SDK never looks; body=%s", rec.Body.String())
+		}
+	})
+}
+
 // TestS3ListingIsMountedAtRootNotUnderAPIV2 pins the prefix, which is the
 // one thing that cannot be got wrong quietly: the SDK builds this URL from a
 // bare origin with no /api/v2 segment (elitea-sdk client.py:115 — every

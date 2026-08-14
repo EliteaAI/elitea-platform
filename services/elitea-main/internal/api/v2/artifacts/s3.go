@@ -81,58 +81,89 @@ type s3ListResponse struct {
 // already produces — and falls back to "S3 error: <code>" for anything
 // unrecognised, so an unmapped code degrades to a vague message rather than
 // a wrong one.
+// "NotFound" is deliberately absent: S3 has two distinct not-found codes and
+// which one applies depends on what the request addressed. A listing can only
+// ever miss the bucket (NoSuchBucket); an object GET has already confirmed
+// the bucket before it reads, so a miss there can only be the key
+// (NoSuchKey). Each caller passes the one that is true for it — collapsing
+// them into a single mapping here would tell the SDK the bucket is gone every
+// time a file is merely absent.
 var s3ErrorCodes = map[string]string{
-	// A listing addresses exactly one resource — the bucket — so a
-	// not-found surfacing from the storage layer can only mean the bucket,
-	// never a key.
-	"NotFound":        "NoSuchBucket",
 	"AccessDenied":    "AccessDenied",
 	"InvalidKey":      "InvalidArgument",
 	"InvalidArgument": "InvalidArgument",
 }
 
-func s3ErrorCode(code string) string {
+func s3ErrorCode(code, notFoundAs string) string {
+	if code == "NotFound" {
+		return notFoundAs
+	}
 	if mapped, ok := s3ErrorCodes[code]; ok {
 		return mapped
 	}
 	return "InternalError"
 }
 
-// ListObjectsS3 answers the SDK's bucket listing.
+// s3ProjectID reads the `project_id` QUERY parameter both S3 routes carry.
 //
-// The project is named by the `project_id` QUERY parameter, not a path
-// segment — that is the SDK's wire format (_s3_params, client.py:1072) and
-// cannot be changed from this side. A query parameter is caller-controlled
-// input and is NOT trusted here as an authorization claim: the route is
-// mounted behind RequireResolvedPermissionsForProject with
-// ProjectIDFromQuery("project_id") (see mountArtifactRoutes in
-// internal/api/router.go), which resolves the caller's permissions IN that
-// named project before this handler runs. A caller who names a project they
-// hold no role in resolves to zero permissions and is refused with 403, so
-// changing the query string cannot reach another tenant's bucket. This
-// handler then scopes every subsequent lookup to that same id.
-func (h *Handler) ListObjectsS3(w http.ResponseWriter, r *http.Request) {
+// The project is named in the query string, not a path segment — that is the
+// SDK's wire format (_s3_params, client.py:1072) and cannot be changed from
+// this side. A query parameter is caller-controlled input and is NOT trusted
+// here as an authorization claim: both routes are mounted behind
+// RequireResolvedPermissionsForProject with ProjectIDFromQuery("project_id")
+// (see mountArtifactRoutes in internal/api/router.go), which resolves the
+// caller's permissions IN that named project before the handler runs. A
+// caller who names a project they hold no role in resolves to zero
+// permissions and is refused with 403, so changing the query string cannot
+// reach another tenant's artifacts. The handlers then scope every subsequent
+// lookup to that same id.
+//
+// Returns the id in both forms the handlers need — int64 for the repository,
+// the original string for storage refs — and writes the error itself when it
+// is unusable.
+func s3ProjectID(w http.ResponseWriter, r *http.Request) (int64, string, bool) {
 	projectIDStr := r.URL.Query().Get("project_id")
 	projectID, err := strconv.ParseInt(projectIDStr, 10, 64)
 	if err != nil || projectID <= 0 {
 		writeError(w, http.StatusBadRequest, "InvalidArgument", "project_id is required")
-		return
+		return 0, "", false
 	}
+	return projectID, projectIDStr, true
+}
 
-	// The SDK lower-cases the bucket before building the URL
-	// (client.py:1105), so normalise here too rather than letting a
-	// differently-cased stored name miss.
-	bucket := strings.ToLower(chi.URLParam(r, "bucket"))
+// s3Bucket reads the bucket path parameter. The SDK lower-cases the bucket
+// before building the URL (client.py:1105, :1176), so normalise here too
+// rather than letting a differently-cased stored name miss.
+func s3Bucket(r *http.Request) string {
+	return strings.ToLower(chi.URLParam(r, "bucket"))
+}
 
-	// Same bucket resolution as the native route, but rendered with the S3
-	// code for a missing bucket: the SDK phrases NoSuchBucket specifically,
-	// and a listing can only ever fail on the bucket, never on a key.
+// requireS3Bucket is requireBucket rendered in the S3 error vocabulary: the
+// SDK phrases NoSuchBucket specifically (S3_ERROR_MESSAGES, client.py:1061).
+// Callers return immediately when ok is false.
+func (h *Handler) requireS3Bucket(w http.ResponseWriter, r *http.Request, projectID int64, bucket string) bool {
 	if _, err := h.repo.GetBucket(r.Context(), projectID, bucket); err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NoSuchBucket", "bucket not found")
-			return
+			return false
 		}
 		writeError(w, http.StatusInternalServerError, "InternalError", "get bucket: "+err.Error())
+		return false
+	}
+	return true
+}
+
+// ListObjectsS3 answers the SDK's bucket listing.
+func (h *Handler) ListObjectsS3(w http.ResponseWriter, r *http.Request) {
+	projectID, projectIDStr, ok := s3ProjectID(w, r)
+	if !ok {
+		return
+	}
+	bucket := s3Bucket(r)
+
+	// Same bucket resolution as the native route. A listing can only ever
+	// fail on the bucket, never on a key.
+	if !h.requireS3Bucket(w, r, projectID, bucket) {
 		return
 	}
 
@@ -144,7 +175,7 @@ func (h *Handler) ListObjectsS3(w http.ResponseWriter, r *http.Request) {
 	// them would mean building an XML representation with no consumer.
 	q, code, message := parseListObjectsQuery(r.URL.Query())
 	if code != "" {
-		writeError(w, statusForCode(code), s3ErrorCode(code), message)
+		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchBucket"), message)
 		return
 	}
 
@@ -159,7 +190,7 @@ func (h *Handler) ListObjectsS3(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "InternalError", "list objects: "+err.Error())
 			return
 		}
-		writeError(w, statusForCode(storageErrorCode(err)), s3ErrorCode(storageErrorCode(err)), err.Error())
+		writeError(w, statusForCode(storageErrorCode(err)), s3ErrorCode(storageErrorCode(err), "NoSuchBucket"), err.Error())
 		return
 	}
 
@@ -183,4 +214,55 @@ func (h *Handler) ListObjectsS3(w http.ResponseWriter, r *http.Request) {
 		IsTruncated:           page.IsTruncated,
 		NextContinuationToken: page.NextContinuationToken,
 	})
+}
+
+// DownloadObjectS3 answers the SDK's object GET — the other half of an index
+// run. The listing enumerates the bucket; this reads each file's bytes
+// (elitea-sdk runtime/tools/artifact.py:_base_loader lists, then _extend_data
+// downloads every listed key). Without it a run lists files correctly and
+// then indexes them all with empty content, which is the same vacuous green
+// as listing nothing.
+//
+// On success the body is the raw object bytes, NOT JSON: the SDK returns
+// response.content unconditionally (client.py:1184) and hands it to a binary
+// content parser. The `format=json` parameter it sends on every S3 call
+// (_s3_params, client.py:1074) is therefore accepted and ignored here — this
+// route has exactly one representation, and honouring `format` would mean
+// base64-wrapping bytes no caller unwraps. JSON appears only in the error
+// case, which is exactly what _handle_s3_error parses.
+//
+// Authorization is identical to the listing's — see s3ProjectID.
+func (h *Handler) DownloadObjectS3(w http.ResponseWriter, r *http.Request) {
+	projectID, projectIDStr, ok := s3ProjectID(w, r)
+	if !ok {
+		return
+	}
+	bucket := s3Bucket(r)
+
+	// The key is the whole remaining path, captured by a trailing chi
+	// wildcard rather than a single {key} segment: the SDK quotes the key
+	// with safe='/' (client.py:1176), so a nested key like
+	// "folder/sub/file.txt" arrives as literal path segments. This is the
+	// same capture the native download route uses.
+	key := objectKeyFromRequest(r)
+
+	// Before the bucket lookup, matching DownloadObject: a malformed key is
+	// caller error whether or not the bucket exists. storage.ErrInvalidKey
+	// maps to the S3 InvalidArgument the SDK can phrase.
+	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", err.Error())
+		return
+	}
+
+	if !h.requireS3Bucket(w, r, projectID, bucket) {
+		return
+	}
+
+	// Past the bucket check, a not-found can only be the key — so this call
+	// site, unlike the listing's, renders NotFound as NoSuchKey. The SDK
+	// phrases that as "File '<key>' not found" (client.py:1062).
+	if code, message := h.streamObject(w, r, ref, key); code != "" {
+		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), message)
+	}
 }

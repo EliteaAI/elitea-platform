@@ -524,33 +524,30 @@ func (h *Handler) BatchDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "failed": failed})
 }
 
-func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := parseProjectID(r)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "InvalidArgument", "invalid project id")
-		return
-	}
-	projectIDStr := chi.URLParam(r, "projectID")
-	bucket := chi.URLParam(r, "bucket")
-	key := objectKeyFromRequest(r)
-
-	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidKey", err.Error())
-		return
-	}
-
-	if _, ok := h.requireBucket(w, r, projectID, bucket); !ok {
-		return
-	}
-
+// streamObject performs the object read shared by both download
+// representations — the native route (DownloadObject) and the S3-shaped one
+// the SDK's artifact toolkit speaks (DownloadObjectS3, s3.go). Everything
+// that decides what bytes go on the wire lives here: the Range parse, the
+// storage Get, the write deadline, the entity headers and the copy. Only the
+// error vocabulary differs between the two, so on failure this writes
+// nothing and returns a code in THIS package's vocabulary for the caller to
+// render in its own — the same split parseListObjectsQuery/listBucketObjects
+// already use for the two listings, and for the same reason: a divergence
+// between the representations would be invisible until an index run silently
+// downloaded nothing.
+//
+// A non-empty code means nothing has been written yet and the caller must
+// render the error. An empty code means the response is complete.
+//
+// The caller has already resolved and authorized the project and confirmed
+// the bucket exists.
+func (h *Handler) streamObject(w http.ResponseWriter, r *http.Request, ref storage.ObjectRef, key string) (code, message string) {
 	status := http.StatusOK
 	var rng *storage.ByteRange
 	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
 		parsed, ok := parseRangeHeader(rangeHeader)
 		if !ok {
-			writeError(w, http.StatusBadRequest, "InvalidArgument", "invalid Range header")
-			return
+			return "InvalidArgument", "invalid Range header"
 		}
 		rng = &parsed
 		status = http.StatusPartialContent
@@ -558,8 +555,7 @@ func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
 
 	body, info, err := h.store.Get(r.Context(), ref, rng)
 	if err != nil {
-		writeStorageError(w, err)
-		return
+		return storageErrorCode(err), err.Error()
 	}
 	defer func() { _ = body.Close() }()
 
@@ -580,6 +576,35 @@ func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(status)
 	_, _ = io.Copy(w, body)
+	return "", ""
+}
+
+func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", "invalid project id")
+		return
+	}
+	projectIDStr := chi.URLParam(r, "projectID")
+	bucket := chi.URLParam(r, "bucket")
+	key := objectKeyFromRequest(r)
+
+	// Deliberately before the bucket lookup, as it always has been: a
+	// malformed key is caller error and must 400 regardless of whether the
+	// bucket happens to exist.
+	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidKey", err.Error())
+		return
+	}
+
+	if _, ok := h.requireBucket(w, r, projectID, bucket); !ok {
+		return
+	}
+
+	if code, message := h.streamObject(w, r, ref, key); code != "" {
+		writeError(w, statusForCode(code), code, message)
+	}
 }
 
 func (h *Handler) StatObject(w http.ResponseWriter, r *http.Request) {

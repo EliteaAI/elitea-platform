@@ -288,7 +288,7 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 	listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	createTransferGrant, commitTransferGrant := notImplementedArtifact, notImplementedArtifact
 	presignUploadPart, completeMultipartUpload, abortMultipartUpload := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
-	listObjectsS3 := notImplementedArtifact
+	listObjectsS3, downloadObjectS3 := notImplementedArtifact, notImplementedArtifact
 	if deps.Handler != nil {
 		listBuckets, createBucket, getBucket, updateBucket, deleteBucket =
 			deps.Handler.ListBuckets, deps.Handler.CreateBucket, deps.Handler.GetBucket, deps.Handler.UpdateBucket, deps.Handler.DeleteBucket
@@ -297,7 +297,7 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 		createTransferGrant, commitTransferGrant = deps.Handler.CreateTransferGrant, deps.Handler.CommitTransferGrant
 		presignUploadPart, completeMultipartUpload, abortMultipartUpload =
 			deps.Handler.PresignUploadPart, deps.Handler.CompleteMultipartUpload, deps.Handler.AbortMultipartUpload
-		listObjectsS3 = deps.Handler.ListObjectsS3
+		listObjectsS3, downloadObjectS3 = deps.Handler.ListObjectsS3, deps.Handler.DownloadObjectS3
 	}
 
 	r.Group(func(r chi.Router) {
@@ -335,8 +335,11 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 			r.With(create).Post("/grants/{projectID}/{grantID}:abortMultipart", abortMultipartUpload)
 		})
 
-		// S3-shaped bucket listing — the listing the SDK's artifact toolkit
-		// actually performs, and therefore the one an index run depends on.
+		// S3-shaped bucket listing and object read — the two calls the SDK's
+		// artifact toolkit actually performs, and therefore the ones an index
+		// run depends on: it lists the bucket, then downloads every listed
+		// key (elitea-sdk runtime/tools/artifact.py, _base_loader then
+		// _extend_data).
 		//
 		// It is mounted at the ROOT, not under /api/v2, because that is
 		// where the request arrives: the worker's platform_origin is
@@ -355,6 +358,12 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 		// the identical resolver/mode/permission through the query
 		// extractor instead. Nothing else about the authorization differs.
 		r.With(viewByQueryProject).Get("/artifacts/s3/{bucket}", listObjectsS3)
+		// The object read. A trailing wildcard, not a single {key} segment:
+		// the SDK quotes the key with safe='/' (client.py:1176), so a nested
+		// key arrives as literal path segments. Same `view` tier as the
+		// listing and as the native download route — reading an object's
+		// bytes is the same act as reading its metadata.
+		r.With(viewByQueryProject).Get("/artifacts/s3/{bucket}/*", downloadObjectS3)
 	})
 }
 

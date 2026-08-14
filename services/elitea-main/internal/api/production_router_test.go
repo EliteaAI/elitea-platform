@@ -1813,6 +1813,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		// origin with no /api/v2 segment, so this is the path that actually
 		// arrives. See mountArtifactRoutes in router.go.
 		"GET /artifacts/s3/{bucket}",
+		// The object read, wildcard-captured so a nested key
+		// ("folder/sub/file.txt") matches as one key rather than 404ing.
+		"GET /artifacts/s3/{bucket}/*",
 		"GET /auth",
 		"GET /avatars/{projectID}/{filename}",
 		"GET /docs",

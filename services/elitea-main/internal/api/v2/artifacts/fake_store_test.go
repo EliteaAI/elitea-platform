@@ -129,8 +129,18 @@ func (s *fakeStore) objectCount() int {
 	return len(s.objects)
 }
 
-// seed adds an object directly, bypassing Put, for test fixture setup.
+// seed adds an object of the given size whose bytes are all zero, directly,
+// bypassing Put, for test fixture setup. Listing tests only ever read the
+// size; use seedContent when the bytes themselves matter.
 func (s *fakeStore) seed(projectID, bucket, key string, size int64) {
+	s.seedContent(projectID, bucket, key, make([]byte, size), "")
+}
+
+// seedContent is seed with real bytes and a content type. Download tests need
+// both: a fixture of zero bytes could not distinguish "served the object" from
+// "served an empty body", and a fixture with no content type could not
+// distinguish the stored type from the extension-derived fallback.
+func (s *fakeStore) seedContent(projectID, bucket, key string, data []byte, contentType string) {
 	ref, err := storage.NewObjectRef(projectID, bucket, key)
 	if err != nil {
 		panic(err)
@@ -138,8 +148,10 @@ func (s *fakeStore) seed(projectID, bucket, key string, size int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	storageKey := ref.StorageKey("")
-	s.objects[storageKey] = storage.ObjectInfo{Key: key, Size: size, LastModified: time.Now()}
-	s.data[storageKey] = make([]byte, size)
+	s.objects[storageKey] = storage.ObjectInfo{
+		Key: key, Size: int64(len(data)), LastModified: time.Now(), ContentType: contentType,
+	}
+	s.data[storageKey] = data
 }
 
 func (s *fakeStore) Put(_ context.Context, ref storage.ObjectRef, body io.Reader, opts storage.PutOptions) (storage.ObjectInfo, error) {
