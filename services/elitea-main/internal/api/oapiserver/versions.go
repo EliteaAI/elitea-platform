@@ -187,20 +187,60 @@ func (s *Server) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reques
 	schema := fmt.Sprintf("p_%s", projectId)
 	ctx := r.Context()
 
+	// This is a REPLACE: the deletes below drop every existing attachment before
+	// the inserts run. When the inserts were `_, _ = pool.Exec(...)` and could
+	// not succeed — they omitted `entity_type`, NOT NULL with no default in both
+	// schema shapes, so every one of them raised 23502 — the handler was a pure
+	// detacher that answered `{"ok":true}`. One transaction so a failed insert
+	// puts the old attachments back instead of leaving the version stripped.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		apierr.Write(w, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once Commit has run
+
+	// `entity_type` is 'agent' here for the same reason it is the default in
+	// internal/api/v2/toolkits/handler.go:596 — this route is the agent
+	// editor's, and 'agent' is the value its attach INSERT writes. `entity_id`
+	// is the owning application (migration 0125), which this route already has
+	// as a path parameter; the chat read joins on it
+	// (internal/db/queries/agent_chat.sql:107), so a row carrying the version id
+	// there would satisfy NOT NULL and join to nothing.
+	const entityType = "agent"
+
 	// Replace skill mappings.
-	_, _ = s.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema), selectedVersionId) // best-effort
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema), selectedVersionId); err != nil {
+		apierr.Write(w, err)
+		return
+	}
 	for _, skillID := range body.Skills {
-		_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %q.entity_skill_mapping (entity_version_id, skill_id)
-			VALUES ($1, $2) ON CONFLICT DO NOTHING`, schema), selectedVersionId, skillID) // best-effort
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id)
+			VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, schema), selectedVersionId, entityType, skillID); err != nil {
+			apierr.Write(w, err)
+			return
+		}
 	}
 
 	// Replace tool mappings.
-	_, _ = s.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema), selectedVersionId) // best-effort
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema), selectedVersionId); err != nil {
+		apierr.Write(w, err)
+		return
+	}
 	for _, toolID := range body.Tools {
-		_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %q.entity_tool_mapping (entity_version_id, tool_id)
-			VALUES ($1, $2) ON CONFLICT DO NOTHING`, schema), selectedVersionId, toolID) // best-effort
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id)
+			VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, schema),
+			selectedVersionId, selectedApplicationId, entityType, toolID); err != nil {
+			apierr.Write(w, err)
+			return
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		apierr.Write(w, err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
