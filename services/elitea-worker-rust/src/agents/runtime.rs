@@ -23,6 +23,7 @@ use super::events::{
     ProjectedAgentEventBatch,
 };
 use super::request::AgentExecutionRequest;
+use super::session::AuthorizedNativeCommandBinding;
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::transport::runtime_context::{
     ClaimScopedEliteaContext, RuntimeContextClient, RuntimeContextError,
@@ -139,6 +140,7 @@ pub(crate) trait NativeAgentCompletionSelector: Send {
 pub(crate) struct AuthorizedNativeAssembly<'a> {
     request: &'a AgentExecutionRequest,
     runtime_context: ClaimBoundRuntimeContextAuthority,
+    command: AuthorizedNativeCommandBinding,
 }
 
 impl<'a> AuthorizedNativeAssembly<'a> {
@@ -146,10 +148,12 @@ impl<'a> AuthorizedNativeAssembly<'a> {
     pub(crate) const fn new(
         request: &'a AgentExecutionRequest,
         runtime_context: ClaimBoundRuntimeContextAuthority,
+        command: AuthorizedNativeCommandBinding,
     ) -> Self {
         Self {
             request,
             runtime_context,
+            command,
         }
     }
 
@@ -167,6 +171,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         Ok(AdmittedOrdinaryNativeAssembly {
             request: self.request,
             runtime_context: self.runtime_context,
+            command: self.command,
             profile,
         })
     }
@@ -176,6 +181,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
 pub(crate) struct AdmittedOrdinaryNativeAssembly<'a> {
     request: &'a AgentExecutionRequest,
     runtime_context: ClaimBoundRuntimeContextAuthority,
+    command: AuthorizedNativeCommandBinding,
     profile: OrdinaryNoToolProfile,
 }
 
@@ -190,6 +196,11 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
         &self.profile
     }
 
+    #[must_use]
+    pub(crate) const fn command(&self) -> &AuthorizedNativeCommandBinding {
+        &self.command
+    }
+
     /// Redeem the ephemeral execution actor only after `AUTHORIZED_NOW`.
     ///
     /// The returned PAT remains zeroized, non-cloneable and non-formattable.
@@ -202,11 +213,13 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
         let Self {
             request,
             runtime_context,
+            command,
             profile,
         } = self;
         let context = client.redeem(runtime_context).await?;
         Ok(RedeemedOrdinaryNativeAssembly {
             request,
+            command,
             profile,
             context,
         })
@@ -216,6 +229,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
 /// Admitted ordinary assembly after its sole claim-scoped PAT redemption.
 pub(crate) struct RedeemedOrdinaryNativeAssembly<'a> {
     request: &'a AgentExecutionRequest,
+    command: AuthorizedNativeCommandBinding,
     profile: OrdinaryNoToolProfile,
     context: ClaimScopedEliteaContext,
 }
@@ -229,6 +243,11 @@ impl RedeemedOrdinaryNativeAssembly<'_> {
     #[must_use]
     pub(crate) const fn profile(&self) -> &OrdinaryNoToolProfile {
         &self.profile
+    }
+
+    #[must_use]
+    pub(crate) const fn command(&self) -> &AuthorizedNativeCommandBinding {
+        &self.command
     }
 
     #[must_use]
@@ -399,7 +418,11 @@ pub(crate) struct NativeAgentInvocation {
 }
 
 impl NativeAgentInvocation {
-    #[cfg(test)]
+    /// Seal one freshly assembled Runner with its exact typed session input.
+    ///
+    /// This constructor is crate-private and accepts no claim, fence, output,
+    /// settlement, or Redis authority. The authorized assembly layer keeps the
+    /// resulting value inseparable from its projector and result selector.
     pub(crate) fn new(
         runner: Runner,
         user_id: UserId,

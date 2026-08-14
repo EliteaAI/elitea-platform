@@ -31,6 +31,8 @@ use tower::ServiceExt as _;
 use zeroize::Zeroizing;
 
 use super::runtime_context::ClaimScopedEliteaContext;
+use crate::agents::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
+use crate::agents::session::BoundOrdinaryAgentModel;
 
 const MODEL_ROUTE: &str = "/llm/v1/chat/completions";
 const MAX_ORIGIN_BYTES: usize = 2_048;
@@ -254,7 +256,7 @@ impl ModelGatewayClient {
             return Err(ModelGatewayError::InvalidInvocation);
         }
         let completion = Arc::new(Mutex::new(CompletionState::default()));
-        let model = EliteaOpenAiCompatibleModel {
+        let model = Arc::new(EliteaOpenAiCompatibleModel {
             transport: self.transport.clone(),
             config: self.config.clone(),
             invocation,
@@ -262,7 +264,7 @@ impl ModelGatewayClient {
             token,
             completion: completion.clone(),
             called: AtomicBool::new(false),
-        };
+        });
         Ok(BoundModelGateway {
             model,
             completion: ModelGatewayCompletion { state: completion },
@@ -272,8 +274,32 @@ impl ModelGatewayClient {
 
 /// Inseparable single-use model and its exact completion capture.
 pub(crate) struct BoundModelGateway {
-    model: EliteaOpenAiCompatibleModel,
+    model: Arc<EliteaOpenAiCompatibleModel>,
     completion: ModelGatewayCompletion,
+}
+
+impl BoundOrdinaryAgentModel for BoundModelGateway {
+    fn adk_model(&self) -> Arc<dyn Llm> {
+        self.model.clone()
+    }
+
+    fn take_completed_text(self) -> Result<String, NativeAgentAssemblyError> {
+        self.completion.take().map_err(model_completion_error)
+    }
+}
+
+fn model_completion_error(error: ModelGatewayError) -> NativeAgentAssemblyError {
+    let code = match error {
+        ModelGatewayError::InvalidConfiguration => {
+            NativeAgentAssemblyErrorCode::InvalidConfiguration
+        }
+        ModelGatewayError::InvalidInvocation => NativeAgentAssemblyErrorCode::InvalidResult,
+        ModelGatewayError::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
+        ModelGatewayError::DependencyUnavailable => {
+            NativeAgentAssemblyErrorCode::DependencyUnavailable
+        }
+    };
+    NativeAgentAssemblyError::new(code, "the bound model completion is unavailable")
 }
 
 #[cfg(test)]

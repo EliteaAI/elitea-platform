@@ -13,6 +13,7 @@ use super::request::{AgentExecutionKind, AgentExecutionRequest, UserInput};
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 
 const MAX_MODEL_NAME_BYTES: usize = 256;
+const MAX_USER_INPUT_BYTES: usize = 512 * 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReasoningEffort {
@@ -26,11 +27,12 @@ pub(crate) enum ReasoningEffort {
 #[derive(Debug, PartialEq)]
 pub(crate) struct OrdinaryNoToolProfile {
     kind: AgentExecutionKind,
+    instructions: String,
     model_name: String,
     model_project_id: u32,
     max_tokens: u32,
     reasoning_effort: Option<ReasoningEffort>,
-    temperature: Option<f64>,
+    temperature: Option<f32>,
 }
 
 impl OrdinaryNoToolProfile {
@@ -45,6 +47,7 @@ impl OrdinaryNoToolProfile {
         };
         Ok(Self {
             kind: request.kind,
+            instructions: model.instructions,
             model_name: model.model_name,
             model_project_id: model.model_project_id,
             max_tokens: model.max_tokens,
@@ -56,6 +59,11 @@ impl OrdinaryNoToolProfile {
     #[must_use]
     pub(crate) const fn kind(&self) -> AgentExecutionKind {
         self.kind
+    }
+
+    #[must_use]
+    pub(crate) fn instructions(&self) -> &str {
+        &self.instructions
     }
 
     #[must_use]
@@ -79,7 +87,7 @@ impl OrdinaryNoToolProfile {
     }
 
     #[must_use]
-    pub(crate) const fn temperature(&self) -> Option<f64> {
+    pub(crate) const fn temperature(&self) -> Option<f32> {
         self.temperature
     }
 }
@@ -88,8 +96,17 @@ fn validate_common_profile(
     request: &AgentExecutionRequest,
 ) -> Result<(), NativeAgentAssemblyError> {
     let payload = &request.payload;
-    if !matches!(payload.user_input, UserInput::Text(_))
-        || !payload.chat_history.is_empty()
+    match &payload.user_input {
+        UserInput::ContentBlocks(_) => return Err(unsupported_profile()),
+        UserInput::Text(text) if text.is_empty() || text.contains('\0') => {
+            return Err(invalid_profile());
+        }
+        UserInput::Text(text) if text.len() > MAX_USER_INPUT_BYTES => {
+            return Err(resource_exhausted_profile());
+        }
+        UserInput::Text(_) => {}
+    }
+    if !payload.chat_history.is_empty()
         || !payload.tools.is_empty()
         || !payload.internal_tools.is_empty()
         || !payload.mcp_tokens.is_empty()
@@ -118,6 +135,7 @@ fn validate_common_profile(
         || !payload.meta.is_empty()
         || !payload.context_settings.is_empty()
         || payload.steps_limit.is_some()
+        || payload.persona != "generic"
     {
         return Err(unsupported_profile());
     }
@@ -129,6 +147,10 @@ fn validate_common_profile(
             .conversation_id
             .as_deref()
             .is_some_and(bounded_runtime_identity)
+        || payload
+            .execution_generation
+            .as_deref()
+            .is_some_and(|value| !bounded_runtime_identity(value))
     {
         return Err(invalid_profile());
     }
@@ -161,6 +183,7 @@ fn application_model(
     }
     validate_empty_feature_array(version.get("tools"), true)?;
     validate_empty_feature_array(version.get("internal_tools"), false)?;
+    validate_empty_feature_array(version.get("skills"), false)?;
     validate_application_meta(version.get("meta"))?;
     let instructions = version
         .get("instructions")
@@ -186,7 +209,7 @@ fn application_model(
     if kwargs.len() != 1 || kwargs.get("openai_compatible") != Some(&Value::Bool(true)) {
         return Err(unsupported_profile());
     }
-    validate_model(settings, ModelFieldNames::APPLICATION, false)
+    validate_model(settings, ModelFieldNames::APPLICATION, false, instructions)
 }
 
 fn validate_empty_feature_array(
@@ -253,7 +276,7 @@ fn adhoc_model(
         .get("kwargs")
         .and_then(Value::as_object)
         .ok_or_else(invalid_profile)?;
-    validate_model(kwargs, ModelFieldNames::ADHOC, true)
+    validate_model(kwargs, ModelFieldNames::ADHOC, true, instructions)
 }
 
 #[derive(Clone, Copy)]
@@ -289,17 +312,19 @@ impl ModelFieldNames {
 }
 
 struct ValidatedModel {
+    instructions: String,
     model_name: String,
     model_project_id: u32,
     max_tokens: u32,
     reasoning_effort: Option<ReasoningEffort>,
-    temperature: Option<f64>,
+    temperature: Option<f32>,
 }
 
 fn validate_model(
     settings: &Map<String, Value>,
     names: ModelFieldNames,
     require_compatible: bool,
+    instructions: &str,
 ) -> Result<ValidatedModel, NativeAgentAssemblyError> {
     if settings
         .keys()
@@ -340,6 +365,7 @@ fn validate_model(
         return Err(invalid_profile());
     }
     Ok(ValidatedModel {
+        instructions: instructions.to_owned(),
         model_name,
         model_project_id,
         max_tokens,
@@ -374,9 +400,9 @@ fn parse_reasoning_effort(value: &Value) -> Result<ReasoningEffort, NativeAgentA
     }
 }
 
-fn parse_temperature(value: &Value) -> Result<f64, NativeAgentAssemblyError> {
-    value
-        .as_f64()
+fn parse_temperature(value: &Value) -> Result<f32, NativeAgentAssemblyError> {
+    serde_json::from_value::<f32>(value.clone())
+        .ok()
         .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 1.0)
         .ok_or_else(invalid_profile)
 }
@@ -406,5 +432,12 @@ fn invalid_profile() -> NativeAgentAssemblyError {
     NativeAgentAssemblyError::new(
         NativeAgentAssemblyErrorCode::InvalidInput,
         "the authorized agent profile is malformed",
+    )
+}
+
+fn resource_exhausted_profile() -> NativeAgentAssemblyError {
+    NativeAgentAssemblyError::new(
+        NativeAgentAssemblyErrorCode::ResourceExhausted,
+        "the authorized agent profile exceeds its approved limit",
     )
 }

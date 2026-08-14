@@ -7,6 +7,7 @@ pub mod protocol;
 pub mod request;
 pub mod result;
 pub(crate) mod runtime;
+pub(crate) mod session;
 
 #[cfg(test)]
 mod assembly_tests;
@@ -14,6 +15,8 @@ mod assembly_tests;
 mod events_tests;
 #[cfg(test)]
 mod runtime_tests;
+#[cfg(test)]
+mod session_tests;
 
 pub use crate::protocol::ProtocolError as AgentProtocolError;
 pub use protocol::{AGENT_INPUT_SCHEMA_REVISION, parse_agent_execution_input, request_from};

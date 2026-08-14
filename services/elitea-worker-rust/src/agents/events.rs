@@ -25,6 +25,7 @@ const MAX_PROJECTED_EVENTS_PER_ADK_EVENT: usize = 4;
 const MAX_ADK_EVENT_ID_BYTES: usize = 512;
 const MAX_ADK_PARTS_PER_EVENT: usize = 256;
 const MAX_CONTEXT_TEXT_BYTES: usize = 2_048;
+const MAX_COMPLETED_CONTENT_BYTES: usize = 60 * 1_024;
 
 /// Stable, low-cardinality event projection failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,6 +203,47 @@ pub(crate) struct AgentEventProjectionContext {
     applied_skills: Vec<Value>,
 }
 
+/// Validated ordinary-turn values derived from the authenticated command and
+/// admitted input before provider execution begins.
+pub(crate) struct OrdinaryProjectionInput {
+    pub(crate) stream_id: String,
+    pub(crate) message_id: String,
+    pub(crate) execution_generation: String,
+    pub(crate) sio_event: String,
+    pub(crate) thread_id: String,
+    pub(crate) project_id: Value,
+    pub(crate) chat_project_id: Value,
+    pub(crate) root_agent_name: String,
+    pub(crate) model_name: String,
+    pub(crate) application_details: Value,
+}
+
+impl AgentEventProjectionContext {
+    pub(crate) fn ordinary(
+        input: OrdinaryProjectionInput,
+    ) -> Result<Self, AgentEventProjectionError> {
+        let context = Self {
+            stream_id: input.stream_id,
+            message_id: input.message_id,
+            execution_generation: input.execution_generation,
+            sio_event: input.sio_event,
+            thread_id: input.thread_id,
+            project_id: input.project_id,
+            chat_project_id: input.chat_project_id,
+            root_agent_name: input.root_agent_name,
+            model_name: input.model_name,
+            application_details: input.application_details,
+            should_continue: false,
+            hitl_resume: false,
+            parallel_reconcile: false,
+            invoked_skills: Vec::new(),
+            applied_skills: Vec::new(),
+        };
+        validate_context(&context)?;
+        Ok(context)
+    }
+}
+
 #[cfg(test)]
 impl AgentEventProjectionContext {
     pub(crate) fn fixture(application_details: Value) -> Self {
@@ -245,6 +287,33 @@ pub(crate) struct CompletedAgentBrowserOutput {
     thread_id: String,
     execution_finished: bool,
     context_info: Value,
+}
+
+impl CompletedAgentBrowserOutput {
+    pub(crate) fn ordinary(
+        content: String,
+        thread_id: String,
+    ) -> Result<Self, AgentEventProjectionError> {
+        validate_public_text(&thread_id)?;
+        if content.len() > MAX_COMPLETED_CONTENT_BYTES {
+            return Err(AgentEventProjectionError::output(
+                ProtocolError::ResourceExhausted(
+                    "the completed agent content exceeds its approved limit",
+                ),
+            ));
+        }
+        if content.is_empty() || content.contains('\0') {
+            return Err(AgentEventProjectionError::output(
+                ProtocolError::InvalidInput("the completed agent content is malformed"),
+            ));
+        }
+        Ok(Self {
+            content,
+            thread_id,
+            execution_finished: true,
+            context_info: Value::Null,
+        })
+    }
 }
 
 #[cfg(test)]

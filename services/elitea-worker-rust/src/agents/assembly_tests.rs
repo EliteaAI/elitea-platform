@@ -6,6 +6,7 @@ use super::request::{
     NextInputSuggestionPolicy, UserInput,
 };
 use super::runtime::{AuthorizedNativeAssembly, NativeAgentAssemblyErrorCode};
+use super::session::AuthorizedNativeCommandBinding;
 use crate::protocol::control::test_runtime_context_authority;
 
 fn object(value: Value) -> Map<String, Value> {
@@ -15,7 +16,7 @@ fn object(value: Value) -> Map<String, Value> {
     value
 }
 
-fn ordinary_request(kind: AgentExecutionKind) -> AgentExecutionRequest {
+pub(super) fn ordinary_request(kind: AgentExecutionKind) -> AgentExecutionRequest {
     let (llm, application) = match kind {
         AgentExecutionKind::Application => (
             object(json!({"kwargs": {"openai_compatible": true}})),
@@ -386,17 +387,25 @@ fn malformed_model_and_session_bindings_are_not_treated_as_dependency_failures()
 #[test]
 fn credential_redemption_is_unreachable_until_the_profile_is_admitted() {
     let request = ordinary_request(AgentExecutionKind::Application);
-    let admitted = AuthorizedNativeAssembly::new(&request, test_runtime_context_authority())
-        .admit_ordinary_no_tool()
-        .expect("admitted assembly");
+    let admitted = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    )
+    .admit_ordinary_no_tool()
+    .expect("admitted assembly");
     assert_eq!(admitted.request().kind, AgentExecutionKind::Application);
     assert_eq!(admitted.profile().model_project_id(), 17);
 
     let mut unsupported = ordinary_request(AgentExecutionKind::Application);
     unsupported.payload.tools.push(json!({"type": "github"}));
     assert!(
-        AuthorizedNativeAssembly::new(&unsupported, test_runtime_context_authority())
-            .admit_ordinary_no_tool()
-            .is_err()
+        AuthorizedNativeAssembly::new(
+            &unsupported,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        )
+        .admit_ordinary_no_tool()
+        .is_err()
     );
 }

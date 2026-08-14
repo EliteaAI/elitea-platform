@@ -33,6 +33,7 @@ use crate::agents::runtime::{
     AssembledNativeAgentInvocation, AuthorizedNativeAssembly, NativeAgentAssembler,
     NativeAgentCompletionSelector, NativeAgentRun, NativeAgentRuntimeError,
 };
+use crate::agents::session::AuthorizedNativeCommandBinding;
 use crate::agents::{
     AgentExecutionKind, AgentExecutionRequest, AgentInputBinding, parse_agent_execution_input,
 };
@@ -764,7 +765,25 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                 ),
             };
         };
-        let assembly = AuthorizedNativeAssembly::new(&request, runtime_context_authority);
+        let command_binding = match AuthorizedNativeCommandBinding::from_verified(&verified) {
+            Ok(binding) => binding,
+            Err(error) => {
+                return AgentNativeAssemblyOutcome::Failed {
+                    run: Box::new(Self {
+                        delivery,
+                        verified,
+                        request,
+                        publisher,
+                        lease,
+                        permit,
+                        runtime_context,
+                    }),
+                    error,
+                };
+            }
+        };
+        let assembly =
+            AuthorizedNativeAssembly::new(&request, runtime_context_authority, command_binding);
         let assembly_result = lease
             .run_cancellation_safe_phase(assembler.assemble(assembly))
             .await;
