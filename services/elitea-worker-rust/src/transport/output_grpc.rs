@@ -399,6 +399,55 @@ impl PreparedOutputSpool {
         Ok(spawn_output_actor(inner, max_frame_bytes))
     }
 
+    /// Start one owned replay of the sole exact nonterminal frame.
+    ///
+    /// Endpoint opening completes before the replay task starts, so cancelling
+    /// this constructor cannot abandon a transmitted frame. Once returned, the
+    /// session owns replay through a bound ACK, rejection, timeout, or explicit
+    /// close; cancelling a result waiter does not cancel that task. Dropping
+    /// the owner abandons local continuation and requires Main claim/handoff
+    /// recovery, so the future publisher must keep session and cursor
+    /// inseparable and use explicit close on its normal paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable binding error before network access unless the spool
+    /// contains exactly the expected nonterminal frame, or a typed endpoint
+    /// error before replay starts.
+    #[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+    pub(crate) async fn start_progress_replay(
+        self,
+        channel: Channel,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<ProgressReplaySession, OutputGrpcError> {
+        self.require_progress_replay(expected)?;
+        let io = TonicOutputStream::open(channel, &self.config).await?;
+        Ok(spawn_progress_replay(self, io, expected))
+    }
+
+    #[cfg(test)]
+    fn start_progress_replay_over<S: OutputStreamIo + 'static>(
+        self,
+        io: S,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<ProgressReplaySession, OutputGrpcError> {
+        self.require_progress_replay(expected)?;
+        Ok(spawn_progress_replay(self, io, expected))
+    }
+
+    fn require_progress_replay(
+        &self,
+        expected: &ExecutionOutputFrameV1,
+    ) -> Result<(), OutputGrpcError> {
+        self.require_single_expected(expected)?;
+        if expected.terminal {
+            return Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+                "terminal output does not produce progress replay authority",
+            )));
+        }
+        Ok(())
+    }
+
     /// Replay the sole exact terminal and return settlement authority only
     /// after Main's bound ACK removes it from the durable spool.
     ///
@@ -561,6 +610,15 @@ impl<S: OutputStreamIo> OutputSession<S> {
     }
 
     async fn from_prepared(io: S, prepared: PreparedOutputSpool) -> Result<Self, OutputGrpcError> {
+        let (_shutdown, mut shutdown) = watch::channel(false);
+        Self::from_prepared_with_shutdown(io, prepared, &mut shutdown).await
+    }
+
+    async fn from_prepared_with_shutdown(
+        io: S,
+        prepared: PreparedOutputSpool,
+        shutdown: &mut watch::Receiver<bool>,
+    ) -> Result<Self, OutputGrpcError> {
         prepared.require_unreconciled()?;
         let PreparedOutputSpool {
             spool,
@@ -577,15 +635,24 @@ impl<S: OutputStreamIo> OutputSession<S> {
             terminal_committed: false,
             failed: false,
         };
-        let bootstrap = session.receive_ack().await?;
-        let plan = session.state.validate_ack(&bootstrap)?;
+        let bootstrap = match timeout(
+            session.config.ack_timeout,
+            session.receive_ack_or_shutdown(shutdown),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(OutputGrpcError::Unavailable(
+                    "the output bootstrap ACK deadline was exceeded",
+                ));
+            }
+        };
+        let plan = session.state.validate_bootstrap_ack(&bootstrap)?;
         session.state.commit_ack(plan);
-        let (_shutdown, mut shutdown_receiver) = watch::channel(false);
         for frame in restored {
             session.state.queue_replay(&frame)?;
-            session
-                .transmit_and_commit(&frame, &mut shutdown_receiver)
-                .await?;
+            session.transmit_and_commit(&frame, shutdown).await?;
             if frame.message().terminal {
                 session.terminal_committed = true;
             }
@@ -733,19 +800,6 @@ impl<S: OutputStreamIo> OutputSession<S> {
         }
     }
 
-    async fn receive_ack(&mut self) -> Result<ExecutionOutputAckV1, OutputGrpcError> {
-        match timeout(self.config.ack_timeout, self.io.receive()).await {
-            Ok(Ok(Some(ack))) => Ok(ack),
-            Ok(Ok(None)) => Err(OutputGrpcError::Unavailable(
-                "the output gRPC stream closed before its bound ACK",
-            )),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(OutputGrpcError::Unavailable(
-                "the output ACK deadline was exceeded",
-            )),
-        }
-    }
-
     async fn with_spool<T, F>(&mut self, operation: F) -> Result<T, OutputGrpcError>
     where
         T: Send + 'static,
@@ -800,13 +854,93 @@ pub struct DurablyAckedTerminal {
 /// Proof that Main durably acknowledged one exact nonterminal frame.
 ///
 /// The type has no public constructor, accessors, `Clone`, or `Debug`. It can
-/// only be produced by [`OutputGrpcSession::send`] after the bound ACK is
-/// applied. The execution output cursor consumes it to advance exactly the
-/// frame whose canonical protobuf bytes were sent.
+/// only be produced by a live send or owned restored replay after the bound
+/// ACK is applied. The execution output cursor consumes it to advance exactly
+/// the frame whose canonical protobuf bytes were sent.
 pub struct DurablyAckedProgress {
     sequence: u64,
     frame_sha256: [u8; 32],
     _permit: Option<OwnedSemaphorePermit>,
+}
+
+/// Closed result of one owned exact progress replay.
+///
+/// Neither variant is constructible outside this transport. The future output
+/// publisher consumes the ACK proof to advance its cursor or the rejection
+/// proof to authorize one same-sequence terminal replacement.
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+pub(crate) enum ProgressReplayDecision {
+    Acknowledged(DurablyAckedProgress),
+    Rejected(FrameBoundProgressRejection),
+}
+
+/// Cancellation-safe owner for one restored progress replay attempt.
+///
+/// The replay task stores its exact decision before notifying waiters. A
+/// cancelled `wait` can be retried on the same value. Callers commit the proof
+/// synchronously, then close the session before reopening the spool. Dropping
+/// this owner is intentionally not a local proof-recovery operation: the
+/// capability-disabled publisher must discard its cursor with the session and
+/// rely on Main's next claim/handoff recovery.
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+#[must_use = "the replay session must be observed and explicitly closed"]
+pub(crate) struct ProgressReplaySession {
+    completion: watch::Receiver<bool>,
+    result: Arc<Mutex<Option<Result<ProgressReplayDecision, OutputGrpcError>>>>,
+    shutdown: watch::Sender<bool>,
+    task: Option<JoinHandle<()>>,
+}
+
+#[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
+impl ProgressReplaySession {
+    /// Wait for the owned replay without gaining cancellation authority over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the replay's stable transport/protocol failure, or a stable
+    /// ownership error if the result was already consumed or its task failed.
+    pub(crate) async fn wait(&mut self) -> Result<ProgressReplayDecision, OutputGrpcError> {
+        while !*self.completion.borrow() {
+            self.completion.changed().await.map_err(|_| {
+                OutputGrpcError::Unavailable("the progress replay task ended without a result")
+            })?;
+        }
+        self.result
+            .lock()
+            .map_err(|_| OutputGrpcError::Unavailable("the progress replay result is unavailable"))?
+            .take()
+            .ok_or(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(
+                    "the progress replay result was already consumed",
+                ),
+            ))?
+    }
+
+    /// Signal shutdown and observe the owned replay task.
+    ///
+    /// A bound decision already stored for the caller is not revoked by a later
+    /// stream-close error. Cancelling this wait retains the join handle so a
+    /// later call can finish the explicit close.
+    pub(crate) async fn close(&mut self) -> Result<(), OutputGrpcError> {
+        let _ignored = self.shutdown.send(true);
+        let outcome = match self.task.as_mut() {
+            Some(task) => Some(task.await),
+            None => None,
+        };
+        if let Some(outcome) = outcome {
+            self.task = None;
+            outcome.map_err(|_| {
+                OutputGrpcError::Unavailable("the progress replay task is unavailable")
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ProgressReplaySession {
+    fn drop(&mut self) {
+        let _ignored = self.shutdown.send(true);
+    }
 }
 
 /// Main-owned winner which may replace one exact rejected progress frame.
@@ -1261,8 +1395,13 @@ impl OutputGrpcSession {
     /// Returns a stable transport error if the output driver cannot close.
     pub async fn close(&mut self) -> Result<(), OutputGrpcError> {
         let _ignored = self.shutdown.send(true);
-        if let Some(task) = self.task.take() {
-            task.await.map_err(|_| {
+        let outcome = match self.task.as_mut() {
+            Some(task) => Some(task.await),
+            None => None,
+        };
+        if let Some(outcome) = outcome {
+            self.task = None;
+            outcome.map_err(|_| {
                 OutputGrpcError::Unavailable("the output session task is unavailable")
             })?;
         }
@@ -1368,6 +1507,78 @@ where
         max_frame_bytes,
         shutdown,
         task: Some(task),
+    }
+}
+
+fn spawn_progress_replay<S>(
+    prepared: PreparedOutputSpool,
+    io: S,
+    expected: &ExecutionOutputFrameV1,
+) -> ProgressReplaySession
+where
+    S: OutputStreamIo + 'static,
+{
+    let pending = PendingProgress::new(expected);
+    let expected_sequence = expected.sequence;
+    let result = Arc::new(Mutex::new(None));
+    let actor_result = Arc::clone(&result);
+    let (completion_sender, completion) = watch::channel(false);
+    let (shutdown, mut shutdown_receiver) = watch::channel(false);
+    let task = tokio::spawn(async move {
+        let replayed =
+            OutputSession::from_prepared_with_shutdown(io, prepared, &mut shutdown_receiver).await;
+        match replayed {
+            Ok(mut session) => {
+                let decision = if session.terminal_committed
+                    || session.state.acknowledged_sequence() != expected_sequence
+                {
+                    Err(OutputGrpcError::Unavailable(
+                        "the progress replay did not reach its bound durable ACK",
+                    ))
+                } else {
+                    Ok(ProgressReplayDecision::Acknowledged(DurablyAckedProgress {
+                        sequence: pending.sequence,
+                        frame_sha256: pending.frame_sha256,
+                        _permit: None,
+                    }))
+                };
+                store_progress_replay_result(&actor_result, decision, &completion_sender);
+                let _ignored = session.io.close().await;
+            }
+            Err(error) => {
+                let decision = match progress_rejection_winner(&error) {
+                    Some(winner) => Ok(ProgressReplayDecision::Rejected(
+                        pending.into_rejected(None, winner),
+                    )),
+                    None => Err(error),
+                };
+                store_progress_replay_result(&actor_result, decision, &completion_sender);
+            }
+        }
+    });
+    ProgressReplaySession {
+        completion,
+        result,
+        shutdown,
+        task: Some(task),
+    }
+}
+
+fn store_progress_replay_result(
+    slot: &Mutex<Option<Result<ProgressReplayDecision, OutputGrpcError>>>,
+    result: Result<ProgressReplayDecision, OutputGrpcError>,
+    completion: &watch::Sender<bool>,
+) {
+    let stored = slot.lock().is_ok_and(|mut current| {
+        if current.is_some() {
+            false
+        } else {
+            *current = Some(result);
+            true
+        }
+    });
+    if stored {
+        let _ignored = completion.send(true);
     }
 }
 
@@ -1590,6 +1801,14 @@ mod tests {
         wrote: Arc<Notify>,
     }
 
+    struct CloseGatedStream {
+        acknowledgements: mpsc::Receiver<ExecutionOutputAckV1>,
+        writes: Arc<Mutex<Vec<ExecutionOutputFrameV1>>>,
+        wrote: Arc<Notify>,
+        close_started: Arc<Notify>,
+        release_close: Arc<Notify>,
+    }
+
     struct SettlementRpc {
         request: Arc<Mutex<Option<PrepareSettlementRequestV1>>>,
     }
@@ -1624,6 +1843,25 @@ mod tests {
         }
 
         async fn close(&mut self) -> Result<(), OutputGrpcError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl OutputStreamIo for CloseGatedStream {
+        async fn send(&mut self, frame: ExecutionOutputFrameV1) -> Result<(), OutputGrpcError> {
+            self.writes.lock().expect("writes lock").push(frame);
+            self.wrote.notify_one();
+            Ok(())
+        }
+
+        async fn receive(&mut self) -> Result<Option<ExecutionOutputAckV1>, OutputGrpcError> {
+            Ok(self.acknowledgements.recv().await)
+        }
+
+        async fn close(&mut self) -> Result<(), OutputGrpcError> {
+            self.close_started.notify_one();
+            self.release_close.notified().await;
             Ok(())
         }
     }
@@ -1982,6 +2220,283 @@ mod tests {
         let pending = recovered.pending().expect("preserved progress spool");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].payload, progress.encode_to_vec());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_replay_wait_retains_the_exact_ack_proof() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-owned-progress-replay");
+        let progress = frame(1, false);
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(progress.clone())
+            .expect("durable progress");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored progress");
+        let (acknowledgements, receiver) = mpsc::channel(2);
+        acknowledgements
+            .send(bootstrap())
+            .await
+            .expect("bootstrap ACK");
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let wrote = Arc::new(Notify::new());
+        let io = GatedStream {
+            acknowledgements: receiver,
+            writes: Arc::clone(&writes),
+            wrote: Arc::clone(&wrote),
+        };
+        let mut replay = restored
+            .start_progress_replay_over(io, &progress)
+            .expect("owned replay");
+        {
+            let wait = replay.wait();
+            tokio::pin!(wait);
+            tokio::select! {
+                _result = &mut wait => panic!("replay returned before its ACK"),
+                () = wrote.notified() => {}
+            }
+        }
+
+        acknowledgements
+            .send(bound_ack(&progress))
+            .await
+            .expect("bound progress ACK");
+        let proof = match replay.wait().await.expect("stored replay decision") {
+            ProgressReplayDecision::Acknowledged(proof) => proof,
+            ProgressReplayDecision::Rejected(_) => panic!("ACK became a rejection"),
+        };
+        assert_eq!(
+            proof.into_binding(),
+            (progress.sequence, progress_frame_sha256(&progress))
+        );
+        assert!(matches!(
+            replay.wait().await,
+            Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(_)
+            ))
+        ));
+        replay.close().await.expect("joined replay task");
+        assert_eq!(*writes.lock().expect("writes lock"), vec![progress]);
+        assert!(
+            spool(&root)
+                .pending()
+                .expect("empty acknowledged spool")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_replay_close_retains_the_join_owner() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-cancelled-replay-close");
+        let progress = frame(1, false);
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(progress.clone())
+            .expect("durable progress");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored progress");
+        let (acknowledgements, receiver) = mpsc::channel(2);
+        acknowledgements
+            .send(bootstrap())
+            .await
+            .expect("bootstrap ACK");
+        let wrote = Arc::new(Notify::new());
+        let close_started = Arc::new(Notify::new());
+        let release_close = Arc::new(Notify::new());
+        let io = CloseGatedStream {
+            acknowledgements: receiver,
+            writes: Arc::new(Mutex::new(Vec::new())),
+            wrote: Arc::clone(&wrote),
+            close_started: Arc::clone(&close_started),
+            release_close: Arc::clone(&release_close),
+        };
+        let mut replay = restored
+            .start_progress_replay_over(io, &progress)
+            .expect("owned replay");
+        wrote.notified().await;
+        acknowledgements
+            .send(bound_ack(&progress))
+            .await
+            .expect("bound progress ACK");
+        assert!(matches!(
+            replay.wait().await.expect("stored replay decision"),
+            ProgressReplayDecision::Acknowledged(_)
+        ));
+
+        {
+            let close = replay.close();
+            tokio::pin!(close);
+            tokio::select! {
+                result = &mut close => panic!("close returned before release: {result:?}"),
+                () = close_started.notified() => {}
+            }
+        }
+        release_close.notify_one();
+        replay.close().await.expect("retryable replay close");
+        assert!(
+            spool(&root)
+                .pending()
+                .expect("empty acknowledged spool")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_progress_replay_retains_exact_rejection_and_spool() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-rejected-progress-replay");
+        let progress = frame(1, false);
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(progress.clone())
+            .expect("durable progress");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored progress");
+        let io = FakeStream {
+            acknowledgements: VecDeque::from([
+                Ok(Some(bootstrap())),
+                Ok(Some(progress_winner(
+                    &progress,
+                    ProgressRejectionWinner::DeadlineExceeded,
+                ))),
+            ]),
+            writes: Vec::new(),
+            closed: false,
+        };
+        let mut replay = restored
+            .start_progress_replay_over(io, &progress)
+            .expect("owned replay");
+        let rejected = match replay.wait().await.expect("stored replay decision") {
+            ProgressReplayDecision::Rejected(rejected) => rejected,
+            ProgressReplayDecision::Acknowledged(_) => panic!("rejection became an ACK"),
+        };
+        let (sequence, frame_sha256, winner) = rejected.into_binding();
+        assert_eq!(sequence, progress.sequence);
+        assert_eq!(frame_sha256, progress_frame_sha256(&progress));
+        assert!(winner == ProgressRejectionWinner::DeadlineExceeded);
+        replay.close().await.expect("joined replay task");
+
+        let pending = spool(&root).pending().expect("preserved progress spool");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].payload, progress.encode_to_vec());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pretransmit_bound_winner_cannot_mint_progress_rejection_authority() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-pretransmit-progress-winner");
+        let progress = frame(1, false);
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(progress.clone())
+            .expect("durable progress");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored progress");
+        let io = FakeStream {
+            acknowledgements: VecDeque::from([Ok(Some(progress_winner(
+                &progress,
+                ProgressRejectionWinner::Cancelled,
+            )))]),
+            writes: Vec::new(),
+            closed: false,
+        };
+        let mut replay = restored
+            .start_progress_replay_over(io, &progress)
+            .expect("owned replay");
+        assert!(matches!(
+            replay.wait().await,
+            Err(OutputGrpcError::Protocol(
+                OutputSessionError::AuthorizationFailed(_)
+            ))
+        ));
+        replay.close().await.expect("joined replay task");
+
+        let pending = spool(&root).pending().expect("preserved progress spool");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].payload, progress.encode_to_vec());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn closing_progress_replay_before_ack_preserves_the_exact_frame() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-closed-progress-replay");
+        let progress = frame(1, false);
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(progress.clone())
+            .expect("durable progress");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored progress");
+        let (acknowledgements, receiver) = mpsc::channel(1);
+        acknowledgements
+            .send(bootstrap())
+            .await
+            .expect("bootstrap ACK");
+        let wrote = Arc::new(Notify::new());
+        let io = GatedStream {
+            acknowledgements: receiver,
+            writes: Arc::new(Mutex::new(Vec::new())),
+            wrote: Arc::clone(&wrote),
+        };
+        let mut replay = restored
+            .start_progress_replay_over(io, &progress)
+            .expect("owned replay");
+        wrote.notified().await;
+        replay.close().await.expect("bounded replay close");
+        assert!(matches!(
+            replay.wait().await,
+            Err(OutputGrpcError::Unavailable(_))
+        ));
+
+        let pending = spool(&root).pending().expect("preserved progress spool");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].payload, progress.encode_to_vec());
+    }
+
+    #[test]
+    fn progress_replay_rejects_a_terminal_before_starting_a_task() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("root-terminal-progress-replay");
+        let terminal = terminal_frame();
+        let mut prepared =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("prepared spool");
+        prepared
+            .persist(terminal.clone())
+            .expect("durable terminal");
+        drop(prepared);
+
+        let restored =
+            PreparedOutputSpool::prepare(spool(&root), config()).expect("restored terminal");
+        let io = FakeStream {
+            acknowledgements: VecDeque::new(),
+            writes: Vec::new(),
+            closed: false,
+        };
+        assert!(matches!(
+            restored.start_progress_replay_over(io, &terminal),
+            Err(OutputGrpcError::Protocol(OutputSessionError::InvalidInput(
+                _
+            )))
+        ));
+        let pending = spool(&root).pending().expect("preserved terminal spool");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].payload, terminal.encode_to_vec());
     }
 
     #[tokio::test(flavor = "current_thread")]

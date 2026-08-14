@@ -413,6 +413,24 @@ impl OutputSessionState {
         })
     }
 
+    pub(crate) fn validate_bootstrap_ack(
+        &self,
+        ack: &ExecutionOutputAckV1,
+    ) -> Result<AckPlan, OutputSessionError> {
+        if has_ack_binding(ack) || ack.rejection.is_some() {
+            return Err(OutputSessionError::AuthorizationFailed(
+                "the output bootstrap ACK is malformed",
+            ));
+        }
+        let plan = self.validate_ack(ack)?;
+        if !plan.bootstrap {
+            return Err(OutputSessionError::AuthorizationFailed(
+                "the output bootstrap ACK is malformed",
+            ));
+        }
+        Ok(plan)
+    }
+
     pub(crate) fn commit_ack(&mut self, plan: AckPlan) {
         if plan.bootstrap {
             self.bootstrap_credit_received = true;
