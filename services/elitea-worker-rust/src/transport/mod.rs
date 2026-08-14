@@ -8,7 +8,7 @@ mod model_gateway_tests;
 pub mod output_grpc;
 mod output_session;
 pub mod redis_commands;
-mod redis_generation;
+pub(crate) mod redis_generation;
 #[cfg(test)]
 mod redis_generation_tests;
 pub mod redis_streams;

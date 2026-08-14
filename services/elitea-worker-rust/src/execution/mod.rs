@@ -8,6 +8,7 @@ pub mod invocation_admission;
 mod invocation_supervisor;
 mod native_agent_lifecycle;
 pub mod output_delivery;
+mod redis_delivery;
 
 #[cfg(test)]
 mod agent_lease_tests;
@@ -19,6 +20,8 @@ mod invocation_admission_tests;
 mod invocation_supervisor_tests;
 #[cfg(test)]
 mod output_delivery_tests;
+#[cfg(test)]
+mod redis_delivery_tests;
 
 pub use agent_delivery::{
     AgentDeliveryCompletion, AgentDeliveryCompletionKind, AgentDeliveryError, AgentDeliveryRoute,
