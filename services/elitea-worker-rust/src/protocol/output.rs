@@ -38,6 +38,165 @@ pub enum AgentTerminalOutput {
     Failure(RuntimeFailureKind),
 }
 
+/// Fully validated semantic shape of one restored agent output frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ValidatedAgentOutputFrameKind {
+    Progress,
+    Terminal,
+}
+
+/// Revalidate decrypted durable output against the exact signed command.
+///
+/// Spool authentication proves that bytes were written under one execution
+/// key; it does not replace semantic validation. Recovery calls this before
+/// trusting a payload digest, settlement proposal, or deterministic identity.
+pub(crate) fn validate_restored_agent_output_frame(
+    verified: &VerifiedAgentCommand,
+    frame: &ExecutionOutputFrameV1,
+) -> Result<ValidatedAgentOutputFrameKind, ProtocolError> {
+    validate_restored_frame_identity(verified, frame)?;
+    let (kind, payload_bytes, requested_outcome) =
+        validate_restored_agent_payload(verified, frame)?;
+    let payload_digest = sha256(&payload_bytes);
+    if frame.payload_digest.as_ref() != Some(&payload_digest) {
+        return Err(malformed_restored_output());
+    }
+    validate_restored_settlement(verified, frame, payload_digest, requested_outcome)?;
+    Ok(kind)
+}
+
+fn validate_restored_frame_identity(
+    verified: &VerifiedAgentCommand,
+    frame: &ExecutionOutputFrameV1,
+) -> Result<(), ProtocolError> {
+    let command = verified.command();
+    let identity = frame.identity.as_ref().ok_or(malformed_restored_output())?;
+    let fence = frame.fence.as_ref().ok_or(malformed_restored_output())?;
+    if frame.output_schema_revision != OUTPUT_SCHEMA_REVISION
+        || frame.stream_id != format!("{}:{}", command.execution_id, command.generation)
+        || identity.tenant_id != command.tenant_id
+        || identity.resource_project_id != command.resource_project_id
+        || identity.projection_project_id != command.projection_project_id
+        || identity.command_id != command.command_id
+        || identity.execution_id != command.execution_id
+        || identity.generation != command.generation
+        || frame.sequence == 0
+        || frame.sequence > i64::MAX as u64
+        || frame.claim_handoff_watermark >= frame.sequence
+        || frame.claim_handoff_watermark > i64::MAX as u64
+        || frame.occurred_at_unix_millis <= 0
+        || frame.event_id != format!("{}:{}", command.command_id, frame.sequence)
+    {
+        return Err(malformed_restored_output());
+    }
+    validate_fence(fence)?;
+    if frame.encoded_len() > MAX_OUTPUT_FRAME_BYTES {
+        return Err(ProtocolError::ResourceExhausted(
+            "the restored agent output frame exceeds the approved limit",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_restored_agent_payload(
+    verified: &VerifiedAgentCommand,
+    frame: &ExecutionOutputFrameV1,
+) -> Result<
+    (
+        ValidatedAgentOutputFrameKind,
+        Vec<u8>,
+        Option<ExecutionOutcomeV1>,
+    ),
+    ProtocolError,
+> {
+    let command = verified.command();
+    match frame.payload.as_ref() {
+        Some(execution_output_frame_v1::Payload::NodeEvent(event)) => {
+            encode_current_node_event_json(event)?;
+            if frame.terminal
+                || frame.event_type != ExecutionOutputEventTypeV1::NodeEvent as i32
+                || frame.logical_output_id
+                    != format!("node-event:{}:{}", command.execution_id, frame.sequence)
+                || frame.settlement_proposal.is_some()
+            {
+                return Err(malformed_restored_output());
+            }
+            Ok((
+                ValidatedAgentOutputFrameKind::Progress,
+                event.encode_to_vec(),
+                None,
+            ))
+        }
+        Some(execution_output_frame_v1::Payload::AgentExecution(result)) => {
+            validate_agent_execution_result(result)?;
+            validate_result_command_binding(verified, result)?;
+            if !frame.terminal
+                || frame.event_type != ExecutionOutputEventTypeV1::AgentExecutionResult as i32
+                || frame.logical_output_id != format!("agent-execution:{}", command.execution_id)
+            {
+                return Err(malformed_restored_output());
+            }
+            Ok((
+                ValidatedAgentOutputFrameKind::Terminal,
+                result.encode_to_vec(),
+                Some(ExecutionOutcomeV1::Succeeded),
+            ))
+        }
+        Some(execution_output_frame_v1::Payload::RuntimeError(error)) => {
+            let failure = canonical_runtime_failure(error).ok_or(malformed_restored_output())?;
+            if !frame.terminal
+                || frame.event_type != ExecutionOutputEventTypeV1::RuntimeError as i32
+                || frame.logical_output_id != format!("agent-execution:{}", command.execution_id)
+            {
+                return Err(malformed_restored_output());
+            }
+            Ok((
+                ValidatedAgentOutputFrameKind::Terminal,
+                error.encode_to_vec(),
+                Some(if failure == RuntimeFailureKind::Cancelled {
+                    ExecutionOutcomeV1::Cancelled
+                } else {
+                    ExecutionOutcomeV1::Failed
+                }),
+            ))
+        }
+        Some(
+            execution_output_frame_v1::Payload::ConfigurationValidation(_)
+            | execution_output_frame_v1::Payload::ToolkitAvailableTools(_)
+            | execution_output_frame_v1::Payload::IndexIngest(_),
+        )
+        | None => Err(malformed_restored_output()),
+    }
+}
+
+fn validate_restored_settlement(
+    verified: &VerifiedAgentCommand,
+    frame: &ExecutionOutputFrameV1,
+    payload_digest: DigestV1,
+    requested_outcome: Option<ExecutionOutcomeV1>,
+) -> Result<(), ProtocolError> {
+    if let Some(requested_outcome) = requested_outcome {
+        let command = verified.command();
+        let expected = SettlementProposalV1 {
+            proposal_id: format!("{}:settlement", command.command_id),
+            requested_outcome: requested_outcome as i32,
+            terminal_logical_output_id: frame.logical_output_id.clone(),
+            terminal_event_id: frame.event_id.clone(),
+            terminal_sequence: frame.sequence,
+            terminal_payload_digest: Some(payload_digest),
+            prepare_idempotency_key: format!("{}:prepare-settlement", command.command_id),
+        };
+        if frame.settlement_proposal.as_ref() != Some(&expected) {
+            return Err(malformed_restored_output());
+        }
+    }
+    Ok(())
+}
+
+const fn malformed_restored_output() -> ProtocolError {
+    ProtocolError::InvalidInput("the restored agent output frame is malformed")
+}
+
 /// Bind one validated current `NodeEvent` to the exact claimed agent stream.
 ///
 /// The control service issues `fence` after claim; it is deliberately supplied
@@ -247,6 +406,22 @@ fn runtime_error(kind: RuntimeFailureKind) -> RuntimeErrorV1 {
         safe_message: safe_message.to_owned(),
         retryable,
     }
+}
+
+fn canonical_runtime_failure(error: &RuntimeErrorV1) -> Option<RuntimeFailureKind> {
+    [
+        RuntimeFailureKind::UnsupportedCapability,
+        RuntimeFailureKind::IncompatibleVersion,
+        RuntimeFailureKind::InvalidInput,
+        RuntimeFailureKind::ResourceExhausted,
+        RuntimeFailureKind::DependencyUnavailable,
+        RuntimeFailureKind::DeadlineExceeded,
+        RuntimeFailureKind::AuthorizationFailed,
+        RuntimeFailureKind::Cancelled,
+        RuntimeFailureKind::Internal,
+    ]
+    .into_iter()
+    .find(|kind| runtime_error(*kind) == *error)
 }
 
 fn validate_result_command_binding(

@@ -7,15 +7,15 @@ use tonic::transport::Channel;
 
 use super::command::VerifiedAgentCommand;
 use super::elitea::runtime::v1::{
-    AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1,
-    BeginExecutionDispositionV1, BeginExecutionRequestV1, BeginExecutionResponseV1,
-    ClaimCommandRequestV1, ClaimCommandResponseV1, ClaimDispositionV1, ClaimReceiptV1,
-    DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1, ExecutionIdentityV1,
-    ExecutionInputBundleReferenceV1, ExecutionInputBundleV1, ExecutionInputEntryV1,
-    ExecutionOutcomeV1, ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1,
-    PrepareSettlementRequestV1, PrepareSettlementResponseV1, RenewLeaseRequestV1,
-    RenewLeaseResponseV1, RuntimeErrorCodeV1, RuntimeErrorV1, ScopedContentReferenceV1,
-    SettlementProposalV1, SettlementRecoveryV1, worker_command_v1,
+    AgentExecutionResultV1, AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1,
+    AuthorizeInvocationResponseV1, BeginExecutionDispositionV1, BeginExecutionRequestV1,
+    BeginExecutionResponseV1, ClaimCommandRequestV1, ClaimCommandResponseV1, ClaimDispositionV1,
+    ClaimReceiptV1, DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1,
+    ExecutionIdentityV1, ExecutionInputBundleReferenceV1, ExecutionInputBundleV1,
+    ExecutionInputEntryV1, ExecutionOutcomeV1, ObserveDesiredStateRequestV1,
+    ObserveDesiredStateResponseV1, PrepareSettlementRequestV1, PrepareSettlementResponseV1,
+    RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1, RuntimeErrorV1,
+    ScopedContentReferenceV1, SettlementProposalV1, SettlementRecoveryV1, worker_command_v1,
 };
 use crate::transport::{
     ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, DurablyAckedTerminal,
@@ -244,6 +244,13 @@ impl AcceptedAgentClaim {
             && handoff_watermark == self.claim_handoff_watermark
     }
 
+    /// Compare the non-secret structural command identity independently from
+    /// a possibly stale output fence and handoff watermark.
+    #[must_use]
+    pub(crate) fn matches_output_identity(&self, identity: Option<&ExecutionIdentityV1>) -> bool {
+        identity == Some(&self.identity)
+    }
+
     #[must_use]
     pub(crate) const fn input_bundle_ref(&self) -> &ExecutionInputBundleReferenceV1 {
         &self.input_bundle_ref
@@ -257,6 +264,41 @@ impl AcceptedAgentClaim {
     #[must_use]
     pub(crate) const fn request_entry(&self) -> &ExecutionInputEntryV1 {
         &self.request_entry
+    }
+
+    #[must_use]
+    pub(crate) fn matches_agent_result_binding(&self, result: &AgentExecutionResultV1) -> bool {
+        let Some(content) = self.request_entry.content.as_ref() else {
+            return false;
+        };
+        result.request_immutable_version == self.request_entry.immutable_version
+            && result.request_content_digest.as_ref() == content.digest.as_ref()
+    }
+
+    /// Consume fresh business authority after a terminal spool has been
+    /// admitted, retaining only the exact lease/output binding needed for
+    /// replay. The input manifest is deliberately destroyed here.
+    pub(crate) fn into_terminal_recovery(self) -> AcceptedTerminalClaimRecovery {
+        let Self {
+            identity,
+            fence,
+            lease_expires_at_unix_millis,
+            claim_id,
+            claim_handoff_watermark,
+            input_bundle_ref: _,
+            input_bundle: _,
+            request_entry: _,
+        } = self;
+        AcceptedTerminalClaimRecovery {
+            binding: RecoveryClaimBinding {
+                identity,
+                fence,
+                lease_expires_at_unix_millis,
+                claim_id,
+                claim_handoff_watermark,
+                desired_state: DesiredExecutionState::Running,
+            },
+        }
     }
 
     #[must_use]
@@ -335,6 +377,16 @@ struct RecoveryClaimBinding {
     claim_id: String,
     claim_handoff_watermark: u64,
     desired_state: DesiredExecutionState,
+}
+
+/// Input-free authority retained for an exact terminal found on ACCEPTED.
+///
+/// Unlike [`AcceptedAgentClaim`], this type has no Begin or input path. The
+/// next recovery coordinator may consume it only into supervised lease and
+/// terminal-output operations.
+pub(crate) struct AcceptedTerminalClaimRecovery {
+    #[allow(dead_code)] // Consumed by the next exact terminal replay slice.
+    binding: RecoveryClaimBinding,
 }
 
 /// Input-free authority for exact durable output recovery under an active

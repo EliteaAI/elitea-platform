@@ -6,10 +6,14 @@ use crate::protocol::command::{
     SignedCommandAuthenticator, VerifiedAgentCommand, parse_and_verify_agent_command,
 };
 use crate::protocol::control::{
-    AcceptedAgentClaim, AgentClaimDecision, AgentControlClient, AgentControlError,
-    AgentOutputRecovery, AgentOutputRecoveryKind, RecoveredSettlement, TerminalRedeliveryKind,
+    AcceptedAgentClaim, AcceptedTerminalClaimRecovery, AgentClaimDecision, AgentControlClient,
+    AgentControlError, AgentOutputRecovery, AgentOutputRecoveryKind, RecoveredSettlement,
+    TerminalRedeliveryKind,
 };
-use crate::protocol::elitea::runtime::v1::ExecutionOutcomeV1;
+use crate::protocol::elitea::runtime::v1::{ExecutionOutcomeV1, execution_output_frame_v1};
+use crate::protocol::output::{
+    ValidatedAgentOutputFrameKind, validate_restored_agent_output_frame,
+};
 use crate::spool::ExecutionSpoolIdentity;
 use crate::transport::ControlRpc;
 use crate::transport::redis_commands::{
@@ -103,6 +107,20 @@ impl FreshAgentDelivery {
         (self.delivery, self.verified, self.claim)
     }
 
+    pub(crate) fn into_terminal_recovery_parts(
+        self,
+    ) -> (
+        RedisCommandDelivery,
+        VerifiedAgentCommand,
+        AcceptedTerminalClaimRecovery,
+    ) {
+        (
+            self.delivery,
+            self.verified,
+            self.claim.into_terminal_recovery(),
+        )
+    }
+
     #[must_use]
     pub(crate) fn spool_identity(&self) -> ExecutionSpoolIdentity {
         let command = self.verified.command();
@@ -137,6 +155,30 @@ impl FreshAgentDelivery {
             frame.fence.as_ref(),
             frame.claim_handoff_watermark,
         )
+    }
+
+    #[must_use]
+    pub(crate) fn matches_output_identity(
+        &self,
+        frame: &crate::protocol::elitea::runtime::v1::ExecutionOutputFrameV1,
+    ) -> bool {
+        self.claim.matches_output_identity(frame.identity.as_ref())
+    }
+
+    pub(crate) fn validate_output_frame(
+        &self,
+        frame: &crate::protocol::elitea::runtime::v1::ExecutionOutputFrameV1,
+    ) -> Result<ValidatedAgentOutputFrameKind, ProtocolError> {
+        let kind = validate_restored_agent_output_frame(&self.verified, frame)?;
+        if let Some(execution_output_frame_v1::Payload::AgentExecution(result)) =
+            frame.payload.as_ref()
+            && !self.claim.matches_agent_result_binding(result)
+        {
+            return Err(ProtocolError::InvalidInput(
+                "the restored agent output frame is malformed",
+            ));
+        }
+        Ok(kind)
     }
 }
 
