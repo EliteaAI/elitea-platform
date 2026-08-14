@@ -215,6 +215,40 @@ pub enum RedisCommandError {
     Client(RedisRetirementClientError),
 }
 
+impl RedisCommandError {
+    /// Stable low-cardinality category for operator logs and metrics.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidInput(_) => "redis_command.invalid_input",
+            Self::ResourceExhausted(_) => "redis_command.resource_exhausted",
+            Self::AuthorizationFailed(_) => "redis_command.authorization_failed",
+            Self::DependencyUnavailable(_)
+            | Self::Client(
+                RedisRetirementClientError::DependencyUnavailable
+                | RedisRetirementClientError::Timeout,
+            ) => "redis_command.dependency_unavailable",
+            Self::Client(RedisRetirementClientError::Authentication) => {
+                "redis_command.authentication_failed"
+            }
+            Self::Client(RedisRetirementClientError::Protocol) => "redis_command.protocol_failure",
+        }
+    }
+
+    /// Whether the same immutable retirement operation may succeed later.
+    #[must_use]
+    pub const fn retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::DependencyUnavailable(_)
+                | Self::Client(
+                    RedisRetirementClientError::DependencyUnavailable
+                        | RedisRetirementClientError::Timeout
+                )
+        )
+    }
+}
+
 impl fmt::Display for RedisCommandError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

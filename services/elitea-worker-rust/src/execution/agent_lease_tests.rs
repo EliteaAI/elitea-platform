@@ -11,7 +11,9 @@ use tonic::{Request, Response, Status};
 use super::agent_lease::{
     ClaimLeaseError, ClaimLeaseErrorCode, ClaimLeaseMonitor, ClaimLeaseMonitorConfig,
 };
-use crate::protocol::control::{AgentControlClient, test_lease_starting_execution};
+use crate::protocol::control::{
+    AgentControlClient, test_lease_starting_execution, test_terminal_claim_recovery,
+};
 use crate::protocol::elitea::runtime::v1::{
     AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1, BeginExecutionRequestV1,
     BeginExecutionResponseV1, ClaimCommandRequestV1, ClaimCommandResponseV1,
@@ -306,6 +308,28 @@ async fn periodic_schedule_skips_missed_intervals_without_a_burst() {
         state.renew_requests.lock().expect("renew requests").len(),
         3
     );
+    monitor.close().await.expect("close");
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn terminal_recovery_starts_periodic_supervision_without_a_pre_replay_poll() {
+    let state = Arc::new(FakeState::default());
+    let monitor = ClaimLeaseMonitor::start_recovery(
+        client(Arc::clone(&state)),
+        test_terminal_claim_recovery(NOW + 60_000),
+        Arc::new(|| NOW),
+        config(Duration::from_secs(10)),
+    );
+
+    tokio::task::yield_now().await;
+    assert!(
+        state.calls.lock().expect("calls").is_empty(),
+        "the exact durable terminal must be replayed before a new desired-state poll"
+    );
+
+    tokio::time::advance(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(*state.calls.lock().expect("calls"), ["renew", "observe"]);
     monitor.close().await.expect("close");
 }
 

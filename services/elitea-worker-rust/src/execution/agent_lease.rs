@@ -16,9 +16,10 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
 use crate::protocol::control::{
-    AgentControlClient, AgentControlError, ClaimLeaseHandle, ControlSemanticError,
-    DesiredExecutionState, InactiveAgentExecution, LeaseMonitoredAgentExecution,
-    LeaseStartingAgentExecution, PendingLeaseActivation, RuntimeControlRejectionKind,
+    AcceptedTerminalClaimRecovery, AgentControlClient, AgentControlError, ClaimLeaseHandle,
+    ControlSemanticError, DesiredExecutionState, InactiveAgentExecution,
+    LeaseMonitoredAgentExecution, LeaseStartingAgentExecution, PendingLeaseActivation,
+    RuntimeControlRejectionKind,
 };
 use crate::transport::ControlRpc;
 
@@ -253,8 +254,42 @@ impl ClaimLeaseMonitor {
         R: ControlRpc + 'static,
         K: UnixMillisClock,
     {
-        let config = config.validated;
         let (activation, lease) = execution.split();
+        Self::start_inner(control, lease, clock, config, Some(activation))
+    }
+
+    /// Start periodic supervision for terminal-only recovery without polling
+    /// before the exact durable frame gets its first replay attempt.
+    ///
+    /// The recovery value contains no fresh-input or Begin authority. The
+    /// periodic actor still renews the accepted claim while output settlement
+    /// is in progress, matching the Python recovery boundary.
+    #[allow(dead_code)] // Called by the disabled terminal-recovery coordinator.
+    pub(crate) fn start_recovery<R, K>(
+        control: Arc<AgentControlClient<R>>,
+        recovery: AcceptedTerminalClaimRecovery,
+        clock: Arc<K>,
+        config: ClaimLeaseMonitorConfig,
+    ) -> Self
+    where
+        R: ControlRpc + 'static,
+        K: UnixMillisClock,
+    {
+        Self::start_inner(control, recovery.into_lease_handle(), clock, config, None)
+    }
+
+    fn start_inner<R, K>(
+        control: Arc<AgentControlClient<R>>,
+        lease: ClaimLeaseHandle,
+        clock: Arc<K>,
+        config: ClaimLeaseMonitorConfig,
+        activation: Option<PendingLeaseActivation>,
+    ) -> Self
+    where
+        R: ControlRpc + 'static,
+        K: UnixMillisClock,
+    {
+        let config = config.validated;
         let (command_sender, command_receiver) = mpsc::channel(1);
         let (state_sender, state_receiver) = watch::channel(MonitorState::Running);
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
@@ -272,7 +307,7 @@ impl ClaimLeaseMonitor {
             state: state_receiver,
             shutdown: shutdown_sender,
             actor: Some(actor),
-            activation: Some(activation),
+            activation,
         }
     }
 

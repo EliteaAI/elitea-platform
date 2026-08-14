@@ -36,7 +36,8 @@ pub use invocation_admission::{
     InvocationAdmissionErrorCode, InvocationReservation,
 };
 pub use output_delivery::{
-    AcceptedTerminalOutputRecovery, AgentOutputPreflight, AgentOutputPreflightError,
-    AgentOutputPreflightKind, AgentOutputPreflightOutcome, AgentOutputRecoveryRequiredKind,
-    AgentOutputRecoveryRequiredNoAck, EmptyAgentOutput,
+    AcceptedTerminalOutputRecovery, AcceptedTerminalRecoveryCompletion, AgentOutputPreflight,
+    AgentOutputPreflightError, AgentOutputPreflightKind, AgentOutputPreflightOutcome,
+    AgentOutputRecoveryRequiredKind, AgentOutputRecoveryRequiredNoAck, AgentTerminalRecoveryConfig,
+    AgentTerminalRecoveryError, EmptyAgentOutput,
 };

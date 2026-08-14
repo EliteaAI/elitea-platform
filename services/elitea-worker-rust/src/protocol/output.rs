@@ -65,6 +65,25 @@ pub(crate) fn validate_restored_agent_output_frame(
     Ok(kind)
 }
 
+/// Return the registered failure carried by an already validated terminal.
+///
+/// Callers use this only after [`validate_restored_agent_output_frame`] has
+/// established the complete canonical frame shape. It prevents a frame-bound
+/// cancellation or deadline winner from repeatedly replacing the same durable
+/// terminal.
+#[allow(dead_code)] // Used by the disabled accepted-terminal recovery owner.
+pub(crate) fn restored_terminal_failure_kind(
+    frame: &ExecutionOutputFrameV1,
+) -> Option<RuntimeFailureKind> {
+    if !frame.terminal {
+        return None;
+    }
+    let execution_output_frame_v1::Payload::RuntimeError(error) = frame.payload.as_ref()? else {
+        return None;
+    };
+    canonical_runtime_failure(error)
+}
+
 fn validate_restored_frame_identity(
     verified: &VerifiedAgentCommand,
     frame: &ExecutionOutputFrameV1,

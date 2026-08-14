@@ -856,6 +856,14 @@ impl DurablyAckedTerminal {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_acknowledged_terminal(
+    verified: &VerifiedAgentCommand,
+    frame: &ExecutionOutputFrameV1,
+) -> Result<DurablyAckedTerminal, OutputGrpcError> {
+    PendingTerminalSettlement::new(verified, frame).map(PendingTerminalSettlement::into_acked)
+}
+
 impl OutputGrpcSession {
     /// Open the bounded stream, validate bootstrap credit, and replay the
     /// encrypted spool before returning admission to the caller.

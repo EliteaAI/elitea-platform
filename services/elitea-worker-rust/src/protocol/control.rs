@@ -384,9 +384,24 @@ struct RecoveryClaimBinding {
 /// Unlike [`AcceptedAgentClaim`], this type has no Begin or input path. The
 /// next recovery coordinator may consume it only into supervised lease and
 /// terminal-output operations.
+#[allow(dead_code)] // Consumed by the disabled terminal-recovery coordinator.
 pub(crate) struct AcceptedTerminalClaimRecovery {
-    #[allow(dead_code)] // Consumed by the next exact terminal replay slice.
     binding: RecoveryClaimBinding,
+}
+
+impl AcceptedTerminalClaimRecovery {
+    /// Consume terminal-only recovery authority into the unique lease handle
+    /// used while the exact durable frame is replayed and settled.
+    #[allow(dead_code)] // Consumed by the disabled terminal-recovery coordinator.
+    pub(crate) fn into_lease_handle(self) -> ClaimLeaseHandle {
+        ClaimLeaseHandle {
+            identity: self.binding.identity,
+            fence: self.binding.fence,
+            claim_id: self.binding.claim_id,
+            lease_expires_at_unix_millis: self.binding.lease_expires_at_unix_millis,
+            renewal_sequence: 0,
+        }
+    }
 }
 
 /// Input-free authority for exact durable output recovery under an active
@@ -723,6 +738,15 @@ pub(crate) fn test_lease_starting_execution(
         claim: execution.claim,
         lease,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_terminal_claim_recovery(
+    lease_expires_at_unix_millis: i64,
+) -> AcceptedTerminalClaimRecovery {
+    let mut execution = test_lease_monitored_input_execution(1, [0x61; 32]);
+    execution.claim.lease_expires_at_unix_millis = lease_expires_at_unix_millis;
+    execution.claim.into_terminal_recovery()
 }
 
 /// Recovery-only state proving `BeginExecution` reported prior possible work.
