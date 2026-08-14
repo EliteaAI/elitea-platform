@@ -143,7 +143,8 @@ const adminConfigKeys = {
  * this deployment cannot serve — and collapsing them into "Failed to save" would
  * discard the only sentence that says which.
  *
- * A 401/403 does not arrive here: `shared/api/http.ts` routes both into the
+ * A 401 does not arrive here (a 403 does, since issue 93):
+ * `shared/api/http.ts` routes a 401 into the
  * single-flight re-auth path and reports `kind: 'auth'`, which carries no body.
  */
 export function configFailureReason(error: unknown): string | undefined {

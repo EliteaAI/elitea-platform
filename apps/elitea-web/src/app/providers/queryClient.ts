@@ -50,8 +50,9 @@ export const QUERY_DEFAULT_OPTIONS: DefaultOptions = {
     gcTime: 5 * 60_000,
     /**
      * 1, not the library default of 3. `shared/api/http.ts` (unit F4) already
-     * resolves any 401/403 through its own single-flight re-auth before a
-     * query's promise ever settles (§5.4) — by the time a query's promise
+     * resolves any 401 through its own single-flight re-auth before a
+     * query's promise ever settles (§5.4; a 403 is an authorization refusal
+     * and deliberately settles straight away) — by the time a query's promise
      * rejects, F4 has already done everything it can about an auth failure,
      * so a query-level retry only fires for a genuine network error or a
      * non-auth 5xx. The library default's 3 attempts with exponential

@@ -250,16 +250,17 @@ describe('AdminSchedulesTasks — the listing', () => {
     expect(alert).toHaveTextContent('failed to read schedules');
   });
 
-  it('falls back to the generic notice on a 403, which carries no body', async () => {
-    // Not a shortfall of this page: `shared/api/http.ts` routes 401/403 into the
-    // single-flight re-auth path and reports `kind: 'auth'`, which has no body
-    // to quote. Pinned so a later change to that classification is visible here
-    // rather than silently turning a refusal into an unexplained failure.
+  it("quotes the server's explanation of a 403 rather than a generic failure", async () => {
+    // This pin fired, and the change it caught is the intended one (issue 93):
+    // `shared/api/http.ts` no longer escalates a 403 into the single-flight
+    // re-auth path, so a refusal now arrives as `kind: 'http'` WITH its body
+    // instead of as a body-less `kind: 'auth'`. Re-pinned the other way round —
+    // an operator refused this page is told why.
     listBody = () => HttpResponse.json({ error: 'permission denied' }, { status: 403 });
     renderAdminRoute(<AdminSchedulesTasks />);
 
     const alert = await screen.findByTestId('admin-schedules-unavailable');
-    expect(alert).toHaveTextContent('Failed to load schedules.');
+    expect(alert).toHaveTextContent('permission denied');
   });
 });
 

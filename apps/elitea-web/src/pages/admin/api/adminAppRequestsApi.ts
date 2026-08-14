@@ -108,7 +108,8 @@ const adminAppRequestsKeys = {
  * rendering "Failed to save" over all of them would hide the only sentence that
  * says which.
  *
- * A 401/403 does NOT arrive here, and that is the shared client's decision:
+ * A 401 does NOT arrive here (a 403 does, since issue 93), and that is the
+ * shared client's decision:
  * `shared/api/http.ts` routes both into the single-flight re-auth path and
  * reports `kind: 'auth'`, which carries no body.
  *
