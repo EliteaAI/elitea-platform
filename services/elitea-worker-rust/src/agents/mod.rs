@@ -1,11 +1,14 @@
 //! Language-neutral agent execution contracts.
 
+pub(crate) mod events;
 pub mod graph;
 pub mod protocol;
 pub mod request;
 pub mod result;
 pub(crate) mod runtime;
 
+#[cfg(test)]
+mod events_tests;
 #[cfg(test)]
 mod runtime_tests;
 
