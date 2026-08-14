@@ -82,6 +82,12 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
           fetch-depth: 0
           submodules: recursive # apps/elitea-ui is the pinned parity baseline
+          # This workflow CHECKS OUT AND EXECUTES the audited commit
+          # (`go run ./tools/uictl`) in the privileged default-branch context
+          # that workflow_run provides. Do not leave the job's token in the
+          # checkout's git config for that code to reach: the audit only reads
+          # the tree and never pushes, so it needs no credential at all.
+          persist-credentials: false
 
       - name: Identify the release under audit
         id: release
