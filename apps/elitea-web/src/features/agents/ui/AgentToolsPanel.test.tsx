@@ -91,6 +91,31 @@ function renderPanel({ readOnly = false, versionStatus = 'draft', onToolsChanged
   );
 }
 
+/**
+ * The same attached toolkit, with a tool list to pick from: `available_tools`
+ * rides in the joined toolkit blob (`config`) and `selected_tools` is a
+ * TOP-LEVEL wire field — see `lib/versionTools.ts`.
+ */
+const SELECTABLE_TOOL: VersionToolRef = {
+  ...ATTACHED_TOOL,
+  selected_tools: ['create_issue'],
+  config: { url: 'https://github.example', available_tools: ['create_issue', 'get_issue'] },
+};
+
+function renderPanelWithSelectableTools() {
+  return renderWithRouterAndProject(
+    <AgentToolsPanel
+      entity={{ applicationId: 42, versionId: 100, versionStatus: 'draft' }}
+      versionTools={[SELECTABLE_TOOL]}
+      dirty={false}
+      internalTools={{ value: [], onChange: vi.fn() }}
+      readOnly={false}
+      viewMode="owner"
+    />,
+    'proj-1',
+  );
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
   server.use(
@@ -162,6 +187,62 @@ describe('AgentToolsPanel', () => {
     // list until a manual reload: `ApplicationTools` rendered `ToolMenu` with
     // no `onToolsChanged` at all.
     await waitFor(() => expect(onToolsChanged).toHaveBeenCalled());
+  });
+
+  it('SELECTED TOOLS: checking a tool puts the full new list on the wire, on the relation route', async () => {
+    // #248. The panel used to write this straight into its in-memory mirror
+    // and stop there, so "the checkbox toggled" / "the card re-rendered" was
+    // true the whole time the edit was being discarded — the assertion has to
+    // be the REQUEST. The Go handler upserts the value into
+    // `entity_tool_mapping.selected_tools`, keyed on the presence of this
+    // exact key.
+    let body: Record<string, unknown> | undefined;
+    let params: Readonly<Record<string, string | readonly string[] | undefined>> | undefined;
+    server.use(relationMockHandler((b, p) => { body = b; params = p; }));
+    renderPanelWithSelectableTools();
+
+    fireEvent.click(await screen.findByTestId('base-card-body-toggle'));
+    fireEvent.click(await screen.findByText('Get issue'));
+
+    await waitFor(() =>
+      expect(body).toMatchObject({
+        entity_version_id: 100,
+        entity_id: 42,
+        entity_type: 'agent',
+        has_relation: true,
+        selected_tools: ['create_issue', 'get_issue'],
+      }),
+    );
+    // Same id space as attach/detach: `tool_id`, not the mapping row's `id`.
+    expect(params).toMatchObject({ projectId: 'proj-1', toolkitId: '77' });
+  });
+
+  it('SELECTED TOOLS: an ATTACH leaves the key OFF the wire, so it cannot wipe a saved selection', async () => {
+    // The absent-vs-empty rule, from the client side. The handler preserves a
+    // stored selection only for a request with no `selected_tools` key at all
+    // — a client that helpfully sent `selected_tools: []` here would erase the
+    // user's selection on every re-attach.
+    let body: Record<string, unknown> | undefined;
+    server.use(relationMockHandler((b) => { body = b; }));
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByTestId('agent-add-toolkit-button')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('agent-add-toolkit-button'));
+    fireEvent.click(await screen.findByText('Jira'));
+
+    await waitFor(() => expect(body).toMatchObject({ has_relation: true }));
+    expect(body).not.toHaveProperty('selected_tools');
+  });
+
+  it('offers NO per-tool variables control on any card', async () => {
+    // Composition-level companion to `AgentToolRow.test.tsx`'s own assertion
+    // (which supplies a tool that carries variables — nothing the server sends
+    // ever does, since `fetchVersionDetails` emits no `variables` key).
+    renderPanelWithSelectableTools();
+
+    expect(await screen.findByTestId('agent-toolkit-card')).toBeVisible();
+    expect(screen.queryByText('Show variables')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-variables')).not.toBeInTheDocument();
   });
 
   it('READ-ONLY view offers neither control: no attach menu, and remove is disabled', async () => {

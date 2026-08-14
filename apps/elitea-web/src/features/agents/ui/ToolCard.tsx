@@ -37,9 +37,18 @@ function renderStatusBanner(params: { isBlockedToolkit: boolean; someToolsAreUna
   return null;
 }
 
-/** Same reasoning as `renderStatusBanner`. */
-function renderVariablesPanel(params: { show: boolean; variables: AgentToolAssociation['variables']; onChangeVariable: (label: string, newValue: string) => void }): ReactNode {
-  if (!params.show) return null;
+/**
+ * Same reasoning as `renderStatusBanner`.
+ *
+ * `onChangeVariable` being absent means the caller WITHHELD the control
+ * (#248 — nothing on this backend can store per-tool variables; see
+ * `ToolCardProps.variables` and `AgentToolRow`'s module doc comment), so the
+ * panel is not rendered at all. Withheld and "collapsed" are handled by the
+ * same early return on purpose: the toggle that flips `show` is withheld too,
+ * so `show` can never become true without a caller.
+ */
+function renderVariablesPanel(params: { show: boolean; variables: AgentToolAssociation['variables']; onChangeVariable: ((label: string, newValue: string) => void) | undefined }): ReactNode {
+  if (!params.show || !params.onChangeVariable) return null;
   return (
     <AgentVariables
       variables={params.variables}
@@ -110,6 +119,13 @@ export function ToolCard({ tool, disabled, isDuplicate = false, context, icon, d
   const onClickShowActions = useCallback(() => setShowActions((prev) => !prev), []);
   const onToggleVariables = useCallback(() => setShowVariables((prev) => !prev), []);
 
+  /**
+   * The variables control is offered only when a caller supplied a way to
+   * persist an edit to it (#248) AND the tool actually carries variables. No
+   * caller supplies one today — see `ToolCardProps.variables`.
+   */
+  const showVariablesToggle = variables !== undefined && view.hasVariables;
+
   const onOpenInNewTab = useCallback(() => {
     const url = buildOpenInNewTabUrl({
       isAgentOrPipeline: view.isAgentOrPipeline,
@@ -144,7 +160,7 @@ export function ToolCard({ tool, disabled, isDuplicate = false, context, icon, d
           data-testid="agent-toolkit-card"
           sx={cardContainerSx(showActions, showVariables, isDuplicate)}
         >
-          <Box sx={cardHeaderSx(showActions, showVariables, view.hasVariables)}>
+          <Box sx={cardHeaderSx(showActions, showVariables, showVariablesToggle)}>
             <EntityIcon
               sx={entityIconSx}
               imageSx={entityIconImageSx}
@@ -158,6 +174,7 @@ export function ToolCard({ tool, disabled, isDuplicate = false, context, icon, d
               isAgentOrPipeline={view.isAgentOrPipeline}
               versionSelector={versionSelector}
               disabled={disabled}
+              showVariablesToggle={showVariablesToggle}
               showVariables={showVariables}
               onToggleVariables={onToggleVariables}
               showActions={showActions}
@@ -179,7 +196,7 @@ export function ToolCard({ tool, disabled, isDuplicate = false, context, icon, d
             />
           </Box>
           {renderStatusBanner({ isBlockedToolkit: view.isBlockedToolkit, someToolsAreUnavailable, hasValidationIssue: view.hasValidationIssue, showActions, toolType: tool.type })}
-          {renderVariablesPanel({ show: showVariables, variables: tool.variables, onChangeVariable: variables.onChangeVariable })}
+          {renderVariablesPanel({ show: showVariables, variables: tool.variables, onChangeVariable: variables?.onChangeVariable })}
           <EnhancedCardToolActions
             toolOptions={toolOptions}
             selectedTools={view.selectedTools}

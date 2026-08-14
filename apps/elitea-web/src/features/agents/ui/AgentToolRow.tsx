@@ -3,7 +3,7 @@ import { useCallback } from 'react';
 
 import { useDisassociateToolkit } from '../lib/hooks/useDisassociateToolkit.hooks';
 import type { ToolRemovalUpdate } from '../lib/hooks/useDisassociateToolkit.hooks';
-import { useSaveAgentToolVariables } from '../lib/hooks/useSaveAgentToolVariables';
+import { useSaveSelectedTools } from '../lib/hooks/useSaveSelectedTools.hooks';
 import type { AgentToolAssociation } from '../lib/types';
 
 import { ToolCard } from './ToolCard';
@@ -35,20 +35,32 @@ import { ToolCard } from './ToolCard';
  *  - `delegatedAuth` — `features/mcps`/`features/sharepoint`/`features/openapi`
  *    slots; `no-sideways-features` forbids reaching them from here, and a
  *    page-level composition would have to inject them.
+ *  - **`variables` — WITHHELD ON PURPOSE (#248), and this is why `ToolCard`
+ *    renders no variables toggle and no variables panel for these rows.**
+ *    There is no per-tool variables column and no tool-variables table
+ *    anywhere in the schema: `p_{id}.entity_tool_mapping` is
+ *    `(id, entity_version_id, entity_id, entity_type, tool_id,
+ *    selected_tools, created_at, updated_at)` and nothing else stores them,
+ *    `applications`' `UpdateVersion` has no `tools` branch, and
+ *    `fetchVersionDetails` emits no `variables` key on a tool row either — so
+ *    the values could be neither written nor read back. An editable field
+ *    that accepts input and discards it is precisely the defect class this
+ *    change removes, so the control is not offered at all rather than offered
+ *    and disabled: the legacy baseline
+ *    (`EliteaUI/src/pages/Applications/Components/Tools/ToolCard.jsx:453-473`)
+ *    gates that toggle on `hasVariables` alone and simply omits it when there
+ *    is nothing behind it, and the conversation-starters port established
+ *    hide-not-disable as this port's convention for the same situation.
+ *    Restoring it means adding storage first — and then a caller passing
+ *    `ToolCard`'s still-supported `variables` prop group.
  *
- * **`variables.onChangeVariable`/`toolSelection.onSelectedToolsChange` write
- * to the caller's in-memory `tools[]` only — they do NOT persist.** The Go
- * `UpdateVersion` handler (`applications/handler.go`) reads `name`/
- * `instructions`/`welcome_message`/`agent_type`/`llm_settings`/
- * `conversation_starters`/`meta`/`pipeline_settings` and has NO `tools`
- * branch, and the relation PATCH that does own the mapping row ignores
- * `selected_tools` on insert. Attach and detach (this row's Remove button and
- * the panel's `ToolMenu`) are the two tool operations that genuinely reach
- * the database; per-tool variables and per-tool selected-tools have no write
- * path on this backend at all. Both are left wired to local state rather than
- * silently dropped so the values still round-trip within a session — the
- * missing endpoint is a backend gap, tracked separately, not something this
- * composition can close.
+ * **`toolSelection.onSelectedToolsChange` DOES persist (#248).** It updates
+ * the panel's in-memory `tools[]` mirror AND issues the relation PATCH with
+ * the full new list, which the Go handler now writes to
+ * `entity_tool_mapping.selected_tools` (upserting on `_entity_tool_unique`)
+ * and `fetchVersionDetails` reads straight back into
+ * `version_details.tools[].selected_tools`. Like attach and detach, it does
+ * not go through the page's Save button — see `useSaveSelectedTools.hooks.ts`.
  */
 /** Structural only — a caller builds this inline against `AgentToolRowProps`; un-exported so knip does not flag an unused named export (the `ToolCardIcon` precedent in `ToolCard.types.ts`). */
 interface AgentToolRowEntity {
@@ -97,10 +109,13 @@ export function AgentToolRow({ tool, index, isDuplicate, disabled, viewMode, ent
     // would be dead wiring, which this codebase has been bitten by repeatedly.
   });
 
-  const { onChangeVariable } = useSaveAgentToolVariables({
+  const { onSelectedToolsChange } = useSaveSelectedTools({
     tool,
+    index,
+    applicationId: entity.applicationId,
+    versionId: entity.versionId,
     tools: toolsState.tools,
-    onChangeTools: toolsState.onToolsChange,
+    onToolsChange: toolsState.onToolsChange,
   });
 
   const handleDisassociate = useCallback(
@@ -108,17 +123,6 @@ export function AgentToolRow({ tool, index, isDuplicate, disabled, viewMode, ent
       void onDisassociateTool({ tool, isAttachmentToolkit });
     },
     [onDisassociateTool, tool],
-  );
-
-  const onSelectedToolsChange = useCallback(
-    (newSelectedTools: readonly string[]) => {
-      toolsState.onToolsChange(
-        toolsState.tools.map((entry, entryIndex) =>
-          entryIndex === index ? { ...entry, settings: { ...entry.settings, selected_tools: newSelectedTools } } : entry,
-        ),
-      );
-    },
-    [index, toolsState],
   );
 
   return (
@@ -134,7 +138,6 @@ export function AgentToolRow({ tool, index, isDuplicate, disabled, viewMode, ent
       }}
       icon={{ url: tool.icon_meta?.url }}
       disassociate={{ onDisassociateTool: handleDisassociate, isDisassociating: isLoading }}
-      variables={{ onChangeVariable }}
       toolSelection={{ onSelectedToolsChange }}
     />
   );

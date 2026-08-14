@@ -13,13 +13,22 @@ import type { AgentToolAssociation } from './types';
  * Go side (`internal/api/v2/toolkits/handler.go`'s `Update` ->
  * `updateToolRelation`, read directly, not inferred):
  *  - `has_relation: true`  -> `INSERT INTO p_{id}.entity_tool_mapping
- *    (entity_version_id, entity_id, entity_type, tool_id) ... ON CONFLICT DO
- *    NOTHING`
+ *    (entity_version_id, entity_id, entity_type, tool_id[, selected_tools])
+ *    ... ON CONFLICT (entity_version_id, tool_id, entity_type)`, `DO NOTHING`
+ *    without a `selected_tools` key and `DO UPDATE SET selected_tools` with
+ *    one (#248)
  *  - `has_relation: false` -> `DELETE FROM p_{id}.entity_tool_mapping WHERE
  *    entity_version_id = $1 AND tool_id = $2`
  * and `applications/handler.go`'s `fetchVersionDetails` reads that same
  * table back into `version_details.tools[]`, so both directions genuinely
  * round-trip.
+ *
+ * **ABSENT vs EMPTY `selected_tools`.** The key is put on the wire only when
+ * the caller passes one, and the handler keys on its PRESENCE, not its
+ * length: an attach says nothing about the selection and must not wipe a
+ * saved one, while `[]` ("I unchecked the last tool") is a real edit that
+ * has to land. `selectedTools: []` and `selectedTools: undefined` are
+ * therefore two DIFFERENT requests — do not collapse them with `?? []`.
  *
  * **The URL's `{toolkit_id}` is `elitea_tools.id`, i.e. the version tool
  * row's `tool_id` — NOT its `id`.** `fetchVersionDetails` emits `id` =
@@ -35,6 +44,8 @@ export interface ToolkitRelationParams {
   /** `elitea_tools.id` — use {@link resolveToolkitId} when starting from a version's `tools[]` row. */
   readonly toolkitId: string | number;
   readonly hasRelation: boolean;
+  /** The FULL resulting `selected_tools` list. Omit it (do not pass `[]`) when the request is not about the selection — see the module doc comment. Ignored when `hasRelation` is false. */
+  readonly selectedTools?: readonly string[] | undefined;
 }
 
 /** Rejects (does not resolve `false`) on failure — `eliteaFetch` throws `EliteaApiError`; callers that want a boolean wrap it themselves. */
@@ -44,6 +55,7 @@ export async function setToolkitRelation({
   versionId,
   toolkitId,
   hasRelation,
+  selectedTools,
 }: ToolkitRelationParams): Promise<void> {
   await eliteaFetch(`/elitea_core/tool/prompt_lib/${projectId}/${toolkitId}`, {
     method: 'PATCH',
@@ -61,6 +73,11 @@ export async function setToolkitRelation({
       // this literal or a detach silently matches nothing.
       entity_type: 'agent',
       has_relation: hasRelation,
+      // Presence is the signal; see the module doc comment. A spread of an
+      // empty object is what keeps the key OFF the wire entirely rather than
+      // sending `"selected_tools": null`, which the handler would also have
+      // to treat as absent.
+      ...(selectedTools === undefined ? {} : { selected_tools: selectedTools }),
     }),
   });
 }

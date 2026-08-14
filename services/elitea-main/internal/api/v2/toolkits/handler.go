@@ -734,9 +734,17 @@ func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, pro
 	}
 
 	if hasRelation {
-		q := fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id) VALUES ($1, $2, $3, $4) ON CONFLICT (entity_version_id, tool_id, entity_type) DO NOTHING`, s)
-		_, err := h.pool.Exec(ctx, q, entityVersionID, entityID, entityType, toolID)
+		selectedTools, hasSelectedTools, err := selectedToolsPayload(body)
 		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		q := selectedToolsRelationInsertSQL(s, hasSelectedTools)
+		args := []any{entityVersionID, entityID, entityType, toolID}
+		if hasSelectedTools {
+			args = append(args, selectedTools)
+		}
+		if _, err := h.pool.Exec(ctx, q, args...); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -749,6 +757,67 @@ func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, pro
 		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"message": "ok"})
+}
+
+// selectedToolsPayload reads the per-mapping `selected_tools` list off the
+// relation request body.
+//
+// ABSENT vs EMPTY, deliberately distinguished (#248). The same body serves two
+// different intents on this one route:
+//
+//   - An ATTACH (`ToolMenu`, and the import/clone paths) sends no
+//     `selected_tools` key at all — it has nothing to say about the selection.
+//     Treating that as "select nothing" would wipe a selection the user saved
+//     earlier, every time the toolkit was re-attached or the same mapping was
+//     touched for any other reason.
+//   - A SELECTION EDIT sends the full resulting list, and `[]` ("I unchecked
+//     the last tool") is a meaningful value that must be stored.
+//
+// So presence of the key — not its length — decides whether the column is
+// written, exactly the distinction `applications.replaceVersionVariables`'
+// callers already draw (`hasVariables` on the update path vs `len(...) > 0` on
+// the create path). A JSON `null` is treated as absent for the same reason: it
+// carries no list.
+//
+// The value must be a JSON array of strings. Anything else is rejected rather
+// than coerced: the column is read back verbatim by
+// `applications.fetchVersionDetails` into `version_details.tools[].selected_tools`,
+// and the UI indexes it as a string list.
+func selectedToolsPayload(body map[string]any) ([]byte, bool, error) {
+	raw, present := body["selected_tools"]
+	if !present || raw == nil {
+		return nil, false, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, false, fmt.Errorf("selected_tools must be an array of tool names")
+	}
+	names := make([]string, 0, len(list))
+	for _, entry := range list {
+		name, ok := entry.(string)
+		if !ok {
+			return nil, false, fmt.Errorf("selected_tools must be an array of tool names")
+		}
+		names = append(names, name)
+	}
+	encoded, err := json.Marshal(names)
+	if err != nil {
+		return nil, false, fmt.Errorf("selected_tools must be an array of tool names")
+	}
+	return encoded, true, nil
+}
+
+// selectedToolsRelationInsertSQL builds the attach statement. `_entity_tool_unique
+// (entity_version_id, tool_id, entity_type)` is the upsert target, so a selection
+// edit on an ALREADY-attached toolkit (the only way the UI ever sends the key)
+// updates the existing mapping row instead of conflicting into a no-op — the
+// bug this whole branch removes: the previous statement was an unconditional
+// `DO NOTHING` and never named `selected_tools` at all.
+func selectedToolsRelationInsertSQL(schema string, withSelectedTools bool) string {
+	if !withSelectedTools {
+		return fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id) VALUES ($1, $2, $3, $4) ON CONFLICT (entity_version_id, tool_id, entity_type) DO NOTHING`, schema)
+	}
+	return fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools) VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT (entity_version_id, tool_id, entity_type) DO UPDATE SET selected_tools = EXCLUDED.selected_tools, updated_at = now()`, schema)
 }
 
 // Delete removes a toolkit instance.
