@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -409,6 +410,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	// the repository — in one transaction. An application with no version row
 	// is invisible to List (which INNER JOINs application_versions) and cannot
 	// be opened in the agent editor, so a half-created agent must not commit.
+	var initialVariables []any
 	if versions, ok := body["versions"].([]any); ok && len(versions) > 0 {
 		if vBody, ok := versions[0].(map[string]any); ok {
 			// Validate model_project_id if llm_settings provided
@@ -422,6 +424,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			req.InitialVersion = versionFromBody(vBody, ownerID)
+			initialVariables, _ = vBody["variables"].([]any)
 		}
 	}
 
@@ -429,6 +432,36 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		apierr.Write(w, err)
 		return
+	}
+
+	// #307, create half — versionFromBody folds `variables` into `meta`, and
+	// that is all the create paths did, so an agent created WITH variables
+	// answered 201 with them echoed back (the echo is built from `meta`) and
+	// then read back empty forever: the READ path (fetchVersionDetails, which
+	// serves the editor's own reload) SELECTs `application_variables` and
+	// ignores `meta`. The rows must be written after repo.Create, not before —
+	// application_variables.application_version_id REFERENCES
+	// application_versions(id) (migrations/001_initial.sql), so the version row
+	// has to exist first, and the repository owns that insert in its own
+	// transaction which this handler cannot join.
+	//
+	// That ordering means the variable write can fail with a version already
+	// committed. The application is deleted rather than returning a 500 over a
+	// surviving half-created agent: the same rule the InitialVersion comment
+	// above states for a missing version row, and the FK's ON DELETE CASCADE
+	// takes any rows that did land with it. A create the caller was told
+	// failed must leave nothing behind for them to find in the list.
+	if len(initialVariables) > 0 && len(app.Versions) > 0 {
+		if err := h.replaceVersionVariables(r.Context(), projectID, app.Versions[0].ID, initialVariables); err != nil {
+			if delErr := h.repo.Delete(r.Context(), projectID, app.ID); delErr != nil {
+				// Nothing left to do for the caller — they get the failure
+				// either way — but a stranded agent is worth a trail.
+				slog.ErrorContext(r.Context(), "rollback of a half-created application failed",
+					"application_id", app.ID, "err", delErr)
+			}
+			apierr.Write(w, err)
+			return
+		}
 	}
 
 	resp := map[string]any{
@@ -758,6 +791,27 @@ func (h *Handler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		apierr.Write(w, err)
 		return
+	}
+
+	// #307, the other create entry point ("save as a new version"). Same fold,
+	// same gap, same ordering constraint as Create: the version row has to
+	// exist before anything can reference it, so the rows go in afterwards and
+	// a failure is undone by deleting the version that was just made. Unlike
+	// Create there is no application to remove — the application predates this
+	// request and keeps its other versions.
+	//
+	// Note this handler does NOT validate the project id itself; it relies on
+	// replaceVersionVariables' own tenantSchema check, which is why that helper
+	// returns a BadRequest rather than assuming a caller already screened it.
+	if variables, _ := body["variables"].([]any); len(variables) > 0 {
+		if err := h.replaceVersionVariables(r.Context(), projectID, ver.ID, variables); err != nil {
+			if delErr := h.repo.DeleteVersion(r.Context(), projectID, applicationID, ver.ID); delErr != nil {
+				slog.ErrorContext(r.Context(), "rollback of a half-created version failed",
+					"application_id", applicationID, "version_id", ver.ID, "err", delErr)
+			}
+			apierr.Write(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, userID))
 }
