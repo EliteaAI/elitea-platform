@@ -183,6 +183,7 @@ func (s *Service) List(ctx context.Context, request Request) ([]Item, error) {
 		decodeCurrentNestedJSON(metadata, "index_configuration")
 		decodeCurrentNestedJSON(metadata, "history")
 		markCurrentFirstHistoryEntryCreated(metadata)
+		omitCurrentHistoryChunkingConfig(metadata)
 		stale, err := currentIndexIsStale(metadata, now, timeout)
 		if err != nil {
 			return nil, ErrCurrentIndexMetaInvalid
@@ -387,6 +388,63 @@ func markCurrentFirstHistoryEntryCreated(metadata map[string]any) {
 		return
 	}
 	first["state"] = "created"
+}
+
+// omitCurrentHistoryChunkingConfig drops the chunking configuration from the
+// per-run history entries of one list element. Each entry is a full clone of
+// the top level, so the SDK's ~3.4 KB default chunking_config is repeated once
+// per run and is what made this response grow linearly (issue #297). Nothing
+// reads it from a history entry: reindex, the edit form and the scheduler all
+// take the top-level index_configuration, which stays whole here, and the
+// exact (detail) read still returns every entry verbatim. Persisted history is
+// untouched, exactly like the created-marker repair above.
+func omitCurrentHistoryChunkingConfig(metadata map[string]any) {
+	history, ok := metadata["history"].([]any)
+	if !ok {
+		return
+	}
+	for _, value := range history {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch configuration := entry["index_configuration"].(type) {
+		case map[string]any:
+			delete(configuration, "chunking_config")
+		case string:
+			// Rows written by the earlier Python path nest this object as a
+			// JSON string. Keep that shape so callers see the same type.
+			trimmed, ok := currentConfigurationWithoutChunking(configuration)
+			if ok {
+				entry["index_configuration"] = trimmed
+			}
+		}
+	}
+}
+
+func currentConfigurationWithoutChunking(encoded string) (string, bool) {
+	if len(encoded) > MaxCurrentIndexMetaMetadataBytes {
+		return "", false
+	}
+	configuration := map[string]any{}
+	decoder := json.NewDecoder(strings.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&configuration); err != nil || configuration == nil {
+		return "", false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return "", false
+	}
+	if _, present := configuration["chunking_config"]; !present {
+		return "", false
+	}
+	delete(configuration, "chunking_config")
+	trimmed, err := json.Marshal(configuration)
+	if err != nil {
+		return "", false
+	}
+	return string(trimmed), true
 }
 
 func currentHistoryEntriesHaveSameRun(first, second map[string]any) bool {
