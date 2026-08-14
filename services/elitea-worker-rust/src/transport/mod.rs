@@ -5,6 +5,7 @@ mod input_content_tests;
 pub mod output_grpc;
 mod output_session;
 pub mod redis_commands;
+pub mod redis_streams;
 
 pub use control_grpc::{
     ControlGrpcClient, ControlGrpcConfig, ControlGrpcError, ControlRpc, TonicControlRpc,

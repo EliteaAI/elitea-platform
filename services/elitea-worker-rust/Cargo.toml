@@ -15,7 +15,9 @@ http = "=1.5.0"
 http-body-util = "=0.1.5"
 percent-encoding = "=2.3.2"
 prost = "=0.14.3"
+redis = { version = "=1.4.1", default-features = false, features = ["streams", "tokio-comp"] }
 ring = "=0.17.14"
+rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std"] }
 rustix = { version = "=1.1.4", features = ["fs", "process"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["arbitrary_precision", "raw_value"] }
@@ -23,7 +25,8 @@ serde_yaml_ng = "=0.10.0"
 sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "chrono"] }
 subtle = "=2.6.1"
 thiserror = "=2.0.20"
-tokio = { version = "=1.53.1", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring"] }
 tokio-stream = "=0.1.19"
 tonic = { version = "=0.14.2", features = ["tls-ring"] }
 tonic-prost = "=0.14.2"

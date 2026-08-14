@@ -109,6 +109,16 @@ impl RedisCommandDelivery {
     pub fn signed_envelope(&self) -> &[u8] {
         &self.signed_envelope
     }
+
+    #[must_use]
+    pub fn stream(&self) -> &str {
+        &self.stream
+    }
+
+    #[must_use]
+    pub fn entry_id(&self) -> &str {
+        &self.entry_id
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -365,7 +375,7 @@ impl<C: RedisRetirementClient> RedisCommandRetirer<C> {
     }
 }
 
-fn decode_entry_id(value: &[u8]) -> Result<String, RedisCommandError> {
+pub(super) fn decode_entry_id(value: &[u8]) -> Result<String, RedisCommandError> {
     let value = std::str::from_utf8(value).map_err(|_| {
         RedisCommandError::InvalidInput("the Redis command entry identity is malformed")
     })?;

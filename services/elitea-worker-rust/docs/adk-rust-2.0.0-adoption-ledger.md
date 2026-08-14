@@ -38,7 +38,7 @@ passing upstream test does not register a production worker capability.
 | Managed runtime | Optional `managed-runtime` exposes another lifecycle abstraction | Defer | Main plus the worker delivery coordinator remain the only execution authority. Revisit only as an internal adapter after proving it cannot duplicate claims, settlement or recovery |
 | Semantic memory | Optional memory service and database/Redis/SQLite backends | Defer and wrap | Define tenant/project/agent namespace, consent, retention, deletion, embedding/provider and poisoning policy before enabling global agent or graph memory |
 | Realtime/voice | Optional realtime runner and transport/provider features | Defer and wrap | Map current voice/ASR/TTS session behavior, cancellation, quotas and `NodeEventV1`/media boundaries first; do not enable the enterprise preset |
-| Redis | ADK offers optional execution-state backends | Do not substitute | Elitea Redis Streams still own command intake, PEL reclaim/heartbeat and exact post-settlement retirement. A later memory/session Redis backend must use separate keys and failure semantics |
+| Redis | ADK offers optional execution-state backends | Do not substitute | The restricted redis-rs transport now owns Elitea command intake, PEL reclaim/heartbeat and exact post-settlement retirement. The worker serve loop/reconnect system test remains. A later memory/session Redis backend must use separate keys and failure semantics |
 
 ## Parallel node decision
 

@@ -274,10 +274,22 @@ alone.
 
 Redis is still required for the Elitea worker. Redis Streams own durable command
 intake, pending-entry reclaim/heartbeat and the final atomic `XACK` + `XDEL` +
-delivery-index removal. The already implemented strict delivery decoder and
-retirement authority are only the contract boundary; a TLS/ACL client, stream
-consumer/reclaimer and restricted Lua effect still require component and
-restart proof.
+delivery-index removal. The Rust worker now has the concrete restricted
+redis-rs 1.4.1 transport: one blocking-intake connection, one bounded control
+connection, RESP2, a TLS-1.3-only Rustls profile with the exact private CA and
+client identity, one command attempt, and no hidden reconnect policy. Its only
+Lua surfaces are the fixed owned-Pending heartbeat and exact retirement
+scripts; no `XADD`, group creation, arbitrary ACK/delete or general Redis API is
+exported.
+
+The remaining production proof is composition rather than another client
+abstraction: a fair bounded serve loop must interleave new intake and Redis 7
+reclaim, heartbeat queued and running ownership, reconnect only at the outer
+attempt boundary, and drain on shutdown. A real TLS/ACL Redis 7 component must
+exercise response-loss/reclaim/retirement. redis-rs allocates the complete RESP
+frame before Rust's semantic bounds run, so the dedicated ACL plane and Main's
+producer capacity gate remain mandatory; a pre-allocation parser limit is a
+recorded defense-in-depth gate.
 
 ADK graph/session Redis features are optional execution-state backends and do
 not replace that delivery transport. They are not enabled in the current
