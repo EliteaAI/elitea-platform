@@ -29,7 +29,7 @@ type governanceQuerier interface {
 }
 
 // GovernanceRow is one authored governance definition in the global
-// gateway.governance_config table (see gateway_migrations/002_governance_config.sql).
+// gateway.governance_config table (see migrations/shared/0067_gateway_budget_schema.sql).
 // The JSONB `Data` payload carries the entity-specific fields the schema-driven
 // admin form produces and the gateway GovernanceStore consumes.
 type GovernanceRow struct {

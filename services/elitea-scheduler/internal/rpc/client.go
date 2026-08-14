@@ -31,13 +31,31 @@ func New(rdb *redis.Client, channel string, hmacKey string) *Client {
 }
 
 // Call dispatches an RPC function call to pylon via Redis pub/sub.
-// kwargs are passed as the payload dict. Fire-and-forget: no reply expected.
-func (c *Client) Call(ctx context.Context, funcName string, kwargs map[string]any) error {
+// kwargs are passed as the payload dict. No reply is expected — but the call is
+// NOT "fire and forget", and the difference is the whole point of the returned
+// count.
+//
+// Redis PUBLISH answers with the number of clients the message was delivered to
+// (https://redis.io/docs/latest/commands/publish/). With zero subscribers that
+// is 0 and the command still succeeds, so `err == nil` says only that Redis
+// accepted the bytes — never that anything will act on them. `elitea_rpc` is
+// consumed by legacy Pylon and by nothing in this repository (issue #305), so
+// on a Go-only stack every dispatch lands in an empty room and reports success.
+//
+// Returning the receiver count lets the caller tell "delivered to a consumer"
+// from "delivered to nobody" instead of treating both as done. The count is a
+// lower bound on what will actually run — a subscriber can still crash before
+// handling the payload — but a ZERO is proof that nothing did.
+func (c *Client) Call(ctx context.Context, funcName string, kwargs map[string]any) (int64, error) {
 	data, err := c.encodeMessage(funcName, kwargs)
 	if err != nil {
-		return fmt.Errorf("rpc: encode: %w", err)
+		return 0, fmt.Errorf("rpc: encode: %w", err)
 	}
-	return c.rdb.Publish(ctx, c.channel, data).Err()
+	receivers, err := c.rdb.Publish(ctx, c.channel, data).Result()
+	if err != nil {
+		return 0, err
+	}
+	return receivers, nil
 }
 
 // encodeMessage builds the arbiter wire format:

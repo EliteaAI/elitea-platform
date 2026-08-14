@@ -107,19 +107,39 @@ export default defineConfig({
         'src/**/*.stories.tsx',
         'src/**/*.d.ts',
         'src/shared/api/generated/**', // generated: covered by contract tests, not line coverage
-        'src/shared/api/sse.ts', //       no consumer at ship (§5.6); REMOVE this line when one lands
+        // `src/shared/api/sse.ts` used to be excluded here. It was removed
+        // (issue #309, Gate 3) and removing it excluded nothing further: the
+        // module became the DIRECTORY src/shared/api/sse/, so the glob had
+        // stopped matching any file at all — an exclusion that reads as a live
+        // waiver while covering nothing, which is worse than either state.
+        // scripts/check-ci-dormancy.mjs now fails on a zero-match exclusion.
         // Deliberately unwired (knip.json's ignoreFiles has the same entry,
         // same reason): its target library (@mui/x-treeview) is not a
         // dependency of this app (spec §2.2/P1, "the file tree is hand-
         // rolled") -- REMOVE this line if that ever changes and something
         // actually wires it into mui-overrides/index.ts.
         'src/shared/brand/mui-overrides/MuiTreeItem.ts',
-        // Wave-2 C4 chat-messages unit — 45 files, not wired into any app
-        // consumer yet; `all:true` would count its 0% as dead weight (same
-        // rationale as sse.ts above). REMOVE when a real consumer imports it.
+        // Wave-2 C4 chat-messages unit. The original reason for this line —
+        // "not wired into any app consumer yet" — IS NO LONGER TRUE, and had
+        // not been for some time before issue #309 found it: ten modules now
+        // import it, among them processes/chat/ui/ChatWithEditors.hooks.ts and
+        // widgets/chat-box/**, i.e. the live chat message layer.
+        //
+        // It stays excluded for now because the unit is 69 files with 8 test
+        // files, and measuring it would drop the merged run under the 80% gate
+        // on its first PR — but it stays excluded as a DECLARED debt, not as a
+        // comment: scripts/check-ci-dormancy.mjs requires this entry to be
+        // listed in coverage-exclusions.json with an owner, an issue and a
+        // review-by date, and fails the build once that date passes. The
+        // stale-comment version of this waiver survived precisely because
+        // nothing could tell it had gone stale.
         'src/features/chat-messages/**',
         'src/test/**',
-        'src/**/__mocks__/**',
+        // `src/**/__mocks__/**` used to sit here. It matched no file either —
+        // this app has no __mocks__ directory anywhere; test doubles live under
+        // src/test/msw. Found by scripts/check-ci-dormancy.mjs on its first
+        // run, not by issue #309, which is the point of having the rule rather
+        // than a list of known-bad entries.
         'src/app/main.tsx',
         'src/routeTree.gen.ts',
       ],

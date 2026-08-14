@@ -66,8 +66,11 @@ on:
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web-e2e.yml"
-    tags:
-      - "v*"
+    # NO `tags: v*` — issue #309, Gate 2; see the identical note in ci-web.yml.
+    # A GITHUB_TOKEN-created tag starts no workflow run, so this arm has never
+    # fired. Both jobs below reach every PR, every push to main and
+    # workflow_dispatch on their own, which is what has actually been running
+    # them; removing the dead arm changes no execution, only the claim.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

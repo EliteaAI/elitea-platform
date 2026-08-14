@@ -41,8 +41,12 @@ on:
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web.yml"
-    tags:
-      - "v*"
+    # NO `tags: v*` — issue #309, Gate 2. publish.yml cuts release tags with
+    # `secrets.GITHUB_TOKEN`, and GitHub does not start workflow runs for refs
+    # created by GITHUB_TOKEN. Measured: `gh api .../actions/runs` returns zero
+    # runs on any `v1.*` ref, for any workflow. A tag trigger here was never a
+    # release gate, only the appearance of one.
+    # scripts/check-ci-dormancy.mjs fails the build if one is added back.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -240,6 +244,15 @@ jobs:
         run: npm ci
       - name: Run rule-layer self-test
         run: node scripts/check-gates-selftest.mjs
+
+      # Issue #309. Fails when a workflow declares a trigger or a step guard
+      # that can never fire (a `v*` tag cut by GITHUB_TOKEN starts no run), or
+      # when a coverage exclusion matches nothing or waives code that something
+      # imports without a dated, owned entry in scripts/coverage-exclusions.json.
+      # It reads .github/workflows, so it covers every workflow in the
+      # repository, not only this one.
+      - name: Gate-dormancy check (workflow triggers + coverage exclusions)
+        run: node scripts/check-ci-dormancy.mjs
 
   gate-script-coverage:
     name: Gate-script decision-logic coverage
@@ -714,10 +727,24 @@ jobs:
         run: |
           go run ./tools/uictl parity-routes --baseline apps/elitea-ui
           go run ./tools/uictl parity-manifest --validate
-      - name: Require-must parity (release/cutover gate)
+      - name: Require-must parity (cutover gate)
         # This release-readiness audit deliberately remains outside normal PR
         # validation until the migration register's priority:must items are
         # complete. Route + manifest parity above remains PR-blocking.
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/cutover/')
+        #
+        # The `refs/tags/v` half of this condition is GONE (issue #309, Gate 2)
+        # and its removal changes no behaviour, which is the point: publish.yml
+        # cuts tags with GITHUB_TOKEN, GitHub starts no run for such a ref, and
+        # measurement confirms zero runs on any `v1.*` ref. Written as a
+        # release gate, it was never one.
+        #
+        # It is NOT simply switched on for releases instead, and that is a
+        # decision rather than an omission: `uictl parity-manifest
+        # --require-must` currently exits 1 with "694 priority:must item(s) not
+        # verified" (measured on this branch). Wiring it into the release path
+        # today would make every release run red on a known, tracked backlog —
+        # a second kind of signal nobody can act on. `cutover/*` is a branch
+        # that really does fire, and is where the audit is meant to bite.
+        if: startsWith(github.ref, 'refs/heads/cutover/')
         working-directory: .
         run: go run ./tools/uictl parity-manifest --require-must

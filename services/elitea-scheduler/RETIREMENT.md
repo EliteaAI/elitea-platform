@@ -18,6 +18,25 @@ For the focused indexing transition:
 - the legacy Redis/Pylon scheduler must not be enabled as a fallback for a job
   registered in `elitea-main`.
 
+## Dispatch is only recorded when it is received
+
+The tick publishes to the `elitea_rpc` Redis channel, whose only consumer is
+legacy Pylon — no Go service in this repository subscribes to it. Redis
+`PUBLISH` to zero subscribers returns 0 and no error, so until issue #305 the
+scheduler stamped `centry.schedule.last_run` after every publish and a Go-only
+deployment recorded every due schedule as run while executing none of them. The
+healthier the schedule history looked, the more completely the product was
+broken.
+
+The scheduler now reads the subscriber count `PUBLISH` returns and **refuses to
+stamp `last_run` when it is zero**, logging at ERROR with the channel name. The
+row is left untouched rather than advanced, so the job is still due on the next
+tick and a consumer that was restarting picks it up instead of losing its
+window. The hybrid deployment, where Pylon subscribes, is unaffected — the count
+is at least 1 and the stamp happens as before. This note is not the guard; the
+guard is `internal/scheduler/dispatch_test.go`, which asserts the stored
+`last_run`, not that a publish happened.
+
 The price-catalog sync and budget write-back consumers currently sharing this
 binary are independent lifecycle responsibilities. They require an explicit
 relocation or retained-service decision before this image can be deleted. This

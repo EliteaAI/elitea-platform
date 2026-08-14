@@ -93,14 +93,14 @@ async function expectKpiRow(page: Page, k: Kpis): Promise<void> {
  * received, captured off the wire; the assertion is that every one of the
  * six KPI tiles displays that response's corresponding field.
  * ──────────────────────────────────────────────────────────────────────── */
-test('J24: settings: analytics overview renders the KPI values the backend returned', async ({ page }) => {
+test('J24: settings: analytics reports that the live backend has no usage source', async ({ page }) => {
   const usage = page.waitForResponse(
-    (r) => USAGE_RE.test(r.url()) && r.request().method() === 'GET' && r.status() === 200,
+    (r) => USAGE_RE.test(r.url()) && r.request().method() === 'GET',
     { timeout: 20_000 },
   );
 
   await page.goto(BASE_URL + '/app/settings/analytics');
-  const payload = (await (await usage).json()) as { kpis: Kpis; models: unknown[] };
+  const response = await usage;
 
   // Chrome that only the real container renders (AnalyticsContainer.tsx:159-236).
   // 15s, not the 5s default: the header's name comes from the selected-project
@@ -123,39 +123,58 @@ test('J24: settings: analytics overview renders the KPI values the backend retur
     await expect(page.getByRole('tab', { name: tab, exact: true })).toBeVisible();
   }
 
-  // The acceptance clause itself: dashboard values, derived from the response.
-  await expectKpiRow(page, payload.kpis);
+  // ── The acceptance clause, second half: "loading failures show an error
+  //    state instead of empty charts."
+  //
+  // This assertion used to be `expectKpiRow(page, payload.kpis)` against a 200.
+  // It passed, and what it proved was that six tiles displayed six numbers the
+  // backend had never computed: `Usage()` hardcoded `unique_users: 0`,
+  // `tool_runs: 0`, `chat_msgs: 0`, `adoption_rate: 0` and discarded the error
+  // from a repository whose every query named a table no migration creates
+  // (issue #303). The oracle was the response body, so a response of pure
+  // fabrication satisfied it exactly as well as real data would have.
+  //
+  // With the fabrication removed the live endpoint answers 500 and says why, so
+  // that is what this journey now pins. It is a STRICTER claim than the one it
+  // replaces: an all-zero dashboard is producible by a stub, by a broken query
+  // and by a genuinely idle project alike, whereas a 500 carrying a no-source
+  // detail is producible only by the handler actually consulting its repository
+  // and reporting what came back.
+  //
+  // The populated-dashboard rendering — tiles, leaderboard, K/M formatter,
+  // model table — is not lost: J24b below drives it with a crafted payload, and
+  // did so before this change too, precisely because every real value was 0.
+  expect(response.status()).toBe(500);
+  const failure = (await response.json()) as { error?: string; detail?: string };
+  expect(failure.detail ?? '').toContain('analytics: no data source');
 
-  await expect(page.getByText('Daily Activity', { exact: true })).toBeVisible();
-  await expect(page.getByText('Top 5 AI Adopters', { exact: true })).toBeVisible();
-  await expect(
-    page.getByText('Leaderboard by AI events (LLM + Tool + Agent)', { exact: true }),
-  ).toBeVisible();
-  // recharts mounts a real <svg class="recharts-surface"> for the Daily
-  // Activity area chart — present whether or not the series has points.
-  await expect(page.locator('.recharts-surface')).toHaveCount(1);
-  // `ModelUsageTable` returns null for an empty `models` array
-  // (ModelUsageTable.tsx:102), so its presence is a function of the payload.
-  await expect(page.getByText('Model Usage Breakdown', { exact: true })).toHaveCount(
-    payload.models.length === 0 ? 0 : 1,
-  );
+  // The UI's error branch (AnalyticsTabContent.tsx:119-130), not a blank panel
+  // and not zero tiles.
+  await expect(page.getByText('Failed to load analytics data.', { exact: true })).toBeVisible();
+  for (const label of ['TEAM', 'AI ACTIVE', 'LLM CALLS', 'TOOL RUNS', 'CHAT MSG', 'AGENT RUNS']) {
+    await expect(page.getByText(label, { exact: true })).toHaveCount(0);
+  }
+  await expect(page.locator('.recharts-surface')).toHaveCount(0);
 
   await checkA11y(page);
 });
 
 /* ────────────────────────────────────────────────────────────────────────
- * The live backend's `Usage()` handler returns an all-zero `kpis` and empty
- * `top_ai_users`/`daily_activity`/`models`
- * (`internal/api/v2/analytics/handler.go:37-64` hardcodes every field except
- * `llm_calls`/`agent_runs`/`total_tokens`/`total_cost`, and `usage_records`
- * is empty in the E2E stack). So the populated-dashboard branches — the
- * leaderboard rows, the `fmtNum` K/M abbreviation, the adoption badge, the
- * model table — are unreachable against real data today.
+ * The live backend cannot populate this dashboard: `usage_records` and
+ * `tool_usage_records` do not exist in the migration corpus (proven by
+ * services/elitea-main/migrations/analytics_tables_postgres_integration_test.go),
+ * and the figures those queries claimed to report have no producer anywhere
+ * in the platform — see the header of
+ * services/elitea-main/internal/infra/db/repos/analytics.go for which, and
+ * why repointing them is a product decision rather than a rewrite. So
+ * `Usage()` now answers 500 and J24 above pins that.
  *
- * They are reached here by serving one crafted response for the ONE usage
- * endpoint, which is also what proves the tiles are bound to the payload
- * rather than rendering hardcoded zeros: J24 above cannot tell those two
- * apart while every real value is 0.
+ * The populated-dashboard branches — the leaderboard rows, the `fmtNum` K/M
+ * abbreviation, the adoption badge, the model table — are therefore reachable
+ * only from a crafted response, which is what this test serves. That was
+ * already true before the handler stopped fabricating: every real value was 0,
+ * so J24 could never tell a payload-bound tile from a hardcoded one, and this
+ * test is what proves the binding.
  * ──────────────────────────────────────────────────────────────────────── */
 test('J24b: analytics tiles, leaderboard and model table are bound to the response payload', async ({ page }) => {
   const kpis: Kpis = {
