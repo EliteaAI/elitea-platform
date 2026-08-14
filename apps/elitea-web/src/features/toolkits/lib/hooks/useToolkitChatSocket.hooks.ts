@@ -31,27 +31,84 @@ import { useExecutionEvents, type ExecutionEventData } from '@/shared/api/sse';
 
 import { IndexStatuses } from '../../indexes/lib/constants/indexDetails.constants';
 import type { GenerateChatMessageBasedOnResponseParams, IndexChatMessage } from '../../indexes/lib/helpers/indexChat.helpers';
-import { generateChatMessageBasedOnResponse } from '../../indexes/lib/helpers/indexChat.helpers';
+import { generateChatMessageBasedOnResponse, generateMockMessageTemplate } from '../../indexes/lib/helpers/indexChat.helpers';
 import type { ToolkitChatMessage } from './useToolkitChat.types';
 
 /**
  * `index.ingest.completed`'s `status` -> this app's `IndexStatuses`.
- * Server side (`services/elitea-main/internal/infra/db/repos/
- * index_ingest_results.go`'s `indexReplayData` + `internal/application/
- * output/index_ingest.go`'s `IndexIngestStatus`): exactly `ok`,
- * `partly_indexed`, `error`. Anything else — including the artifact-shaped
- * projection that carries no `status` at all — settles as `completed`,
- * matching what the socket path reported for a run that simply ended.
+ *
+ * Server side, `indexReplayData` (`services/elitea-main/internal/infra/db/
+ * repos/index_ingest_results.go:613-645`) writes ONE OF TWO SHAPES, and they
+ * mean different things:
+ *
+ *  - the SUMMARY shape, `{status, message}`, whose `status` is the closed set
+ *    `ok` | `partly_indexed` | `error` (`internal/application/output/
+ *    index_ingest.go:118-122`);
+ *  - the ARTIFACT shape, `{artifact_id, immutable_version, media_type,
+ *    byte_length, digest, classification}`, which carries NO `status` key —
+ *    the reference type has no outcome field at all, and the projection only
+ *    writes it after `IndexIngestResult.Validate()` and artifact verification
+ *    have both passed.
+ *
+ * The two are therefore treated differently, where a single `default:` used
+ * to treat them the same:
+ *
+ *  - An artifact-shaped frame keeps settling as `completed`. It is a verified
+ *    terminal projection and there is nothing in it to read an outcome out of;
+ *    inventing a failure here would be as much of a guess as the old code's
+ *    success.
+ *  - A frame that DOES carry a `status` but not one of the three known values
+ *    now settles as `failed`, not `completed`. That branch is the real defect
+ *    the old `default:` hid: an unrecognised terminal status is not a success
+ *    claim, and `completed` is in `RUNNABLE_INDEX_STATUSES` — so the old
+ *    mapping did not merely paint the wrong colour, it advertised the index as
+ *    searchable on the strength of a status this build has never seen.
  */
 function toIndexState(frame: ExecutionEventData): string {
-  switch (frame['status']) {
+  const status = frame['status'];
+  switch (status) {
+    case 'ok':
+      return IndexStatuses.success;
     case 'error':
       return IndexStatuses.fail;
     case 'partly_indexed':
       return IndexStatuses.partlyOk;
     default:
-      return IndexStatuses.success;
+      // Absent `status` ⇒ the artifact shape ⇒ a verified completion.
+      // Present-but-unknown ⇒ refuse to claim success.
+      return status === undefined ? IndexStatuses.success : IndexStatuses.fail;
   }
+}
+
+/**
+ * The user-visible text for an `execution.failed` frame.
+ *
+ * The frame is not empty and never was: `infra/db/repos/command_outbox.go:
+ * 29-30` writes `{"code", "safe_message", "retryable"}`, and `safe_message` is
+ * named that way precisely because it is the one field cleared for display.
+ * The handler used to take NO ARGUMENT, so every one of those bytes was
+ * discarded and a cancelled run, a deadline retirement and a genuine runtime
+ * fault were all indistinguishable on screen.
+ */
+function failureNotice(frame: ExecutionEventData): string {
+  const safeMessage = typeof frame['safe_message'] === 'string' ? frame['safe_message'] : '';
+  const code = typeof frame['code'] === 'string' ? frame['code'] : '';
+  const retryable = frame['retryable'] === true ? '\n\nThis can be retried.' : '';
+  const detail = safeMessage !== '' ? safeMessage : 'The run failed before it produced a result.';
+  return `❌ ${detail}${code !== '' ? `\n\n**Code:** ${code}` : ''}${retryable}`;
+}
+
+/**
+ * The user-visible text for an `execution.replay_reset` frame.
+ *
+ * Emitted when the durable log was pruned past the cursor being resumed from
+ * (`infra/db/repos/replay_events.go:89-102`), i.e. progress frames exist that
+ * this client will never receive. The run itself is unaffected — which is
+ * exactly why it needs saying: without it the transcript looks complete.
+ */
+function replayResetNotice(frame: ExecutionEventData): string {
+  const reason = typeof frame['reason'] === 'string' && frame['reason'] !== '' ? frame['reason'] : 'unknown';
+  return `⚠️ Some earlier progress updates are no longer available and have been skipped (${reason}). The run itself is still going.`;
 }
 
 /**
@@ -195,10 +252,28 @@ export function useToolkitChatSocket(params: UseToolkitChatSocketParams): Socket
     [onRunFinish],
   );
 
-  const handleExecutionFailed = useCallback(() => {
-    if (isAuthCheckSessionRef.current) return;
-    onRunFinish(IndexStatuses.fail);
-  }, [onRunFinish]);
+  const handleExecutionFailed = useCallback(
+    (frame: ExecutionEventData) => {
+      if (isAuthCheckSessionRef.current) return;
+      // Rendered as a chat entry rather than routed to `onRunFinish`, which
+      // takes a bare status string and has nowhere to put a reason.
+      const notice = generateMockMessageTemplate(failureNotice(frame), 'toolkit');
+      setChatHistory((prev) => [...prev, notice]);
+      onRunFinish(IndexStatuses.fail);
+    },
+    [onRunFinish, setChatHistory],
+  );
+
+  const handleReplayReset = useCallback(
+    (frame: ExecutionEventData) => {
+      if (isAuthCheckSessionRef.current) return;
+      // NOT terminal: the run continues, only the transcript has a hole. So
+      // this appends a notice and deliberately does not call `onRunFinish`.
+      const notice = generateMockMessageTemplate(replayResetNotice(frame), 'toolkit');
+      setChatHistory((prev) => [...prev, notice]);
+    },
+    [setChatHistory],
+  );
 
   useExecutionEvents({
     projectId,
@@ -206,6 +281,7 @@ export function useToolkitChatSocket(params: UseToolkitChatSocketParams): Socket
     onNodeEvent: handleNodeEvent,
     onIndexIngestCompleted: handleIngestCompleted,
     onFailed: handleExecutionFailed,
+    onReplayReset: handleReplayReset,
     onError: onStreamError,
   });
 

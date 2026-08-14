@@ -235,6 +235,23 @@ describe('useToolkitChatSocket — SSE execution stream (issue #93)', () => {
     expect(onRunFinish).toHaveBeenCalledWith('completed');
   });
 
+  // The other half of the same decision: a terminal frame that DOES carry a
+  // status, but not one this build knows, must not be reported as a success.
+  // `completed` is in RUNNABLE_INDEX_STATUSES, so the pre-fix `default:`
+  // branch did not merely mispaint — it advertised the index as searchable on
+  // the strength of a status nothing in the app has ever seen. Fails against
+  // any implementation that keeps mapping "unknown" to "completed".
+  it('refuses to report an UNRECOGNISED terminal status as completed', () => {
+    for (const status of ['aborted', 'OK', '', 'partly-indexed']) {
+      const client = createTestSocketClient();
+      const { onRunFinish } = setup(client, { executionId: 'exec-1' });
+      act(() => {
+        sse.emit('index.ingest.completed', JSON.stringify({ status }));
+      });
+      expect(onRunFinish, `status ${JSON.stringify(status)} must not settle as completed`).toHaveBeenLastCalledWith('failed');
+    }
+  });
+
   it('reports execution.failed as a failed run', () => {
     const client = createTestSocketClient();
     const { onRunFinish } = setup(client, { executionId: 'exec-1' });
@@ -244,6 +261,63 @@ describe('useToolkitChatSocket — SSE execution stream (issue #93)', () => {
     });
 
     expect(onRunFinish).toHaveBeenCalledWith('failed');
+  });
+
+  // `execution.failed`'s payload is `{code, safe_message, retryable}`
+  // (`infra/db/repos/command_outbox.go:29-30`). The handler used to take NO
+  // ARGUMENT, so all three were discarded and a cancellation, a deadline
+  // retirement and a hard fault were indistinguishable on screen. Asserting on
+  // the RENDERED text — not on a call count — is what makes this fail against
+  // a handler that receives the frame and drops it anyway.
+  it('surfaces the failure frame’s safe_message, code and retryability to the user', () => {
+    const client = createTestSocketClient();
+    const { getChatHistory, onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit(
+        'execution.failed',
+        JSON.stringify({ code: 'DEADLINE_EXCEEDED', safe_message: 'The execution deadline was exceeded.', retryable: true }),
+      );
+    });
+
+    const rendered = getChatHistory().map((message) => String(message.content ?? '')).join('\n');
+    expect(rendered).toContain('The execution deadline was exceeded.');
+    expect(rendered).toContain('DEADLINE_EXCEEDED');
+    expect(rendered).toMatch(/retried/i);
+    expect(onRunFinish).toHaveBeenCalledWith('failed');
+  });
+
+  it('still says something useful when the failure frame carries no safe_message', () => {
+    const client = createTestSocketClient();
+    const { getChatHistory } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('execution.failed', JSON.stringify({ code: 'CANCELLED', retryable: false }));
+    });
+
+    const rendered = getChatHistory().map((message) => String(message.content ?? '')).join('\n');
+    expect(rendered).toContain('CANCELLED');
+    expect(rendered).not.toMatch(/retried/i);
+  });
+
+  // `execution.replay_reset` is emitted when the durable log was pruned past
+  // the cursor being resumed from (`infra/db/repos/replay_events.go:89-102`).
+  // An SSE `event:` name with no registered listener is dropped SILENTLY by
+  // EventSource, so before this the frame arrived and nothing happened: a
+  // resumed long run rendered a transcript with an undisclosed hole in it.
+  it('discloses a replay reset to the user WITHOUT ending the run', () => {
+    const client = createTestSocketClient();
+    const { getChatHistory, onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('execution.replay_reset', JSON.stringify({ reason: 'progress_retention_window_elapsed' }));
+    });
+
+    const rendered = getChatHistory().map((message) => String(message.content ?? '')).join('\n');
+    expect(rendered, 'the gap notice must reach the transcript').toContain('progress_retention_window_elapsed');
+    // The run is still going: a reset that settles the run would strand a
+    // live execution in a terminal state and close its own stream.
+    expect(onRunFinish).not.toHaveBeenCalled();
   });
 
   it('ignores every SSE frame while isAuthCheckSession is true', () => {

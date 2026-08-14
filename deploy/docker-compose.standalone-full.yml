@@ -143,7 +143,19 @@ services:
   # ── Infrastructure ──────────────────────────────────────────────────────────
 
   postgres:
-    image: postgres:18
+    # pgvector, not plain postgres:18, and it is load-bearing for the index
+    # plane (#93 Surface A). The index-start request materializes its initial
+    # index_meta SYNCHRONOUSLY before it answers, and that write creates
+    # `langchain_pg_embedding (… embedding vector …)` in the target database
+    # (internal/infra/pgvector/index_meta_writer.go:649-667). Without the
+    # extension the DDL fails with `type "vector" does not exist` and the start
+    # route answers 500 — no dispatch, no task_id, nothing on the events
+    # stream. The legacy stack has always used a pgvector image for the same
+    # reason; this one had not needed it because the index plane was off.
+    #
+    # Same PostgreSQL major as before (pg18), so the existing standalone_pg_data
+    # volume is reused in place rather than re-initialized.
+    image: pgvector/pgvector:0.8.1-pg18
     shm_size: '2g'
     environment:
       POSTGRES_USER: elitea
@@ -263,6 +275,12 @@ services:
              "SELECT 1 FROM pg_database WHERE datname = 'agentstate'" | grep -q 1; then
           psql -v ON_ERROR_STOP=1 -h postgres -U elitea -d postgres -c "CREATE DATABASE agentstate"
         fi
+        # The vector type the index plane's DDL uses unqualified, so it has to
+        # live in a schema on the default search_path — `public`. Idempotent,
+        # and separate from 001_initial.sql because it must also be applied to
+        # a database that predates this line.
+        psql -v ON_ERROR_STOP=1 -h postgres -U elitea -d elitea \
+             -c "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public"
         if psql -h postgres -U elitea -d elitea -tAc "SELECT to_regclass('centry.project')" | grep -q .; then
           echo "centry schema already present; skipping 001_initial.sql"
           exit 0
@@ -593,9 +611,34 @@ services:
       # when the stack terminates TLS in front of elitea-main.
       ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL: "https://elitea-main:8080"
 
-      # Index-ingest dispatch stays OFF: validateRuntimeComposition requires the
-      # LiteLLM facade for it, and this stack has no LiteLLM. Setting any
-      # ELITEA_RUNTIME_INDEX_INGEST_* here without the flag is a boot error.
+      # Index-ingest dispatch: the toolkit `index_data` path behind
+      # POST /api/v2/elitea_core/test_toolkit_tool/prompt_lib/{projectID}
+      # (#93 Surface A). Without the flag, main.go composes no
+      # CurrentIndexStart handler and the legacy hardcoded 503 stub in
+      # internal/api/v2/toolkits/handler.go is the only thing on that path.
+      #
+      # This used to be impossible here: validateRuntimeComposition required
+      # the LiteLLM facade, which this stack does not have. The embedding
+      # binding now resolves from the same p_{id}.configuration rows the
+      # Bifrost gateway reads, so the only remaining requirement is
+      # ELITEA_CONFIGURATIONS_ENABLED, set above.
+      ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED: "true"
+      # DELIBERATELY the same stream AND the same consumer group as the agent
+      # plane above. runtimecomposition/config.go:303-306 makes that an
+      # explicitly supported configuration (it only rejects sharing the stream
+      # with a DIFFERENT group), and the worker dispatches on the command's
+      # capability_id rather than on which stream it came from
+      # (elitea_worker/serve.py:545). So the one running worker consumes both
+      # capabilities and this needs no second worker container, no extra Redis
+      # ACL grant, no extra consumer group and no second workload_sessions row.
+      #
+      # A dedicated index stream is the alternative shape; it costs a second
+      # worker instance with its own runtime.json, ACL entries for the new
+      # stream and its `:delivery-index.v1` sibling, an XGROUP in
+      # runtime/bootstrap-streams.sh, and a second authorized workload session.
+      ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM: "commands.v1.agent.execute.agent.shared.1.0"
+      ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP: "elitea-agent-worker-v1"
+      ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES: "1024"
 
       ELITEA_RUNTIME_REDIS_URL: "rediss://producer@runtime-redis:6380/0"
       ELITEA_RUNTIME_REDIS_PASSWORD_FILE: /run/elitea-runtime/redis-producer-password

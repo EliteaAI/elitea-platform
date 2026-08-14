@@ -10,6 +10,7 @@ import {
   EXECUTION_EVENT_FAILED,
   EXECUTION_EVENT_INDEX_INGEST_COMPLETED,
   EXECUTION_EVENT_NODE,
+  EXECUTION_EVENT_REPLAY_RESET,
   parseExecutionEventData,
   resolveExecutionEventsUrl,
   useExecutionEventStream,
@@ -75,6 +76,13 @@ describe('useExecutionEvents', () => {
     const onNodeEvent = vi.fn();
     const onIndexIngestCompleted = vi.fn();
     const onFailed = vi.fn();
+    // `execution.replay_reset` is the fourth name the backend emits
+    // (`infra/db/repos/replay_events.go:16`). It is asserted here because an
+    // SSE `event:` with no registered listener is dropped SILENTLY by
+    // EventSource — so the ONLY way to tell "handled" from "ignored" is to
+    // emit it and require the callback. Fails against any build that leaves
+    // the name unregistered, which is exactly what this module used to do.
+    const onReplayReset = vi.fn();
     render(
       <Probe
         projectId={7}
@@ -82,6 +90,7 @@ describe('useExecutionEvents', () => {
         onNodeEvent={onNodeEvent}
         onIndexIngestCompleted={onIndexIngestCompleted}
         onFailed={onFailed}
+        onReplayReset={onReplayReset}
       />,
     );
 
@@ -89,11 +98,13 @@ describe('useExecutionEvents', () => {
       registry.emit(EXECUTION_EVENT_NODE, '{"type":"chunk"}');
       registry.emit(EXECUTION_EVENT_INDEX_INGEST_COMPLETED, '{"status":"ok"}');
       registry.emit(EXECUTION_EVENT_FAILED, '{"message":"boom"}');
+      registry.emit(EXECUTION_EVENT_REPLAY_RESET, '{"reason":"progress_retention_window_elapsed"}');
     });
 
     expect(onNodeEvent).toHaveBeenCalledWith({ type: 'chunk' });
     expect(onIndexIngestCompleted).toHaveBeenCalledWith({ status: 'ok' });
     expect(onFailed).toHaveBeenCalledWith({ message: 'boom' });
+    expect(onReplayReset).toHaveBeenCalledWith({ reason: 'progress_retention_window_elapsed' });
   });
 
   it('drops an unparseable frame instead of invoking the callback', () => {

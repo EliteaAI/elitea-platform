@@ -48,6 +48,17 @@ import { useEventSource } from './useEventSource';
 export const EXECUTION_EVENT_NODE = 'execution.node_event';
 export const EXECUTION_EVENT_FAILED = 'execution.failed';
 export const EXECUTION_EVENT_INDEX_INGEST_COMPLETED = 'index.ingest.completed';
+/**
+ * The durable log was PRUNED past the cursor this client asked to resume
+ * from, so an unknown number of progress frames between that cursor and the
+ * one carried here will never be delivered
+ * (`infra/db/repos/replay_events.go:89-102` — `{"reason":
+ * "progress_retention_window_elapsed"}`). Registered because an unregistered
+ * SSE `event:` name is dropped SILENTLY by `EventSource`: without this the
+ * frame arrives, nothing reacts, and a resumed long run shows a continuous
+ * transcript with a hole in the middle that nothing on screen discloses.
+ */
+export const EXECUTION_EVENT_REPLAY_RESET = 'execution.replay_reset';
 
 /**
  * A parsed frame body. Deliberately a loose record: every consumer reads it
@@ -106,8 +117,10 @@ export interface ExecutionEventCallbacks {
   readonly onNodeEvent?: ((frame: ExecutionEventData) => void) | undefined;
   /** The index-ingest terminal frame. */
   readonly onIndexIngestCompleted?: ((frame: ExecutionEventData) => void) | undefined;
-  /** The runtime-failure frame (also emitted on deadline retirement and cancellation). */
+  /** The runtime-failure frame (also emitted on deadline retirement and cancellation). Carries `code`, `safe_message` and `retryable` — see `infra/db/repos/command_outbox.go:29-30`. */
   readonly onFailed?: ((frame: ExecutionEventData) => void) | undefined;
+  /** Progress frames were pruned before this client could read them; the frame carries `reason`. */
+  readonly onReplayReset?: ((frame: ExecutionEventData) => void) | undefined;
   /**
    * The stream failed to OPEN, or dropped — a transport failure, not a
    * frame. Distinct from `onFailed` (which is the server telling you the
@@ -125,14 +138,14 @@ export interface ExecutionEventCallbacks {
  * returned (issue #93's chat surface). Prefer this over re-deriving the
  * path: the server owns that shape.
  *
- * All three event names are ALWAYS registered, whether or not the caller
+ * All four event names are ALWAYS registered, whether or not the caller
  * passed the matching callback: the registered name set is what
  * `useEventSource` keys its connection on, so a conditional map would
  * reopen the HTTP stream whenever a caller's callback appeared or
  * disappeared. Frames with no callback are parsed and dropped.
  */
 export function useExecutionEventStream(eventsUrl: string | null | undefined, callbacks: ExecutionEventCallbacks): void {
-  const { onNodeEvent, onIndexIngestCompleted, onFailed, onError } = callbacks;
+  const { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onError } = callbacks;
   const config = getConfig();
   const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
   const url = useMemo(() => resolveExecutionEventsUrl(serverUrl, eventsUrl), [serverUrl, eventsUrl]);
@@ -150,6 +163,10 @@ export function useExecutionEventStream(eventsUrl: string | null | undefined, ca
       const frame = parseExecutionEventData(event);
       if (frame) onFailed?.(frame);
     },
+    [EXECUTION_EVENT_REPLAY_RESET]: (event) => {
+      const frame = parseExecutionEventData(event);
+      if (frame) onReplayReset?.(frame);
+    },
   }, { onError });
 }
 
@@ -162,14 +179,14 @@ export interface UseExecutionEventsParams extends ExecutionEventCallbacks {
 /**
  * Subscribe to one execution's durable event stream.
  *
- * All three event names are ALWAYS registered, whether or not the caller
+ * All four event names are ALWAYS registered, whether or not the caller
  * passed the matching callback: the registered name set is what
  * `useEventSource` keys its connection on, so a conditional map would
  * reopen the HTTP stream whenever a caller's callback appeared or
  * disappeared. Frames with no callback are parsed and dropped.
  */
 export function useExecutionEvents(params: UseExecutionEventsParams): void {
-  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onError } = params;
+  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onError } = params;
   const config = getConfig();
   const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
 
@@ -186,5 +203,5 @@ export function useExecutionEvents(params: UseExecutionEventsParams): void {
   // Already absolute against `vite_server_url` ⇒ `useExecutionEventStream`'s
   // own resolution is a no-op for it (same-origin prefix returns the path
   // unchanged; an absolute origin was already baked in above).
-  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onError });
+  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onError });
 }

@@ -9,6 +9,8 @@
 #   seed-runtime authorize the agent worker's certificate identity (#281)
 #   seed-llm     credential the gateway serves completions with. Defaults to the
 #                offline mock (#283) unless OPENAI_API_KEY/ANTHROPIC_API_KEY is set
+#   seed-index   vector store + embedding model + an indexable toolkit, so the
+#                index-start route and its SSE stream can be driven (#93)
 #   check        verify the gateway mTLS hop, the runtime plane and the chat
 #                critical path (delegates the last to chat-smoke.py)
 #   down         tear down (add -v yourself to drop volumes)
@@ -20,6 +22,7 @@
 #   deploy/scripts/standalone-stack.sh seed-runtime
 #   deploy/scripts/standalone-stack.sh seed-llm            # offline mock
 #   OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm   # real provider
+#   deploy/scripts/standalone-stack.sh seed-index          # index plane (#93)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -324,6 +327,138 @@ SQL
     fi
     ;;
 
+  seed-index)
+    # Provision the INDEX plane's data (#93 Surface A). The transport half is
+    # compose + migrations; this is the three rows without which
+    # POST /api/v2/elitea_core/test_toolkit_tool/prompt_lib/{projectID}
+    # cannot get past resolution.
+    #
+    # Project 1 AND every personal project, exactly as `seed-llm` above, and
+    # for a related reason. `models.applications.tool.patch` — the index-start
+    # route's permission — is checked against the project in the URL, while the
+    # embedding hop underneath resolves the CALLER's PERSONAL project. So a run
+    # can only complete in a project that is BOTH: the E2E seeder now grants
+    # the index permissions inside the driver persona's personal project, and
+    # this seeds that project's rows. Seeding project 1 alone left the only
+    # permitted callers without a personal project and the run died on
+    # `project_not_resolved` before the toolkit was ever loaded.
+    #
+    # Read the KNOWN LIMIT at the end of this block before concluding that a
+    # run which indexes nothing means a broken stack.
+    TOOLKIT_ID="${INDEX_TOOLKIT_ID:-9002}"
+    EMBEDDING_MODEL="${INDEX_EMBEDDING_MODEL:-vllm/E2E-MOCK-EMBEDDING}"
+    INDEX_TARGETS="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT p.id FROM centry.project p
+          WHERE (p.id = 1 OR p.name LIKE 'project\_user\_%')
+            AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace
+                         WHERE nspname = 'p_' || p.id::text)
+          ORDER BY p.id" 2>/dev/null | tr -d '\r')"
+    if [ -z "$INDEX_TARGETS" ]; then
+      echo "ERROR: no tenant schema to seed into. Run: $0 seed" >&2
+      exit 1
+    fi
+    for TARGET in $INDEX_TARGETS; do
+    echo "→ Seeding the index plane into project ${TARGET} (toolkit id ${TOOLKIT_ID})…"
+    $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+      psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
+        -v toolkit="$TOOLKIT_ID" -v embedding="$EMBEDDING_MODEL" \
+        -v pid="$TARGET" -v schema="p_${TARGET}" <<'SQL'
+-- 1. The vector store the run writes into.
+--
+-- `postgresql+psycopg://` is NOT interchangeable with `postgresql://` here even
+-- though internal/infra/pgvector/index_meta.go accepts both. The SDK's
+-- runtime/langchain/store_manager.py:_parse_connection_string only assigns its
+-- `url` variable inside `if conn_str.startswith("postgresql+psycopg://")`, so
+-- any other scheme reaches urlparse with the variable unbound and the toolkit
+-- dies with `UnboundLocalError: cannot access local variable 'url'` — measured,
+-- and it surfaces only as a generic "Indexing reported an error." node event.
+--
+-- It points at this stack's own postgres, which is why that service runs a
+-- pgvector image: the start request creates `… embedding vector …` in this
+-- database before it answers.
+INSERT INTO :"schema".configuration
+    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (:pid, 'elitea-pgvector', 'elitea-pgvector', 'pgvector', 'vectorstorage',
+     jsonb_build_object('connection_string','postgresql+psycopg://elitea:elitea@postgres:5432/elitea'),
+     '{}', false, true, 'system', NOW(), NOW())
+ON CONFLICT (elitea_title) DO UPDATE
+    SET data = EXCLUDED.data, type = EXCLUDED.type, section = EXCLUDED.section,
+        status_ok = true, updated_at = NOW();
+
+-- 2. The embedding model the resolver binds.
+--
+-- section='embedding' + type='embedding_model' is a FOURTH configuration section,
+-- distinct from the three `seed-llm` writes. `label` must be non-null for the
+-- same reason as the chat model row: repos/models.go REJECTS an unlabelled row
+-- with an error rather than skipping it, emptying the whole catalogue.
+-- `data` may contain ONLY `name` and optionally `ai_credentials` — the decoder
+-- uses DisallowUnknownFields, so any extra key is an invalid binding (503).
+INSERT INTO :"schema".configuration
+    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (:pid, 'standalone-embedding', 'standalone-embedding', 'embedding_model', 'embedding',
+     jsonb_build_object('name', :'embedding'), '{}', true, true, 'user', NOW(), NOW())
+ON CONFLICT (elitea_title) DO UPDATE
+    SET data = EXCLUDED.data, type = EXCLUDED.type, section = EXCLUDED.section,
+        label = EXCLUDED.label, shared = true, status_ok = true, updated_at = NOW();
+
+-- 3. An indexable toolkit.
+--
+-- `artifact` is the one indexable type in the pinned toolkit schema snapshot
+-- that needs no third-party credential and no egress — it indexes this stack's
+-- own RustFS bucket. (`memory` is lighter still and starts fine, but it is not a
+-- BaseIndexerToolkit and has no index_data tool at all, so a run against it
+-- always terminates in error.)
+--
+-- `bucket` is not in the Go schema snapshot — that snapshot only declares
+-- configuration-typed properties — but the SDK toolkit raises KeyError without
+-- it. Settings are frozen and forwarded verbatim, so it simply has to be here.
+INSERT INTO :"schema".elitea_tools (id, name, type, description, owner_id, author_id, meta, settings)
+VALUES (:toolkit, 'standalone-artifact-index', 'artifact', 'index plane (#93)', :pid, 1, '{}'::jsonb,
+        jsonb_build_object(
+            'bucket', 'elitea-artifacts',
+            'embedding_model', :'embedding',
+            'pgvector_configuration',
+                jsonb_build_object('elitea_title', 'elitea-pgvector', 'private', false)))
+ON CONFLICT (id) DO UPDATE
+    SET settings = EXCLUDED.settings, type = EXCLUDED.type, meta = EXCLUDED.meta;
+SQL
+    done
+    INDEX_DRIVER_PROJECT="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT p.id FROM centry.project p
+          JOIN public.auth_core__user u ON u.id = p.owner_id
+         WHERE p.name = 'project_user_' || u.id::text
+           AND u.email = 'e2e-chat@autotest.local'" 2>/dev/null | tr -d '\r')"
+    echo "→ Seeded. Start a run as the driver persona (project ${INDEX_DRIVER_PROJECT:-<none>}):"
+    echo "     POST /api/v2/elitea_core/test_toolkit_tool/prompt_lib/${INDEX_DRIVER_PROJECT:-1}?await_response=false&execution_contract=index.ingest.v1"
+    echo "     {\"toolkit_config\":{\"toolkit_id\":${TOOLKIT_ID}},\"tool_name\":\"index_data\","
+    echo "      \"tool_params\":{\"index_name\":\"smoke\"}}"
+    echo "   then GET /api/v2/executions/${INDEX_DRIVER_PROJECT:-1}/{task_id}/events"
+    echo
+    echo "   A run seeded this way reaches"
+    echo "     event: index.ingest.completed"
+    echo "     data: {\"status\":\"ok\",\"message\":\"No new documents to index.\"}"
+    echo "   — measured. The green terminal frame is real: dispatch, worker,"
+    echo "   node-event stream and terminal projection all ran."
+    echo
+    echo "   KNOWN LIMIT — that run indexes ZERO documents no matter what is in"
+    echo "   the bucket, so no embedding is ever computed and nothing is written"
+    echo "   to the vector store. This is a BACKEND gap, not a seeding one: the"
+    echo "   SDK's artifact toolkit lists its bucket over an S3-compatible API"
+    echo "   at {base_url}/artifacts/s3/{bucket}?list-type=2"
+    echo "   (elitea-sdk runtime/clients/client.py:1105), and elitea-main serves"
+    echo "   no such route — only /api/v2/artifacts/objects/{projectID}/{bucket},"
+    echo "   which returns the very same object correctly. The SDK swallows the"
+    echo "   404 into an empty listing (artifact.py:342), so the run reports"
+    echo "   \"Found 0 files after filtering\" and terminates green."
+    echo "   Measured separately, and working: POST /llm/v1/embeddings answers"
+    echo "   200 with a 1536-wide vector from the offline mock, so the embedding"
+    echo "   hop itself is NOT the blocker — only the file listing is."
+    ;;
+
   check)
     # Talk to the gateway directly over mTLS. /llm routes need signed identity
     # headers that only elitea-main can produce, so this checks transport and
@@ -549,6 +684,43 @@ except Exception as error:
         *project_not_resolved*)    echo "  ~ SKIPPED: caller has no personal project (run: $0 seed)" ;;
         *'HTTPERR 502'*)           fail "gateway could not reach llm-mock — is GATEWAY_EGRESS_ALLOWLIST set? (see the compose comment)" ;;
         *)                         fail "completion hop failed: $(printf '%s' "$LLM_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
+      esac
+
+      # The EMBEDDING hop, over the same edge and gateway (#93 Surface A). It is
+      # checked separately from the completion above because it is a different
+      # upstream route (`/v1/embeddings`), a different model row and a different
+      # response shape — a stack whose completions work can still have no
+      # embeddings at all, which is what an index run actually needs.
+      #
+      # The assertion is on the WIDTH of the returned vector, not on a 200: an
+      # OpenAI-shaped error body and an empty `data` list both answer 200, and a
+      # vector of the wrong width fails only much later, at insert time, inside
+      # the worker. The `openai` client asks for base64 unless told otherwise,
+      # so `encoding_format` is pinned to `float` here to keep the probe's own
+      # decoding trivial and the failure attributable to the hop.
+      EMB_OUT="$(llm_probe "
+import json, ssl, urllib.error, urllib.request
+context = ssl.create_default_context(cafile='/m/runtime-ca.crt')
+body = json.dumps({'model': 'vllm/E2E-MOCK-EMBEDDING',
+                   'encoding_format': 'float',
+                   'input': 'standalone embedding check'}).encode()
+request = urllib.request.Request(
+    'https://elitea-platform-edge/llm/v1/embeddings', data=body,
+    headers={'Authorization': 'Bearer ${LLM_JWT}', 'Content-Type': 'application/json'})
+try:
+    payload = json.loads(urllib.request.urlopen(request, context=context, timeout=30).read())
+    vectors = payload.get('data') or []
+    print('DIM', len(vectors[0].get('embedding') or []) if vectors else 0)
+except urllib.error.HTTPError as error:
+    print('HTTPERR', error.code, error.read().decode()[:200])
+except Exception as error:
+    print('ERR', type(error).__name__, error)
+")"
+      case "$EMB_OUT" in
+        *'DIM 0'*)              fail "embedding hop returned no vector: $(printf '%s' "$EMB_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
+        *'DIM '[1-9]*)          echo "  ✓ embedding hop returned a vector ($(printf '%s' "$EMB_OUT" | tr -dc '0-9 ' | awk '{print $1}') dimensions)" ;;
+        *project_not_resolved*) echo "  ~ SKIPPED: caller has no personal project (run: $0 seed)" ;;
+        *)                      fail "embedding hop failed: $(printf '%s' "$EMB_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
       esac
     fi
 

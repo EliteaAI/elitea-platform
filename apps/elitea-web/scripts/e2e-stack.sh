@@ -580,6 +580,25 @@ ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 -- The chat driver acts INSIDE its personal project, so the permissions the chat
 -- routes check have to exist there too — the project-1 grants above do not
 -- reach it.
+--
+-- The INDEX permissions below (#93 Surface A) are on this SAME persona rather
+-- than on a fourth one, and that is the smaller change of the two available:
+--   * The index-start route resolves `models.applications.tool.patch` against
+--     the project in its URL, while the embedding hop underneath it resolves
+--     the CALLER's PERSONAL project for the provider credential — so the one
+--     caller who can drive an index run end to end is a caller who has both.
+--     Only this persona has a personal project at all (measured: the sole
+--     `project_user_%` row belongs to it), and only project 1 grants
+--     `tool.patch` — the two never met, which is why an index run used to die
+--     on `project_not_resolved` before the permission was even consulted.
+--   * Giving `e2e-member`/`e2e-admin` a personal project instead is the option
+--     the comment above already rules out, for a reason that has not changed.
+--   * A fourth persona would need its own OIDC login, storageState, Playwright
+--     project, `social_users` row, vault blob and tenant schema — and would
+--     still end up with exactly this permission list. Widening one autotest
+--     persona's rights INSIDE ITS OWN personal project changes nothing any
+--     other persona can see or assert: no journey reads this project, and the
+--     project-1 grant list is untouched.
 INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
 SELECT r.project_id, r.id, p.permission
 FROM auth_core__user u
@@ -592,6 +611,29 @@ CROSS JOIN (VALUES
     ('models.chat.conversation.details'),
     ('models.chat.messages.create'),
     ('models.chat.folders.get'),
+    -- #93 Surface A. `tool.patch` is the index-start route's own permission
+    -- (`internal/api/v2/indexing/route.go:15`); the rest are what the browser
+    -- needs to REACH the run control — list the toolkits, open one, read and
+    -- write its index_meta rows.
+    ('models.applications.tools.list'),
+    ('models.applications.tools.create'),
+    ('models.applications.tool.details'),
+    ('models.applications.tool.update'),
+    ('models.applications.tool.patch'),
+    -- `.details` is the LIST permission for `GET .../index_meta/...`
+    -- (`internal/api/v2/indexing/index_meta.go:18`), and it is a different
+    -- string from `.edit`. Without it the indexes rail 403s and renders
+    -- loading skeletons forever, which looks like a hung fetch rather than a
+    -- refusal — measured.
+    ('models.applications.index_meta.details'),
+    ('models.applications.index_meta.edit'),
+    ('models.applications.index_meta.delete'),
+    -- The `artifact` toolkit indexes an artifact bucket, so the driver has to
+    -- be able to create one and put a document in it.
+    ('configuration.artifacts.artifacts.view'),
+    ('configuration.artifacts.artifacts.create'),
+    ('configuration.artifacts.artifacts.edit'),
+    ('configuration.artifacts.artifacts.delete'),
     -- `configurations.configurationS.list` — the plural is the route's, not a
     -- typo: handler.go:102 requires it for the model catalogue the picker
     -- reads. The singular form below is a DIFFERENT permission (one config's

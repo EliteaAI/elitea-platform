@@ -94,9 +94,11 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	shared, err := LoadManifest(platformmigrations.Files, ScopeShared)
 	require.NoError(t, err)
-	require.EqualValues(t, 64, Head(shared))
+	// 65: shared/0065_centry_notifications_uuid_unique.sql.
+	require.EqualValues(t, 65, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
-	require.EqualValues(t, 123, Head(tenant))
+	// 124: tenant/0124_elitea_tools_pylon_shape.sql.
+	require.EqualValues(t, 124, Head(tenant))
 }
