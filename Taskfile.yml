@@ -275,6 +275,15 @@ tasks:
     cmds:
       - podman build -t ghcr.io/eliteaai/pylon-indexer:dev -f services/pylon-indexer/Containerfile services/pylon-indexer
 
+  # ── Deploy ────────────────────────────────────────────────────────────────────
+  deploy:check-edge:
+    desc: Check that every Traefik router names a middleware some file defines
+    cmds:
+      # -count=1 is required. The gate reads YAML from deploy/, which is
+      # outside the module, so the Go test cache does not notice an edit to
+      # those files and can serve a stale pass.
+      - cd services/elitea-main && go test -count=1 ./tests/deployedge/...
+
   # ── Helm ──────────────────────────────────────────────────────────────────────
   helm:lint:
     desc: Lint all Helm charts

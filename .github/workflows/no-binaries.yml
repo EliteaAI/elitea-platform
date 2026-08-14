@@ -32,3 +32,19 @@ jobs:
           bash -n deploy/centry-hybrid/prepare-runtime.sh
           test -s deploy/centry-hybrid/pov-compose.yml
           test -s deploy/centry-hybrid/traefik/index-routes.yml
+      # This gate lives here, and not only in ci-go.yml, because ci-go.yml is
+      # path-filtered and does not select deploy/centry-hybrid/**. A pull
+      # request that edits only the edge YAML would not run it there. Traefik
+      # drops a router that names an unknown middleware and keeps serving, so
+      # the fault reaches production as a silent fallback to pylon rather than
+      # as an error (#338).
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: services/elitea-main/go.sum
+      # -count=1 is required, not tidiness. The gate reads YAML from deploy/,
+      # which is outside this module, so the Go test cache does not notice an
+      # edit to those files and can serve a stale pass.
+      - name: Validate the Traefik edge middleware references
+        working-directory: services/elitea-main
+        run: go test -count=1 ./tests/deployedge/...
