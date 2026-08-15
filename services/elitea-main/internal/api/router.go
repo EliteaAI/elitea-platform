@@ -71,7 +71,6 @@ type AuthDeps struct {
 	SessionHandler            *v2auth.SessionHandler
 	OIDCHandler               *v2auth.OIDCHandler
 	SessionSecret             string
-	TrustedProxyCIDRs         []string
 }
 
 // NOTE(#126): IndexerDeps and its six fields — Predictor, LLMService,
@@ -655,7 +654,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		PrincipalValidator:        cfg.PrincipalValidator,
 		ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 		SessionSecret:             cfg.SessionSecret,
-		TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 	})
 	mountArtifactRoutes(r, ArtifactDeps{
 		Handler:      artifactHandler,
@@ -674,7 +672,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			PrincipalValidator:        cfg.PrincipalValidator,
 			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 			SessionSecret:             cfg.SessionSecret,
-			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 		}))
 
 		if cfg.CutoverRouter != nil {
@@ -2071,7 +2068,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				PrincipalValidator:        cfg.PrincipalValidator,
 				ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 				SessionSecret:             cfg.SessionSecret,
-				TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 			}))
 			// Membership admits the caller-supplied project selector header
 			// (issue #318). Without it the edge admits no selector that names
