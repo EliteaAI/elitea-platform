@@ -93,6 +93,12 @@ type ListResponse struct {
 
 type Repository interface {
 	List(ctx context.Context, projectID string, params ListParams) (ListResponse, error)
+	// ListForApplicationVersion returns only the skills attached to one agent
+	// version. It is part of this interface rather than a separate optional
+	// one that the router type-asserts for: an assertion that fails leaves the
+	// route unregistered, which is the silent gap #367 is about. Here a
+	// repository that cannot answer it does not compile.
+	ListForApplicationVersion(ctx context.Context, projectID, appVersionID string) (ListResponse, error)
 	Get(ctx context.Context, projectID, skillID string) (Skill, error)
 	GetByName(ctx context.Context, projectID, name string) (Skill, bool, error)
 	Create(ctx context.Context, projectID string, skill Skill) (Skill, error)
@@ -143,6 +149,51 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ListForApplication answers GET /application_skills/{mode}/{projectID}/{appVersionID}
+// with the skills attached to that agent version.
+//
+// The route used to point at List, which never reads {appVersionID} and so
+// returned every skill in the project (#367). Both handlers answer 200 and both
+// return the same envelope, so no caller could tell the two apart — the screen
+// simply showed the wrong skills.
+//
+// A malformed {appVersionID} is refused rather than coerced. Passing a
+// non-numeric segment through to the query would make the answer depend on how
+// PostgreSQL casts it, and the failure mode of the bug being fixed here is
+// exactly "answers confidently with the wrong set".
+func (h *Handler) ListForApplication(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	appVersionID := chi.URLParam(r, "appVersionID")
+
+	if !isPositiveInteger(appVersionID) {
+		apierr.Write(w, apierr.BadRequest("app version id must be a positive integer"))
+		return
+	}
+
+	resp, err := h.repo.ListForApplicationVersion(r.Context(), projectID, appVersionID)
+	if err != nil {
+		apierr.Write(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// isPositiveInteger accepts decimal digits only, and rejects zero however it is
+// written. "0" and "000" are not version ids, and entity_version_id is never 0,
+// so accepting them would turn a malformed request into an empty list — an
+// answer indistinguishable from "this version has no skills".
+func isPositiveInteger(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return strings.Trim(value, "0") != ""
 }
 
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {

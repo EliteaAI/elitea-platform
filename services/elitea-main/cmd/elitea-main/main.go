@@ -498,14 +498,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("load current Configurations settings: %w", err)
 	}
-	currentPromptContextReadsSettings, err :=
-		currentPromptContextReadsConfigFromEnv(os.LookupEnv)
-	if err != nil {
-		return fmt.Errorf("load current prompt-context read settings: %w", err)
-	}
-	if currentPromptContextReadsSettings.Enabled && !currentConfigurationsConfig.Enabled {
-		return errors.New("ELITEA_PROMPT_CONTEXT_READS_ENABLED requires ELITEA_CONFIGURATIONS_ENABLED=true")
-	}
 	if currentConfigurationsConfig.Enabled && (formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
 		return errors.New("ELITEA_CONFIGURATIONS_ENABLED requires production authentication")
 	}
@@ -593,63 +585,58 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// p_{projectID}.configuration itself, so Main has nothing to proxy on
 		// its behalf beyond the mTLS gateway proxy composed on LLM_GATEWAY_URL
 		// below, which is the sole /llm backend.
-		if currentPromptContextReadsSettings.Enabled {
-			chatConfigReader, readerErr :=
-				promptcontextreadsapi.NewCurrentChatConfigVaultReader(
-					currentConfigurationsRoot.VaultLoader(),
-				)
-			if readerErr != nil {
-				return fmt.Errorf("compose current chat configuration reader: %w", readerErr)
-			}
-			projectContextReader, readerErr :=
-				promptcontextreadsapi.NewCurrentProjectContextRepository(pool)
-			if readerErr != nil {
-				return fmt.Errorf("compose current project-context reader: %w", readerErr)
-			}
-			currentPromptContextReads, err = promptcontextreadsapi.NewCurrentRoutes(
-				chatConfigReader,
-				projectContextReader,
-				currentAuth,
-				currentPermissions,
-			)
-			if err != nil {
-				return fmt.Errorf("compose current prompt-context read routes: %w", err)
-			}
-			logger.Info("current prompt-context read routes enabled")
-		}
+		// ELITEA_PROMPT_CONTEXT_READS_ENABLED used to gate a second composition
+		// of promptcontextreadsapi.NewCurrentRoutes here, on the same reader
+		// pair. It is deleted with its branch (#367).
+		//
+		// The branch was unreachable and redundant at the same time. It needed
+		// this flag AND ELITEA_CONFIGURATIONS_ENABLED AND production auth, and
+		// no deployment sets the flag — while the ungated composition below
+		// builds the identical pair whenever FormGraph or an OIDC session
+		// handler exists, which every deployment that could have satisfied the
+		// flag also has. So the flag could only ever pre-empt a block that was
+		// going to run anyway, and its absence changed nothing.
+		//
+		// Deleting it is not a behaviour change: with the flag unset, control
+		// already reached the block below. What it removes is a second, subtly
+		// different composition of the same routes — this one passed
+		// currentAuth/currentPermissions, the one below passes
+		// chatConfigAuthConfig(...) and a fresh legacyrbac resolver — that no
+		// test and no deployment ever exercised.
 		logger.Info("current Configurations services enabled", "public_project_id", currentConfigurationsConfig.PublicProjectID)
 	}
 
 	// The chat-config read has to be composable WITHOUT the Configurations
 	// chain (#194). Its only registration used to sit inside the deleted
 	// `ChatService` gate on the prototype eliteacore handler, and the current
-	// implementation above is reachable only under
-	// ELITEA_PROMPT_CONTEXT_READS_ENABLED, which itself requires
-	// ELITEA_CONFIGURATIONS_ENABLED + ELITEA_AI_PROJECT_ID. Neither of those
-	// is set in any deployment, so
-	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` has
-	// answered 404 everywhere for as long as the gate has existed — while
+	// implementation was then reachable only under
+	// ELITEA_PROMPT_CONTEXT_READS_ENABLED, which no deployment set. So
+	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` answered 404
+	// everywhere for as long as that gate existed — while
 	// `features/artifacts`' chatConfigApi has been querying it on every
 	// artifacts page load and silently falling back to a 150 MB default.
 	//
-	// Turning the chain on was rejected as the fix for the same reason #131
-	// rejected it: the flag gates composition, but the router every
-	// environment actually runs is the compatibility router, and enabling the
-	// chain would additionally light up ~10 unrelated Configurations/LLM
-	// routes that are deliberately dark. The reader itself needs nothing from
-	// that chain — only a *pgxpool.Pool and the optional vault master key —
-	// so it is composed here instead, exactly like the OIDC-only project-list
-	// and notification-event routes above.
+	// This block is now the ONLY composition of the pair. #367 deleted the
+	// flagged one above, which needed a flag nothing set to pre-empt a block
+	// that runs regardless.
+	//
+	// The reader needs nothing from the Configurations chain — only a
+	// *pgxpool.Pool and the optional vault master key — so it is composed here,
+	// exactly like the OIDC-only project-list and notification-event routes
+	// above, and it stays composed here whether or not that chain is on.
+	//
+	// The claim this comment used to make, that ELITEA_CONFIGURATIONS_ENABLED
+	// "is set in no deployment", was stale:
+	// deploy/docker-compose.standalone-full.yml sets it. The claim mattered,
+	// because it was the reason given for composing here rather than in the
+	// chain; the reason above does not depend on it and holds either way.
 	//
 	// CurrentRoutes is an atomic pair, so the project-context read is
 	// constructed alongside it. Which PATHS become reachable is decided at the
-	// router: the compatibility router (the one every deployment gets) mounts
-	// only the chat_config path, because that is #194's half and the
-	// project-context path is already served there by the prototype eliteacore
-	// handler. The production router — which NewRouter never reaches while any
-	// prototype field is set, i.e. in no deployment today — mounts both, so
-	// composing here does make the current project-context implementation
-	// reachable THERE where the flag chain previously left it dark.
+	// router: mountReviewedProductionRoutes registers the chat_config path
+	// only, because that is #194's half and the project-context path is already
+	// served by the prototype eliteacore handler — see production_router.go's
+	// comment on why registering both would change that path's default.
 	if currentPromptContextReads == nil && (formGraph != nil || oidcSessionHandler != nil) {
 		// Reuse the Configurations runtime's loader when it exists, so a
 		// deployment that DOES set ELITEA_VAULT_MASTER_KEY_FILE keeps reading
