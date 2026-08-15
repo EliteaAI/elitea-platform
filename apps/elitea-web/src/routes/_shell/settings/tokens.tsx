@@ -41,6 +41,7 @@ import { SettingsPreview } from '@/features/settings/ui/personal-tokens/Settings
 import { t } from '@/shared/i18n';
 import { useListTokensQuery } from '@/entities/token/api/tokenApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
+import { useProjectOptions } from '@/widgets/sidebar';
 import { getConfig } from '@/shared/config';
 import { isPublicProject } from '@/entities/project';
 
@@ -103,7 +104,13 @@ function selectIsPublicProject(projectId: string): boolean {
   return isPublicProject(projectId, config.config.vite_public_project_id);
 }
 
-function PersonalTokensPage() {
+/** The configured public project id, or `''` when config has not resolved. */
+function selectPublicProjectId(): string {
+  const config = getConfig();
+  return config.status === 'ok' ? config.config.vite_public_project_id : '';
+}
+
+export function PersonalTokensPage() {
   const navigate = useNavigate();
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
   const routeContext: unknown = useRouteContext({ strict: false });
@@ -121,6 +128,20 @@ function PersonalTokensPage() {
   );
 
   const isPublicProjectSelected = useMemo(() => selectIsPublicProject(projectId), [projectId]);
+
+  /*
+   * Names for the token table's binding column. The app's EXISTING projects
+   * query (`useProjectOptions` -> the generated `useListProjects`), reused
+   * as-is: same hook, same react-query key as the project switcher, so this
+   * page adds no second fetch and no new key. `TokensTable` lives in
+   * `features/` and may not import `widgets/` (R-L1), which is why the map is
+   * built here and passed down.
+   */
+  const { projects } = useProjectOptions(selectPublicProjectId());
+  const projectNames = useMemo(
+    () => new Map(projects.map((project) => [String(project.id), project.name])),
+    [projects],
+  );
 
   const [search, setSearch] = useState('');
   const theme = useTheme();
@@ -229,6 +250,7 @@ function PersonalTokensPage() {
           search={search}
           showPreview={showTokenPreview}
           onPreviewToken={handlePreview}
+          projectNames={projectNames}
         />
       </Box>
 

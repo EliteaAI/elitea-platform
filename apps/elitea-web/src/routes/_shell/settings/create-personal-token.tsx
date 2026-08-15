@@ -6,7 +6,15 @@
  *  - Token name (validated: alphanumeric, underscore, hyphen)
  *  - Expiration period (dropdown: never, days, weeks, hours, minutes)
  *  - Expiration value (number input, shown when period != never)
+ *  - OPTIONAL project binding (dropdown, `spec-llm-project-scope` §4)
  *  - Generated token display via `GeneratedTokenDialog` on success
+ *
+ * PROJECT BINDING (`spec-llm-project-scope` §4, ADR-0018): `project_id` is
+ * OPTIONAL, absent means unbound, and unbound stays the default — `onSubmit`
+ * OMITS the field rather than sending `null`. The list is the app's EXISTING
+ * projects query (`useProjectOptions` -> the generated `useListProjects`),
+ * reused as-is: no new endpoint, no new query key. The control and the §4
+ * failure copy live in `routes/-ui/TokenProjectField.tsx`.
  *
  * Ported from `apps/elitea-ui/src/[fsd]/pages/settings/CreatePersonalToken.jsx`.
  *
@@ -47,6 +55,9 @@ import { GeneratedTokenDialog } from '@/features/settings/ui/personal-tokens/Gen
 import { t } from '@/shared/i18n';
 import { TOKEN_NAME_PATTERN, TOKEN_EXPIRATION_OPTIONS, DEFAULT_TOKEN_EXPIRATION_VALUE } from '@/entities/token/model/constants';
 import { useCreateTokenMutation, useListTokensQuery } from '@/entities/token/api/tokenApi';
+import { createTokenFailureMessage, TokenCreateError, TokenProjectField } from '@/routes/-ui/TokenProjectField';
+import { getConfig } from '@/shared/config';
+import { useProjectOptions } from '@/widgets/sidebar';
 import { useTheme } from '@mui/material/styles';
 
 export const Route = createFileRoute('/_shell/settings/create-personal-token')({
@@ -70,13 +81,15 @@ const validationSchema = z.object({
     }),
   measure: z.string().min(1),
   expiration: z.coerce.number().min(1).optional(),
+  /* `<select>` value; `''` is "no binding". Only `onSubmit` makes it a number. */
+  projectId: z.string(),
 });
 
 type FormValues = z.infer<typeof validationSchema>;
 
 /* ── page ─────────────────────────────────────────────────────────────── */
 
-function CreatePersonalTokenPage() {
+export function CreatePersonalTokenPage() {
   const navigate = useNavigate();
   const [showDialog, setShowDialog] = useState(false);
   const [generatedToken, setGeneratedToken] = useState<{
@@ -87,6 +100,13 @@ function CreatePersonalTokenPage() {
   const isGenerating = createMutation.isPending;
   useListTokensQuery({ enabled: false });
   const theme = useTheme();
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  /* Bindable projects. The server re-checks membership in the create
+     transaction (§4) — this list is the affordance, not the authority. */
+  const configResult = getConfig();
+  const publicProjectId = configResult.status === 'ok' ? configResult.config.vite_public_project_id : '';
+  const { projects } = useProjectOptions(publicProjectId);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(validationSchema),
@@ -95,6 +115,7 @@ function CreatePersonalTokenPage() {
       name: '',
       measure: 'days',
       expiration: DEFAULT_TOKEN_EXPIRATION_VALUE,
+      projectId: '', // unbound by default (§4)
     },
   });
 
@@ -108,6 +129,7 @@ function CreatePersonalTokenPage() {
 
   const measure = watch('measure');
   const name = watch('name');
+  const selectedProjectId = watch('projectId');
 
   const onSubmit = useCallback(async (values: FormValues) => {
     const expires =
@@ -115,22 +137,26 @@ function CreatePersonalTokenPage() {
         ? null
         : { measure: values.measure, value: values.expiration ?? DEFAULT_TOKEN_EXPIRATION_VALUE };
 
+    setSubmitError(null);
+
     try {
       const resp = await createMutation.mutateAsync({
         name: values.name,
         expires,
+        // SPREAD, never `project_id: null` — §4 makes "absent" the unbound case.
+        ...(values.projectId === '' ? {} : { project_id: Number(values.projectId) }),
       });
       setGeneratedToken({ token: resp.token, name: resp.name });
       setShowDialog(true);
-    } catch {
-      // Error handled by react-query — no toast in shared/ui
+    } catch (error) {
+      setSubmitError(createTokenFailureMessage(error));
     }
   }, [createMutation]);
 
   const expirationValue = useWatch({ name: 'expiration', control }) as number | null;
   const hasChanged = useMemo(
-    () => name !== '' || measure !== 'days' || expirationValue !== DEFAULT_TOKEN_EXPIRATION_VALUE,
-    [name, measure, expirationValue],
+    () => name !== '' || measure !== 'days' || expirationValue !== DEFAULT_TOKEN_EXPIRATION_VALUE || selectedProjectId !== '',
+    [name, measure, expirationValue, selectedProjectId],
   );
 
   const onCancel = useCallback(() => {
@@ -248,6 +274,16 @@ function CreatePersonalTokenPage() {
                     </Box>
                   )}
                 </Box>
+
+                {/* Project binding — optional, fixed at creation (§4) */}
+                <TokenProjectField
+                  projects={projects}
+                  registration={register('projectId')}
+                  bound={selectedProjectId !== ''}
+                  selectStyle={styles.select}
+                />
+
+                <TokenCreateError message={submitError} />
               </Box>
             </form>
           </Box>

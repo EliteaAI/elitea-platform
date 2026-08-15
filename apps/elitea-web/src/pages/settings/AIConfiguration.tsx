@@ -16,7 +16,6 @@ import Box from '@mui/material/Box';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
 
-import { isPublicProject } from '@/entities/project';
 import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
 
@@ -27,7 +26,6 @@ const {
   OpenAITemplate,
   ProjectAIConfiguration,
   useConfigurationsBySection,
-  useModelsQuery,
 } = aiConfigurationFeature;
 
 /**
@@ -56,20 +54,13 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
   const styles = getStyles(theme);
 
   const userApiUrl = useUserApiUrl();
-  const configResult = getConfig();
-  const includeShared =
-    configResult.status === 'ok' && !isPublicProject(projectId, configResult.config.vite_public_project_id);
-  /**
-   * Baseline passes `model.project_id` — the project owning the model the user
-   * has picked in `ModelConfiguration.jsx`'s own selector. That per-model
-   * selection state (`useModelOptions`/`useModelConfiguration`) is not ported
-   * to this page yet (see #71's parity follow-up), so this uses the project's
-   * configured default LLM model instead, which is what the selector is seeded
-   * with on mount in the baseline. Same `useModelsQuery(projectId, 'llm', …)`
-   * call `ConfigurationsPanel` already makes, so it de-dupes on the shared
-   * React Query cache key rather than firing a second request.
+  /*
+   * The model-owning project id used to be computed here and passed to
+   * ProjectAIConfiguration, which advertised it as `OpenAI-Project`. It is
+   * gone: that panel now shows the billing project only. A reader could not
+   * tell the two ids apart, and the generated samples sent the model's project
+   * as the project to bill (ADR-0018, spec-llm-project-scope §9).
    */
-  const modelProjectId = useModelsQuery(projectId, 'llm', includeShared).data?.default_model_project_id;
 
   const tabs = [
     { label: t('ai-configuration.tabs.configurations', 'Configurations') },
@@ -108,7 +99,6 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
         <ProjectAIConfiguration
           userApiUrl={userApiUrl}
           projectId={projectId}
-          modelProjectId={modelProjectId}
         />
       )}
 

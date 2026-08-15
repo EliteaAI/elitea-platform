@@ -108,7 +108,6 @@
   "ai-configuration.openaiTemplate.downloadTooltip": "Download code example",
   "ai-configuration.projectConfig.notConfigured": "Not configured",
   "ai-configuration.projectConfig.openaiBase": "OpenAI-BaseURL:",
-  "ai-configuration.projectConfig.openaiProject": "OpenAI-Project:",
   "ai-configuration.projectConfig.projectId": "Project ID:",
   "ai-configuration.projectConfig.serverUrl": "Server URL:",
   "ai-configuration.section.aiCredentials": "AI Credentials",
@@ -1965,5 +1964,15 @@
   "features.agents.deleteVersion.error": "Failed to delete this version.",
   "features.agents.deleteVersion.title": "Delete version",
   "pages.agents.editApplication.deleteError": "Failed to delete this agent.",
-  "pages.agents.editApplication.exportError": "Failed to export this agent."
+  "pages.agents.editApplication.exportError": "Failed to export this agent.",
+  "entities.token.form.createFailed": "The system did not create the token. Try again.",
+  "entities.token.form.invalidProjectId": "This project is not a valid choice. Select a project from the list again.",
+  "entities.token.form.project": "Project",
+  "entities.token.form.projectForbidden": "You are not a member of this project. Select a different project, or create the token with no project.",
+  "entities.token.form.projectHeaderNote": "A token with a project does not need the X-Project-Id header in a request.",
+  "entities.token.form.projectHelp": "The project you select pays for the calls of this token. You cannot change the project after you create the token. If you leave the project, the token does not work for that project.",
+  "entities.token.form.projectNone": "No project (default)",
+  "entities.token.table.project": "Project",
+  "entities.token.table.projectId": "Project {{id}}",
+  "entities.token.table.projectNone": "Not bound"
 }

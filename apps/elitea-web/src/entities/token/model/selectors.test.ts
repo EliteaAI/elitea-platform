@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { maskedTokenValue, sortTokensByName, tokenExpiryInDays, tokenExpiryStatus } from './selectors';
+import {
+  maskedTokenValue,
+  sortTokensByName,
+  tokenExpiryInDays,
+  tokenExpiryStatus,
+  tokenProjectErrorCode,
+  tokenProjectKey,
+} from './selectors';
 import type { PersonalAccessToken } from './types';
 
 const NOW = new Date('2026-01-01T00:00:00Z').getTime();
@@ -68,5 +75,56 @@ describe('sortTokensByName', () => {
   it('sorts case-insensitively', () => {
     const tokens = [token('zeta', null), token('Alpha', null)];
     expect(sortTokensByName(tokens).map((t) => t.name)).toEqual(['Alpha', 'zeta']);
+  });
+});
+
+describe('tokenProjectKey', () => {
+  it('returns the bound project as a string key', () => {
+    expect(tokenProjectKey({ ...token('a', null), project_id: 42 })).toBe('42');
+  });
+
+  it('treats an explicit null binding as unbound', () => {
+    expect(tokenProjectKey({ ...token('a', null), project_id: null })).toBeNull();
+  });
+
+  it('treats a record with no project_id field at all as unbound', () => {
+    expect(tokenProjectKey(token('a', null))).toBeNull();
+  });
+});
+
+describe('tokenProjectErrorCode', () => {
+  /** The nested envelope the two §4 project failures use. */
+  const nested = (code: string): unknown => ({
+    failure: { kind: 'http', status: 403, url: '/api/v2/auth/token/', body: { error: { message: 'no', type: 'permission_error', code } } },
+  });
+
+  it('reads project_forbidden out of the nested error envelope', () => {
+    expect(tokenProjectErrorCode(nested('project_forbidden'))).toBe('project_forbidden');
+  });
+
+  it('reads invalid_project_id out of the nested error envelope', () => {
+    expect(tokenProjectErrorCode(nested('invalid_project_id'))).toBe('invalid_project_id');
+  });
+
+  it('ignores a code it does not know', () => {
+    expect(tokenProjectErrorCode(nested('some_other_code'))).toBeNull();
+  });
+
+  /*
+   * The other half of the split contract: every OTHER failure on this
+   * endpoint keeps the flat `{"error":"…"}` shape, where `error` is a string
+   * and not an object. It must degrade to null, not throw.
+   */
+  it('returns null for the flat error envelope', () => {
+    expect(
+      tokenProjectErrorCode({ failure: { kind: 'http', status: 500, url: '/x', body: { error: 'boom' } } }),
+    ).toBeNull();
+  });
+
+  it('returns null for a rejection that carries no failure at all', () => {
+    expect(tokenProjectErrorCode(new Error('network down'))).toBeNull();
+    expect(tokenProjectErrorCode(undefined)).toBeNull();
+    expect(tokenProjectErrorCode(null)).toBeNull();
+    expect(tokenProjectErrorCode('nope')).toBeNull();
   });
 });

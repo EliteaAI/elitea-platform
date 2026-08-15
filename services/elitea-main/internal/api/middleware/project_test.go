@@ -257,10 +257,10 @@ func TestProject_PublicProjectIDDefault(t *testing.T) {
 
 func TestProjectIDFromUserName(t *testing.T) {
 	cases := []struct {
-		name    string
-		input   string
-		wantID  int
-		wantOK  bool
+		name   string
+		input  string
+		wantID int
+		wantOK bool
 	}{
 		{"valid system name", ":system:project:42:", 42, true},
 		{"valid large id", ":system:project:100000:", 100000, true},

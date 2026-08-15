@@ -68,7 +68,10 @@ func NewProjectMembershipWith(queries ProjectMemberQuerier) ProjectMembershipChe
 //
 // Both ids are int4 columns. A value that does not fit is not a member. That is
 // a refusal and not a failure: the function returns false with a nil error, so
-// the edge answers 403 and never 503.
+// the edge ignores the selector and bills the caller's own project. It must not
+// look like an outage, because the edge treats an outage the same way (ADR-0018,
+// spec-llm-project-scope §5 rows 5 and 6) and a caller learns nothing either
+// way.
 func (m projectMembership) IsProjectMember(ctx context.Context, userID int64, projectID int) (bool, error) {
 	if userID <= 0 || userID > math.MaxInt32 {
 		return false, nil

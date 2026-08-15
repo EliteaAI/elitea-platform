@@ -35,6 +35,17 @@ type User struct {
 	Permissions []string `json:"permissions"`
 	ProjectID   string   `json:"project_id,omitempty"`
 	AuthType    string   `json:"auth_type,omitempty"`
+	// TokenProjectID is the project this access token is bound to, or nil when
+	// the token is unbound. Unbound is the default and stays the default: no
+	// existing token carries a binding (ADR-0018, spec-llm-project-scope §3.2).
+	//
+	// Only a credential validator that READ THE BINDING FROM STORAGE may set
+	// this field. It MUST NOT be derived from any request header, from the
+	// token `name`, or from the principal `name`. The token name is
+	// caller-supplied free text of up to 768 bytes, so a field derived from it
+	// would be self-service authorization over another project's budget and
+	// provider credentials (spec §7 invariant 2).
+	TokenProjectID *int64 `json:"token_project_id,omitempty"`
 }
 
 // OwningUserID returns the database user that owns the authenticated identity.

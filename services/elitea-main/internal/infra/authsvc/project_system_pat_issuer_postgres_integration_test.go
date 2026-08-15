@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	dbschema "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/schema"
+	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 )
 
 func TestPostgresIndexRuntimeCurrentIdentityPATSelection(t *testing.T) {
@@ -177,6 +178,17 @@ func newProjectSystemPATTestDatabase(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, dbschema.CentryProjectsBaselineSQLCProjection); err != nil {
+		t.Fatal(err)
+	}
+	// GetActivePATPrincipalByUUID LEFT JOINs elitea_identity.token_project_binding
+	// on every credential validation (ADR-0018). A database without that table
+	// answers every token with 42P01, so the harness applies the REAL migration
+	// rather than a hand-copied projection.
+	bindingMigration, err := platformmigrations.Files.ReadFile("shared/0070_token_project_binding.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(bindingMigration)); err != nil {
 		t.Fatal(err)
 	}
 	return pool

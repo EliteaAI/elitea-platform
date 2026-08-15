@@ -2,6 +2,7 @@ package llmproxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,18 +31,31 @@ func (s stubPersonalResolver) PersonalProjectID(context.Context, string) (int, e
 }
 
 // stubMemberQuerier answers the membership query without a database.
-type stubMemberQuerier struct{ allow map[int32]bool }
+type stubMemberQuerier struct {
+	allow map[int32]bool
+	err   error
+}
 
 func (s stubMemberQuerier) IsCurrentUserProjectMember(
 	_ context.Context,
 	params sqlcgen.IsCurrentUserProjectMemberParams,
 ) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
 	return s.allow[params.ProjectID], nil
 }
 
 // edgeStack builds the real /llm chain: the project middleware in front of the
 // streaming proxy, pointed at a backend that records what the gateway received.
 func edgeStack(t *testing.T, allow map[int32]bool, gotHeaders *http.Header) http.Handler {
+	t.Helper()
+	return edgeStackWith(t, stubMemberQuerier{allow: allow}, gotHeaders)
+}
+
+// edgeStackWith is edgeStack over an explicit querier, so a test can make the
+// membership query fail.
+func edgeStackWith(t *testing.T, queries middleware.ProjectMemberQuerier, gotHeaders *http.Header) http.Handler {
 	t.Helper()
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +68,7 @@ func edgeStack(t *testing.T, allow map[int32]bool, gotHeaders *http.Header) http
 	mw := middleware.Project(middleware.ProjectConfig{
 		Resolver:        stubPersonalResolver{id: edgePersonalProject},
 		PublicProjectID: 1,
-		Membership:      middleware.NewProjectMembershipWith(stubMemberQuerier{allow: allow}),
+		Membership:      middleware.NewProjectMembershipWith(queries),
 	})
 	return mw(proxyTo(t, backend.URL, "sekret"))
 }
@@ -67,6 +81,24 @@ func edgeRequest(header, value string) *http.Request {
 	}
 	user := auth.User{ID: "42", UserID: "42", TokenID: "900", Name: "Regular User", AuthType: "token"}
 	return req.WithContext(auth.ContextWithUser(req.Context(), user))
+}
+
+// assertBilledProject reads the signed identity the gateway received. The
+// gateway bills strictly on X-Elitea-Project-Id, so this is the assertion that
+// tells a correctly billed request from a wrongly billed one.
+func assertBilledProject(t *testing.T, gotHeaders http.Header, want string) {
+	t.Helper()
+	if gotHeaders == nil {
+		t.Fatal("the gateway was never called")
+	}
+	if got := gotHeaders.Get(HeaderProjectID); got != want {
+		t.Errorf("gateway billed project %q, want %q", got, want)
+	}
+	// The identity must be signed over the billed project, or the gateway
+	// rejects it and the assertion above would prove nothing.
+	if !verifyIdentitySignature(gotHeaders, []byte("sekret")) {
+		t.Errorf("forwarded identity signature did not verify")
+	}
 }
 
 // TestEdge_NamedProjectReachesTheGatewayIdentity is the end-to-end form of the
@@ -82,35 +114,86 @@ func TestEdge_NamedProjectReachesTheGatewayIdentity(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if got := gotHeaders.Get(HeaderProjectID); got != "4321" {
-		t.Errorf("gateway billed project %q, want 4321", got)
-	}
-	if got := gotHeaders.Get(HeaderProjectID); got == "7" {
-		t.Errorf("gateway billed the caller's personal project 7; the header named 4321")
-	}
-	// The identity must be signed over the admitted project, or the gateway
-	// rejects it and the assertion above would prove nothing.
-	if !verifyIdentitySignature(gotHeaders, []byte("sekret")) {
-		t.Errorf("forwarded identity signature did not verify")
-	}
+	assertBilledProject(t, gotHeaders, "4321")
 }
 
-// TestEdge_NonMemberNeverReachesTheGateway is the end-to-end form of the second
-// discriminating test. A refused selector must produce no upstream call at all,
-// and above all no upstream call billed to the personal project.
-func TestEdge_NonMemberNeverReachesTheGateway(t *testing.T) {
+// TestEdge_OpenAIOrganizationIsTheSelector covers the second accepted name end
+// to end.
+func TestEdge_OpenAIOrganizationIsTheSelector(t *testing.T) {
+	var gotHeaders http.Header
+	stack := edgeStack(t, map[int32]bool{edgeTeamProject: true}, &gotHeaders)
+
+	rec := httptest.NewRecorder()
+	stack.ServeHTTP(rec, edgeRequest(middleware.HeaderProjectSelectorOpenAIOrg, "4321"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	assertBilledProject(t, gotHeaders, "4321")
+}
+
+// TestEdge_NonMemberBillsThePersonalProject is the end-to-end form of the second
+// discriminating test, and the row ADR-0018 changed. A selector the caller may
+// not use is ignored in silence: the call proceeds, and it bills the caller's
+// own project.
+//
+// The status assertions are explicit because issue #318 names them: not 403,
+// and not 500. A 403 would break every existing caller of the UI's generated
+// samples.
+func TestEdge_NonMemberBillsThePersonalProject(t *testing.T) {
 	var gotHeaders http.Header
 	stack := edgeStack(t, map[int32]bool{}, &gotHeaders) // member of nothing
 
 	rec := httptest.NewRecorder()
 	stack.ServeHTTP(rec, edgeRequest(middleware.HeaderProjectSelector, "4321"))
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body = %s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("status = 403; a non-member selector must be ignored, not refused")
 	}
-	if gotHeaders != nil {
-		t.Fatalf("the gateway was called for a refused selector, with project %q",
-			gotHeaders.Get(HeaderProjectID))
+	if rec.Code >= http.StatusInternalServerError {
+		t.Fatalf("status = %d; a non-member selector must not be a server error", rec.Code)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	assertBilledProject(t, gotHeaders, "7")
+	if got := gotHeaders.Get(HeaderProjectID); got == "4321" {
+		t.Errorf("gateway billed project 4321, which the caller may not use")
+	}
+}
+
+// TestEdge_MembershipErrorBillsThePersonalProject is spec §5 row 6 end to end.
+// A membership query that errors never bills the selector.
+func TestEdge_MembershipErrorBillsThePersonalProject(t *testing.T) {
+	var gotHeaders http.Header
+	stack := edgeStackWith(t, stubMemberQuerier{err: errors.New("connection refused")}, &gotHeaders)
+
+	rec := httptest.NewRecorder()
+	stack.ServeHTTP(rec, edgeRequest(middleware.HeaderProjectSelector, "4321"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	assertBilledProject(t, gotHeaders, "7")
+}
+
+// TestEdge_OpenAIProjectDoesNotBill is the ADR-0018 refusal end to end. The UI
+// fills OpenAI-Project from the project that owns the model, which is often the
+// shared project. The caller here IS a member of the named project, so the only
+// reason the money stays on the personal project is the header name.
+func TestEdge_OpenAIProjectDoesNotBill(t *testing.T) {
+	var gotHeaders http.Header
+	stack := edgeStack(t, map[int32]bool{edgeTeamProject: true}, &gotHeaders)
+
+	rec := httptest.NewRecorder()
+	stack.ServeHTTP(rec, edgeRequest(middleware.HeaderProjectSelectorOpenAIProject, "4321"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	assertBilledProject(t, gotHeaders, "7")
+	if got := gotHeaders.Get(HeaderProjectID); got == "4321" {
+		t.Errorf("OpenAI-Project billed project 4321; that header names the model owner, not the payer")
 	}
 }
 
@@ -126,15 +209,13 @@ func TestEdge_AbsentSelectorBillsThePersonalProject(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := gotHeaders.Get(HeaderProjectID); got != "7" {
-		t.Errorf("gateway billed project %q, want the personal project 7", got)
-	}
+	assertBilledProject(t, gotHeaders, "7")
 }
 
-// TestEdge_SelectorHeadersAreNotForwarded proves the edge consumes the
-// selector. An Elitea project id must not travel onward under a name a real
+// TestEdge_ProjectHeadersAreNotForwarded proves the edge consumes every project
+// header. An Elitea project id must not travel onward under a name a real
 // provider reads.
-func TestEdge_SelectorHeadersAreNotForwarded(t *testing.T) {
+func TestEdge_ProjectHeadersAreNotForwarded(t *testing.T) {
 	var gotHeaders http.Header
 	stack := edgeStack(t, map[int32]bool{edgeTeamProject: true}, &gotHeaders)
 
@@ -148,12 +229,17 @@ func TestEdge_SelectorHeadersAreNotForwarded(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	for _, name := range middleware.ProjectSelectorHeaders() {
+	for _, name := range middleware.ProjectHeadersStrippedOutbound() {
 		if got := gotHeaders.Get(name); got != "" {
-			t.Errorf("selector header %s reached the gateway with %q", name, got)
+			t.Errorf("project header %s reached the gateway with %q", name, got)
 		}
 	}
-	if got := gotHeaders.Get(HeaderProjectID); got != "4321" {
-		t.Errorf("gateway billed project %q, want 4321", got)
+	// The three names are asserted literally as well, so a shrinking strip list
+	// cannot quietly empty the loop above.
+	for _, name := range []string{"X-Project-Id", "OpenAI-Project", "OpenAI-Organization"} {
+		if got := gotHeaders.Get(name); got != "" {
+			t.Errorf("project header %s reached the gateway with %q", name, got)
+		}
 	}
+	assertBilledProject(t, gotHeaders, "4321")
 }
