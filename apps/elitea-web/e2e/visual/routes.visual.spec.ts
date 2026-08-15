@@ -491,6 +491,16 @@ for (const route of ROUTES.filter((r) => r.light)) {
     await settle(page);
     await reportChevron(page, `${route.name}-light`);
 
+    // TEMPORARY (issue #238): a second shot under a NEW name. A name with no
+    // committed baseline is written rather than compared, so this captures the
+    // light render as it actually is, instead of whatever the existing
+    // comparison is deciding about it.
+    await expect(page).toHaveScreenshot(`${route.name}-lightdiag.png`, {
+      fullPage: false,
+      mask: volatileRegions(page),
+      ...SNAPSHOT_TOLERANCE,
+    });
+
     await expect(page).toHaveScreenshot(`${route.name}-light.png`, {
       fullPage: false,
       mask: volatileRegions(page),
