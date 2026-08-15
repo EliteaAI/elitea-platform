@@ -269,6 +269,17 @@ LIMIT 2`,
 	}
 }
 
+// NormalizeConnectionString converts a stored PgVector connection string into a
+// DSN pgx can parse, and reports whether the input was a PostgreSQL URL at all.
+//
+// The stored form is SQLAlchemy's `postgresql+psycopg://`, which pgx rejects.
+// It is exported so the project vector-store composition normalises the
+// platform bootstrap exactly as the index path normalises a project's own
+// connection string — one rule, one implementation (#371).
+func NormalizeConnectionString(value string) (string, bool) {
+	return normalizeCurrentPgvectorDSN(value)
+}
+
 func normalizeCurrentPgvectorDSN(value string) (string, bool) {
 	if value == "" || len(value) > indexmetaapp.MaxCurrentPgvectorDSNBytes || strings.ContainsAny(value, "\x00\r\n") {
 		return "", false

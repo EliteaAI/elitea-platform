@@ -33,6 +33,10 @@ package projectprovisioning
 //                        Fernet key. See createProjectSecrets for why this step
 //                        was first dropped and then restored (#373).
 //   artifact_buckets     The project's `reports` and `tasks` system buckets.
+//   project_pgvector     The project's PgVector role/database, its vault
+//                        material, and the `vectorstorage` configuration row an
+//                        index run resolves. See the note below: pylon does
+//                        this from an EVENT rather than from a step.
 //   project_admin        Membership for the administrators of the project.
 //
 // DROPPED, with the reason:
@@ -48,15 +52,40 @@ package projectprovisioning
 //                        false by default, so it is already inert on a stock
 //                        deployment.
 //
-// NOT REPRODUCED, deliberately:
+// PORTED AS A STEP, from an event:
 //
-//   project_created      pylon fires an event two listeners consume: pgvector
-//                        credential creation, and LiteLLM team/key creation.
-//                        Nothing in the Go tree fires or consumes a project
-//                        lifecycle event, the LLM path is Bifrost rather than
-//                        LiteLLM, and pgvector credentials are resolved through
-//                        a different mechanism. Adding an event with no
-//                        subscriber would be dead wiring.
+//   project_created      pylon fires this event AFTER it commits
+//                        create_success (project_steps.py:369), and two
+//                        listeners consume it. One creates the project's
+//                        pgvector credentials
+//                        (elitea_core/events/vectorstore.py:9); the other
+//                        creates a LiteLLM team and key.
+//
+//                        The pgvector half is reproduced, as the
+//                        project_pgvector STEP above rather than as an event
+//                        (#371). An earlier revision of this comment claimed
+//                        that "pgvector credentials are resolved through a
+//                        different mechanism". No such mechanism ran: the three
+//                        components that would have implemented it —
+//                        runtimecomposition's database provisioner and vault
+//                        material repository, and repos'
+//                        CurrentProjectPgvectorConfigurationsRepository — had
+//                        no non-test caller at all, so nothing ever wrote the
+//                        row. A project could be created and then could not
+//                        index, because configuration expansion resolves
+//                        `pgvector_configuration` by elitea_title in the
+//                        project's own tenant and finds nothing.
+//
+//                        Making it a step rather than an event is a deliberate
+//                        correction, not a shortcut. pylon's listener runs
+//                        after create_success is already true, so a listener
+//                        failure leaves a project that every reader treats as
+//                        complete and that no index run can use. A step cannot
+//                        end that way: it is compensated with the rest.
+//
+//                        The LiteLLM half stays unreproduced. This platform's
+//                        LLM path is Bifrost, and nothing consumes a LiteLLM
+//                        team or key.
 
 import (
 	"context"
@@ -76,6 +105,7 @@ const (
 	StepSystemToken        = "system_token"
 	StepProjectSecrets     = "project_secrets"
 	StepArtifactBuckets    = "artifact_buckets"
+	StepProjectPgvector    = "project_pgvector"
 	StepProjectAdmin       = "project_admin"
 )
 
@@ -120,6 +150,7 @@ func createSteps() []step {
 		// constraint.
 		{name: StepProjectSecrets, create: createProjectSecrets, remove: removeProjectSecrets},
 		{name: StepArtifactBuckets, create: createArtifactBuckets, remove: removeArtifactBuckets},
+		{name: StepProjectPgvector, create: createProjectVectorStore, remove: removeProjectVectorStore},
 		{name: StepProjectAdmin, create: createProjectAdmin, remove: removeProjectAdmin},
 	}
 }
@@ -644,6 +675,76 @@ func removeArtifactBuckets(ctx context.Context, p *Provisioner, state *provision
 	}
 	if err := p.buckets.TeardownProjectBuckets(ctx, state.projectIDString()); err != nil {
 		return fmt.Errorf("teardown project buckets: %w", err)
+	}
+	return nil
+}
+
+/* ── project_pgvector ──────────────────────────────────────────────────── */
+
+// createProjectVectorStore provisions the project's vector store (#371).
+//
+// It converges three things, and all three are needed before the project can
+// index: the per-project PgVector role and database, the `pgvector_project_*`
+// pair in the project's encrypted vault, and the `vectorstorage` configuration
+// row in the tenant. internal/application/vectorstore.ProjectPgvectorService
+// already owns that sequence and its retry ordering; this is its call site.
+//
+// WHY ALL THREE, and not just the row. Configuration expansion resolves
+// `pgvector_configuration` by elitea_title in the project's own tenant, so the
+// row is what an index run looks for. But the row stores only the placeholder
+// `{{secret.pgvector_project_connstr}}`, and the unsecreter leaves an
+// unresolved placeholder VERBATIM rather than failing
+// (infra/storage/expansion_unsecreter.go). A row without its vault entry
+// therefore passes every validator on the index path and fails much later as a
+// connection error against a host literally named
+// "{{secret.pgvector_project_connstr}}". Writing the row alone would move the
+// defect, not fix it.
+//
+// WHY IT SITS HERE, before project_admin. pylon does this from a listener on
+// the `project_created` event, which it fires only after create_success is
+// committed — so in the reference a pgvector failure leaves a project that
+// looks complete and cannot index. A step is compensated instead. It is placed
+// before project_admin so that the one step which can fail on caller input (an
+// administrator address that matches no account) still rolls the vector store
+// back.
+//
+// THE DEPENDENCY IS OPTIONAL, and that is a real limitation rather than a
+// design choice: a deployment configures no vector store when it has no
+// PgVector bootstrap to provision from. The step then reports success without
+// doing anything, exactly as createArtifactBuckets does. The difference matters
+// and is stated here so nobody has to rediscover it: such a project CAN be
+// created and CANNOT index. It is the state every project is in before this
+// step existed, so its absence is not a regression — but it is not a working
+// project either.
+func createProjectVectorStore(ctx context.Context, p *Provisioner, state *provisionState) error {
+	if p.vectorStore == nil {
+		return nil
+	}
+	if err := p.vectorStore.ProvisionProjectVectorStore(ctx, state.projectID); err != nil {
+		return fmt.Errorf("provision project vector store: %w", err)
+	}
+	return nil
+}
+
+// removeProjectVectorStore undoes what the step wrote to this platform.
+//
+// It removes the configuration row and the two vault entries. It does NOT drop
+// the PgVector role or database. That is deliberate and bounded:
+// internal/infra/pgvector has no drop path at all, pylon's own project delete
+// has no pgvector step either, and dropping a database that may already hold a
+// project's vectors is a destructive operation that belongs to an explicit
+// decision rather than to a compensation. The role and database are converged
+// idempotently, so a retry reuses them rather than leaking a second pair.
+//
+// The compensation still leaves nothing behind on THIS side, which is what the
+// create path needs: no row an index run could resolve, and no vault entry
+// naming a project that will not exist.
+func removeProjectVectorStore(ctx context.Context, p *Provisioner, state *provisionState) error {
+	if p.vectorStore == nil || state.projectID == 0 {
+		return nil
+	}
+	if err := p.vectorStore.RemoveProjectVectorStore(ctx, state.projectID); err != nil {
+		return fmt.Errorf("remove project vector store: %w", err)
 	}
 	return nil
 }

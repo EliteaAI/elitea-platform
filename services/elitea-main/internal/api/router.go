@@ -152,11 +152,18 @@ type RouterConfig struct {
 	WebhookRepo                webhook.Repository
 	RedisClient                *goredis.Client
 	EventSource                v2events.EventSource
-	Shadow                     *shadow.Comparator
-	ShadowMetrics              *shadow.Metrics
-	CutoverTracker             *cutover.Tracker
-	CutoverRouter              *cutover.Router
-	AdminUI                    *adminui.Config
+	// ProjectVectorStore provisions a new project's PgVector credentials and
+	// its `vectorstorage` configuration row (#371). It is injected because the
+	// composition needs the Configurations runtime's finder, unsecreter and
+	// vault writer, and that runtime is owned by internal/runtimecomposition,
+	// which imports this layer. Unassigned, a created project has no vector
+	// store and cannot index — see createProjectVectorStore.
+	ProjectVectorStore projectprovisioning.ProjectVectorStore
+	Shadow             *shadow.Comparator
+	ShadowMetrics      *shadow.Metrics
+	CutoverTracker     *cutover.Tracker
+	CutoverRouter      *cutover.Router
+	AdminUI            *adminui.Config
 	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
 	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
 	// DELETE cascade, but only inside newProductionRouter — it is
@@ -281,6 +288,11 @@ type bucketBootstrapRepoAdapter struct {
 // optional: a deployment with no object store still creates projects, it just
 // creates them without artifact buckets — which is the state EVERY project is
 // in today, so its absence cannot be a regression.
+//
+// The vector store is optional in the same way and for the same reason (#371),
+// with one difference worth stating: a project created without it CAN be
+// created and CANNOT index. Its absence is not a regression either, because no
+// Go-created project could index before, but it is not a working project.
 func newProjectProvisioner(cfg RouterConfig) (*projectprovisioning.Provisioner, bool) {
 	if cfg.Pool == nil {
 		return nil, false
@@ -294,6 +306,10 @@ func newProjectProvisioner(cfg RouterConfig) (*projectprovisioning.Provisioner, 
 	// SECRETS_MASTER_KEY rule.
 	options := []projectprovisioning.Option{
 		projectprovisioning.WithProjectVault(v2secrets.NewHandler(cfg.Pool)),
+	}
+	// The vector store (#371) IS conditional — see this function's doc comment.
+	if cfg.ProjectVectorStore != nil {
+		options = append(options, projectprovisioning.WithVectorStore(cfg.ProjectVectorStore))
 	}
 	if cfg.ObjectStore != nil {
 		bucketsRepo, bucketsErr := dbrepos.NewArtifactBucketsRepository(cfg.Pool)

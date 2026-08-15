@@ -135,13 +135,29 @@ type ProjectVaultBootstrapper interface {
 	RemoveProjectVault(ctx context.Context, projectID string) error
 }
 
+// ProjectVectorStore creates and removes a project's vector-store credentials
+// and its `vectorstorage` configuration row — the state an index run resolves
+// before it can write a vector (#371).
+//
+// It is satisfied by runtimecomposition's adapter over
+// internal/application/vectorstore.ProjectPgvectorService, and it is optional
+// for the same reason ArtifactBootstrapper is: a deployment that runs no
+// PgVector bootstrap still creates projects. Unlike the bucket bootstrapper,
+// though, its absence is NOT a no-op that leaves a working project — see
+// createProjectVectorStore.
+type ProjectVectorStore interface {
+	ProvisionProjectVectorStore(ctx context.Context, projectID int64) error
+	RemoveProjectVectorStore(ctx context.Context, projectID int64) error
+}
+
 // Provisioner runs the project-create pipeline.
 type Provisioner struct {
-	pool     *pgxpool.Pool
-	migrator TenantMigrator
-	buckets  ArtifactBootstrapper
-	vault    ProjectVaultBootstrapper
-	logger   *slog.Logger
+	pool        *pgxpool.Pool
+	migrator    TenantMigrator
+	buckets     ArtifactBootstrapper
+	vault       ProjectVaultBootstrapper
+	vectorStore ProjectVectorStore
+	logger      *slog.Logger
 }
 
 // Option configures a Provisioner at construction time.
@@ -158,6 +174,12 @@ func WithArtifactBuckets(buckets ArtifactBootstrapper) Option {
 // optional: Provision refuses to run without it. See ProjectVaultBootstrapper.
 func WithProjectVault(vault ProjectVaultBootstrapper) Option {
 	return func(p *Provisioner) { p.vault = vault }
+}
+
+// WithVectorStore supplies the project vector-store provisioner. Without it the
+// project_pgvector step is inert — see createProjectVectorStore.
+func WithVectorStore(vectorStore ProjectVectorStore) Option {
+	return func(p *Provisioner) { p.vectorStore = vectorStore }
 }
 
 func New(pool *pgxpool.Pool, migrator TenantMigrator, logger *slog.Logger, options ...Option) *Provisioner {
