@@ -87,12 +87,23 @@ func (id identity) sign(secret []byte) string {
 //   - X-Auth-Type / X-Auth-Id / X-Auth-Reference (Traefik forward-auth headers)
 //   - Authorization, X-Api-Key (bearer / API-key credentials)
 //   - Cookie (session cookies; must not reach the downstream gateway)
+//   - X-Project-Id / OpenAI-Project / OpenAI-Organization (the edge project
+//     selector; the edge consumes it and speaks the result as signed identity)
 func stripIdentityHeaders(h http.Header) {
 	// Signed edge identity headers — re-injected after stripping.
 	h.Del(HeaderProjectID)
 	h.Del(HeaderUserID)
 	h.Del(HeaderTenantID)
 	h.Del(HeaderSignature)
+
+	// The project selector is an edge control header (issue #318). The edge
+	// already read it, checked the caller's membership, and expressed the
+	// result as X-Elitea-Project-Id. Forwarding it would send an Elitea project
+	// id onward under a name a real provider reads: OpenAI rejects a request
+	// whose OpenAI-Organization names an organization the key cannot use.
+	for _, name := range middleware.ProjectSelectorHeaders() {
+		h.Del(name)
+	}
 
 	// Traefik forward-auth headers that the auth middleware reads; remove so the
 	// gateway never sees inbound authentication context.
