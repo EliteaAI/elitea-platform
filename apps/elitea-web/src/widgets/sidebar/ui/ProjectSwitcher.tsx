@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import Box from '@mui/material/Box';
 import ClickAwayListener from '@mui/material/ClickAwayListener';
 import Paper from '@mui/material/Paper';
@@ -37,12 +38,42 @@ export interface ProjectSwitcherProps {
  * (`SidebarProjectSelect.jsx:25-63`)'s `StyledTooltip` — otherwise a
  * collapsed sidebar leaves no way to tell which project is active without
  * expanding it.
+ *
+ * Issue #238: the hand-rolled trigger dropped the two things the baseline
+ * `Select` supplied for free — a visible dropdown arrow and the
+ * `aria-haspopup`/`aria-expanded` pair — so the control read as static text
+ * ("Project: Default Project") and nobody knew it could be clicked. Both
+ * are restored here:
+ *
+ * - The arrow is `ExpandMoreIcon`, the same chevron the sibling sidebar
+ *   dropdown (`widgets/create-button/ui/CreateEntityButton.tsx`, an
+ *   identical `ClickAwayListener` + `Popper` + `Paper` shape) already
+ *   rotates 180° on open, and the same icon `shared/ui/SingleSelect` hands
+ *   to MUI `Select` as its `IconComponent`. It is `aria-hidden`
+ *   (decoration; the ARIA state below carries the meaning) and it is not
+ *   rendered when `collapsed`, where the avatar is the whole control.
+ * - The trigger owns `aria-haspopup="listbox"`, a live `aria-expanded`, and
+ *   `aria-controls` pointing at the popup while it is open; the popup
+ *   `Paper` keeps its `role="listbox"` and is named by the trigger. Same
+ *   trigger/menu id pairing `shared/ui/ControlsDropdown` uses.
+ *
+ * The popup no longer hides itself when `projects` is empty (it was gated
+ * on `open && projects.length > 0`, which made the button a silent no-op).
+ * It now renders one disabled "No projects" row — the same key the trigger
+ * text falls back to, and the same in-popup empty row
+ * `shared/ui/SingleSelect` renders for an empty option list. Disabling the
+ * trigger instead would suppress the R4 collapsed tooltip, because MUI
+ * `Tooltip` gets no pointer events from a disabled button.
  */
 export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collapsed = false }: ProjectSwitcherProps): ReactNode {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLElement | null>(null);
+  const generatedId = useId();
+  const triggerId = `project-switcher-trigger-${generatedId}`;
+  const listboxId = `project-switcher-listbox-${generatedId}`;
   const selected = projects.find((project) => String(project.id) === selectedProjectId);
-  const selectedName = selected?.name ?? t('widgets.sidebar.projectSwitcher.none', 'No projects');
+  const noneLabel = t('widgets.sidebar.projectSwitcher.none', 'No projects');
+  const selectedName = selected?.name ?? noneLabel;
 
   const close = useCallback(() => setOpen(false), []);
   const toggle = useCallback(() => setOpen((value) => !value), []);
@@ -66,7 +97,11 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
           <Box
             component="button"
             type="button"
+            id={triggerId}
             ref={anchorRef}
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-controls={open ? listboxId : undefined}
             onClick={toggle}
             sx={(theme: Theme) => ({
               display: 'flex',
@@ -109,16 +144,42 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
                 </Typography>
               </Box>
             )}
+            {!collapsed && (
+              <ExpandMoreIcon
+                aria-hidden
+                data-testid="project-switcher-chevron"
+                sx={{
+                  width: '1rem',
+                  height: '1rem',
+                  flexShrink: 0,
+                  // currentColor, not a pinned palette token. Every other icon
+                  // on this rail inherits — the nav items, both collapse
+                  // chevrons in Sidebar.tsx, and the create-button chevron —
+                  // and pinning one made this the only sidebar icon whose
+                  // colour is an independent input. It rendered in the dark
+                  // scheme and vanished in the light one, measured in the
+                  // visual suite: the dark baseline carries the glyph and the
+                  // light baseline of the same row is flat background. A glyph
+                  // painted in the background colour and a glyph that never
+                  // painted are the same picture, so inheriting removes the
+                  // input rather than guessing which of the two it was.
+                  transition: 'transform 0.2s ease-in-out',
+                  transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+                }}
+              />
+            )}
           </Box>
         </Tooltip>
 
         <Popper
-          open={open && projects.length > 0}
+          open={open}
           anchorEl={anchorRef.current}
           placement="bottom-start"
           sx={{ zIndex: 1300 }}
         >
           <Paper
+            id={listboxId}
+            aria-labelledby={triggerId}
             // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a real <select>/<datalist> cannot host this custom-styled, avatar-decorated option list; role="listbox" + child role="option" is the standard ARIA pattern for exactly this case.
             role="listbox"
             sx={(theme: Theme) => ({
@@ -132,6 +193,23 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
               boxShadow: theme.vars.palette.boxShadow.default,
             })}
           >
+            {projects.length === 0 && (
+              <Box
+                // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- same custom listbox as the option rows below; an empty row still has to be an "option" for the listbox to stay valid ARIA, exactly as MUI renders a disabled `MenuItem` inside `Select`.
+                role="option"
+                aria-selected={false}
+                aria-disabled
+                sx={(theme: Theme) => ({
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: theme.spacing(1, 2),
+                  cursor: 'default',
+                  color: theme.vars.palette.text.metrics,
+                })}
+              >
+                <Typography variant="labelMedium">{noneLabel}</Typography>
+              </Box>
+            )}
             {projects.map((project) => (
               <Box
                 key={project.id}

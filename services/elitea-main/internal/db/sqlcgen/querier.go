@@ -51,6 +51,11 @@ type Querier interface {
 	CreateArtifactTransferGrant(ctx context.Context, arg CreateArtifactTransferGrantParams) (CreateArtifactTransferGrantRow, error)
 	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
+	// A binding is written once, in the same transaction as the token INSERT, and
+	// after the membership check. There is no update query on purpose: a binding is
+	// a fact about a key, not a setting that changes under a running integration
+	// (spec-llm-project-scope §4).
+	CreateTokenProjectBinding(ctx context.Context, arg CreateTokenProjectBindingParams) error
 	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
 	DeleteArtifactObjectRows(ctx context.Context, ids []int64) (int64, error)
 	DeleteArtifactObjects(ctx context.Context, arg DeleteArtifactObjectsParams) (int64, error)
@@ -65,6 +70,17 @@ type Querier interface {
 	// Legacy's equivalent is utils/file_utils.py's cleanup_stale_chunks, a
 	// 12-hour local-disk TTL swept by the elitea_core_cleanup_stale_chunks RPC.
 	DeleteStaleAttachmentChunks(ctx context.Context, receivedAt pgtype.Timestamptz) (int64, error)
+	// The list and get responses read the binding back through the LEFT JOIN
+	// above, so no point-read query exists. A separate read would be a second round
+	// trip for a value the same row already carries.
+	// Token deletion deletes the binding explicitly, in the same transaction, and
+	// does NOT rely on ON DELETE CASCADE (spec-llm-project-scope §3.1). Migration
+	// 0071 guards its foreign key with to_regclass, because elitea-migrate can run
+	// before pylon creates auth_core. When the guard skips, the migration is still
+	// ledgered as applied and no later run adds the constraint, so that database
+	// has no cascade for its whole life. The constraint stays as the second of two
+	// independent guarantees; this query is the first.
+	DeleteTokenProjectBinding(ctx context.Context, tokenID int32) error
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
 	FinalizeCurrentAgentAuthorizationPause(ctx context.Context, arg FinalizeCurrentAgentAuthorizationPauseParams) (int64, error)
 	FinalizeCurrentAgentFullMessage(ctx context.Context, arg FinalizeCurrentAgentFullMessageParams) (int64, error)
@@ -80,6 +96,10 @@ type Querier interface {
 	FindCurrentEmbeddingConfigurations(ctx context.Context, arg FindCurrentEmbeddingConfigurationsParams) ([]FindCurrentEmbeddingConfigurationsRow, error)
 	GetActivePATForUser(ctx context.Context, userID int32) (GetActivePATForUserRow, error)
 	GetActivePATPrincipalByID(ctx context.Context, tokenID int32) (GetActivePATPrincipalByIDRow, error)
+	// This is the single query the credential validator runs for every request.
+	// The token binding rides along on the row the validator already reads, so a
+	// bound token costs no additional round trip on the request path
+	// (spec-llm-project-scope §3.2). Do not split it into a second lookup.
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)
 	GetActiveProjectSystemPAT(ctx context.Context, projectID int32) (GetActiveProjectSystemPATRow, error)
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
@@ -237,6 +257,9 @@ type Querier interface {
 	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
 	ListExpiredArtifactObjects(ctx context.Context, arg ListExpiredArtifactObjectsParams) ([]EliteaStorageObject, error)
+	// The LEFT JOIN onto elitea_identity.token_project_binding is what lets a user
+	// see which project a key bills (ADR-0018, spec-llm-project-scope §4). It is a
+	// LEFT JOIN because an unbound token is the default and must still be listed.
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	ListPendingAgentExecutionIDs(ctx context.Context, arg ListPendingAgentExecutionIDsParams) ([]string, error)
 	LoadIndexMetaInitializationWork(ctx context.Context, arg LoadIndexMetaInitializationWorkParams) (LoadIndexMetaInitializationWorkRow, error)

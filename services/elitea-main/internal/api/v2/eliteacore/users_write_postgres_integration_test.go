@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
 	dbschema "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/schema"
+	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 )
 
 const usersWriteProjectID = 1
@@ -339,6 +341,166 @@ func TestUsersWriteVerbsPersistProjectMembership(t *testing.T) {
 	})
 }
 
+/* ── token project binding revocation (spec-llm-project-scope §7.3) ───────── */
+
+// A binding MUST NOT outlive membership. The binding decides which project pays
+// for a /llm call and whose provider credentials the call spends
+// (elitea-llm-gateway/internal/account/account.go), so a binding that survives
+// a removal is a former member spending a project's keys. The cases below
+// bracket the sweep from both sides: it must remove the right rows, and it must
+// leave every other row alone.
+const otherProjectID = 4242
+
+func TestUsersDeleteRevokesTokenProjectBindingsForThatProjectOnly(t *testing.T) {
+	pool := newUsersWritePostgresPool(t)
+	prepareUsersWriteFixture(t, pool)
+	router := usersWriteRouter(eliteacore.NewHandler(pool))
+
+	const leaving = "e2e-member@autotest.local"
+	const staying = "e2e-admin@autotest.local"
+
+	// The key that must be revoked, plus the two that must not: the same
+	// person's key for a DIFFERENT project, and a DIFFERENT person's key for the
+	// same project.
+	revoked := seedBoundPAT(t, pool, "leaving-here", leaving, usersWriteProjectID)
+	keptOtherProject := seedBoundPAT(t, pool, "leaving-elsewhere", leaving, otherProjectID)
+	keptOtherUser := seedBoundPAT(t, pool, "staying-here", staying, usersWriteProjectID)
+
+	before := readMembers(t, router)
+	userID := memberUserID(t, before, leaving)
+
+	recorder := usersWriteDo(t, router, http.MethodDelete,
+		fmt.Sprintf("/admin/users/default/%d?id%%5B%%5D=%s", usersWriteProjectID, userID), nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	// Membership really went — otherwise the binding assertions prove nothing.
+	after := readMembers(t, router)
+	if _, found := memberRoles(after, leaving); found {
+		t.Fatalf("%s is still a member after DELETE: %+v", leaving, after.Rows)
+	}
+
+	if projectID, found := boundProjectID(t, pool, revoked); found {
+		t.Errorf("token %d of the removed member still binds project %d — the key keeps "+
+			"spending a project its owner has left (spec §7 invariant 3)", revoked, projectID)
+	}
+
+	// Precision, the half a broad `DELETE ... WHERE project_id = $1` would fail.
+	if projectID, found := boundProjectID(t, pool, keptOtherProject); !found || projectID != otherProjectID {
+		t.Errorf("the removed member's binding for project %d was swept too (found=%v project=%d); "+
+			"leaving one project must not unbind the keys of another",
+			otherProjectID, found, projectID)
+	}
+	// And the half a broad `DELETE ... WHERE token_id IN (...)` would fail.
+	if projectID, found := boundProjectID(t, pool, keptOtherUser); !found || projectID != usersWriteProjectID {
+		t.Errorf("a still-member's binding for project %d was swept (found=%v project=%d); "+
+			"removing one user must not touch another user's keys",
+			usersWriteProjectID, found, projectID)
+	}
+}
+
+// The regression that would otherwise ship unnoticed. UsersUpdate DELETEs the
+// same auth_core__project_user_role rows UsersDelete does, and re-inserts them
+// in the same transaction. Reading that DELETE as a removal — and revoking
+// bindings beside it — would unbind every key of every edited user on an
+// ordinary role change, reported as "roles updated". Nothing in the response,
+// the member list or the UI would say so.
+func TestUsersUpdateRoleChangeKeepsTokenProjectBindings(t *testing.T) {
+	pool := newUsersWritePostgresPool(t)
+	prepareUsersWriteFixture(t, pool)
+	router := usersWriteRouter(eliteacore.NewHandler(pool))
+
+	const edited = "e2e-member@autotest.local"
+	tokenID := seedBoundPAT(t, pool, "edited-member", edited, usersWriteProjectID)
+
+	before := readMembers(t, router)
+	userID := memberUserID(t, before, edited)
+	if roles, _ := memberRoles(before, edited); len(roles) != 1 || roles[0] != "editor" {
+		t.Fatalf("precondition: %s roles = %v, want [editor]", edited, roles)
+	}
+
+	recorder := usersWriteDo(t, router, http.MethodPut,
+		fmt.Sprintf("/admin/users/default/%d", usersWriteProjectID),
+		map[string]any{"userId": userID, "roles": []string{"admin"}})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	// The edit did happen, and the user is still a member.
+	after := readMembers(t, router)
+	roles, found := memberRoles(after, edited)
+	if !found {
+		t.Fatalf("%s disappeared from the member list after a role change", edited)
+	}
+	if len(roles) != 1 || roles[0] != "admin" {
+		t.Fatalf("roles after edit = %v, want [admin]", roles)
+	}
+
+	projectID, bound := boundProjectID(t, pool, tokenID)
+	if !bound || projectID != usersWriteProjectID {
+		t.Fatalf("a role change unbound the member's access token (found=%v project=%d); "+
+			"the user never lost membership, so the binding must survive", bound, projectID)
+	}
+}
+
+// Atomicity. The binding revocation and the assignment delete are one
+// transaction: a failure in either must leave the database exactly as it was.
+// The trigger below makes the assignment delete fail deterministically, which
+// no ordering of two bare pool.Exec calls could survive — the binding would
+// already be gone, and the member would still be a member holding an unbound
+// key.
+func TestUsersDeleteBindingRevocationRollsBackWithTheAssignment(t *testing.T) {
+	pool := newUsersWritePostgresPool(t)
+	prepareUsersWriteFixture(t, pool)
+	router := usersWriteRouter(eliteacore.NewHandler(pool))
+
+	const member = "e2e-member@autotest.local"
+	tokenID := seedBoundPAT(t, pool, "rollback-member", member, usersWriteProjectID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, statement := range []string{
+		`CREATE FUNCTION reject_assignment_delete() RETURNS trigger AS $$
+		 BEGIN RAISE EXCEPTION 'assignment delete refused by test'; END $$ LANGUAGE plpgsql`,
+		`CREATE TRIGGER reject_assignment_delete
+		 BEFORE DELETE ON public.auth_core__project_user_role
+		 FOR EACH ROW EXECUTE FUNCTION reject_assignment_delete()`,
+	} {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("install failure trigger: %v", err)
+		}
+	}
+
+	before := readMembers(t, router)
+	userID := memberUserID(t, before, member)
+
+	recorder := usersWriteDo(t, router, http.MethodDelete,
+		fmt.Sprintf("/admin/users/default/%d?id%%5B%%5D=%s", usersWriteProjectID, userID), nil)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("DELETE status = %d with the assignment delete refused, want 500 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+
+	if _, err := pool.Exec(ctx,
+		`DROP TRIGGER reject_assignment_delete ON public.auth_core__project_user_role`); err != nil {
+		t.Fatalf("remove failure trigger: %v", err)
+	}
+
+	// Nothing moved. The member is still a member…
+	after := readMembers(t, router)
+	if _, stillMember := memberRoles(after, member); !stillMember {
+		t.Errorf("%s was removed even though the assignment delete failed", member)
+	}
+	// …so the binding must still be there. A committed revocation beside a
+	// failed removal is the split this transaction exists to prevent.
+	projectID, bound := boundProjectID(t, pool, tokenID)
+	if !bound || projectID != usersWriteProjectID {
+		t.Errorf("the binding was revoked (found=%v project=%d) while the member kept membership; "+
+			"the two writes are not atomic", bound, projectID)
+	}
+}
+
 /* ── fixture ─────────────────────────────────────────────────────────────── */
 
 func prepareUsersWriteFixture(t *testing.T, pool *pgxpool.Pool) {
@@ -427,5 +589,77 @@ func newUsersWritePostgresPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx, dbschema.AuthCoreBaselineSQLCProjection); err != nil {
 		t.Fatalf("apply auth_core baseline projection: %v", err)
 	}
+
+	// The REAL migration, not a hand-written CREATE TABLE. UsersDelete revokes
+	// token bindings through this table on every removal, so a fixture shape
+	// that drifted from migrations/shared/0071 would let the revocation pass
+	// here and fail 42P01 in production. Reading the file means it cannot.
+	// The foreign key inside it is guarded by to_regclass and resolves, because
+	// the projection above created public.auth_core__token.
+	bindingSQL, err := infradb.TokenBindingMigrationSQL()
+	if err != nil {
+		t.Fatalf("read token binding migration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, bindingSQL); err != nil {
+		t.Fatalf("apply token binding migration: %v", err)
+	}
 	return pool
+}
+
+/* ── token binding helpers (spec-llm-project-scope §7 invariant 3) ────────── */
+
+// seedBoundPAT creates one access token for the named member and binds it to
+// projectID, the way internal/api/v2/auth/tokens.go does after its membership
+// check. It returns the token id.
+func seedBoundPAT(t *testing.T, pool *pgxpool.Pool, label, email string, projectID int) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	var tokenID int
+	if err := pool.QueryRow(ctx, `
+INSERT INTO public.auth_core__token (uuid, user_id, name)
+SELECT $1, owner.id, $2
+FROM public.auth_core__user AS owner
+WHERE owner.email = $3
+RETURNING id`, "pat-"+label, label, email).Scan(&tokenID); err != nil {
+		t.Fatalf("seed token %s for %s: %v", label, email, err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO elitea_identity.token_project_binding (token_id, project_id) VALUES ($1, $2)`,
+		tokenID, projectID); err != nil {
+		t.Fatalf("bind token %s to project %d: %v", label, projectID, err)
+	}
+	return tokenID
+}
+
+// boundProjectID answers what the /llm edge would resolve for this token: the
+// bound project, or nothing when the binding is gone.
+func boundProjectID(t *testing.T, pool *pgxpool.Pool, tokenID int) (int, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	var projectID int
+	err := pool.QueryRow(ctx,
+		`SELECT project_id FROM elitea_identity.token_project_binding WHERE token_id = $1`,
+		tokenID).Scan(&projectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false
+	}
+	if err != nil {
+		t.Fatalf("read binding for token %d: %v", tokenID, err)
+	}
+	return projectID, true
+}
+
+func memberUserID(t *testing.T, listing usersListBody, email string) string {
+	t.Helper()
+	for _, row := range listing.Rows {
+		if row.Email == email {
+			return row.ID
+		}
+	}
+	t.Fatalf("precondition: %s is not in the member list %+v", email, listing.Rows)
+	return ""
 }

@@ -2064,9 +2064,9 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 			}))
 			// Membership admits the caller-supplied project selector header
-			// (issue #318). Without it every selector that names another
-			// project is refused, so /llm keeps billing the caller's own
-			// project and never bills a project on an unchecked header.
+			// (issue #318). Without it the edge admits no selector that names
+			// another project, so /llm keeps billing the caller's own project
+			// and never bills a project on an unchecked header.
 			r.Use(apimw.Project(apimw.ProjectConfig{
 				Resolver:   resolver,
 				Membership: apimw.NewProjectMembership(cfg.Pool),

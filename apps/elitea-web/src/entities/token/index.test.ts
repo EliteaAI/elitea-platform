@@ -19,6 +19,7 @@ const PUBLIC_SURFACE = [
   'sortTokensByName',
   'tokenExpiryInDays',
   'tokenExpiryStatus',
+  'tokenProjectKey',
   'useCreateTokenMutation',
   'useDeleteTokenMutation',
   'useListTokensQuery',

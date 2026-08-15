@@ -87,8 +87,9 @@ func (id identity) sign(secret []byte) string {
 //   - X-Auth-Type / X-Auth-Id / X-Auth-Reference (Traefik forward-auth headers)
 //   - Authorization, X-Api-Key (bearer / API-key credentials)
 //   - Cookie (session cookies; must not reach the downstream gateway)
-//   - X-Project-Id / OpenAI-Project / OpenAI-Organization (the edge project
-//     selector; the edge consumes it and speaks the result as signed identity)
+//   - X-Project-Id / OpenAI-Organization (the edge project selector; the edge
+//     consumes it and speaks the result as signed identity)
+//   - OpenAI-Project (never a selector, but it must not travel onward either)
 func stripIdentityHeaders(h http.Header) {
 	// Signed edge identity headers — re-injected after stripping.
 	h.Del(HeaderProjectID)
@@ -96,12 +97,14 @@ func stripIdentityHeaders(h http.Header) {
 	h.Del(HeaderTenantID)
 	h.Del(HeaderSignature)
 
-	// The project selector is an edge control header (issue #318). The edge
-	// already read it, checked the caller's membership, and expressed the
-	// result as X-Elitea-Project-Id. Forwarding it would send an Elitea project
-	// id onward under a name a real provider reads: OpenAI rejects a request
-	// whose OpenAI-Organization names an organization the key cannot use.
-	for _, name := range middleware.ProjectSelectorHeaders() {
+	// The project headers are edge control headers (issue #318). The edge
+	// already read the selector, checked the caller's membership, and expressed
+	// the result as X-Elitea-Project-Id. Forwarding any of them would send an
+	// Elitea project id onward under a name a real provider reads: OpenAI
+	// rejects a request whose OpenAI-Organization names an organization the key
+	// cannot use. OpenAI-Project is stripped as well, although the edge never
+	// reads it as a selector, because it carries an Elitea project id too.
+	for _, name := range middleware.ProjectHeadersStrippedOutbound() {
 		h.Del(name)
 	}
 

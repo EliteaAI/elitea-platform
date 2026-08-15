@@ -94,8 +94,9 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	shared, err := LoadManifest(platformmigrations.Files, ScopeShared)
 	require.NoError(t, err)
-	// 70: shared/0070_chat_messages_create_permission.sql.
-	require.EqualValues(t, 70, Head(shared))
+	// 71: shared/0071_token_project_binding.sql, which follows
+	// shared/0070_chat_messages_create_permission.sql.
+	require.EqualValues(t, 71, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

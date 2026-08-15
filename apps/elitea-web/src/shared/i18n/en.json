@@ -108,7 +108,6 @@
   "ai-configuration.openaiTemplate.downloadTooltip": "Download code example",
   "ai-configuration.projectConfig.notConfigured": "Not configured",
   "ai-configuration.projectConfig.openaiBase": "OpenAI-BaseURL:",
-  "ai-configuration.projectConfig.openaiProject": "OpenAI-Project:",
   "ai-configuration.projectConfig.projectId": "Project ID:",
   "ai-configuration.projectConfig.serverUrl": "Server URL:",
   "ai-configuration.section.aiCredentials": "AI Credentials",
@@ -1966,5 +1965,13 @@
   "features.agents.deleteVersion.title": "Delete version",
   "pages.agents.editApplication.deleteError": "Failed to delete this agent.",
   "pages.agents.editApplication.exportError": "Failed to export this agent.",
-  "features.toolkits.indexScheduleModal.credentialsLabel": "Credentials"
+  "entities.token.form.createFailed": "The system did not create the token. Try again.",
+  "entities.token.form.invalidProjectId": "This project is not a valid choice. Select a different project in the sidebar, then create the token again.",
+  "entities.token.form.projectForbidden": "You are not a member of this project. Select a different project in the sidebar, then create the token again.",
+  "entities.token.table.project": "Project",
+  "entities.token.table.projectId": "Project {{id}}",
+  "entities.token.table.projectNone": "Not bound",
+  "features.toolkits.indexScheduleModal.credentialsLabel": "Credentials",
+  "entities.token.form.projectNoneNote": "This token gets no project, and you cannot change this later.",
+  "entities.token.form.projectNote": "The project {{project}} pays for this token, and you cannot change this later."
 }

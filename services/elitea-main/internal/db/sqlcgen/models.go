@@ -312,6 +312,12 @@ type Configuration struct {
 	UpdatedAt   pgtype.Timestamp `db:"updated_at" json:"updated_at"`
 }
 
+type EliteaIdentityTokenProjectBinding struct {
+	TokenID   int32              `db:"token_id" json:"token_id"`
+	ProjectID int32              `db:"project_id" json:"project_id"`
+	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
 type EliteaRuntimeAgentExecutionJob struct {
 	ExecutionID               string `db:"execution_id" json:"execution_id"`
 	Generation                int64  `db:"generation" json:"generation"`

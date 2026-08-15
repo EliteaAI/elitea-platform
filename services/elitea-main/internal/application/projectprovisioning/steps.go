@@ -269,7 +269,8 @@ ON CONFLICT (project_id, name) DO NOTHING`,
 	return nil
 }
 
-// removeProjectPermissions deletes the project's roles.
+// removeProjectPermissions deletes the project's roles and the token bindings
+// that name it.
 //
 // pylon's counterpart is a no-op, which leaves orphan auth_core__project_role
 // and auth_core__project_user_role rows behind after a project is deleted — its
@@ -277,15 +278,42 @@ ON CONFLICT (project_id, name) DO NOTHING`,
 // deliberate correction: the rows describe a project that will not exist, and
 // auth_core__project_user_role cascades from the role, so one delete clears
 // both.
+//
+// The binding delete is the same invariant one level up (ADR-0018,
+// spec-llm-project-scope §7.3): a binding must not outlive membership. Removing
+// one user from a project revokes that user's bindings for it, in
+// eliteacore.UsersDelete. Removing the whole project takes every membership
+// with it through the role cascade, so it must take every binding too.
+// elitea_identity.token_project_binding.project_id carries no foreign key —
+// centry.project is pylon-owned as well — so nothing deletes these rows for us.
+//
+// Both statements run in one transaction. Half a teardown leaves bindings that
+// name a project no longer there, which is the state this function exists to
+// prevent.
 func removeProjectPermissions(ctx context.Context, p *Provisioner, state *provisionState) error {
 	if state.projectID == 0 {
 		return nil
 	}
-	if _, err := p.pool.Exec(ctx,
+	transaction, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = transaction.Rollback(context.WithoutCancel(ctx)) }()
+
+	if _, err := transaction.Exec(ctx,
+		`DELETE FROM elitea_identity.token_project_binding WHERE project_id = $1`,
+		state.projectID,
+	); err != nil {
+		return fmt.Errorf("delete token project bindings: %w", err)
+	}
+	if _, err := transaction.Exec(ctx,
 		`DELETE FROM public.auth_core__project_role WHERE project_id = $1`,
 		state.projectID,
 	); err != nil {
 		return fmt.Errorf("delete project roles: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
 }

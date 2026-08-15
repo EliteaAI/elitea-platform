@@ -563,6 +563,94 @@ func TestDeprovisionRemovesEverythingProvisionCreated(t *testing.T) {
 	}
 }
 
+// TestDeprovisionRevokesTokenBindingsForThatProjectOnly pins ADR-0018's §7.3
+// invariant at the project level: a token binding must not outlive membership.
+//
+// Deleting one member from a project revokes that member's bindings for it, in
+// eliteacore.UsersDelete. Deleting the whole project takes every membership
+// with it — removeProjectPermissions deletes auth_core__project_role, and
+// auth_core__project_user_role cascades from the role — so it must take every
+// binding too. elitea_identity.token_project_binding.project_id carries no
+// foreign key, because centry.project is pylon-owned, so nothing revokes these
+// rows for us.
+//
+// The surviving binding is the half that makes this test discriminate. A
+// `DELETE FROM token_project_binding` with no WHERE clause would pass the first
+// assertion and fail the second.
+func TestDeprovisionRevokesTokenBindingsForThatProjectOnly(t *testing.T) {
+	pool := newProvisioningPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	doomed, err := provisioner.Provision(ctx, projectprovisioning.Request{
+		Name: "Doomed With A Bound Key", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
+	})
+	if err != nil {
+		t.Fatalf("provision doomed: %v", err)
+	}
+	kept, err := provisioner.Provision(ctx, projectprovisioning.Request{
+		Name: "Kept With A Bound Key", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
+	})
+	if err != nil {
+		t.Fatalf("provision kept: %v", err)
+	}
+
+	doomedToken := bindTokenToProject(ctx, t, pool, "deprovision-doomed", doomed.ProjectID)
+	keptToken := bindTokenToProject(ctx, t, pool, "deprovision-kept", kept.ProjectID)
+
+	// Premise: both bindings exist. Without this the "gone" assertion below
+	// would pass against a binding that was never written.
+	if got := countBindings(ctx, t, pool, doomedToken); got != 1 {
+		t.Fatalf("doomed binding was not written: got %d rows, want 1", got)
+	}
+
+	if _, err := provisioner.Deprovision(ctx, doomed.ProjectID); err != nil {
+		t.Fatalf("deprovision: %v", err)
+	}
+
+	if got := countBindings(ctx, t, pool, doomedToken); got != 0 {
+		t.Errorf("the binding survived the project it names: got %d rows, want 0", got)
+	}
+	if got := countBindings(ctx, t, pool, keptToken); got != 1 {
+		t.Errorf("deleting one project revoked another project's binding: got %d rows, want 1", got)
+	}
+}
+
+// bindTokenToProject writes one token owned by user 1 and binds it to
+// projectID. It returns the token id. It writes the rows directly because the
+// token API lives in another package; the columns are the same ones that API
+// writes.
+func bindTokenToProject(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tokenUUID string, projectID int64) int32 {
+	t.Helper()
+	var tokenID int32
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO public.auth_core__token (uuid, user_id, name) VALUES ($1, 1, $2) RETURNING id`,
+		tokenUUID, tokenUUID,
+	).Scan(&tokenID); err != nil {
+		t.Fatalf("insert token %s: %v", tokenUUID, err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO elitea_identity.token_project_binding (token_id, project_id) VALUES ($1, $2)`,
+		tokenID, projectID,
+	); err != nil {
+		t.Fatalf("bind token %s to project %d: %v", tokenUUID, projectID, err)
+	}
+	return tokenID
+}
+
+func countBindings(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tokenID int32) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM elitea_identity.token_project_binding WHERE token_id = $1`,
+		tokenID,
+	).Scan(&rows); err != nil {
+		t.Fatalf("count bindings for token %d: %v", tokenID, err)
+	}
+	return rows
+}
+
 /* ── fixture ───────────────────────────────────────────────────────────── */
 
 // newProvisioningPool builds an isolated database holding exactly what a real

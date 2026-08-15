@@ -68,6 +68,33 @@ func runSelector(
 	return rec, seen, invoked
 }
 
+// assertFellBackToPersonal states the whole silent-fallback contract in one
+// place: the request succeeds, it reaches the proxy, and it bills the caller's
+// own project. The 200 covers "not 403 and not 500" as well. A status-only
+// assertion cannot tell a correctly billed request from a wrongly billed one,
+// so the billed project is asserted too.
+func assertFellBackToPersonal(
+	t *testing.T,
+	rec *httptest.ResponseRecorder,
+	seen ProjectContext,
+	invoked bool,
+) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; an inadmissible selector must not be an error; body = %s",
+			rec.Code, rec.Body.String())
+	}
+	if !invoked {
+		t.Fatal("next handler was not invoked")
+	}
+	if seen.ProjectID == teamProject {
+		t.Errorf("billed project %d, which the selector named but the caller may not use", teamProject)
+	}
+	if seen.ProjectID != personalProject {
+		t.Errorf("billed project = %d, want the personal project %d", seen.ProjectID, personalProject)
+	}
+}
+
 // TestProjectSelector_MemberProjectIsBilled is the first discriminating test:
 // the admitted project must be the one the header names, and not the caller's
 // personal project.
@@ -101,11 +128,13 @@ func TestProjectSelector_MemberProjectIsBilled(t *testing.T) {
 	}
 }
 
-// TestProjectSelector_NonMemberIsRefused is the second discriminating test: a
-// selector the caller may not use is refused. It must not be redirected to the
-// personal project, because that silently moves team spend onto a personal
-// budget.
-func TestProjectSelector_NonMemberIsRefused(t *testing.T) {
+// TestProjectSelector_NonMemberFallsBackSilently is the second discriminating
+// test, and it is the row that ADR-0018 changed. A selector the caller may not
+// use is ignored. The request proceeds on the caller's own project.
+//
+// It must not be a 403. Issue #318 forbids a new failure mode for an existing
+// caller, and the UI's Node and Python samples send a project id today.
+func TestProjectSelector_NonMemberFallsBackSilently(t *testing.T) {
 	queries := &fakeMemberQuerier{allow: map[int32]bool{}} // member of nothing
 
 	rec, seen, invoked := runSelector(
@@ -113,23 +142,9 @@ func TestProjectSelector_NonMemberIsRefused(t *testing.T) {
 		selectorRequest(HeaderProjectSelector, "4321"),
 	)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body = %s", rec.Code, rec.Body.String())
-	}
-	if invoked {
-		t.Error("next handler ran; a refused selector must not reach the proxy")
-	}
-	if seen.ProjectID == personalProject {
-		t.Errorf("silently fell back to the personal project %d", personalProject)
-	}
-	if seen.ProjectID == teamProject {
-		t.Errorf("honoured project %d for a non-member", teamProject)
-	}
-	if seen != (ProjectContext{}) {
-		t.Errorf("project context = %+v, want none", seen)
-	}
-	assertProjectJSONErrorBody(t, rec.Body.Bytes())
+	assertFellBackToPersonal(t, rec, seen, invoked)
 
+	// The fallback must follow a real membership answer about that exact pair.
 	if len(queries.calls) != 1 {
 		t.Fatalf("membership queries = %d, want 1", len(queries.calls))
 	}
@@ -180,15 +195,22 @@ func TestProjectSelector_OwnProjectSkipsMembership(t *testing.T) {
 	}
 }
 
-// TestProjectSelector_AcceptedHeaderNames covers each accepted name. The UI
-// advertises OpenAI-Project, and the legacy runtime accepted X-Project-Id and
-// OpenAI-Organization.
+// TestProjectSelector_AcceptedHeaderNames covers each accepted name. The legacy
+// runtime accepted X-Project-Id and OpenAI-Organization, and those two are the
+// whole accepted set (ADR-0018).
 func TestProjectSelector_AcceptedHeaderNames(t *testing.T) {
-	for _, header := range []string{
-		HeaderProjectSelector,
-		HeaderProjectSelectorOpenAIProject,
-		HeaderProjectSelectorOpenAIOrg,
-	} {
+	want := []string{HeaderProjectSelector, HeaderProjectSelectorOpenAIOrg}
+
+	if got := ProjectSelectorHeaders(); len(got) != len(want) {
+		t.Fatalf("ProjectSelectorHeaders() = %v, want %v", got, want)
+	}
+	for i, name := range ProjectSelectorHeaders() {
+		if name != want[i] {
+			t.Fatalf("ProjectSelectorHeaders()[%d] = %s, want %s", i, name, want[i])
+		}
+	}
+
+	for _, header := range want {
 		t.Run(header, func(t *testing.T) {
 			queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true}}
 
@@ -204,14 +226,38 @@ func TestProjectSelector_AcceptedHeaderNames(t *testing.T) {
 	}
 }
 
-// TestProjectSelector_Precedence pins the documented order. X-Project-Id wins
-// over OpenAI-Project, which wins over OpenAI-Organization.
+// TestProjectSelector_OpenAIProjectIsNotASelector pins the ADR-0018 refusal.
+//
+// The web UI fills OpenAI-Project from model.project_id — the project that owns
+// the model, not the project that pays. The models query passes includeShared,
+// so that value is frequently the shared project. Reading it as the selector
+// would bill the shared project for every user who copies the UI's own sample.
+//
+// The caller here IS a member of the named project, so the only reason the
+// project can be refused is the header name.
+func TestProjectSelector_OpenAIProjectIsNotASelector(t *testing.T) {
+	queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true}}
+
+	rec, seen, invoked := runSelector(
+		NewProjectMembershipWith(queries),
+		selectorRequest(HeaderProjectSelectorOpenAIProject, "4321"),
+	)
+
+	assertFellBackToPersonal(t, rec, seen, invoked)
+	if len(queries.calls) != 0 {
+		t.Errorf("membership was queried %d times for OpenAI-Project, which is not a selector", len(queries.calls))
+	}
+}
+
+// TestProjectSelector_Precedence pins the documented order: X-Project-Id wins
+// over OpenAI-Organization. OpenAI-Project loses to both, because it is not
+// read at all.
 func TestProjectSelector_Precedence(t *testing.T) {
 	queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true, 999: true}}
 
 	req := selectorRequest(HeaderProjectSelector, "4321")
-	req.Header.Set(HeaderProjectSelectorOpenAIProject, "999")
 	req.Header.Set(HeaderProjectSelectorOpenAIOrg, "999")
+	req.Header.Set(HeaderProjectSelectorOpenAIProject, "999")
 
 	_, seen, _ := runSelector(NewProjectMembershipWith(queries), req)
 
@@ -220,10 +266,30 @@ func TestProjectSelector_Precedence(t *testing.T) {
 	}
 }
 
-// TestProjectSelector_MalformedIsRefused proves a selector that names no
-// project is reported, not discarded.
-func TestProjectSelector_MalformedIsRefused(t *testing.T) {
-	for _, value := range []string{"org-abc123", "0", "-3", "12.5", "9999999999999"} {
+// TestProjectSelector_OpenAIProjectLosesToOpenAIOrg proves OpenAI-Project does
+// not shadow the accepted OpenAI-Organization selector beside it. The UI sends
+// both header names on the same request.
+func TestProjectSelector_OpenAIProjectLosesToOpenAIOrg(t *testing.T) {
+	queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true, 999: true}}
+
+	req := selectorRequest(HeaderProjectSelectorOpenAIOrg, "4321")
+	req.Header.Set(HeaderProjectSelectorOpenAIProject, "999")
+
+	_, seen, _ := runSelector(NewProjectMembershipWith(queries), req)
+
+	if seen.ProjectID != teamProject {
+		t.Errorf("billed project = %d, want %d from %s", seen.ProjectID, teamProject, HeaderProjectSelectorOpenAIOrg)
+	}
+	if seen.ProjectID == 999 {
+		t.Errorf("billed %d, which only OpenAI-Project named", 999)
+	}
+}
+
+// TestProjectSelector_MalformedIsAbsent proves a selector that names no project
+// is treated as absent (spec §6.2). It is not an error: a 400 here would be the
+// new failure mode issue #318 forbids.
+func TestProjectSelector_MalformedIsAbsent(t *testing.T) {
+	for _, value := range []string{"org-abc123", "0", "-3", "12.5", "9999999999999", "2147483648"} {
 		t.Run(value, func(t *testing.T) {
 			queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true}}
 
@@ -232,21 +298,16 @@ func TestProjectSelector_MalformedIsRefused(t *testing.T) {
 				selectorRequest(HeaderProjectSelector, value),
 			)
 
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400", rec.Code)
+			assertFellBackToPersonal(t, rec, seen, invoked)
+			if len(queries.calls) != 0 {
+				t.Errorf("membership was queried %d times for a selector that names no project", len(queries.calls))
 			}
-			if invoked {
-				t.Error("next handler ran for a malformed selector")
-			}
-			if seen.ProjectID == personalProject {
-				t.Errorf("silently fell back to the personal project %d", personalProject)
-			}
-			assertProjectJSONErrorBody(t, rec.Body.Bytes())
 		})
 	}
 }
 
-// TestProjectSelector_BlankValueIsAbsent treats an empty header as no header.
+// TestProjectSelector_BlankValueIsAbsent treats an empty header as no header,
+// so a lower-precedence header may still carry the selector.
 func TestProjectSelector_BlankValueIsAbsent(t *testing.T) {
 	queries := &fakeMemberQuerier{allow: map[int32]bool{}}
 
@@ -258,28 +319,73 @@ func TestProjectSelector_BlankValueIsAbsent(t *testing.T) {
 	if seen.ProjectID != personalProject {
 		t.Errorf("billed project = %d, want %d", seen.ProjectID, personalProject)
 	}
+
+	t.Run("blank header defers to the next accepted name", func(t *testing.T) {
+		queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true}}
+		req := selectorRequest(HeaderProjectSelector, "")
+		req.Header.Set(HeaderProjectSelectorOpenAIOrg, "4321")
+
+		_, seen, _ := runSelector(NewProjectMembershipWith(queries), req)
+
+		if seen.ProjectID != teamProject {
+			t.Errorf("billed project = %d, want %d", seen.ProjectID, teamProject)
+		}
+	})
 }
 
-// TestProjectSelector_NilCheckerFailsClosed proves an unconfigured checker
-// refuses the selector instead of billing the personal project.
-func TestProjectSelector_NilCheckerFailsClosed(t *testing.T) {
+// TestProjectSelector_RepeatedHeaderIsAbsent follows the
+// uniqueForwardedIdentityHeader posture in auth.go: when two copies of an
+// identity-bearing header disagree, no rule can say which copy the caller
+// meant, so the selector is absent.
+func TestProjectSelector_RepeatedHeaderIsAbsent(t *testing.T) {
+	for _, name := range []string{HeaderProjectSelector, HeaderProjectSelectorOpenAIOrg} {
+		t.Run(name, func(t *testing.T) {
+			queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true, personalProject: true}}
+
+			req := selectorRequest("", "")
+			req.Header.Add(name, "4321")
+			req.Header.Add(name, "4321")
+
+			rec, seen, invoked := runSelector(NewProjectMembershipWith(queries), req)
+
+			assertFellBackToPersonal(t, rec, seen, invoked)
+			if len(queries.calls) != 0 {
+				t.Errorf("membership was queried %d times for a repeated header", len(queries.calls))
+			}
+		})
+	}
+
+	// A repeated first-precedence header does not hand the decision to the
+	// next name either. Otherwise a caller could pick which value wins by
+	// duplicating the one it does not want.
+	t.Run("repeated X-Project-Id does not defer to OpenAI-Organization", func(t *testing.T) {
+		queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true}}
+
+		req := selectorRequest("", "")
+		req.Header.Add(HeaderProjectSelector, "1234")
+		req.Header.Add(HeaderProjectSelector, "5678")
+		req.Header.Set(HeaderProjectSelectorOpenAIOrg, "4321")
+
+		rec, seen, invoked := runSelector(NewProjectMembershipWith(queries), req)
+
+		assertFellBackToPersonal(t, rec, seen, invoked)
+	})
+}
+
+// TestProjectSelector_NilCheckerFallsBack proves an unconfigured checker admits
+// no selector. It falls back to the caller's own project, and never to the
+// selector: a checker that cannot run must not authorize spend elsewhere.
+func TestProjectSelector_NilCheckerFallsBack(t *testing.T) {
 	rec, seen, invoked := runSelector(nil, selectorRequest(HeaderProjectSelector, "4321"))
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
-	if invoked {
-		t.Error("next handler ran with no membership checker configured")
-	}
-	if seen.ProjectID == personalProject {
-		t.Errorf("silently fell back to the personal project %d", personalProject)
-	}
-	assertProjectJSONErrorBody(t, rec.Body.Bytes())
+	assertFellBackToPersonal(t, rec, seen, invoked)
 }
 
-// TestProjectSelector_QueryErrorFailsClosed proves a database failure refuses
-// the request rather than billing the personal project.
-func TestProjectSelector_QueryErrorFailsClosed(t *testing.T) {
+// TestProjectSelector_QueryErrorFallsBack is spec §5 row 6. A membership query
+// that errors is treated as "not a member". The caller's own project pays.
+// Failing open here would let a database outage authorize spend on an arbitrary
+// project.
+func TestProjectSelector_QueryErrorFallsBack(t *testing.T) {
 	queries := &fakeMemberQuerier{err: errors.New("connection refused")}
 
 	rec, seen, invoked := runSelector(
@@ -287,20 +393,15 @@ func TestProjectSelector_QueryErrorFailsClosed(t *testing.T) {
 		selectorRequest(HeaderProjectSelector, "4321"),
 	)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", rec.Code)
-	}
-	if invoked {
-		t.Error("next handler ran after a membership query failure")
-	}
-	if seen.ProjectID == personalProject {
-		t.Errorf("silently fell back to the personal project %d", personalProject)
+	assertFellBackToPersonal(t, rec, seen, invoked)
+	if len(queries.calls) != 1 {
+		t.Errorf("membership queries = %d, want 1", len(queries.calls))
 	}
 }
 
 // TestProjectSelector_TokenScopedCallerCannotMoveSpend proves a project-scoped
 // system token cannot redirect spend to another project. Its user is not a
-// member there, so the request is refused.
+// member there, so the request keeps the token's own project.
 func TestProjectSelector_TokenScopedCallerCannotMoveSpend(t *testing.T) {
 	queries := &fakeMemberQuerier{allow: map[int32]bool{}}
 
@@ -311,21 +412,24 @@ func TestProjectSelector_TokenScopedCallerCannotMoveSpend(t *testing.T) {
 
 	rec, seen, invoked := runSelector(NewProjectMembershipWith(queries), req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if invoked {
-		t.Error("next handler ran for a token-scoped caller naming another project")
+	if !invoked {
+		t.Fatal("next handler was not invoked")
 	}
 	if seen.ProjectID == teamProject {
 		t.Errorf("token scoped to project 7 billed project %d", teamProject)
 	}
+	if seen.ProjectID != 7 {
+		t.Errorf("billed project = %d, want the token's own project 7", seen.ProjectID)
+	}
 }
 
-// TestProjectSelector_UnresolvedOwnerIsRefused proves the check runs against
-// the owning user and never against a token id. A token principal whose owner
-// was not resolved cannot be checked, so it cannot name a project.
-func TestProjectSelector_UnresolvedOwnerIsRefused(t *testing.T) {
+// TestProjectSelector_UnresolvedOwnerIsIgnored proves the check runs against the
+// owning user and never against a token id. A token principal whose owner was
+// not resolved cannot be checked, so it cannot name a project.
+func TestProjectSelector_UnresolvedOwnerIsIgnored(t *testing.T) {
 	queries := &fakeMemberQuerier{allow: map[int32]bool{teamProject: true}}
 
 	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
@@ -336,17 +440,44 @@ func TestProjectSelector_UnresolvedOwnerIsRefused(t *testing.T) {
 
 	rec, seen, invoked := runSelector(NewProjectMembershipWith(queries), req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rec.Code)
-	}
-	if invoked {
-		t.Error("next handler ran for a principal with no owning user")
-	}
-	if seen.ProjectID == personalProject {
-		t.Errorf("silently fell back to the personal project %d", personalProject)
-	}
+	assertFellBackToPersonal(t, rec, seen, invoked)
 	if len(queries.calls) != 0 {
 		t.Errorf("membership was queried %d times; the token id must never be used as a user id", len(queries.calls))
+	}
+}
+
+// TestProjectHeadersStrippedOutbound proves the strip list keeps OpenAI-Project,
+// which the accepted-selector list drops. The edge must not read that header,
+// and it must not forward it either.
+func TestProjectHeadersStrippedOutbound(t *testing.T) {
+	stripped := ProjectHeadersStrippedOutbound()
+
+	for _, name := range []string{
+		HeaderProjectSelector,
+		HeaderProjectSelectorOpenAIProject,
+		HeaderProjectSelectorOpenAIOrg,
+	} {
+		found := false
+		for _, got := range stripped {
+			if got == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s is not stripped from the outbound request", name)
+		}
+	}
+
+	for _, accepted := range ProjectSelectorHeaders() {
+		found := false
+		for _, got := range stripped {
+			if got == accepted {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("accepted selector %s is not stripped from the outbound request", accepted)
+		}
 	}
 }
 

@@ -366,6 +366,15 @@ func (req usersUpdateRequest) userIDs() ([]int, error) {
 // pylon's update_project_user_roles deletes the user's rows for the project
 // before inserting the new set, and the Edit-roles dialog is a checkbox list
 // whose unchecked boxes have to mean something.
+//
+// THE DELETE BELOW IS NOT A REMOVAL, and no token binding is revoked for it
+// (spec-llm-project-scope §7 invariant 3). The rows go and come straight back
+// inside one transaction, so the user never stops being a member. Revoking
+// bindings here would unbind every access key of every edited user on an
+// ordinary role change — a silent loss of the project a key bills, caused by
+// an operation that says "roles updated". UsersDelete is the removal path, and
+// it is the only place that revokes. TestUsersUpdateRoleChangeKeepsTokenProjectBindings
+// pins this.
 func (h *Handler) UsersUpdate(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := h.userWriteContext(w, r)
 	if !ok {
@@ -472,11 +481,45 @@ func deleteUserIDs(r *http.Request) ([]int, error) {
 	return ids, nil
 }
 
+// revokeTokenProjectBindingsSQL enforces spec-llm-project-scope §7 invariant 3:
+// "a binding MUST NOT outlive membership". The join through
+// public.auth_core__token.user_id is what makes the sweep precise. It removes
+// exactly the bindings that name THIS project AND belong to a token of one of
+// THESE users — never another member's key for the same project, and never the
+// same person's key for a project they still belong to.
+//
+// The spec offers two implementations and prefers this one: revoking on the
+// membership write costs nothing on the request path, where the alternative
+// (re-checking membership for every bound token at resolution time) adds work
+// to every /llm call.
+//
+// This is inline SQL, not a generated sqlc query, for the same reason every
+// other statement in this file is: package eliteacore holds no sqlcgen.Queries
+// and no handler here constructs one. A single generated call would pull the
+// sqlcgen dependency, a *sqlcgen.Queries built with WithTx, and a second
+// spelling of "how this package reads the database" into one function. The
+// binding write path DOES use sqlc (CreateTokenProjectBinding in
+// internal/db/queries/auth_pat.sql), because internal/api/v2/auth is a
+// sqlc-based package.
+const revokeTokenProjectBindingsSQL = `
+DELETE FROM elitea_identity.token_project_binding AS binding
+USING public.auth_core__token AS token
+WHERE binding.token_id = token.id
+  AND binding.project_id = $1
+  AND token.user_id = ANY($2)`
+
 // UsersDelete implements DELETE /api/v2/admin/users/{mode}/{projectID} —
 // remove the users from THIS project. Parity with pylon's
 // remove_users_from_project: it clears the project role rows only. The
 // auth_core__user row survives, because the person may be a member of other
 // projects and "remove from project" is not "delete the account".
+//
+// It also revokes the access-token bindings that name this project for these
+// users. The two writes share ONE transaction on purpose. Split apart, a
+// failure between them leaves a token that still bills a project its owner has
+// left — which is the exact state invariant 3 forbids, and it would persist
+// until someone noticed. The handler used to run the assignment delete as a
+// bare pool.Exec; a second bare Exec beside it would have been that split.
 func (h *Handler) UsersDelete(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := h.userWriteContext(w, r)
 	if !ok {
@@ -493,9 +536,25 @@ func (h *Handler) UsersDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.pool.Exec(r.Context(),
+	ctx := r.Context()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to remove users"})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, revokeTokenProjectBindingsSQL, projectID, userIDs); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to remove users"})
+		return
+	}
+	if _, err := tx.Exec(ctx,
 		`DELETE FROM auth_core__project_user_role WHERE project_id = $1 AND user_id = ANY($2)`,
 		projectID, userIDs); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to remove users"})
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to remove users"})
 		return
 	}
