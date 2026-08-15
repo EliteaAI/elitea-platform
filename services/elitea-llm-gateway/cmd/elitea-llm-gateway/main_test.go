@@ -39,6 +39,7 @@ func TestMainWiring(t *testing.T) {
 		why  string
 	}{
 		{"llmproxy.WithBudgetGate(", "the budget gate is never attached to the handler — every /llm request would be admitted unconditionally (enforcement silently off)"},
+		{"llmproxy.WithModelResolver(", "the model resolver is never attached to the handler — /llm/v1/models advertises nothing AND the inference path stops mapping the advertised model id onto the provider's own model name, so a caller that picks a model from the list sends the provider a name it does not know (issue #317)"},
 		{"account.New(", "the vault-backed Account is never constructed — the gateway runs the zero-provider bootstrap account and cannot resolve ANY provider credential (BFF.6)"},
 		{"account.NewFernetVault(", "the Fernet vault is never constructed — {{secret.NAME}} credential references cannot be resolved (BFF.6)"},
 		{"llmproxy.WithLoopBreakerParams(", "the per-(project_id, model) amplification backstop (spec §2.6 guard #2's implementation) is never armed — unbounded request amplification for one tuple would run unchecked in production"},

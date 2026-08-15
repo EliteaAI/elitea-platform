@@ -261,6 +261,54 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   3. **Coverage floor** (`scripts/coverage-floor.sh`) — enforcement packages must
      not regress below current coverage.
 
+## Model-name mapping
+- **The advertised model id and the provider model name are two different
+  names, and the gateway maps one onto the other before dispatch (issue #317).**
+  `GET /llm/v1/models` advertises `elitea_title`, a user-authored label. The
+  provider only knows the row's `data.name`. The two are independent by
+  construction, so the inference path sent the provider a name it does not know.
+  LiteLLM did this mapping; nothing replaced it when LiteLLM was removed.
+
+  `internal/llmproxy/modelmap.go` is the single resolution point. Every dialect
+  calls `mapModel` after it decodes the request and BEFORE the budget gate. The
+  order is load-bearing twice: the provider must never see an unmapped title,
+  and the cost tables are keyed by the provider's model name.
+
+- **The provider wire name stays inside the gateway.** `modelObject.providerModel`
+  is unexported, so `encoding/json` cannot put it in a caller-facing response.
+  Guarded by `TestModelMap_ListDoesNotLeakTheProviderWireName`.
+
+- **The request accepts BOTH the advertised id and the row's own `data.name`.**
+  Both name the same configuration row, so both map to the same dispatch. This
+  is not a widening: a name that no configured row carries is still rejected.
+
+  *Why both:* every caller that exists today sends `data.name`, not the title.
+  elitea-main's model catalog exposes an `llm` row under `data->>'name'`
+  (`internal/infra/db/repos/models.go`), the web model picker posts that string
+  back as `llm_settings.model_name`, and the e2e seed gives the same row the
+  title `e2e-mock-model-llm` and the name `E2E-MOCK-MODEL`. An id-only rule
+  would 404 the whole chat path on the first request.
+
+- **An id that matches nothing is 404 at the gateway** (`model_not_found`),
+  not an opaque provider error. Guarded by
+  `TestModelMap_UnknownModelIs404AndNeverReachesTheProvider`.
+
+- **An UNREADABLE model set forwards the caller's model unchanged.** This is the
+  degraded path only: no project on the request, no database, or a query failure
+  with nothing cached. The gateway cannot prove the model is wrong, and a 404
+  here would turn a database blip into a total inference outage. It is
+  deliberately NOT the fail-closed rule the budget path uses — no money and no
+  tenant boundary depend on this mapping, and a wrong name fails at the provider
+  anyway. Do not change it to fail closed without a human.
+
+  The resolver reports "read the set" and "could not read the set" as different
+  answers (`ModelResolver.list`). `List` collapses both to an empty slice, which
+  is correct for `/llm/v1/models` and WRONG for dispatch. Keep them distinct.
+
+- **Which name SHOULD be the addressable one is still a product decision.**
+  Issue #317 did not pick one, because it changes what external SDK users type.
+  This change only makes the list and the request path agree.
+
 ## Resolved follow-ups
 - ✅ `SECRETS_MASTER_KEY` + `GATEWAY_IDENTITY_SECRET` now wired via the chart's
   `secrets:` block (valueFrom.secretKeyRef, optional:true default) — provision the

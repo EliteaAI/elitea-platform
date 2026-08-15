@@ -39,6 +39,17 @@ type modelObject struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+
+	// providerModel is the row's data.name — the model name the PROVIDER
+	// accepts. ID is elitea_title, a user-authored label, and the two are
+	// independent by construction, so the inference path must translate ID to
+	// providerModel before it dispatches (issue #317).
+	//
+	// The field is deliberately UNEXPORTED: encoding/json skips it, so the
+	// provider's wire name can never leak into a caller-facing /llm/v1/models
+	// response (the gateway is the model owner from the caller's view — see
+	// modelsOwnedBy).
+	providerModel string
 }
 
 // modelsList is the OpenAI /v1/models list envelope.
@@ -147,8 +158,25 @@ const modelsSQL = `SELECT COALESCE(elitea_title, ''), data
 // failing/absent database it returns an empty (non-nil) slice. An empty
 // projectID yields an empty set (no project ⇒ no models).
 func (m *ModelResolver) List(ctx context.Context, projectID string) []modelObject {
+	models, _ := m.list(ctx, projectID)
+	return models
+}
+
+// list is List plus the "did I actually read this project's model set?" answer.
+// known is false when the set is UNKNOWN — an empty projectID, no database, or
+// a query failure with nothing cached — and true when the returned set is the
+// project's real (possibly stale, possibly empty) model set.
+//
+// The two cases must stay distinct because the inference path acts on them
+// differently: an unknown set forwards the caller's model unchanged, while a
+// known set rejects a model that is not in it (see resolve). List collapses
+// both to an empty slice, which is correct for the /llm/v1/models surface.
+func (m *ModelResolver) list(ctx context.Context, projectID string) (models []modelObject, known bool) {
 	if projectID == "" {
-		return []modelObject{}
+		return []modelObject{}, false
+	}
+	if m.db == nil {
+		return []modelObject{}, false
 	}
 
 	m.mu.RLock()
@@ -156,7 +184,7 @@ func (m *ModelResolver) List(ctx context.Context, projectID string) []modelObjec
 	fresh := cached && m.now().Before(ent.expires)
 	m.mu.RUnlock()
 	if fresh {
-		return ent.models
+		return ent.models, true
 	}
 
 	models, err := m.query(ctx, projectID)
@@ -166,17 +194,17 @@ func (m *ModelResolver) List(ctx context.Context, projectID string) []modelObjec
 		if cached {
 			m.logger.WarnContext(ctx, "models: query failed; serving stale cached list",
 				"project_id", projectID, "err", err, "stale_count", len(ent.models))
-			return ent.models
+			return ent.models, true
 		}
 		m.logger.WarnContext(ctx, "models: query failed and no cache; returning empty set",
 			"project_id", projectID, "err", err)
-		return []modelObject{}
+		return []modelObject{}, false
 	}
 
 	m.mu.Lock()
 	m.cache[projectID] = modelsCacheEntry{models: models, expires: m.now().Add(m.ttl)}
 	m.mu.Unlock()
-	return models
+	return models, true
 }
 
 // Get returns the single synthesised model with the given id for projectID and
@@ -222,7 +250,7 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 		if err := rows.Scan(&title, &dataBytes); err != nil {
 			return nil, fmt.Errorf("scan model row: %w", err)
 		}
-		id := modelID(title, dataBytes)
+		id, providerModel := modelNames(title, dataBytes)
 		if id == "" {
 			continue
 		}
@@ -231,10 +259,11 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 		}
 		seen[id] = struct{}{}
 		models = append(models, modelObject{
-			ID:      id,
-			Object:  modelObjectType,
-			Created: 0,
-			OwnedBy: modelsOwnedBy,
+			ID:            id,
+			Object:        modelObjectType,
+			Created:       0,
+			OwnedBy:       modelsOwnedBy,
+			providerModel: providerModel,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -243,21 +272,35 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 	return models, nil
 }
 
-// modelID resolves the caller-visible id for an llm_model row: the elitea_title
-// alias when present, else the underlying data.name. Returns "" when neither is
-// usable (the row is then skipped). A malformed data JSONB is treated as absent.
-func modelID(title string, dataBytes []byte) string {
-	if title != "" {
-		return title
-	}
-	if len(dataBytes) == 0 {
-		return ""
-	}
+// modelNames resolves the two names of one llm_model row:
+//
+//   - id is the caller-visible model id: the elitea_title alias when present,
+//     else the underlying data.name. It is "" when neither is usable, and the
+//     row is then skipped.
+//   - providerModel is the name to send to the provider: data.name. It falls
+//     back to id when data.name is absent, so a row that carries a title and no
+//     wire name dispatches the title exactly as it did before issue #317.
+//
+// A malformed data JSONB is treated as absent.
+func modelNames(title string, dataBytes []byte) (id, providerModel string) {
 	var d modelConfigData
-	if err := json.Unmarshal(dataBytes, &d); err != nil {
-		return ""
+	if len(dataBytes) > 0 {
+		if err := json.Unmarshal(dataBytes, &d); err != nil {
+			d = modelConfigData{}
+		}
 	}
-	return d.Name
+	id = title
+	if id == "" {
+		id = d.Name
+	}
+	if id == "" {
+		return "", ""
+	}
+	providerModel = d.Name
+	if providerModel == "" {
+		providerModel = id
+	}
+	return id, providerModel
 }
 
 // validateNumericProjectID rejects a non-numeric projectID before it is

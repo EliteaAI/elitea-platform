@@ -24,6 +24,12 @@ because each was a real bug found across 3 review rounds.
 - Budget gate runs **before** the provider on EVERY /llm endpoint (chat,
   responses, text, embeddings, images, messages). Adding a new endpoint? It MUST
   call checkBudget before dispatch and updateUsage after.
+- The model a caller sends is **mapped to the provider's own model name before
+  dispatch** (`mapModel`, internal/llmproxy/modelmap.go). Adding a new endpoint
+  that carries a model? It MUST call `mapModel` after the decode and BEFORE
+  `checkBudget` — the provider must not see an unmapped id, and the cost tables
+  are keyed by the provider's name. Do not make the unreadable-model-set path
+  fail closed without a human (DECISIONS.md, "Model-name mapping").
 - Error bodies are **OpenAI-shaped on ALL /llm routes** (spec §2.5): nested
   `{"error":{"message","type","code"}}`. 402=budget_exceeded/insufficient_quota,
   429=rate_limit_error/rate_limit_exceeded, 503=service_unavailable/nats_unavailable.
