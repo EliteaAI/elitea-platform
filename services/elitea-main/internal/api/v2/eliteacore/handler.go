@@ -694,9 +694,9 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		RETURNING id`, s, s)
 
 	// A publish is all-or-nothing, for the reason ForkAgent is
-	// (internal/api/oapiserver/publishing.go). The version clone and the
-	// tool-mapping copy below run in one transaction. The copy used to run on the
-	// pool with its error discarded, so a failed copy published a version and
+	// (internal/api/oapiserver/publishing.go). The version clone and the two
+	// attachment copies below run in one transaction. The tool copy used to run on
+	// the pool with its error discarded, so a failed copy published a version and
 	// answered 200. The user then saw a published agent that had lost every
 	// toolkit, and nothing was logged. A published shell is worse than a refusal
 	// the caller can retry, because the caller cannot see that it must retry.
@@ -734,6 +734,26 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		SELECT $2, entity_id, entity_type, tool_id, selected_tools
 		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent tool attachments"})
+		return
+	}
+
+	// Clone entity_skill_mapping rows from source version to new published version.
+	// Publish copied tool mappings only, so a published agent carried no skills
+	// (#351). Fork sets the precedent it now matches
+	// (internal/api/oapiserver/publishing.go:149).
+	//
+	// The table has no `entity_id` column (001_initial.sql:422-432): a skill
+	// attachment is keyed by (entity_version_id, skill_id, entity_type) alone.
+	// `entity_type` is carried from the source row rather than defaulted, because
+	// it is part of that key and the chat read matches on it
+	// (internal/db/queries/agent_chat.sql:132). `skill_version_id` rides along
+	// because the same read LEFT JOINs it for the skill instructions — dropping it
+	// publishes a named skill with an empty body.
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+		SELECT $2, entity_type, skill_id, skill_version_id
+		FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent skill attachments"})
 		return
 	}
 
