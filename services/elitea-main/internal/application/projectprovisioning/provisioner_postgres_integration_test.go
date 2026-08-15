@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
@@ -58,7 +59,7 @@ RETURNING id`).Scan(&adminUserID); err != nil {
 		t.Fatalf("seed administrator account: %v", err)
 	}
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	result, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name:        "Acceptance Project",
 		OwnerID:     1,
@@ -275,7 +276,7 @@ func TestProvisionIsIdempotent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	request := projectprovisioning.Request{
 		Name: "Idempotent Project", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	}
@@ -332,7 +333,7 @@ func TestProvisionLeavesNothingBehindWhenAStepFails(t *testing.T) {
 
 	before := projectIDs(ctx, t, pool)
 
-	provisioner := projectprovisioning.New(pool, failingMigrator{err: errors.New("corpus unavailable")}, nil)
+	provisioner := newTestProvisioner(t, pool, failingMigrator{err: errors.New("corpus unavailable")})
 	result, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "Doomed Project", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	})
@@ -436,7 +437,7 @@ func TestProvisionRejectsAnEmptyNameAndAnUnknownOwner(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 
 	if _, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "   ", OwnerID: 1,
@@ -459,7 +460,7 @@ func TestProvisionRefusesAnUnknownAdministrator(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	result, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name:        "Typo Project",
 		OwnerID:     1,
@@ -492,7 +493,7 @@ func TestDeprovisionRemovesEverythingProvisionCreated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	created, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "Doomed", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	})
@@ -582,7 +583,7 @@ func TestDeprovisionRevokesTokenBindingsForThatProjectOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	doomed, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "Doomed With A Bound Key", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	})
@@ -652,6 +653,20 @@ func countBindings(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tokenI
 }
 
 /* ── fixture ───────────────────────────────────────────────────────────── */
+
+// newTestProvisioner builds the provisioner with the same vault dependency
+// internal/api/router.go wires (#373).
+//
+// The real secrets handler, not a fake: it is the only code in the tree that
+// mints a vault key, so a fake here would prove the step ran and nothing about
+// whether what it wrote can be opened.
+func newTestProvisioner(
+	t *testing.T, pool *pgxpool.Pool, migrator projectprovisioning.TenantMigrator,
+) *projectprovisioning.Provisioner {
+	t.Helper()
+	return projectprovisioning.New(pool, migrator, nil,
+		projectprovisioning.WithProjectVault(v2secrets.NewHandler(pool)))
+}
 
 // newProvisioningPool builds an isolated database holding exactly what a real
 // deployment holds: the bootstrap schema plus the embedded corpus. Nothing is
