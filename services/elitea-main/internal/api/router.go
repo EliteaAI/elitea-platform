@@ -1244,8 +1244,17 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						Patch("/skill_default_version/{mode}/{projectID}/{skillID}", skillHandler.Update)
 					// application_skills.py declares the APPLICATION read, not
 					// the skill one: the resource is an agent's skill list.
+					//
+					// This pointed at skillHandler.List until #367. List reads
+					// {projectID} and never looks at {appVersionID}, so opening
+					// any agent version answered with EVERY skill in the
+					// project — at 200, in the same envelope, so no caller
+					// could see it. The reviewed route that does read the
+					// attachment (internal/api/v2/applicationskills) is gated
+					// on a flag no deployment sets, so this handler is the one
+					// every deployment reaches.
 					r.With(projectPermission("models.applications.applications.details")).
-						Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.List)
+						Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.ListForApplication)
 					r.With(requireSkillCreate).Post("/skill_import/{mode}/{projectID}", skillHandler.Import)
 					r.With(requireSkillExport).Get("/skill_export/{mode}/{projectID}/{skillID}", skillHandler.Export)
 					r.With(requireSkillExport).
