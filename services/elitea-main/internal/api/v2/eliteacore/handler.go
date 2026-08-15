@@ -690,7 +690,21 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		FROM %q.application_versions WHERE id = $1
 		RETURNING id`, s, s)
 
-	err = h.pool.QueryRow(ctx, cloneQ, versionID, body.VersionName, metaOverlay).Scan(&cloneID)
+	// A publish is all-or-nothing, for the reason ForkAgent is
+	// (internal/api/oapiserver/publishing.go). The version clone and the
+	// tool-mapping copy below run in one transaction. The copy used to run on the
+	// pool with its error discarded, so a failed copy published a version and
+	// answered 200. The user then saw a published agent that had lost every
+	// toolkit, and nothing was logged. A published shell is worse than a refusal
+	// the caller can retry, because the caller cannot see that it must retry.
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent"})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once Commit has run
+
+	err = tx.QueryRow(ctx, cloneQ, versionID, body.VersionName, metaOverlay).Scan(&cloneID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "_application_version_name_uc") {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
@@ -707,11 +721,23 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clone entity_tool_mapping rows from source version to new published version
-	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+	// Clone entity_tool_mapping rows from source version to new published version.
+	// The copy keeps the source `entity_type` and `entity_id`: the clone above
+	// selects the source `application_id`, so the published version belongs to the
+	// same agent, and the chat read joins `entity_id` to that application
+	// (internal/db/queries/agent_chat.sql:107).
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 		SELECT $2, entity_id, entity_type, tool_id, selected_tools
-		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID) // best-effort copy
+		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent tool attachments"})
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent"})
+		return
+	}
 
 	// Embed sub-agents: clone application_tools of type 'application' recursively
 	h.embedSubAgents(ctx, s, versionID, cloneID)
