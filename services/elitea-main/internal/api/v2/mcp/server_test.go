@@ -29,7 +29,7 @@ import (
 // centry.platform_config row.
 func newTestHandler(t *testing.T, source toolSource) *Handler {
 	t.Helper()
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 	handler.source = source
 	return handler
 }

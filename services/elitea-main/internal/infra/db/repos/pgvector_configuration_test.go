@@ -145,10 +145,23 @@ func validCurrentProjectPgvectorConfigurationForTest(projectID int32) vectorstor
 }
 
 type currentProjectPgvectorQueriesStub struct {
-	id     int32
-	err    error
-	params sqlcgen.UpsertCurrentProjectPgvectorConfigurationParams
-	calls  int
+	id           int32
+	err          error
+	params       sqlcgen.UpsertCurrentProjectPgvectorConfigurationParams
+	calls        int
+	removed      int64
+	deleteErr    error
+	deleteParams sqlcgen.DeleteCurrentProjectPgvectorConfigurationParams
+	deleteCalls  int
+}
+
+func (s *currentProjectPgvectorQueriesStub) DeleteCurrentProjectPgvectorConfiguration(
+	_ context.Context,
+	params sqlcgen.DeleteCurrentProjectPgvectorConfigurationParams,
+) (int64, error) {
+	s.deleteCalls++
+	s.deleteParams = params
+	return s.removed, s.deleteErr
 }
 
 func (s *currentProjectPgvectorQueriesStub) UpsertCurrentProjectPgvectorConfiguration(

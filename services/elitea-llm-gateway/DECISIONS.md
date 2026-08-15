@@ -393,6 +393,51 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
     (`TestUnpublishedModelIsNotDispatchable`). #317 accepts `data.name` as an
     alias, so the wire name is a second way in if the predicate ever fails.
 
+- **The model set is EVERY addressable configuration section, not the `llm`
+  section.** `addressableModelSections` (`internal/llmproxy/models.go`) lists the
+  `(section, type)` pairs the resolver reads: `llm`/`llm_model`,
+  `embedding`/`embedding_model`, and
+  `image_generation`/`image_generation_model`.
+
+  *Why this is a correctness rule and not a preference:* `mapModel` gates EVERY
+  dialect against this one set. While the resolver read `llm` rows alone, a
+  project's `embedding`/`embedding_model` row was invisible to it, so
+  `POST /llm/v1/embeddings` answered 404 `model_not_found` for a model the
+  project had configured and whose credential resolved. Measured on the
+  standalone stack: the index plane's embedding hop could not dispatch at all.
+  `/llm/v1/images/*` had the identical defect. The `llm`-only read predates
+  `mapModel` — it was written for `GET /llm/v1/models`, where it was harmless,
+  and #317 turned it into a gate without widening it.
+
+- **The fix is in the gateway, NOT in the seed.** Seeding an embedding model as
+  an extra `llm`/`llm_model` row also makes it resolve, and it is a smaller
+  change. It is rejected because those rows ARE the chat catalogue: elitea-main's
+  `/configurations/models/{projectId}` selects `section = 'llm'`
+  (`CurrentModelSectionLLM`), which is what the web chat model picker reads. An
+  embedding model would become a selectable chat model in the product, for every
+  project seeded that way. Keep each model in its own section and make the
+  gateway read them all.
+
+- **`asr` and `tts` are deliberately absent, and that is a routing fact.** The
+  gateway mounts no audio route, so admitting those sections would advertise a
+  model no caller can reach. `vectorstorage` holds no model. Add a pair to
+  `addressableModelSections` when, and only when, you add a route that
+  dispatches it — `model_sections_test.go` covers each pair on its own route.
+
+- **The declared order is the precedence order.** `modelsSQL` joins the pairs
+  with `WITH ORDINALITY` and orders by the ordinality before the row id, so a
+  model id two sections both carry resolves to the earlier section, and `llm`
+  first keeps the chat models in the positions they held before the set grew.
+  The pairs travel as bind parameters: no part of the statement text is built
+  from the section list.
+
+- **Advertising the other sections on `GET /llm/v1/models` is intended.** OpenAI's
+  own `/v1/models` lists embedding and image models, the legacy LiteLLM list did
+  too (`preflight.StaticLegacyModels` carries `text-embedding-3-*`, and the BFF.3
+  parity gate asserts they stay present), and the web pickers do not read this
+  route. It also keeps the invariant `modelmap.go` states: list and dispatch
+  agree.
+
 ## Resolved follow-ups
 - ✅ `SECRETS_MASTER_KEY` + `GATEWAY_IDENTITY_SECRET` now wired via the chart's
   `secrets:` block (valueFrom.secretKeyRef, optional:true default) — provision the

@@ -36,8 +36,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/mcp"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 )
 
 const (
@@ -66,6 +68,7 @@ func newRouter(handler *mcp.Handler, userID int64) chi.Router {
 	router.Post("/app/{projectID}/mcp", handler.Endpoint)
 	router.Get("/app/{projectID}/mcp/*", handler.Endpoint)
 	router.Post("/app/{projectID}/mcp/*", handler.Endpoint)
+	router.Get("/api/v2/elitea_core/tools_list/{projectID}", handler.ToolsList)
 	router.Get("/api/v2/elitea_core/tools_list/default/{projectID}", handler.ToolsList)
 	router.Post("/api/v2/elitea_core/tools_call/default/{projectID}", handler.ToolsCall)
 	router.Get("/api/v2/elitea_core/internal_mcp_pat_status/prompt_lib/{projectID}/{toolkitType}",
@@ -217,7 +220,7 @@ const availableByMCP = `{"mcp_options": {"available_by_mcp": true}}`
 // what selects them. Two agents, one tag apart, must not both appear.
 func TestToolsListServesOnlyAgentsTaggedMCP(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 
 	seedAgent(t, pool, homeSchema, "Release Notes", "writes release notes", "mcp")
 	seedAgent(t, pool, homeSchema, "Untagged Helper", "not exposed")
@@ -236,7 +239,7 @@ func TestToolsListServesOnlyAgentsTaggedMCP(t *testing.T) {
 // database" from "returns a plausible constant".
 func TestToolNamesFollowTheRowValues(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 	seedAgent(t, pool, homeSchema, "First Name", "", "mcp")
 
 	if names := listToolNames(t, router, "/app/"+homeProject+"/mcp"); !contains(names, "First_Name") {
@@ -254,7 +257,7 @@ func TestToolNamesFollowTheRowValues(t *testing.T) {
 
 func TestToolsListServesOnlyToolkitsFlaggedAvailableByMCP(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 
 	seedToolkit(t, pool, homeSchema, "Repo", "github", availableByMCP, "get_issue", "list_issues")
 	seedToolkit(t, pool, homeSchema, "Private", "github", `{}`, "get_issue")
@@ -275,7 +278,7 @@ func TestToolsListServesOnlyToolkitsFlaggedAvailableByMCP(t *testing.T) {
 // two schemas, and each endpoint serves exactly its own.
 func TestListingIsScopedToTheProjectInTheURL(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 
 	seedAgent(t, pool, homeSchema, "Home Agent", "", "mcp")
 	seedAgent(t, pool, otherSchema, "Other Agent", "", "mcp")
@@ -295,7 +298,7 @@ func TestListingIsScopedToTheProjectInTheURL(t *testing.T) {
 
 func TestCategoryScopesSplitTheTwoSources(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 
 	seedAgent(t, pool, homeSchema, "Tagged Agent", "", "mcp")
 	seedToolkit(t, pool, homeSchema, "Repo", "github", availableByMCP, "get_issue")
@@ -320,7 +323,7 @@ func TestCategoryScopesSplitTheTwoSources(t *testing.T) {
 // available_by_mcp flag, and must not serve the project's other toolkits.
 func TestResourceScopeServesOneToolkitAndStillHonoursTheFlag(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 
 	exposed := seedToolkit(t, pool, homeSchema, "Repo", "github", availableByMCP, "get_issue")
 	alsoExposed := seedToolkit(t, pool, homeSchema, "Wiki", "confluence", availableByMCP, "read_page")
@@ -346,7 +349,7 @@ func TestResourceScopeServesOneToolkitAndStillHonoursTheFlag(t *testing.T) {
 // the id alone must not be enough.
 func TestResourceScopeCannotReachAnotherProjectsVersion(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 
 	versionID := seedAgent(t, pool, otherSchema, "Foreign Agent", "")
 
@@ -368,7 +371,7 @@ func TestResourceScopeCannotReachAnotherProjectsVersion(t *testing.T) {
 // that is not in the listing is a caller error.
 func TestToolsCallResolvesAgainstTheRealListing(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 	seedAgent(t, pool, homeSchema, "Release Notes", "", "mcp")
 
 	listed := decode(t, do(t, router, http.MethodPost, "/app/"+homeProject+"/mcp",
@@ -403,7 +406,7 @@ func TestToolsCallResolvesAgainstTheRealListing(t *testing.T) {
 // surface open to anyone who kept a URL.
 func TestMCPMasterSwitchClosesEveryEndpoint(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 	seedAgent(t, pool, homeSchema, "Tagged Agent", "", "mcp")
 
 	// Enabled by default: the listing works.
@@ -434,24 +437,24 @@ func TestMCPMasterSwitchClosesEveryEndpoint(t *testing.T) {
 	}
 }
 
-/* ── the two REST refusals ─────────────────────────────────────────────── */
+/* ── the one remaining REST refusal ────────────────────────────────────── */
 
-func TestToolsListAndToolsCallRefuseWithTheStatedReason(t *testing.T) {
+// tools_call still refuses, and the reason is pinned so that a later edit
+// cannot quietly turn it into a stub that answers 200 with nothing behind it.
+//
+// tools_list is NOT in this table any more. It serves the durable store — see
+// the tools_list cases in this package.
+func TestToolsCallRefusesWithTheStatedReason(t *testing.T) {
 	pool := newMCPPool(t)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 
-	for _, endpoint := range []struct{ method, target, body string }{
-		{http.MethodGet, "/api/v2/elitea_core/tools_list/default/" + homeProject, ""},
-		{http.MethodPost, "/api/v2/elitea_core/tools_call/default/" + homeProject,
-			`{"server":"local","tool_call_id":"1","tool_timeout_sec":30,"params":{}}`},
-	} {
-		recorder := do(t, router, endpoint.method, endpoint.target, endpoint.body)
-		if recorder.Code != http.StatusNotImplemented {
-			t.Fatalf("%s %s: status = %d, want 501", endpoint.method, endpoint.target, recorder.Code)
-		}
-		if got := decode(t, recorder)["error"]; got != mcp.ToolRegistryUnavailableReason {
-			t.Fatalf("%s %s: error = %v, want the stated reason", endpoint.method, endpoint.target, got)
-		}
+	recorder := do(t, router, http.MethodPost, "/api/v2/elitea_core/tools_call/default/"+homeProject,
+		`{"server":"local","tool_call_id":"1","tool_timeout_sec":30,"params":{}}`)
+	if recorder.Code != http.StatusNotImplemented {
+		t.Fatalf("tools_call: status = %d, want 501", recorder.Code)
+	}
+	if got := decode(t, recorder)["error"]; got != mcp.ToolRegistryUnavailableReason {
+		t.Fatalf("tools_call: error = %v, want the stated reason", got)
 	}
 }
 
@@ -469,7 +472,7 @@ func TestToolsListAndToolsCallRefuseWithTheStatedReason(t *testing.T) {
 func TestPATStatusRecognisesTheInternalEndpointInBothURLForms(t *testing.T) {
 	pool := newMCPPool(t)
 	seedUser(t, pool, callerUserID)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 
 	seedMCPToolkitWithURL(t, pool, homeSchema, "mcp_elitea_internal",
 		"http://pylon_main:8080/app/{project_id}/mcp/elitea_core/applications")
@@ -507,7 +510,7 @@ func TestPATStatusRecognisesTheInternalEndpointInBothURLForms(t *testing.T) {
 func TestPATStatusReportsMissingThenExpiredThenValid(t *testing.T) {
 	pool := newMCPPool(t)
 	seedUser(t, pool, callerUserID)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 	seedMCPToolkitWithURL(t, pool, homeSchema, "mcp_elitea_internal",
 		"http://elitea-main:8080/app/"+homeProject+"/mcp/elitea_core/applications")
 
@@ -548,7 +551,7 @@ func TestPATStatusReportsMissingThenExpiredThenValid(t *testing.T) {
 func TestPATStatusTreatsANullExpiryAsValid(t *testing.T) {
 	pool := newMCPPool(t)
 	seedUser(t, pool, callerUserID)
-	router := newRouter(mcp.NewHandler(pool), callerUserID)
+	router := newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID)
 	seedMCPToolkitWithURL(t, pool, homeSchema, "mcp_elitea_internal",
 		"http://pylon_main:8080/app/{project_id}/mcp/elitea_core/applications")
 	seedToken(t, pool, callerUserID, nil)
@@ -574,11 +577,11 @@ func TestPATStatusReadsOnlyTheCallersTokens(t *testing.T) {
 
 	target := "/api/v2/elitea_core/internal_mcp_pat_status/prompt_lib/" + homeProject + "/mcp_elitea_internal"
 
-	withoutToken := decode(t, do(t, newRouter(mcp.NewHandler(pool), callerUserID), http.MethodGet, target, ""))
+	withoutToken := decode(t, do(t, newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID), http.MethodGet, target, ""))
 	if withoutToken["state"] != "MISSING" {
 		t.Fatalf("caller without a token: state = %v, want MISSING", withoutToken["state"])
 	}
-	withToken := decode(t, do(t, newRouter(mcp.NewHandler(pool), callerUserID+1), http.MethodGet, target, ""))
+	withToken := decode(t, do(t, newRouter(mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool)), callerUserID+1), http.MethodGet, target, ""))
 	if withToken["state"] != "VALID" {
 		t.Fatalf("caller with a token: state = %v, want VALID", withToken["state"])
 	}
@@ -649,5 +652,21 @@ func newMCPPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx, `SELECT create_tenant_schema($1)`, otherSchema); err != nil {
 		t.Fatalf("create second project schema: %v", err)
 	}
+
+	// The durable MCP server store lives in the shared history, not in
+	// 001_initial.sql. The migration file itself is applied — not a copy of its
+	// DDL — so a change to the shipped schema that these tests do not expect
+	// makes them fail here rather than passing against a stale duplicate.
+	registry, err := platformmigrations.Files.ReadFile(mcpRegistryMigration)
+	if err != nil {
+		t.Fatalf("read %s: %v", mcpRegistryMigration, err)
+	}
+	if _, err := pool.Exec(ctx, string(registry)); err != nil {
+		t.Fatalf("apply %s: %v", mcpRegistryMigration, err)
+	}
 	return pool
 }
+
+// mcpRegistryMigration creates elitea_mcp.registered_servers and
+// elitea_mcp.registered_tools (issue 335).
+const mcpRegistryMigration = "shared/0073_mcp_tool_registry.sql"

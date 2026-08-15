@@ -592,6 +592,26 @@ services:
       # which selects a UI view and must NOT be 1, this must name a project that
       # exists.
       ELITEA_AI_PROJECT_ID: "1"
+
+      # ── Current project-info (issue #367) ──────────────────────────────────
+      # On, because the handler behind it is the only one that can answer the
+      # question the UI asks.
+      #
+      # With this off, GET .../project_info/prompt_lib/{id}/project-info falls
+      # through to the prototype handler, which returns {name, icon_meta:null}:
+      # it never counts teammates and it hardcodes the icon to null. The screen
+      # reads exactly the two fields it cannot supply — see
+      # apps/elitea-web/src/entities/project/api/projectContextApi.ts, which
+      # reads icon_meta and teammates_count — so the teammates count showed 0
+      # and no uploaded project icon ever rendered, at 200.
+      #
+      # It needs production authentication, which this stack has
+      # (ELITEA_AUTH_CONFIG_FILE above). The flag rejects a deployment that
+      # lacks it rather than starting with the route dark.
+      #
+      # The prototype handler still owns PUT on the same path: the current
+      # route registers GET only.
+      ELITEA_PROJECT_INFO_ENABLED: "true"
       # ELITEA_VAULT_MASTER_KEY_FILE is deliberately NOT set, and the material is
       # still minted so a deployment that wants key wrapping can point at it.
       #

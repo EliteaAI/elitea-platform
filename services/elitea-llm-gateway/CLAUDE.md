@@ -30,6 +30,15 @@ because each was a real bug found across 3 review rounds.
   `checkBudget` — the provider must not see an unmapped id, and the cost tables
   are keyed by the provider's name. Do not make the unreadable-model-set path
   fail closed without a human (DECISIONS.md, "Model-name mapping").
+- `mapModel` gates every dialect against ONE model set, built from the
+  `(section, type)` pairs in `addressableModelSections`
+  (internal/llmproxy/models.go). Add the pair there when you add a route that
+  dispatches a new kind of model, and add its case to
+  `addressableSectionCases()` in `model_sections_test.go`. A missing pair makes
+  the gateway answer 404 `model_not_found` for a model the project configured
+  correctly — that is how /llm/v1/embeddings and /llm/v1/images/* broke. Do NOT
+  work around it by seeding the model as an `llm`/`llm_model` row: those rows are
+  the chat catalogue the web model picker reads.
 - Error bodies are **OpenAI-shaped on ALL /llm routes** (spec §2.5): nested
   `{"error":{"message","type","code"}}`. 402=budget_exceeded/insufficient_quota,
   429=rate_limit_error/rate_limit_exceeded, 503=service_unavailable/nats_unavailable.

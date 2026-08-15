@@ -71,7 +71,6 @@ type AuthDeps struct {
 	SessionHandler            *v2auth.SessionHandler
 	OIDCHandler               *v2auth.OIDCHandler
 	SessionSecret             string
-	TrustedProxyCIDRs         []string
 }
 
 // NOTE(#126): IndexerDeps and its six fields — Predictor, LLMService,
@@ -153,11 +152,18 @@ type RouterConfig struct {
 	WebhookRepo                webhook.Repository
 	RedisClient                *goredis.Client
 	EventSource                v2events.EventSource
-	Shadow                     *shadow.Comparator
-	ShadowMetrics              *shadow.Metrics
-	CutoverTracker             *cutover.Tracker
-	CutoverRouter              *cutover.Router
-	AdminUI                    *adminui.Config
+	// ProjectVectorStore provisions a new project's PgVector credentials and
+	// its `vectorstorage` configuration row (#371). It is injected because the
+	// composition needs the Configurations runtime's finder, unsecreter and
+	// vault writer, and that runtime is owned by internal/runtimecomposition,
+	// which imports this layer. Unassigned, a created project has no vector
+	// store and cannot index — see createProjectVectorStore.
+	ProjectVectorStore projectprovisioning.ProjectVectorStore
+	Shadow             *shadow.Comparator
+	ShadowMetrics      *shadow.Metrics
+	CutoverTracker     *cutover.Tracker
+	CutoverRouter      *cutover.Router
+	AdminUI            *adminui.Config
 	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
 	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
 	// DELETE cascade, but only inside newProductionRouter — it is
@@ -282,11 +288,29 @@ type bucketBootstrapRepoAdapter struct {
 // optional: a deployment with no object store still creates projects, it just
 // creates them without artifact buckets — which is the state EVERY project is
 // in today, so its absence cannot be a regression.
+//
+// The vector store is optional in the same way and for the same reason (#371),
+// with one difference worth stating: a project created without it CAN be
+// created and CANNOT index. Its absence is not a regression either, because no
+// Go-created project could index before, but it is not a working project.
 func newProjectProvisioner(cfg RouterConfig) (*projectprovisioning.Provisioner, bool) {
 	if cfg.Pool == nil {
 		return nil, false
 	}
-	options := make([]projectprovisioning.Option, 0, 1)
+	// The secrets vault (#373). Not conditional: a project provisioned without
+	// one cannot show its model catalogue, so the provisioner refuses to run
+	// without this dependency rather than creating projects that look complete
+	// and have no model picker. The handler is constructed here rather than
+	// shared with the one mountSecretsRoutes builds because that one is built
+	// inside the route tree; both read the same tables under the same
+	// SECRETS_MASTER_KEY rule.
+	options := []projectprovisioning.Option{
+		projectprovisioning.WithProjectVault(v2secrets.NewHandler(cfg.Pool)),
+	}
+	// The vector store (#371) IS conditional — see this function's doc comment.
+	if cfg.ProjectVectorStore != nil {
+		options = append(options, projectprovisioning.WithVectorStore(cfg.ProjectVectorStore))
+	}
 	if cfg.ObjectStore != nil {
 		bucketsRepo, bucketsErr := dbrepos.NewArtifactBucketsRepository(cfg.Pool)
 		objectsRepo, objectsErr := dbrepos.NewArtifactObjectsRepository(cfg.Pool)
@@ -496,7 +520,7 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 // pattern; the handler reads the tail with chi.URLParam(r, "*"), which is empty
 // for the first pair.
 func mountMCPServerRoutes(r chi.Router, pool *pgxpool.Pool, authenticate func(http.Handler) http.Handler) {
-	handler := v2mcp.NewHandler(pool)
+	handler := v2mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool))
 	r.Group(func(r chi.Router) {
 		r.Use(authenticate)
 		r.Use(apimw.RequireProjectAccess(pool))
@@ -655,7 +679,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		PrincipalValidator:        cfg.PrincipalValidator,
 		ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 		SessionSecret:             cfg.SessionSecret,
-		TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 	})
 	mountArtifactRoutes(r, ArtifactDeps{
 		Handler:      artifactHandler,
@@ -674,7 +697,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			PrincipalValidator:        cfg.PrincipalValidator,
 			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 			SessionSecret:             cfg.SessionSecret,
-			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 		}))
 
 		if cfg.CutoverRouter != nil {
@@ -1222,8 +1244,17 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						Patch("/skill_default_version/{mode}/{projectID}/{skillID}", skillHandler.Update)
 					// application_skills.py declares the APPLICATION read, not
 					// the skill one: the resource is an agent's skill list.
+					//
+					// This pointed at skillHandler.List until #367. List reads
+					// {projectID} and never looks at {appVersionID}, so opening
+					// any agent version answered with EVERY skill in the
+					// project — at 200, in the same envelope, so no caller
+					// could see it. The reviewed route that does read the
+					// attachment (internal/api/v2/applicationskills) is gated
+					// on a flag no deployment sets, so this handler is the one
+					// every deployment reaches.
 					r.With(projectPermission("models.applications.applications.details")).
-						Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.List)
+						Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.ListForApplication)
 					r.With(requireSkillCreate).Post("/skill_import/{mode}/{projectID}", skillHandler.Import)
 					r.With(requireSkillExport).Get("/skill_export/{mode}/{projectID}/{skillID}", skillHandler.Export)
 					r.With(requireSkillExport).
@@ -1787,13 +1818,23 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// path 404s here rather than being answered with something
 				// plausible.
 				//
-				// tools_list and tools_call answer 501 with a stated reason —
-				// see internal/api/v2/mcp/registry.go. They are registered
-				// rather than left off so the refusal is explicit and pinned by
-				// a test: a 404 leaves the next person free to wire a stub up.
-				mcpHandler := v2mcp.NewHandler(cfg.Pool)
+				// tools_list is registered in BOTH mode shapes. pylon's
+				// `api_tools.with_modes` registers a route with and without the
+				// mode segment, so `/tools_list/1` and `/tools_list/default/1`
+				// are one endpoint there. The Python execution worker builds
+				// the mode-less form (`elitea_sdk/runtime/clients/client.py`),
+				// and the hybrid edge matches the mode-less form too, so
+				// registering only `/default/` would leave the caller that
+				// actually exists unserved.
+				//
+				// tools_call still answers 501 with a stated reason — see
+				// internal/api/v2/mcp/registry.go. It is registered rather than
+				// left off so the refusal is explicit and pinned by a test: a
+				// 404 leaves the next person free to wire a stub up.
+				mcpHandler := v2mcp.NewHandler(cfg.Pool, apimw.NewDBPersonalProjectResolver(cfg.Pool))
 				r.Group(func(r chi.Router) {
 					r.Use(projectScoped)
+					r.Get("/tools_list/{projectID}", mcpHandler.ToolsList)
 					r.Get("/tools_list/default/{projectID}", mcpHandler.ToolsList)
 					r.Post("/tools_call/default/{projectID}", mcpHandler.ToolsCall)
 					r.Get("/internal_mcp_pat_status/prompt_lib/{projectID}/{toolkitType}", mcpHandler.InternalMCPPATStatus)
@@ -2061,7 +2102,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				PrincipalValidator:        cfg.PrincipalValidator,
 				ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 				SessionSecret:             cfg.SessionSecret,
-				TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 			}))
 			// Membership admits the caller-supplied project selector header
 			// (issue #318). Without it the edge admits no selector that names

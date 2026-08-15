@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
@@ -58,7 +59,7 @@ RETURNING id`).Scan(&adminUserID); err != nil {
 		t.Fatalf("seed administrator account: %v", err)
 	}
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	result, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name:        "Acceptance Project",
 		OwnerID:     1,
@@ -275,7 +276,7 @@ func TestProvisionIsIdempotent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	request := projectprovisioning.Request{
 		Name: "Idempotent Project", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	}
@@ -332,7 +333,7 @@ func TestProvisionLeavesNothingBehindWhenAStepFails(t *testing.T) {
 
 	before := projectIDs(ctx, t, pool)
 
-	provisioner := projectprovisioning.New(pool, failingMigrator{err: errors.New("corpus unavailable")}, nil)
+	provisioner := newTestProvisioner(t, pool, failingMigrator{err: errors.New("corpus unavailable")})
 	result, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "Doomed Project", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	})
@@ -436,7 +437,7 @@ func TestProvisionRejectsAnEmptyNameAndAnUnknownOwner(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 
 	if _, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "   ", OwnerID: 1,
@@ -459,7 +460,7 @@ func TestProvisionRefusesAnUnknownAdministrator(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	result, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name:        "Typo Project",
 		OwnerID:     1,
@@ -492,7 +493,7 @@ func TestDeprovisionRemovesEverythingProvisionCreated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	created, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "Doomed", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	})
@@ -582,7 +583,7 @@ func TestDeprovisionRevokesTokenBindingsForThatProjectOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	doomed, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "Doomed With A Bound Key", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	})
@@ -652,6 +653,20 @@ func countBindings(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tokenI
 }
 
 /* ── fixture ───────────────────────────────────────────────────────────── */
+
+// newTestProvisioner builds the provisioner with the same vault dependency
+// internal/api/router.go wires (#373).
+//
+// The real secrets handler, not a fake: it is the only code in the tree that
+// mints a vault key, so a fake here would prove the step ran and nothing about
+// whether what it wrote can be opened.
+func newTestProvisioner(
+	t *testing.T, pool *pgxpool.Pool, migrator projectprovisioning.TenantMigrator,
+) *projectprovisioning.Provisioner {
+	t.Helper()
+	return projectprovisioning.New(pool, migrator, nil,
+		projectprovisioning.WithProjectVault(v2secrets.NewHandler(pool)))
+}
 
 // newProvisioningPool builds an isolated database holding exactly what a real
 // deployment holds: the bootstrap schema plus the embedded corpus. Nothing is
@@ -816,6 +831,422 @@ func difference(from, remove []string) []string {
 }
 
 func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+/* ── issue #374: the delete order ──────────────────────────────────────── */
+
+// TestDeprovisionRemovesAProjectThatRanAnExecution is the case the delete path
+// could not do at all.
+//
+// Seven foreign keys name centry.project(id) with no ON DELETE action. A
+// project that ever ran an agent turn or an index ingest holds rows behind
+// them, so the project row delete failed — AFTER the schema drop had already
+// succeeded. The result was a project row with create_success = TRUE and no
+// p_<id> schema, which is the one state cmd/elitea-migrate refuses to run
+// against, for every tenant in the deployment.
+//
+// The seed is a whole execution graph and not one row on purpose. Two of the
+// tables that block the delete — index_ingest_results and
+// configuration_validation_results — carry no project column at all and reach
+// the project only through their execution job, so a seed of the seven obvious
+// tables would not exercise the statements that clear them.
+func TestDeprovisionRemovesAProjectThatRanAnExecution(t *testing.T) {
+	pool := newProvisioningPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
+	created, err := provisioner.Provision(ctx, projectprovisioning.Request{
+		Name: "Ran An Execution", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	projectID := created.ProjectID
+	execution := seedExecutionGraph(ctx, t, pool, projectID)
+
+	// Premise: the rows really are there. Without this the "gone" assertions
+	// below would pass against a project that never ran anything, which is what
+	// every delete test in this file did before #374.
+	for table, rows := range executionGraphRowCounts(ctx, t, pool, projectID, execution) {
+		if rows == 0 {
+			t.Fatalf("the seed wrote no row in %s, so this test cannot prove the delete clears it", table)
+		}
+	}
+
+	result, err := provisioner.Deprovision(ctx, projectID)
+	if err != nil {
+		t.Fatalf("deprovision a project that ran an execution: %v (steps=%+v)", err, result.RollbackSteps)
+	}
+
+	for table, rows := range executionGraphRowCounts(ctx, t, pool, projectID, execution) {
+		if rows != 0 {
+			t.Errorf("%s kept %d row(s) that name the deleted project", table, rows)
+		}
+	}
+
+	var rowSurvived, schemaSurvived bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (SELECT 1 FROM centry.project WHERE id = $1),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $2)`,
+		projectID, fmt.Sprintf("p_%d", projectID),
+	).Scan(&rowSurvived, &schemaSurvived); err != nil {
+		t.Fatalf("read the project row and its schema: %v", err)
+	}
+	if rowSurvived {
+		t.Error("the project row survived the delete")
+	}
+	if schemaSurvived {
+		t.Error("the tenant schema survived the delete")
+	}
+
+	// The deployment-wide consequence. This is the real preflight, not a copy.
+	if _, err := migrate.TenantProjects(ctx, pool); err != nil {
+		t.Errorf("elitea-migrate preflight fails after the delete: %v", err)
+	}
+}
+
+// TestDeprovisionKeepsTheTenantSchemaWhenTheProjectRowCannotGo is the
+// acceptance criterion that matters most in #374.
+//
+// It makes the delete fail on purpose, at the project row, and proves the
+// database is NOT left with a project row whose schema is gone. The failure is
+// injected with a foreign key this package does not know about, because a
+// blocker taken from the covered list would prove only that the list is
+// complete today. Any future table that names centry.project behaves the same
+// way.
+//
+// Against the ordering this test replaces — schema first, row second — the
+// tenant schema is already gone at this point and the preflight assertion
+// below fails for the whole deployment.
+func TestDeprovisionKeepsTheTenantSchemaWhenTheProjectRowCannotGo(t *testing.T) {
+	pool := newProvisioningPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
+	created, err := provisioner.Provision(ctx, projectprovisioning.Request{
+		Name: "Blocked Delete", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	projectID := created.ProjectID
+	schema := fmt.Sprintf("p_%d", projectID)
+	tenantTables := schemaTables(ctx, t, pool, schema)
+	if len(tenantTables) == 0 {
+		t.Fatal("nothing was provisioned, so this test cannot prove anything was kept")
+	}
+
+	// The blocker: one row behind a foreign key with no ON DELETE action, which
+	// is the shape of all seven real ones.
+	if _, err := pool.Exec(ctx, `
+CREATE TABLE centry.delete_blocker (
+    project_id INTEGER NOT NULL REFERENCES centry.project(id)
+)`); err != nil {
+		t.Fatalf("create the blocking table: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO centry.delete_blocker (project_id) VALUES ($1)`, projectID); err != nil {
+		t.Fatalf("insert the blocking row: %v", err)
+	}
+
+	result, err := provisioner.Deprovision(ctx, projectID)
+	if !errors.Is(err, projectprovisioning.ErrProjectNotRemoved) {
+		t.Fatalf("deprovision err = %v, want ErrProjectNotRemoved", err)
+	}
+
+	// THE ASSERTION THIS TEST EXISTS FOR. The tenant data is the part that
+	// cannot be rebuilt, so a delete that cannot remove the project row must
+	// keep it.
+	if kept := schemaTables(ctx, t, pool, schema); !equalStrings(tenantTables, kept) {
+		t.Fatalf("the failed delete changed the tenant schema %s\n missing: %v\n extra:   %v",
+			schema, difference(tenantTables, kept), difference(kept, tenantTables))
+	}
+
+	var rowSurvived, createSuccess bool
+	if err := pool.QueryRow(ctx,
+		`SELECT true, create_success FROM centry.project WHERE id = $1`, projectID,
+	).Scan(&rowSurvived, &createSuccess); err != nil {
+		t.Fatalf("the failed delete removed the project row it could not delete: %v", err)
+	}
+	if !createSuccess {
+		t.Error("the failed delete cleared create_success, which hides the project from every reader that filters on it")
+	}
+
+	// The deployment-wide consequence, proved rather than argued: a project row
+	// with create_success = TRUE and no schema stops migration for EVERY
+	// tenant. Here the schema is there, so the preflight still runs.
+	eligible, err := migrate.TenantProjects(ctx, pool)
+	if err != nil {
+		t.Fatalf("elitea-migrate preflight fails after a failed delete, so no tenant in this deployment can migrate: %v", err)
+	}
+	if !containsID(eligible, projectID) {
+		t.Errorf("the preflight does not list project %d, so its tenant would never migrate again", projectID)
+	}
+
+	// The report names the held-back step, and it says the step was not
+	// started rather than that it failed halfway.
+	var schemaStep projectprovisioning.StepStatus
+	for _, status := range result.RollbackSteps {
+		if status.Step == "project_schema" {
+			schemaStep = status
+		}
+	}
+	if schemaStep.OK == nil || *schemaStep.OK {
+		t.Errorf("project_schema is reported as %+v, want a step that did not succeed", schemaStep)
+	}
+	if schemaStep.Msg != projectprovisioning.HeldBackStepMessage("project_schema") {
+		t.Errorf("project_schema msg = %q, want the held-back message", schemaStep.Msg)
+	}
+
+	// And the delete converges once the blocker is gone.
+	if _, err := pool.Exec(ctx, `DROP TABLE centry.delete_blocker`); err != nil {
+		t.Fatalf("drop the blocking table: %v", err)
+	}
+	if _, err := provisioner.Deprovision(ctx, projectID); err != nil {
+		t.Fatalf("the retried delete failed: %v", err)
+	}
+	if tables := schemaTables(ctx, t, pool, schema); len(tables) != 0 {
+		t.Error("the retried delete kept the tenant schema")
+	}
+	if _, err := migrate.TenantProjects(ctx, pool); err != nil {
+		t.Errorf("elitea-migrate preflight fails after the retried delete: %v", err)
+	}
+}
+
+// TestEveryBlockingForeignKeyIsCovered is the guard against the next migration
+// reopening #374.
+//
+// It walks the live catalogue from centry.project through the cascades the
+// delete gets for free, and it names any table that could still block the
+// project row delete. The answer must be empty. A migration that adds a
+// foreign key to centry.project(id), or to any table the delete removes, fails
+// this test until referencingDeletes clears it too.
+func TestEveryBlockingForeignKeyIsCovered(t *testing.T) {
+	pool := newProvisioningPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	removed := append([]string{"centry.project"}, projectprovisioning.ReferencingTables()...)
+	rows, err := pool.Query(ctx, `
+WITH RECURSIVE removed AS (
+        SELECT class.oid AS rel
+        FROM pg_catalog.pg_class AS class
+        JOIN pg_catalog.pg_namespace AS space ON space.oid = class.relnamespace
+        WHERE space.nspname || '.' || class.relname = ANY($1::text[])
+    UNION
+        SELECT constraint_.conrelid
+        FROM pg_catalog.pg_constraint AS constraint_
+        JOIN removed ON constraint_.confrelid = removed.rel
+        WHERE constraint_.contype = 'f' AND constraint_.confdeltype = 'c'
+)
+SELECT DISTINCT space.nspname || '.' || class.relname
+FROM pg_catalog.pg_constraint AS constraint_
+JOIN removed ON constraint_.confrelid = removed.rel
+JOIN pg_catalog.pg_class AS class ON class.oid = constraint_.conrelid
+JOIN pg_catalog.pg_namespace AS space ON space.oid = class.relnamespace
+WHERE constraint_.contype = 'f'
+  AND constraint_.confdeltype NOT IN ('c', 'n', 'd')
+  AND constraint_.conrelid NOT IN (SELECT rel FROM removed)
+ORDER BY 1`, removed)
+	if err != nil {
+		t.Fatalf("read the foreign keys that reference the project: %v", err)
+	}
+	defer rows.Close()
+
+	blocking := make([]string, 0)
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			t.Fatalf("scan a blocking table: %v", err)
+		}
+		blocking = append(blocking, table)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the blocking tables: %v", err)
+	}
+	if len(blocking) != 0 {
+		t.Fatalf("these tables can block a project delete and referencingDeletes does not clear them: %v", blocking)
+	}
+
+	// Premise: the walk really does reach the runtime tables. An empty answer
+	// from a query that reaches nothing would pass for the wrong reason.
+	if !contains(projectprovisioning.ReferencingTables(), "elitea_runtime.execution_jobs") {
+		t.Fatal("the covered list does not name execution_jobs, so this test proves nothing")
+	}
+}
+
+/* ── the execution graph fixture ───────────────────────────────────────── */
+
+// seedExecutionGraph writes one complete execution for projectID: a bundle, a
+// job, a claim, two outbox events, an index artifact, an index ingest result, a
+// configuration validation result, both replay tables and an index generation
+// counter. It returns the execution id.
+//
+// The rows are written with raw SQL because the repositories that normally
+// write them live in other packages, and a fixture that went through them would
+// test those packages instead of the delete.
+func seedExecutionGraph(ctx context.Context, t *testing.T, pool *pgxpool.Pool, projectID int64) string {
+	t.Helper()
+	execution := fmt.Sprintf("execution-delete-%d", projectID)
+	bundle := fmt.Sprintf("bundle-delete-%d", projectID)
+	claim := fmt.Sprintf("claim-delete-%d", projectID)
+	record := fmt.Sprintf("storage-record-%d", projectID)
+	digest := make([]byte, 32)
+	payload := []byte("payload")
+
+	for _, seed := range []struct {
+		what      string
+		statement string
+		arguments []any
+	}{
+		{"input bundle", `
+INSERT INTO elitea_runtime.input_bundles (
+    input_bundle_id, immutable_version, media_type, resource_project_id,
+    manifest_digest, manifest_size, manifest_bytes, created_by
+) VALUES ($1, 'v1', 'application/x-protobuf', $2, $3, 7, $4, 'tests')`,
+			[]any{bundle, projectID, digest, payload}},
+
+		{"execution job", `
+INSERT INTO elitea_runtime.execution_jobs (
+    execution_id, generation, command_id, tenant_id, resource_project_id,
+    projection_project_id, actor_id, principal_ref, capability_id,
+    capability_version, input_bundle_id, request_digest, idempotency_scope,
+    idempotency_key, state, desired_state
+) VALUES ($1, 1, $2, $3, $4, $4, '1', 'principal', 'index.ingest.v1', '1',
+          $5, $6, 'tests', $2, 'RUNNING', 'RUNNING')`,
+			[]any{execution, "command-" + execution, fmt.Sprintf("%d", projectID), projectID, bundle, digest}},
+
+		{"execution claim", `
+INSERT INTO elitea_runtime.execution_claims (
+    claim_id, execution_id, generation, workload_session_id, workload_identity,
+    producer_id, claim_attempt, lease_epoch, fence_token, lease_expires_at
+) VALUES ($1, $2, 1, 'session', 'identity', 'producer', 1, 1, $3,
+          now() + interval '1 hour')`,
+			[]any{claim, execution, digest}},
+
+		{"outbox events", `
+INSERT INTO elitea_runtime.output_inbox (
+    event_id, logical_output_id, execution_id, generation, claim_id,
+    fence_token, workload_identity, workload_session_id, producer_id,
+    claim_attempt, lease_epoch, stream_id, sequence, payload_type,
+    payload_digest, payload_bytes, settlement_proposal_id, settlement_outcome,
+    settlement_proposal_bytes, settlement_proposal_digest,
+    settlement_idempotency_key, occurred_at
+) VALUES
+    ($1 || ':ingest', 'ingest-output', $1, 1, $2, $3, 'identity', 'session',
+     'producer', 1, 1, 'stream', 1, 'INDEX_INGEST_RESULT', $3, $4,
+     'proposal-ingest', 'SUCCEEDED', $4, $3, 'idempotency-ingest', now()),
+    ($1 || ':config', 'config-output', $1, 1, $2, $3, 'identity', 'session',
+     'producer', 2, 1, 'stream', 2, 'CONFIGURATION_VALIDATION', $3, $4,
+     'proposal-config', 'SUCCEEDED', $4, $3, 'idempotency-config', now())`,
+			[]any{execution, claim, digest, payload}},
+
+		{"index result artifact", `
+INSERT INTO elitea_runtime.index_result_artifacts (
+    artifact_id, immutable_version, execution_id, generation,
+    resource_project_id, media_type, byte_length, digest, classification,
+    storage_record_id, bytes_verified_at, metadata_created_at
+) VALUES ('artifact', 'v1', $1, 1, $2, 'application/octet-stream', 7, $3,
+          'internal', $4, now(), now())`,
+			[]any{execution, projectID, digest, record}},
+
+		{"index ingest result", `
+INSERT INTO elitea_runtime.index_ingest_results (
+    logical_output_id, execution_id, generation, input_bundle_id,
+    input_bundle_digest, artifact_id, artifact_immutable_version,
+    artifact_storage_record_id
+) VALUES ('ingest-output', $1, 1, $2, $3, 'artifact', 'v1', $4)`,
+			[]any{execution, bundle, digest, record}},
+
+		{"configuration validation result", `
+INSERT INTO elitea_runtime.configuration_validation_results (
+    logical_output_id, execution_id, generation, configuration_revision_id,
+    configuration_type, catalog_revision, catalog_digest, schema_id,
+    schema_revision, schema_digest, input_bundle_id, input_bundle_digest,
+    settings_entry_id, settings_entry_version, settings_content_digest, valid
+) VALUES ('config-output', $1, 1, 'revision', 'application/json', 'catalog',
+          $2, 'schema', '1', $2, $3, $2, 'entry', '1', $2, true)`,
+			[]any{execution, digest, bundle}},
+
+		{"replay event", `
+INSERT INTO elitea_runtime.execution_replay_events (
+    event_id, execution_id, generation, projection_project_id, event_type,
+    event_bytes, event_digest
+) VALUES ($1 || ':replay', $1, 1, $2, 'execution.node_event', $3, $4)`,
+			[]any{execution, projectID, payload, digest}},
+
+		{"replay state", `
+INSERT INTO elitea_runtime.execution_replay_state (
+    execution_id, generation, projection_project_id
+) VALUES ($1, 1, $2)`,
+			[]any{execution, projectID}},
+
+		{"index generation counter", `
+INSERT INTO elitea_runtime.index_generation_counters (
+    resource_project_id, toolkit_id, index_name, last_generation
+) VALUES ($1, 1, 'index', 1)`,
+			[]any{projectID}},
+	} {
+		if _, err := pool.Exec(ctx, seed.statement, seed.arguments...); err != nil {
+			t.Fatalf("seed %s: %v", seed.what, err)
+		}
+	}
+	return execution
+}
+
+// executionGraphRowCounts counts what the seed wrote, per table. The two
+// tables with no project column are counted by execution, which is the only
+// route they have to the project.
+func executionGraphRowCounts(
+	ctx context.Context, t *testing.T, pool *pgxpool.Pool, projectID int64, execution string,
+) map[string]int {
+	t.Helper()
+	counts := make(map[string]int)
+	for _, check := range []struct {
+		table     string
+		statement string
+		argument  any
+	}{
+		{"elitea_runtime.input_bundles",
+			`SELECT count(*) FROM elitea_runtime.input_bundles WHERE resource_project_id = $1`, projectID},
+		{"elitea_runtime.execution_jobs",
+			`SELECT count(*) FROM elitea_runtime.execution_jobs
+             WHERE resource_project_id = $1 OR projection_project_id = $1`, projectID},
+		{"elitea_runtime.execution_replay_events",
+			`SELECT count(*) FROM elitea_runtime.execution_replay_events WHERE projection_project_id = $1`, projectID},
+		{"elitea_runtime.execution_replay_state",
+			`SELECT count(*) FROM elitea_runtime.execution_replay_state WHERE projection_project_id = $1`, projectID},
+		{"elitea_runtime.index_result_artifacts",
+			`SELECT count(*) FROM elitea_runtime.index_result_artifacts WHERE resource_project_id = $1`, projectID},
+		{"elitea_runtime.index_generation_counters",
+			`SELECT count(*) FROM elitea_runtime.index_generation_counters WHERE resource_project_id = $1`, projectID},
+		{"elitea_runtime.index_ingest_results",
+			`SELECT count(*) FROM elitea_runtime.index_ingest_results WHERE execution_id = $1`, execution},
+		{"elitea_runtime.configuration_validation_results",
+			`SELECT count(*) FROM elitea_runtime.configuration_validation_results WHERE execution_id = $1`, execution},
+		{"elitea_runtime.output_inbox",
+			`SELECT count(*) FROM elitea_runtime.output_inbox WHERE execution_id = $1`, execution},
+		{"elitea_runtime.execution_claims",
+			`SELECT count(*) FROM elitea_runtime.execution_claims WHERE execution_id = $1`, execution},
+	} {
+		var rows int
+		if err := pool.QueryRow(ctx, check.statement, check.argument).Scan(&rows); err != nil {
+			t.Fatalf("count rows in %s: %v", check.table, err)
+		}
+		counts[check.table] = rows
+	}
+	return counts
+}
+
+func containsID(values []int64, want int64) bool {
 	for _, value := range values {
 		if value == want {
 			return true
