@@ -68,6 +68,39 @@ export const EXECUTION_EVENT_REPLAY_RESET = 'execution.replay_reset';
 export type ExecutionEventData = Readonly<Record<string, unknown>>;
 
 /**
+ * The bound every backend admission route enforces on a client-supplied or
+ * client-correlated id — e.g. `services/elitea-main/internal/application/
+ * indexing/start.go`'s `MaxClientCorrelationBytes`, which `start_handler.go`'s
+ * `validTaskID` applies to every `task_id` it ever returns.
+ */
+const MAX_EXECUTION_ID_BYTES = 512;
+
+/**
+ * Bounds-checks an execution/task id BEFORE it is interpolated into the SSE
+ * URL below (issue #310: "task ids are bounds-checked before use in a URL")
+ * — non-empty, no leading/trailing whitespace, no NUL/CR/LF, at most 512
+ * bytes. This is the one place every caller's `executionId` (however it was
+ * obtained — a normal start response, an adopted 409 conflict, a recovered
+ * value) actually becomes a URL, so the guard lives here rather than relying
+ * on every caller to have checked first. `features/toolkits/indexes/lib/
+ * helpers/indexExecution.helpers.ts`'s `isBoundedIndexExecutionTaskId`
+ * applies the identical rule where a `task_id` is first accepted off the
+ * wire — duplicated rather than imported because `shared/` must not depend
+ * on a feature slice (R-L3): this file protects the transport boundary for
+ * every execution kind, not only index runs.
+ */
+function isBoundedExecutionId(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value === value.trim() &&
+    !value.includes('\0') &&
+    !value.includes('\r') &&
+    !value.includes('\n') &&
+    new TextEncoder().encode(value).length <= MAX_EXECUTION_ID_BYTES
+  );
+}
+
+/**
  * `JSON.parse` at a transport boundary, as a value and never a throw (§3.6):
  * a malformed or non-object frame yields `undefined` and the handler is
  * skipped, rather than killing the React event handler that called it.
@@ -141,6 +174,15 @@ export interface ExecutionEventCallbacks {
    * needs the run to proceed must act here.
    */
   readonly onError?: ((event: Event) => void) | undefined;
+  /**
+   * The stream actually OPENED (see `./useEventSource.ts`'s own doc comment
+   * on this option) — fired before any frame arrives, as soon as the HTTP
+   * response headers come back successfully. A caller that must tell "this
+   * `executionId` was never a real stream" apart from "it opened, then
+   * later dropped" needs this: `onError` alone cannot make that
+   * distinction (issue #310).
+   */
+  readonly onOpen?: ((event: Event) => void) | undefined;
 }
 
 /**
@@ -155,7 +197,7 @@ export interface ExecutionEventCallbacks {
  * disappeared. Frames with no callback are parsed and dropped.
  */
 export function useExecutionEventStream(eventsUrl: string | null | undefined, callbacks: ExecutionEventCallbacks): void {
-  const { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError } = callbacks;
+  const { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError, onOpen } = callbacks;
   const config = getConfig();
   const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
   const url = useMemo(() => resolveExecutionEventsUrl(serverUrl, eventsUrl), [serverUrl, eventsUrl]);
@@ -179,7 +221,7 @@ export function useExecutionEventStream(eventsUrl: string | null | undefined, ca
     [EXECUTION_EVENT_INDEX_INGEST_COMPLETED]: deliver(onIndexIngestCompleted),
     [EXECUTION_EVENT_FAILED]: deliver(onFailed),
     [EXECUTION_EVENT_REPLAY_RESET]: deliver(onReplayReset),
-  }, { onError });
+  }, { onError, onOpen });
 }
 
 export interface UseExecutionEventsParams extends ExecutionEventCallbacks {
@@ -198,15 +240,18 @@ export interface UseExecutionEventsParams extends ExecutionEventCallbacks {
  * disappeared. Frames with no callback are parsed and dropped.
  */
 export function useExecutionEvents(params: UseExecutionEventsParams): void {
-  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError } = params;
+  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError, onOpen } = params;
   const config = getConfig();
   const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
 
   // The index surface starts its run through a route that returns only a
-  // `task_id`, so the path is derived here rather than supplied.
+  // `task_id`, so the path is derived here rather than supplied. Bounds-checked
+  // (issue #310) before it is interpolated: an out-of-bounds `executionId`
+  // produces no URL at all, exactly like a missing one — see
+  // `isBoundedExecutionId`'s own doc comment.
   const eventsUrl = useMemo(
     () =>
-      projectId !== undefined && projectId !== '' && executionId && serverUrl
+      projectId !== undefined && projectId !== '' && executionId && isBoundedExecutionId(executionId) && serverUrl
         ? `${serverUrl}/executions/${String(projectId)}/${executionId}/events`
         : null,
     [projectId, executionId, serverUrl],
@@ -215,5 +260,5 @@ export function useExecutionEvents(params: UseExecutionEventsParams): void {
   // Already absolute against `vite_server_url` ⇒ `useExecutionEventStream`'s
   // own resolution is a no-op for it (same-origin prefix returns the path
   // unchanged; an absolute origin was already baked in above).
-  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError });
+  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError, onOpen });
 }

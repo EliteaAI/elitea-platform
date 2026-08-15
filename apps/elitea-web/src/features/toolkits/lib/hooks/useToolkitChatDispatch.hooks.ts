@@ -27,6 +27,20 @@
  *     discriminator: if it fails to open, the run is on legacy (or the
  *     route is gone), and the socket emit fires after all. Without this the
  *     frontend would suppress the only working transport and follow a 404.
+ *
+ * A THIRD case, issue #310: the POST itself can answer `409 "Indexing is
+ * already in progress for this index"`, naming the `task_id` of the run
+ * already admitted. That is not a failure to fall back from — it is proof
+ * an execution exists, on the Go runtime, right now. The old code swallowed
+ * every `startIndexExecution` rejection in a bare `catch {}` and fell
+ * through to the socket emit unconditionally, which STARTED A SECOND RUN on
+ * top of the one the 409 was reporting. `parseIndexStartConflictTaskId`
+ * (`../../indexes/lib/helpers/indexExecution.helpers.ts`) recognises only
+ * that exact conflict shape; when it does, this hook ADOPTS the returned
+ * task id — same as a normal successful start — and deliberately leaves
+ * `pendingFallbackRef` unset, so a later stream failure can never queue a
+ * socket-fallback emit for this run: retrying over socket.io would itself
+ * be the duplicate run this branch exists to prevent.
  */
 import { useCallback, useRef } from 'react';
 
@@ -34,6 +48,7 @@ import { useSocketClient } from '@/shared/api/socket/client';
 
 import { startIndexExecution } from '../../indexes/api/indexesApi';
 import { IndexesToolsEnum } from '../../indexes/lib/constants/indexDetails.constants';
+import { isBoundedIndexExecutionTaskId, parseIndexStartConflictTaskId } from '../../indexes/lib/helpers/indexExecution.helpers';
 import type { CreatedConversation } from '../helpers/toolkitConversation.helpers';
 import { findToolkitParticipant } from '../helpers/toolkitConversation.helpers';
 import type { ToolkitChatLlmSettings, ToolkitChatModel, UseToolkitChatParams } from './useToolkitChat.types';
@@ -109,15 +124,26 @@ export function useToolkitRunDispatch(params: UseToolkitRunDispatchParams): UseT
             ...(selectedModel?.name !== undefined ? { llmModel: selectedModel.name } : {}),
             llmSettings,
           });
-          if (started.task_id) {
+          if (isBoundedIndexExecutionTaskId(started.task_id)) {
             // Decision 2: park the emit until the stream proves it connected.
             pendingFallbackRef.current = emitOverSocket;
             setExecutionId(started.task_id);
             onStartTask(started.task_id);
             return;
           }
-        } catch {
-          // Fall through to the socket path below.
+        } catch (error) {
+          // Decision 3 (issue #310): a 409 names a run already admitted —
+          // adopt its task id instead of retrying. `pendingFallbackRef`
+          // stays unset (cleared above, at the top of `startToolRun`), so a
+          // later stream failure can never re-dispatch this run over
+          // socket.io — see this file's header.
+          const conflictTaskId = parseIndexStartConflictTaskId(error);
+          if (conflictTaskId !== undefined) {
+            setExecutionId(conflictTaskId);
+            onStartTask(conflictTaskId);
+            return;
+          }
+          // Every other failure: fall through to the socket path below.
         }
       }
 
