@@ -1965,5 +1965,6 @@
   "features.agents.deleteVersion.error": "Failed to delete this version.",
   "features.agents.deleteVersion.title": "Delete version",
   "pages.agents.editApplication.deleteError": "Failed to delete this agent.",
-  "pages.agents.editApplication.exportError": "Failed to export this agent."
+  "pages.agents.editApplication.exportError": "Failed to export this agent.",
+  "features.toolkits.indexScheduleModal.credentialsLabel": "Credentials"
 }

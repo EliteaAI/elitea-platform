@@ -48,6 +48,25 @@ export interface ToolBasePropertyCredentialContext {
 export interface ToolBasePropertySlots {
   readonly renderOpenApiSpecField?: ToolSlotRenderer<OpenApiSpecFieldContext> | undefined;
   readonly renderCredentialLikeField?: ToolSlotRenderer<CredentialLikeFieldContext> | undefined;
+  /**
+   * #308 — the credential picker for a `configuration`-kind field only.
+   *
+   * This is a SECOND, narrower slot beside `renderCredentialLikeField` on
+   * purpose. The three model kinds are intra-slice: `useCredentialLikeFieldSlot`
+   * renders `ModelSelectField` for them and no caller must supply anything.
+   * The `configuration` kind is not: its picker is
+   * `features/credentials`' `CredentialsSelect`, and `no-sideways-features`
+   * forbids this slice from importing it, so only a `pages/`/`widgets/` root
+   * can build it.
+   *
+   * Splitting the two keeps the page's duty to ONE kind. Making the page
+   * supply `renderCredentialLikeField` instead would make it responsible for
+   * the model kinds too (that slot replaces the default wholesale — see the
+   * merge in `ToolkitForm.hooks.ts`), so a page that wired only the credential
+   * picker would silently blank the model pickers again. That is the exact
+   * defect #308 records.
+   */
+  readonly renderCredentialPicker?: ToolSlotRenderer<CredentialLikeFieldContext> | undefined;
 }
 
 export interface ToolBasePropertyProps {
