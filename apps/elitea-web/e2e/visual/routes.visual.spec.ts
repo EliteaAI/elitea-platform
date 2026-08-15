@@ -381,64 +381,12 @@ const ROUTES: readonly VisualRoute[] = [
   },
 ];
 
-/**
- * TEMPORARY (issue #238 investigation) — reports the live state of the sidebar
- * chevron so the light pass can be compared against the dark one. The chevron
- * draws in the dark baselines and not in the light ones, and every unit-level
- * render shows it present in both, so the divergence is only observable here.
- * Remove once the cause is known.
- */
-async function reportChevron(page: Page, label: string): Promise<void> {
-  const state = await page.evaluate(() => {
-    const el = document.querySelector('[data-testid="project-switcher-chevron"]');
-    const scheme = document.documentElement.getAttribute('data-el-scheme');
-    if (!el) {
-      const trigger = document.querySelector('[id^="project-switcher-trigger"]');
-      return {
-        scheme,
-        present: false,
-        triggerPresent: Boolean(trigger),
-        triggerHTML: trigger ? trigger.outerHTML.slice(0, 400) : null,
-      };
-    }
-    const style = getComputedStyle(el);
-    const rect = el.getBoundingClientRect();
-    const cx = Math.round(rect.x + rect.width / 2);
-    const cy = Math.round(rect.y + rect.height / 2);
-    const onTop = document.elementFromPoint(cx, cy);
-    const chain: string[] = [];
-    for (let node = el.parentElement, depth = 0; node && depth < 6; node = node.parentElement, depth += 1) {
-      const parentStyle = getComputedStyle(node);
-      chain.push(
-        `${node.tagName}.${node.className.toString().slice(0, 24)}|op=${parentStyle.opacity}|ov=${parentStyle.overflow}|vis=${parentStyle.visibility}|z=${parentStyle.zIndex}|bg=${parentStyle.backgroundColor}`,
-      );
-    }
-    return {
-      scheme,
-      present: true,
-      rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
-      color: style.color,
-      fill: style.fill,
-      opacity: style.opacity,
-      visibility: style.visibility,
-      display: style.display,
-      svgPathCount: el.querySelectorAll('path').length,
-      svgOuter: el.outerHTML.slice(0, 160),
-      onTop: onTop ? `${onTop.tagName}.${onTop.className.toString().slice(0, 40)}` : null,
-      onTopIsChevron: onTop === el || el.contains(onTop),
-      chain,
-    };
-  });
-  console.log(`CHEVRON-DIAG ${label} ${JSON.stringify(state)}`);
-}
-
 for (const route of ROUTES) {
   test(`@visual ${route.name}`, async ({ page }) => {
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
     await shellSettled(page);
     await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
     await settle(page);
-    await reportChevron(page, route.name);
 
     await expect(page).toHaveScreenshot(`${route.name}.png`, {
       fullPage: false,
@@ -504,17 +452,6 @@ for (const route of ROUTES.filter((r) => r.light)) {
     // light name, and it would look correct.
     expect(await page.evaluate(() => document.documentElement.getAttribute('data-el-scheme'))).toBe('light');
     await settle(page);
-    await reportChevron(page, `${route.name}-light`);
-
-    // TEMPORARY (issue #238): a second shot under a NEW name. A name with no
-    // committed baseline is written rather than compared, so this captures the
-    // light render as it actually is, instead of whatever the existing
-    // comparison is deciding about it.
-    await expect(page).toHaveScreenshot(`${route.name}-lightdiag.png`, {
-      fullPage: false,
-      mask: volatileRegions(page),
-      ...SNAPSHOT_TOLERANCE,
-    });
 
     await expect(page).toHaveScreenshot(`${route.name}-light.png`, {
       fullPage: false,
