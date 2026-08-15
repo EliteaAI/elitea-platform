@@ -186,6 +186,19 @@ VALUES ($1, (now() AT TIME ZONE 'utc'))`,
 	return nil
 }
 
+// removeProjectModel deletes the project row, its two companion rows, and every
+// shared row that points at it.
+//
+// THE MECHANISM ISSUE #374 ASKS TO RECORD: the delete REMOVES THE REFERENCING
+// ROWS. It does not disarm a foreign key and it does not add one. Seven foreign
+// keys name centry.project(id) with no ON DELETE action, so a project that ever
+// ran an agent turn or an index ingest could not be deleted at all — the row
+// delete failed on the first of them. See referencingDeletes for the list and
+// for the order.
+//
+// All of it runs in ONE transaction, the referencing rows included. Either the
+// project and everything that names it go together, or nothing goes. A partial
+// delete cannot commit, so the project row and its tenant schema stay in step.
 func removeProjectModel(ctx context.Context, p *Provisioner, state *provisionState) error {
 	if state.projectID == 0 {
 		return nil
@@ -195,6 +208,24 @@ func removeProjectModel(ctx context.Context, p *Provisioner, state *provisionSta
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = transaction.Rollback(context.WithoutCancel(ctx)) }()
+
+	for _, cleanup := range referencingDeletes() {
+		// A deployment that has not applied the shared history yet does not
+		// have these tables. deleteTenantLedger guards the same way, and an
+		// undefined table would abort the whole transaction.
+		var present bool
+		if err := transaction.QueryRow(ctx,
+			`SELECT to_regclass($1) IS NOT NULL`, cleanup.table,
+		).Scan(&present); err != nil {
+			return fmt.Errorf("resolve %s: %w", cleanup.table, err)
+		}
+		if !present {
+			continue
+		}
+		if _, err := transaction.Exec(ctx, cleanup.statement, state.projectID); err != nil {
+			return fmt.Errorf("delete rows in %s: %w", cleanup.table, err)
+		}
+	}
 
 	for _, statement := range []string{
 		`DELETE FROM centry.statistic WHERE project_id = $1`,
@@ -206,6 +237,94 @@ func removeProjectModel(ctx context.Context, p *Provisioner, state *provisionSta
 		}
 	}
 	return transaction.Commit(ctx)
+}
+
+// referencingDelete is one table to clear before the project row goes.
+type referencingDelete struct {
+	// table is the qualified name, used both as the to_regclass guard argument
+	// and as the key the coverage test compares against the live catalogue.
+	table string
+	// statement takes the project id as $1.
+	statement string
+}
+
+// referencingDeletes clears every shared row that would block the project row
+// delete, in an order that leaves nothing dangling at any point.
+//
+// WHY A LIST RATHER THAN A CASCADE. The seven foreign keys are declared in
+// shipped migrations, and a migration carries a content checksum, so the
+// declarations cannot be edited. Adding ON DELETE CASCADE to them would also
+// make every future project delete silently destroy the execution and index
+// attestation records, without a reader of this package being able to see it.
+// The list states what a delete removes.
+//
+// THE ORDER. Two of these tables hold rows that no project column selects:
+// index_ingest_results and configuration_validation_results reach the project
+// only through their execution job. They come first, because they block the
+// tables below them. execution_jobs comes next to last of the runtime tables,
+// because it cascades to the claims, the settlements, the outbox and the ingest
+// jobs. input_bundles comes after it, because a job names its bundle.
+//
+// COVERAGE IS TESTED, NOT ASSUMED. A migration that adds a foreign key to
+// centry.project reopens this defect. TestEveryBlockingForeignKeyIsCovered
+// reads the live catalogue and fails while a table that can block the delete is
+// absent from this list.
+func referencingDeletes() []referencingDelete {
+	// The project's execution jobs. Both project columns select them: a job
+	// carries the project that owns the resource and the project the result is
+	// projected into, and either one can name this project.
+	const jobsOfProject = `
+    SELECT job.execution_id, job.generation
+    FROM elitea_runtime.execution_jobs AS job
+    WHERE job.resource_project_id = $1 OR job.projection_project_id = $1`
+
+	return []referencingDelete{
+		{
+			table: "elitea_runtime.index_ingest_results",
+			statement: `
+DELETE FROM elitea_runtime.index_ingest_results
+WHERE (execution_id, generation) IN (` + jobsOfProject + `)`,
+		},
+		{
+			table: "elitea_runtime.configuration_validation_results",
+			statement: `
+DELETE FROM elitea_runtime.configuration_validation_results
+WHERE (execution_id, generation) IN (` + jobsOfProject + `)`,
+		},
+		{
+			// Also a cascade child of execution_jobs. This statement takes the
+			// rows this project owns whose job belongs to another project.
+			table: "elitea_runtime.index_result_artifacts",
+			statement: `
+DELETE FROM elitea_runtime.index_result_artifacts WHERE resource_project_id = $1`,
+		},
+		{
+			table: "elitea_runtime.execution_replay_events",
+			statement: `
+DELETE FROM elitea_runtime.execution_replay_events WHERE projection_project_id = $1`,
+		},
+		{
+			table: "elitea_runtime.execution_replay_state",
+			statement: `
+DELETE FROM elitea_runtime.execution_replay_state WHERE projection_project_id = $1`,
+		},
+		{
+			table: "elitea_runtime.execution_jobs",
+			statement: `
+DELETE FROM elitea_runtime.execution_jobs
+WHERE resource_project_id = $1 OR projection_project_id = $1`,
+		},
+		{
+			table: "elitea_runtime.input_bundles",
+			statement: `
+DELETE FROM elitea_runtime.input_bundles WHERE resource_project_id = $1`,
+		},
+		{
+			table: "elitea_runtime.index_generation_counters",
+			statement: `
+DELETE FROM elitea_runtime.index_generation_counters WHERE resource_project_id = $1`,
+		},
+	}
 }
 
 /* ── project_schema ────────────────────────────────────────────────────── */
