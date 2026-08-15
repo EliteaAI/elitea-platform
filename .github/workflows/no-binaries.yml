@@ -48,3 +48,27 @@ jobs:
       - name: Validate the Traefik edge middleware references
         working-directory: services/elitea-main
         run: go test -count=1 ./tests/deployedge/...
+      # The permission-grant gate lives here for the same reason as the step
+      # above. A route gated on a permission that no migration grants answers
+      # 403 to every caller on a clean database, and every seeded database
+      # hides it (#354, #359). The gate must run on a pull request that
+      # touches a router file OR a migration. ci-go.yml selects
+      # services/elitea-main/** and covers both today, but a path filter is a
+      # second thing to keep correct, and this repository has already shipped a
+      # gate that stopped running when a file moved (#157). This workflow has
+      # no path filter at all, so the gate cannot be switched off by accident.
+      #
+      # The whole package runs, with no -run filter. `go test -run NoSuchName`
+      # exits 0 and reports "no tests to run", so a renamed test would turn this
+      # step into a silent no-op — the same "nothing found, therefore OK" trap.
+      #
+      # -count=1 removes any dependency on the Go test cache. The gate reads
+      # migrations/shared and every source file under internal/, all outside this
+      # package. A local check shows the cache does track those reads today and
+      # does invalidate on a migration edit, so this is insurance rather than a
+      # repair: the tracking is best-effort, this test opens more than a thousand
+      # files, and a stale pass here hides the exact defect the gate exists for.
+      # The run takes about ten seconds, so the insurance is nearly free.
+      - name: Validate that every gated permission has a grant
+        working-directory: services/elitea-main
+        run: go test -count=1 ./internal/api/
