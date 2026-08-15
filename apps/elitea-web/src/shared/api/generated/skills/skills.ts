@@ -108,6 +108,11 @@ export type listApplicationSkillsResponse200 = {
   status: 200;
 };
 
+export type listApplicationSkillsResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
 export type listApplicationSkillsResponse401 = {
   data: N401Response;
   status: 401;
@@ -123,7 +128,9 @@ export type listApplicationSkillsResponseSuccess =
     headers: Headers;
   };
 export type listApplicationSkillsResponseError = (
-  listApplicationSkillsResponse401 | listApplicationSkillsResponse403
+  | listApplicationSkillsResponse400
+  | listApplicationSkillsResponse401
+  | listApplicationSkillsResponse403
 ) & {
   headers: Headers;
 };
@@ -139,10 +146,15 @@ export const getListApplicationSkillsUrl = (
 };
 
 /**
- * NOTE(W2): the router points this at the skills List handler
- * (internal/api/router.go:360 → skills/handler.go:61-78) — the
- * app_version_id segment is not read; the response is the project
- * skills list envelope.
+ * Returns only the skills attached to app_version_id, read from
+ * entity_skill_mapping.
+ *
+ * NOTE(#367): this route used to point at the project skills List
+ * handler, which never read app_version_id and answered with every
+ * skill in the project, at 200. The envelope is unchanged — it is
+ * still SkillsList — so a client sees the same shape and different,
+ * correct contents. A malformed app_version_id is now refused with
+ * 400 instead of being coerced.
  * @summary List skills attached to an agent version
  */
 export const listApplicationSkills = async (
@@ -170,7 +182,7 @@ export const getListApplicationSkillsQueryKey = (
 
 export const getListApplicationSkillsQueryOptions = <
   TData = Awaited<ReturnType<typeof listApplicationSkills>>,
-  TError = N401Response | N403Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
   appVersionId: number,
@@ -218,11 +230,12 @@ export const getListApplicationSkillsQueryOptions = <
 export type ListApplicationSkillsQueryResult = NonNullable<
   Awaited<ReturnType<typeof listApplicationSkills>>
 >;
-export type ListApplicationSkillsQueryError = N401Response | N403Response;
+export type ListApplicationSkillsQueryError =
+  N400Response | N401Response | N403Response;
 
 export function useListApplicationSkills<
   TData = Awaited<ReturnType<typeof listApplicationSkills>>,
-  TError = N401Response | N403Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
   appVersionId: number,
@@ -250,7 +263,7 @@ export function useListApplicationSkills<
 };
 export function useListApplicationSkills<
   TData = Awaited<ReturnType<typeof listApplicationSkills>>,
-  TError = N401Response | N403Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
   appVersionId: number,
@@ -278,7 +291,7 @@ export function useListApplicationSkills<
 };
 export function useListApplicationSkills<
   TData = Awaited<ReturnType<typeof listApplicationSkills>>,
-  TError = N401Response | N403Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
   appVersionId: number,
@@ -302,7 +315,7 @@ export function useListApplicationSkills<
 
 export function useListApplicationSkills<
   TData = Awaited<ReturnType<typeof listApplicationSkills>>,
-  TError = N401Response | N403Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
   appVersionId: number,
