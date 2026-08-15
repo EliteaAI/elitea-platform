@@ -21,6 +21,50 @@ type fakeModelRow struct {
 	// shared is the row's `shared` column. It defaults to false, which is what
 	// an ordinary project-owned row carries.
 	shared bool
+	// section and type are the row's configuration coordinates. The ZERO VALUE
+	// means the chat pair (`llm`/`llm_model`), so a test that does not care
+	// about sections reads as it did before the resolver admitted more than one.
+	section string
+	typ     string
+}
+
+// pair returns the row's (section, type), defaulting the zero value to the chat
+// pair.
+func (r fakeModelRow) pair() (string, string) {
+	if r.section == "" && r.typ == "" {
+		return "llm", "llm_model"
+	}
+	return r.section, r.typ
+}
+
+// keepAddressableRows drops every row whose (section, type) pair is absent from
+// the statement's bind arguments — the fake's stand-in for modelsSQL's join
+// against unnest($1, $2). args is (sections []string, types []string); anything
+// else leaves the rows untouched, so a malformed call fails on the assertion the
+// test actually makes rather than on an empty result.
+func keepAddressableRows(rows []fakeModelRow, args []any) []fakeModelRow {
+	if len(args) != 2 {
+		return rows
+	}
+	sections, ok := args[0].([]string)
+	if !ok {
+		return rows
+	}
+	types, ok := args[1].([]string)
+	if !ok || len(types) != len(sections) {
+		return rows
+	}
+	kept := make([]fakeModelRow, 0, len(rows))
+	for _, r := range rows {
+		rowSection, rowType := r.pair()
+		for i := range sections {
+			if sections[i] == rowSection && types[i] == rowType {
+				kept = append(kept, r)
+				break
+			}
+		}
+	}
+	return kept
 }
 
 // fakeModelDB is a modelRowQuerier test double. It returns rows verbatim and
@@ -39,15 +83,21 @@ type fakeModelDB struct {
 	// gotSQL records every statement issued, in order, so a test can assert
 	// WHICH schemas were read and that the shared predicate was applied.
 	gotSQL []string
+	// gotArgs records the bind arguments of every statement, in the same order
+	// as gotSQL. The section/type pairs the resolver admits travel as bind
+	// parameters, not in the statement text, so this is the only place a test
+	// can see WHICH configuration sections were read.
+	gotArgs [][]any
 	// ignoreSharedPredicate makes the fake return unpublished rows even when the
 	// statement asks for `shared = true`, simulating a query that lost its
 	// predicate. Postgres is modelled faithfully by default.
 	ignoreSharedPredicate bool
 }
 
-func (db *fakeModelDB) Query(_ context.Context, sql string, _ ...any) (modelRows, error) {
+func (db *fakeModelDB) Query(_ context.Context, sql string, args ...any) (modelRows, error) {
 	db.calls++
 	db.gotSQL = append(db.gotSQL, sql)
+	db.gotArgs = append(db.gotArgs, args)
 	if db.err != nil {
 		return nil, db.err
 	}
@@ -55,6 +105,11 @@ func (db *fakeModelDB) Query(_ context.Context, sql string, _ ...any) (modelRows
 	if db.bySchema != nil {
 		rows = db.bySchema[modelSchemaProjectOf(sql)]
 	}
+	// Model the (section, type) join: a row whose pair the statement did not
+	// bind is not visible to the resolver. Without this the fake would return an
+	// asr/tts row to a resolver that never asked for one, and a test could not
+	// tell the admitted sections apart from the rejected ones.
+	rows = keepAddressableRows(rows, args)
 	// Model Postgres: `shared = true` really does exclude unpublished rows.
 	// Without this an isolation test would prove nothing.
 	if strings.Contains(sql, "shared = true") && !db.ignoreSharedPredicate {

@@ -209,40 +209,44 @@ func TestLLMRoute_SubpathPreserved(t *testing.T) {
 	}
 }
 
-// TestTrustedProxyCIDRs_ThreadedThroughAuthDeps verifies Fix round-3 #5:
-// TrustedProxyCIDRs set on AuthDeps reaches both Auth middleware constructions
-// in NewRouter (the main /api/v2 group and the /llm group). A request arriving
-// from a trusted IP with Traefik X-Auth-Type headers is accepted without a
-// Bearer token when TrustedProxyCIDRs includes the loopback address.
-func TestTrustedProxyCIDRs_ThreadedThroughAuthDeps(t *testing.T) {
-	// Traefik-side user injected via headers (no Bearer token in the request).
-	proxy := &recordingHandler{}
+// TestForwardedHeadersAloneAreRefusedThroughTheRouter is the router-level guard
+// for #390. It asserts the contract through NewRouter, so it covers every Auth
+// middleware construction, not the middleware in isolation.
+//
+// This test replaces TestTrustedProxyCIDRs_ThreadedThroughAuthDeps, which
+// asserted the opposite: that X-Auth-Type / X-Auth-Id from a trusted CIDR
+// authenticate a caller with no Bearer token. That path is deleted. It called
+// serveAuthenticated directly, so no principal check ever ran on it, and the
+// headers were the whole credential.
+func TestForwardedHeadersAloneAreRefusedThroughTheRouter(t *testing.T) {
+	// Name the range that used to grant access, through the switch that used
+	// to enable it. Neither may authenticate the caller now.
+	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.0/8")
 
+	proxy := &recordingHandler{}
 	cfg := api.RouterConfig{
 		Auth: api.AuthDeps{
-			Client:            newTestAuthClient(t),
-			Validator:         nil, // not needed for header-auth path
-			TrustedProxyCIDRs: []string{"127.0.0.0/8"},
+			Client: newTestAuthClient(t),
 		},
 		LLMProxy:           proxy,
 		LLMProjectResolver: &stubProjectResolver{id: 10},
 	}
 	r := api.NewRouter(cfg)
 
-	// Simulate a request from Traefik (127.0.0.1) carrying X-Auth-Type headers.
-	// The Auth middleware must accept this and let the request through.
-	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("X-Auth-Type", "traefik")
-	req.Header.Set("X-Auth-Id", "user-traefik")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
+	for _, path := range []string{"/llm/v1/chat/completions", "/api/v2/projects"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("X-Auth-Type", "user")
+		req.Header.Set("X-Auth-Id", "1")
+		rec := httptest.NewRecorder()
 
-	// 200 proves the CIDR was threaded to the middleware — not 401.
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 (trusted proxy accepted), got %d; TrustedProxyCIDRs may not have been threaded to AuthConfig", rec.Code)
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want %d", path, rec.Code, http.StatusUnauthorized)
+		}
 	}
-	if !proxy.reached {
-		t.Error("proxy was not reached; request was blocked despite trusted CIDR")
+	if proxy.reached {
+		t.Error("forwarded headers alone reached the LLM proxy")
 	}
 }
