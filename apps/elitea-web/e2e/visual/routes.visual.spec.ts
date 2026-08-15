@@ -403,6 +403,16 @@ async function reportChevron(page: Page, label: string): Promise<void> {
     }
     const style = getComputedStyle(el);
     const rect = el.getBoundingClientRect();
+    const cx = Math.round(rect.x + rect.width / 2);
+    const cy = Math.round(rect.y + rect.height / 2);
+    const onTop = document.elementFromPoint(cx, cy);
+    const chain: string[] = [];
+    for (let node = el.parentElement, depth = 0; node && depth < 6; node = node.parentElement, depth += 1) {
+      const parentStyle = getComputedStyle(node);
+      chain.push(
+        `${node.tagName}.${node.className.toString().slice(0, 24)}|op=${parentStyle.opacity}|ov=${parentStyle.overflow}|vis=${parentStyle.visibility}|z=${parentStyle.zIndex}|bg=${parentStyle.backgroundColor}`,
+      );
+    }
     return {
       scheme,
       present: true,
@@ -412,6 +422,11 @@ async function reportChevron(page: Page, label: string): Promise<void> {
       opacity: style.opacity,
       visibility: style.visibility,
       display: style.display,
+      svgPathCount: el.querySelectorAll('path').length,
+      svgOuter: el.outerHTML.slice(0, 160),
+      onTop: onTop ? `${onTop.tagName}.${onTop.className.toString().slice(0, 40)}` : null,
+      onTopIsChevron: onTop === el || el.contains(onTop),
+      chain,
     };
   });
   console.log(`CHEVRON-DIAG ${label} ${JSON.stringify(state)}`);
