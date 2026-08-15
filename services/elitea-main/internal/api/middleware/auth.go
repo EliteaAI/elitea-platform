@@ -8,10 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -44,10 +41,6 @@ type AuthConfig struct {
 	PrincipalValidator        PrincipalValidator
 	ForwardedIdentityVerifier ForwardedIdentityPeerVerifier
 	SessionSecret             string // HMAC key for session cookies
-	// TrustedProxyCIDRs preserves the current Main compatibility boundary for
-	// deployments where Traefik is the authenticated identity peer. New
-	// production composition should prefer ForwardedIdentityVerifier.
-	TrustedProxyCIDRs []string
 }
 
 // Auth authenticates every request against exactly four credential sources:
@@ -65,9 +58,24 @@ type AuthConfig struct {
 // open for the 16 of 21 configs in main.go that never set SessionSecret. See
 // ADR-0017. Development and CI authenticate through the mock OIDC provider;
 // tests inject a stub TokenValidator via RouterConfig.
+//
+// There is likewise no trusted-proxy header source. A second forwarded-identity
+// path accepted X-Auth-Type/X-Auth-Id on one proof: RemoteAddr fell inside
+// TrustedProxyCIDRs. That path called serveAuthenticated directly, so
+// PrincipalValidator never ran on it.
+//
+// A deactivated user who kept access was the smaller failure. The headers were
+// the whole credential. deploy/traefik/dynamic.yml removes no inbound X-Auth-*
+// header. No composition root set the CIDR list, so the TRUSTED_PROXY_CIDRS
+// environment variable was the only switch. An operator who set that variable
+// to the ingress range gave every anonymous caller any user ID.
+//
+// validatePrincipal does not correct that failure. The validator confirms that
+// the claimed user is active. It does not confirm that the caller may claim
+// that user. ForwardedIdentityPeerVerifier draws that distinction. See #390.
+// browserauth.TrustedProxyConfig is a different boundary. It reads the auth
+// configuration file, and this change does not affect it.
 func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
-	trustedCIDRs := configuredTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if user, ok := tryTraefikHeaders(r, cfg.ForwardedIdentityVerifier); ok {
@@ -86,12 +94,6 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				}
 				serveAuthenticated(next, w, r, user, auth.AuthenticationSourceForwarded)
 				return
-			}
-			if cfg.ForwardedIdentityVerifier == nil && isFromTrustedProxy(r, trustedCIDRs) {
-				if user, ok := tryTrustedProxyHeaders(r); ok {
-					serveAuthenticated(next, w, r, user, auth.AuthenticationSourceForwarded)
-					return
-				}
 			}
 
 			// X-API-Key header (pylon compatibility)
@@ -179,63 +181,6 @@ func writeJSONError(w http.ResponseWriter, status int, errType, code, message st
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(jsonError{Error: jsonErrorFields{Message: message, Type: errType, Code: code}})
-}
-
-func configuredTrustedProxyCIDRs(configured []string) []*net.IPNet {
-	rawCIDRs := configured
-	if len(rawCIDRs) == 0 {
-		if raw := os.Getenv("TRUSTED_PROXY_CIDRS"); raw != "" {
-			rawCIDRs = strings.Split(raw, ",")
-		}
-	}
-	networks := make([]*net.IPNet, 0, len(rawCIDRs))
-	for _, cidr := range rawCIDRs {
-		cidr = strings.TrimSpace(cidr)
-		if cidr == "" {
-			continue
-		}
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			slog.Default().Error("middleware: ignoring invalid trusted proxy CIDR", "cidr", cidr, "err", err)
-			continue
-		}
-		networks = append(networks, network)
-	}
-	return networks
-}
-
-func isFromTrustedProxy(r *http.Request, networks []*net.IPNet) bool {
-	if len(networks) == 0 {
-		return false
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	for _, network := range networks {
-		if network.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-func tryTrustedProxyHeaders(r *http.Request) (auth.User, bool) {
-	authType := r.Header.Get("X-Auth-Type")
-	authID := r.Header.Get("X-Auth-Id")
-	if authType == "" || authID == "" || strings.ContainsAny(authType+authID, "\x00\r\n") {
-		return auth.User{}, false
-	}
-	return auth.User{
-		ID:       authID,
-		UserID:   authID,
-		Email:    r.Header.Get("X-Auth-Reference"),
-		AuthType: authType,
-	}, true
 }
 
 func tryTraefikHeaders(r *http.Request, verifier ForwardedIdentityPeerVerifier) (auth.User, bool) {
