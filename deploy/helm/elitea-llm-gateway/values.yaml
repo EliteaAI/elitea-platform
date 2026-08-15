@@ -156,9 +156,14 @@ env:
   # credential. With ELITEA_ALLOW_PROJECT_OWN_LLMS=false — the mode where
   # projects are meant to use platform models ONLY — that left no usable model.
   #
-  # Set this to the SAME value as elitea-main's ELITEA_AI_PROJECT_ID. The two
-  # services must name the same project or the gateway will serve a different
-  # model set from the one the UI offers.
+  # Set this to the SAME value as elitea-main's ELITEA_AI_PROJECT_ID, which is
+  # the identically named key in deploy/helm/elitea-main/values.yaml (issue
+  # #382 added it there). The two services must name the same project or the
+  # gateway will serve a different model set from the one the UI offers.
+  #
+  # Leaving THIS key empty while elitea-main names a project is the state that
+  # keeps issue #316 inert on Kubernetes: the UI offers the shared models and
+  # the gateway then finds no credential for them. Set both or neither.
   #
   # Empty (the default) keeps the old project-local behaviour: no shared models.
   # It is empty rather than "1" on purpose — an id naming a schema that does not

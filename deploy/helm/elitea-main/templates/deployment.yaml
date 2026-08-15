@@ -39,6 +39,20 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            {{- if .Values.runtime.enabled }}
+            # The runtime plane's three listeners (issue #382). The agent
+            # worker dials all three, so they must be reachable on the Service
+            # as well as declared here.
+            - name: runtime-control
+              containerPort: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.controlAddress }}
+              protocol: TCP
+            - name: runtime-output
+              containerPort: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.outputAddress }}
+              protocol: TCP
+            - name: runtime-content
+              containerPort: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.contentAddress }}
+              protocol: TCP
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "elitea-main.fullname" . }}-config
@@ -107,9 +121,26 @@ spec:
               subPath: {{ .Values.fileConfig.brandPack.key }}
               readOnly: true
             {{- end }}
+            {{- if .Values.runtime.enabled }}
+            # The runtime material (issue #382): signing key, verification
+            # keyring, Redis password, Redis CA and the three server keypairs.
+            # A WHOLE-DIRECTORY mount, deliberately — not the per-file subPath
+            # mounts used above. internal/security/securefile also rejects any
+            # path whose final component is a symlink, and the file names are
+            # fixed by deploy/scripts/gen-runtime-certs.sh, so the source must
+            # present all of them under one directory. Read the runtime.material
+            # comment in values.yaml for which volume sources actually work.
+            - name: runtime-material
+              mountPath: {{ .Values.runtime.material.mountPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.runtime.enabled }}
+        - name: runtime-material
+          {{- toYaml .Values.runtime.material.volume | nindent 10 }}
+        {{- end }}
         {{- if .Values.fileConfig.authConfig.enabled }}
         - name: auth-config
           configMap:

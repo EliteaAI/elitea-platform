@@ -90,6 +90,34 @@ check_target() {
                    | { grep -v '_test.go' || true; } \
                    | sed -E 's/.*\("//; s/"$//')" \
               | sed '/^$/d' | sort -u)"
+  # Indirect reads through a validating helper: `required("X")` and
+  # `integer("X")` in internal/runtimecomposition/config.go. Neither pattern
+  # above matches them, so the WHOLE runtime plane — about twenty names —
+  # looked like dead chart config the moment the chart started setting it
+  # (#382). Same WARN-tier-only treatment as `lookup(` above: these helpers DO
+  # fail closed on a missing value, but the regex cannot prove that, so the
+  # required/defaulted split still comes from the os.Getenv form.
+  code_all="$(printf '%s\n%s\n' "$code_all" \
+                "$({ grep -roE '(required|integer)\("[A-Z][A-Z0-9_]+"' \
+                       "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
+                   | { grep -v '_test.go' || true; } \
+                   | sed -E 's/.*\("//; s/"$//')" \
+              | sed '/^$/d' | sort -u)"
+  # Names BUILT BY CONCATENATION. `loadTLSFiles(prefix)` reads
+  # prefix+"_CERT_FILE", prefix+"_KEY_FILE" and prefix+"_CLIENT_CA_FILE", so
+  # the full name of all nine runtime TLS variables exists NOWHERE in the
+  # source as a literal. No amount of literal-matching finds them; the suffixes
+  # have to be reconstructed, exactly as the Go code builds them. Keep this in
+  # step with loadTLSFiles if its suffix set ever changes.
+  code_all="$(printf '%s\n%s\n' "$code_all" \
+                "$({ grep -rhoE 'loadTLSFiles\("[A-Z][A-Z0-9_]+"' \
+                       "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
+                   | sed -E 's/.*\("//; s/"$//' \
+                   | while read -r prefix; do
+                       printf '%s_CERT_FILE\n%s_KEY_FILE\n%s_CLIENT_CA_FILE\n' \
+                         "$prefix" "$prefix" "$prefix"
+                     done)" \
+              | sed '/^$/d' | sort -u)"
   code_required="$({ grep -roE 'os\.Getenv\("[A-Z][A-Z0-9_]+"' \
                        "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
                    | { grep -v '_test.go' || true; } \
@@ -98,13 +126,21 @@ check_target() {
   # --- 2. env vars the CHART can set ------------------------------------------
   # a) keys of the .Values.env map (plaintext); b) keys of the .Values.secrets map
   # (rendered as valueFrom.secretKeyRef); c) hard-coded names in template blocks
-  # (e.g. the mtls TLS paths). All three are legitimate ways the chart sets an env.
-  local chart_env chart_secrets chart_tmpl chart_all allow
+  # (e.g. the mtls TLS paths); d) ConfigMap DATA keys written directly in a
+  # template. All four are legitimate ways the chart sets an env.
+  local chart_env chart_secrets chart_tmpl chart_data chart_all allow
   chart_env="$({ yq -r '.env // {} | keys | .[]' "$chart/values.yaml" 2>/dev/null || true; } | sort -u)"
   chart_secrets="$({ yq -r '.secrets // {} | keys | .[]' "$chart/values.yaml" 2>/dev/null || true; } | sort -u)"
   chart_tmpl="$({ grep -rhoE 'name: [A-Z][A-Z0-9_]+' "$chart/templates" 2>/dev/null || true; } \
                 | sed -E 's/name: //' | sort -u)"
-  chart_all="$(printf '%s\n%s\n%s\n' "$chart_env" "$chart_secrets" "$chart_tmpl" | sort -u | sed '/^$/d')"
+  # (d) covers a block a template emits into a ConfigMap as `KEY: value` rather
+  # than as a container `- name: KEY` entry. elitea-main's runtime plane is
+  # written that way, because it is all-or-nothing and one helper owns the whole
+  # block (#382). Without this pass the chart set thirty runtime names that the
+  # gate still reported as never set.
+  chart_data="$({ grep -rhoE '^[[:space:]]*[A-Z][A-Z0-9_]+:' "$chart/templates" 2>/dev/null || true; } \
+                | sed -E 's/^[[:space:]]*//; s/:$//' | sort -u)"
+  chart_all="$(printf '%s\n%s\n%s\n%s\n' "$chart_env" "$chart_secrets" "$chart_tmpl" "$chart_data" | sort -u | sed '/^$/d')"
 
   allow="$(grep -vE '^\s*#|^\s*$' "$allowfile" 2>/dev/null | sort -u || true)"
 

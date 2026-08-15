@@ -49,6 +49,16 @@ jobs:
             helm lint "$dir"
           done
 
+      # `helm lint` proves a chart is well formed. It never reads the rendered
+      # environment, so it stayed green for as long as the elitea-main chart
+      # set no capability flag at all — and a Kubernetes install therefore ran
+      # with the runtime plane dark while the same image on compose ran it
+      # (#382). This gate asserts the rendered YAML, and it reads the required
+      # runtime names straight out of internal/runtimecomposition/config.go, so
+      # a newly required name fails here until the chart renders it.
+      - name: Capability flags reach the container environment
+        run: bash deploy/helm/elitea-main/tests/render-capabilities.sh
+
   template:
     name: Helm Template (${{ matrix.chart }})
     runs-on: ubuntu-latest
@@ -119,6 +129,22 @@ jobs:
             -schema-location default \
             -schema-location "$CRD_SCHEMAS" \
             "/tmp/${{ matrix.chart }}.yaml"
+
+      # The pylon-free capability set (#382). It renders objects no other pass
+      # produces — the runtime material volume and the three runtime listener
+      # ports on both the Deployment and the Service — so a schema error in
+      # them is invisible everywhere else.
+      - name: helm template + kubeconform (standalone capability values)
+        if: matrix.chart == 'elitea-main'
+        run: |
+          helm template ci-release deploy/helm/elitea-main \
+            -f deploy/helm/elitea-main/values-standalone.yaml \
+            > /tmp/elitea-main-standalone.yaml
+          kubeconform -strict -summary -verbose \
+            -kubernetes-version 1.30.0 \
+            -schema-location default \
+            -schema-location "$CRD_SCHEMAS" \
+            /tmp/elitea-main-standalone.yaml
 
       # Toggled-off/on paths (HPA, PVC, optional Services and probes, hook Jobs)
       # render zero objects in the default pass, so a break in them is invisible

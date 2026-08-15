@@ -292,6 +292,18 @@ tasks:
         for chart in deploy/helm/*/Chart.yaml; do
           helm lint "$(dirname "$chart")"
         done
+      - task: helm:capabilities
+
+  helm:capabilities:
+    desc: Check that the elitea-main chart renders the capability flags the composition root reads
+    cmds:
+      # `helm lint` proves the chart is well formed. It does not read the
+      # rendered environment, so it stayed green for as long as the chart set
+      # no capability flag at all and a Kubernetes install ran with the runtime
+      # plane dark (#382). This gate asserts the RENDERED YAML instead, and it
+      # reads the required runtime names out of the Go source, so a new one
+      # fails here until the chart renders it.
+      - bash deploy/helm/elitea-main/tests/render-capabilities.sh
 
   # ── All ───────────────────────────────────────────────────────────────────────
   all:

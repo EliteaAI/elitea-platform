@@ -111,6 +111,20 @@ FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS
 # --- for plain-HTTP localhost E2E runs and must never appear in production values.
 COOKIE_SECURE
 
+# --- Capability flag deliberately NOT wired, and it is the ONE exception in
+# --- the set issue #382 swept. Every other capability flag the composition
+# --- root reads now has a values.yaml knob; this one is being DELETED.
+# --- ELITEA_PROMPT_CONTEXT_READS_ENABLED gates a second composition of the
+# --- prompt-context read routes. That branch is unreachable and redundant at
+# --- once: it needs this flag AND ELITEA_CONFIGURATIONS_ENABLED AND production
+# --- authentication, while the ungated composition below it builds the same
+# --- reader pair for every deployment that could satisfy all three. So the
+# --- flag can only pre-empt a block that was going to run anyway. Issue #367
+# --- removes the flag and its branch. Wiring a knob for a name that is on its
+# --- way out would leave the chart setting a variable nothing reads.
+# --- Delete this line together with the flag.
+ELITEA_PROMPT_CONTEXT_READS_ENABLED
+
 # --- Rename tripwire, NOT a knob — same inverted reading as AUTH_DEV_MODE
 # --- above. The project-own-LLM policy survived the LiteLLM removal; only its
 # --- env var did not, becoming ELITEA_ALLOW_PROJECT_OWN_LLMS.
