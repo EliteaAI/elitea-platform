@@ -148,14 +148,24 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
               <ExpandMoreIcon
                 aria-hidden
                 data-testid="project-switcher-chevron"
-                sx={(theme: Theme) => ({
+                sx={{
                   width: '1rem',
                   height: '1rem',
                   flexShrink: 0,
-                  color: theme.vars.palette.icon.fill.default,
+                  // currentColor, not a pinned palette token. Every other icon
+                  // on this rail inherits — the nav items, both collapse
+                  // chevrons in Sidebar.tsx, and the create-button chevron —
+                  // and pinning one made this the only sidebar icon whose
+                  // colour is an independent input. It rendered in the dark
+                  // scheme and vanished in the light one, measured in the
+                  // visual suite: the dark baseline carries the glyph and the
+                  // light baseline of the same row is flat background. A glyph
+                  // painted in the background colour and a glyph that never
+                  // painted are the same picture, so inheriting removes the
+                  // input rather than guessing which of the two it was.
                   transition: 'transform 0.2s ease-in-out',
                   transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
-                })}
+                }}
               />
             )}
           </Box>

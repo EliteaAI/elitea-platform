@@ -1,8 +1,11 @@
 import userEvent from '@testing-library/user-event';
-import { screen, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import CssBaseline from '@mui/material/CssBaseline';
+import { ThemeProvider } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Project } from '@/entities/project';
+import { DEFAULT_BRAND_PACK, buildEliteaTheme } from '@/shared/brand';
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 
 import { ProjectSwitcher } from '../ui/ProjectSwitcher';
@@ -11,6 +14,27 @@ const projects: readonly Project[] = [
   { id: 11, name: 'Public', status: 'active', suspended: false },
   { id: 2, name: 'Acme', status: 'active', suspended: false },
 ];
+
+/**
+ * `renderWithTheme` is pinned to `DEFAULT_COLOR_SCHEME` ('dark'), so it cannot
+ * express "the same component, light scheme". The light-scheme cases below
+ * build their own provider rather than widen that shared helper, which every
+ * other `shared/ui` test depends on.
+ */
+const schemeTheme = buildEliteaTheme(DEFAULT_BRAND_PACK);
+
+function renderInScheme(mode: 'light' | 'dark', ui: Parameters<typeof render>[0]): void {
+  document.documentElement.setAttribute('data-el-scheme', mode);
+  render(
+    <ThemeProvider
+      theme={schemeTheme}
+      defaultMode={mode}
+    >
+      <CssBaseline />
+      {ui}
+    </ThemeProvider>,
+  );
+}
 
 describe('ProjectSwitcher', () => {
   it('shows "No projects" when the list is empty', () => {
@@ -269,6 +293,117 @@ describe('ProjectSwitcher', () => {
     screen.getByRole('option', { name: /Public/ }).focus();
     await user.keyboard('{Enter}');
     expect(onSelect).toHaveBeenCalledWith('11', 'Public');
+  });
+
+  /**
+   * The chevron must not be a dark-scheme-only affordance. Nothing in the
+   * component branches on the colour scheme, so these pin that fact rather
+   * than describe a fix — see the scheme-parity guard below for the failure
+   * mode that CAN make one scheme lose an icon.
+   */
+  it('issue 238: renders the chevron in the light colour scheme too', () => {
+    renderInScheme(
+      'light',
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('project-switcher-chevron')).toBeInTheDocument();
+    expect(screen.getByRole('button')).toHaveAttribute('aria-haspopup', 'listbox');
+  });
+
+  it('issue 238: the light-scheme dropdown still opens and lists every project', async () => {
+    const user = userEvent.setup();
+    renderInScheme(
+      'light',
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button'));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Public/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Acme/ })).toBeInTheDocument();
+  });
+
+  /**
+   * The real way a sidebar icon can exist in one scheme and vanish in the
+   * other: a palette token the brand pack declares for only ONE scheme. The
+   * pack does exactly that today — `--el-palette-text-icon` is emitted under
+   * `[data-el-scheme="dark"]` and NOT under `[data-el-scheme="light"]` — so a
+   * chevron coloured from such a token would silently fall back to the baked
+   * default-scheme value. This asserts every variable the chevron's own style
+   * references is declared in BOTH scheme blocks.
+   */
+  it('issue 238: the chevron pins no colour of its own, so it cannot differ by scheme', () => {
+    renderInScheme(
+      'dark',
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    const chevronStyle = screen.getByTestId('project-switcher-chevron').getAttribute('style') ?? '';
+    const inlineColour = /(^|;)\s*color\s*:/.test(chevronStyle);
+    expect(inlineColour).toBe(false);
+
+    // It still resolves through a variable — the one it INHERITS from the
+    // trigger, which is the same colour the project name is painted in and is
+    // therefore correct in both schemes by construction. What matters is that
+    // every variable in that chain is declared under both scheme blocks, so
+    // the glyph cannot fall back to a baked default-scheme value in one of
+    // them.
+    const declared = getComputedStyle(screen.getByTestId('project-switcher-chevron')).color;
+    const used = [...declared.matchAll(/--[\w-]+/g)].map((match) => match[0]);
+    expect(used.length).toBeGreaterThan(0);
+
+    const sheets = schemeTheme.generateStyleSheets();
+    const bySelector: Record<string, Record<string, string>> = {};
+    for (const sheet of sheets) {
+      for (const [selector, declarations] of Object.entries(sheet as Record<string, Record<string, string>>)) {
+        bySelector[selector] = declarations;
+      }
+    }
+    const darkBlock = Object.keys(bySelector[':root, [data-el-scheme="dark"]'] ?? {});
+    const lightBlock = Object.keys(bySelector['[data-el-scheme="light"]'] ?? {});
+    for (const variable of used) {
+      expect(darkBlock).toContain(variable);
+      expect(lightBlock).toContain(variable);
+    }
+  });
+
+  /**
+   * The trap the line above closes, kept measured rather than remembered.
+   *
+   * The brand pack does not declare every palette token under both schemes:
+   * `--el-palette-text-icon` is emitted under `[data-el-scheme="dark"]` and
+   * NOT under `[data-el-scheme="light"]`. Anything coloured from such a token
+   * falls back to the baked default-scheme value, and in a screenshot a glyph
+   * painted in the background colour is indistinguishable from a glyph that
+   * never painted at all — which is exactly how the chevron read as missing in
+   * the light visual baselines while every unit test showed it present.
+   *
+   * This asserts the asymmetry still exists, so the day the pack is fixed this
+   * test fails and says so, instead of standing as a warning about a hazard
+   * that has quietly gone away.
+   */
+  it('issue 238: the brand pack still declares at least one palette token in only one scheme', () => {
+    const sheets = schemeTheme.generateStyleSheets();
+    const bySelector: Record<string, Record<string, string>> = {};
+    for (const sheet of sheets) {
+      for (const [selector, declarations] of Object.entries(sheet as Record<string, Record<string, string>>)) {
+        bySelector[selector] = declarations;
+      }
+    }
+    const darkBlock = Object.keys(bySelector[':root, [data-el-scheme="dark"]'] ?? {});
+    const lightBlock = new Set(Object.keys(bySelector['[data-el-scheme="light"]'] ?? {}));
+    const darkOnly = darkBlock.filter((variable) => !lightBlock.has(variable));
+    expect(darkOnly).toContain('--el-palette-text-icon');
   });
 
   it('clicking away closes the dropdown without selecting', async () => {
