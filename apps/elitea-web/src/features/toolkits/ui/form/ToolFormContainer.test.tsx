@@ -239,6 +239,29 @@ describe('ToolFormContainer', () => {
     expect(saved['output_format']).not.toBe('json');
   });
 
+  /**
+   * #311, the reload half. `startIndexExecution`
+   * (`../../indexes/api/indexesApi.ts`) now sends a cleared field to the
+   * backend as an explicit `null` instead of letting `JSON.stringify` drop
+   * the key, so a reopened index's saved configuration carries `null`, not
+   * a missing key, for a field the user cleared. This proves the form
+   * accepts that shape correctly: `null` is a PRESENT key, so
+   * `resolveFieldValue` must leave it alone rather than treating it like an
+   * absent one and reapplying `property.default`.
+   */
+  it('renders empty, not the schema default, when the persisted value is an explicit null (a reloaded, previously-cleared field)', () => {
+    const { getByRole } = renderWithTheme(
+      <ToolFormContainer
+        fieldKey="output_format"
+        property={{ type: 'string', title: 'Output Format', default: 'json' }}
+        toolInputVariables={{ output_format: null }}
+        schema={undefined}
+        onChangeInputVariables={vi.fn()}
+      />,
+    );
+    expect(getByRole('textbox')).toHaveValue('');
+  });
+
   it('re-applies the schema default only while the key is absent — a retyped value is not overwritten either', () => {
     const onSave = vi.fn();
     const { getByRole } = renderWithTheme(
