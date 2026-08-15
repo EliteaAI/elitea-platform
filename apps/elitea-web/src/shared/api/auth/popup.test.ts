@@ -35,6 +35,7 @@ class FakeChannel implements AuthChannelLike {
 interface Harness {
   controller: ReturnType<typeof createAuthPopupController>;
   openedUrls: string[];
+  openedNames: string[];
   openedFeatures: string[];
   channels: FakeChannel[];
   popup: PopupWindowLike & { closed: boolean };
@@ -43,13 +44,24 @@ interface Harness {
 
 function harness(overrides: Partial<AuthPopupOptions> = {}): Harness {
   const openedUrls: string[] = [];
+  const openedNames: string[] = [];
   const openedFeatures: string[] = [];
   const channels: FakeChannel[] = [];
-  const popup = { closed: false, close: (): void => undefined };
+  // A real window reports `closed` again after `close()`, and a freshly
+  // opened one reports `closed === false`. The fake obeys both rules: the
+  // controller now reads `closed` to decide when the previous popup is gone.
+  const popup = {
+    closed: false,
+    close(): void {
+      popup.closed = true;
+    },
+  };
   const controller = createAuthPopupController({
-    openWindow: (url, _name, features) => {
+    openWindow: (url, name, features) => {
       openedUrls.push(url);
+      openedNames.push(name);
       openedFeatures.push(features);
+      popup.closed = false;
       return popup;
     },
     createChannel: (name) => {
@@ -62,6 +74,7 @@ function harness(overrides: Partial<AuthPopupOptions> = {}): Harness {
   return {
     controller,
     openedUrls,
+    openedNames,
     openedFeatures,
     channels,
     popup,
@@ -342,8 +355,141 @@ describe('single-flight + lifecycle', () => {
     const flight = h.controller.reauthenticate();
     h.popup.closed = true;
     const expectation = expect(flight).rejects.toBeInstanceOf(AuthPopupError);
-    await vi.advanceTimersByTimeAsync(300);
+    // One `closed` reading is not proof (issue #364). The controller believes
+    // the reading only after it holds for the full confirmation window.
+    await vi.advanceTimersByTimeAsync(1500);
     await expectation;
     expect(h.controller.pending).toBe(false);
+  });
+});
+
+/**
+ * Issue #364 — a second re-auth flight must never re-navigate a live popup.
+ *
+ * Measured on a WebKit Playwright trace of J3
+ * (`e2e/journeys/shell/shell.session.spec.ts:23`): the app opened the popup,
+ * then 0.8 s later drove a SECOND `/forward-auth/auth_oidc/login` hop, with a
+ * different `auth_state`, into the SAME popup page. The re-navigation landed
+ * between the fill and the click, so the user lost the typed value and the
+ * form submitted empty.
+ *
+ * Two independent defects produce that outcome, and each test below pins one.
+ */
+describe('issue 364 — one popup per user, never re-navigated', () => {
+  it('keeps the guard through a transient `closed` reading during navigation', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const first = h.controller.reauthenticate();
+    expect(h.openedUrls).toHaveLength(1);
+
+    let firstSettled = false;
+    const mark = (): void => {
+      firstSettled = true;
+    };
+    void first.then(mark, mark);
+
+    // WebKit reports `closed` as true for a cross-origin popup WHILE that
+    // popup crosses from the app origin to the provider origin. The popup is
+    // alive. The user types in it.
+    h.popup.closed = true;
+    await vi.advanceTimersByTimeAsync(300);
+    // The popup navigated, so it was never closed. A closed window cannot
+    // navigate, which proves the reading above was false.
+    h.popup.closed = false;
+    await vi.advanceTimersByTimeAsync(300);
+    expect(firstSettled).toBe(false);
+
+    // A second 401 arrives while the popup is live.
+    const second = h.controller.reauthenticate();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(second).toBe(first); // it joins flight one...
+    expect(h.openedUrls).toHaveLength(1); // ...and opens no second window.
+
+    // The user finishes and authorizes. Flight one completes as normal.
+    h.channels[0]?.onmessage?.({ data: resultMessage(h.stateOf()) });
+    await expect(first).resolves.toBeUndefined();
+  });
+
+  it('opens no second popup while the popup of the previous flight is live', async () => {
+    vi.useFakeTimers();
+    // This popup ignores `close()`, which a popup that lost `window.opener`
+    // does: `routes/auth-callback.tsx` closes itself ONLY when an opener is
+    // present. The guard must still hold until the window is really gone.
+    const popups: Array<{ closed: boolean; close: () => void }> = [];
+    const h: Harness = harness({
+      openWindow: (url, name, features) => {
+        h.openedUrls.push(url);
+        h.openedNames.push(name);
+        h.openedFeatures.push(features);
+        const stubborn = { closed: false, close: (): void => undefined };
+        popups.push(stubborn);
+        return stubborn;
+      },
+    });
+
+    const first = h.controller.reauthenticate();
+    h.channels[0]?.onmessage?.({ data: resultMessage(h.stateOf(0)) });
+    await first;
+    expect(popups[0]?.closed).toBe(false); // the window is still on screen
+
+    const second = h.controller.reauthenticate();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(h.openedUrls).toHaveLength(1); // no window opens over the live one
+
+    popups[0]!.closed = true; // the user closes it, or it closes at last
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.openedUrls).toHaveLength(2); // only now may flight two open
+    h.channels[1]?.onmessage?.({ data: resultMessage(h.stateOf(1)) });
+    await expect(second).resolves.toBeUndefined();
+  });
+
+  it('frees the guard after the grace period when a popup never closes', async () => {
+    vi.useFakeTimers();
+    const h: Harness = harness({
+      closeGraceMs: 900,
+      openWindow: (url, name, features) => {
+        h.openedUrls.push(url);
+        h.openedNames.push(name);
+        h.openedFeatures.push(features);
+        return { closed: false, close: (): void => undefined };
+      },
+    });
+
+    const first = h.controller.reauthenticate();
+    h.channels[0]?.onmessage?.({ data: resultMessage(h.stateOf(0)) });
+    await first;
+
+    // A popup that never closes must not kill re-auth for the page lifetime.
+    const second = h.controller.reauthenticate();
+    await vi.advanceTimersByTimeAsync(900);
+    expect(h.openedUrls).toHaveLength(2);
+    h.channels[1]?.onmessage?.({ data: resultMessage(h.stateOf(1)) });
+    await expect(second).resolves.toBeUndefined();
+  });
+
+  it('names each popup after its own flight state', async () => {
+    const h = harness();
+    const first = h.controller.reauthenticate();
+    // A fixed name makes `window.open` re-navigate the popup that is already
+    // open. The name must carry the state of this flight.
+    expect(h.openedNames[0]).toBe(`elitea-auth-popup-${h.stateOf(0)}`);
+    h.channels[0]?.onmessage?.({ data: resultMessage(h.stateOf(0)) });
+    await first;
+
+    const second = h.controller.reauthenticate();
+    h.channels[1]?.onmessage?.({ data: resultMessage(h.stateOf(1)) });
+    await second;
+    expect(h.openedNames[1]).not.toBe(h.openedNames[0]);
+  });
+
+  it('gives two tabs two different window names', () => {
+    // Two tabs hold two controllers, so no single-flight guard can join them.
+    // A shared window name lets tab B re-navigate the popup of tab A. Only a
+    // per-flight name stops that.
+    const tabA = harness();
+    const tabB = harness();
+    void tabA.controller.reauthenticate();
+    void tabB.controller.reauthenticate();
+    expect(tabA.openedNames[0]).not.toBe(tabB.openedNames[0]);
   });
 });

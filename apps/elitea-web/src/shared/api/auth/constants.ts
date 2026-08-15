@@ -23,6 +23,22 @@ export function authResultStorageKey(state: string): string {
 }
 export const AUTH_CALLBACK_PATH = '/auth-callback'; // ROUTE-001
 export const AUTH_CHANNEL_PREFIX = 'elitea-auth-';
+/**
+ * Window-name prefix for the re-auth popup. The name is STATE-SCOPED.
+ *
+ * `window.open` REPLACES the page of a window that already carries the given
+ * name. A fixed name therefore lets a second flight re-navigate the popup the
+ * user works in: the typed value disappears and the form submits empty
+ * (issue #364, measured on a WebKit trace of J3 — two authorize hops, two
+ * `auth_state` values, one popup page, 0.8 s apart). Per-flight names make
+ * that impossible, and they also cover the case no in-page guard can reach:
+ * two tabs, two controllers, one shared name.
+ */
+const AUTH_WINDOW_NAME_PREFIX = 'elitea-auth-popup-';
+
+export function authWindowName(state: string): string {
+  return AUTH_WINDOW_NAME_PREFIX + state;
+}
 export const LOGOUT_PATH = '/forward-auth/logout'; // old UserButton.jsx:32
 
 /**
