@@ -44,13 +44,17 @@ import (
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	v2tracing "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tracing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/artifactbootstrap"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
 	platformauth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
@@ -249,6 +253,46 @@ func newArtifactHandler(cfg RouterConfig) (h *v2artifacts.Handler, ok bool) {
 		return nil, false
 	}
 	return v2artifacts.NewHandler(artifactRepoAdapter{bucketsRepo, objectsRepo, grantsRepo}, cfg.ObjectStore), true
+}
+
+// bucketBootstrapRepoAdapter satisfies artifactbootstrap.Repository the same
+// way artifactRepoAdapter satisfies the artifacts one: the two S6 repositories
+// share no method names, so promotion supplies the union.
+type bucketBootstrapRepoAdapter struct {
+	*dbrepos.ArtifactBucketsRepository
+	*dbrepos.ArtifactObjectsRepository
+}
+
+// newProjectProvisioner builds the project-create pipeline (#333).
+//
+// ok is false without a pool, in which case the create route answers 503 rather
+// than provisioning half a tenant. The bucket bootstrapper is separate and
+// optional: a deployment with no object store still creates projects, it just
+// creates them without artifact buckets — which is the state EVERY project is
+// in today, so its absence cannot be a regression.
+func newProjectProvisioner(cfg RouterConfig) (*projectprovisioning.Provisioner, bool) {
+	if cfg.Pool == nil {
+		return nil, false
+	}
+	options := make([]projectprovisioning.Option, 0, 1)
+	if cfg.ObjectStore != nil {
+		bucketsRepo, bucketsErr := dbrepos.NewArtifactBucketsRepository(cfg.Pool)
+		objectsRepo, objectsErr := dbrepos.NewArtifactObjectsRepository(cfg.Pool)
+		if bucketsErr == nil && objectsErr == nil {
+			options = append(options, projectprovisioning.WithArtifactBuckets(
+				artifactbootstrap.NewBootstrapper(
+					bucketBootstrapRepoAdapter{bucketsRepo, objectsRepo},
+					cfg.ObjectStore,
+				),
+			))
+		}
+	}
+	return projectprovisioning.New(
+		cfg.Pool,
+		migrate.New(cfg.Pool, platformmigrations.Files),
+		nil,
+		options...,
+	), true
 }
 
 // Permission strings from the existing configuration.artifacts.artifacts
@@ -654,10 +698,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// the mount: the three group WRITES are gated per route inside
 			// `Routes()`, because chi cannot carry a per-route gate across a
 			// Mount boundary and the project LIST must stay open to any member.
-			r.Mount("/projects", v2projects.NewHandler(
-				cfg.Pool,
+			projectOptions := []v2projects.Option{
 				v2projects.WithPermissionResolver(permissionResolver),
-			).Routes())
+			}
+			if provisioner, ok := newProjectProvisioner(cfg); ok {
+				projectOptions = append(projectOptions, v2projects.WithProvisioner(provisioner))
+			}
+			r.Mount("/projects", v2projects.NewHandler(cfg.Pool, projectOptions...).Routes())
 
 			// === Admin endpoints ===
 			adminHandler := admin.NewHandler(cfg.Pool, admin.WithPermissionResolver(permissionResolver))

@@ -822,7 +822,25 @@ JOIN (VALUES
     ('super_admin', 'models.admin.project_budgets.view'),
     ('super_admin', 'models.admin.project_budgets.edit'),
     ('admin', 'models.admin.project_budgets.view'),
-    ('admin', 'models.admin.project_budgets.edit')
+    ('admin', 'models.admin.project_budgets.edit'),
+    -- Issue 333, project provisioning. `project.py`'s `AdminAPI.post` and
+    -- `AdminAPI.delete` declare `{"admin": True, "viewer": False,
+    -- "editor": False}` in administration mode, which leaves super_admin at
+    -- its default True per the note above. The exported matrix agrees: both
+    -- names sit on administration/{admin, super_admin, system}, and `system`
+    -- is omitted here as everywhere else in this file.
+    --
+    -- Deliberately NOT granted in the default mode, even though the matrix
+    -- lists both names there for super_admin and system. Go seeds neither role
+    -- in that mode, and a default-mode grant to `admin` would reach every
+    -- project admin through projectPermissions()' central fallback. The routes
+    -- resolve in `administration` mode, so this is the only mode that reaches
+    -- them. The same grants land on existing databases through
+    -- migrations/shared/0069_project_create_permissions.sql.
+    ('super_admin', 'projects.projects.project.create'),
+    ('super_admin', 'projects.projects.project.delete'),
+    ('admin', 'projects.projects.project.create'),
+    ('admin', 'projects.projects.project.delete')
 ) AS grant_row(role_name, permission) ON grant_row.role_name = role.name
 WHERE role.mode = 'administration'
 ON CONFLICT (role_id, permission) DO NOTHING;

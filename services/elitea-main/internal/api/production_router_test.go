@@ -1646,6 +1646,8 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/notifications/notification/prompt_lib/{projectID}/{notificationID}",
 		"DELETE /api/v2/notifications/notifications/prompt_lib/{projectID}",
 		"DELETE /api/v2/projects/group/prompt_lib/{projectID}/{groupID}",
+		// Project DELETE (#333). Destructive: it drops the tenant schema.
+		"DELETE /api/v2/projects/project/{mode}/{projectID}",
 		"DELETE /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/application/{applicationID}",
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
@@ -1911,6 +1913,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/elitea_core/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}",
 		"POST /api/v2/elitea_core/versions/prompt_lib/{projectID}/{applicationID}",
 		"POST /api/v2/projects/group/prompt_lib/{projectID}",
+		// Project CREATE (#333). The handler refuses any {mode} other than
+		// `administration`, matching the reference's route table.
+		"POST /api/v2/projects/project/{mode}",
 		"POST /api/v2/secrets/hide/{mode}/{projectID}/{name}",
 		"POST /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"POST /api/v2/secrets/secrets/{mode}/{projectID}",
