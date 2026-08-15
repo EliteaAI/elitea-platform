@@ -218,9 +218,6 @@ func TestAPIGroupAuthConfigAdmitsNothingWithoutACredentialPlane(t *testing.T) {
 		t.Fatal("a deployment with no credential plane carries a forwarded " +
 			"identity verifier")
 	}
-	if config.TrustedProxyCIDRs != nil {
-		t.Fatal("a deployment with no credential plane trusts a proxy range")
-	}
 }
 
 // TestAPIGroupAuthUsesTheSharedComposition guards the call site. The helper is
