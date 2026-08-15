@@ -81,7 +81,8 @@ function toSelectField(field: CredentialPickerFieldProps): {
   };
 }
 
-export interface CredentialPickerFieldProps {
+/** Not exported: `credentialPickerSlots.tsx` builds this object inline and never names the type. An export with no importer fails the `knip --max-issues 0` gate. */
+interface CredentialPickerFieldProps {
   readonly label: string;
   readonly required?: boolean | undefined;
   readonly error: boolean;
