@@ -502,6 +502,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return errors.New("ELITEA_CONFIGURATIONS_ENABLED requires production authentication")
 	}
 	var currentConfigurationsRoot *runtimecomposition.CurrentConfigurationsRuntime
+	// The project vector-store collaborator the project-create route provisions
+	// with (#371). It is composed from the Configurations runtime, so it exists
+	// only where that runtime does; without it a created project cannot index.
+	var projectVectorStore *runtimecomposition.ProjectVectorStore
 	var currentConfigurationRead http.Handler
 	var currentConfigurationAvailable http.Handler
 	var currentConfigurationTypes http.Handler
@@ -519,6 +523,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("compose current Configurations services: %w", err)
 		}
 		defer currentConfigurationsRoot.Destroy()
+		projectVectorStore, err = currentConfigurationsRoot.NewProjectVectorStore(pool, logger)
+		if err != nil {
+			return fmt.Errorf("compose project vector-store provisioning: %w", err)
+		}
 		currentAuth := apimw.AuthConfig{
 			Validator:                 formGraph,
 			PrincipalValidator:        principalValidator,
@@ -1107,6 +1115,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		GatewayProjectResolver:        gatewayProjectResolver,
 		ConfigConnectionChecker:       configConnectionChecker,
 		ObjectStore:                   objectStore,
+		ProjectVectorStore:            projectVectorStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering
 		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*
 		// route, and creating an agent from the UI 404s (#115).

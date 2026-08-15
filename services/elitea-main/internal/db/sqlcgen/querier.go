@@ -62,6 +62,11 @@ type Querier interface {
 	DeleteAttachmentChunks(ctx context.Context, arg DeleteAttachmentChunksParams) (int64, error)
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeleteCurrentNotification(ctx context.Context, arg DeleteCurrentNotificationParams) (int64, error)
+	// The exact inverse of the statement above, and only that row. The four
+	// identity predicates repeat the ones the upsert conflicts on, so a
+	// user-created configuration that happens to carry the same title is never
+	// removed by a rollback of the system row.
+	DeleteCurrentProjectPgvectorConfiguration(ctx context.Context, arg DeleteCurrentProjectPgvectorConfigurationParams) (int64, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
 	// Reclaims chunk rows for a chunked upload that was abandoned before its
 	// final chunk arrived (browser tab closed, connection lost) — the only
