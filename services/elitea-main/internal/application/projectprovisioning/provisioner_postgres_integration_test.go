@@ -861,7 +861,7 @@ func TestDeprovisionRemovesAProjectThatRanAnExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	created, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "Ran An Execution", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	})
@@ -930,7 +930,7 @@ func TestDeprovisionKeepsTheTenantSchemaWhenTheProjectRowCannotGo(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	provisioner := projectprovisioning.New(pool, migrate.New(pool, platformmigrations.Files), nil)
+	provisioner := newTestProvisioner(t, pool, migrate.New(pool, platformmigrations.Files))
 	created, err := provisioner.Provision(ctx, projectprovisioning.Request{
 		Name: "Blocked Delete", OwnerID: 1, Limits: projectprovisioning.DefaultLimits(),
 	})
