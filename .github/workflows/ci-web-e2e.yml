@@ -48,6 +48,22 @@ on:
           artifact, look at the PNGs, commit the ones you meant to change.
         type: boolean
         default: false
+      full_visual_refresh:
+        description: >-
+          Rewrite EVERY @visual baseline (--update-snapshots=all) instead of
+          only the ones that fail. Requires update_visual_baselines. Use this to
+          find drift that the maxDiffPixels budget has been absorbing: a
+          snapshot that passes is never rewritten, so a baseline that moved less
+          than the budget stays wrong indefinitely and a green run cannot tell
+          you. Issue #238 is the worked example — a dropdown arrow moved 11 px
+          in the light scheme against a 20 px budget, so 7 baselines went on
+          matching an image with no arrow in it, and no regeneration touched
+          them until they were deleted. The run prints a pixel-level comparison
+          (scripts/compare-visual-baselines.mjs) so the artifact is reviewable:
+          a full rewrite re-encodes all of them, and a byte diff calls every
+          file changed.
+        type: boolean
+        default: false
   pull_request:
     paths:
       - "apps/elitea-web/**"
@@ -431,25 +447,65 @@ jobs:
       # deploy/docker-compose.e2e-standalone.yml, which is why the whole stack
       # came up healthy and seven tests ran. `e2e`'s two explicit builds are
       # belt-and-braces for a job with a matrix; this one does not need them.
+      # Keep the committed baselines aside BEFORE the suite overwrites them in
+      # place. Without this copy there is nothing left to compare the
+      # regenerated tree against, because the regeneration writes over the very
+      # files that were the reference.
+      - name: Keep the committed baselines for comparison
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
+        working-directory: apps/elitea-web
+        run: cp -r e2e/snapshots /tmp/committed-snapshots
+
       - name: Snapshot suite (pinned container, host network)
         env:
           # Baseline-regeneration mode. Manual dispatch only — `inputs` is null
           # on every other event, so a tag build or a PR can never take this
           # branch. See the `on:` input's description for why that matters.
           UPDATE_BASELINES: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
+          FULL_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.full_visual_refresh == true }}
         run: |
           test -d e2e/visual || { echo "release tag without a visual suite (unit V2) — refusing"; exit 1; }
           if [ "$UPDATE_BASELINES" = "true" ]; then
             echo "::warning::Baseline-regeneration mode — this run CANNOT fail on a snapshot diff."
-            update_arg="--update-snapshots=changed"
+            if [ "$FULL_REFRESH" = "true" ]; then
+              # `all`, not `changed`: a snapshot that PASSES is never rewritten,
+              # so `changed` cannot refresh a baseline that drifted under the
+              # maxDiffPixels budget. That drift is exactly what this mode is
+              # for, and it is invisible to every green run until someone looks.
+              echo "::warning::FULL refresh — every baseline is rewritten, including ones that pass."
+              update_arg="--update-snapshots=all"
+            else
+              update_arg="--update-snapshots=changed"
+            fi
           else
             update_arg=""
+            if [ "$FULL_REFRESH" = "true" ]; then
+              echo "full_visual_refresh needs update_visual_baselines; it does nothing on its own" >&2
+              exit 1
+            fi
           fi
           docker run --rm --network host \
             -v "$PWD":/work -w /work \
             -e CI=1 -e E2E_REUSE_STACK=1 \
             mcr.microsoft.com/playwright:v1.62.0-noble \
             npx playwright test --grep @visual $update_arg
+
+      # What actually moved, by PIXELS. A regeneration re-encodes every PNG, so
+      # `git status` and any byte comparison call all of them changed — measured
+      # on #238, 37 files reported for 18 real movements, with admin pages and
+      # the collapsed rail among the false ones. A reviewer handed that list
+      # cannot find the real change in it.
+      #
+      # It runs on the HOST rather than in the container: the comparison only
+      # reads PNGs and reuses playwright-core's own comparator, so it needs no
+      # browser, and the count it prints is the count the gate would compute.
+      #
+      # `|| true` because the script exits non-zero whenever anything differs,
+      # which in this mode is the normal and expected outcome, not a failure.
+      - name: Report what the regeneration changed
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
+        working-directory: apps/elitea-web
+        run: node scripts/compare-visual-baselines.mjs e2e/snapshots /tmp/committed-snapshots || true
 
       # A snapshot diff is unreviewable as prose: "183 pixels (ratio 0.01) are
       # different" tells a reviewer that something moved, never what. The only
