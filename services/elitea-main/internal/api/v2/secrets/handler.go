@@ -980,6 +980,67 @@ func (h *Handler) RemoveProjectVault(ctx context.Context, projectID string) erro
 	return transaction.Commit(ctx)
 }
 
+// StoreProjectSecrets writes several regular secrets to one project vault in a
+// SINGLE rewrite. It never creates a vault: an absent or unreadable vault is an
+// error (#399).
+//
+// WHY IT IS HERE AND NOT IN THE PROVISIONER, for the same reason
+// EnsureProjectVault is. This handler holds the only master key a deployment
+// actually sets. A material writer built anywhere else derives its own key, so
+// it writes material this handler cannot open, and it cannot open material this
+// handler wrote. The creator and the writer must share one key source, or the
+// vault is unusable whichever creator ran first.
+//
+// WHY ONE REWRITE, AND NOT REPEATED StoreSecret CALLS. Provisioning stores a
+// project's PgVector password and its connection string together. Two calls are
+// two read-modify-write cycles, so a failure between them leaves half the
+// material behind. A later index run then reads a password with no connection
+// string.
+//
+// The caller must create the vault first. The project_secrets provisioning step
+// does that, and it runs before every caller of this.
+func (h *Handler) StoreProjectSecrets(ctx context.Context, projectID string, values map[string]string) error {
+	vaultID := dbKey(projectID)
+	if len(values) == 0 {
+		return fmt.Errorf("store %s secrets: no values given", vaultID)
+	}
+	vault, err := h.readVaultCtx(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("store %s secrets: %w", vaultID, err)
+	}
+	for name, value := range values {
+		if name == "" {
+			return fmt.Errorf("store %s secrets: a secret name is empty", vaultID)
+		}
+		vault.Secrets[name] = value
+	}
+	return h.writeVaultCtx(ctx, projectID, vault)
+}
+
+// LookupProjectSecret reads one regular secret from a project vault.
+//
+// found is false only when the vault opens and holds no such name. An absent
+// vault and an unreadable vault are both errors, so no caller can read a key
+// mismatch as an empty result.
+func (h *Handler) LookupProjectSecret(
+	ctx context.Context,
+	projectID string,
+	name string,
+) (value string, found bool, err error) {
+	vaultID := dbKey(projectID)
+	if name == "" {
+		return "", false, fmt.Errorf("look up %s secret: the name is empty", vaultID)
+	}
+	vault, err := h.readVaultCtx(ctx, projectID)
+	if err != nil {
+		return "", false, fmt.Errorf("look up %s secret: %w", vaultID, err)
+	}
+	if stored, ok := vault.Secrets[name]; ok {
+		return stored, true, nil
+	}
+	return "", false, nil
+}
+
 // StoreSecret programmatically stores a secret value without going through HTTP.
 func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, name, value string) error {
 	vault, err := h.readOrInitVaultCtx(ctx, projectID)

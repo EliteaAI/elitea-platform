@@ -64,141 +64,17 @@ func (r *CurrentSecretVaultRepository) MutateAdmin(ctx context.Context, mutation
 	return r.mutate(ctx, "admin", mutations)
 }
 
-// EnsureProjectVault creates one project's empty vault when it does not exist,
-// and reports whether it created it.
+// THIS TYPE CREATES NO VAULT, AND MUST NOT (#399). It used to carry
+// EnsureProjectVault and DeleteProjectVault, keyed off
+// ELITEA_VAULT_MASTER_KEY_FILE. No file under deploy/ sets that variable, while
+// five set SECRETS_MASTER_KEY, which is the key the secrets handler uses. Two
+// creators with two key sources compose without an error — both are
+// create-if-absent and idempotent — and leave a vault that one path cannot
+// decrypt. Nothing reports the fault until a later read fails.
 //
-// WHY THIS IS HERE (#371). MutateProject cannot create a vault: it locks
-// centry.secrets_key/secrets_data and answers ErrCurrentVaultUnavailable when
-// the pair is absent. Until now the ONLY code that could bring a project vault
-// into being was the secrets HTTP handler, which mints a Fernet key inline on
-// its first write. So the first non-HTTP writer for a newly created project —
-// project PgVector material — had nothing to write into and could only fail.
-//
-// It is idempotent and safe under a concurrent first write. The key row is
-// inserted with DO NOTHING and the whole pair is written in one transaction, so
-// the loser of a race changes nothing and reports created=false. That ordering
-// is the same one the secrets handler documents: replacing an existing key row
-// would orphan a data row encrypted under the old key.
-func (r *CurrentSecretVaultRepository) EnsureProjectVault(
-	ctx context.Context,
-	projectID int64,
-) (created bool, err error) {
-	if r == nil || r.store == nil {
-		return false, ErrCurrentVaultUnavailable
-	}
-	if ctx == nil || projectID <= 0 {
-		return false, ErrInvalidCurrentVaultMutation
-	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	vaultID := "project-" + strconv.FormatInt(projectID, 10)
-
-	err = r.store.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite},
-		func(tx sqlExecutor) error {
-			var present bool
-			if scanErr := tx.QueryRow(ctx, `
-SELECT EXISTS (
-    SELECT 1
-    FROM centry.secrets_key AS k
-    JOIN centry.secrets_data AS d ON d.id = k.id
-    WHERE k.id = $1
-)`, vaultID).Scan(&present); scanErr != nil {
-				return ErrCurrentVaultUnavailable
-			}
-			if present {
-				return nil
-			}
-
-			var storedKey, encryptedVault []byte
-			var createErr error
-			if len(r.masterKey) == 0 {
-				storedKey, encryptedVault, createErr = centrysecrets.CreateUnwrapped()
-			} else {
-				storedKey, encryptedVault, createErr = centrysecrets.CreateWrapped(r.masterKey)
-			}
-			if createErr != nil {
-				return ErrCurrentVaultUnavailable
-			}
-			defer clearCurrentVaultBytes(storedKey)
-			defer clearCurrentVaultBytes(encryptedVault)
-
-			// DO NOTHING on both halves: a concurrent first write may have
-			// inserted the key between the probe above and this statement, and
-			// the surviving key must stay the one the data is encrypted with.
-			tag, execErr := tx.Exec(ctx, `
-INSERT INTO centry.secrets_key (id, data) VALUES ($1, $2)
-ON CONFLICT (id) DO NOTHING`, vaultID, storedKey)
-			if execErr != nil {
-				return ErrCurrentVaultUnavailable
-			}
-			if tag.RowsAffected() == 0 {
-				// Another writer won. Leave its rows untouched.
-				return nil
-			}
-			if _, execErr := tx.Exec(ctx, `
-INSERT INTO centry.secrets_data (id, data) VALUES ($1, $2)
-ON CONFLICT (id) DO NOTHING`, vaultID, encryptedVault); execErr != nil {
-				return ErrCurrentVaultUnavailable
-			}
-			created = true
-			return nil
-		})
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, ctxErr
-		}
-		return false, err
-	}
-	return created, nil
-}
-
-// DeleteProjectVault removes one project's vault rows, and reports whether it
-// removed anything.
-//
-// It is the inverse of EnsureProjectVault and exists for the same caller: a
-// provisioning step that created a vault must remove it when the project it
-// belongs to is rolled back. Nothing else deletes these rows, so a project
-// deleted without this leaves an encrypted vault naming a project that is gone.
-func (r *CurrentSecretVaultRepository) DeleteProjectVault(
-	ctx context.Context,
-	projectID int64,
-) (removed bool, err error) {
-	if r == nil || r.store == nil {
-		return false, ErrCurrentVaultUnavailable
-	}
-	if ctx == nil || projectID <= 0 {
-		return false, ErrInvalidCurrentVaultMutation
-	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	vaultID := "project-" + strconv.FormatInt(projectID, 10)
-
-	err = r.store.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite},
-		func(tx sqlExecutor) error {
-			// Data first: a key row without its data row is an unreadable vault,
-			// which is the state lockCurrentSecretVault already rejects, whereas
-			// a data row without its key is unopenable ciphertext nothing sweeps.
-			dataTag, execErr := tx.Exec(ctx, `DELETE FROM centry.secrets_data WHERE id = $1`, vaultID)
-			if execErr != nil {
-				return ErrCurrentVaultUnavailable
-			}
-			keyTag, execErr := tx.Exec(ctx, `DELETE FROM centry.secrets_key WHERE id = $1`, vaultID)
-			if execErr != nil {
-				return ErrCurrentVaultUnavailable
-			}
-			removed = dataTag.RowsAffected() > 0 || keyTag.RowsAffected() > 0
-			return nil
-		})
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, ctxErr
-		}
-		return false, err
-	}
-	return removed, nil
-}
+// internal/api/v2/secrets.Handler is now the ONE creator, called by the
+// project_secrets provisioning step. Every writer that needs a vault must run
+// after that step and hold that step's key.
 
 func (r *CurrentSecretVaultRepository) mutate(ctx context.Context, vaultID string, mutations []centrysecrets.Mutation) error {
 	if r == nil || r.store == nil {

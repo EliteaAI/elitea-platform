@@ -32,6 +32,7 @@ import (
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
+	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
@@ -523,7 +524,19 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("compose current Configurations services: %w", err)
 		}
 		defer currentConfigurationsRoot.Destroy()
-		projectVectorStore, err = currentConfigurationsRoot.NewProjectVectorStore(pool, logger)
+		// The vault material goes through the secrets handler, which holds the
+		// one master key a deployment sets (SECRETS_MASTER_KEY). That handler
+		// is also the one vault creator, through the project_secrets
+		// provisioning step, so the creator and the material writer now share a
+		// key source (#399). The Configurations runtime's own vault writer is
+		// deliberately NOT used here: it keys off ELITEA_VAULT_MASTER_KEY_FILE,
+		// which no file under deploy/ sets, so it could not open the vault the
+		// handler had just created.
+		projectVectorStore, err = currentConfigurationsRoot.NewProjectVectorStore(
+			pool,
+			v2secrets.NewHandler(pool),
+			logger,
+		)
 		if err != nil {
 			return fmt.Errorf("compose project vector-store provisioning: %w", err)
 		}
