@@ -246,6 +246,68 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   separate human call. The chart's opt-in `networkPolicy` is defence in depth,
   not the primary control — see values.yaml for why it cannot default to on.
 
+## Shared/public project scope
+- **[human decision] The public project id is OPERATOR CONFIGURATION
+  (`ELITEA_AI_PROJECT_ID`), not a field on the signed identity.** Chosen
+  2026-08-14 for issue #316, which allowed either shape and asked that the
+  choice be recorded.
+
+  *Context:* the gateway read `p_{caller}` only. Elitea has always had two
+  sources of models for a project — its own rows, and the public project's
+  `shared = true` rows. The UI pickers offer both (`include_shared`), so a user
+  could select a platform model that the gateway then had no credential for. In
+  the `ELITEA_ALLOW_PROJECT_OWN_LLMS=false` deployment mode that left no usable
+  model at all.
+
+  *Rationale for configuration over the identity header:*
+  1. The value is a DEPLOYMENT-WIDE CONSTANT. elitea-main reads it from the
+     environment too (`ELITEA_AI_PROJECT_ID`, default 1); it does not vary per
+     request, per user or per tenant. Sending a constant per request only
+     creates ways for it to be wrong.
+  2. It selects a SECOND SCHEMA TO READ. A request-carried value would let
+     anyone who can set headers name any project as "public" and read that
+     project's rows — a cross-tenant read, and exactly the failure this issue
+     warned against. Configuration removes that surface completely.
+  3. Carrying it on the identity means changing the HMAC canonical string, which
+     both modules must change in lockstep; a version skew either fails every
+     request or, if the field is left unsigned, is forgeable. Changing the
+     signing scheme is a trust-boundary change (see CLAUDE.md's autonomy
+     boundary) and needs a human, which this issue did not ask for.
+
+  *Accepted cost:* the id is set in two places and can drift. A gateway pointed
+  at the wrong project serves a model set the UI does not offer. Mitigations:
+  the chart documents that the value must match elitea-main's, and main() logs
+  the resolved mode at startup — armed with the id, or an explicit warning that
+  shared models are unreachable.
+
+  *Default OFF (empty), not 1.* An id naming a schema that does not exist makes
+  every credential read fail, so the operator opts in. An unset scope reproduces
+  the previous project-local behaviour exactly.
+
+- **Precedence: the caller's OWN row wins.** This matches the legacy resolver
+  (`runtime_interface_litellm` `_map_model_name`), which probed
+  `{project}_{model}` before `{public}_{model}`. Credentials from the caller's
+  project are returned first; on a model-id collision the caller's row is kept
+  and the shared row is dropped, so the id appears exactly once. Both rules are
+  pinned by tests. NOTE the issue explicitly did NOT decide which credential
+  should win where two rows share an id but carry different secrets — bifrost
+  picks from the key list we return, and ordering is the only lever this change
+  takes. Revisit if product wants shared credentials to override a project's own.
+
+- **Two isolation invariants, and neither may be weakened without a human:**
+  1. The public scope is read ONLY with `AND shared = true`. The predicate is a
+     constant and is never built from caller-supplied input.
+  2. Every row returned from the public scope is re-checked against its own
+     `shared` column in Go before use, and the read FAILS if one escapes. This
+     mirrors elitea-main's "escaped its authorized scope" check on the same
+     table. It exists because the SQL predicate is the kind of thing a later
+     refactor drops silently.
+
+  A shared credential's `{{secret.NAME}}` reference resolves against the PUBLIC
+  project's Fernet vault, not the caller's — the vault scope follows the
+  credential's owner. Resolving against the caller would either fail or pick up
+  an unrelated same-named secret of the caller's.
+
 ## Topology / build
 - Gateway is a standalone Go 1.26.4 module, deliberately OUT of the root go.work
   (which stays 1.25.8 for elitea-main/scheduler). Build with GOWORK=off. Rationale:
@@ -308,6 +370,28 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
 - **Which name SHOULD be the addressable one is still a product decision.**
   Issue #317 did not pick one, because it changes what external SDK users type.
   This change only makes the list and the request path agree.
+
+- **The shared scope and the name mapping compose in one row loop (#316 + #317).**
+  The scope decides WHICH rows come back. The mapping decides WHAT EACH ROW
+  CARRIES. They are independent, so `queryScope` builds every row the same way
+  in both scopes: a shared row carries `providerModel` exactly like an own row.
+
+  A shared row that carries no provider model name sends the provider a
+  user-authored title, and it prices the wrong model at the budget gate, because
+  the cost tables are keyed by the provider's name. Both suites are blind to
+  this on their own: the #316 tests assert model ids only, and the #317 tests
+  seed one scope only.
+
+  `shared_modelmap_test.go` pins the join. It asserts what the PROVIDER
+  received, never the status. Three properties are guarded:
+  - A shared model dispatches its `data.name`
+    (`TestSharedModelDispatchesTheProviderWireName`).
+  - On an id collision the CALLER's row supplies the dispatched name
+    (`TestCollidingModelIDDispatchesTheOwnRowWireName`). The two rows share an
+    id, so the dispatched name is the only evidence of which row won.
+  - An unpublished row dispatches under NEITHER of its two names
+    (`TestUnpublishedModelIsNotDispatchable`). #317 accepts `data.name` as an
+    alias, so the wire name is a second way in if the predicate ever fails.
 
 ## Resolved follow-ups
 - ✅ `SECRETS_MASTER_KEY` + `GATEWAY_IDENTITY_SECRET` now wired via the chart's

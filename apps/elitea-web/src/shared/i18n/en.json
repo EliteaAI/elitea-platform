@@ -1974,5 +1974,6 @@
   "entities.token.form.projectNone": "No project (default)",
   "entities.token.table.project": "Project",
   "entities.token.table.projectId": "Project {{id}}",
-  "entities.token.table.projectNone": "Not bound"
+  "entities.token.table.projectNone": "Not bound",
+  "features.toolkits.indexScheduleModal.credentialsLabel": "Credentials"
 }

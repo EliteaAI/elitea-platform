@@ -113,6 +113,7 @@ function ScheduleSwitch(props: ScheduleSwitchProps): ReactNode {
 
       <Tooltip title={scheduleConfigMessage ?? ''}>
         <Box
+          data-testid="index-schedule-settings"
           onClick={() => (scheduleConfigMessage ? null : onOpenModal())}
           sx={{
             display: 'flex',

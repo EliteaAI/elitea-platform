@@ -57,7 +57,7 @@ import type { ToolkitLlmModel } from '../api/toolkitChatSession';
 import { useStopIndexingItemMutation } from '../indexes/api/indexesApi';
 import { useSelectedProjectId } from '../indexes/lib/hooks/useSelectedProjectId';
 import type { IndexRow } from '../indexes/model/indexesStore';
-import { IndexesContainer } from '../indexes/ui/IndexesContainer';
+import { IndexesContainer, type IndexesContainerProps } from '../indexes/ui/IndexesContainer';
 import type { ChatMessageListProps, LLMModelSelectorProps } from '../indexes/ui/IndexDetails/IndexChat';
 import type { UseToolkitChatParams, UseToolkitChatResult } from '../indexes/ui/IndexDetails/IndexDetails';
 import type { EditToolDetail } from '../indexes/ui/IndexDetails/IndexActions';
@@ -150,11 +150,22 @@ export interface IndexesTabProps {
   /** The `IndexesToolsEnum` members present in the toolkit's `selected_tools` — gates the Run tab and the Remove-index action. */
   readonly selectedIndexTools: readonly string[];
   readonly chatUI: IndexesTabChatUI;
+  /**
+   * #308 — the index schedule modal's credential select.
+   *
+   * `IndexScheduleModal` declares this slot because `features/toolkits` may not
+   * import `features/credentials` (`no-sideways-features`). It was threaded
+   * down through `IndexesContainer`/`IndexDetails`/`IndexActions` and supplied
+   * by no production caller, so the modal rendered no credential field and a
+   * schedule that needs one could not be saved. The supplier is
+   * `pages/toolkits/lib/credentialPickerSlots.tsx`.
+   */
+  readonly renderCredentialsSelect?: IndexesContainerProps['renderCredentialsSelect'];
 }
 
 /** @public Rendered by `pages/toolkits/EditToolkit.tsx` as the Indexes tab panel. */
 export function IndexesTab(props: IndexesTabProps): ReactNode {
-  const { toolkitId, values, selectedIndexTools, chatUI } = props;
+  const { toolkitId, values, selectedIndexTools, chatUI, renderCredentialsSelect } = props;
 
   /**
    * `IndexActions` reads exactly two fields off `editToolDetail`: `type`,
@@ -282,6 +293,7 @@ export function IndexesTab(props: IndexesTabProps): ReactNode {
         LLMModelSelector={LLMModelSelector}
         ChatMessageList={ChatMessageList}
         ClearChatButton={ClearChatButton}
+        renderCredentialsSelect={renderCredentialsSelect}
       />
       {/*
         * No global toast host exists in this app (the gap `IndexActions.tsx`

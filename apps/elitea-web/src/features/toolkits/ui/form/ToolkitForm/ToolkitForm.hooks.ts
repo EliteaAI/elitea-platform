@@ -64,7 +64,7 @@ export function useToolkitFormState(props: ResolvedToolkitFormProps): ToolkitFor
   } = props;
   const { view, setView, onManualViewChange, isValidSchema, effectiveToolSchema, hasErrors, mergedToolErrors, editField, setToolErrors, showValidation, configurationErrors, setConfigurationErrors, configurationName, setConfigurationName, configuration, setConfiguration, toolType, ToolComponent } = core;
   const { isCreatingConfiguration, isTestingConnection, onCreateConfiguration, onTestConnection, onRevertCredentials, shouldShowDisabledConfigFields, onCredentialReload, isLoading } = config;
-  const renderCredentialLikeField = useCredentialLikeFieldSlot(projectId);
+  const renderCredentialLikeField = useCredentialLikeFieldSlot(projectId, slots?.renderCredentialPicker);
 
   // A PLAIN object literal, not `useMemo`'d: the baseline itself never
   // memoized this bag either (`ToolkitForm.jsx:502-535` builds it fresh
@@ -120,8 +120,12 @@ export function useToolkitFormState(props: ResolvedToolkitFormProps): ToolkitFor
      * `ToolBaseProperty.dispatch.tsx`'s `renderCredentialLike` returns `null`
      * without one, so every model/credential field rendered as blank space.
      * The default is merged UNDER the caller's `slots` so a page that supplies
-     * its own renderer (e.g. a future one covering `configuration`, which this
-     * slice may not import — see the hook's own doc comment) still wins.
+     * its own renderer still wins.
+     *
+     * A page that only needs the credential picker must supply
+     * `slots.renderCredentialPicker`, NOT this slot: the default above already
+     * reads that narrower slot and keeps the three model pickers. Replacing
+     * this slot wholesale drops them.
      */
     slots: { renderCredentialLikeField, ...slots },
   };

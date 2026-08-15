@@ -112,7 +112,11 @@ function resolveScheduleData(toolkitScheduler: Readonly<Record<string, ScheduleE
 /** `credentialsData`'s resolution logic — same extraction reason as `resolveScheduleData` above. */
 function resolveCredentialsData(toolkitSchema: ToolkitTypeSchema): CredentialsFieldDescriptor | null {
   const entry = Object.entries(toolkitSchema.properties ?? {}).find(([, v]) => v.section?.includes('credentials'));
-  return (entry?.[1] as CredentialsFieldDescriptor | undefined) ?? null;
+  if (entry === undefined) return null;
+  // The KEY travels with the property: the served property carries no
+  // `description`, so the modal derives its picker label from the key instead
+  // (#308 — see `resolveCredentialsLabel` in `IndexScheduleModal.tsx`).
+  return { ...(entry[1] as CredentialsFieldDescriptor), propertyKey: entry[0] };
 }
 
 /** `schedulingTooltipMessage`'s computation — same extraction reason as `resolveScheduleData` above (this one is the single largest branch contributor). */

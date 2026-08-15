@@ -148,7 +148,8 @@ func TestStaticModelRowsIter_NextAndScan(t *testing.T) {
 	}
 	var title string
 	var data []byte
-	if err := it.Scan(&title, &data); err != nil {
+	var shared bool
+	if err := it.Scan(&title, &data, &shared); err != nil {
 		t.Fatalf("Scan error: %v", err)
 	}
 	if title != "m1" {
@@ -162,7 +163,7 @@ func TestStaticModelRowsIter_NextAndScan(t *testing.T) {
 	if !it.Next() {
 		t.Fatal("Next() should return true for second row")
 	}
-	if err := it.Scan(&title, &data); err != nil {
+	if err := it.Scan(&title, &data, &shared); err != nil {
 		t.Fatalf("Scan error: %v", err)
 	}
 	if title != "m2" {
@@ -194,7 +195,8 @@ func TestStaticModelQuerier_Query(t *testing.T) {
 		count++
 		var title string
 		var data []byte
-		if scanErr := rows.Scan(&title, &data); scanErr != nil {
+		var shared bool
+		if scanErr := rows.Scan(&title, &data, &shared); scanErr != nil {
 			t.Fatalf("Scan error: %v", scanErr)
 		}
 	}

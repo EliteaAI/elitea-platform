@@ -88,10 +88,13 @@ type modelConfigData struct {
 // project's model surface. It is safe for concurrent use and NEVER routes
 // through bifrost/core (design §4.2, §3.4).
 type ModelResolver struct {
-	db     modelRowQuerier
-	ttl    time.Duration
-	now    func() time.Time
-	logger *slog.Logger
+	db  modelRowQuerier
+	ttl time.Duration
+	now func() time.Time
+	// publicProjectID is the platform's shared project (issue #316). Empty
+	// disables the shared scope. Operator configuration, never request data.
+	publicProjectID string
+	logger          *slog.Logger
 
 	mu    sync.RWMutex
 	cache map[string]modelsCacheEntry
@@ -116,6 +119,14 @@ type ModelResolverConfig struct {
 	Now func() time.Time
 	// Logger is used for resolution warnings; nil uses slog.Default().
 	Logger *slog.Logger
+	// PublicProjectID is the platform's shared ("public") project id as a
+	// decimal string (ELITEA_AI_PROJECT_ID). When set, List also returns that
+	// project's `shared = true` models, so /llm/v1/models agrees with the model
+	// picker the caller just used (issue #316). Empty disables the shared scope.
+	//
+	// This MUST be operator configuration. A request-supplied value would let a
+	// caller name any project as "public" and enumerate its models.
+	PublicProjectID string
 }
 
 // NewModelResolver builds a ModelResolver from cfg.
@@ -133,11 +144,12 @@ func NewModelResolver(cfg ModelResolverConfig) *ModelResolver {
 		logger = slog.Default()
 	}
 	return &ModelResolver{
-		db:     cfg.DB,
-		ttl:    ttl,
-		now:    now,
-		logger: logger,
-		cache:  make(map[string]modelsCacheEntry),
+		db:              cfg.DB,
+		ttl:             ttl,
+		now:             now,
+		publicProjectID: cfg.PublicProjectID,
+		logger:          logger,
+		cache:           make(map[string]modelsCacheEntry),
 	}
 }
 
@@ -146,10 +158,19 @@ func NewModelResolver(cfg ModelResolverConfig) *ModelResolver {
 // field (it is what ChatConfig surfaces as the model "name"); data carries the
 // underlying wire name as a fallback id. Rows are ordered by id so the
 // synthesised set is stable.
-const modelsSQL = `SELECT COALESCE(elitea_title, ''), data
+// %s is the scope predicate: empty for the caller's own project, and
+// sharedModelPredicate for the public project, whose rows are visible to another
+// project ONLY when the platform published them. `shared` is selected so the
+// public-scope result can be re-verified in Go.
+const modelsSQL = `SELECT COALESCE(elitea_title, ''), data, shared
 	FROM %q.configuration
-	WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
+	WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true%s
 	ORDER BY id`
+
+// sharedModelPredicate restricts a cross-project read to published rows. It is
+// the only thing that makes reading a second schema safe, so it is a constant
+// and is never built from a caller-supplied value.
+const sharedModelPredicate = " AND shared = true"
 
 // List returns the synthesised model set for projectID. It serves a fresh
 // cached list when one exists, else queries Postgres and caches the result. On
@@ -220,8 +241,19 @@ func (m *ModelResolver) Get(ctx context.Context, projectID, id string) (modelObj
 }
 
 // query reads and decodes the project's llm_model rows into a deduplicated,
-// order-preserving model set. A row with no usable id (empty elitea_title and
-// empty data.name) is skipped; a duplicate id keeps its first occurrence.
+// order-preserving model set.
+//
+// It reads two scopes (issue #316): the caller's own project, then the public
+// project's `shared = true` rows. The own-project scope is read FIRST and a
+// duplicate id keeps its first occurrence, so where both scopes expose the same
+// model id the project's own row wins — the precedence the legacy
+// _map_model_name resolver had. The second scope is skipped when it is unset or
+// when the caller IS the public project.
+//
+// A row with no usable id (empty elitea_title and empty data.name) is skipped.
+//
+// TENANT ISOLATION: publicProjectID is operator configuration, never request
+// data, and the public-scope read always carries sharedModelPredicate.
 func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObject, error) {
 	if m.db == nil {
 		return []modelObject{}, nil
@@ -230,25 +262,63 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 		return nil, err
 	}
 
-	// projectID is a signed, server-resolved, numeric-validated value (never raw
-	// client input), so the fmt-built schema identifier is not an injection
-	// vector — same guard the account package applies (design §5.3).
-	q := fmt.Sprintf(modelsSQL, "p_"+projectID)
+	models := make([]modelObject, 0)
+	seen := make(map[string]struct{})
+	if err := m.queryScope(ctx, projectID, false, &models, seen); err != nil {
+		return nil, err
+	}
+
+	if m.publicProjectID == "" || m.publicProjectID == projectID {
+		return models, nil
+	}
+	if err := validateNumericProjectID(m.publicProjectID); err != nil {
+		return nil, fmt.Errorf("public project id: %w", err)
+	}
+	if err := m.queryScope(ctx, m.publicProjectID, true, &models, seen); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+// queryScope reads one project's llm_model rows and appends the new ids to
+// models, skipping any id already in seen. sharedOnly adds the `shared = true`
+// predicate and re-verifies every returned row against its own `shared` column.
+func (m *ModelResolver) queryScope(
+	ctx context.Context,
+	scopeProjectID string,
+	sharedOnly bool,
+	models *[]modelObject,
+	seen map[string]struct{},
+) error {
+	predicate := ""
+	if sharedOnly {
+		predicate = sharedModelPredicate
+	}
+	// scopeProjectID is either the signed, server-resolved caller project or the
+	// operator-configured public project. Both are numeric-validated before they
+	// reach here, so the fmt-built schema identifier is not an injection vector
+	// — the same guard the account package applies (design §5.3).
+	q := fmt.Sprintf(modelsSQL, "p_"+scopeProjectID, predicate)
 	rows, err := m.db.Query(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("query models: %w", err)
+		return fmt.Errorf("query models for project %s: %w", scopeProjectID, err)
 	}
 	defer rows.Close()
 
-	models := make([]modelObject, 0)
-	seen := make(map[string]struct{})
 	for rows.Next() {
 		var (
 			title     string
 			dataBytes []byte
+			shared    bool
 		)
-		if err := rows.Scan(&title, &dataBytes); err != nil {
-			return nil, fmt.Errorf("scan model row: %w", err)
+		if err := rows.Scan(&title, &dataBytes, &shared); err != nil {
+			return fmt.Errorf("scan model row: %w", err)
+		}
+		// Defence in depth: a cross-project read must never yield an unpublished
+		// row. Reaching here means the query lost its predicate, so fail the read
+		// rather than advertise another project's private model.
+		if sharedOnly && !shared {
+			return fmt.Errorf("model row from project %s escaped the shared scope", scopeProjectID)
 		}
 		id, providerModel := modelNames(title, dataBytes)
 		if id == "" {
@@ -258,7 +328,12 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 			continue
 		}
 		seen[id] = struct{}{}
-		models = append(models, modelObject{
+		// A shared row carries providerModel exactly like an own row (issue
+		// #317). The scope decides WHICH rows come back; it does not change what
+		// a row carries. A shared model must map to the provider's name too,
+		// else the budget gate prices the wrong model and the provider gets a
+		// title it does not know.
+		*models = append(*models, modelObject{
 			ID:            id,
 			Object:        modelObjectType,
 			Created:       0,
@@ -267,9 +342,9 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate model rows: %w", err)
+		return fmt.Errorf("iterate model rows: %w", err)
 	}
-	return models, nil
+	return nil
 }
 
 // modelNames resolves the two names of one llm_model row:

@@ -32,22 +32,14 @@
  *    shared row when the value is blank) is ported, and only as the
  *    `autoSelectFirstShared` opt-in flag a caller can set.
  *
- * **STATUS (A7-ui adversarial-review finding): zero live call sites**,
- * despite this component + sub-parts being fully built, exported, and
- * tested. Architectural, not fixable from this file: the one prospective
- * consumer (`ToolBaseProperty.tsx`'s `type === 'configuration'` branch)
- * cannot import this directly (`no-sideways-features` — R-L1); it threads
- * an opaque `slots.renderCredentialLikeField` (`CredentialLikeFieldContext`
- * in `features/toolkits/ui/form/ToolBase/types.ts`) that has zero
- * implementations anywhere in the worktree. Routing for whoever lands the
- * fix: a page/widget composition root (none exists yet) that may legally
- * import both `features/toolkits` and `features/credentials` must supply
- * that slot, rendering `<CredentialsSelect>` for `kind === 'configuration'`
- * from `context.value`/`onChange`/`propertyKey`/`presetOptions`/
- * `onCredentialReload`. Out of this cluster's scope (`features/toolkits`
- * and any new page/widget file are outside A7-ui's file scope).
+ * **STATUS: live since #308.** This component had zero call sites for a long
+ * time, because the one prospective consumer (`features/toolkits`' toolkit
+ * form and index schedule modal) may not import it (`no-sideways-features` —
+ * R-L1) and both only declared render-prop slots. The composition root that
+ * fills those slots is `pages/toolkits/lib/credentialPicker.tsx`; read that
+ * file for the whole routing story.
  */
-import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, type ReactNode, type RefObject } from 'react';
 
 import Box from '@mui/material/Box';
 import FormControl from '@mui/material/FormControl';
@@ -173,6 +165,7 @@ export function CredentialsSelect({
     [handlers, value],
   );
 
+  const labelId = useId();
   const resolvedField = resolveFieldProps(field);
   const showMismatchFooter = isMismatchFooterVisible(value, selectedRow, hasFetchedData);
 
@@ -187,8 +180,15 @@ export function CredentialsSelect({
           disabled={resolvedField.disabled}
           error={resolvedField.error}
         >
-          <InputLabel shrink>{resolvedField.label}</InputLabel>
+          {/* `id`/`labelId` pair up so the label becomes the select's ACCESSIBLE NAME. Without them MUI renders an unnamed `combobox`: the label is on screen, but no assistive technology can reach it, and a form with two credential references offers two indistinguishable controls. */}
+          <InputLabel
+            shrink
+            id={labelId}
+          >
+            {resolvedField.label}
+          </InputLabel>
           <Select<string>
+            labelId={labelId}
             value={selectStringValue}
             onChange={handleChange}
             displayEmpty

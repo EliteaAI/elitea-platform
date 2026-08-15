@@ -13,7 +13,21 @@ import (
 // literal or a {{secret.NAME}} reference resolved through the Fernet vault; it
 // is never logged.
 type credential struct {
-	configID  string // configuration row id (used as the bifrost Key ID)
+	configID string // configuration row id
+	// keyID is the bifrost Key ID. It equals configID for a credential the
+	// caller's own project owns. A credential read from the public project is
+	// prefixed (sharedKeyIDPrefix) so two rows that carry the same numeric id in
+	// two different schemas cannot collide on one Key ID.
+	keyID string
+	// ownerProjectID is the project whose schema the row came from. It is NOT
+	// always the caller: a shared credential is owned by the public project.
+	// The Fernet vault MUST be read with this id, because a {{secret.NAME}}
+	// reference in a shared row names a secret in the public project's vault.
+	ownerProjectID string
+	// shared is the row's `shared` flag as stored. It is read back so the
+	// public-scope result can be re-verified in Go (defence in depth against a
+	// query that loses its predicate).
+	shared    bool
 	name      string // human-readable label (elitea_title)
 	apiBase   string // provider endpoint (subject to the self-referential guard)
 	apiKeyRef string // stored api_key: literal or {{secret.NAME}} reference
@@ -21,6 +35,13 @@ type credential struct {
 	// upstream's Anthropic-compatible /v1/messages surface (see credentialData).
 	useAnthropicEndpoints bool
 }
+
+// sharedKeyIDPrefix marks a bifrost Key ID that came from the public project
+// rather than the caller's own project. Two schemas can each hold a
+// configuration row with the same numeric id, so the raw id is not unique once
+// two scopes are read; the prefix also tells an operator reading a log line
+// that a platform-shared credential served the request.
+const sharedKeyIDPrefix = "shared:"
 
 // providerConfigTypes maps a bifrost provider to the p_{projectID}.configuration
 // `type` values that represent a credential for it. Derived from the legacy
@@ -62,11 +83,46 @@ func (d credentialData) credentialKeyRef() string {
 	return d.APIToken
 }
 
+// credentialsSQL reads the ai_credentials rows for one project scope. %q is the
+// schema name and %s is the scope predicate: empty for the caller's own project
+// (a project sees all of its own credentials) and sharedPredicate for the public
+// project (a caller may see ONLY the rows the platform published). `shared` is
+// selected so the result can be re-verified in Go.
+const credentialsSQL = `
+		SELECT COALESCE(uuid::text, id::text), COALESCE(elitea_title, ''), data, shared
+		FROM %q.configuration
+		WHERE section = 'ai_credentials' AND type = ANY($1) AND status_ok = true%s
+		ORDER BY id`
+
+// sharedPredicate restricts a cross-project read to published rows. It is the
+// ONLY thing that makes reading a second schema safe, so it is a constant and
+// never built from a caller-supplied value.
+const sharedPredicate = " AND shared = true"
+
 // loadCredentials reads the ai_credentials configuration rows for the given
-// project and provider from p_{projectID}.configuration and decodes each row's
-// `data` JSONB into a credential. Rows whose type does not map to a supported
-// provider yield no results. No secret material is resolved here — that happens
-// in GetKeysForProvider after the self-referential guard runs.
+// provider and decodes each row's `data` JSONB into a credential.
+//
+// It reads two scopes (issue #316):
+//
+//  1. p_{projectID} — every credential the caller's own project owns.
+//  2. p_{publicProjectID} — ONLY the rows flagged `shared = true`, i.e. the
+//     models and credentials the platform operator published for everyone.
+//
+// The caller's own rows come first, so the legacy precedence is preserved: where
+// both scopes describe the same thing, the project's own row wins (legacy
+// _map_model_name probed {project}_{model} before {public}_{model}).
+//
+// The second scope is skipped when it is unset or when the caller IS the public
+// project (that project already reads its own rows in scope 1, and reading it
+// twice would duplicate every shared row).
+//
+// TENANT ISOLATION: publicProjectID is operator configuration, never request
+// data, and the public-scope read always carries sharedPredicate. No other
+// project's schema is reachable from this path.
+//
+// Rows whose type does not map to a supported provider yield no results. No
+// secret material is resolved here — that happens in GetKeysForProvider after
+// the self-referential guard runs.
 func (a *EliteaAccount) loadCredentials(ctx context.Context, projectID string, provider schemas.ModelProvider) ([]credential, error) {
 	types, ok := providerConfigTypes[provider]
 	if !ok || len(types) == 0 {
@@ -79,17 +135,45 @@ func (a *EliteaAccount) loadCredentials(ctx context.Context, projectID string, p
 	if err := validateProjectID(projectID); err != nil {
 		return nil, err
 	}
-	schema := fmt.Sprintf("p_%s", projectID)
 
-	q := fmt.Sprintf(`
-		SELECT COALESCE(uuid::text, id::text), COALESCE(elitea_title, ''), data
-		FROM %q.configuration
-		WHERE section = 'ai_credentials' AND type = ANY($1) AND status_ok = true
-		ORDER BY id`, schema)
+	creds, err := a.loadCredentialScope(ctx, projectID, provider, types, false)
+	if err != nil {
+		return nil, err
+	}
+
+	if a.publicProjectID == "" || a.publicProjectID == projectID {
+		return creds, nil
+	}
+	if err := validateProjectID(a.publicProjectID); err != nil {
+		return nil, fmt.Errorf("public project id: %w", err)
+	}
+	shared, err := a.loadCredentialScope(ctx, a.publicProjectID, provider, types, true)
+	if err != nil {
+		return nil, err
+	}
+	return append(creds, shared...), nil
+}
+
+// loadCredentialScope reads one project's ai_credentials rows. sharedOnly adds
+// the `shared = true` predicate and makes the caller's read a cross-project one;
+// every row returned under it is re-checked against its own `shared` column
+// before it is used.
+func (a *EliteaAccount) loadCredentialScope(
+	ctx context.Context,
+	scopeProjectID string,
+	provider schemas.ModelProvider,
+	types []string,
+	sharedOnly bool,
+) ([]credential, error) {
+	predicate := ""
+	if sharedOnly {
+		predicate = sharedPredicate
+	}
+	q := fmt.Sprintf(credentialsSQL, fmt.Sprintf("p_%s", scopeProjectID), predicate)
 
 	rows, err := a.db.Query(ctx, q, types)
 	if err != nil {
-		return nil, fmt.Errorf("query configuration: %w", err)
+		return nil, fmt.Errorf("query configuration for project %s: %w", scopeProjectID, err)
 	}
 	defer rows.Close()
 
@@ -98,21 +182,39 @@ func (a *EliteaAccount) loadCredentials(ctx context.Context, projectID string, p
 		var (
 			id, title string
 			dataBytes []byte
+			shared    bool
 		)
-		if err := rows.Scan(&id, &title, &dataBytes); err != nil {
+		if err := rows.Scan(&id, &title, &dataBytes, &shared); err != nil {
 			return nil, fmt.Errorf("scan configuration row: %w", err)
+		}
+		// Defence in depth: a cross-project read must never yield an unpublished
+		// row. The SQL predicate above already excludes them, so reaching here
+		// means the query lost its predicate — fail the whole read rather than
+		// hand another project's private credential to the caller. This mirrors
+		// elitea-main's "escaped its authorized scope" check on the same table.
+		if sharedOnly && !shared {
+			return nil, fmt.Errorf(
+				"account: configuration row %s from project %s escaped the shared scope",
+				id, scopeProjectID)
 		}
 		var d credentialData
 		if len(dataBytes) > 0 {
 			if err := json.Unmarshal(dataBytes, &d); err != nil {
 				// A malformed row must not poison the whole provider; skip it.
 				a.logger.WarnContext(ctx, "skipping unparsable ai_credentials row",
-					"project_id", projectID, "provider", string(provider), "config_id", id)
+					"project_id", scopeProjectID, "provider", string(provider), "config_id", id)
 				continue
 			}
 		}
+		keyID := id
+		if sharedOnly {
+			keyID = sharedKeyIDPrefix + id
+		}
 		creds = append(creds, credential{
 			configID:              id,
+			keyID:                 keyID,
+			ownerProjectID:        scopeProjectID,
+			shared:                shared,
 			name:                  title,
 			apiBase:               d.APIBase,
 			apiKeyRef:             d.credentialKeyRef(),

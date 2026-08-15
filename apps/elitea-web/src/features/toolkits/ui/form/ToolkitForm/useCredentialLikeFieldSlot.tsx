@@ -29,16 +29,21 @@ import type { ToolkitModelSection } from '../../../api/toolkitChatSession';
  * `slots.renderCredentialLikeField` still wins (see the merge in
  * `ToolkitForm.hooks.ts`).
  *
+ * **`configuration` — the credential picker — resolves through the caller.**
+ * The real picker is `features/credentials`' `CredentialsSelect`, and
+ * `no-sideways-features` forbids this slice from importing it. The caller
+ * supplies it through the narrow `slots.renderCredentialPicker` seam and this
+ * hook dispatches the kind to it. Read that slot's own doc comment for why it
+ * is a second slot and not this one.
+ *
+ * The kind is reachable only since PR #352 (issue #330). That change makes the
+ * Go catalogue serve a `$defs` block with `$ref` properties — credentials for
+ * `github`, `jira` and `openapi`, vectorstorage for `artifact`, `github` and
+ * `jira`. `toolkitSchema.helpers.ts`'s `configProps` keys the kind off exactly
+ * that block. Before it, no property was ever typed `configuration`, and this
+ * hook's earlier revision recorded that as the blocker.
+ *
  * **Deliberately NOT covered here, and still rendering `null`:**
- *  - `configuration` (the credential picker). `features/credentials`'
- *    `CredentialsSelect` exists and is exported, but `no-sideways-features`
- *    forbids importing it from this slice, so its supplier must be a
- *    page/widget root. It is also NOT reachable today: the kind is assigned
- *    only to properties whose schema `$ref`s a `$defs` entry
- *    (`toolkitSchema.helpers.ts`'s `configProps`), and the Go catalogue
- *    serves no `$defs` at all (measured: zero occurrences in
- *    `internal/api/v2/toolkits/handler.go`). Wiring it would be another
- *    component with no reachable call site.
  *  - `toolkit_reference` / `agent_reference` / `pipeline_reference`. The
  *    baseline's `ToolkitSelect`/`AgentSelect` have no port anywhere in this
  *    app, and the annotations that produce these kinds (`toolkit_types`,
@@ -53,9 +58,11 @@ const MODEL_SECTIONS: Partial<Record<CredentialLikeFieldKind, ToolkitModelSectio
 
 export function useCredentialLikeFieldSlot(
   projectId: string | undefined,
+  renderCredentialPicker: ToolBaseSlots['renderCredentialPicker'],
 ): NonNullable<ToolBaseSlots['renderCredentialLikeField']> {
   return useCallback(
     (context: CredentialLikeFieldContext) => {
+      if (context.kind === 'configuration') return renderCredentialPicker?.(context) ?? null;
       const section = MODEL_SECTIONS[context.kind];
       if (section === undefined) return null;
       return (
@@ -75,6 +82,6 @@ export function useCredentialLikeFieldSlot(
         />
       );
     },
-    [projectId],
+    [projectId, renderCredentialPicker],
   );
 }
