@@ -185,13 +185,26 @@ export function workflowRunTargets(workflowText) {
 /**
  * Rule 3 — BROKEN workflow_run REFERENCES.
  *
- * Issue #309's Gate 2 is now armed by ci-release-audit.yml, which fires on
- * `workflow_run` against the workflow *named* "Release & Publish". That string
- * is the whole coupling: rename publish.yml's `name:`, and the release audit
- * stops running, forever, while nothing anywhere reports an error — GitHub does
- * not warn about a workflow_run target that matches no workflow. It is exactly
- * the shape of the check-playwright-image-tag.mjs regression in #157, where a
- * gate kept passing because the path it watched had moved out from under it.
+ * A generic safety net, not tied to one workflow: any `workflow_run` trigger
+ * anywhere in this repository names its target workflow by a bare string, and
+ * GitHub does not warn when that string matches no workflow's `name:` — the
+ * triggered workflow just stops running, forever, with no error anywhere. It
+ * is exactly the shape of the check-playwright-image-tag.mjs regression in
+ * #157, where a gate kept passing because the path it watched had moved out
+ * from under it.
+ *
+ * Issue #309's Gate 2 used to be exactly this shape: ci-release-audit.yml
+ * fired on `workflow_run` against the workflow named "Release & Publish".
+ * That coupling is gone — the release audit is now a `needs: release` job
+ * inside publish.yml itself (see that file's "Job 1b" comment for why: a
+ * workflow_run job has to check out and then EXECUTE the released commit in
+ * the privileged default-branch context, which CodeQL flags as
+ * actions/cache-poisoning/poisonable-step). This rule still runs on every
+ * workflow file for whichever `workflow_run` trigger shows up next; it
+ * currently resolves zero targets, which is correct, not a sign the rule
+ * itself has gone dormant — check-ci-dormancy.mjs prints that count on every
+ * run either way, so a rule that had quietly stopped checking anything would
+ * still be visible in the log.
  *
  * @param {{file: string, text: string}[]} workflows
  * @returns {{file: string, rule: string, detail: string}[]}
