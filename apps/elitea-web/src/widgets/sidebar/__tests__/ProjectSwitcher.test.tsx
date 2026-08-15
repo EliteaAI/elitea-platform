@@ -1,5 +1,5 @@
 import userEvent from '@testing-library/user-event';
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Project } from '@/entities/project';
@@ -89,6 +89,96 @@ describe('ProjectSwitcher', () => {
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 
+  /**
+   * Issue #238 regression: the trigger must announce itself as a dropdown.
+   * The pre-fix component carried neither attribute, so both halves of this
+   * assertion failed against it.
+   */
+  it('issue 238: the trigger announces a listbox popup and reports the closed state', () => {
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole('button');
+    expect(trigger).toHaveAttribute('aria-haspopup', 'listbox');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).not.toHaveAttribute('aria-controls');
+  });
+
+  it('issue 238: clicking the trigger flips aria-expanded to true and points aria-controls at the listbox', async () => {
+    const user = userEvent.setup();
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole('button');
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const listbox = screen.getByRole('listbox');
+    expect(trigger).toHaveAttribute('aria-controls', listbox.id);
+    expect(listbox.id).not.toBe('');
+  });
+
+  it('issue 238: clicking the trigger a second time closes the popup and resets aria-expanded', async () => {
+    const user = userEvent.setup();
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole('button');
+    await user.click(trigger);
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+
+  /** Issue #238: without a visible arrow the control reads as static text. */
+  it('issue 238: expanded mode draws the dropdown chevron', () => {
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('project-switcher-chevron')).toBeInTheDocument();
+  });
+
+  it('issue 238: the chevron rotates to indicate the open state', async () => {
+    const user = userEvent.setup();
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('project-switcher-chevron')).toHaveStyle({ transform: 'rotate(0deg)' });
+    await user.click(screen.getByRole('button'));
+    expect(screen.getByTestId('project-switcher-chevron')).toHaveStyle({ transform: 'rotate(180deg)' });
+  });
+
+  it('issue 238: collapsed mode hides the chevron, leaving only the avatar', () => {
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+        collapsed
+      />,
+    );
+    expect(screen.queryByTestId('project-switcher-chevron')).not.toBeInTheDocument();
+  });
+
   it('opens the dropdown on click and lists every project', async () => {
     const user = userEvent.setup();
     renderWithTheme(
@@ -99,13 +189,24 @@ describe('ProjectSwitcher', () => {
       />,
     );
     await user.click(screen.getByRole('button'));
-    expect(screen.getByRole('option', { name: /Public/ })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /Acme/ })).toBeInTheDocument();
+    const listbox = screen.getByRole('listbox');
+    // Each row is avatar-initial + name, so match on containment, not equality.
+    const names = within(listbox)
+      .getAllByRole('option')
+      .map((option) => option.textContent ?? '');
+    expect(names).toHaveLength(projects.length);
+    expect(names[0]).toContain('Public');
+    expect(names[1]).toContain('Acme');
     expect(screen.getByRole('option', { name: /Acme/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('option', { name: /Public/ })).toHaveAttribute('aria-selected', 'false');
   });
 
-  it('does not open the dropdown when there are no projects to choose from', async () => {
+  /**
+   * Issue #238: the popup used to be gated on `open && projects.length > 0`,
+   * so an empty list turned the trigger into a silent no-op. It now opens on
+   * a disabled "No projects" row, the same copy the trigger text falls back to.
+   */
+  it('issue 238: an empty project list opens a disabled "No projects" row, not nothing', async () => {
     const user = userEvent.setup();
     renderWithTheme(
       <ProjectSwitcher
@@ -115,7 +216,25 @@ describe('ProjectSwitcher', () => {
       />,
     );
     await user.click(screen.getByRole('button'));
-    expect(screen.queryByRole('option')).not.toBeInTheDocument();
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    const empty = screen.getByRole('option', { name: 'No projects' });
+    expect(empty).toHaveAttribute('aria-disabled', 'true');
+    expect(empty).toHaveAttribute('aria-selected', 'false');
+  });
+
+  it('issue 238: the empty "No projects" row does not select anything when clicked', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={[]}
+        selectedProjectId={undefined}
+        onSelect={onSelect}
+      />,
+    );
+    await user.click(screen.getByRole('button'));
+    await user.click(screen.getByRole('option', { name: 'No projects' }));
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it('selecting an option calls onSelect and closes the dropdown', async () => {
@@ -128,10 +247,12 @@ describe('ProjectSwitcher', () => {
         onSelect={onSelect}
       />,
     );
-    await user.click(screen.getByRole('button'));
+    const trigger = screen.getByRole('button');
+    await user.click(trigger);
     await user.click(screen.getByRole('option', { name: /Public/ }));
     expect(onSelect).toHaveBeenCalledWith('11', 'Public');
-    expect(screen.queryByRole('option')).not.toBeInTheDocument();
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('selecting an option via the keyboard (Enter) also calls onSelect', async () => {
