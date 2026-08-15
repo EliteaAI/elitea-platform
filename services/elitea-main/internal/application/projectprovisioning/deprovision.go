@@ -69,7 +69,10 @@ func (p *Provisioner) Deprovision(ctx context.Context, projectID int64) (Result,
 	if projectID <= 0 {
 		return Result{}, ErrProjectNotFound
 	}
-	if p.pool == nil {
+	// The vault is required here for the same reason Provision requires it: a
+	// delete that skipped the vault would leave rows keyed `project-<id>` with
+	// no project, and the next project to draw that id would adopt them.
+	if p.pool == nil || p.vault == nil {
 		return Result{}, errors.New("projectprovisioning: provisioner is not configured")
 	}
 

@@ -28,20 +28,15 @@ package projectprovisioning
 //                        project off from every grant migration 0062-0069 adds.
 //   system_user          The `system_user_<id>@centry.user` identity.
 //   system_token         Its PAT, named 'api'.
+//   project_secrets      The project's rows in centry.secrets_key and
+//                        centry.secrets_data — an EMPTY vault under a fresh
+//                        Fernet key. See createProjectSecrets for why this step
+//                        was first dropped and then restored (#373).
 //   artifact_buckets     The project's `reports` and `tasks` system buckets.
-//   project_admin        Membership for the caller-supplied admin emails.
+//   project_admin        Membership for the administrators of the project.
 //
 // DROPPED, with the reason:
 //
-//   project_secrets      pylon calls VaultClient.create_project_space() and
-//                        stores an approle blob in centry.project.secrets_json.
-//                        Neither half has a consumer here. The Go vault
-//                        (internal/api/v2/secrets) mints a project's Fernet key
-//                        LAZILY on first write and reports an absent vault as
-//                        an empty list, precisely so a new project does not look
-//                        broken; and `secrets_json` is a dead column — its only
-//                        occurrence in Go is the sqlc struct field. Provisioning
-//                        a vault space here would create state nothing reads.
 //   rabbit_vhost         AGENTS.md forbids the Arbiter transport, and this
 //                        platform's durable worker transport is Redis Streams.
 //                        pylon itself skips this step unless ARBITER_RUNTIME is
@@ -79,6 +74,7 @@ const (
 	StepProjectPermissions = "project_permissions"
 	StepSystemUser         = "system_user"
 	StepSystemToken        = "system_token"
+	StepProjectSecrets     = "project_secrets"
 	StepArtifactBuckets    = "artifact_buckets"
 	StepProjectAdmin       = "project_admin"
 )
@@ -116,6 +112,13 @@ func createSteps() []step {
 		{name: StepProjectPermissions, create: createProjectPermissions, remove: removeProjectPermissions},
 		{name: StepSystemUser, create: createSystemUser, remove: removeSystemUser},
 		{name: StepSystemToken, create: createSystemToken, remove: removeSystemToken},
+		// project_secrets sits where pylon puts it: after system_token and
+		// before the bucket step. The position is load-bearing in the OTHER
+		// direction — compensation and Deprovision both walk this list in
+		// reverse — but nothing in the vault depends on a later step, and no
+		// later step reads the vault, so the placement is parity rather than a
+		// constraint.
+		{name: StepProjectSecrets, create: createProjectSecrets, remove: removeProjectSecrets},
 		{name: StepArtifactBuckets, create: createArtifactBuckets, remove: removeArtifactBuckets},
 		{name: StepProjectAdmin, create: createProjectAdmin, remove: removeProjectAdmin},
 	}
@@ -556,6 +559,58 @@ func removeSystemToken(ctx context.Context, p *Provisioner, state *provisionStat
 	return nil
 }
 
+/* ── project_secrets ───────────────────────────────────────────────────── */
+
+// createProjectSecrets gives the project an empty secrets vault (#373).
+//
+// RESTORED, after being dropped. The disposition note at the top of this file
+// used to record this step as deliberately dropped, on the reasoning that the
+// Go vault mints a project's Fernet key lazily on first write and reports an
+// absent vault as an empty list, so provisioning one would create state nothing
+// reads. The first half is true; the second is not. Only the SECRETS API is
+// lazy. The model catalogue is not:
+//
+//   - infra/storage/postgres_secret_vault.go's load() turns pgx.ErrNoRows into
+//     ErrContentUnavailable;
+//   - infra/storage/model_defaults.go's Load fails the WHOLE read on it;
+//   - api/v2/configurations/models.go turns that into a 500.
+//
+// The model picker asks that route for its catalogue, so a project with no
+// vault rows presents to its owner as "the product has no models". A customer
+// given a new project could not pick a model and so could not start a chat
+// turn, which made project creation incomplete for a pylon-free deployment.
+//
+// The vault is created EMPTY. pylon additionally stores an approle blob in
+// centry.project.secrets_json; that column stays dead here, its only occurrence
+// in Go being the sqlc struct field, so this reproduces the half with a reader.
+//
+// The write is delegated rather than reimplemented. secrets.Handler is the only
+// code that mints a vault key, and it alone knows whether SECRETS_MASTER_KEY
+// wraps it; a second minter would write vaults that handler cannot open, and it
+// never overwrites an unreadable vault, so the project would 500 for ever.
+func createProjectSecrets(ctx context.Context, p *Provisioner, state *provisionState) error {
+	if p.vault == nil {
+		// Provision refuses a Provisioner with no vault, so this is unreachable
+		// through it. Deprovision reaches the remove half with the same field,
+		// and a step that silently did nothing is the shape #373 was.
+		return errors.New("project vault bootstrapper is not configured")
+	}
+	if err := p.vault.EnsureProjectVault(ctx, state.projectIDString()); err != nil {
+		return fmt.Errorf("create project secrets vault: %w", err)
+	}
+	return nil
+}
+
+func removeProjectSecrets(ctx context.Context, p *Provisioner, state *provisionState) error {
+	if p.vault == nil || state.projectID == 0 {
+		return nil
+	}
+	if err := p.vault.RemoveProjectVault(ctx, state.projectIDString()); err != nil {
+		return fmt.Errorf("remove project secrets vault: %w", err)
+	}
+	return nil
+}
+
 /* ── artifact_buckets ──────────────────────────────────────────────────── */
 
 // createArtifactBuckets creates the project's `reports` and `tasks` buckets.
@@ -595,7 +650,7 @@ func removeArtifactBuckets(ctx context.Context, p *Provisioner, state *provision
 
 /* ── project_admin ─────────────────────────────────────────────────────── */
 
-// createProjectAdmin gives the requested administrators membership.
+// createProjectAdmin gives the project's administrators membership.
 //
 // NARROWED FROM THE REFERENCE, deliberately. pylon's
 // `add_user_to_project_or_create` CREATES an account — in Keycloak and in
@@ -609,13 +664,42 @@ func removeArtifactBuckets(ctx context.Context, p *Provisioner, state *provision
 // while the administrator the caller named has no access — the "answers 200,
 // provisioned nothing" shape this codebase keeps re-shipping. The whole create
 // rolls back instead, and the caller sees which step failed.
+//
+// THE EMPTY-LIST RULE (#375). A request that names NO administrator used to
+// return at once, which answered 201 for a project that had a schema, roles, a
+// quota, a system user and a system token — and no human member at all.
+// queries/auth_projects.sql's ListCurrentUserProjects inner-joins membership,
+// so the project was absent from its own maker's list; legacyrbac's
+// projectPermissions returns nothing without an assignment, so every
+// default-mode route on it answered 403. The project could not be opened by
+// anybody, including the person who had just created it.
+//
+// Issue #375 offered two rules and asked for one to be chosen and recorded.
+// THE RULE CHOSEN IS: the MAKER of the project becomes its administrator when
+// the request names nobody else. The alternative — refuse a create with no
+// `project_admin_email` — was rejected for two reasons. It would turn a
+// currently-accepted request into an error, which breaks a caller to fix a
+// defect that a default can fix instead; and centry.project.owner_id already
+// records the maker as the owner, so granting that same person the `admin`
+// project role makes the membership table agree with a fact the project row
+// already states rather than inventing a new one.
+//
+// The fallback applies ONLY to the empty case. A request that names
+// administrators is left exactly as it was: the maker does not silently join a
+// project it created for somebody else, which is the behaviour a platform
+// operator onboarding a customer depends on.
+//
+// A request that names administrators but no ROLES takes the fallback too. The
+// HTTP handler always sends `admin`, so that shape can only arrive from a
+// programmatic caller; it used to grant nobody anything, and the invariant this
+// step now holds is that a provisioned project always has an administrator.
 func createProjectAdmin(ctx context.Context, p *Provisioner, state *provisionState) error {
 	if len(state.request.AdminEmails) == 0 {
-		return nil
+		return createOwnerMembership(ctx, p, state)
 	}
 	roles := state.request.AdminRoles
 	if len(roles) == 0 {
-		return nil
+		return createOwnerMembership(ctx, p, state)
 	}
 
 	for _, email := range state.request.AdminEmails {
@@ -657,8 +741,81 @@ SELECT EXISTS (
 	return nil
 }
 
+// ownerProjectRole is the project role the maker of a project receives when the
+// request names no administrator.
+//
+// It is `admin` and not one of state.request.AdminRoles: those roles are what
+// the caller asked for the people it NAMED, and this branch runs precisely when
+// it named nobody. The role has to be the administrative one, because the
+// purpose of the grant is that the maker can administer the project it just
+// made — a viewer could not add the first member.
+const ownerProjectRole = "admin"
+
+// createOwnerMembership makes the maker of the project its administrator.
+//
+// It is the empty-`project_admin_email` branch of createProjectAdmin; see that
+// function for the rule and why it was chosen.
+func createOwnerMembership(ctx context.Context, p *Provisioner, state *provisionState) error {
+	if state.request.OwnerID <= 0 {
+		// Provision rejects a non-positive owner before any step runs, so this
+		// cannot be reached through it.
+		return ErrOwnerRequired
+	}
+	// Matched on the id rather than on an address: the owner is the
+	// authenticated caller that Provision was given, never a body field.
+	tag, err := p.pool.Exec(ctx, `
+INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id)
+SELECT $1, account.id, role.id
+FROM public.auth_core__user AS account
+JOIN public.auth_core__project_role AS role
+  ON role.project_id = $1 AND role.name = $3
+WHERE account.id = $2
+  AND account.suspended = false
+ON CONFLICT (project_id, user_id, role_id) DO NOTHING`,
+		state.projectID, state.request.OwnerID, ownerProjectRole,
+	)
+	if err != nil {
+		return fmt.Errorf("assign project owner membership: %w", err)
+	}
+	if tag.RowsAffected() != 0 {
+		return nil
+	}
+	// Either the owner has no active account, or the assignment already
+	// existed. Distinguish them, so a re-run stays idempotent while an owner
+	// that cannot be resolved still fails — a project whose maker cannot open
+	// it is the whole defect this branch exists to prevent.
+	var member bool
+	if err := p.pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM public.auth_core__project_user_role AS assignment
+    WHERE assignment.project_id = $1 AND assignment.user_id = $2
+)`, state.projectID, state.request.OwnerID).Scan(&member); err != nil {
+		return fmt.Errorf("verify project owner membership: %w", err)
+	}
+	if !member {
+		return fmt.Errorf("%w: %d", ErrUnknownOwner, state.request.OwnerID)
+	}
+	return nil
+}
+
 func removeProjectAdmin(ctx context.Context, p *Provisioner, state *provisionState) error {
-	if state.projectID == 0 || len(state.request.AdminEmails) == 0 {
+	if state.projectID == 0 {
+		return nil
+	}
+	if len(state.request.AdminEmails) == 0 || len(state.request.AdminRoles) == 0 {
+		// The branch createOwnerMembership took. Nothing to undo for a
+		// Deprovision, which carries no request and therefore no owner.
+		if state.request.OwnerID <= 0 {
+			return nil
+		}
+		if _, err := p.pool.Exec(ctx,
+			`DELETE FROM public.auth_core__project_user_role
+             WHERE project_id = $1 AND user_id = $2`,
+			state.projectID, state.request.OwnerID,
+		); err != nil {
+			return fmt.Errorf("remove project owner membership: %w", err)
+		}
 		return nil
 	}
 	// Only the assignments this step could have made. The system user's own
@@ -679,6 +836,14 @@ WHERE assignment.project_id = $1
 // ErrUnknownAdminEmail reports a project_admin_email that matches no active
 // account. The handler maps it to 400.
 var ErrUnknownAdminEmail = errors.New("projectprovisioning: no active account for administrator email")
+
+// ErrUnknownOwner reports an owner id with no active account (#375).
+//
+// It is NOT mapped to 400. The owner is the authenticated caller rather than a
+// body field, so an owner that resolves to no account is an inconsistency
+// inside the deployment and not something the caller can correct by sending a
+// different request. The create is rolled back and reported as a 500.
+var ErrUnknownOwner = errors.New("projectprovisioning: no active account for project owner")
 
 func lowerAll(values []string) []string {
 	lowered := make([]string, 0, len(values))
