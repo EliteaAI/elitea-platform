@@ -74,19 +74,65 @@ type modelRows interface {
 	Close()
 }
 
-// modelConfigData is the subset of an llm_model configuration row's JSONB
-// `data` the resolver reads. name is the underlying model wire name; it backs
-// the exposed id only when elitea_title is empty.
+// modelConfigData is the subset of a model configuration row's JSONB `data` the
+// resolver reads. name is the underlying model wire name; it backs the exposed
+// id only when elitea_title is empty.
 type modelConfigData struct {
 	Name string `json:"name"`
 }
 
+// modelSection is one (section, type) pair in p_{projectID}.configuration that
+// holds a model a /llm route can address.
+type modelSection struct {
+	section string
+	typ     string
+}
+
+// addressableModelSections enumerates the configuration rows that describe a
+// model the gateway can dispatch to. elitea-main writes the two columns as a
+// pair (internal/api/v2/configurations/handler.go) and its own reads verify
+// both before they trust a row, so both are matched here too.
+//
+// This is the WHOLE model surface, not the chat surface. mapModel gates EVERY
+// dialect against this set, so a section that is absent here makes the gateway
+// answer 404 `model_not_found` for every model it holds — even though the
+// project configured the model and the credential resolves. That is what
+// happened to POST /llm/v1/embeddings while the resolver read the `llm` section
+// alone: an `embedding`/`embedding_model` row was invisible, so the embedding
+// hop of the index plane could never dispatch.
+//
+// The order is precedence: a model id that two sections both carry resolves to
+// the first section in this list (see modelsSQL's ORDER BY).
+//
+// Keep this in step with the routes in internal/api/router.go. `asr` and `tts`
+// are deliberately absent — the gateway serves no audio route, so advertising
+// those models would name something no caller can reach. `vectorstorage` holds
+// no model at all. ADD THE PAIR HERE when you add a route that dispatches one.
+var addressableModelSections = []modelSection{
+	{section: "llm", typ: "llm_model"},                           // /chat/completions, /completions, /responses, /messages
+	{section: "embedding", typ: "embedding_model"},               // /embeddings
+	{section: "image_generation", typ: "image_generation_model"}, // /images/generations, /images/edits, /images/variations
+}
+
+// modelSectionArgs returns the two parallel arrays modelsSQL binds, in
+// addressableModelSections order. Passing the pairs as bind parameters keeps
+// the statement text fixed: nothing about which sections are read is built by
+// string concatenation.
+func modelSectionArgs() (sections, types []string) {
+	sections = make([]string, len(addressableModelSections))
+	types = make([]string, len(addressableModelSections))
+	for i, s := range addressableModelSections {
+		sections[i], types[i] = s.section, s.typ
+	}
+	return sections, types
+}
+
 // ModelResolver synthesises the per-project /llm/v1/models set from
-// p_{projectID}.configuration (section 'llm', type 'llm_model'). It caches the
-// resolved list per project for a short TTL and, on a query failure, serves a
-// stale cached list if one exists so a transient database blip does not empty a
-// project's model surface. It is safe for concurrent use and NEVER routes
-// through bifrost/core (design §4.2, §3.4).
+// p_{projectID}.configuration, reading every pair in addressableModelSections.
+// It caches the resolved list per project for a short TTL and, on a query
+// failure, serves a stale cached list if one exists so a transient database blip
+// does not empty a project's model surface. It is safe for concurrent use and
+// NEVER routes through bifrost/core (design §4.2, §3.4).
 type ModelResolver struct {
 	db  modelRowQuerier
 	ttl time.Duration
@@ -153,24 +199,33 @@ func NewModelResolver(cfg ModelResolverConfig) *ModelResolver {
 	}
 }
 
-// modelsSQL reads the caller-visible model ids for a project's configured LLM
+// modelsSQL reads the caller-visible model ids for a project's configured
 // models. elitea_title is the alias the caller uses in the request `model`
 // field (it is what ChatConfig surfaces as the model "name"); data carries the
-// underlying wire name as a fallback id. Rows are ordered by id so the
-// synthesised set is stable.
-// %s is the scope predicate: empty for the caller's own project, and
-// sharedModelPredicate for the public project, whose rows are visible to another
-// project ONLY when the platform published them. `shared` is selected so the
-// public-scope result can be re-verified in Go.
-const modelsSQL = `SELECT COALESCE(elitea_title, ''), data, shared
-	FROM %q.configuration
-	WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true%s
-	ORDER BY id`
+// underlying wire name as a fallback id.
+//
+// The admitted rows are the (section, type) pairs of addressableModelSections,
+// bound as two parallel arrays and joined WITH ORDINALITY. The ordinality is
+// load-bearing rather than decorative: it orders the result by the declared
+// section order first and by row id second. The chat models therefore keep the
+// position they held when the `llm` section was the only one read, and a model
+// id that two sections both carry resolves to the same row on every call.
+//
+// %q is the schema name. %s is the scope predicate: empty for the caller's own
+// project, and sharedModelPredicate for the public project, whose rows are
+// visible to another project ONLY when the platform published them. `shared` is
+// selected so the public-scope result can be re-verified in Go.
+const modelsSQL = `SELECT COALESCE(c.elitea_title, ''), c.data, c.shared
+	FROM %q.configuration AS c
+	JOIN unnest($1::text[], $2::text[]) WITH ORDINALITY AS s(section, type, ord)
+	  ON c.section = s.section AND c.type = s.type
+	WHERE c.status_ok = true%s
+	ORDER BY s.ord, c.id`
 
 // sharedModelPredicate restricts a cross-project read to published rows. It is
 // the only thing that makes reading a second schema safe, so it is a constant
 // and is never built from a caller-supplied value.
-const sharedModelPredicate = " AND shared = true"
+const sharedModelPredicate = " AND c.shared = true"
 
 // List returns the synthesised model set for projectID. It serves a fresh
 // cached list when one exists, else queries Postgres and caches the result. On
@@ -240,7 +295,7 @@ func (m *ModelResolver) Get(ctx context.Context, projectID, id string) (modelObj
 	return modelObject{}, false
 }
 
-// query reads and decodes the project's llm_model rows into a deduplicated,
+// query reads and decodes the project's model rows into a deduplicated,
 // order-preserving model set.
 //
 // It reads two scopes (issue #316): the caller's own project, then the public
@@ -280,9 +335,10 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 	return models, nil
 }
 
-// queryScope reads one project's llm_model rows and appends the new ids to
-// models, skipping any id already in seen. sharedOnly adds the `shared = true`
-// predicate and re-verifies every returned row against its own `shared` column.
+// queryScope reads one project's model rows, across every pair in
+// addressableModelSections, and appends the new ids to models, skipping any id
+// already in seen. sharedOnly adds the `shared = true` predicate and re-verifies
+// every returned row against its own `shared` column.
 func (m *ModelResolver) queryScope(
 	ctx context.Context,
 	scopeProjectID string,
@@ -299,7 +355,8 @@ func (m *ModelResolver) queryScope(
 	// reach here, so the fmt-built schema identifier is not an injection vector
 	// — the same guard the account package applies (design §5.3).
 	q := fmt.Sprintf(modelsSQL, "p_"+scopeProjectID, predicate)
-	rows, err := m.db.Query(ctx, q)
+	sections, types := modelSectionArgs()
+	rows, err := m.db.Query(ctx, q, sections, types)
 	if err != nil {
 		return fmt.Errorf("query models for project %s: %w", scopeProjectID, err)
 	}
@@ -347,7 +404,7 @@ func (m *ModelResolver) queryScope(
 	return nil
 }
 
-// modelNames resolves the two names of one llm_model row:
+// modelNames resolves the two names of one model row:
 //
 //   - id is the caller-visible model id: the elitea_title alias when present,
 //     else the underlying data.name. It is "" when neither is usable, and the
