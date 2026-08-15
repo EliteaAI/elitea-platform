@@ -44,19 +44,69 @@ func (f *fakeVault) Resolve(_ context.Context, projectID, secretRef string) (str
 // Query returns the configured rows (tests use a single provider per case);
 // queryErr forces Query to fail.
 type fakeDB struct {
-	rows     [][]any // each row: {id string, title string, data []byte}
+	// rows is the catch-all result: every Query returns it unless bySchema
+	// carries an entry for the schema the query names. Each row is
+	// {id string, title string, data []byte} with an optional 4th
+	// {shared bool}; a 3-element row means shared = false.
+	rows     [][]any
 	queryErr error
 	scanErr  error
+	// bySchema routes rows per project schema ("7", "1", …) so a test can seed a
+	// different result for the caller's project and for the public project.
+	// A schema with no entry yields zero rows, NOT the catch-all.
+	bySchema map[string][][]any
+	// gotSQL records every statement the account issued, in order, so a test can
+	// assert WHICH schemas were read and that the shared predicate was applied.
+	gotSQL []string
+	// ignoreSharedPredicate makes the fake return unpublished rows even when the
+	// statement asks for `shared = true`. It simulates a query that lost its
+	// predicate, so a test can prove the Go-side backstop still refuses the row.
+	// Postgres is modelled faithfully by default (the predicate IS applied).
+	ignoreSharedPredicate bool
 	// keyRows/dataRows feed QueryRow (vault path) — not used by account tests.
 	keyRow, dataRow []byte
 	keyErr, dataErr error
 }
 
-func (d *fakeDB) Query(_ context.Context, _ string, _ ...any) (pgxRows, error) {
+func (d *fakeDB) Query(_ context.Context, sql string, _ ...any) (pgxRows, error) {
+	d.gotSQL = append(d.gotSQL, sql)
 	if d.queryErr != nil {
 		return nil, d.queryErr
 	}
-	return &fakeRows{rows: d.rows, scanErr: d.scanErr}, nil
+	rows := d.rows
+	if d.bySchema != nil {
+		rows = d.bySchema[schemaProjectOf(sql)]
+	}
+	// Model Postgres: when the statement carries `shared = true`, only published
+	// rows come back. Without this the fake would return rows the real database
+	// never would, and an isolation test would prove nothing.
+	if strings.Contains(sql, "shared = true") && !d.ignoreSharedPredicate {
+		kept := make([][]any, 0, len(rows))
+		for _, row := range rows {
+			if len(row) > 3 && row[3].(bool) {
+				kept = append(kept, row)
+			}
+		}
+		rows = kept
+	}
+	return &fakeRows{rows: rows, scanErr: d.scanErr}, nil
+}
+
+// schemaProjectOf extracts the project id from the `FROM "p_<id>".configuration`
+// clause of a statement, so the fake can serve per-project rows. Returns "" when
+// the statement names no project schema.
+func schemaProjectOf(sql string) string {
+	const marker = `"p_`
+	i := strings.Index(sql, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := sql[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
 }
 
 func (d *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {
@@ -98,7 +148,7 @@ func (r *fakeRows) Scan(dest ...any) error {
 	}
 	row := r.rows[r.i]
 	r.i++
-	// row layout: id string, title string, data []byte
+	// row layout: id string, title string, data []byte, [shared bool]
 	if p, ok := dest[0].(*string); ok {
 		*p = row[0].(string)
 	}
@@ -107,6 +157,13 @@ func (r *fakeRows) Scan(dest ...any) error {
 	}
 	if p, ok := dest[2].(*[]byte); ok {
 		*p = row[2].([]byte)
+	}
+	// A 3-element row means shared = false. Tests that exercise the shared scope
+	// supply the 4th element explicitly.
+	if len(dest) > 3 && len(row) > 3 {
+		if p, ok := dest[3].(*bool); ok {
+			*p = row[3].(bool)
+		}
 	}
 	return nil
 }

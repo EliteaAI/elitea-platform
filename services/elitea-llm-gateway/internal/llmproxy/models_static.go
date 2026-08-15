@@ -19,7 +19,7 @@ import (
 // staticModelQuerier is a modelRowQuerier that always returns a fixed set of
 // rows regardless of the SQL text or arguments.  All model ids are represented
 // as elitea_title values so the resolver uses them directly as the model id
-// (modelID prefers title over data.name when non-empty).
+// (modelNames prefers title over data.name when non-empty).
 type staticModelQuerier struct {
 	rows []staticModelRow
 }
@@ -42,16 +42,20 @@ func (it *staticModelRowsIter) Next() bool {
 	return true
 }
 
-// Scan fills (title string, data []byte) — the column order query() expects.
-// The data JSONB column is set to nil: because title is always non-empty here,
-// modelID returns it directly without inspecting data.
+// Scan fills (title string, data []byte, shared bool) — the column order
+// queryScope() expects. The data JSONB column is set to nil: because title is
+// always non-empty here, modelNames returns it as the id, and the provider
+// model name falls back to that same title (issue #317). shared is true so the
+// rows stay usable if a caller configures this static resolver with a public
+// project scope.
 func (it *staticModelRowsIter) Scan(dest ...any) error {
-	if len(dest) != 2 {
-		return fmt.Errorf("staticModelRowsIter: expected 2 scan destinations, got %d", len(dest))
+	if len(dest) != 3 {
+		return fmt.Errorf("staticModelRowsIter: expected 3 scan destinations, got %d", len(dest))
 	}
 	row := it.rows[it.i-1]
 	*dest[0].(*string) = row.title
 	*dest[1].(*[]byte) = nil // title is non-empty; data not needed
+	*dest[2].(*bool) = true
 	return nil
 }
 

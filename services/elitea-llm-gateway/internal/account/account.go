@@ -119,6 +119,11 @@ type EliteaAccount struct {
 	// operator supplied any entry.
 	egress *egressAllowlist
 
+	// publicProjectID is the platform's shared project (issue #316). Empty
+	// disables the shared scope. It is operator configuration and is never
+	// taken from a request.
+	publicProjectID string
+
 	logger *slog.Logger
 }
 
@@ -147,6 +152,15 @@ type Config struct {
 	// these hosts and, for the self-hosted classes only, permits private
 	// destinations. See egress.go for why this is a NAME allowlist.
 	EgressAllowlist []string
+	// PublicProjectID is the platform's shared ("public") project id as a
+	// decimal string (ELITEA_AI_PROJECT_ID). When set, GetKeysForProvider also
+	// returns that project's `shared = true` credentials, so a platform-published
+	// model is usable by every project (issue #316). Empty disables the shared
+	// scope and restores the project-local-only behaviour.
+	//
+	// This MUST be operator configuration. A request-supplied value would let a
+	// caller name any project as "public" and read its credentials.
+	PublicProjectID string
 	// Logger is used for structured logging; never logs secret material. When
 	// nil, slog.Default is used.
 	Logger *slog.Logger
@@ -174,12 +188,21 @@ func New(cfg Config) (*EliteaAccount, error) {
 	if err != nil {
 		return nil, fmt.Errorf("account: %w", err)
 	}
+	// Reject a malformed public project id at construction. The value is
+	// interpolated into a schema name, so a bad one must fail at startup rather
+	// than on the first request.
+	if cfg.PublicProjectID != "" {
+		if err := validateProjectID(cfg.PublicProjectID); err != nil {
+			return nil, fmt.Errorf("account: public project id: %w", err)
+		}
+	}
 	return &EliteaAccount{
 		db:                  cfg.DB,
 		vault:               cfg.Vault,
 		providerConcurrency: cfg.ProviderConcurrency,
 		selfOrigins:         origins,
 		egress:              egress,
+		publicProjectID:     cfg.PublicProjectID,
 		logger:              logger,
 	}, nil
 }
@@ -279,6 +302,10 @@ func (a *EliteaAccount) GetKeysForProvider(ctx context.Context, provider schemas
 			a.logger.WarnContext(ctx, "rejected self-referential provider credential",
 				"reason", SelfReferentialCredentialReason,
 				"project_id", projectID,
+				// The credential may belong to the public project rather than
+				// the caller (issue #316); name its owner so an operator looks
+				// the row up in the right schema.
+				"credential_project_id", c.ownerProjectID,
 				"provider", string(provider),
 				"config_id", c.configID,
 			)
@@ -299,13 +326,20 @@ func (a *EliteaAccount) GetKeysForProvider(ctx context.Context, provider schemas
 			a.logger.WarnContext(ctx, "rejected provider credential: api_base host is not on the egress allowlist",
 				"reason", EgressNotAllowedReason,
 				"project_id", projectID,
+				"credential_project_id", c.ownerProjectID,
 				"provider", string(provider),
 				"config_id", c.configID,
 			)
 			return nil, fmt.Errorf("account: credential %s: %w", c.configID, ErrEgressNotAllowed)
 		}
 
-		apiKey, err := a.vault.Resolve(ctx, projectID, c.apiKeyRef)
+		// Resolve the secret against the project that OWNS the credential, not
+		// the caller. A shared credential's {{secret.NAME}} reference names a
+		// secret in the public project's Fernet vault; resolving it against the
+		// caller's vault would either fail or silently pick up an unrelated
+		// same-named secret of the caller's. The plaintext still never leaves
+		// this process — it goes only into bifrost's in-memory schemas.Key.
+		apiKey, err := a.vault.Resolve(ctx, c.ownerProjectID, c.apiKeyRef)
 		if err != nil {
 			return nil, fmt.Errorf("account: resolve secret for credential %s: %w", c.configID, err)
 		}
@@ -322,7 +356,7 @@ func (a *EliteaAccount) GetKeysForProvider(ctx context.Context, provider schemas
 // request (BF0.3), so the key carries only the resolved secret value.
 func buildKey(provider schemas.ModelProvider, c credential, apiKey string) schemas.Key {
 	key := schemas.Key{
-		ID:     c.configID,
+		ID:     c.keyID,
 		Name:   c.name,
 		Value:  *schemas.NewSecretVar(apiKey),
 		Models: schemas.WhiteList{"*"},
