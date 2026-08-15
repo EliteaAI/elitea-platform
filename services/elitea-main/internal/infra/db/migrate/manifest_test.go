@@ -94,9 +94,9 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	shared, err := LoadManifest(platformmigrations.Files, ScopeShared)
 	require.NoError(t, err)
-	// 72: shared/0072_agent_cancel_and_configuration_permissions.sql, which
-	// follows shared/0071_token_project_binding.sql.
-	require.EqualValues(t, 72, Head(shared))
+	// 73: shared/0073_mcp_tool_registry.sql, which follows
+	// shared/0072_agent_cancel_and_configuration_permissions.sql.
+	require.EqualValues(t, 73, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
