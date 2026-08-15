@@ -250,8 +250,12 @@ describe('delivery channels', () => {
     // winner's result, discards it on state mismatch AND deletes it — so the
     // rightful owner hangs to popup_closed. The key is state-scoped instead.
     const tabA = harness();
-    const tabB = harness();
     const flightA = tabA.controller.reauthenticate();
+    // A second TAB owns a separate sessionStorage. Clearing it here is what
+    // makes these two controllers two TABS rather than two documents of one
+    // tab, which would adopt one another's flight (issue #364).
+    window.sessionStorage.clear();
+    const tabB = harness();
     const flightB = tabB.controller.reauthenticate();
     expect(tabA.stateOf()).not.toBe(tabB.stateOf());
 
@@ -487,9 +491,94 @@ describe('issue 364 — one popup per user, never re-navigated', () => {
     // A shared window name lets tab B re-navigate the popup of tab A. Only a
     // per-flight name stops that.
     const tabA = harness();
-    const tabB = harness();
     void tabA.controller.reauthenticate();
+    const nameA = tabA.openedNames[0];
+
+    // A second TAB owns a separate sessionStorage, so it cannot read the
+    // marker of tab A and cannot adopt its flight.
+    window.sessionStorage.clear();
+    const tabB = harness();
     void tabB.controller.reauthenticate();
-    expect(tabA.openedNames[0]).not.toBe(tabB.openedNames[0]);
+    expect(tabB.openedNames[0]).not.toBe(nameA);
+  });
+});
+
+/**
+ * The MEASURED cause of issue #364, from an instrumented WebKit run of J3.
+ *
+ * J3 drives `page.goto('/app/agents/all')`, which is a full document load.
+ * The trace shows two documents (two `performance.timeOrigin` values), each
+ * building its own controller, each starting its own flight 0.8 s apart, with
+ * the popup of the first still open. No flight ended early — no settle ran
+ * between the two. The guard of the controller is closure state, so it dies
+ * with the document and cannot span a page load.
+ *
+ * sessionStorage is per tab and survives that load, so the marker crosses it.
+ */
+describe('issue 364 — a page load must not start a second flight', () => {
+  it('adopts the flight a previous document of the same tab left running', async () => {
+    const first = harness();
+    void first.controller.reauthenticate();
+    const liveState = first.stateOf(0);
+    expect(window.sessionStorage.getItem('el.auth.state')).toBe(liveState);
+
+    // The page loads. A NEW controller replaces the old one and its guard.
+    const second = harness();
+    const adopted = second.controller.reauthenticate();
+    expect(second.openedUrls).toHaveLength(0); // no second popup, no second login
+
+    // The popup of the FIRST flight reports its result to the tab, which now
+    // holds the new document.
+    second.channels[0]?.onmessage?.({ data: resultMessage(liveState) });
+    await expect(adopted).resolves.toBeUndefined();
+    expect(window.sessionStorage.getItem('el.auth.state')).toBeNull();
+  });
+
+  it('scopes the adopted listener to the state of the running flight', () => {
+    const first = harness();
+    void first.controller.reauthenticate();
+    const second = harness();
+    void second.controller.reauthenticate();
+    expect(second.channels[0]?.name).toBe(`elitea-auth-${first.stateOf(0)}`);
+  });
+
+  it('reads a result that landed before the new document attached', async () => {
+    const first = harness();
+    void first.controller.reauthenticate();
+    const liveState = first.stateOf(0);
+    // The popup answered while the page was still loading, so only the
+    // localStorage fallback holds the result.
+    window.localStorage.setItem(
+      `el.auth.result.${liveState}`,
+      JSON.stringify(resultMessage(liveState)),
+    );
+
+    const second = harness();
+    await expect(second.controller.reauthenticate()).resolves.toBeUndefined();
+    expect(second.openedUrls).toHaveLength(0);
+  });
+
+  it('starts its own flight when the marker is older than the TTL', () => {
+    const first = harness();
+    void first.controller.reauthenticate();
+
+    // The popup was abandoned. A stale marker must not block re-auth.
+    const second = harness({ now: () => Date.now() + 120_000 });
+    void second.controller.reauthenticate();
+    expect(second.openedUrls).toHaveLength(1);
+    expect(second.stateOf(0)).not.toBe(first.stateOf(0));
+  });
+
+  it('rejects an adopted flight once the marker deadline passes', async () => {
+    vi.useFakeTimers();
+    const first = harness();
+    void first.controller.reauthenticate();
+
+    const second = harness({ flightTtlMs: 900 });
+    const adopted = second.controller.reauthenticate();
+    const expectation = expect(adopted).rejects.toMatchObject({ reason: 'popup_closed' });
+    await vi.advanceTimersByTimeAsync(1200);
+    await expectation;
+    expect(second.controller.pending).toBe(false);
   });
 });

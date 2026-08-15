@@ -9,6 +9,21 @@ export const AUTH_STATE_PARAM = 'auth_state';
 /** sessionStorage (logical): the CSRF state of the in-flight popup flow. */
 export const AUTH_STATE_STORAGE_KEY = 'auth.state';
 /**
+ * sessionStorage (logical): `Date.now()` of the moment the flight started.
+ *
+ * The single-flight guard of the controller is closure state, so it dies with
+ * the document. A full page load while the popup is open therefore built a
+ * SECOND controller with an empty slot, and that controller opened a second
+ * flight into the popup that was already open (issue #364, measured on
+ * WebKit: two documents, two controllers, two `auth_state` values, one tab).
+ *
+ * sessionStorage is per tab and survives a same-tab navigation, so the new
+ * document reads this marker and ADOPTS the flight that already runs. The
+ * timestamp bounds the adoption: a marker that no document ever cleared, left
+ * by a popup the user abandoned, must not block re-auth for ever.
+ */
+export const AUTH_FLIGHT_STARTED_KEY = 'auth.flight.started';
+/**
  * localStorage (logical) prefix: cross-window result fallback channel. The
  * key is STATE-SCOPED, exactly like the BroadcastChannel name — with a single
  * shared key two controllers (two tabs) consume each other's result: the
