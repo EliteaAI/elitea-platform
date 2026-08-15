@@ -198,8 +198,8 @@ SQL
     # The gateway resolves provider credentials from p_{projectID}.configuration
     # where section='ai_credentials' — a DIFFERENT section from the section='models'
     # row the E2E seeder writes for the UI's token button, and a different one
-    # again from section='llm'/type='llm_model', which is what GET /llm/v1/models
-    # reads. Seed all three so both the API and the model picker work.
+    # again from section='llm'/type='llm_model', which is the CHAT model
+    # catalogue. Seed all three so both the API and the model picker work.
     # Mock mode (issue #283) is the DEFAULT when no provider key is present, so
     # a fresh stack completes a model turn offline. With OPENAI_API_KEY (or
     # ANTHROPIC_API_KEY, or an explicit LLM_PROVIDER) set, behaviour is exactly
@@ -282,9 +282,15 @@ ON CONFLICT (elitea_title) DO UPDATE
     SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
         status_ok = true, updated_at = NOW();
 
--- Model row GET /llm/v1/models synthesises its list from. elitea_title is the
--- alias the caller passes in the request `model` field; data.name is the wire
--- name used as a fallback id.
+-- The CHAT model row. elitea_title is the alias the caller passes in the request
+-- `model` field; data.name is the wire name used as a fallback id.
+--
+-- The gateway reads this section for /llm/v1/chat/completions, /completions,
+-- /responses and /messages. Keep it to chat models: elitea-main's
+-- /configurations/models/{projectId} selects section='llm' for the web chat
+-- model picker, so anything seeded here becomes a selectable chat model. An
+-- embedding or image model belongs in its OWN section (see `seed-index`); the
+-- gateway reads those sections too (addressableModelSections).
 --
 -- `label` is NOT decoration. repos/models.go's mapCurrentModelCandidate
 -- REJECTS an llm-section row whose label is NULL, and the rejection is an
@@ -306,7 +312,7 @@ ON CONFLICT (elitea_title) DO UPDATE
 -- The row the MODEL PICKER reads. `useListModelsQuery` calls
 -- /configurations/configurations/{project}?section=models, which is a THIRD
 -- section again — distinct from the `ai_credentials` the gateway resolves and
--- the `llm`/`llm_model` row GET /llm/v1/models synthesises its list from.
+-- the `llm`/`llm_model` chat catalogue row above.
 -- Without it the picker is empty, nothing can be selected, and the send is
 -- rejected 400 for a missing model while every backend row is present and
 -- correct (#292).
@@ -393,6 +399,12 @@ ON CONFLICT (elitea_title) DO UPDATE
 -- distinct from the three `seed-llm` writes. `label` must be non-null for the
 -- same reason as the chat model row: repos/models.go REJECTS an unlabelled row
 -- with an error rather than skipping it, emptying the whole catalogue.
+--
+-- The gateway reads THIS section for POST /llm/v1/embeddings — it is one of the
+-- pairs in addressableModelSections (internal/llmproxy/models.go). Do not add a
+-- duplicate `llm`/`llm_model` row to make the embedding hop dispatch: that
+-- section is the chat catalogue the web model picker reads, and the embedding
+-- model would become a selectable chat model.
 -- `data` may contain ONLY `name` and optionally `ai_credentials` — the decoder
 -- uses DisallowUnknownFields, so any extra key is an invalid binding (503).
 INSERT INTO :"schema".configuration
