@@ -388,6 +388,27 @@ describe('useToolkitChat', () => {
       await waitFor(() => expect(traceNewIndex).toHaveBeenCalledWith('idx-1', { conversation_id: 'conv-1' }));
     });
 
+    // issue 310: "a start is gated when one is already active" — the
+    // index's own last-known server metadata says it is already indexing,
+    // even though nothing in THIS render's local state (`isRunning`) knows
+    // that yet (no `conversation_id`, so the recovery effect never fires).
+    it('does not start a new run when the index is already actively indexing per server metadata', async () => {
+      const client = createTestSocketClient();
+      const createConversation = vi.fn().mockResolvedValue({ data: { id: 'conv-1', uuid: 'uuid-1', participants: [] } });
+      const index = { id: 'idx-1', metadata: { state: 'in_progress' } };
+
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, createConversation }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+      expect(box.current?.isRunning).toBe(false);
+
+      act(() => {
+        box.current?.handleIndexData();
+      });
+
+      expect(createConversation).not.toHaveBeenCalled();
+      expect(box.current?.isRunning).toBe(false);
+    });
+
     /**
      * `run()`'s own `canProceed` gate (`!isRunning`) blocks a second
      * `handleIndexData()` call while a prior run is still in flight — both
@@ -897,6 +918,81 @@ describe('useToolkitChat', () => {
 
       await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
       expect(sse.getSources()).toHaveLength(0);
+    });
+
+    // issue 310: the central regression test. A 409 means a run is
+    // ALREADY in flight server-side; the client must ADOPT its task_id and
+    // follow it, never start a second one over socket.io.
+    it('adopts the task_id from a 409 conflict instead of starting a second run (issue 310)', async () => {
+      server.use(
+        http.post(START_PATH, () =>
+          HttpResponse.json({ error: 'Indexing is already in progress for this index', task_id: 'already-running-task' }, { status: 409 }),
+        ),
+      );
+      const client = createTestSocketClient();
+      const traceNewIndex = vi.fn();
+      const index = { id: 'idx-1', metadata: { state: 'created' } };
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, traceNewIndex }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+
+      // DISCRIMINATES: proves the client followed the EXISTING task rather
+      // than retrying — the adopted task's stream opens, and no second run
+      // is ever dispatched over socket.io.
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(1));
+      expect(sse.getSources()[0]?.url).toBe(`${BASE}/executions/proj-1/already-running-task/events`);
+      expect(client.getEmitted('chat_predict')).toHaveLength(0);
+      expect(traceNewIndex).toHaveBeenCalledWith('idx-1', { task_id: 'already-running-task' });
+
+      // And it stays that way even if the adopted stream later drops —
+      // adopting must never retry.
+      act(() => {
+        sse.fail();
+      });
+      expect(client.getEmitted('chat_predict')).toHaveLength(0);
+    });
+
+    it('falls back to the socket emit for a 409 that does not match the exact conflict contract (bounds-checked task id)', async () => {
+      server.use(
+        http.post(START_PATH, () =>
+          HttpResponse.json({ error: 'Indexing is already in progress for this index', task_id: 'bad\r\nid' }, { status: 409 }),
+        ),
+      );
+      const client = createTestSocketClient();
+      const { box } = renderToolkitChat(baseParams({ modes: [] }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+      expect(sse.getSources()).toHaveLength(0);
+    });
+
+    // issue 310: onError must not re-dispatch a run whose stream already
+    // opened — an end-to-end check that the wiring in
+    // `useToolkitChatSocket.hooks.ts` actually reaches through
+    // `useToolkitChat`'s own `runSocketFallback`.
+    it('does not emit on socket.io when the stream drops AFTER it opened and was already carrying frames', async () => {
+      server.use(http.post(START_PATH, () => HttpResponse.json({ task_id: 'exec-1' })));
+      const client = createTestSocketClient();
+      const { box } = renderToolkitChat(baseParams({ modes: [] }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(sse.getOpen()).toHaveLength(1));
+
+      act(() => {
+        sse.emit('open');
+      });
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 'exec-1' } }));
+      });
+      act(() => {
+        sse.fail();
+      });
+
+      expect(client.getEmitted('chat_predict')).toHaveLength(0);
     });
   });
 });
