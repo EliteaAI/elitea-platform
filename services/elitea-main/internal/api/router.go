@@ -504,7 +504,7 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 // pattern; the handler reads the tail with chi.URLParam(r, "*"), which is empty
 // for the first pair.
 func mountMCPServerRoutes(r chi.Router, pool *pgxpool.Pool, authenticate func(http.Handler) http.Handler) {
-	handler := v2mcp.NewHandler(pool)
+	handler := v2mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool))
 	r.Group(func(r chi.Router) {
 		r.Use(authenticate)
 		r.Use(apimw.RequireProjectAccess(pool))
@@ -1802,13 +1802,23 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// path 404s here rather than being answered with something
 				// plausible.
 				//
-				// tools_list and tools_call answer 501 with a stated reason —
-				// see internal/api/v2/mcp/registry.go. They are registered
-				// rather than left off so the refusal is explicit and pinned by
-				// a test: a 404 leaves the next person free to wire a stub up.
-				mcpHandler := v2mcp.NewHandler(cfg.Pool)
+				// tools_list is registered in BOTH mode shapes. pylon's
+				// `api_tools.with_modes` registers a route with and without the
+				// mode segment, so `/tools_list/1` and `/tools_list/default/1`
+				// are one endpoint there. The Python execution worker builds
+				// the mode-less form (`elitea_sdk/runtime/clients/client.py`),
+				// and the hybrid edge matches the mode-less form too, so
+				// registering only `/default/` would leave the caller that
+				// actually exists unserved.
+				//
+				// tools_call still answers 501 with a stated reason — see
+				// internal/api/v2/mcp/registry.go. It is registered rather than
+				// left off so the refusal is explicit and pinned by a test: a
+				// 404 leaves the next person free to wire a stub up.
+				mcpHandler := v2mcp.NewHandler(cfg.Pool, apimw.NewDBPersonalProjectResolver(cfg.Pool))
 				r.Group(func(r chi.Router) {
 					r.Use(projectScoped)
+					r.Get("/tools_list/{projectID}", mcpHandler.ToolsList)
 					r.Get("/tools_list/default/{projectID}", mcpHandler.ToolsList)
 					r.Post("/tools_call/default/{projectID}", mcpHandler.ToolsCall)
 					r.Get("/internal_mcp_pat_status/prompt_lib/{projectID}/{toolkitType}", mcpHandler.InternalMCPPATStatus)
