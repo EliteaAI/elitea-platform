@@ -111,7 +111,12 @@ jobs:
     # server instance, so a single service container is enough.
     services:
       postgres:
-        image: postgres:16-alpine
+        # pgvector, not plain postgres: the projectprovisioning tests run
+        # CREATE EXTENSION vector, and four other tests skip themselves on a
+        # server without it. Same PG major and same credentials, so the DSN
+        # below is unchanged. A skip guard was rejected deliberately: it would
+        # turn this job green while giving that coverage zero execution.
+        image: pgvector/pgvector:0.8.5-pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
