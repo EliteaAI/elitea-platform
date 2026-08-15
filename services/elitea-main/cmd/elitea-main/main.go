@@ -986,21 +986,25 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// assigning a nil *FormGraph directly to an interface field would produce
 	// a non-nil interface holding a nil pointer, defeating the "not
 	// configured" nil-checks in the auth middleware (#86).
-	var gatewayAuthValidator apimw.TokenValidator
-	var gatewayPrincipalValidator apimw.PrincipalValidator
-	var gatewayForwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
-	var gatewaySessionSecret string
-	if formGraph != nil {
-		gatewayAuthValidator = formGraph
-		gatewayPrincipalValidator = principalValidator
-		gatewayForwardedIdentityVerifier = forwardedIdentityVerifier
-		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
-	} else if oidcSessionHandler != nil {
-		// OIDC-only deployments (no ELITEA_AUTH_CONFIG_FILE) still need the session
-		// secret in the auth middleware so OIDC session cookies are accepted on
-		// /api/v2 routes. formGraph uses the same APPLICATION_SECRET_KEY.
-		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
-	}
+	//
+	// The same four fields also carry the WHOLE /api/v2 group, because
+	// internal/api/router.go installs one apimw.AuthConfig built from them with
+	// r.Use on the group that wraps r.Route("/api/v2", ...).
+	//
+	// authsvc.NewPrincipalValidator(pool) is built here rather than reusing the
+	// `principalValidator` variable because that variable is nil in exactly the
+	// OIDC-only branch: it is only assigned inside the `authEnabled` block,
+	// which is also the only place formGraph is set. Without it a deactivated
+	// user's unexpired session cookie reached every route in the group (#370).
+	// See apiGroupAuthConfig.
+	apiGroupAuth := apiGroupAuthConfig(
+		formGraph,
+		principalValidator,
+		forwardedIdentityVerifier,
+		authsvc.NewPrincipalValidator(pool),
+		os.Getenv("APPLICATION_SECRET_KEY"),
+		oidcSessionHandler != nil,
+	)
 
 	var adminUICfg *adminui.Config
 	if dir := os.Getenv("ADMIN_UI_STATIC_DIR"); dir != "" {
@@ -1066,11 +1070,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
 		},
-		AuthValidator:      gatewayAuthValidator,
-		PrincipalValidator: gatewayPrincipalValidator,
-		SessionSecret:      gatewaySessionSecret,
+		AuthValidator:      apiGroupAuth.Validator,
+		PrincipalValidator: apiGroupAuth.PrincipalValidator,
+		SessionSecret:      apiGroupAuth.SessionSecret,
 		Auth: api.AuthDeps{
-			ForwardedIdentityVerifier: gatewayForwardedIdentityVerifier,
+			ForwardedIdentityVerifier: apiGroupAuth.ForwardedIdentityVerifier,
 			SessionHandler:            oidcSessionHandler,
 			OIDCHandler:               oidcOIDCHandler,
 		},
