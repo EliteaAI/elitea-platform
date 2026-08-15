@@ -235,10 +235,18 @@ func (p *Provisioner) markCreated(ctx context.Context, projectID int64) error {
 // Unlike pylon's rollback loop — which has no per-step try/except, so the first
 // undo that raises aborts every remaining undo and discards the progress report
 // — every compensation here is isolated. One failing undo cannot strand the
-// rest, because the LAST of them is the one that removes the project row, and a
-// project row that outlives its schema is the state the elitea-migrate
-// preflight refuses to run against. It is only safe because the row is still
-// `create_success = FALSE`, which that preflight ignores.
+// rest.
+//
+// THE SCHEMA DROP IS THE EXCEPTION, AND IT RUNS LAST (#374). Reverse order puts
+// project_schema before project_model, so the schema went first and the row
+// went second. A row delete that then failed left a project row whose schema is
+// gone — the one state cmd/elitea-migrate's preflight refuses to run against,
+// and that refusal stops migration for EVERY tenant in the deployment. So
+// project_schema is lifted out of the loop and runs after it, and it runs only
+// when the project row is proved gone. See removeTenantSchemaWhenTheRowIsGone.
+//
+// The remaining order is unchanged: every other undo runs in reverse, and the
+// last of them removes the project row.
 func (p *Provisioner) compensate(ctx context.Context, state *provisionState, attempted []StepStatus) []StepStatus {
 	// Compensation must still run when the request context is already done —
 	// otherwise a client disconnect during provisioning leaves the tenant
@@ -252,9 +260,14 @@ func (p *Provisioner) compensate(ctx context.Context, state *provisionState, att
 
 	steps := createSteps()
 	rollback := make([]StepStatus, 0, len(steps))
+	var schemaStep *step
 	for i := len(steps) - 1; i >= 0; i-- {
 		step := steps[i]
 		if _, ok := touched[step.name]; !ok {
+			continue
+		}
+		if step.name == StepProjectSchema {
+			schemaStep = &steps[i]
 			continue
 		}
 		status := StepStatus{Step: step.name, Initialized: true}
@@ -267,7 +280,53 @@ func (p *Provisioner) compensate(ctx context.Context, state *provisionState, att
 		}
 		rollback = append(rollback, status)
 	}
+	if schemaStep != nil {
+		rollback = append(rollback, p.removeTenantSchemaWhenTheRowIsGone(ctx, state, *schemaStep))
+	}
 	return rollback
+}
+
+// removeTenantSchemaWhenTheRowIsGone drops the tenant schema, but only after it
+// proves that no centry.project row names it.
+//
+// The tenant data is the part that cannot be rebuilt. So the schema is the LAST
+// thing the delete removes, and it is held back on any doubt: a project row
+// that is still there, and a read that cannot say whether it is still there,
+// both keep the schema. The step is then reported as not run, the caller learns
+// which step was held back, and the delete converges on a retry.
+//
+// Holding the schema back is always the recoverable choice. A project row with
+// its schema is a usable project. A project row without its schema stops
+// cmd/elitea-migrate for the whole deployment.
+func (p *Provisioner) removeTenantSchemaWhenTheRowIsGone(
+	ctx context.Context, state *provisionState, schemaStep step,
+) StepStatus {
+	status := StepStatus{Step: schemaStep.name, Initialized: true}
+	if state.projectID != 0 {
+		var survived bool
+		if err := p.pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM centry.project WHERE id = $1)`, state.projectID,
+		).Scan(&survived); err != nil {
+			status.setFailed(heldBackStepMessage(schemaStep.name))
+			p.logger.ErrorContext(ctx, "tenant schema kept because the project row could not be read",
+				"step", schemaStep.name, "project_id", state.projectID, "err", err)
+			return status
+		}
+		if survived {
+			status.setFailed(heldBackStepMessage(schemaStep.name))
+			p.logger.ErrorContext(ctx, "tenant schema kept because the project row is still there",
+				"step", schemaStep.name, "project_id", state.projectID)
+			return status
+		}
+	}
+	if err := schemaStep.remove(ctx, p, state); err != nil {
+		status.setFailed(safeStepMessage(schemaStep.name))
+		p.logger.ErrorContext(ctx, "project provisioning compensation failed",
+			"step", schemaStep.name, "project_id", state.projectID, "err", err)
+		return status
+	}
+	status.setOK()
+	return status
 }
 
 // provisionState carries values between steps. It replaces pylon's mutable
@@ -303,6 +362,16 @@ func (s *provisionState) tenantSchema() string {
 // caller can act on, and it is preserved exactly.
 func safeStepMessage(step string) string {
 	return "step " + step + " did not complete"
+}
+
+// heldBackStepMessage is what the caller is told about a step that did not run
+// because running it would have made the damage worse.
+//
+// It is a different message from safeStepMessage on purpose. "did not complete"
+// and "was not started, to keep the tenant data" call for different operator
+// actions, and one message for both states would hide which one happened.
+func heldBackStepMessage(step string) string {
+	return "step " + step + " was not started, because the project row is still there"
 }
 
 // deleteTenantLedger removes the tenant migration ledger rows for a project
