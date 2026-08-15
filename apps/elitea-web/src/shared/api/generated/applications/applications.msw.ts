@@ -54,6 +54,7 @@ import type {
   ApplicationRelationUpdatedResponse,
   ApplicationUpdatedResponse,
   ApplicationVersionDetail,
+  ApplicationVersionDetailExpanded,
   AuthorDetail,
   DefaultIcon,
   DocumentLoadersResponse,
@@ -2023,6 +2024,244 @@ export const getUpdateApplicationVersionResponseMock = (
   is_forked: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
   ...overrideResponse,
 });
+
+export const getGetApplicationVersionDetailExpandedResponseMock =
+  (): ApplicationVersionDetailExpanded => ({
+    ...{
+      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      application_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      status: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      agent_type: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      instructions: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      welcome_message: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      llm_settings: faker.helpers.arrayElement([
+        {
+          model_name: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          model_project_id: faker.helpers.arrayElement([
+            faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              faker.number.int(),
+            ]),
+            undefined,
+          ]),
+          temperature: faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            undefined,
+          ]),
+          max_tokens: faker.helpers.arrayElement([
+            faker.number.int(),
+            undefined,
+          ]),
+          top_p: faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            undefined,
+          ]),
+        },
+        undefined,
+      ]),
+      meta: faker.helpers.arrayElement([
+        {
+          ...{
+            step_limit: faker.helpers.arrayElement([
+              faker.helpers.arrayElement([faker.number.int(), null]),
+              undefined,
+            ]),
+            icon_meta: faker.helpers.arrayElement([{}, undefined]),
+            category: faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              undefined,
+            ]),
+            source_version_id: faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              undefined,
+            ]),
+            parent_entity_id: faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              undefined,
+            ]),
+            parent_project_id: faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              undefined,
+            ]),
+            parent_author_id: faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              undefined,
+            ]),
+            variables: faker.helpers.arrayElement([
+              Array.from(
+                { length: faker.number.int({ min: 1, max: 10 }) },
+                (_, i) => i + 1,
+              ).map(() => ({
+                name: faker.helpers.arrayElement([
+                  faker.helpers.arrayElement([
+                    faker.string.alpha({ length: { min: 10, max: 20 } }),
+                    null,
+                  ]),
+                  undefined,
+                ]),
+                value: faker.helpers.arrayElement([
+                  faker.helpers.arrayElement([
+                    faker.string.alpha({ length: { min: 10, max: 20 } }),
+                    null,
+                  ]),
+                  undefined,
+                ]),
+              })),
+              undefined,
+            ]),
+            attachment_storage: faker.helpers.arrayElement([
+              {
+                toolkit_id: faker.helpers.arrayElement([
+                  faker.string.alpha({ length: { min: 10, max: 20 } }),
+                  undefined,
+                ]),
+              },
+              undefined,
+            ]),
+            internal_tools: faker.helpers.arrayElement([
+              Array.from(
+                { length: faker.number.int({ min: 1, max: 10 }) },
+                (_, i) => i + 1,
+              ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+              undefined,
+            ]),
+          },
+        },
+        null,
+      ]),
+      conversation_starters: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({})),
+        undefined,
+      ]),
+      pipeline_settings: faker.helpers.arrayElement([{}, undefined]),
+      author_id: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      author: faker.helpers.arrayElement([
+        {
+          id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          email: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        },
+        undefined,
+      ]),
+      tools: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          id: faker.number.int(),
+          tool_id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+          entity_type: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          selected_tools: faker.helpers.arrayElement([{}, undefined]),
+          name: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          type: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          config: faker.helpers.arrayElement([{}, undefined]),
+          settings: faker.helpers.arrayElement([{}, undefined]),
+          author_id: faker.helpers.arrayElement([
+            faker.string.alpha({ length: { min: 10, max: 20 } }),
+            undefined,
+          ]),
+          project_id: faker.helpers.arrayElement([
+            faker.number.int(),
+            undefined,
+          ]),
+        })),
+        undefined,
+      ]),
+      tags: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          name: faker.helpers.arrayElement([
+            faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              null,
+            ]),
+            undefined,
+          ]),
+          data: faker.helpers.arrayElement([{}, undefined]),
+        })),
+        undefined,
+      ]),
+      variables: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          name: faker.helpers.arrayElement([
+            faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              null,
+            ]),
+            undefined,
+          ]),
+          value: faker.helpers.arrayElement([
+            faker.helpers.arrayElement([
+              faker.string.alpha({ length: { min: 10, max: 20 } }),
+              null,
+            ]),
+            undefined,
+          ]),
+        })),
+        undefined,
+      ]),
+      is_forked: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
+    },
+    ...{
+      icon_meta: faker.helpers.arrayElement([{}, undefined]),
+      attached_skills: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          skill_id: faker.number.int(),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          instructions: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          icon_meta: faker.helpers.arrayElement([
+            faker.helpers.arrayElement([null]),
+            undefined,
+          ]),
+        })),
+        undefined,
+      ]),
+    },
+  });
 
 export const getSaveApplicationNewVersionResponseMock = (
   overrideResponse: Partial<Extract<ApplicationVersionDetail, object>> = {},
@@ -4120,6 +4359,34 @@ export const getUpdateApplicationVersionMockHandler = (
   );
 };
 
+export const getGetApplicationVersionDetailExpandedMockHandler = (
+  overrideResponse?:
+    | ApplicationVersionDetailExpanded
+    | ((
+        info: Parameters<Parameters<typeof http.patch>[1]>[0],
+      ) =>
+        | Promise<ApplicationVersionDetailExpanded>
+        | ApplicationVersionDetailExpanded),
+  options?: RequestHandlerOptions,
+) => {
+  return http.patch(
+    "*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId",
+    async (info: Parameters<Parameters<typeof http.patch>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetApplicationVersionDetailExpandedResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getDeleteApplicationVersionMockHandler = (
   overrideResponse?:
     | void
@@ -4956,6 +5223,7 @@ export const getApplicationsMock = () => [
   getValidateForPublishMockHandler(),
   getGetApplicationVersionDetailMockHandler(),
   getUpdateApplicationVersionMockHandler(),
+  getGetApplicationVersionDetailExpandedMockHandler(),
   getDeleteApplicationVersionMockHandler(),
   getSaveApplicationNewVersionMockHandler(),
   getSetApplicationDefaultVersionMockHandler(),

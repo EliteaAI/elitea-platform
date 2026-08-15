@@ -106,6 +106,10 @@ var eliteaCoreProjectScopedRoutes = []eliteaCoreProjectScopedRoute{
 	{http.MethodGet, "/api/v2/elitea_core/version/prompt_lib/7/1/2", "/api/v2/elitea_core/version/prompt_lib/8/1/2", "models.applications.version.details"},
 	{http.MethodPut, "/api/v2/elitea_core/version/prompt_lib/7/1/2", "/api/v2/elitea_core/version/prompt_lib/8/1/2", "models.applications.version.update"},
 	{http.MethodDelete, "/api/v2/elitea_core/version/prompt_lib/7/1/2", "/api/v2/elitea_core/version/prompt_lib/8/1/2", "models.applications.version.delete"},
+	// PATCH on the version path is the expanded READ the SDK calls, so it
+	// carries the READ permission the GET above carries, not version.update
+	// (#336). Pylon declares the same string on its own PATCH handler.
+	{http.MethodPatch, "/api/v2/elitea_core/version/prompt_lib/7/1/2", "/api/v2/elitea_core/version/prompt_lib/8/1/2", "models.applications.version.details"},
 	// Skills.
 	{http.MethodGet, "/api/v2/elitea_core/skills/prompt_lib/7", "/api/v2/elitea_core/skills/prompt_lib/8", "models.applications.skills.list"},
 	{http.MethodPost, "/api/v2/elitea_core/skills/prompt_lib/7", "/api/v2/elitea_core/skills/prompt_lib/8", "models.applications.skills.create"},

@@ -1841,6 +1841,8 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PATCH /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/skill_default_version/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
+		// The expanded version READ the SDK calls with a body-less PATCH (#336).
+		"PATCH /api/v2/elitea_core/version/prompt_lib/{projectID}/{applicationID}/{versionID}",
 		"POST /api/v2/admin/auth_users/{mode}",
 		"POST /api/v2/admin/gateway/governance",
 		"POST /api/v2/admin/gateway/governance/validate-cel",

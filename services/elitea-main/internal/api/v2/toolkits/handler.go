@@ -451,24 +451,40 @@ func withArgumentSchemas(
 	return typeSchema
 }
 
+// AvailableTools lists the tools that one toolkit instance supplies.
+//
+// A failed read answers 500. Before #340 it answered `200 {"tools":[],
+// "total":0}`, which made a broken read look exactly like a toolkit that
+// legitimately holds no tools. The caller could not tell the two apart, so a
+// database outage silently emptied the tool picker instead of reporting a
+// fault. The error text is a fixed string: the cause carries SQL and schema
+// names, and AGENTS.md forbids returning a raw error across a trust boundary.
 func (h *Handler) AvailableTools(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitID := chi.URLParam(r, "toolkitID")
 	tools, err := h.repo.AvailableTools(r.Context(), projectID, toolkitID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"tools": []any{}, "total": 0})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to read the available tools"})
 		return
+	}
+	if tools == nil {
+		tools = []Tool{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools, "total": len(tools)})
 }
 
+// DiscoverTools lists the tools that one toolkit TYPE supplies. It answers a
+// failed read the same way AvailableTools does, and for the same reason.
 func (h *Handler) DiscoverTools(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitType := chi.URLParam(r, "toolkitType")
 	tools, err := h.repo.DiscoverTools(r.Context(), projectID, toolkitType)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"tools": []any{}, "total": 0})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to discover the tools"})
 		return
+	}
+	if tools == nil {
+		tools = []Tool{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools, "total": len(tools)})
 }
@@ -963,19 +979,22 @@ func (r *pgRepo) AvailableTools(ctx context.Context, projectID, toolkitID string
 		WHERE etm.entity_version_id = $1`, s, s)
 	rows, err := r.pool.Query(ctx, q, toolkitID)
 	if err != nil {
-		return []Tool{}, nil
+		return nil, fmt.Errorf("query the available tools: %w", err)
 	}
 	defer rows.Close()
-	var tools []Tool
+	tools := []Tool{}
 	for rows.Next() {
 		var t Tool
 		if err := rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description); err != nil {
-			continue
+			return nil, fmt.Errorf("scan an available tool: %w", err)
 		}
 		tools = append(tools, t)
 	}
-	if tools == nil {
-		tools = []Tool{}
+	// rows.Err() reports a failure that stops the iteration part way, such as
+	// a lost connection. Without this check the loop ends early and the caller
+	// receives a short list that looks complete.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the available tools: %w", err)
 	}
 	return tools, nil
 }
@@ -985,19 +1004,21 @@ func (r *pgRepo) DiscoverTools(ctx context.Context, projectID, toolkitType strin
 	q := fmt.Sprintf(`SELECT id, name, type, COALESCE(description, '') FROM %q.elitea_tools WHERE type = $1 ORDER BY name`, s)
 	rows, err := r.pool.Query(ctx, q, toolkitType)
 	if err != nil {
-		return []Tool{}, nil
+		return nil, fmt.Errorf("query the discovered tools: %w", err)
 	}
 	defer rows.Close()
-	var tools []Tool
+	tools := []Tool{}
 	for rows.Next() {
 		var t Tool
 		if err := rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description); err != nil {
-			continue
+			return nil, fmt.Errorf("scan a discovered tool: %w", err)
 		}
 		tools = append(tools, t)
 	}
-	if tools == nil {
-		tools = []Tool{}
+	// See the note in AvailableTools: a part-way failure must not look like a
+	// complete list.
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the discovered tools: %w", err)
 	}
 	return tools, nil
 }

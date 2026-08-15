@@ -111,6 +111,11 @@ func newHandlerTestServer(t *testing.T, pool *pgxpool.Pool, user auth.User) *chi
 	r.Get("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.GetVersion)
 	r.Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.UpdateVersion)
 	r.Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.DeleteVersion)
+	// PATCH on this path is the expanded READ the SDK calls, not an update
+	// (#336). It is registered here because this server re-declares the router's
+	// table rather than importing it; a route missing here is invisible to every
+	// test in this file.
+	r.Patch("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.GetVersionExpanded)
 	r.Get("/default_version/prompt_lib/{projectID}/{applicationID}", h.GetDefaultVersion)
 	r.Patch("/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.SetDefaultVersion)
 	return r
