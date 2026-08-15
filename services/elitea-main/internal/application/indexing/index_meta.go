@@ -18,6 +18,23 @@ import (
 const (
 	MaxCurrentIndexMetaConnectionStringBytes = 16 << 10
 	MaxCurrentInitialIndexMetaBytes          = 1 << 20
+
+	// MaxCurrentIndexMetaHistoryEntries is the largest number of run-history
+	// entries one index metadata row keeps. History accumulates one entry for
+	// each run, and each entry clones the top level, so an unbounded history
+	// grows the row until it passes MaxCurrentInitialIndexMetaBytes and the
+	// index can no longer record a run. The writer discards the oldest entries
+	// first, and the list projection applies the same bound to a row that the
+	// writer has not repaired yet.
+	MaxCurrentIndexMetaHistoryEntries = 200
+
+	// MaxCurrentIndexMetaReadBytes is the largest stored row this platform
+	// reads. It is deliberately larger than MaxCurrentInitialIndexMetaBytes,
+	// which caps only what this platform writes. The Python SDK writes the same
+	// row and applies no cap, so a stored row can already exceed the write cap.
+	// Such a row must stay readable: the list projection bounds its history in
+	// the response, and the next write bounds the stored history for good.
+	MaxCurrentIndexMetaReadBytes = 4 * MaxCurrentInitialIndexMetaBytes
 )
 
 var (
