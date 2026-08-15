@@ -2057,7 +2057,14 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				SessionSecret:             cfg.SessionSecret,
 				TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 			}))
-			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: resolver}))
+			// Membership admits the caller-supplied project selector header
+			// (issue #318). Without it every selector that names another
+			// project is refused, so /llm keeps billing the caller's own
+			// project and never bills a project on an unchecked header.
+			r.Use(apimw.Project(apimw.ProjectConfig{
+				Resolver:   resolver,
+				Membership: apimw.NewProjectMembership(cfg.Pool),
+			}))
 			r.Mount("/llm", proxy)
 		})
 	}
