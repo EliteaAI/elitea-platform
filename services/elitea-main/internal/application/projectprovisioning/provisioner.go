@@ -121,11 +121,26 @@ type ArtifactBootstrapper interface {
 	TeardownProjectBuckets(ctx context.Context, projectID string) error
 }
 
+// ProjectVaultBootstrapper creates and removes a project's secrets vault. It is
+// satisfied by internal/api/v2/secrets.Handler.
+//
+// UNLIKE ArtifactBootstrapper, THIS ONE IS REQUIRED. The artifact bootstrapper
+// is optional because a deployment can genuinely run no object store; there is
+// no deployment that runs no vault, because the vault tables are in the same
+// database as the project row and the model catalogue reads them on every page
+// that shows a model. A Provisioner built without this dependency refuses to
+// provision rather than creating projects with the #373 gap in them.
+type ProjectVaultBootstrapper interface {
+	EnsureProjectVault(ctx context.Context, projectID string) error
+	RemoveProjectVault(ctx context.Context, projectID string) error
+}
+
 // Provisioner runs the project-create pipeline.
 type Provisioner struct {
 	pool     *pgxpool.Pool
 	migrator TenantMigrator
 	buckets  ArtifactBootstrapper
+	vault    ProjectVaultBootstrapper
 	logger   *slog.Logger
 }
 
@@ -136,6 +151,13 @@ type Option func(*Provisioner)
 // artifact_buckets step is inert — see createArtifactBuckets.
 func WithArtifactBuckets(buckets ArtifactBootstrapper) Option {
 	return func(p *Provisioner) { p.buckets = buckets }
+}
+
+// WithProjectVault supplies the secrets-vault bootstrapper (#373). It is an
+// Option for symmetry with the rest of this constructor, not because it is
+// optional: Provision refuses to run without it. See ProjectVaultBootstrapper.
+func WithProjectVault(vault ProjectVaultBootstrapper) Option {
+	return func(p *Provisioner) { p.vault = vault }
 }
 
 func New(pool *pgxpool.Pool, migrator TenantMigrator, logger *slog.Logger, options ...Option) *Provisioner {
@@ -164,7 +186,12 @@ func (p *Provisioner) Provision(ctx context.Context, request Request) (Result, e
 	if request.OwnerID <= 0 {
 		return Result{}, ErrOwnerRequired
 	}
-	if p.pool == nil || p.migrator == nil {
+	// The vault is checked here beside the pool and the migrator, and for the
+	// same reason: a project provisioned without one is not a project with a
+	// missing extra, it is a project whose owner cannot pick a model (#373).
+	// Failing before the first insert is the only failure that leaves nothing
+	// behind.
+	if p.pool == nil || p.migrator == nil || p.vault == nil {
 		return Result{}, errors.New("projectprovisioning: provisioner is not configured")
 	}
 

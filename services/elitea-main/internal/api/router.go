@@ -285,7 +285,16 @@ func newProjectProvisioner(cfg RouterConfig) (*projectprovisioning.Provisioner, 
 	if cfg.Pool == nil {
 		return nil, false
 	}
-	options := make([]projectprovisioning.Option, 0, 1)
+	// The secrets vault (#373). Not conditional: a project provisioned without
+	// one cannot show its model catalogue, so the provisioner refuses to run
+	// without this dependency rather than creating projects that look complete
+	// and have no model picker. The handler is constructed here rather than
+	// shared with the one mountSecretsRoutes builds because that one is built
+	// inside the route tree; both read the same tables under the same
+	// SECRETS_MASTER_KEY rule.
+	options := []projectprovisioning.Option{
+		projectprovisioning.WithProjectVault(v2secrets.NewHandler(cfg.Pool)),
+	}
 	if cfg.ObjectStore != nil {
 		bucketsRepo, bucketsErr := dbrepos.NewArtifactBucketsRepository(cfg.Pool)
 		objectsRepo, objectsErr := dbrepos.NewArtifactObjectsRepository(cfg.Pool)

@@ -912,6 +912,74 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 	return data[:len(data)-pad], nil
 }
 
+// EnsureProjectVault creates an EMPTY vault for a project that has none, and
+// does nothing for a project that already has a readable one (#373).
+//
+// WHY PROVISIONING NEEDS THIS. Every write route below mints a project's Fernet
+// key lazily, so the secrets API alone never needs a vault created in advance.
+// The model catalogue does. storage.PostgresSecretVaultLoader reports absent
+// rows as ErrContentUnavailable, storage.CurrentModelDefaultsReader fails the
+// whole read on that error, and the configurations route turns it into a 500 —
+// so a project with no vault rows presents to its owner as "the product has no
+// models". internal/application/projectprovisioning calls this as its
+// project_secrets step.
+//
+// WHY IT IS HERE AND NOT IN THE PROVISIONER. This is the only code in the tree
+// that mints a vault key, and it decides — from SECRETS_MASTER_KEY — whether
+// the stored key is wrapped. A second minter with its own rule would write
+// vaults this handler cannot open, and readVaultByID never overwrites an
+// unreadable vault, so that project's secrets would 500 for ever with no way
+// back. One minter, one rule.
+//
+// IDEMPOTENT, and deliberately narrow about which failure it acts on. Only
+// errVaultAbsent — neither row present — permits a write. A vault that exists
+// and will not open is reported, never replaced.
+func (h *Handler) EnsureProjectVault(ctx context.Context, projectID string) error {
+	_, err := h.readVaultCtx(ctx, projectID)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, errVaultAbsent):
+		return h.writeVaultCtx(ctx, projectID, vaultData{
+			Secrets:       map[string]string{},
+			HiddenSecrets: map[string]string{},
+		})
+	default:
+		return err
+	}
+}
+
+// RemoveProjectVault deletes a project's vault rows.
+//
+// It is the compensation half of EnsureProjectVault, and the delete half of
+// project deprovisioning. Neither centry.secrets_key nor centry.secrets_data
+// carries a foreign key to centry.project — the id is the TEXT `project-<id>`
+// rather than the integer — so nothing removes these rows for us, and a vault
+// left behind would be adopted by the next project that draws the same id.
+//
+// Removing an absent vault is success, so a re-run and a compensation for a
+// step that never ran both converge.
+func (h *Handler) RemoveProjectVault(ctx context.Context, projectID string) error {
+	vaultID := dbKey(projectID)
+	// One transaction: a key row without its data row is the half state
+	// readVaultByID reports as a hard error rather than as an absent vault.
+	transaction, err := h.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin %s vault delete: %w", vaultID, err)
+	}
+	defer func() { _ = transaction.Rollback(context.WithoutCancel(ctx)) }()
+
+	for _, statement := range []string{
+		`DELETE FROM centry.secrets_data WHERE id = $1`,
+		`DELETE FROM centry.secrets_key WHERE id = $1`,
+	} {
+		if _, err := transaction.Exec(ctx, statement, vaultID); err != nil {
+			return fmt.Errorf("delete %s vault rows: %w", vaultID, err)
+		}
+	}
+	return transaction.Commit(ctx)
+}
+
 // StoreSecret programmatically stores a secret value without going through HTTP.
 func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, name, value string) error {
 	vault, err := h.readOrInitVaultCtx(ctx, projectID)
