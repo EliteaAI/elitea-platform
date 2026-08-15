@@ -112,6 +112,14 @@ type Handler struct {
 	// request?" assertion has no other observation point, because a blocked
 	// request never reaches the router.
 	streamCtxHook func(*schemas.BifrostContext)
+
+	// egressPolicy backs the /llm/v1/check_connection endpoint's SSRF gate
+	// (#319). It is the SAME operator-configured allowlist GetKeysForProvider
+	// applies to persisted credentials (*account.EliteaAccount implements
+	// this), so a not-yet-saved credential under test is refused on the exact
+	// terms a saved one would be (issue #13). nil makes CheckConnection refuse
+	// every request — fail closed rather than skip the check.
+	egressPolicy EgressPolicy
 }
 
 // HandlerOption customises Handler construction. It keeps NewHandler's core
@@ -123,6 +131,14 @@ type HandlerOption func(*Handler)
 // leaves the models surface reporting an empty set.
 func WithModelResolver(r *ModelResolver) HandlerOption {
 	return func(h *Handler) { h.models = r }
+}
+
+// WithEgressPolicy wires the operator's egress allowlist into the
+// /llm/v1/check_connection endpoint (#319). A nil policy is a no-op — the
+// endpoint then refuses every request, matching the fail-closed default the
+// rest of the gateway uses for an unconfigured Account.
+func WithEgressPolicy(p EgressPolicy) HandlerOption {
+	return func(h *Handler) { h.egressPolicy = p }
 }
 
 // WithBudgetGate wires the pre-LLM budget enforcement gate. When gate is nil

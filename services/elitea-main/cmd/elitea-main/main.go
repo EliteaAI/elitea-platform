@@ -970,6 +970,30 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		slog.Info("llm gateway proxy enabled", "target", gwURL)
 	}
 
+	// #319: /configurations/check_connection(s) needs a real, minimal round
+	// trip to the provider, which the gateway performs (it owns the SSRF-safe
+	// egress allowlist for a tenant-authored api_base — issue #13). Reuse the
+	// same gateway connection settings as the /llm proxy above so an operator
+	// configures the gateway hop once, not twice.
+	var configConnectionChecker configurationapi.ConnectionChecker
+	if checker, checkerErr := configurationapi.NewGatewayConnectionCheckerFromConfig(
+		os.Getenv("LLM_GATEWAY_URL"),
+		os.Getenv("LLM_GATEWAY_CLIENT_CERT"),
+		os.Getenv("LLM_GATEWAY_CLIENT_KEY"),
+		os.Getenv("LLM_GATEWAY_CA_FILE"),
+		os.Getenv("GATEWAY_IDENTITY_SECRET"),
+	); checkerErr != nil {
+		return fmt.Errorf("compose configurations check-connection client: %w", checkerErr)
+	} else if checker != nil {
+		// Assigned only when non-nil: boxing a nil *GatewayConnectionChecker
+		// into the ConnectionChecker interface would make
+		// `h.connectionChecker == nil` false (a non-nil interface holding a
+		// nil pointer) and CheckConnection would call a method on a nil
+		// receiver instead of reporting "not available".
+		configConnectionChecker = checker
+		slog.Info("configurations check-connection client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
+	}
+
 	// BF0.9c/d: the gateway proxy needs the same production-auth wiring as
 	// every other auth-protected route above, gated on formGraph != nil —
 	// assigning a nil *FormGraph directly to an interface field would produce
@@ -1090,6 +1114,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentModelDefault:           currentModelDefault,
 		GatewayProxy:                  gatewayProxy,
 		GatewayProjectResolver:        gatewayProjectResolver,
+		ConfigConnectionChecker:       configConnectionChecker,
 		ObjectStore:                   objectStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering
 		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*

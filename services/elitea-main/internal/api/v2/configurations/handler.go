@@ -34,6 +34,11 @@ type Handler struct {
 	// (#131: that flag gates the *production* router, which this compatibility
 	// router is not, so no environment ever reached the real catalogue).
 	catalog *configurationapp.CurrentAvailableCatalog
+	// connectionChecker performs the real, minimal provider round trip
+	// CheckConnection/BatchCheckConnections need (#319, check_connection.go).
+	// nil means "not configured" — the handlers then report an honest
+	// "not available" failure rather than fabricating success.
+	connectionChecker ConnectionChecker
 }
 
 type Option func(*Handler)
@@ -41,6 +46,16 @@ type Option func(*Handler)
 func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	return func(handler *Handler) {
 		handler.permissionResolver = resolver
+	}
+}
+
+// WithConnectionChecker wires the real provider-connection checker (#319).
+// Without this option CheckConnection/BatchCheckConnections report an honest
+// "not available" failure for every checkable type — never a fabricated
+// success.
+func WithConnectionChecker(checker ConnectionChecker) Option {
+	return func(handler *Handler) {
+		handler.connectionChecker = checker
 	}
 }
 
@@ -587,21 +602,9 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) CheckConnection(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Connection successful"})
-}
-
-func (h *Handler) BatchCheckConnections(w http.ResponseWriter, r *http.Request) {
-	var items []map[string]any
-	if !decodeBoundedJSON(w, r, &items) {
-		return
-	}
-	results := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		results = append(results, map[string]any{"id": item["id"], "success": true, "message": "Connection successful"})
-	}
-	writeJSON(w, http.StatusOK, results)
-}
+// CheckConnection and BatchCheckConnections are implemented in
+// check_connection.go (#319) — they used to be unconditional stubs here that
+// reported success for every payload without ever contacting the provider.
 
 type Model struct {
 	ID         int            `json:"id"`
