@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -15,12 +16,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 )
 
 func generateID() string {
@@ -3170,16 +3173,29 @@ func (h *Handler) MCPDCRProxy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp.StatusCode, dcrResp)
 }
 
-// MCPSyncTools reports that MCP tool discovery has no backend in this stack.
+// MCPSyncTools discovers the tools of a remote MCP server and records them.
 //
 // NOTE(#126): it used to forward to an injected MCPToolSyncer, whose only
 // implementation was the prototype indexersvc Redis RPC client. That client was
-// never assigned in any composition root, so this endpoint has always answered
-// 503 — the injection seam was decoration on an unconditional failure. The
-// transport it spoke was retired (see the IndexerDeps note in
-// internal/api/router.go), so the seam went with it and the 503 is now stated
-// directly. This route stays registered and its response is byte-identical to
-// what every deployment already returned. #194 records the missing capability.
+// never assigned in any composition root, so this endpoint always answered 503
+// — the injection seam was decoration on an unconditional failure.
+//
+// Issue 335 gives it a real backend. The discovery is an outbound HTTP exchange
+// with the MCP server named in the body, over the streamable-HTTP transport,
+// through the same validated sender the OAuth and DCR proxies in this file
+// already use. pylon reaches the same servers through a task node that imports
+// the Python SDK; the protocol on the wire is the same.
+//
+// The result is also WRITTEN to `elitea_mcp.registered_servers`, which is what
+// `GET /elitea_core/tools_list/{projectID}` reads. That write is the reason the
+// listing endpoint can stop answering 501: this is the registration path, so
+// there is no second source of the same data.
+//
+// The response shape is pylon's `McpSyncToolsResponseModel`, flat rather than
+// wrapped in `{"result": …}`. The web client accepts either
+// (`useGetRemoteMcpTools.ts:192` reads `response.result ?? response`), and flat
+// is the truthful one here: pylon nests because the value arrives from an
+// asynchronous task, and this path has no task.
 func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
 	// Gated BEFORE the body is decoded, so a disabled deployment answers the
 	// same 403 to a well-formed request and a malformed one. Deciding after the
@@ -3188,13 +3204,109 @@ func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
 	if !h.requireMCPEnabled(w, r) {
 		return
 	}
-	var body map[string]any
+
+	var body struct {
+		URL         string            `json:"url"`
+		Headers     map[string]string `json:"headers"`
+		Timeout     int               `json:"timeout"`
+		ToolkitType string            `json:"toolkit_type"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request"})
 		return
 	}
 
-	writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "indexer service not available"})
+	// `ssl_verify` is read from the body by pylon and honoured. It is ignored
+	// here, and TLS verification always applies: AGENTS.md makes verification
+	// mandatory outside an explicitly isolated test. A caller that needs a
+	// private certificate authority configures the service trust bundle
+	// (WithHTTPClient), which is auditable, rather than switching verification
+	// off per request, which is not.
+	if strings.TrimSpace(body.URL) == "" {
+		// pylon fills a missing URL for a pre-built MCP toolkit from its own
+		// plugin configuration (`resolve_mcp_prebuilt_settings`). That
+		// catalogue does not exist in this stack, so the URL must be supplied
+		// rather than invented.
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"error":   "url is required: this service does not hold the pre-built MCP catalogue",
+		})
+		return
+	}
+	endpoint, err := validateMCPProxyURL(body.URL)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": "invalid_mcp_url"})
+		return
+	}
+
+	timeout := time.Duration(body.Timeout) * time.Second
+	if timeout <= 0 || timeout > mcpSyncMaxTimeout {
+		timeout = mcpSyncDefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	tools, err := mcpregistry.NewDiscoverer(h.doMCPProxyRequest).
+		Discover(ctx, endpoint.String(), body.Headers)
+	if err != nil {
+		// The stated cause is the remote server's, not this service's, so it is
+		// reported as a failed discovery rather than a fault here. The web
+		// client renders `error` directly.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":    false,
+			"error":      "MCP tool discovery failed",
+			"server_url": endpoint.String(),
+		})
+		return
+	}
+
+	// The registration is stored under the toolkit type, because that is the
+	// name a worker matches a toolkit against: the SDK looks the toolkit's
+	// `type` up among the server names that `tools_list` returns
+	// (`elitea_sdk/runtime/toolkits/tools.py:_mcp_tools`). A discovery with no
+	// toolkit type is a preview for the toolkit editor — nothing would ever
+	// match it — so it is answered but not stored.
+	projectID, validProject := parsePositiveID(chi.URLParam(r, "projectID"))
+	if serverName := strings.TrimSpace(body.ToolkitType); serverName != "" && validProject && h.pool != nil {
+		registration := mcpregistry.Registration{
+			ProjectID: projectID,
+			Name:      serverName,
+			ServerURL: endpoint.String(),
+			Tools:     tools,
+		}
+		if err := mcpregistry.NewStore(h.pool).Save(ctx, registration); err != nil {
+			// The discovery succeeded and the caller asked for the tools. A
+			// failed write must not withhold them; it costs the caller the
+			// listing, not this answer.
+			slog.ErrorContext(ctx, "mcp_sync_tools: store registration failed",
+				"project_id", projectID, "server", serverName, "err", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":    true,
+		"tools":      tools,
+		"count":      len(tools),
+		"server_url": endpoint.String(),
+	})
+}
+
+// mcpSyncDefaultTimeout and mcpSyncMaxTimeout bound the outbound discovery.
+// pylon defaults the synchronous form to 120 seconds; the ceiling stops a
+// caller-supplied value from holding a request open indefinitely.
+const (
+	mcpSyncDefaultTimeout = 120 * time.Second
+	mcpSyncMaxTimeout     = 300 * time.Second
+)
+
+// parsePositiveID accepts only a plain positive integer, which is what pylon's
+// `<int:project_id>` converter accepts.
+func parsePositiveID(raw string) (int64, bool) {
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 func (h *Handler) SupportConfig(w http.ResponseWriter, _ *http.Request) {
