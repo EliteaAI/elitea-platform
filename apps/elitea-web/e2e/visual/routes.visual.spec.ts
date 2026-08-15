@@ -381,12 +381,49 @@ const ROUTES: readonly VisualRoute[] = [
   },
 ];
 
+/**
+ * TEMPORARY (issue #238 investigation) — reports the live state of the sidebar
+ * chevron so the light pass can be compared against the dark one. The chevron
+ * draws in the dark baselines and not in the light ones, and every unit-level
+ * render shows it present in both, so the divergence is only observable here.
+ * Remove once the cause is known.
+ */
+async function reportChevron(page: Page, label: string): Promise<void> {
+  const state = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="project-switcher-chevron"]');
+    const scheme = document.documentElement.getAttribute('data-el-scheme');
+    if (!el) {
+      const trigger = document.querySelector('[id^="project-switcher-trigger"]');
+      return {
+        scheme,
+        present: false,
+        triggerPresent: Boolean(trigger),
+        triggerHTML: trigger ? trigger.outerHTML.slice(0, 400) : null,
+      };
+    }
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return {
+      scheme,
+      present: true,
+      rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
+      color: style.color,
+      fill: style.fill,
+      opacity: style.opacity,
+      visibility: style.visibility,
+      display: style.display,
+    };
+  });
+  console.log(`CHEVRON-DIAG ${label} ${JSON.stringify(state)}`);
+}
+
 for (const route of ROUTES) {
   test(`@visual ${route.name}`, async ({ page }) => {
     await page.goto(BASE_URL + route.path, { waitUntil: 'domcontentloaded' });
     await shellSettled(page);
     await expect(route.landmark(page).first()).toBeVisible({ timeout: 20_000 });
     await settle(page);
+    await reportChevron(page, route.name);
 
     await expect(page).toHaveScreenshot(`${route.name}.png`, {
       fullPage: false,
@@ -452,6 +489,7 @@ for (const route of ROUTES.filter((r) => r.light)) {
     // light name, and it would look correct.
     expect(await page.evaluate(() => document.documentElement.getAttribute('data-el-scheme'))).toBe('light');
     await settle(page);
+    await reportChevron(page, `${route.name}-light`);
 
     await expect(page).toHaveScreenshot(`${route.name}-light.png`, {
       fullPage: false,
