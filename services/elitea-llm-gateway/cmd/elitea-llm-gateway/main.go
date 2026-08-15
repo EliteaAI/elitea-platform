@@ -89,8 +89,9 @@ func main() {
 		defer pool.Close()
 
 		modelResolver = llmproxy.NewModelResolver(llmproxy.ModelResolverConfig{
-			DB:     llmproxy.NewModelPoolQuerier(pool),
-			Logger: logger,
+			DB:              llmproxy.NewModelPoolQuerier(pool),
+			Logger:          logger,
+			PublicProjectID: cfg.PublicProjectIDString(),
 		})
 	}
 
@@ -123,6 +124,7 @@ func main() {
 			ProviderConcurrency: cfg.ProviderConcurrency,
 			SelfOrigins:         cfg.SelfLLMOrigins,
 			EgressAllowlist:     cfg.EgressAllowlist,
+			PublicProjectID:     cfg.PublicProjectIDString(),
 			Logger:              logger,
 		})
 		if aerr != nil {
@@ -144,6 +146,16 @@ func main() {
 			logger.Warn("GATEWAY_EGRESS_ALLOWLIST is empty — tenant-authored api_base hosts are UNRESTRICTED (public only). " +
 				"bifrost's SSRF-safe dialer stays on for every provider, so self-hosted vLLM/Ollama on a private " +
 				"network will NOT work until the allowlist names those hosts (issue #13)")
+		}
+		// Issue #316: say whether platform-shared models are reachable. With the
+		// scope off, a project sees only its own credentials, so a deployment
+		// that runs on shared models alone has no usable model at all.
+		if id := cfg.PublicProjectIDString(); id != "" {
+			logger.Info("SHARED MODEL SCOPE ARMED: the gateway also reads the public project's shared credentials and models",
+				"public_project_id", id)
+		} else {
+			logger.Warn("ELITEA_AI_PROJECT_ID is unset — platform-shared models are UNREACHABLE. " +
+				"Each project can use only its own credentials and models (issue #316)")
 		}
 		logger.Info("vault-backed Account ENABLED", "self_origins", len(cfg.SelfLLMOrigins))
 	} else {

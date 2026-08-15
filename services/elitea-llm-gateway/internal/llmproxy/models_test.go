@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -17,23 +18,71 @@ import (
 type fakeModelRow struct {
 	title string
 	data  []byte
+	// shared is the row's `shared` column. It defaults to false, which is what
+	// an ordinary project-owned row carries.
+	shared bool
 }
 
 // fakeModelDB is a modelRowQuerier test double. It returns rows verbatim and
 // can be made to fail (err) or count how many times Query ran (calls) so the
 // cache behaviour is observable.
 type fakeModelDB struct {
+	// rows is the catch-all result, returned for every query unless bySchema
+	// carries an entry for the schema the query names.
 	rows  []fakeModelRow
 	err   error
 	calls int
+	// bySchema routes rows per project schema ("7", "1", …) so a test can seed
+	// different models for the caller's project and for the public project. A
+	// schema with no entry yields zero rows, NOT the catch-all.
+	bySchema map[string][]fakeModelRow
+	// gotSQL records every statement issued, in order, so a test can assert
+	// WHICH schemas were read and that the shared predicate was applied.
+	gotSQL []string
+	// ignoreSharedPredicate makes the fake return unpublished rows even when the
+	// statement asks for `shared = true`, simulating a query that lost its
+	// predicate. Postgres is modelled faithfully by default.
+	ignoreSharedPredicate bool
 }
 
-func (db *fakeModelDB) Query(_ context.Context, _ string, _ ...any) (modelRows, error) {
+func (db *fakeModelDB) Query(_ context.Context, sql string, _ ...any) (modelRows, error) {
 	db.calls++
+	db.gotSQL = append(db.gotSQL, sql)
 	if db.err != nil {
 		return nil, db.err
 	}
-	return &fakeModelRowsIter{rows: db.rows}, nil
+	rows := db.rows
+	if db.bySchema != nil {
+		rows = db.bySchema[modelSchemaProjectOf(sql)]
+	}
+	// Model Postgres: `shared = true` really does exclude unpublished rows.
+	// Without this an isolation test would prove nothing.
+	if strings.Contains(sql, "shared = true") && !db.ignoreSharedPredicate {
+		kept := make([]fakeModelRow, 0, len(rows))
+		for _, r := range rows {
+			if r.shared {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	}
+	return &fakeModelRowsIter{rows: rows}, nil
+}
+
+// modelSchemaProjectOf extracts the project id from the `FROM "p_<id>"` clause
+// of a statement, so the fake can serve per-project rows.
+func modelSchemaProjectOf(sql string) string {
+	const marker = `"p_`
+	i := strings.Index(sql, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := sql[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
 }
 
 // fakeModelRowsIter iterates fakeModelRow values as modelRows.
@@ -52,12 +101,13 @@ func (it *fakeModelRowsIter) Next() bool {
 
 func (it *fakeModelRowsIter) Scan(dest ...any) error {
 	row := it.rows[it.i-1]
-	// query() scans (title string, data []byte) in that order.
-	if len(dest) != 2 {
+	// queryScope() scans (title string, data []byte, shared bool) in that order.
+	if len(dest) != 3 {
 		return errors.New("unexpected scan arity")
 	}
 	*dest[0].(*string) = row.title
 	*dest[1].(*[]byte) = row.data
+	*dest[2].(*bool) = row.shared
 	return nil
 }
 
