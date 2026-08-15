@@ -21,9 +21,13 @@ import (
 )
 
 const (
-	MaxCurrentIndexMetaRows          = 10_000
-	MaxCurrentIndexMetaIDBytes       = 4 << 10
-	MaxCurrentIndexMetaMetadataBytes = 1 << 20
+	MaxCurrentIndexMetaRows    = 10_000
+	MaxCurrentIndexMetaIDBytes = 4 << 10
+	// MaxCurrentIndexMetaMetadataBytes is the read ceiling, not the write cap.
+	// A row that grew past the write cap before the writer bounded its history
+	// must still list, because the reindex that repairs it starts from this
+	// list. A row over this ceiling still fails the request.
+	MaxCurrentIndexMetaMetadataBytes = indexingapp.MaxCurrentIndexMetaReadBytes
 	MaxCurrentIndexMetaTotalBytes    = 16 << 20
 	MaxCurrentPgvectorDSNBytes       = 16 << 10
 )
@@ -182,7 +186,10 @@ func (s *Service) List(ctx context.Context, request Request) ([]Item, error) {
 		}
 		decodeCurrentNestedJSON(metadata, "index_configuration")
 		decodeCurrentNestedJSON(metadata, "history")
+		// The created-marker repair reads the true first entry, so it runs
+		// before the bound drops the oldest entries.
 		markCurrentFirstHistoryEntryCreated(metadata)
+		boundCurrentHistoryEntries(metadata)
 		omitCurrentHistoryChunkingConfig(metadata)
 		stale, err := currentIndexIsStale(metadata, now, timeout)
 		if err != nil {
@@ -388,6 +395,22 @@ func markCurrentFirstHistoryEntryCreated(metadata map[string]any) {
 		return
 	}
 	first["state"] = "created"
+}
+
+// boundCurrentHistoryEntries keeps the newest run entries of one list element
+// and drops the oldest ones. The writer applies the same bound when it stores
+// the row, so this only takes effect on a row that grew past the bound before
+// the writer repaired it (issue #299). Such a row would otherwise return every
+// entry it ever accumulated. The run-history view shows the newest run first
+// and reads no entry beyond the ones kept here. Persisted history is
+// untouched, exactly like the created-marker repair above.
+func boundCurrentHistoryEntries(metadata map[string]any) {
+	history, ok := metadata["history"].([]any)
+	if !ok || len(history) <= indexingapp.MaxCurrentIndexMetaHistoryEntries {
+		return
+	}
+	metadata["history"] =
+		history[len(history)-indexingapp.MaxCurrentIndexMetaHistoryEntries:]
 }
 
 // omitCurrentHistoryChunkingConfig drops the chunking configuration from the
