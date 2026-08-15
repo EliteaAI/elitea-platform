@@ -107,128 +107,37 @@ func (k allowlistKey) String() string {
 }
 
 // allowlistedGates records every gated permission that no migration grants, and
-// that this change does NOT fix. Each entry needs a written reason.
+// that the change adding the entry does NOT fix. Each entry needs a written
+// reason.
 //
 // This is not a dumping ground. An entry asserts "someone looked at this route
 // and recorded why it stays unreachable on a clean database". Adding one to
 // silence the test, without meaning it, reintroduces exactly the invisibility
 // this file guards against.
 //
-// READ THE ENTRIES AS A BACKLOG, NOT AS APPROVAL. #372 asks for the gate only.
-// It forbids a change to a route gate or to a migration. The first run of the
-// gate found 47 ungranted permissions, which is far more than the 7 that #354
-// and #359 recorded. Six of them are granted by migration 0072 in PR #369, so
-// they are deliberately NOT listed here: the gate must keep failing on them
-// until that migration lands. The other 41 are listed, because a permanently
-// red gate gets switched off, and a gate that is switched off catches nothing.
+// THE ALLOWLIST IS EMPTY, AND THAT IS THE POINT.
 //
-// Every entry below is a route that answers 403 to every caller on a clean
-// database. Each needs a NEW migration in migrations/shared, with the role split
-// that testdata/postgres/legacy-rbac-matrix.json gives it. Remove the entry in
-// the same change as the grant. The stale-entry check below fails if you forget.
-var allowlistedGates = map[allowlistKey]string{
-	// --- The artifact surface (default mode) --------------------------------
-	// router.go:342-345 and the S3-shaped routes at :356. No migration in the
-	// corpus names configuration.artifacts.*. The Go artifact routes are recent
-	// and their grant was never written.
-	{mode: "default", permission: "configuration.artifacts.artifacts.view"}:   "#372 — recorded gap: no migration grants the artifact read gate",
-	{mode: "default", permission: "configuration.artifacts.artifacts.create"}: "#372 — recorded gap: no migration grants the artifact create gate",
-	{mode: "default", permission: "configuration.artifacts.artifacts.edit"}:   "#372 — recorded gap: no migration grants the artifact edit gate",
-	{mode: "default", permission: "configuration.artifacts.artifacts.delete"}: "#372 — recorded gap: no migration grants the artifact delete gate",
-
-	// --- The secrets surface (default mode) ---------------------------------
-	// internal/api/v2/secrets/handler.go:124-189, through the projectGate
-	// helper. Six routes, no grant for any of them.
-	{mode: "default", permission: "configuration.secrets.secret.list"}:     "#372 — recorded gap: no migration grants the secret list gate",
-	{mode: "default", permission: "configuration.secrets.secret.create"}:   "#372 — recorded gap: no migration grants the secret create gate",
-	{mode: "default", permission: "configuration.secrets.secret.edit"}:     "#372 — recorded gap: no migration grants the secret edit gate",
-	{mode: "default", permission: "configuration.secrets.secret.delete"}:   "#372 — recorded gap: no migration grants the secret delete gate",
-	{mode: "default", permission: "configuration.secrets.secret.hide"}:     "#372 — recorded gap: no migration grants the secret hide gate",
-	{mode: "default", permission: "configuration.secrets.secret.unsecret"}: "#372 — recorded gap: no migration grants the secret reveal gate",
-
-	// --- The project members surface (default mode) -------------------------
-	// router.go:907-915 for the writes, and :1813-1815 for the reads. 0068
-	// grants configuration.users.users.view and configuration.roles.roles.view,
-	// so the READS work and the WRITES do not. That split is why the fault is
-	// easy to miss: the page loads, and every button on it returns 403.
-	{mode: "default", permission: "configuration.users.users.create"}: "#372 — recorded gap: 0068 grants the users read, not the users create",
-	{mode: "default", permission: "configuration.users.users.edit"}:   "#372 — recorded gap: 0068 grants the users read, not the users edit",
-	{mode: "default", permission: "configuration.users.users.delete"}: "#372 — recorded gap: 0068 grants the users read, not the users delete",
-
-	// --- The moderation surface (default mode) ------------------------------
-	// router.go:973-977. 001_initial grants the BARE string admin.moderation to
-	// the administration super_admin role. middleware.hasIntersection compares
-	// exact strings, so the bare grant does not satisfy a .view or .create gate.
-	{mode: "default", permission: "admin.moderation.view"}:   "#372 — recorded gap: only the bare admin.moderation is granted, and the match is exact",
-	{mode: "default", permission: "admin.moderation.create"}: "#372 — recorded gap: only the bare admin.moderation is granted, and the match is exact",
-
-	// --- The scheduling surface (both modes) --------------------------------
-	// router.go:1021-1033 registers the same two permissions twice, once
-	// centrally and once per project. Neither mode has a grant.
-	{mode: "default", permission: "configuration.scheduling.schedules.view"}: "#372 — recorded gap: no migration grants the schedule read gate",
-	{mode: "default", permission: "configuration.scheduling.schedules.edit"}: "#372 — recorded gap: no migration grants the schedule write gate",
-
-	// --- The notifications surface (default mode) ---------------------------
-	// internal/api/v2/notifications/api.go:55-70, through the
-	// currentNotificationEndpoint helper. All six routes, no grant.
-	{mode: "default", permission: "models.notifications.notifications.list"}:   "#372 — recorded gap: no migration grants the notification list gate",
-	{mode: "default", permission: "models.notifications.notification.details"}: "#372 — recorded gap: no migration grants the notification read gate",
-	{mode: "default", permission: "models.notifications.notification.update"}:  "#372 — recorded gap: no migration grants the notification update gate",
-	{mode: "default", permission: "models.notifications.notification.delete"}:  "#372 — recorded gap: no migration grants the notification delete gate",
-
-	// --- The social surface (default mode) ----------------------------------
-	// internal/api/v2/social/{authors,avatar,feedback}.go. The end-to-end seed
-	// grants these per project, which is why the journeys pass (#161).
-	{mode: "default", permission: "models.social.authors.get"}:      "#372 — recorded gap: the E2E seed grants it per project, no migration grants it centrally",
-	{mode: "default", permission: "models.social.avatar.get"}:       "#372 — recorded gap: no migration grants the avatar read gate",
-	{mode: "default", permission: "models.social.avatar.update"}:    "#372 — recorded gap: no migration grants the avatar write gate",
-	{mode: "default", permission: "models.social.feedbacks.create"}: "#372 — recorded gap: no migration grants the feedback create gate",
-
-	// --- The projects surface (default mode) --------------------------------
-	// internal/api/v2/projects/handler.go:109-124 and production.go:33.
-	// projects.projects.project.view gates the project LIST, which every
-	// session calls first.
-	{mode: "default", permission: "projects.projects.project.view"}: "#372 — recorded gap: no migration grants the project list gate",
-	{mode: "default", permission: "projects.projects.project.edit"}: "#372 — recorded gap: no migration grants the project edit gate",
-	{mode: "default", permission: "projects.projects.groups.edit"}:  "#372 — recorded gap: no migration grants the project group edit gate",
-	{mode: "default", permission: "projects.projects.group.create"}: "#372 — recorded gap: no migration grants the project group create gate",
-	{mode: "default", permission: "projects.projects.group.delete"}: "#372 — recorded gap: no migration grants the project group delete gate",
-
-	// --- The admin panel (administration mode) ------------------------------
-	// legacyrbac.centralPermissions reads auth_core__user_role, the
-	// administration role, and its grants. It has NO super-admin bypass, so an
-	// administration gate with no grant is 403 for the operator too.
-	//
-	// 0060 seeds 11 administration grants and 0061 adds 4. The gates below name
-	// strings that neither file carries. Note that 0060 also returns early when
-	// any administration role already exists, so an upgraded deployment may hold
-	// even fewer of them.
-	{mode: "administration", permission: "configuration.users.users.create"}:        "#372 — recorded gap: the admin users page can read, and cannot write",
-	{mode: "administration", permission: "configuration.users.users.edit"}:          "#372 — recorded gap: the admin users page can read, and cannot write",
-	{mode: "administration", permission: "admin.moderation.edit"}:                   "#372 — recorded gap: only the bare admin.moderation is granted, and the match is exact",
-	{mode: "administration", permission: "configuration.roles.permissions.edit"}:    "#372 — recorded gap: 0060 grants the permissions read, not the permissions write",
-	{mode: "administration", permission: "projects.projects.projects.edit"}:         "#372 — recorded gap: 0060 grants the projects read, not the projects write",
-	{mode: "administration", permission: "configuration.scheduling.schedules.view"}: "#372 — recorded gap: no migration grants the admin schedule read gate",
-	{mode: "administration", permission: "configuration.scheduling.schedules.edit"}: "#372 — recorded gap: no migration grants the admin schedule write gate",
-	{mode: "administration", permission: "models.admin.audit_trail.view"}:           "#372 — recorded gap: no migration grants the audit trail gate",
-	// The two provider-hub routes answer 501 by design: this platform has no
-	// provider hub. 001_initial grants both strings and explains that the gate
-	// runs BEFORE the refusal, so without the grant an administrator gets a bare
-	// 403 instead of the sentence that explains the empty page. The ledgered
-	// corpus does not carry that grant, so on a clean database the explanation
-	// is unreachable.
-	{mode: "administration", permission: "runtime.airun.serviceproviders"}:   "#372 — recorded gap: only the dev bootstrap 001_initial grants it, and that file is not ledgered",
-	{mode: "administration", permission: "provider_hub.descriptor.register"}: "#372 — recorded gap: only the dev bootstrap 001_initial grants it, and that file is not ledgered",
-
-	// --- A gate that no migration can fix -----------------------------------
-	// router.go:991 uses RequirePermissions, which reads auth.User.Permissions
-	// instead of the resolver. Production never fills that field: the only
-	// assignment in non-test code is internal/api/adminui/handler.go:60, and it
-	// assigns an EMPTY slice. So this gate refuses every caller by construction,
-	// and a grant would not change it. The route needs a resolved gate, which is
-	// a code change and is outside the scope of #372.
-	{mode: "", permission: "configuration.governance"}: "#372 — recorded gap: auth.User.Permissions is never populated, so no migration can satisfy this gate",
-}
+// #372 added this gate and could not fix what it found: that issue asks for the
+// gate only, and forbids a change to a route gate or to a migration. The first
+// run reported 47 ungranted permissions. Six were granted by migration 0072 in
+// #369. The other 41 were listed here as a backlog, because a permanently red
+// gate gets switched off, and a gate that is switched off catches nothing.
+//
+// #386 cleared that backlog. Migrations 0074 to 0082 grant 40 of the 41, one
+// migration per surface, each with the role split
+// testdata/postgres/legacy-rbac-matrix.json gives it. The 41st,
+// `configuration.governance`, needed a code change rather than a grant: its gate
+// used `RequirePermissions`, which reads the never-populated
+// `auth.User.Permissions`. router.go now gates it with
+// `RequireCentralPermissions` in the `administration` mode, and
+// shared/0082_admin_panel_permissions.sql grants it.
+//
+// KEEP IT EMPTY IF YOU CAN. Add an entry only for a route you have decided must
+// stay unreachable on a clean database, and write the reason. Every entry is a
+// route that answers 403 to every caller. The usual fix is a NEW migration in
+// migrations/shared. Remove the entry in the same change as the grant. The
+// stale-entry check below fails if you forget.
+var allowlistedGates = map[allowlistKey]string{}
 
 // gate is one call site that gates a route on a permission.
 type gate struct {

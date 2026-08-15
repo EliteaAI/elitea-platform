@@ -1004,13 +1004,30 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// Preserve current-main gateway administration. Server-side
 				// permission enforcement is required even when the UI hides
 				// these controls.
+				//
+				// This gate used `apimw.RequirePermissions`, which reads
+				// `auth.User.Permissions` instead of asking the resolver.
+				// Production never fills that field. The only source that
+				// assigns it is the legacy Redis-RPC validator at
+				// internal/infra/authsvc/rpc.go:121, and production wires
+				// `authsvc.NewPrincipalValidator` instead, which leaves the
+				// field nil. So the gate refused EVERY caller by construction,
+				// the operator included, and no migration could reach it. That
+				// is #386.
+				//
+				// `RequireCentralPermissions` in the `administration` mode is
+				// what every neighbour in this block uses, and it is the right
+				// shape here: the path carries no `{projectID}`, so the surface
+				// is platform-wide rather than project-scoped. The permission
+				// string does not change.
+				// shared/0082_admin_panel_permissions.sql grants it.
 				if cfg.BudgetAlertStore == nil {
 					cfg.BudgetAlertStore = gateway.NewBudgetAlertStore()
 				}
 				budgetAlertHandler := gateway.NewBudgetAlertHandler(cfg.BudgetAlertStore)
 				governanceHandler := gateway.NewGovernanceHandler(cfg.Pool)
 				r.Group(func(r chi.Router) {
-					r.Use(apimw.RequirePermissions("configuration.governance"))
+					r.Use(central("configuration.governance"))
 					r.Route("/gateway", func(r chi.Router) {
 						r.Mount("/", budgetAlertHandler.Routes())
 						governanceHandler.Register(r)
