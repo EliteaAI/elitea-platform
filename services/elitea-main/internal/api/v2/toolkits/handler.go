@@ -60,10 +60,32 @@ type ToolkitArgumentSchemaSource interface {
 	ToolkitArgumentSchemas(toolkitType string) (map[string]map[string]any, bool, error)
 }
 
+// ToolkitSettingsDefinitionSource supplies the JSON Schema definitions one
+// built-in toolkit type's SETTINGS properties reference: the "$defs" block, and
+// the properties that "$ref" into it, keyed by property name. found=false means
+// the type is not a built-in SDK toolkit.
+//
+// It is a second, separate seam from ToolkitArgumentSchemaSource because the
+// two answer different questions from different pinned files — argument schemas
+// describe a TOOL's inputs, definitions describe a SETTINGS field's referenced
+// configuration — and because the implementation joins two snapshots that only
+// internal/runtimecomposition owns. The same dependency rule applies: that
+// package imports this one, so the interface lives here and the composition
+// root injects the implementation.
+//
+// Unassigned, the endpoint serves settings schemas with no "$defs" at all. The
+// web client then produces no property of kind `configuration`, so the toolkit
+// credential picker and the index schedule credential select are both
+// unreachable — the defect #330 records.
+type ToolkitSettingsDefinitionSource interface {
+	ToolkitSettingsDefinitions(toolkitType string) (map[string]any, map[string]any, bool, error)
+}
+
 type Handler struct {
-	repo            Repository
-	pool            *pgxpool.Pool
-	argumentSchemas ToolkitArgumentSchemaSource
+	repo                Repository
+	pool                *pgxpool.Pool
+	argumentSchemas     ToolkitArgumentSchemaSource
+	settingsDefinitions ToolkitSettingsDefinitionSource
 }
 
 // Option configures a Handler at construction, matching the pattern
@@ -75,6 +97,13 @@ type Option func(*Handler)
 // lists below, which carry no argument schemas at all — see ListTypeSchemas.
 func WithArgumentSchemas(source ToolkitArgumentSchemaSource) Option {
 	return func(h *Handler) { h.argumentSchemas = source }
+}
+
+// WithSettingsDefinitions supplies the settings "$defs" served by
+// ListTypeSchemas. Without it the endpoint serves settings schemas that
+// reference nothing — see ToolkitSettingsDefinitionSource.
+func WithSettingsDefinitions(source ToolkitSettingsDefinitionSource) Option {
+	return func(h *Handler) { h.settingsDefinitions = source }
 }
 
 func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
@@ -153,6 +182,16 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 // settings schemas here: they are an annotation projection (configuration_model,
 // configuration_types, toolkit_name) covering only annotated fields, so e.g.
 // artifact's bucket and github's repository do not appear in them at all.
+//
+// One of those annotations IS authoritative, however. configuration_types marks
+// a settings field as a reference to a saved configuration, and ListTypeSchemas
+// expands it into a "$defs" entry plus a "$ref" property that replaces the
+// hand-written stub of the same name (see withSettingsDefinitions). The entries
+// below therefore do not declare the *_configuration fields themselves; the
+// pinned SDK snapshot names them. github's access_token and jira's
+// url/username/password are the pre-configuration inline shape and are left as
+// they are — removing them changes the create-toolkit form, which #330 does not
+// own.
 var toolkitTypeSchemas = map[string]map[string]any{
 	"artifact": {
 		"type": "object",
@@ -286,6 +325,11 @@ var toolkitTypeSchemas = map[string]map[string]any{
 // into (apps/elitea-web/src/features/toolkits/ui/test-tools/
 // useGetSelectedToolSchema.ts and ui/form/ToolBase/). Settings come from
 // toolkitTypeSchemas; argument schemas come from the pinned SDK snapshot.
+//
+// Each type also carries a "$defs" block beside its properties, holding the
+// configuration definitions its settings reference. The web client keys its
+// whole configuration-property kind off that block, so a type schema without it
+// renders no credential picker at all.
 func (h *Handler) ListTypeSchemas(w http.ResponseWriter, r *http.Request) {
 	catalogue, err := h.toolkitTypeCatalogue()
 	if err != nil {
@@ -305,15 +349,25 @@ func (h *Handler) ListTypeSchemas(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) toolkitTypeCatalogue() (map[string]map[string]any, error) {
 	catalogue := make(map[string]map[string]any, len(toolkitTypeSchemas))
 	for toolkitType, settingsSchema := range toolkitTypeSchemas {
+		typeSchema := settingsSchema
+
 		argsSchemas, found, err := h.toolkitArgumentSchemas(toolkitType)
 		if err != nil {
 			return nil, fmt.Errorf("toolkit type %q argument schemas: %w", toolkitType, err)
 		}
-		if !found {
-			catalogue[toolkitType] = settingsSchema
-			continue
+		if found {
+			typeSchema = withArgumentSchemas(typeSchema, argsSchemas)
 		}
-		catalogue[toolkitType] = withArgumentSchemas(settingsSchema, argsSchemas)
+
+		definitions, configurationProperties, found, err := h.toolkitSettingsDefinitions(toolkitType)
+		if err != nil {
+			return nil, fmt.Errorf("toolkit type %q settings definitions: %w", toolkitType, err)
+		}
+		if found && len(definitions) > 0 {
+			typeSchema = withSettingsDefinitions(typeSchema, definitions, configurationProperties)
+		}
+
+		catalogue[toolkitType] = typeSchema
 	}
 	return catalogue, nil
 }
@@ -323,6 +377,49 @@ func (h *Handler) toolkitArgumentSchemas(toolkitType string) (map[string]map[str
 		return nil, false, nil
 	}
 	return h.argumentSchemas.ToolkitArgumentSchemas(toolkitType)
+}
+
+func (h *Handler) toolkitSettingsDefinitions(
+	toolkitType string,
+) (map[string]any, map[string]any, bool, error) {
+	if h == nil || h.settingsDefinitions == nil {
+		return nil, nil, false, nil
+	}
+	return h.settingsDefinitions.ToolkitSettingsDefinitions(toolkitType)
+}
+
+// withSettingsDefinitions copies one type's settings schema with the "$defs"
+// block added at the schema root and the configuration properties merged into
+// properties. The root is where the web client reads them: it hands one type's
+// schema to convertToolkitSchema, which takes its $defs key set from
+// Object.keys(schema.$defs).
+//
+// A configuration property REPLACES the hand-written entry of the same name.
+// The pinned SDK snapshot is authoritative about which settings field is a
+// configuration reference, and the hand-written stubs predate that: artifact's
+// pgvector_configuration was a bare {"type":"object"}, which the client sorts
+// into the ordinary-property bucket and renders as a plain object field.
+// Settings that no configuration property names are carried over untouched.
+func withSettingsDefinitions(
+	settingsSchema map[string]any,
+	definitions map[string]any,
+	configurationProperties map[string]any,
+) map[string]any {
+	typeSchema := make(map[string]any, len(settingsSchema)+1)
+	for key, value := range settingsSchema {
+		typeSchema[key] = value
+	}
+	settingsProperties, _ := settingsSchema["properties"].(map[string]any)
+	properties := make(map[string]any, len(settingsProperties)+len(configurationProperties))
+	for key, value := range settingsProperties {
+		properties[key] = value
+	}
+	for key, value := range configurationProperties {
+		properties[key] = value
+	}
+	typeSchema["properties"] = properties
+	typeSchema["$defs"] = definitions
+	return typeSchema
 }
 
 // withArgumentSchemas copies one type's settings schema with
