@@ -7,10 +7,12 @@
 #   up           bring the stack up and wait for healthy
 #   seed         schema + OIDC users + RBAC — delegates to the E2E seeder
 #   seed-runtime authorize the agent worker's certificate identity (#281)
-#   seed-llm     credential the gateway serves completions with. Defaults to the
-#                offline mock (#283) unless OPENAI_API_KEY/ANTHROPIC_API_KEY is set
-#   seed-index   vector store + embedding model + an indexable toolkit, so the
-#                index-start route and its SSE stream can be driven (#93)
+#   seed-llm     credential the gateway serves completions with, plus the chat
+#                model and the embedding model. Defaults to the offline mock
+#                (#283) unless OPENAI_API_KEY/ANTHROPIC_API_KEY is set
+#   seed-index   vector store + an indexable toolkit, so the index-start route
+#                and its SSE stream can be driven (#93). It re-seeds the same
+#                embedding model row as seed-llm, so either order works
 #   check        verify the gateway mTLS hop, the runtime plane and the chat
 #                critical path (delegates the last to chat-smoke.py)
 #   down         tear down (add -v yourself to drop volumes)
@@ -221,9 +223,14 @@ SQL
         # own /llm origin.
         API_KEY="mock-key-not-used"; MODEL="${LLM_MODEL:-E2E-MOCK-MODEL}"
         API_BASE="http://llm-mock:8090"; CRED_TYPE="vllm"
+        EMBEDDING_MODEL="${LLM_EMBEDDING_MODEL:-vllm/E2E-MOCK-EMBEDDING}"
         ;;
-      open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai" ;;
-      anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic" ;;
+      open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai"
+                 EMBEDDING_MODEL="${LLM_EMBEDDING_MODEL:-text-embedding-3-small}" ;;
+      # Anthropic serves no embeddings API, so there is no default to seed. Set
+      # LLM_EMBEDDING_MODEL to name a model some other provider serves.
+      anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic"
+                 EMBEDDING_MODEL="${LLM_EMBEDDING_MODEL:-}" ;;
       *) echo "ERROR: LLM_PROVIDER must be mock, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
     esac
     if [ -z "$API_KEY" ]; then
@@ -238,6 +245,10 @@ SQL
       # therefore titled `vllm/E2E-MOCK-MODEL`, which is what the model picker
       # hands to the SDK and what the SDK puts on the wire.
       MODEL="vllm/${MODEL#vllm/}"
+      # The embedding model needs the same prefix, and for the same reason. The
+      # gateway maps the request model onto this row's data.name and re-splits
+      # the result, so the prefix is what selects the `vllm` credential.
+      [ -n "$EMBEDDING_MODEL" ] && EMBEDDING_MODEL="vllm/${EMBEDDING_MODEL#vllm/}"
     fi
     # A LITERAL api_key deliberately avoids the Fernet vault entirely: vault
     # Resolve returns any value that is not a {{secret.NAME}} reference verbatim,
@@ -326,8 +337,61 @@ ON CONFLICT (elitea_title) DO UPDATE
     SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
         label = EXCLUDED.label, status_ok = true, updated_at = NOW();
 SQL
+
+    # The EMBEDDING model row (#380).
+    #
+    # It is seeded HERE and not only in `seed-index`, because `check` asserts
+    # the embedding hop and the `chat-stream` continuous-integration job runs
+    # `seed-llm` and `check` but never `seed-index`. Seeding it only there left
+    # that job asserting a model no step had written, and the hop answered 404.
+    #
+    # section='embedding' + type='embedding_model' is a FOURTH configuration
+    # section, distinct from the three rows above. The gateway reads it through
+    # `addressableModelSections` (#398), so the row serves POST /llm/v1/embeddings
+    # AND appears in GET /llm/v1/models. That is intended: see DECISIONS.md. The
+    # web model picker reads elitea-main's catalogue and not this route, so the
+    # row never becomes selectable as a chat model.
+    #
+    # `data` may contain ONLY `name` and optionally `ai_credentials` — the
+    # decoder uses DisallowUnknownFields, so any extra key is an invalid
+    # binding (503). `label` must be non-null for the same reason as the chat
+    # model row: repos/models.go REJECTS an unlabelled row with an error rather
+    # than skipping it, emptying the whole catalogue.
+    #
+    # The elitea_title matches the row `seed-index` writes, so the two steps
+    # agree and running both in either order is idempotent.
+    if [ -n "$EMBEDDING_MODEL" ]; then
+      $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
+          -v embedding="$EMBEDDING_MODEL" -v pid="$TARGET" -v schema="p_${TARGET}" <<'SQL'
+INSERT INTO :"schema".configuration
+    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (:pid, 'standalone-embedding', 'standalone-embedding', 'embedding_model', 'embedding',
+     jsonb_build_object('name', :'embedding'), '{}', true, true, 'user', NOW(), NOW())
+ON CONFLICT (elitea_title) DO UPDATE
+    SET data = EXCLUDED.data, type = EXCLUDED.type, section = EXCLUDED.section,
+        label = EXCLUDED.label, shared = true, status_ok = true, updated_at = NOW();
+SQL
+    fi
     done
     echo "→ Seeded. Model alias: $MODEL"
+    # Name BOTH names (#380). A caller sends the catalogue name; the gateway
+    # maps it onto the provider's own name before it dispatches. When the two
+    # disagree the failure is a bare 404 that names only one of them, so print
+    # both here and make the mismatch readable.
+    if [ -n "$EMBEDDING_MODEL" ]; then
+      echo "→ Embedding model: $EMBEDDING_MODEL"
+      echo "   The catalogue stores it as elitea_title 'standalone-embedding'"
+      echo "   with data.name '${EMBEDDING_MODEL}'. A caller may send either name."
+      echo "   The gateway reports the name AFTER it splits the provider prefix,"
+      echo "   so a 404 for '${EMBEDDING_MODEL#*/}' names this same row."
+    else
+      echo "→ NO embedding model seeded: provider '$PROVIDER' serves no embeddings API."
+      echo "   The embedding hop will answer 404 and '$0 check' will FAIL."
+      echo "   Set LLM_EMBEDDING_MODEL to a model some provider serves, then"
+      echo "   run '$0 seed-llm' again."
+    fi
     if [ "$PROVIDER" = "mock" ]; then
       echo "  (offline mock — no provider key used. Set OPENAI_API_KEY to seed a real one instead.)"
     fi
@@ -395,9 +459,17 @@ ON CONFLICT (elitea_title) DO UPDATE
 
 -- 2. The embedding model the resolver binds.
 --
+-- `seed-llm` writes this SAME row, under the same elitea_title (#380). It is
+-- repeated here so `seed-index` still provisions a complete index plane on its
+-- own. Both statements are idempotent, so either order gives the same rows.
+--
 -- section='embedding' + type='embedding_model' is a FOURTH configuration section,
--- distinct from the three `seed-llm` writes. `label` must be non-null for the
--- same reason as the chat model row: repos/models.go REJECTS an unlabelled row
+-- distinct from the three `seed-llm` writes. The gateway reads this section
+-- through `addressableModelSections` (#398), so the row serves the embedding
+-- route AND appears in GET /llm/v1/models. The web model picker reads
+-- elitea-main's catalogue and not that route, so the row can never be selected
+-- as a chat model. `label` must be non-null for the same
+-- reason as the chat model row: repos/models.go REJECTS an unlabelled row
 -- with an error rather than skipping it, emptying the whole catalogue.
 --
 -- The gateway reads THIS section for POST /llm/v1/embeddings — it is one of the
@@ -473,9 +545,12 @@ SQL
     echo "   execution.failed, and a partially-working download would index"
     echo "   files with EMPTY content while still reporting success."
     echo
-    echo "   PUT/DELETE/HEAD on {bucket}/{key} are still missing. An index run"
-    echo "   does not need them (measured: a run completes with GET alone);"
-    echo "   the SDK uses them for artifact create/delete and existence checks."
+    echo "   PUT, DELETE and HEAD on {bucket}/{key} are served too. Commit"
+    echo "   2ef4f462 added the S3 object write verbs. Measured end to end"
+    echo "   through the edge: create bucket 200, PUT 200, GET returns the"
+    echo "   same bytes, the listing reports the right size, DELETE 204, and"
+    echo "   the GET after the delete 404. An index run needs GET alone; the"
+    echo "   SDK uses the others for artifact create/delete and existence checks."
     echo
     echo "   To seed an artifact, use the native route:"
     echo "     POST /api/v2/artifacts/buckets/{projectID}  {\"name\":\"elitea-artifacts\"}"
@@ -829,7 +904,61 @@ except Exception as error:
         *'DIM 0'*)              fail "embedding hop returned no vector: $(printf '%s' "$EMB_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
         *'DIM '[1-9]*)          echo "  ✓ embedding hop returned a vector ($(printf '%s' "$EMB_OUT" | tr -dc '0-9 ' | awk '{print $1}') dimensions)" ;;
         *project_not_resolved*) echo "  ~ SKIPPED: caller has no personal project (run: $0 seed)" ;;
+        *model_not_found*)
+          # Name the cause (#380). A bare 404 sent people to the gateway's
+          # routing when the catalogue simply held no embedding row, or held
+          # one the gateway could not read.
+          fail "embedding hop: the gateway serves no such embedding model.
+       Check the row: SELECT elitea_title, type, section, data->>'name'
+         FROM p_<id>.configuration WHERE section = 'embedding';
+       It must be type='embedding_model' AND section='embedding'.
+       No row at all means seed-llm did not seed one — run: $0 seed-llm
+       Raw: $(printf '%s' "$EMB_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
         *)                      fail "embedding hop failed: $(printf '%s' "$EMB_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
+      esac
+
+      # GET /llm/v1/models must list BOTH models (#398). The gateway reads
+      # every pair in `addressableModelSections`, so the list carries the chat
+      # model and the embedding model. This is intended, and DECISIONS.md
+      # records why: OpenAI's own /v1/models lists embedding models, the legacy
+      # LiteLLM list did too, and the BFF.3 parity gate asserts they stay
+      # present. The web model picker does NOT read this route — it reads
+      # elitea-main's catalogue — so an embedding model here never becomes
+      # selectable as a chat model.
+      #
+      # Assert the list here, because no other check in this repository reads
+      # it on a live stack.
+      MODELS_OUT="$(llm_probe "
+import json, ssl, urllib.error, urllib.request
+context = ssl.create_default_context(cafile='/m/runtime-ca.crt')
+request = urllib.request.Request(
+    'https://elitea-platform-edge/llm/v1/models',
+    headers={'Authorization': 'Bearer ${LLM_JWT}'})
+try:
+    payload = json.loads(urllib.request.urlopen(request, context=context, timeout=30).read())
+    print('IDS', json.dumps([m.get('id') for m in payload.get('data') or []]))
+except urllib.error.HTTPError as error:
+    print('HTTPERR', error.code, error.read().decode()[:200])
+except Exception as error:
+    print('ERR', type(error).__name__, error)
+")"
+      # Both names are required, so an empty list cannot pass. A list that
+      # holds the chat model alone means the embedding section is invisible to
+      # the resolver, which is the defect #398 corrected.
+      case "$MODELS_OUT" in
+        *'E2E-MOCK-MODEL'*)
+          case "$MODELS_OUT" in
+            *'E2E-MOCK-EMBEDDING'*|*'standalone-embedding'*)
+              echo "  ✓ GET /llm/v1/models lists the chat model and the embedding model" ;;
+            *)
+              fail "GET /llm/v1/models omits the embedding model (#398).
+       The resolver reads every pair in addressableModelSections, so the
+       embedding row must appear. Check the row:
+         SELECT elitea_title, type, section FROM p_<id>.configuration
+           WHERE section = 'embedding';
+       Raw: $(printf '%s' "$MODELS_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+          esac ;;
+        *) fail "GET /llm/v1/models did not list the seeded chat model: $(printf '%s' "$MODELS_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
       esac
     fi
 
