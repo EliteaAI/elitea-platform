@@ -138,19 +138,26 @@ type RouterConfig struct {
 	// Unassigned, the endpoint serves settings schemas with no argument schemas
 	// and every tool form in the web client renders empty.
 	ToolkitArgumentSchemas v2toolkits.ToolkitArgumentSchemaSource
-	SkillsRepo             v2skills.Repository
-	FoldersRepo            v2folders.Repository
-	TagsRepo               v2tags.Repository
-	AnalyticsRepo          v2analytics.Repository
-	ConvsRepo              v2convs.Repository
-	WebhookRepo            webhook.Repository
-	RedisClient            *goredis.Client
-	EventSource            v2events.EventSource
-	Shadow                 *shadow.Comparator
-	ShadowMetrics          *shadow.Metrics
-	CutoverTracker         *cutover.Tracker
-	CutoverRouter          *cutover.Router
-	AdminUI                *adminui.Config
+	// ToolkitSettingsDefinitions supplies the same endpoint with the "$defs"
+	// block each type's settings properties reference. It is injected for the
+	// same reason as ToolkitArgumentSchemas: the implementation joins two
+	// digest-pinned snapshots owned by internal/runtimecomposition.
+	// Unassigned, the endpoint serves no "$defs", and the web client's toolkit
+	// credential picker and index schedule credential select stay unreachable.
+	ToolkitSettingsDefinitions v2toolkits.ToolkitSettingsDefinitionSource
+	SkillsRepo                 v2skills.Repository
+	FoldersRepo                v2folders.Repository
+	TagsRepo                   v2tags.Repository
+	AnalyticsRepo              v2analytics.Repository
+	ConvsRepo                  v2convs.Repository
+	WebhookRepo                webhook.Repository
+	RedisClient                *goredis.Client
+	EventSource                v2events.EventSource
+	Shadow                     *shadow.Comparator
+	ShadowMetrics              *shadow.Metrics
+	CutoverTracker             *cutover.Tracker
+	CutoverRouter              *cutover.Router
+	AdminUI                    *adminui.Config
 	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
 	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
 	// DELETE cascade, but only inside newProductionRouter — it is
@@ -1221,6 +1228,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				toolkitHandler := v2toolkits.NewHandler(
 					cfg.Pool,
 					v2toolkits.WithArgumentSchemas(cfg.ToolkitArgumentSchemas),
+					v2toolkits.WithSettingsDefinitions(cfg.ToolkitSettingsDefinitions),
 				)
 				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills).
 				//

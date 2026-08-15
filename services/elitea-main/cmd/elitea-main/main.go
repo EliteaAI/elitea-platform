@@ -1017,11 +1017,28 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("load pinned current toolkit schema snapshot: %w", err)
 	}
+	// The same endpoint serves the "$defs" its settings properties reference.
+	// That block is the join of the toolkit snapshot above (which settings
+	// field references a configuration) with the SDK configuration catalogue
+	// (which section that configuration belongs to), so both pinned files load
+	// here and stop startup the same way if either is unreadable.
+	sdkConfigurations, err := runtimecomposition.LoadPinnedCurrentSDKConfigurationCatalog()
+	if err != nil {
+		return fmt.Errorf("load pinned current SDK configuration catalog: %w", err)
+	}
+	toolkitSettingsDefinitions, err := runtimecomposition.NewCurrentToolkitSettingsDefinitionCatalog(
+		toolkitArgumentSchemas,
+		sdkConfigurations,
+	)
+	if err != nil {
+		return fmt.Errorf("compose current toolkit settings definitions: %w", err)
+	}
 
 	r := api.NewRouter(api.RouterConfig{
-		AdminUI:                adminUICfg,
-		Pool:                   pool,
-		ToolkitArgumentSchemas: toolkitArgumentSchemas,
+		AdminUI:                    adminUICfg,
+		Pool:                       pool,
+		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
+		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
