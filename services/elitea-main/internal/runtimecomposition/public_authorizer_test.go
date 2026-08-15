@@ -245,29 +245,167 @@ func TestPublicAuthorizerRequiresChatPermissionForBothAgentCapabilities(t *testi
 	}
 }
 
-func TestPublicAuthorizerKeepsValidationReplayTransitionalAndFailClosed(t *testing.T) {
-	store := &authorizationStore{row: authorizationRow{capabilityID: "configuration.validate.v1"}}
-	permissions := &authorizationPermissionResolver{
-		resolution: auth.PermissionResolution{
-			UserID:      17,
-			Permissions: []string{"configurations.configuration.details"},
+// TestPublicAuthorizerAuthorizesValidationEventsOnMembershipNotPermissionCount
+// pins both directions that the replaced size check got wrong. A member with an
+// empty default-mode permission set must keep the stream, and a non-member with
+// a large set must lose it. Every case here holds the permission set constant
+// against the membership answer, or the membership answer constant against the
+// permission set, so a check that reads the set size fails at least one case.
+func TestPublicAuthorizerAuthorizesValidationEventsOnMembershipNotPermissionCount(t *testing.T) {
+	ctx := auth.ContextWithAuthenticatedUser(
+		context.Background(),
+		auth.User{ID: "17"},
+		auth.AuthenticationSourceSession,
+	)
+	cases := []struct {
+		name        string
+		member      bool
+		permissions []string
+		admitted    bool
+	}{
+		{
+			name:        "member holding no default-mode permission keeps the stream",
+			member:      true,
+			permissions: nil,
+			admitted:    true,
+		},
+		{
+			name:        "member holding one unrelated permission keeps the stream",
+			member:      true,
+			permissions: []string{"models.project_context.view"},
+			admitted:    true,
+		},
+		{
+			name:   "non-member holding many unrelated permissions loses the stream",
+			member: false,
+			permissions: []string{
+				"models.project_context.view",
+				"models.applications.tool.patch",
+				"models.chat.messages.create",
+				"configurations.configuration.details",
+			},
+			admitted: false,
+		},
+		{
+			name:        "non-member holding no permission loses the stream",
+			member:      false,
+			permissions: nil,
+			admitted:    false,
 		},
 	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			admission := &authorizationStore{row: authorizationRow{active: testCase.member}}
+			output := &authorizationStore{row: authorizationRow{capabilityID: "configuration.validate.v1"}}
+			permissions := &authorizationPermissionResolver{
+				resolution: auth.PermissionResolution{
+					UserID:      17,
+					Permissions: testCase.permissions,
+				},
+			}
+			authorizer, err := newPostgresPublicAuthorizer(admission, output, permissions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1")
+			if testCase.admitted && err != nil {
+				t.Fatalf("member with %d permissions refused: %v", len(testCase.permissions), err)
+			}
+			if !testCase.admitted && !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
+				t.Fatalf("non-member with %d permissions error = %v", len(testCase.permissions), err)
+			}
+			// The branch must reach the membership predicate, and it must ask
+			// it about the projection project and the polling principal.
+			if admission.calls != 1 {
+				t.Fatalf("membership query calls = %d, want 1", admission.calls)
+			}
+			if admission.admissionParams.ProjectID != 42 || admission.admissionParams.UserID != 17 {
+				t.Fatalf("membership query params = %+v", admission.admissionParams)
+			}
+		})
+	}
+}
+
+// TestPublicAuthorizerRefusesValidationEventsForInactivePrincipal keeps the
+// stream fail-closed when the resolver rejects the principal, which is what
+// revalidates the active user and token on every poll.
+func TestPublicAuthorizerRefusesValidationEventsForInactivePrincipal(t *testing.T) {
+	admission := &authorizationStore{row: authorizationRow{active: true}}
 	authorizer, err := newPostgresPublicAuthorizer(
-		&authorizationStore{row: authorizationRow{active: true}},
-		store,
-		permissions,
+		admission,
+		&authorizationStore{row: authorizationRow{capabilityID: "configuration.validate.v1"}},
+		&authorizationPermissionResolver{err: errors.New("inactive principal")},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, auth.AuthenticationSourceSession)
-	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); err != nil {
-		t.Fatalf("validation compatibility replay error = %v", err)
-	}
-	permissions.resolution.Permissions = nil
 	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
-		t.Fatalf("empty validation permissions error = %v", err)
+		t.Fatalf("inactive principal error = %v", err)
+	}
+	if admission.calls != 0 {
+		t.Fatalf("inactive principal reached the membership query %d times", admission.calls)
+	}
+}
+
+// TestPublicAuthorizerRefusesValidationEventsWhenMembershipQueryFails keeps a
+// database failure from admitting the stream.
+func TestPublicAuthorizerRefusesValidationEventsWhenMembershipQueryFails(t *testing.T) {
+	authorizer, err := newPostgresPublicAuthorizer(
+		&authorizationStore{row: authorizationRow{active: true, err: errors.New("connection reset")}},
+		&authorizationStore{row: authorizationRow{capabilityID: "configuration.validate.v1"}},
+		&authorizationPermissionResolver{resolution: auth.PermissionResolution{UserID: 17}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, auth.AuthenticationSourceSession)
+	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); err == nil {
+		t.Fatal("membership query failure admitted the stream")
+	}
+}
+
+// TestPublicAuthorizerKeepsNamedPermissionBranchesIndependentOfMembership
+// proves the other two branches did not pick up a membership dependency. A
+// member without the named permission must still be refused.
+func TestPublicAuthorizerKeepsNamedPermissionBranchesIndependentOfMembership(t *testing.T) {
+	ctx := auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, auth.AuthenticationSourceSession)
+	cases := []struct {
+		capabilityID string
+		required     string
+	}{
+		{capabilityID: executiondomain.IndexIngestCapability, required: "models.applications.tool.patch"},
+		{capabilityID: executiondomain.AgentApplicationCapability, required: "models.chat.messages.create"},
+		{capabilityID: executiondomain.AgentAdhocCapability, required: "models.chat.messages.create"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.capabilityID, func(t *testing.T) {
+			admission := &authorizationStore{row: authorizationRow{active: true}}
+			permissions := &authorizationPermissionResolver{
+				resolution: auth.PermissionResolution{
+					UserID:      17,
+					Permissions: []string{"models.project_context.view"},
+				},
+			}
+			authorizer, err := newPostgresPublicAuthorizer(
+				admission,
+				&authorizationStore{row: authorizationRow{capabilityID: testCase.capabilityID}},
+				permissions,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
+				t.Fatalf("member without %s error = %v", testCase.required, err)
+			}
+			if admission.calls != 0 {
+				t.Fatalf("named permission branch ran the membership query %d times", admission.calls)
+			}
+			permissions.resolution.Permissions = []string{testCase.required}
+			if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); err != nil {
+				t.Fatalf("caller holding %s refused: %v", testCase.required, err)
+			}
+		})
 	}
 }
 
