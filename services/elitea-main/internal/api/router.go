@@ -196,6 +196,11 @@ type RouterConfig struct {
 	// in the production router.
 	GatewayProxy           http.Handler
 	GatewayProjectResolver apimw.PersonalProjectResolver
+	// ConfigConnectionChecker performs the real, minimal provider round trip
+	// backing /configurations/check_connection(s) (#319). nil leaves those
+	// routes reporting an honest "not available" failure rather than the
+	// previous unconditional-success stub.
+	ConfigConnectionChecker v2configs.ConnectionChecker
 }
 
 type RuntimeRoutes struct {
@@ -1027,6 +1032,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			r.Mount("/configurations", v2configs.NewHandler(
 				cfg.Pool,
 				v2configs.WithPermissionResolver(permissionResolver),
+				v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
 			).Routes())
 
 			// === Secrets ===

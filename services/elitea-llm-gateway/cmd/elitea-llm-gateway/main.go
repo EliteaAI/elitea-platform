@@ -108,6 +108,12 @@ func main() {
 	// gateway keeps the zero-provider bootstrap account — it will start, but
 	// every provider call fails until the database returns.
 	var acct schemas.Account
+	// egressPolicy backs /llm/v1/check_connection (#319): it needs the exact
+	// same egress-allowlist decision GetKeysForProvider applies to persisted
+	// credentials, for a credential under test that has no row yet. nil (no
+	// pool) leaves the endpoint refusing every request — fail closed, not
+	// silently unchecked.
+	var egressPolicy llmproxy.EgressPolicy
 	if pool != nil {
 		vault, verr := account.NewFernetVault(account.NewPoolQuerier(pool))
 		if verr != nil {
@@ -130,6 +136,7 @@ func main() {
 			os.Exit(1)
 		}
 		acct = eliteaAcct
+		egressPolicy = eliteaAcct
 		if len(cfg.SelfLLMOrigins) == 0 {
 			logger.Warn("GATEWAY_SELF_LLM_ORIGINS is empty — the request-time SELF_REFERENTIAL_CREDENTIAL guard (spec §2.6 guard #1) is inert")
 		}
@@ -264,6 +271,7 @@ func main() {
 			llmproxy.WithLoopBreakerParams(breakerParams),
 			llmproxy.WithStreamGrace(cfg.StreamGrace),
 			llmproxy.WithStreamDrainLimit(cfg.StreamDrainLimit),
+			llmproxy.WithEgressPolicy(egressPolicy),
 		},
 		budgetOpts...,
 	)

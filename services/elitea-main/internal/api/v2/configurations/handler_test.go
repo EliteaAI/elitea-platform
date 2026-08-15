@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,6 +46,37 @@ func setupConfigRouter() *chi.Mux {
 	// NewHandler panics if pool is nil only when it tries to use it.
 	// For static handlers the pool is never accessed, so we can safely pass nil.
 	h := handler.NewHandler(nil)
+	r := chi.NewRouter()
+	r.Mount("/api/v2", h.Routes())
+	return r
+}
+
+// checkerCall records one invocation of fakeConnectionChecker.Check, so tests
+// can assert not just the HTTP response but that a real round trip actually
+// happened — the property #319 requires ("must FAIL if the implementation
+// reports success without a provider round trip").
+type checkerCall struct {
+	configType string
+	data       map[string]any
+}
+
+// fakeConnectionChecker is a test double for handler.ConnectionChecker. A
+// handler bug that reports success without calling Check (the exact defect
+// #319 fixes) is caught by asserting len(calls) rather than trusting the
+// canned result field.
+type fakeConnectionChecker struct {
+	calls  []checkerCall
+	result handler.ConnectionCheckResult
+	err    error
+}
+
+func (f *fakeConnectionChecker) Check(_ context.Context, configType string, data map[string]any) (handler.ConnectionCheckResult, error) {
+	f.calls = append(f.calls, checkerCall{configType: configType, data: data})
+	return f.result, f.err
+}
+
+func setupConfigRouterWithChecker(checker handler.ConnectionChecker) *chi.Mux {
+	h := handler.NewHandler(nil, handler.WithConnectionChecker(checker))
 	r := chi.NewRouter()
 	r.Mount("/api/v2", h.Routes())
 	return r
@@ -239,15 +271,35 @@ func TestAvailableFiltersBySection(t *testing.T) {
 
 // ---- CheckConnection --------------------------------------------------------
 
-func TestCheckConnection_Success(t *testing.T) {
-	r := setupConfigRouter()
+// TestCheckConnection_ReportsSuccessOnlyWhenCheckerCalled is the test #319
+// requires: the handler must not be able to report success without actually
+// invoking the connection checker (the real provider round trip). Before this
+// fix, CheckConnection returned success:true unconditionally, ignoring the
+// request body and never calling anything — that stub would fail this
+// assertion (len(checker.calls) would stay 0).
+func TestCheckConnection_ReportsSuccessOnlyWhenCheckerCalled(t *testing.T) {
+	checker := &fakeConnectionChecker{
+		result: handler.ConnectionCheckResult{Success: true, Message: "Connection successful"},
+	}
+	r := setupConfigRouterWithChecker(checker)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connection/proj-1/openai", nil)
+	body := `{"api_base":"https://api.openai.com/v1","api_key":"sk-good"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connection/1/open_ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if len(checker.calls) != 1 {
+		t.Fatalf("expected exactly one checker call, got %d — success must come from a real round trip", len(checker.calls))
+	}
+	if checker.calls[0].configType != "open_ai" {
+		t.Errorf("checker called with type %q, want open_ai", checker.calls[0].configType)
+	}
+	if apiBase, _ := checker.calls[0].data["api_base"].(string); apiBase != "https://api.openai.com/v1" {
+		t.Errorf("checker called with api_base %q, want the request body's value", apiBase)
 	}
 
 	var result map[string]any
@@ -256,6 +308,137 @@ func TestCheckConnection_Success(t *testing.T) {
 	}
 	if success, _ := result["success"].(bool); !success {
 		t.Error("expected success=true in CheckConnection response")
+	}
+}
+
+// TestCheckConnection_BadCredentialReportsFailure asserts the second half of
+// #319's bar: a credential the provider rejects must surface as a failure.
+// The browser (useCreateConfiguration.onTestConnection) keys its
+// success/failure toast off the HTTP status, so this must be a non-2xx —
+// matching legacy's check_connection.py contract exactly (400 with
+// {"success":false,"message":...}).
+func TestCheckConnection_BadCredentialReportsFailure(t *testing.T) {
+	checker := &fakeConnectionChecker{
+		result: handler.ConnectionCheckResult{Success: false, Message: "The provider rejected the credential."},
+	}
+	r := setupConfigRouterWithChecker(checker)
+
+	body := `{"api_base":"https://api.openai.com/v1","api_key":"sk-bad"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connection/1/open_ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if len(checker.calls) != 1 {
+		t.Fatalf("expected exactly one checker call, got %d", len(checker.calls))
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if success, _ := result["success"].(bool); success {
+		t.Fatal("a credential the provider rejects must not report success")
+	}
+	if msg, _ := result["message"].(string); msg == "" {
+		t.Error("expected a non-empty, safe failure message")
+	}
+}
+
+// TestCheckConnection_CheckerTransportErrorNeverReportsSuccess proves a
+// gateway-unreachable/transport failure never falls back to success — the
+// exact "the routes exist, but always claim success" defect the issue
+// describes must not resurface when the gateway itself is unreachable.
+func TestCheckConnection_CheckerTransportErrorNeverReportsSuccess(t *testing.T) {
+	checker := &fakeConnectionChecker{err: errors.New("gateway unreachable")}
+	r := setupConfigRouterWithChecker(checker)
+
+	body := `{"api_base":"https://api.openai.com/v1","api_key":"sk-x"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connection/1/open_ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a transport-level checker error must never report HTTP 200 success, got body: %s", rec.Body.String())
+	}
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if success, _ := result["success"].(bool); success {
+		t.Fatal("must not report success when the checker itself errors")
+	}
+}
+
+// TestCheckConnection_NoCheckerConfiguredNeverReportsSuccess covers a Handler
+// wired without WithConnectionChecker (e.g. LLM_GATEWAY_URL unset) — it must
+// report an honest failure, not silently behave like the old stub.
+func TestCheckConnection_NoCheckerConfiguredNeverReportsSuccess(t *testing.T) {
+	r := setupConfigRouter() // no WithConnectionChecker
+
+	body := `{"api_base":"https://api.openai.com/v1","api_key":"sk-x"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connection/1/open_ai", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("no checker configured must never report success, got 200: %s", rec.Body.String())
+	}
+}
+
+// TestCheckConnection_UnknownTypeReturns404WithoutCallingChecker matches
+// legacy's check_connection.py: a type absent from the registry entirely is
+// a 404, and nothing is called to check it.
+func TestCheckConnection_UnknownTypeReturns404WithoutCallingChecker(t *testing.T) {
+	checker := &fakeConnectionChecker{result: handler.ConnectionCheckResult{Success: true}}
+	r := setupConfigRouterWithChecker(checker)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connection/1/not_a_real_type", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(checker.calls) != 0 {
+		t.Fatalf("checker must not be called for an unknown type, got %d calls", len(checker.calls))
+	}
+}
+
+// TestCheckConnection_KnownButUncheckableTypeReturns400WithoutCallingChecker
+// covers every type this Go build still cannot really check (toolkit
+// credential types, amazon_bedrock, vertex_ai, ...): it must report the
+// honest "not supported yet" failure legacy's own registry fallback used —
+// never the previous unconditional success.
+func TestCheckConnection_KnownButUncheckableTypeReturns400WithoutCallingChecker(t *testing.T) {
+	checker := &fakeConnectionChecker{result: handler.ConnectionCheckResult{Success: true}}
+	r := setupConfigRouterWithChecker(checker)
+
+	// "github" is a real pinned catalogue type (credentials section) but not
+	// one of this build's checkable ai_credentials provider types.
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connection/1/github", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(checker.calls) != 0 {
+		t.Fatalf("checker must not be called for a not-yet-checkable type, got %d calls", len(checker.calls))
+	}
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if success, _ := result["success"].(bool); success {
+		t.Fatal("a not-yet-checkable type must never report success")
 	}
 }
 
@@ -283,12 +466,19 @@ func TestBatchCheckConnections_Empty(t *testing.T) {
 	}
 }
 
-func TestBatchCheckConnections_MultiplItems(t *testing.T) {
-	r := setupConfigRouter()
+// TestBatchCheckConnections_MixedItems proves per-item that (a) a checkable
+// type reports success ONLY via a real checker call, and (b) an unknown type
+// gets the legacy-parity unsupported:true flag WITHOUT any checker call —
+// the batch equivalent of the single-check tests above.
+func TestBatchCheckConnections_MixedItems(t *testing.T) {
+	checker := &fakeConnectionChecker{
+		result: handler.ConnectionCheckResult{Success: true, Message: "Connection successful"},
+	}
+	r := setupConfigRouterWithChecker(checker)
 
 	payload, err := json.Marshal([]map[string]any{
-		{"id": "cfg-1"},
-		{"id": "cfg-2"},
+		{"id": "cfg-1", "type": "open_ai", "data": map[string]any{"api_base": "https://api.openai.com/v1", "api_key": "sk-good"}},
+		{"id": "cfg-2", "type": "not_a_real_type", "data": map[string]any{}},
 	})
 	if err != nil {
 		t.Fatalf("failed to encode request: %v", err)
@@ -307,12 +497,56 @@ func TestBatchCheckConnections_MultiplItems(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 	if len(results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(results))
+		t.Fatalf("expected 2 results, got %d", len(results))
 	}
-	for _, res := range results {
-		if success, _ := res["success"].(bool); !success {
-			t.Errorf("expected success=true for item %v", res["id"])
-		}
+	if success, _ := results[0]["success"].(bool); !success {
+		t.Errorf("expected success=true for cfg-1 (checkable type + real checker success)")
+	}
+	if success, _ := results[1]["success"].(bool); success {
+		t.Errorf("expected success=false for cfg-2 (unknown type)")
+	}
+	if unsupported, _ := results[1]["unsupported"].(bool); !unsupported {
+		t.Errorf("expected unsupported=true for cfg-2 (unknown type), got %v", results[1])
+	}
+	if len(checker.calls) != 1 {
+		t.Fatalf("expected exactly one checker call (cfg-1 only), got %d — success must come from a real round trip", len(checker.calls))
+	}
+}
+
+// TestBatchCheckConnections_BadCredentialReportsFailure is the batch-path
+// twin of TestCheckConnection_BadCredentialReportsFailure.
+func TestBatchCheckConnections_BadCredentialReportsFailure(t *testing.T) {
+	checker := &fakeConnectionChecker{
+		result: handler.ConnectionCheckResult{Success: false, Message: "The provider rejected the credential."},
+	}
+	r := setupConfigRouterWithChecker(checker)
+
+	payload, err := json.Marshal([]map[string]any{
+		{"id": "cfg-1", "type": "open_ai", "data": map[string]any{"api_base": "https://api.openai.com/v1", "api_key": "sk-bad"}},
+	})
+	if err != nil {
+		t.Fatalf("failed to encode request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connections/proj-1", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (batch is always 200), got %d", rec.Code)
+	}
+	var results []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if success, _ := results[0]["success"].(bool); success {
+		t.Fatal("a credential the provider rejects must not report success")
+	}
+	if len(checker.calls) != 1 {
+		t.Fatalf("expected exactly one checker call, got %d", len(checker.calls))
 	}
 }
 
