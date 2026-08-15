@@ -335,13 +335,20 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// Wire currentProjectList with OIDC-only auth when formGraph is absent.
 	// formGraph (ELITEA_AUTH_CONFIG_FILE) wires it above with full validators;
 	// OIDC-only deployments (E2E stack) only have session-cookie auth.
+	//
+	// authsvc.NewPrincipalValidator(pool) is built here rather than reusing the
+	// `principalValidator` variable because that variable is nil in exactly
+	// this branch: it is only assigned inside the `authEnabled` block, which is
+	// also the only place formGraph is set. See oidcSessionAuthConfig for why
+	// nil is not survivable (#314).
 	if currentProjectList == nil && oidcSessionHandler != nil {
 		var oidcProjectListErr error
 		currentProjectList, oidcProjectListErr = v2projects.NewCurrentProjectListRoute(
 			sqlcgen.New(pool),
-			apimw.AuthConfig{
-				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
-			},
+			oidcSessionAuthConfig(
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
 			legacyrbac.NewPostgresResolver(pool),
 		)
 		if oidcProjectListErr != nil {
@@ -367,12 +374,17 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if repositoryErr != nil {
 			return fmt.Errorf("compose OIDC-only notification events repository: %w", repositoryErr)
 		}
+		// Same principal-validator reasoning as the project-list branch above:
+		// the session cookie is the only credential here, and without a
+		// validator a deactivated user's unexpired cookie opens the stream
+		// (#314).
 		var oidcNotificationEventsErr error
 		currentNotificationEvents, oidcNotificationEventsErr = notificationsapi.NewCurrentNotificationEventsRoute(
 			notificationEventsRepository,
-			apimw.AuthConfig{
-				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
-			},
+			oidcSessionAuthConfig(
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
 			legacyrbac.NewPostgresResolver(pool),
 		)
 		if oidcNotificationEventsErr != nil {
