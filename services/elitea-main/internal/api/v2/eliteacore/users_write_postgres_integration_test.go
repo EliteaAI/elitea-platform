@@ -592,7 +592,7 @@ func newUsersWritePostgresPool(t *testing.T) *pgxpool.Pool {
 
 	// The REAL migration, not a hand-written CREATE TABLE. UsersDelete revokes
 	// token bindings through this table on every removal, so a fixture shape
-	// that drifted from migrations/shared/0070 would let the revocation pass
+	// that drifted from migrations/shared/0071 would let the revocation pass
 	// here and fail 42P01 in production. Reading the file means it cannot.
 	// The foreign key inside it is guarded by to_regclass and resolves, because
 	// the projection above created public.auth_core__token.

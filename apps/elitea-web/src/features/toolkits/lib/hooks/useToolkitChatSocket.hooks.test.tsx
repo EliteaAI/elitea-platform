@@ -347,4 +347,139 @@ describe('useToolkitChatSocket — SSE execution stream (issue #93)', () => {
     // be re-dispatched on socket.io, so it must not be reported as failed.
     expect(onRunFinish).not.toHaveBeenCalled();
   });
+
+  // issue #310: once the stream has genuinely opened, a LATER drop must not
+  // re-dispatch the same run over socket.io — the execution is already
+  // progressing server-side, so that would start a second run.
+  it('does NOT forward a stream error to onStreamError once the stream has opened', () => {
+    const client = createTestSocketClient();
+    const { onStreamError, onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('open');
+    });
+    act(() => {
+      sse.fail();
+    });
+
+    expect(onStreamError).not.toHaveBeenCalled();
+    expect(onRunFinish).not.toHaveBeenCalled();
+  });
+
+  it('re-arms the open gate for a fresh executionId — a NEW run that never opens still falls back', () => {
+    const client = createTestSocketClient();
+    const onStreamError = vi.fn();
+    const { rerender } = renderHook(
+      (props: { executionId: string | undefined }) =>
+        useToolkitChatSocket({
+          isAuthCheckSession: false,
+          onMcpAuthRequired: undefined,
+          onRunFinish: vi.fn(),
+          onStartTask: vi.fn(),
+          setChatHistory: vi.fn(),
+          activeConversationId: undefined,
+          activeConversationUuid: undefined,
+          projectId: 'proj-1',
+          roomEnabled: false,
+          executionId: props.executionId,
+          onStreamError,
+        }),
+      { wrapper: withSocket(client), initialProps: { executionId: 'exec-1' } },
+    );
+
+    act(() => {
+      sse.emit('open');
+    });
+    act(() => {
+      sse.fail();
+    });
+    expect(onStreamError).not.toHaveBeenCalled();
+
+    // A brand-new run gets its own stream and its own open-gate state.
+    rerender({ executionId: 'exec-2' });
+    act(() => {
+      sse.fail();
+    });
+    expect(onStreamError).toHaveBeenCalledTimes(1);
+  });
+
+  // issue #310: "No message_id guard — any frame arriving on the stream
+  // reaches the reducer, regardless of which run it belongs to."
+  describe('message_id correlation', () => {
+    it('routes every frame belonging to the SAME message_id', () => {
+      const client = createTestSocketClient();
+      const { setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+        sse.emit('execution.node_event', JSON.stringify({ type: 'chunk', message_id: 'm1', content: 'hello' }));
+      });
+
+      expect(setChatHistory).toHaveBeenCalledTimes(2);
+    });
+
+    it('drops a frame naming a DIFFERENT message_id once one is tracked', () => {
+      const client = createTestSocketClient();
+      const { setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+      });
+      expect(setChatHistory).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        // A stray frame from a different run's message_id must not reach
+        // the reducer and corrupt this run's transcript.
+        sse.emit('execution.node_event', JSON.stringify({ type: 'chunk', message_id: 'stray-run', content: 'oops' }));
+      });
+      expect(setChatHistory).toHaveBeenCalledTimes(1);
+    });
+
+    it('still routes a frame that carries no message_id at all', () => {
+      const client = createTestSocketClient();
+      const { setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+        sse.emit('execution.node_event', JSON.stringify({ type: 'chunk', content: 'no id here' }));
+      });
+
+      expect(setChatHistory).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-arms the tracked message_id for a fresh executionId', () => {
+      const client = createTestSocketClient();
+      const setChatHistory = vi.fn();
+      const { rerender } = renderHook(
+        (props: { executionId: string | undefined }) =>
+          useToolkitChatSocket({
+            isAuthCheckSession: false,
+            onMcpAuthRequired: undefined,
+            onRunFinish: vi.fn(),
+            onStartTask: vi.fn(),
+            setChatHistory,
+            activeConversationId: undefined,
+            activeConversationUuid: undefined,
+            projectId: 'proj-1',
+            roomEnabled: false,
+            executionId: props.executionId,
+            onStreamError: vi.fn(),
+          }),
+        { wrapper: withSocket(client), initialProps: { executionId: 'exec-1' } },
+      );
+
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+      });
+      expect(setChatHistory).toHaveBeenCalledTimes(1);
+
+      // A brand-new run (its own executionId, its own message_id) must not
+      // be gated by the PREVIOUS run's tracked message_id.
+      rerender({ executionId: 'exec-2' });
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm2', content: { task_id: 't2' } }));
+      });
+      expect(setChatHistory).toHaveBeenCalledTimes(2);
+    });
+  });
 });

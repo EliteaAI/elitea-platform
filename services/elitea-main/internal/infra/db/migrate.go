@@ -43,7 +43,7 @@ const gatewayMigrationPath = "shared/0067_gateway_budget_schema.sql"
 // the hybrid POV compose) runs elitea-migrate and applies the whole ledgered
 // history, so none of them need this. Only ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA
 // does.
-const tokenBindingMigrationPath = "shared/0070_token_project_binding.sql"
+const tokenBindingMigrationPath = "shared/0071_token_project_binding.sql"
 
 // dumpGuardExemptMigrations are the ledgered shared files RunMigrations applies
 // itself, in order. Every one of them MUST be idempotent and MUST tolerate a

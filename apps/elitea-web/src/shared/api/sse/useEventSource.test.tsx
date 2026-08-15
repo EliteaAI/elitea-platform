@@ -22,10 +22,11 @@ interface ProbeProps {
   readonly url: string | null | undefined;
   readonly handlers: Record<string, (event: MessageEvent) => void>;
   readonly onError?: (event: Event) => void;
+  readonly onOpen?: (event: Event) => void;
 }
 
-function Probe({ url, handlers, onError }: ProbeProps): null {
-  useEventSource(url, handlers, onError ? { onError } : {});
+function Probe({ url, handlers, onError, onOpen }: ProbeProps): null {
+  useEventSource(url, handlers, { ...(onError ? { onError } : {}), ...(onOpen ? { onOpen } : {}) });
   return null;
 }
 
@@ -305,6 +306,85 @@ describe('useEventSource — connection failure', () => {
     expect(() =>
       act(() => {
         registry?.fail();
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe('useEventSource — connection open (issue 310)', () => {
+  it('reports a successful connection through onOpen', () => {
+    registry = installTestEventSource();
+    const onOpen = vi.fn();
+    render(
+      <Probe
+        url="/api/v2/stream"
+        handlers={{ ping: vi.fn() }}
+        onOpen={onOpen}
+      />,
+    );
+
+    act(() => {
+      registry?.emit('open');
+    });
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not put `open` in the connection cache key — a caller-supplied onOpen never reopens the stream', () => {
+    registry = installTestEventSource();
+    const { rerender } = render(
+      <Probe
+        url="/api/v2/stream"
+        handlers={{ ping: vi.fn() }}
+        onOpen={vi.fn()}
+      />,
+    );
+    rerender(
+      <Probe
+        url="/api/v2/stream"
+        handlers={{ ping: vi.fn() }}
+        onOpen={vi.fn()}
+      />,
+    );
+    expect(registry.getSources()).toHaveLength(1);
+  });
+
+  it('calls the LATEST onOpen, not a stale closure', () => {
+    registry = installTestEventSource();
+    const first = vi.fn();
+    const second = vi.fn();
+    const { rerender } = render(
+      <Probe
+        url="/api/v2/stream"
+        handlers={{ ping: vi.fn() }}
+        onOpen={first}
+      />,
+    );
+    rerender(
+      <Probe
+        url="/api/v2/stream"
+        handlers={{ ping: vi.fn() }}
+        onOpen={second}
+      />,
+    );
+
+    act(() => {
+      registry?.emit('open');
+    });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('a successful open with no onOpen supplied is a harmless no-op', () => {
+    registry = installTestEventSource();
+    render(
+      <Probe
+        url="/api/v2/stream"
+        handlers={{ ping: vi.fn() }}
+      />,
+    );
+    expect(() =>
+      act(() => {
+        registry?.emit('open');
       }),
     ).not.toThrow();
   });

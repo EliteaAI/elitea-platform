@@ -2,7 +2,7 @@
 -- (ADR-0018, spec-llm-project-scope §3).
 --
 -- This file is NOT a runtime migration.
--- migrations/shared/0070_token_project_binding.sql remains the only
+-- migrations/shared/0071_token_project_binding.sql remains the only
 -- target-schema authority. The migration guards the foreign key with
 -- to_regclass, because elitea-migrate can run before auth_core exists. The
 -- projection below declares the same shape unguarded, because sqlc type-checks

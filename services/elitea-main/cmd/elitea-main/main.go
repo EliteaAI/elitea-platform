@@ -335,13 +335,20 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// Wire currentProjectList with OIDC-only auth when formGraph is absent.
 	// formGraph (ELITEA_AUTH_CONFIG_FILE) wires it above with full validators;
 	// OIDC-only deployments (E2E stack) only have session-cookie auth.
+	//
+	// authsvc.NewPrincipalValidator(pool) is built here rather than reusing the
+	// `principalValidator` variable because that variable is nil in exactly
+	// this branch: it is only assigned inside the `authEnabled` block, which is
+	// also the only place formGraph is set. See oidcSessionAuthConfig for why
+	// nil is not survivable (#314).
 	if currentProjectList == nil && oidcSessionHandler != nil {
 		var oidcProjectListErr error
 		currentProjectList, oidcProjectListErr = v2projects.NewCurrentProjectListRoute(
 			sqlcgen.New(pool),
-			apimw.AuthConfig{
-				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
-			},
+			oidcSessionAuthConfig(
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
 			legacyrbac.NewPostgresResolver(pool),
 		)
 		if oidcProjectListErr != nil {
@@ -367,12 +374,17 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if repositoryErr != nil {
 			return fmt.Errorf("compose OIDC-only notification events repository: %w", repositoryErr)
 		}
+		// Same principal-validator reasoning as the project-list branch above:
+		// the session cookie is the only credential here, and without a
+		// validator a deactivated user's unexpired cookie opens the stream
+		// (#314).
 		var oidcNotificationEventsErr error
 		currentNotificationEvents, oidcNotificationEventsErr = notificationsapi.NewCurrentNotificationEventsRoute(
 			notificationEventsRepository,
-			apimw.AuthConfig{
-				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
-			},
+			oidcSessionAuthConfig(
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
 			legacyrbac.NewPostgresResolver(pool),
 		)
 		if oidcNotificationEventsErr != nil {
@@ -958,6 +970,30 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		slog.Info("llm gateway proxy enabled", "target", gwURL)
 	}
 
+	// #319: /configurations/check_connection(s) needs a real, minimal round
+	// trip to the provider, which the gateway performs (it owns the SSRF-safe
+	// egress allowlist for a tenant-authored api_base — issue #13). Reuse the
+	// same gateway connection settings as the /llm proxy above so an operator
+	// configures the gateway hop once, not twice.
+	var configConnectionChecker configurationapi.ConnectionChecker
+	if checker, checkerErr := configurationapi.NewGatewayConnectionCheckerFromConfig(
+		os.Getenv("LLM_GATEWAY_URL"),
+		os.Getenv("LLM_GATEWAY_CLIENT_CERT"),
+		os.Getenv("LLM_GATEWAY_CLIENT_KEY"),
+		os.Getenv("LLM_GATEWAY_CA_FILE"),
+		os.Getenv("GATEWAY_IDENTITY_SECRET"),
+	); checkerErr != nil {
+		return fmt.Errorf("compose configurations check-connection client: %w", checkerErr)
+	} else if checker != nil {
+		// Assigned only when non-nil: boxing a nil *GatewayConnectionChecker
+		// into the ConnectionChecker interface would make
+		// `h.connectionChecker == nil` false (a non-nil interface holding a
+		// nil pointer) and CheckConnection would call a method on a nil
+		// receiver instead of reporting "not available".
+		configConnectionChecker = checker
+		slog.Info("configurations check-connection client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
+	}
+
 	// BF0.9c/d: the gateway proxy needs the same production-auth wiring as
 	// every other auth-protected route above, gated on formGraph != nil —
 	// assigning a nil *FormGraph directly to an interface field would produce
@@ -1017,11 +1053,28 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("load pinned current toolkit schema snapshot: %w", err)
 	}
+	// The same endpoint serves the "$defs" its settings properties reference.
+	// That block is the join of the toolkit snapshot above (which settings
+	// field references a configuration) with the SDK configuration catalogue
+	// (which section that configuration belongs to), so both pinned files load
+	// here and stop startup the same way if either is unreadable.
+	sdkConfigurations, err := runtimecomposition.LoadPinnedCurrentSDKConfigurationCatalog()
+	if err != nil {
+		return fmt.Errorf("load pinned current SDK configuration catalog: %w", err)
+	}
+	toolkitSettingsDefinitions, err := runtimecomposition.NewCurrentToolkitSettingsDefinitionCatalog(
+		toolkitArgumentSchemas,
+		sdkConfigurations,
+	)
+	if err != nil {
+		return fmt.Errorf("compose current toolkit settings definitions: %w", err)
+	}
 
 	r := api.NewRouter(api.RouterConfig{
-		AdminUI:                adminUICfg,
-		Pool:                   pool,
-		ToolkitArgumentSchemas: toolkitArgumentSchemas,
+		AdminUI:                    adminUICfg,
+		Pool:                       pool,
+		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
+		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
@@ -1061,6 +1114,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentModelDefault:           currentModelDefault,
 		GatewayProxy:                  gatewayProxy,
 		GatewayProjectResolver:        gatewayProjectResolver,
+		ConfigConnectionChecker:       configConnectionChecker,
 		ObjectStore:                   objectStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering
 		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*

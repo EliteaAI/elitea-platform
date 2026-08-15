@@ -1,4 +1,4 @@
--- 0070_token_project_binding.sql — the optional project binding of an access
+-- 0071_token_project_binding.sql — the optional project binding of an access
 -- token (ADR-0018, spec-llm-project-scope §3).
 --
 -- WHAT THIS ADDS. An access token may name one project. The binding decides

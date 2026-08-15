@@ -191,18 +191,44 @@ export interface StartIndexExecutionResult {
   readonly [key: string]: unknown;
 }
 
+/**
+ * #311, the save-path half. `ToolFormContainer.resolveFieldValue` (already
+ * fixed) keeps a cleared field's key PRESENT with value `undefined`, so the
+ * form layer can tell "cleared" apart from "never set". Plain
+ * `JSON.stringify` does not carry that distinction over the wire: it drops
+ * every key whose value is `undefined`, so a cleared `tool_params` field
+ * never reaches the Go handler (`start_handler.go` decodes `tool_params` as
+ * raw JSON, byte for byte). The index's saved configuration then comes back
+ * from a later fetch one key short — indistinguishable, again, from "never
+ * set" — and `resolveFieldValue`'s own `key in toolInputVariables` guard
+ * reapplies `property.default`, the exact defect #311 reports, one layer
+ * down.
+ *
+ * This replacer turns an `undefined` value into an explicit `null` before
+ * serialization, so the key survives. `null` is not `undefined`, so both
+ * `resolveFieldValue` and `computeDefaultConfigValues`
+ * (`../ui/IndexDetails/IndexDetails.helpers.ts`) already treat a returned
+ * `null` as "present, deliberately cleared" and leave it alone.
+ */
+function preserveExplicitClears(_key: string, value: unknown): unknown {
+  return value === undefined ? null : value;
+}
+
 export async function startIndexExecution(params: StartIndexExecutionParams): Promise<StartIndexExecutionResult> {
   const { projectId, toolkitId, toolParams, llmModel, llmSettings } = params;
   const query = `?await_response=false&execution_contract=${encodeURIComponent(INDEX_INGEST_EXECUTION_CONTRACT)}`;
   return fetchData<StartIndexExecutionResult>(`/elitea_core/test_toolkit_tool/prompt_lib/${String(projectId)}${query}`, {
     method: 'POST',
-    body: JSON.stringify({
-      toolkit_config: { toolkit_id: toolkitId },
-      tool_name: 'index_data',
-      tool_params: toolParams,
-      ...(llmModel !== undefined ? { llm_model: llmModel } : {}),
-      ...(llmSettings !== undefined ? { llm_settings: llmSettings } : {}),
-    }),
+    body: JSON.stringify(
+      {
+        toolkit_config: { toolkit_id: toolkitId },
+        tool_name: 'index_data',
+        tool_params: toolParams,
+        ...(llmModel !== undefined ? { llm_model: llmModel } : {}),
+        ...(llmSettings !== undefined ? { llm_settings: llmSettings } : {}),
+      },
+      preserveExplicitClears,
+    ),
     headers: { 'Content-Type': 'application/json' },
   });
 }

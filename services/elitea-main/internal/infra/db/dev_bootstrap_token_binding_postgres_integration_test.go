@@ -12,7 +12,7 @@ package db
 // elitea_identity.token_project_binding. On a database missing that table the
 // query does not degrade: PostgreSQL answers 42P01 and every token-authenticated
 // request fails. Migration 0067 hit the same class of problem from the other
-// direction (issue #306) and was fixed in this same function; 0070 follows it.
+// direction (issue #306) and was fixed in this same function; 0071 follows it.
 //
 // gateway_migrations_test.go asserts the SHAPE of a migration file. This test
 // asserts the OUTCOME of the bootstrap: it runs RunMigrations against a real
@@ -106,7 +106,7 @@ INSERT INTO elitea_identity.token_project_binding (token_id, project_id) VALUES 
 	})
 
 	t.Run("the guarded foreign key resolved, so deleting a token cascades", func(t *testing.T) {
-		// 0070 adds the foreign key only when to_regclass finds
+		// 0071 adds the foreign key only when to_regclass finds
 		// public.auth_core__token. 001_initial.sql creates it, so on this path
 		// the constraint MUST be there — and ON DELETE CASCADE is the whole
 		// reason no application code deletes a binding when a token goes.

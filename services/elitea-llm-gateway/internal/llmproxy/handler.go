@@ -112,6 +112,14 @@ type Handler struct {
 	// request?" assertion has no other observation point, because a blocked
 	// request never reaches the router.
 	streamCtxHook func(*schemas.BifrostContext)
+
+	// egressPolicy backs the /llm/v1/check_connection endpoint's SSRF gate
+	// (#319). It is the SAME operator-configured allowlist GetKeysForProvider
+	// applies to persisted credentials (*account.EliteaAccount implements
+	// this), so a not-yet-saved credential under test is refused on the exact
+	// terms a saved one would be (issue #13). nil makes CheckConnection refuse
+	// every request — fail closed rather than skip the check.
+	egressPolicy EgressPolicy
 }
 
 // HandlerOption customises Handler construction. It keeps NewHandler's core
@@ -123,6 +131,14 @@ type HandlerOption func(*Handler)
 // leaves the models surface reporting an empty set.
 func WithModelResolver(r *ModelResolver) HandlerOption {
 	return func(h *Handler) { h.models = r }
+}
+
+// WithEgressPolicy wires the operator's egress allowlist into the
+// /llm/v1/check_connection endpoint (#319). A nil policy is a no-op — the
+// endpoint then refuses every request, matching the fail-closed default the
+// rest of the gateway uses for an unconfigured Account.
+func WithEgressPolicy(p EgressPolicy) HandlerOption {
+	return func(h *Handler) { h.egressPolicy = p }
 }
 
 // WithBudgetGate wires the pre-LLM budget enforcement gate. When gate is nil
@@ -438,6 +454,12 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostChatRequest(ctx)
 
+	// Map the caller's model id onto the provider's own model name (issue #317)
+	// BEFORE the budget gate, so the gate and the provider see the same name.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	provider, model := providerModelFromChatReq(bifReq)
 	// Pre-flight budget check (admission only; the cost is billed post-response).
 	if !h.checkBudget(w, ctx, model) {
@@ -482,6 +504,10 @@ func (h *Handler) TextCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostTextCompletionRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// FIX #4: enforce the budget gate before calling the provider.
 	provider, model := providerModelFromTextReq(bifReq)
 	if !h.checkBudget(w, ctx, model) {
@@ -508,6 +534,10 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostEmbeddingRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// FIX #4: enforce the budget gate before calling the provider.
 	provider, model := providerModelFromEmbeddingReq(bifReq)
 	if !h.checkBudget(w, ctx, model) {
@@ -536,6 +566,11 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	// FIX #3: enforce the budget gate before calling the provider (mirrors Messages).
 	provider, model := providerModelFromResponsesReq(bifReq)
 	if !h.checkBudget(w, ctx, model) {
@@ -572,6 +607,10 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostImageGenerationRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// FIX #26: enforce the budget gate before calling the image provider.
 	// Image generation can be expensive; an over-budget project must be
 	// blocked before any provider call incurs real cost.
@@ -617,6 +656,11 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	provider, model := providerModelFromResponsesReq(bifReq)
 	// Pre-flight budget check (see Chat handler comment).
 	if !h.checkBudget(w, ctx, model) {
@@ -658,6 +702,10 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// Budget gate BEFORE the provider — count_tokens is a provider call and must
 	// be admission-gated like every other /llm endpoint (uniform gating,
 	// DECISIONS.md). No updateUsage after: CountTokensResponse carries no billable

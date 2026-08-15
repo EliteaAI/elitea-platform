@@ -57,6 +57,19 @@ type EventSourceHandlers = Readonly<Record<string, (event: MessageEvent) => void
 interface EventSourceOptions {
   /** Fired on a failed connection or a mid-stream drop. The stream is NOT retried automatically — decide here. */
   readonly onError?: ((event: Event) => void) | undefined;
+  /**
+   * Fired once the connection is actually established (the WHATWG `open`
+   * event — readyState transitions to OPEN). Distinct from a frame ever
+   * arriving: `open` fires as soon as the HTTP response headers come back
+   * successfully (200 + `text/event-stream`), before any `data:` line is
+   * written. A route that answers a non-2xx status or the wrong content
+   * type fails straight to `error` and never fires this at all — which is
+   * exactly what makes it useful as a "was this ever a real stream"
+   * signal for a caller that must not treat a LATER drop the same as a
+   * connection that never opened (issue #310's
+   * `useToolkitChatSocket.hooks.ts`).
+   */
+  readonly onOpen?: ((event: Event) => void) | undefined;
 }
 
 /**
@@ -72,9 +85,11 @@ interface EventSourceOptions {
 export function useEventSource(url: string | null | undefined, handlers: EventSourceHandlers, options: EventSourceOptions = {}): void {
   const handlersRef = useRef(handlers);
   const onErrorRef = useRef(options.onError);
+  const onOpenRef = useRef(options.onOpen);
   useEffect(() => {
     handlersRef.current = handlers;
     onErrorRef.current = options.onError;
+    onOpenRef.current = options.onOpen;
   });
 
   // Sorted + joined so the deps entry is order-insensitive: `{a, b}` and
@@ -96,9 +111,12 @@ export function useEventSource(url: string | null | undefined, handlers: EventSo
         handlersRef.current[name]?.(event);
       });
     }
-    // Registered unconditionally, not from `handlers`: `error` is a reserved
-    // EventSource event, so routing it through the named-handler map would
-    // put it in the connection's own cache key.
+    // Registered unconditionally, not from `handlers`: `open`/`error` are
+    // reserved EventSource events, so routing them through the named-handler
+    // map would put them in the connection's own cache key.
+    source.addEventListener('open', (event) => {
+      onOpenRef.current?.(event);
+    });
     source.addEventListener('error', (event) => {
       onErrorRef.current?.(event);
     });

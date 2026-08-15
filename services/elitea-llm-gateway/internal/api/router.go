@@ -50,6 +50,12 @@ func NewRouter(h *llmproxy.Handler) http.Handler {
 		// ids contain slashes, e.g. "openai/gpt-4o").
 		r.Get("/models", h.Models)
 		r.Get("/models/*", h.Model)
+
+		// Connection-check surface (#319) — a real, minimal round trip to a
+		// NOT-YET-SAVED credential, so it bypasses core entirely rather than
+		// going through the persisted-credential Account path. See
+		// llmproxy/checkconnection.go.
+		r.Post("/check_connection", h.CheckConnection)
 	})
 
 	return r

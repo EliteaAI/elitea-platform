@@ -903,7 +903,7 @@ func planCurrentTerminalIndexMeta(
 			return currentIndexMetaWritePlan{},
 				indexingapp.ErrCurrentIndexMetaConflict
 		}
-		history[runIndex] = cloneCurrentIndexMetaValue(terminal)
+		history[runIndex] = currentIndexMetaHistoryEntrySnapshot(terminal)
 	} else {
 		// Main still owns terminalization when the SDK never started.
 		if state != "in_progress" ||
@@ -911,7 +911,7 @@ func planCurrentTerminalIndexMeta(
 			return currentIndexMetaWritePlan{},
 				indexingapp.ErrCurrentIndexMetaConflict
 		}
-		history = append(history, cloneCurrentIndexMetaValue(terminal))
+		history = append(history, currentIndexMetaHistoryEntrySnapshot(terminal))
 	}
 	metadata, err := encodeCurrentIndexMetaWithHistory(terminal, history)
 	if err != nil {
@@ -950,7 +950,7 @@ func planCurrentScheduledFailure(
 	failed["state"] = "failed"
 	failed["updated_on"] = currentIndexMetaUnixSeconds(effect.OccurredAt)
 	failed["error"] = effect.SafeReason
-	historyEntry := cloneCurrentIndexMetaObject(failed)
+	historyEntry := currentIndexMetaHistoryEntrySnapshot(failed)
 	historyEntry["schedule_effect_id"] = effect.EffectID
 	history = append(history, historyEntry)
 	metadata, err := encodeCurrentIndexMetaWithHistory(failed, history)
@@ -1719,8 +1719,56 @@ func currentIndexMetaRetryMatches(stored, initial map[string]any) bool {
 	return true
 }
 
+// currentIndexMetaHistoryEntrySnapshot clones source for storage as one new
+// history entry and removes chunking_config from its index_configuration.
+// Main writes the SDK's full chunking_config default into the top-level
+// index_configuration exactly once, at index creation. Every history entry
+// is otherwise a full clone of that top level, so without this trim, each
+// new entry repeats the same ~3.4 KB default; nothing reads chunking_config
+// back out of a history entry (issue #297). Removing the copy also holds
+// back the stored row from the 1 MiB encode cap that issue #299 tracks. The
+// source map is left untouched, so the top-level metadata built from it
+// keeps its own chunking_config. Both stored index_configuration shapes are
+// handled: the modern nested object and the Python-era JSON-string
+// encoding.
+func currentIndexMetaHistoryEntrySnapshot(source map[string]any) map[string]any {
+	entry := cloneCurrentIndexMetaObject(source)
+	switch configuration := entry["index_configuration"].(type) {
+	case map[string]any:
+		delete(configuration, "chunking_config")
+	case string:
+		if trimmed, ok := currentIndexMetaConfigurationWithoutChunking(configuration); ok {
+			entry["index_configuration"] = trimmed
+		}
+	}
+	return entry
+}
+
+// currentIndexMetaConfigurationWithoutChunking mirrors
+// indexmeta.currentConfigurationWithoutChunking for the one legacy shape the
+// writer can encounter: a pre-fence row's top-level index_configuration,
+// stored as a JSON string rather than a nested object.
+func currentIndexMetaConfigurationWithoutChunking(encoded string) (string, bool) {
+	if len(encoded) == 0 || len(encoded) > indexingapp.MaxCurrentInitialIndexMetaBytes {
+		return "", false
+	}
+	configuration, err := decodeCurrentIndexMetaJSON([]byte(encoded))
+	if err != nil {
+		return "", false
+	}
+	if _, present := configuration["chunking_config"]; !present {
+		return "", false
+	}
+	delete(configuration, "chunking_config")
+	trimmed, err := json.Marshal(configuration)
+	if err != nil {
+		return "", false
+	}
+	return string(trimmed), true
+}
+
 func currentCreatedIndexMetaMarker(initial map[string]any) map[string]any {
-	marker := cloneCurrentIndexMetaObject(initial)
+	marker := currentIndexMetaHistoryEntrySnapshot(initial)
 	marker["state"] = "created"
 	marker["task_id"] = nil
 	marker["conversation_id"] = nil

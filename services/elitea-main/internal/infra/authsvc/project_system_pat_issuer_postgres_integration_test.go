@@ -184,7 +184,7 @@ func newProjectSystemPATTestDatabase(t *testing.T) *pgxpool.Pool {
 	// on every credential validation (ADR-0018). A database without that table
 	// answers every token with 42P01, so the harness applies the REAL migration
 	// rather than a hand-copied projection.
-	bindingMigration, err := platformmigrations.Files.ReadFile("shared/0070_token_project_binding.sql")
+	bindingMigration, err := platformmigrations.Files.ReadFile("shared/0071_token_project_binding.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

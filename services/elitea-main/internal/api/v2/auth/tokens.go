@@ -227,7 +227,7 @@ func (r *postgresTokenRepository) DeleteOwned(ctx context.Context, userID int64,
 		return errTokenForbidden
 	}
 	// Delete the binding explicitly rather than leaning on ON DELETE CASCADE.
-	// Migration 0070 guards its foreign key, and a guard that skips is never
+	// Migration 0071 guards its foreign key, and a guard that skips is never
 	// revisited, so the cascade is absent on any database that ran the
 	// migration before auth_core existed (spec-llm-project-scope §3.1). This
 	// runs inside the same transaction as the token delete, so the two rows go

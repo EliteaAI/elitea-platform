@@ -1,0 +1,379 @@
+package llmproxy
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// checkconnection.go implements POST /llm/v1/check_connection (#319): a real,
+// minimal round trip to the named provider using a credential the caller has
+// NOT yet saved (elitea-main's "Test connection" button tests a payload
+// before Create/Update persists it, restoring the save-time feedback legacy's
+// LiteLLM health/test_connection gave — 071774fb). Because the credential
+// under test has no p_{projectID}.configuration row, it cannot be resolved
+// through account.EliteaAccount.GetKeysForProvider, and there is no saved
+// "model" field to complete against, so this endpoint deliberately does not
+// go through bifrost/core at all: it makes its own minimal, read-only,
+// provider-native request (list models / list deployments / list local
+// models) directly, over a purpose-built SSRF-safe client that mirrors
+// bifrost's own protections (account/egress.go) rather than inheriting them.
+//
+// The wire contract here is INTERNAL — elitea-main is the only caller, and it
+// translates checkConnectionResponse into the browser-facing, legacy-parity
+// {"success":...,"message":...} shape its own handler already promises.
+// Nothing in this contract or its logs ever carries the raw provider
+// response body: only a small, fixed reason vocabulary crosses the wire, and
+// full detail (status code, error text) is logged server-side only.
+
+// EgressPolicy is the subset of *account.EliteaAccount CheckConnection needs.
+// It is a narrow interface, defined here rather than imported from the
+// account package, so llmproxy does not gain a dependency on account's
+// Postgres/vault plumbing merely to reuse its allowlist decision.
+type EgressPolicy interface {
+	// EgressAllows reports whether apiBase may be dialled under the
+	// operator's GATEWAY_EGRESS_ALLOWLIST — the identical decision
+	// GetKeysForProvider applies to every persisted credential (issue #13).
+	EgressAllows(apiBase string) bool
+	// EgressAllowlistConfigured reports whether an allowlist is armed at
+	// all, matching GetConfigForProvider's private-network carve-out for the
+	// self-hosted provider classes.
+	EgressAllowlistConfigured() bool
+}
+
+// checkConnectionProbeTimeout bounds the single provider round trip a check
+// performs, end to end (DNS, dial, TLS, response). The UI's "Test connection"
+// button is a synchronous click; an unreachable host must fail promptly
+// rather than hang the request.
+const checkConnectionProbeTimeout = 8 * time.Second
+
+// checkConnectionMaxBody bounds the request body: a handful of short string
+// fields, never a bulk payload.
+const checkConnectionMaxBody = 8 << 10 // 8 KiB
+
+// checkConnectionRequest is the elitea-main → gateway wire contract. Type
+// selects the probe (see checkConnectionProviders); the remaining fields are
+// the raw, already-unsecreted credential values elitea-main read from the
+// user's not-yet-saved form payload.
+type checkConnectionRequest struct {
+	Type       string `json:"type"`
+	APIBase    string `json:"api_base"`
+	APIKey     string `json:"api_key"`
+	APIVersion string `json:"api_version"`
+}
+
+// checkConnectionResponse is the gateway → elitea-main wire contract. Reason
+// is a small, fixed vocabulary (checkConnectionReason* below); Detail adds a
+// human-readable but still provider-body-free hint. Success is true only when
+// the probe actually round-tripped to the provider and got back a successful
+// response — there is no code path that reports Success without calling the
+// probe.
+type checkConnectionResponse struct {
+	Success bool   `json:"success"`
+	Reason  string `json:"reason,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// Reason vocabulary for checkConnectionResponse. elitea-main maps each of
+// these to its own user-facing message; the gateway itself never emits raw
+// provider response text over this contract.
+const (
+	checkConnectionReasonOK          = "ok"
+	checkConnectionReasonUnsupported = "unsupported_type"
+	checkConnectionReasonMissingBase = "missing_api_base"
+	checkConnectionReasonEgress      = "egress_not_allowed"
+	checkConnectionReasonUnauth      = "unauthorized"
+	checkConnectionReasonUnreachable = "unreachable"
+	checkConnectionReasonUpstream    = "upstream_error"
+)
+
+// defaultAzureAPIVersion is used when the caller supplies no api_version for
+// an Azure-shaped credential (azure_open_ai, ai_dial — both map to
+// schemas.Azure in account/credentials.go's providerConfigTypes). It is a
+// long-stable, generally-available Azure OpenAI API version whose sole use
+// here is listing deployments, not completions, so newer API surface changes
+// do not affect it.
+const defaultAzureAPIVersion = "2023-05-15"
+
+// checkConnectionProvider describes one credential type's minimal, real probe.
+type checkConnectionProvider struct {
+	probe func(ctx context.Context, client *http.Client, req checkConnectionRequest) error
+	// selfHosted marks provider classes whose api_base legitimately targets a
+	// private network (mirrors GetConfigForProvider's vLLM/Ollama carve-out).
+	// Private destinations are still refused unless the operator has ALSO
+	// armed GATEWAY_EGRESS_ALLOWLIST (checked at call time, not here).
+	selfHosted bool
+}
+
+// checkConnectionProviders is deliberately narrower than
+// account/credentials.go's providerConfigTypes: amazon_bedrock (AWS SigV4)
+// and vertex_ai (GCP service-account JWT) are NOT probed here. Implementing
+// their auth schemes is materially different work from an HTTP GET with a
+// bearer/api-key header, and guessing at it without a real provider to test
+// against risks a WRONG verdict either way. Per #319 ("Or drop it... make the
+// code and the catalogue agree"), those two types fall through to
+// elitea-main's honest "not supported yet" response instead of a fabricated
+// check — never a fabricated success.
+var checkConnectionProviders = map[string]checkConnectionProvider{
+	// OpenAI's own credential type: GET /models is OpenAI's documented,
+	// canonical way to validate a key (no billed completion).
+	"open_ai": {probe: probeOpenAICompatibleModels},
+	// azure_open_ai and ai_dial both map to schemas.Azure in
+	// account/credentials.go's providerConfigTypes — AI DIAL is explicitly an
+	// Azure-OpenAI-API-compatible proxy, so both list deployments the same
+	// way.
+	"azure_open_ai": {probe: probeAzureDeployments},
+	"ai_dial":       {probe: probeAzureDeployments},
+	// Ollama is self-hosted: its api_base routinely names a private address,
+	// exactly like account.go's vLLM/Ollama carve-out.
+	"ollama": {probe: probeOllamaTags, selfHosted: true},
+}
+
+// CheckConnection performs a real, minimal round trip to the named provider
+// using the supplied (not-yet-persisted) credential fields, and reports
+// whether it actually succeeded. It never dials a host the operator's egress
+// allowlist forbids (issue #13), and it never returns the provider's raw
+// response body to the caller — see the package doc above.
+func (h *Handler) CheckConnection(w http.ResponseWriter, r *http.Request) {
+	if !verifySignature(r.Header, h.identitySecret) {
+		writeError(w, http.StatusForbidden, "permission_error", "invalid identity signature", "")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, checkConnectionMaxBody)
+	var req checkConnectionRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	provider, ok := checkConnectionProviders[req.Type]
+	if !ok {
+		writeJSON(w, http.StatusOK, checkConnectionResponse{
+			Success: false, Reason: checkConnectionReasonUnsupported,
+		})
+		return
+	}
+	if strings.TrimSpace(req.APIBase) == "" {
+		writeJSON(w, http.StatusOK, checkConnectionResponse{
+			Success: false, Reason: checkConnectionReasonMissingBase,
+		})
+		return
+	}
+
+	// Fail closed: no policy wired (a Handler built without WithEgressPolicy)
+	// refuses every request rather than silently skipping the gate.
+	if h.egressPolicy == nil || !h.egressPolicy.EgressAllows(req.APIBase) {
+		h.logger.WarnContext(r.Context(), "check_connection: api_base host is not on the egress allowlist",
+			"type", req.Type)
+		writeJSON(w, http.StatusOK, checkConnectionResponse{
+			Success: false, Reason: checkConnectionReasonEgress,
+		})
+		return
+	}
+
+	allowPrivate := provider.selfHosted && h.egressPolicy.EgressAllowlistConfigured()
+	client := newCheckConnectionProbeClient(allowPrivate)
+
+	ctx, cancel := context.WithTimeout(r.Context(), checkConnectionProbeTimeout)
+	defer cancel()
+
+	if err := provider.probe(ctx, client, req); err != nil {
+		reason, detail := classifyCheckConnectionProbeError(err)
+		h.logger.WarnContext(r.Context(), "check_connection: provider probe failed",
+			"type", req.Type, "reason", reason, "err", err)
+		writeJSON(w, http.StatusOK, checkConnectionResponse{
+			Success: false, Reason: reason, Detail: detail,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, checkConnectionResponse{Success: true, Reason: checkConnectionReasonOK})
+}
+
+// checkConnectionProbeError carries the provider's HTTP status when the
+// request round-tripped, so classifyCheckConnectionProbeError can tell
+// "credential rejected" apart from "could not reach the provider" without
+// ever inspecting (or forwarding) the response body.
+type checkConnectionProbeError struct {
+	status int // 0 when the request never received a response
+	err    error
+}
+
+func (e *checkConnectionProbeError) Error() string { return e.err.Error() }
+func (e *checkConnectionProbeError) Unwrap() error { return e.err }
+
+func classifyCheckConnectionProbeError(err error) (reason, detail string) {
+	var pe *checkConnectionProbeError
+	if errors.As(err, &pe) {
+		switch {
+		case pe.status == http.StatusUnauthorized || pe.status == http.StatusForbidden:
+			return checkConnectionReasonUnauth, "the provider rejected the credential"
+		case pe.status >= 500:
+			return checkConnectionReasonUpstream, "the provider returned a server error"
+		case pe.status > 0:
+			return checkConnectionReasonUpstream, fmt.Sprintf("the provider returned an unexpected response (status %d)", pe.status)
+		}
+	}
+	return checkConnectionReasonUnreachable, "could not reach the provider"
+}
+
+// probeOpenAICompatibleModels validates an OpenAI credential with GET
+// {api_base}/models — OpenAI's own documented way to check a key without a
+// billed completion.
+func probeOpenAICompatibleModels(ctx context.Context, client *http.Client, req checkConnectionRequest) error {
+	headers := map[string]string{}
+	if req.APIKey != "" {
+		headers["Authorization"] = "Bearer " + req.APIKey
+	}
+	return checkConnectionProbeGET(ctx, client, checkConnectionJoinURL(req.APIBase, "/models"), headers)
+}
+
+// probeAzureDeployments validates an Azure-OpenAI-shaped credential
+// (azure_open_ai, ai_dial) with GET
+// {api_base}/openai/deployments?api-version=..., authenticated with the
+// api-key header Azure's control-plane API expects (not Bearer).
+func probeAzureDeployments(ctx context.Context, client *http.Client, req checkConnectionRequest) error {
+	apiVersion := req.APIVersion
+	if apiVersion == "" {
+		apiVersion = defaultAzureAPIVersion
+	}
+	target := checkConnectionJoinURL(req.APIBase, "/openai/deployments") + "?api-version=" + url.QueryEscape(apiVersion)
+	headers := map[string]string{}
+	if req.APIKey != "" {
+		headers["api-key"] = req.APIKey
+	}
+	return checkConnectionProbeGET(ctx, client, target, headers)
+}
+
+// probeOllamaTags validates a self-hosted Ollama credential with GET
+// {api_base}/api/tags — Ollama's native "list local models" call. Ollama
+// credentials carry no api_key (the elitea-main catalog schema for "ollama"
+// has only api_base), so no Authorization header is sent.
+func probeOllamaTags(ctx context.Context, client *http.Client, req checkConnectionRequest) error {
+	return checkConnectionProbeGET(ctx, client, checkConnectionJoinURL(req.APIBase, "/api/tags"), nil)
+}
+
+func checkConnectionJoinURL(base, path string) string {
+	return strings.TrimRight(strings.TrimSpace(base), "/") + path
+}
+
+// checkConnectionProbeGET performs the actual minimal, read-only provider
+// call. A non-2xx response is reported as a *checkConnectionProbeError
+// carrying the status (never the body); a transport-level failure (DNS,
+// dial, TLS, timeout) is reported with status 0.
+func checkConnectionProbeGET(ctx context.Context, client *http.Client, rawURL string, headers map[string]string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return &checkConnectionProbeError{err: fmt.Errorf("check_connection: api_base does not yield a valid http(s) url")}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return &checkConnectionProbeError{err: err}
+	}
+	for k, v := range headers {
+		if v != "" {
+			httpReq.Header.Set(k, v)
+		}
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return &checkConnectionProbeError{err: err}
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &checkConnectionProbeError{
+			status: resp.StatusCode,
+			err:    fmt.Errorf("check_connection: provider returned status %d", resp.StatusCode),
+		}
+	}
+	return nil
+}
+
+// newCheckConnectionProbeClient builds the http.Client CheckConnection uses
+// for its single real provider round trip.
+//
+// This endpoint bypasses bifrost/core entirely (see the package doc above:
+// no persisted credential, no bifrost Account, no saved model to complete
+// against), so it does NOT inherit bifrost's own SSRF-safe dialer the way
+// every other provider call in this gateway does — it has to reimplement the
+// equivalent address-level protection itself, or a tenant-authored api_base
+// could steer this endpoint at an internal address the name-only egress
+// allowlist alone cannot catch by hostname (e.g. a hostname that legitimately
+// resolves to both a public and a private address).
+//
+// The DialContext hook resolves the target host ITSELF and validates the
+// resolved address before connecting, then dials that exact address — not
+// the original addr, which would let the standard dialer re-resolve the name
+// a second time. Validating a first resolution and then dialing by name again
+// is exactly the check-then-dial DNS-rebinding race account/egress.go's own
+// doc comment warns about; dialing the validated IP directly closes it.
+//
+// allowPrivate is true only for a self-hosted credential class (currently
+// just Ollama) AND only when the operator has armed
+// GATEWAY_EGRESS_ALLOWLIST — mirroring GetConfigForProvider's
+// NetworkConfig.AllowPrivateNetwork exactly.
+func newCheckConnectionProbeClient(allowPrivate bool) *http.Client {
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			var dialIP net.IP
+			for _, candidate := range ips {
+				if !allowPrivate && isDisallowedCheckConnectionAddress(candidate.IP) {
+					continue
+				}
+				dialIP = candidate.IP
+				break
+			}
+			if dialIP == nil {
+				return nil, fmt.Errorf("check_connection: no permitted address for %q", host)
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(dialIP.String(), port))
+		},
+		MaxIdleConns:      1,
+		IdleConnTimeout:   5 * time.Second,
+		DisableKeepAlives: true,
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   checkConnectionProbeTimeout,
+		// Never follow a redirect: doing so would dial a second, unvalidated
+		// host through net/http's own connection logic, bypassing the
+		// DialContext guard above for that hop. Treating the redirect itself
+		// as the (non-2xx) final response is enough to prove or disprove the
+		// credential.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// isDisallowedCheckConnectionAddress reports whether ip is a loopback,
+// private (RFC 1918/RFC 4193), link-local (including the
+// 169.254.169.254/fd00:ec2::254 cloud metadata addresses, which are
+// link-local unicast), unspecified, or multicast address — the standard SSRF
+// destination denylist, mirroring what bifrost/core's own dialer refuses for
+// every other provider call in this gateway.
+func isDisallowedCheckConnectionAddress(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+}

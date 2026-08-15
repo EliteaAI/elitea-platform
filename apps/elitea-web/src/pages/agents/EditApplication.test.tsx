@@ -6,10 +6,22 @@ import { http, HttpResponse } from 'msw';
 import { getGetApplicationMockHandler } from '@/shared/api/generated/applications/applications.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { resetConfigForTests } from '@/shared/config/get-config';
+import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
 
 import { EditApplication } from './EditApplication';
 import { renderAgentsRoute } from './__tests__/testRouter';
+
+// This page's real `CreateAgentForm` mounts a CodeMirror-backed field
+// (`InstructionsInput`), which needs both stubs `installCodeMirrorTestPolyfills`
+// installs — see that file's doc comment. Without it, jsdom throws out of a
+// `requestAnimationFrame` callback (`TypeError: textRange(...).getClientRects
+// is not a function`) on every render pass after mount, an unhandled
+// rejection vitest can report as a failed run independent of the test's own
+// assertions. Reproduced on CI shard 10 for the newly added Tools-panel
+// tests below, though the same mount runs — and can throw — in every test in
+// this file.
+installCodeMirrorTestPolyfills();
 
 const globals = globalThis as unknown as Record<string, unknown>;
 
@@ -79,8 +91,14 @@ describe('EditApplication', () => {
     // default timeout, with the DOM showing the fallback `<h3>Agent</h3>` — the
     // query had simply not resolved yet. The assertion is unchanged; only the
     // wait is realistic for a slower machine.
+    //
+    // The query's own 5s timeout used to equal vitest's 5s default test
+    // budget — a slow-but-correct mount and an uninformative "Test timed
+    // out" raced for the same clock. Scoped to 15s below, same pattern as
+    // the rename test, so the query still fails with a named element when
+    // one is genuinely missing, well before the test budget would.
     expect(await screen.findByText('My Agent', {}, { timeout: 5_000 })).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it('renders the configuration tab panel with the real agent fields in it', async () => {
     server.use(getGetApplicationMockHandler(detail()));
@@ -90,11 +108,15 @@ describe('EditApplication', () => {
     // self-closing `<Box data-testid=… />` for so long — an empty div is in the
     // document. Assert it CONTAINS the fields, so a hollow panel fails here
     // rather than waiting for an E2E journey to notice.
+    // Both queries below carry the same 5s timeout as vitest's 5s default
+    // test budget, so a scoped 15s budget (the pattern the rename test
+    // fixed first) is needed here too — see that test's comment for why an
+    // equal timeout/budget pair flakes on a slow-but-correct CI run.
     const panel = await screen.findByTestId('edit-application-configuration-tab-panel', {}, { timeout: 5_000 });
     expect(await screen.findByTestId('agent-name-input', {}, { timeout: 5_000 })).toBeInTheDocument();
     expect(panel).toContainElement(screen.getByTestId('agent-name-input'));
     expect(panel).toContainElement(screen.getByTestId('agent-description-input'));
-  });
+  }, 15_000);
 
   it('shows the not-found state when the URL version is not in the versions list', async () => {
     server.use(getGetApplicationMockHandler(detail()));
@@ -155,6 +177,10 @@ describe('EditApplication', () => {
     const user = userEvent.setup();
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
 
+    // Scoped 15s budget: the trigger's own 5s query timeout used to equal
+    // vitest's 5s default test budget (the same class the rename test's
+    // comment documents), so a slow-but-correct mount could red as "Test
+    // timed out" instead of naming a missing element.
     await user.click(await screen.findByTestId('version-selector-trigger', {}, { timeout: 5_000 }));
 
     const items = await screen.findAllByRole('menuitem');
@@ -162,11 +188,14 @@ describe('EditApplication', () => {
       expect.stringContaining('base'),
       expect.stringContaining('v1'),
     ]);
-  });
+  }, 15_000);
 
   it('mounts "Save As Version" for an owner and withholds it from a read-only viewer', async () => {
     server.use(getGetApplicationMockHandler(detail()));
     const owner = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    // Two full mounts in this one test, each carrying a 5s query timeout
+    // that used to equal vitest's 5s default test budget. Scoped 15s budget
+    // below gives both mounts room, same pattern the rename test fixed.
     expect(await owner.findByRole('button', { name: /save as version/i }, { timeout: 5_000 })).toBeInTheDocument();
     owner.unmount();
 
@@ -174,7 +203,7 @@ describe('EditApplication', () => {
     const viewer = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
     await viewer.findByTestId('version-selector-trigger', {}, { timeout: 5_000 });
     expect(viewer.queryByRole('button', { name: /save as version/i })).not.toBeInTheDocument();
-  });
+  }, 15_000);
 
   it('clicking Cancel does not throw and keeps the page mounted', async () => {
     server.use(getGetApplicationMockHandler(detail()));
@@ -260,6 +289,9 @@ describe('EditApplication', () => {
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
     const user = userEvent.setup();
 
+    // 5s query timeout used to equal vitest's 5s default test budget — see
+    // the rename test's comment for why that pairing flakes on a
+    // slow-but-correct CI run. Scoped 15s budget below fixes it here too.
     const welcomeInput = await screen.findByTestId('agent-welcome-message-input', {}, { timeout: 5_000 });
     // The whole form renders `disabled` while the detail fetch is in flight,
     // and the panel mounts before it settles — typing into it at that point
@@ -276,7 +308,7 @@ describe('EditApplication', () => {
 
     await waitFor(() => expect(versionBodies).toHaveLength(1));
     expect(versionBodies[0]?.['welcome_message']).toBe('Hello!');
-  });
+  }, 15_000);
 
   it('persists a renamed agent through the application PUT, which the page never called before issue 307', async () => {
     server.use(getGetApplicationMockHandler(detail()));
@@ -343,6 +375,9 @@ describe('EditApplication', () => {
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
     const user = userEvent.setup();
 
+    // 5s query timeout used to equal vitest's 5s default test budget — see
+    // the rename test's comment for why that pairing flakes on a
+    // slow-but-correct CI run. Scoped 15s budget below fixes it here too.
     const starterInput = await screen.findByTestId('agent-conversation-starter-input', {}, { timeout: 5_000 });
     await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
     // Seeded from the fixture — proof the editor READS the version, before
@@ -355,7 +390,7 @@ describe('EditApplication', () => {
 
     await waitFor(() => expect(versionBodies).toHaveLength(1));
     expect(versionBodies[0]?.['conversation_starters']).toEqual(['Hi there friend']);
-  });
+  }, 15_000);
 
   it('adds a new conversation starter and sends both of them', async () => {
     server.use(getGetApplicationMockHandler(detail()));
@@ -372,6 +407,9 @@ describe('EditApplication', () => {
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
     const user = userEvent.setup();
 
+    // 5s query timeout used to equal vitest's 5s default test budget — see
+    // the rename test's comment for why that pairing flakes on a
+    // slow-but-correct CI run. Scoped 15s budget below fixes it here too.
     await screen.findByTestId('agent-conversation-starter-add', {}, { timeout: 5_000 });
     await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
     await user.click(screen.getByTestId('agent-conversation-starter-add'));
@@ -381,7 +419,7 @@ describe('EditApplication', () => {
 
     await waitFor(() => expect(versionBodies).toHaveLength(1));
     expect(versionBodies[0]?.['conversation_starters']).toEqual(['Hi there', 'Second']);
-  });
+  }, 15_000);
 
   /*
    * #307 — export/delete/version-delete were fully built with zero
@@ -392,10 +430,13 @@ describe('EditApplication', () => {
     server.use(getGetApplicationMockHandler(detail()));
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
 
+    // 5s query timeout used to equal vitest's 5s default test budget — see
+    // the rename test's comment for why that pairing flakes on a
+    // slow-but-correct CI run. Scoped 15s budget below fixes it here too.
     expect(await screen.findByRole('button', { name: /export agent/i }, { timeout: 5_000 })).toBeVisible();
     expect(screen.getByRole('button', { name: /delete entity/i })).toBeVisible();
     expect(screen.getByTestId('agent-version-delete')).toBeVisible();
-  });
+  }, 15_000);
 
   it('hides the export, delete and version-delete controls from a read-only viewer of a public agent', async () => {
     setPublicProjectId('42');
@@ -419,6 +460,9 @@ describe('EditApplication', () => {
     server.use(getGetApplicationMockHandler(detailWithTools()));
     renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
 
+    // 5s query timeout used to equal vitest's 5s default test budget — see
+    // the rename test's comment for why that pairing flakes on a
+    // slow-but-correct CI run. Scoped 15s budget below fixes it here too.
     const card = await screen.findByTestId('agent-toolkit-card', {}, { timeout: 5_000 });
     // Visible, not merely present: the panel this page shipped before #307
     // was a self-closing empty Box that satisfied toBeInTheDocument().
@@ -426,15 +470,16 @@ describe('EditApplication', () => {
     expect(screen.getByText('Github')).toBeVisible();
     expect(screen.getByTestId('edit-application-configuration-tab-panel')).toContainElement(card);
     expect(screen.getByTestId('agent-add-toolkit-button')).toBeVisible();
-  });
+  }, 15_000);
 
   it('offers a read-only viewer neither tool control (no attach menu, remove disabled)', async () => {
     setPublicProjectId('42');
     server.use(getGetApplicationMockHandler(detailWithTools()));
     renderAgentsRoute(<EditApplication />, '/agents/latest/42', { projectId: '42' });
 
+    // Same scoped-budget fix as the sibling test above.
     await screen.findByTestId('agent-toolkit-card', {}, { timeout: 5_000 });
     expect(screen.queryByTestId('agent-add-toolkit-button')).not.toBeInTheDocument();
     expect(screen.getByTestId('agent-toolkit-delete-button')).toBeDisabled();
-  });
+  }, 15_000);
 });

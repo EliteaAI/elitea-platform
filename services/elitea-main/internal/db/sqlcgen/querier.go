@@ -75,7 +75,7 @@ type Querier interface {
 	// trip for a value the same row already carries.
 	// Token deletion deletes the binding explicitly, in the same transaction, and
 	// does NOT rely on ON DELETE CASCADE (spec-llm-project-scope §3.1). Migration
-	// 0070 guards its foreign key with to_regclass, because elitea-migrate can run
+	// 0071 guards its foreign key with to_regclass, because elitea-migrate can run
 	// before pylon creates auth_core. When the guard skips, the migration is still
 	// ledgered as applied and no later run adds the constraint, so that database
 	// has no cascade for its whole life. The constraint stays as the second of two

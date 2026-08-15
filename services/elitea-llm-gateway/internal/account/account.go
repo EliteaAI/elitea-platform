@@ -190,6 +190,20 @@ func New(cfg Config) (*EliteaAccount, error) {
 // see which one is armed without reading the code (issue #13).
 func (a *EliteaAccount) EgressAllowlistConfigured() bool { return a.egress.configured() }
 
+// EgressAllows reports whether apiBase may be dialled under the operator's
+// configured egress allowlist. It exposes the identical decision
+// GetKeysForProvider already applies to every persisted credential, for the
+// connection-check endpoint (#319): that endpoint tests a credential BEFORE
+// it is saved, so there is no p_{projectID}.configuration row to run through
+// GetKeysForProvider — but the tenant-authored api_base it dials is exactly
+// as untrusted, and must be refused on the same terms (issue #13).
+func (a *EliteaAccount) EgressAllows(apiBase string) bool {
+	if a == nil {
+		return false
+	}
+	return a.egress.allows(apiBase)
+}
+
 // GetConfiguredProviders returns the static supported-provider set. Per-project
 // availability is enforced in GetKeysForProvider (which returns zero keys for a
 // provider a project has not configured), so this list does not depend on any

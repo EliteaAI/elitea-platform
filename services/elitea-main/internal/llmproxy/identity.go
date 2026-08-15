@@ -145,6 +145,33 @@ func injectIdentity(ctx context.Context, out http.Header, secret []byte) {
 	}
 }
 
+// SignIdentityHeaders sets the signed X-Elitea-* identity headers on out from
+// explicit project/user/tenant values, using the identical HMAC scheme
+// injectIdentity uses. It exists for elitea-main callers that resolve their
+// own project identity from something other than the request-scoped
+// middleware context injectIdentity reads — e.g. the configurations
+// check-connection client (internal/api/v2/configurations), whose project id
+// is a URL path parameter, not a *middleware.ProjectContext the /configurations
+// mount never populates. Mirrors the gateway's own exported
+// SignIdentityHeaders (elitea-llm-gateway/internal/llmproxy/identity.go) so
+// the two sides cannot silently diverge on the signing scheme.
+func SignIdentityHeaders(out http.Header, secret []byte, projectID, userID, tenantID string) {
+	stripIdentityHeaders(out)
+	id := identity{projectID: projectID, userID: userID, tenantID: tenantID}
+	if id.projectID != "" {
+		out.Set(HeaderProjectID, id.projectID)
+	}
+	if id.userID != "" {
+		out.Set(HeaderUserID, id.userID)
+	}
+	if id.tenantID != "" {
+		out.Set(HeaderTenantID, id.tenantID)
+	}
+	if len(secret) > 0 && id.projectID != "" {
+		out.Set(HeaderSignature, id.sign(secret))
+	}
+}
+
 // verifyIdentitySignature reports whether the identity headers on h carry a
 // valid signature under secret. It is used by tests here and is safe for the
 // gateway side to mirror. Returns false if the signature header is absent.

@@ -200,7 +200,7 @@ RETURNING id`).Scan(&nullableMetadataID); err != nil {
 	}
 }
 
-const tokenProjectBindingMigration = "shared/0070_token_project_binding.sql"
+const tokenProjectBindingMigration = "shared/0071_token_project_binding.sql"
 
 // TestPostgresTokenProjectBindingLifecycle is the §4 half of ADR-0018 measured
 // against a real database: the membership predicate, the refusal, the fact that
@@ -351,7 +351,7 @@ INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id) V
 
 	// The case that discriminates. The assertion above passes on the cascade
 	// alone, so it cannot see whether the application deletes anything. Migration
-	// 0070 guards its foreign key with to_regclass, and a guard that skips is
+	// 0071 guards its foreign key with to_regclass, and a guard that skips is
 	// never revisited, so a database that ran the migration before auth_core
 	// existed has the table and no constraint for its whole life
 	// (spec-llm-project-scope §3.1). Drop the constraint and the application

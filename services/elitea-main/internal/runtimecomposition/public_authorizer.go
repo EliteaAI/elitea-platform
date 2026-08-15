@@ -78,6 +78,15 @@ func (a *postgresPublicAuthorizer) AuthorizeValidation(ctx context.Context, proj
 	}, nil
 }
 
+// AuthorizeExecutionEvents authorizes one execution event stream against the
+// capability that created the execution.
+//
+// The capability branches do not all authorize on the same kind of fact, and
+// the difference is deliberate. Index ingest and agent execution each name the
+// one permission that admits them. Configuration validation authorizes on
+// project membership instead, because legacy admits a validation under either
+// of two permissions and the admission record does not keep which one applied.
+// No branch authorizes on the SIZE of the resolved permission set.
 func (a *postgresPublicAuthorizer) AuthorizeExecutionEvents(ctx context.Context, projectID, executionID string) error {
 	project, principal, ok := runtimePrincipalDetails(ctx, projectID)
 	if !ok || executionID == "" || len(executionID) > 256 {
@@ -97,6 +106,10 @@ func (a *postgresPublicAuthorizer) AuthorizeExecutionEvents(ctx context.Context,
 		return executionapi.ErrExecutionEventsForbidden
 	}
 
+	// Resolve on every poll for every capability. The resolution supplies the
+	// named permission that two of the branches below need. It also revalidates
+	// the active user, the token and the project, so a principal that went
+	// inactive loses the stream at the next poll.
 	resolution, err := a.permissions.ResolvePermissions(
 		ctx,
 		principal,
@@ -112,12 +125,34 @@ func (a *postgresPublicAuthorizer) AuthorizeExecutionEvents(ctx context.Context,
 			return executionapi.ErrExecutionEventsForbidden
 		}
 	case executiondomain.ConfigurationValidationCapability:
-		// Validation can currently be admitted by either create or update.
-		// Until admission persists that originating permission, retain the
-		// current project-member compatibility behavior without guessing a
-		// static permission. The resolver still revalidates the active user,
-		// token and project on every SSE poll.
-		if len(resolution.Permissions) == 0 {
+		// Ask the same membership question that AuthorizeValidation asks, and
+		// through the same query, so that the event stream and the admission
+		// that created the execution keep one definition of "may see this".
+		//
+		// This branch previously tested len(resolution.Permissions) == 0 as a
+		// stand-in for that question. The stand-in coupled an execution-event
+		// authorization boundary to any grant to a default-mode role: a change
+		// in an unrelated migration moved what this branch admits, and nothing
+		// in either place stated the link. See #276.
+		//
+		// Membership is the correct question here, and a named permission is
+		// not. AuthorizeValidation admits this capability on membership alone,
+		// and it does not record which permission the caller held. A named
+		// permission would therefore refuse some callers the output of an
+		// execution that the same service already admitted. The two validator
+		// permissions that exist, models.applications.toolkit_validator.check
+		// and models.applications.version_validator.check, gate the separate
+		// synchronous validator routes rather than this capability.
+		//
+		// A named permission becomes possible only after admission persists
+		// the permission that admitted the validation. Legacy admits a
+		// validation under either create or update, so admission must capture
+		// that fact. Do not guess it here.
+		authorized, err := a.authorizeValidationMembership(ctx, project, principal)
+		if err != nil {
+			return err
+		}
+		if !authorized {
 			return executionapi.ErrExecutionEventsForbidden
 		}
 	case executiondomain.AgentApplicationCapability, executiondomain.AgentAdhocCapability:
@@ -128,6 +163,31 @@ func (a *postgresPublicAuthorizer) AuthorizeExecutionEvents(ctx context.Context,
 		return executionapi.ErrExecutionEventsForbidden
 	}
 	return nil
+}
+
+// authorizeValidationMembership runs the admission-time membership predicate
+// for one principal and project. It reports false, and no error, when the
+// principal carries an identifier that PostgreSQL cannot hold.
+func (a *postgresPublicAuthorizer) authorizeValidationMembership(
+	ctx context.Context,
+	project int64,
+	principal auth.User,
+) (bool, error) {
+	user, err := canonicalPositiveInteger(principal.ID)
+	if err != nil {
+		return false, nil
+	}
+	authorized, err := a.admissionStore.AuthorizeRuntimeValidationProject(
+		ctx,
+		sqlcgen.AuthorizeRuntimeValidationProjectParams{
+			ProjectID: int32(project),
+			UserID:    int32(user),
+		},
+	)
+	if err != nil {
+		return false, fmt.Errorf("authorize runtime validation project: %w", err)
+	}
+	return authorized, nil
 }
 
 func runtimePrincipalDetails(ctx context.Context, projectID string) (int64, auth.User, bool) {
