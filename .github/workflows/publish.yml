@@ -101,16 +101,36 @@ jobs:
           go run ./tools/uictl parity-routes --baseline apps/elitea-ui
           go run ./tools/uictl parity-manifest --validate
 
-      # `--require-must` REPORTS, it does not block, and that is a visible
-      # decision rather than an omission: it exits 1 on a large tracked backlog
-      # of unverified priority:must items, so enforcing it today would red every
-      # release on a signal nobody can act on at release time. Whether a release
-      # should block on the parity register is a policy call.
+      # `--require-must` REPORTS, it does not block. This is a decision, not
+      # an omission — issue #309 asked for the choice to be made explicitly
+      # and named, not left as a silent default:
       #
-      # The step still FAILS if the audit emits no recognisable verdict at all —
-      # "ran, found nothing" and "did not really run" are otherwise the same log
-      # line, which is the entire subject of the gate-dormancy work.
-      - name: Require-must parity (advisory — reports, does not block)
+      #   DECISION: stay advisory. Measured on this branch, `uictl
+      #   parity-manifest --require-must` exits 1 with "694 priority:must
+      #   item(s) not verified". Blocking on that count would red every
+      #   release on a known, tracked migration backlog, a signal nobody can
+      #   act on at release time — that is how a gate turns into noise
+      #   everyone learns to ignore, not a safer release.
+      #
+      #   OWNER: Platform Engineering, the same owner
+      #   `implementation-readiness.mdx` (elitea-docs) already names for this
+      #   gap register — this step reports the identical priority:must count
+      #   that document tracks, so it inherits that document's owner rather
+      #   than getting an invented one.
+      #
+      #   REVIEW BY: 2026-11-30. Re-run this decision then: if the backlog is
+      #   near zero, make this step block a release; if not, move this date.
+      #   An advisory with no review date is how gate 3's stale coverage
+      #   exclusion (this same issue) went unnoticed for ten consumers.
+      #
+      # `cutover/*` in ci-web.yml already blocks on this same check and is
+      # unaffected by the above — that arm is where the audit is meant to
+      # bite before release policy changes.
+      #
+      # The step still FAILS if the audit emits no recognisable verdict at all
+      # — "ran, found nothing" and "did not really run" are otherwise the same
+      # log line, which is the entire subject of the gate-dormancy work.
+      - name: Require-must parity (advisory — reports, does not block; owner Platform Engineering, review by 2026-11-30)
         run: |
           set -uo pipefail
           OUT="$(go run ./tools/uictl parity-manifest --require-must 2>&1)" && STATUS=0 || STATUS=$?
@@ -119,7 +139,11 @@ jobs:
             echo "::error::parity-manifest --require-must produced no verdict line (exit $STATUS)"
             exit 1
           fi
-          printf '%s\n' "$OUT" | grep -E 'priority:must item|all priority:must items' >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf '%s\n' "$OUT" | grep -E 'priority:must item|all priority:must items'
+            echo ""
+            echo "_Advisory, not release-blocking (issue #309). Owner: Platform Engineering. Review by: 2026-11-30._"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Job 2: Build each image on its native runner ────────────────────────────
   # NOTE (issue #244): elitea-worker-python has a Containerfile

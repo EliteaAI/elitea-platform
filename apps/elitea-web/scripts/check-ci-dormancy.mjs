@@ -42,9 +42,11 @@ if (workflows.length === 0) {
 const triggerOffences = findDeadTagTriggers(workflows);
 
 // ── rule 3: workflow_run triggers pointing at a workflow that isn't there ────
-// Gate 2 of #309 is armed by ci-release-audit.yml's `workflow_run` on "Release
-// & Publish". That coupling is a bare string; renaming the target would make
-// the release audit dormant with no error from anywhere.
+// A generic safety net for any `workflow_run` trigger in this repository — see
+// findMissingWorkflowRunTargets's own doc comment in ci-dormancy-core.mjs. Gate
+// 2 of #309 used to be armed this way (ci-release-audit.yml's `workflow_run` on
+// "Release & Publish"); it now runs as a job inside publish.yml instead, so
+// this rule currently resolves zero targets — reported below, not silenced.
 const workflowRunOffences = findMissingWorkflowRunTargets(workflows);
 
 // ── rule 2: stale coverage exclusions ───────────────────────────────────────
