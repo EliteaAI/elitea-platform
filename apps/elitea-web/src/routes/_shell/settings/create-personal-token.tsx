@@ -6,26 +6,26 @@
  *  - Token name (validated: alphanumeric, underscore, hyphen)
  *  - Expiration period (dropdown: never, days, weeks, hours, minutes)
  *  - Expiration value (number input, shown when period != never)
- *  - OPTIONAL project binding (dropdown, `spec-llm-project-scope` §4)
  *  - Generated token display via `GeneratedTokenDialog` on success
  *
- * PROJECT BINDING (`spec-llm-project-scope` §4, ADR-0018): `project_id` is
- * OPTIONAL, absent means unbound, and unbound stays the default — `onSubmit`
- * OMITS the field rather than sending `null`. The list is the app's EXISTING
- * projects query (`useProjectOptions` -> the generated `useListProjects`),
- * reused as-is: no new endpoint, no new query key. The control and the §4
- * failure copy live in `routes/-ui/TokenProjectField.tsx`.
+ * PROJECT BINDING (`spec-llm-project-scope` §4, ADR-0018): the token binds to
+ * the project the SIDEBAR selects. The page offers no project control of its
+ * own — it reads `useSelectedProjectStore`, the same store
+ * `settings/tokens.tsx` reads, and only discloses the binding it will send.
+ * `project_id` stays OPTIONAL on the wire: `bindableProjectId` drops a store
+ * value that is not a positive integer, and `onSubmit` then OMITS the field
+ * rather than sending `null`. Absent means unbound, and the server keeps
+ * unbound as its default. The disclosure line and the §4 failure copy live in
+ * `routes/-ui/TokenProjectNotice.tsx`.
  *
  * Ported from `apps/elitea-ui/src/[fsd]/pages/settings/CreatePersonalToken.jsx`.
  *
  * Deviations:
  *  - Uses react-hook-form + zod (project standards; formik/yup not installed)
- *  - No `useNavBlocker` hook (Wave-2 concern)
- *  - No Redux
- *  - Uses `@/shared/i18n` for i18n
- *  - Uses `DrawerPageHeader` from shared UI
- *  - Uses `GeneratedTokenDialog` from shared UI
- *  - Uses RTK Query hooks from `entities/token/api/tokenApi`
+ *  - No `useNavBlocker` hook (Wave-2 concern), and no Redux
+ *  - Uses `@/shared/i18n` for i18n, `DrawerPageHeader` and
+ *    `GeneratedTokenDialog` from shared UI, and the query hooks from
+ *    `entities/token/api/tokenApi`
  *  - `MAX_TOKEN_NAME_LENGTH` is a LOCAL override (768), not the constant of
  *    the same name `@/entities/token/model/constants` exports (64) — that
  *    file is outside this cluster's file scope. old-app parity is
@@ -55,9 +55,9 @@ import { GeneratedTokenDialog } from '@/features/settings/ui/personal-tokens/Gen
 import { t } from '@/shared/i18n';
 import { TOKEN_NAME_PATTERN, TOKEN_EXPIRATION_OPTIONS, DEFAULT_TOKEN_EXPIRATION_VALUE } from '@/entities/token/model/constants';
 import { useCreateTokenMutation, useListTokensQuery } from '@/entities/token/api/tokenApi';
-import { createTokenFailureMessage, TokenCreateError, TokenProjectField } from '@/routes/-ui/TokenProjectField';
-import { getConfig } from '@/shared/config';
-import { useProjectOptions } from '@/widgets/sidebar';
+import { bindableProjectId } from '@/entities/token/model/selectors';
+import { createTokenFailureMessage, TokenCreateError, TokenProjectNotice } from '@/routes/-ui/TokenProjectNotice';
+import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { useTheme } from '@mui/material/styles';
 
 export const Route = createFileRoute('/_shell/settings/create-personal-token')({
@@ -81,8 +81,6 @@ const validationSchema = z.object({
     }),
   measure: z.string().min(1),
   expiration: z.coerce.number().min(1).optional(),
-  /* `<select>` value; `''` is "no binding". Only `onSubmit` makes it a number. */
-  projectId: z.string(),
 });
 
 type FormValues = z.infer<typeof validationSchema>;
@@ -102,11 +100,12 @@ export function CreatePersonalTokenPage() {
   const theme = useTheme();
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  /* Bindable projects. The server re-checks membership in the create
-     transaction (§4) — this list is the affordance, not the authority. */
-  const configResult = getConfig();
-  const publicProjectId = configResult.status === 'ok' ? configResult.config.vite_public_project_id : '';
-  const { projects } = useProjectOptions(publicProjectId);
+  /* The binding, read the same way `settings/tokens.tsx` reads it. The server
+     re-checks membership in the create transaction (§4) — the sidebar
+     selection is the input, not the authority. */
+  const selectedProjectId = useSelectedProjectStore((s) => s.project?.id ?? '');
+  const selectedProjectName = useSelectedProjectStore((s) => s.project?.name ?? '');
+  const boundProjectId = bindableProjectId(selectedProjectId);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(validationSchema),
@@ -115,7 +114,6 @@ export function CreatePersonalTokenPage() {
       name: '',
       measure: 'days',
       expiration: DEFAULT_TOKEN_EXPIRATION_VALUE,
-      projectId: '', // unbound by default (§4)
     },
   });
 
@@ -129,7 +127,6 @@ export function CreatePersonalTokenPage() {
 
   const measure = watch('measure');
   const name = watch('name');
-  const selectedProjectId = watch('projectId');
 
   const onSubmit = useCallback(async (values: FormValues) => {
     const expires =
@@ -144,19 +141,19 @@ export function CreatePersonalTokenPage() {
         name: values.name,
         expires,
         // SPREAD, never `project_id: null` — §4 makes "absent" the unbound case.
-        ...(values.projectId === '' ? {} : { project_id: Number(values.projectId) }),
+        ...(boundProjectId === undefined ? {} : { project_id: boundProjectId }),
       });
       setGeneratedToken({ token: resp.token, name: resp.name });
       setShowDialog(true);
     } catch (error) {
       setSubmitError(createTokenFailureMessage(error));
     }
-  }, [createMutation]);
+  }, [createMutation, boundProjectId]);
 
   const expirationValue = useWatch({ name: 'expiration', control }) as number | null;
   const hasChanged = useMemo(
-    () => name !== '' || measure !== 'days' || expirationValue !== DEFAULT_TOKEN_EXPIRATION_VALUE || selectedProjectId !== '',
-    [name, measure, expirationValue, selectedProjectId],
+    () => name !== '' || measure !== 'days' || expirationValue !== DEFAULT_TOKEN_EXPIRATION_VALUE,
+    [name, measure, expirationValue],
   );
 
   const onCancel = useCallback(() => {
@@ -275,13 +272,12 @@ export function CreatePersonalTokenPage() {
                   )}
                 </Box>
 
-                {/* Project binding — optional, fixed at creation (§4) */}
-                <TokenProjectField
-                  projects={projects}
-                  registration={register('projectId')}
-                  bound={selectedProjectId !== ''}
-                  selectStyle={styles.select}
-                />
+                {/* Project binding — the sidebar selection, fixed at creation (§4).
+                    The name comes from the id the request carries, so a dropped
+                    store value reads as unbound here too. `||`, not `??`: the
+                    store gives `''` for a missing name, and the id labels it
+                    better than an empty string does. */}
+                <TokenProjectNotice projectName={boundProjectId === undefined ? null : selectedProjectName || selectedProjectId} />
 
                 <TokenCreateError message={submitError} />
               </Box>

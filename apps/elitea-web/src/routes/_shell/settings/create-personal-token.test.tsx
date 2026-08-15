@@ -1,22 +1,29 @@
 /**
- * create-personal-token.test.tsx — the optional project binding on
+ * create-personal-token.test.tsx — the project binding on
  * `POST /api/v2/auth/token/` (`spec-llm-project-scope` §4, ADR-0018).
  *
- * The four things that can silently go wrong here, and are therefore pinned:
+ * The page has NO project control. A new token binds to the project the
+ * sidebar selects, which the page reads from `useSelectedProjectStore` — the
+ * same store `settings/tokens.tsx` reads. The things that can silently go
+ * wrong, and are therefore pinned:
  *
- *  1. UNBOUND MUST STAY THE DEFAULT. A user who never touches the new control
- *     must send the request that shipped before the control existed — no
- *     `project_id` key at all, not `project_id: null`. Asserted on the
- *     request body's KEYS, because `toMatchObject` cannot tell an absent key
- *     from an explicit `null` one.
- *  2. Picking a project sends it, as a NUMBER (the `<select>` value is a
- *     string; the conversion happens in `onSubmit`).
- *  3/4. The 403 `project_forbidden` and 400 `invalid_project_id` failures
+ *  1. The request carries the SELECTED project, as a NUMBER (the store holds
+ *     a string id; the conversion happens in `bindableProjectId`).
+ *  2. With no usable selection the request must be the one that shipped
+ *     before the binding existed: NO `project_id` key at all, not
+ *     `project_id: null` and not `project_id: 0`. Asserted on the request
+ *     body's KEYS, because `toMatchObject` cannot tell an absent key from an
+ *     explicit `null` one.
+ *  3. The user still sees which project pays, because the binding is
+ *     permanent and the API has no update path.
+ *  4/5. The 403 `project_forbidden` and 400 `invalid_project_id` failures
  *     reach the user as their own messages. Both use the NESTED envelope
  *     `{"error":{message,type,code}}`, unlike every other failure on this
- *     endpoint, which keeps the FLAT `{"error":"…"}` — the last case below
- *     feeds a flat body in to prove the flat shape still degrades to the
- *     generic line instead of throwing or rendering a project message.
+ *     endpoint, which keeps the FLAT `{"error":"…"}` — one case below feeds a
+ *     flat body in to prove the flat shape still degrades to the generic line
+ *     instead of throwing or rendering a project message.
+ *  6. No project-choosing control comes back. The owner removed the choice,
+ *     so a rendered `<select>` here is the defect.
  *
  * Mounts `CreatePersonalTokenPage` through a MINIMAL hand-built router tree
  * for the reason `notifications.test.tsx` documents at length: the real
@@ -33,6 +40,7 @@ import type { AuthContext, RouterContext } from '@/app/router-context';
 import { AppProviders } from '@/app/providers/AppProviders';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { resetConfigForTests } from '@/shared/config/get-config';
+import { useSelectedProjectStore } from '@/widgets/app-shell';
 
 import { server } from '../../../test/setup';
 import { CreatePersonalTokenPage } from './create-personal-token';
@@ -40,7 +48,6 @@ import { CreatePersonalTokenPage } from './create-personal-token';
 const BASE = '/api/v2';
 const PUBLIC_PROJECT_ID = '1';
 const TOKEN_PATH = `${BASE}/auth/token/`;
-const PROJECTS_PATH = `${BASE}/projects/project/default/${PUBLIC_PROJECT_ID}`;
 
 const globals = globalThis as unknown as Record<string, unknown>;
 
@@ -67,16 +74,9 @@ function mount(): void {
   );
 }
 
-/** The app's existing projects query — `GET /projects/project/default/{publicProjectId}`. */
-function mockProjects(): void {
-  server.use(
-    http.get(PROJECTS_PATH, () =>
-      HttpResponse.json([
-        { id: PUBLIC_PROJECT_ID, name: 'Public', status: 'active', suspended: false },
-        { id: '42', name: 'Marketing', status: 'active', suspended: false },
-      ]),
-    ),
-  );
+/** The sidebar selection this page binds to. */
+function selectProject(id: string, name: string): void {
+  useSelectedProjectStore.setState({ project: { id, name } });
 }
 
 /**
@@ -108,15 +108,10 @@ function mockCreateFailure(status: number, body: Record<string, unknown>): void 
 }
 
 /** Fills the name and presses Generate, waiting for the form to become valid first. */
-async function submitWith(user: ReturnType<typeof userEvent.setup>, projectOption?: string): Promise<void> {
+async function submit(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   // `findBy…`: the router resolves its match asynchronously, so the form is
   // not in the DOM on the tick after `render`.
   await user.type(await screen.findByLabelText('Name'), 'my-token');
-  if (projectOption !== undefined) {
-    // Wait for the project list before selecting from it.
-    await screen.findByRole('option', { name: projectOption });
-    await user.selectOptions(screen.getByLabelText('Project'), projectOption);
-  }
   const generate = screen.getByRole('button', { name: 'Generate' });
   await waitFor(() => expect(generate).toBeEnabled());
   await user.click(generate);
@@ -130,91 +125,124 @@ beforeEach(() => {
     vite_public_project_id: PUBLIC_PROJECT_ID,
   };
   configureGeneratedClient({ baseUrl: BASE });
-  mockProjects();
+  useSelectedProjectStore.setState({ project: null });
 });
 
 afterEach(() => {
   resetGeneratedClient();
   resetConfigForTests();
+  useSelectedProjectStore.setState({ project: null });
   delete globals['elitea_ui_config'];
 });
 
-describe('project binding — the default', () => {
-  it('sends no project_id at all when the user ignores the project control', async () => {
-    const { bodies } = mockCreateOk();
-    mount();
-
-    await submitWith(userEvent.setup());
-
-    await waitFor(() => expect(bodies).toHaveLength(1));
-    expect(Object.keys(bodies[0]!)).not.toContain('project_id');
-    expect(bodies[0]).toMatchObject({ name: 'my-token', expires: { measure: 'days', value: 30 } });
-  });
-
-  it('offers "No project (default)" as the pre-selected option', async () => {
-    mount();
-
-    const select = await screen.findByLabelText('Project');
-    expect(select).toHaveValue('');
-    expect(await screen.findByRole('option', { name: 'No project (default)' })).toBeInTheDocument();
-  });
-});
-
-describe('project binding — a chosen project', () => {
+describe('project binding — the selected project', () => {
   it('sends the selected project as a numeric project_id', async () => {
+    selectProject('42', 'Marketing');
     const { bodies } = mockCreateOk();
     mount();
 
-    await submitWith(userEvent.setup(), 'Marketing');
+    await submit(userEvent.setup());
 
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0]).toMatchObject({ name: 'my-token', project_id: 42 });
     expect(typeof bodies[0]!['project_id']).toBe('number');
   });
 
-  it('offers only the projects the projects query returns', async () => {
+  it('names the project that pays, and says the binding is permanent', async () => {
+    selectProject('42', 'Marketing');
     mount();
 
-    await screen.findByRole('option', { name: 'Marketing' });
-    const options = screen.getAllByRole('option').map((option) => option.textContent);
-    expect(options).toContain('Marketing');
-    expect(options).toContain('Public');
-    expect(options).not.toContain('Some other project');
+    expect(
+      await screen.findByText('The project Marketing pays for this token, and you cannot change this later.'),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('project binding — no usable selection', () => {
+  it('sends no project_id key at all when no project is selected', async () => {
+    const { bodies } = mockCreateOk();
+    mount();
+
+    await submit(userEvent.setup());
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(Object.keys(bodies[0]!)).not.toContain('project_id');
+    expect(bodies[0]).toMatchObject({ name: 'my-token', expires: { measure: 'days', value: 30 } });
+  });
+
+  it('sends no project_id key at all when the selected id is not a positive integer', async () => {
+    selectProject('0', 'Not a real project');
+    const { bodies } = mockCreateOk();
+    mount();
+
+    await submit(userEvent.setup());
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(Object.keys(bodies[0]!)).not.toContain('project_id');
+  });
+
+  it('says the token gets no project', async () => {
+    mount();
+
+    expect(
+      await screen.findByText('This token gets no project, and you cannot change this later.'),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('project binding — no project-choosing control', () => {
+  it('renders no project select, and keeps only the expiration one', async () => {
+    selectProject('42', 'Marketing');
+    mount();
+
+    // The form is mounted before the negative assertions run.
+    await screen.findByLabelText('Name');
+    const selects = screen.getAllByRole('combobox');
+    expect(selects).toHaveLength(1);
+    expect(selects[0]).toHaveAccessibleName('Expiration period');
+    expect(screen.queryByLabelText('Project')).toBeNull();
+    expect(screen.queryByRole('option', { name: 'No project (default)' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'Marketing' })).toBeNull();
   });
 });
 
 describe('project binding — the §4 error contract', () => {
   it('renders the membership message for a 403 project_forbidden', async () => {
+    selectProject('42', 'Marketing');
     mockCreateFailure(403, {
       error: { message: 'not a member', type: 'permission_error', code: 'project_forbidden' },
     });
     mount();
 
-    await submitWith(userEvent.setup(), 'Marketing');
+    await submit(userEvent.setup());
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(
-      'You are not a member of this project. Select a different project, or create the token with no project.',
+      'You are not a member of this project. Select a different project in the sidebar, then create the token again.',
     );
   });
 
   it('renders the malformed-project message for a 400 invalid_project_id', async () => {
+    selectProject('42', 'Marketing');
     mockCreateFailure(400, {
       error: { message: 'bad project id', type: 'invalid_request_error', code: 'invalid_project_id' },
     });
     mount();
 
-    await submitWith(userEvent.setup(), 'Marketing');
+    await submit(userEvent.setup());
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('This project is not a valid choice. Select a project from the list again.');
+    expect(alert).toHaveTextContent(
+      'This project is not a valid choice. Select a different project in the sidebar, then create the token again.',
+    );
   });
 
   it('falls back to the generic message for the FLAT error envelope every other failure uses', async () => {
+    selectProject('42', 'Marketing');
     mockCreateFailure(500, { error: 'internal server error' });
     mount();
 
-    await submitWith(userEvent.setup());
+    await submit(userEvent.setup());
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('The system did not create the token. Try again.');

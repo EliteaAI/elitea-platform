@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  bindableProjectId,
   maskedTokenValue,
   sortTokensByName,
   tokenExpiryInDays,
@@ -89,6 +90,37 @@ describe('tokenProjectKey', () => {
 
   it('treats a record with no project_id field at all as unbound', () => {
     expect(tokenProjectKey(token('a', null))).toBeNull();
+  });
+});
+
+describe('bindableProjectId', () => {
+  it('converts a positive integer id to a number', () => {
+    expect(bindableProjectId('42')).toBe(42);
+  });
+
+  /*
+   * Every case below must give `undefined`, because the caller turns
+   * `undefined` into an ABSENT `project_id` — the unbound default (§4). A
+   * `0` or a `NaN` here would reach the wire as a real, wrong binding.
+   */
+  it('gives undefined for an empty selection', () => {
+    expect(bindableProjectId('')).toBeUndefined();
+  });
+
+  it('gives undefined for zero', () => {
+    expect(bindableProjectId('0')).toBeUndefined();
+  });
+
+  it('gives undefined for an id that is not a plain positive integer', () => {
+    expect(bindableProjectId('-1')).toBeUndefined();
+    expect(bindableProjectId('4.2')).toBeUndefined();
+    expect(bindableProjectId(' 42')).toBeUndefined();
+    expect(bindableProjectId('42x')).toBeUndefined();
+    expect(bindableProjectId('personal')).toBeUndefined();
+  });
+
+  it('gives undefined for an id above the safe-integer range', () => {
+    expect(bindableProjectId('9007199254740993')).toBeUndefined();
   });
 });
 

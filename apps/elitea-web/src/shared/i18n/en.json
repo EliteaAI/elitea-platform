@@ -1966,14 +1966,12 @@
   "pages.agents.editApplication.deleteError": "Failed to delete this agent.",
   "pages.agents.editApplication.exportError": "Failed to export this agent.",
   "entities.token.form.createFailed": "The system did not create the token. Try again.",
-  "entities.token.form.invalidProjectId": "This project is not a valid choice. Select a project from the list again.",
-  "entities.token.form.project": "Project",
-  "entities.token.form.projectForbidden": "You are not a member of this project. Select a different project, or create the token with no project.",
-  "entities.token.form.projectHeaderNote": "A token with a project does not need the X-Project-Id header in a request.",
-  "entities.token.form.projectHelp": "The project you select pays for the calls of this token. You cannot change the project after you create the token. If you leave the project, the token does not work for that project.",
-  "entities.token.form.projectNone": "No project (default)",
+  "entities.token.form.invalidProjectId": "This project is not a valid choice. Select a different project in the sidebar, then create the token again.",
+  "entities.token.form.projectForbidden": "You are not a member of this project. Select a different project in the sidebar, then create the token again.",
   "entities.token.table.project": "Project",
   "entities.token.table.projectId": "Project {{id}}",
   "entities.token.table.projectNone": "Not bound",
-  "features.toolkits.indexScheduleModal.credentialsLabel": "Credentials"
+  "features.toolkits.indexScheduleModal.credentialsLabel": "Credentials",
+  "entities.token.form.projectNoneNote": "This token gets no project, and you cannot change this later.",
+  "entities.token.form.projectNote": "The project {{project}} pays for this token, and you cannot change this later."
 }

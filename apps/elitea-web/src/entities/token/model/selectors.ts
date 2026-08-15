@@ -61,6 +61,25 @@ export function tokenProjectKey(token: PersonalAccessToken): string | null {
 }
 
 /**
+ * The `project_id` a create-token request may carry, or `undefined` for an
+ * unbound token.
+ *
+ * The app holds the selected project id as a STRING; `POST /auth/token/` takes
+ * a positive integer. A value of another shape (an empty selection, `'0'`, a
+ * decimal, a name) gives `undefined`, and the caller then OMITS `project_id`.
+ * Absent is the unbound case (`spec-llm-project-scope` §4) — a caller must
+ * never send `null` or `0` in its place.
+ *
+ * Deep-imported by the create-token route, not re-exported from `index.ts`:
+ * see that file's note on the §3.3 budget.
+ */
+export function bindableProjectId(selectedProjectId: string): number | undefined {
+  if (!/^\d+$/.test(selectedProjectId)) return undefined;
+  const id = Number(selectedProjectId);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+/**
  * The two failures `POST /api/v2/auth/token/` answers for a bad `project_id`
  * (`spec-llm-project-scope` §4): 403 for a project the caller is not a member
  * of, 400 for a malformed one.
