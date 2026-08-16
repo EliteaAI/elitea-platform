@@ -9,6 +9,15 @@ on:
       - "libs/proto/pyproject.toml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-python.yml"
+      # The "Runtime worker" job reads the files below. It compares each
+      # committed projection with the SDK that the worker lock selects.
+      # Start this workflow when one of these files changes. The worker lock
+      # is in the services/elitea-worker-python/ directory. The entry above
+      # covers the lock.
+      - "scripts/contract/**"
+      - "services/elitea-main/internal/runtimecomposition/current_index_types_snapshot.json"
+      - "services/elitea-main/internal/runtimecomposition/current_toolkit_schema_snapshot.json"
+      - "services/elitea-main/internal/api/v2/indextypes/testdata/current_index_types_ui_response.json"
   push:
     branches:
       - main
@@ -19,6 +28,10 @@ on:
       - "libs/proto/pyproject.toml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-python.yml"
+      - "scripts/contract/**"
+      - "services/elitea-main/internal/runtimecomposition/current_index_types_snapshot.json"
+      - "services/elitea-main/internal/runtimecomposition/current_toolkit_schema_snapshot.json"
+      - "services/elitea-main/internal/api/v2/indextypes/testdata/current_index_types_ui_response.json"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

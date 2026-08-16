@@ -19,7 +19,7 @@ const (
 	currentToolkitSchemaSnapshotVersion = "elitea.current-toolkit-schema-snapshot.v1"
 	// The pinned snapshot carries per-tool argument schemas as well as the
 	// settings annotations, so it is no longer a few kilobytes: it measured
-	// 596,006 bytes at SDK revision b5113a1 (56.8% of this ceiling, up from
+	// 595,983 bytes at SDK revision b5113a1 (56.8% of this ceiling, up from
 	// 0.8% before the argument schemas were retained). The limit is kept where
 	// it is deliberately — it still admits the file with ~440 KiB of headroom,
 	// and raising it to accommodate a future regeneration should be a decision
