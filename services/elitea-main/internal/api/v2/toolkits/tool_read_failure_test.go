@@ -32,11 +32,34 @@ import (
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 )
 
-// missingSchemaProjectID names a project whose tenant schema `p_4242` was never
-// created. Every read against it fails inside PostgreSQL with undefined_table.
-// That is the exact production failure this pair of tests is about: the
-// database refuses the read, and the caller must learn that it did.
-const missingSchemaProjectID = "4242"
+// missingSchemaProjectIDLegacy names a project whose tenant schema `p_4242` was
+// never created. Every read against it fails inside PostgreSQL with
+// undefined_table. That is the exact production failure this pair of tests is
+// about: the database refuses the read, and the caller must learn that it did.
+//
+// THIS FILE DUPLICATES COVERAGE THAT available_tools_read_fault_test.go AND
+// handler_test.go ALREADY GIVE. It arrived with #410. #439 then rewrote the
+// same routes and brought its own tests, which declare their own
+// `missingSchemaProjectID` ("9999"). Both files cannot declare that name in
+// one package, so this one carries the `Legacy` suffix.
+//
+// Every condition below is covered again, and more strictly, by #439:
+//   - a missing tenant schema, by TestAvailableToolsReportsAMissingTenantSchemaAsAFailure
+//     and TestDiscoverToolsReportsAMissingTenantSchemaAsAFailure
+//   - a failed read that must not look like an empty list, by
+//     TestAvailableTools_ReadFaultIsNotAnEmptyList and its Discover twin, whose
+//     assertReadFaultResponse requires the error to EQUAL a named reason. That
+//     is stronger than the "not the raw cause" assertion below, because it
+//     excludes the leak and pins the reason.
+//   - an empty toolkit that must stay 200, by TestAvailableTools_Empty and
+//     TestToolListEmptyAndFailedReadDoNotShareAResponse
+//
+// #439 also covers a dropped table, a row that fails to scan, and a ListTypes
+// read fault, none of which this file reaches. The file was kept rather than
+// deleted so that the removal is a separate, deliberate change with the
+// coverage argument written down. Delete it when someone confirms the mapping
+// above; do not delete it merely to resolve a name collision.
+const missingSchemaProjectIDLegacy = "4242"
 
 // newToolReadFixture builds p_1 with one toolkit attached to one version, so a
 // GOOD read returns exactly one row. Without that half the failure assertions
@@ -104,10 +127,10 @@ func TestPgRepoAvailableToolsReturnsAnErrorWhenTheReadFails(t *testing.T) {
 	}
 
 	// The same read against a schema that does not exist must FAIL.
-	failed, err := repo.AvailableTools(ctx, missingSchemaProjectID, versionID)
+	failed, err := repo.AvailableTools(ctx, missingSchemaProjectIDLegacy, versionID)
 	if err == nil {
 		t.Fatalf("a read of the missing schema p_%s reported success and returned %d tools; "+
-			"a failed read must return an error, not an empty list", missingSchemaProjectID, len(failed))
+			"a failed read must return an error, not an empty list", missingSchemaProjectIDLegacy, len(failed))
 	}
 	if failed != nil {
 		t.Errorf("a failed read must return no tools, got %+v", failed)
@@ -126,10 +149,10 @@ func TestPgRepoDiscoverToolsReturnsAnErrorWhenTheReadFails(t *testing.T) {
 		t.Fatalf("expected the fixture toolkit, got %d tools: %+v", len(tools), tools)
 	}
 
-	failed, err := repo.DiscoverTools(ctx, missingSchemaProjectID, "github")
+	failed, err := repo.DiscoverTools(ctx, missingSchemaProjectIDLegacy, "github")
 	if err == nil {
 		t.Fatalf("a discover against the missing schema p_%s reported success and returned %d tools; "+
-			"a failed read must return an error, not an empty list", missingSchemaProjectID, len(failed))
+			"a failed read must return an error, not an empty list", missingSchemaProjectIDLegacy, len(failed))
 	}
 	if failed != nil {
 		t.Errorf("a failed discover must return no tools, got %+v", failed)

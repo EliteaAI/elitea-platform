@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -137,9 +139,22 @@ var knownToolkitTypes = []string{
 	"custom",
 }
 
+// ListTypes serves the toolkit type list.
+//
+// This route keeps its fallback on purpose. The static knownToolkitTypes list
+// is a correct answer on its own, and the create-toolkit form must stay usable
+// when the tenant read fails. The route therefore stays at 200. But the
+// degradation is now recorded (#381). Before, the repository turned the failure
+// into an empty list and a nil error, and the handler dropped the error with
+// `_`, so a dead pool served the static list and left no trace anywhere.
 func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	dbTypes, _ := h.repo.ListTypes(r.Context(), projectID)
+	dbTypes, err := h.repo.ListTypes(r.Context(), projectID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "toolkit_types: tenant type read failed; serving the static type list only",
+			"project_id", projectID, "err", err)
+		dbTypes = nil
+	}
 
 	// Merge DB types with known list, deduplicating.
 	seen := make(map[string]struct{})
@@ -451,40 +466,47 @@ func withArgumentSchemas(
 	return typeSchema
 }
 
-// AvailableTools lists the tools that one toolkit instance supplies.
+// availableToolsReadFailed and discoverToolsReadFailed are the named reasons
+// that the two tool-list reads report. The client gets the reason and no
+// database detail. The log line carries the wrapped driver error (#381 AC6).
+const (
+	availableToolsReadFailed = "available tools read failed"
+	discoverToolsReadFailed  = "discover tools read failed"
+)
+
+// AvailableTools lists the tools that one toolkit instance has.
 //
-// A failed read answers 500. Before #340 it answered `200 {"tools":[],
-// "total":0}`, which made a broken read look exactly like a toolkit that
-// legitimately holds no tools. The caller could not tell the two apart, so a
-// database outage silently emptied the tool picker instead of reporting a
-// fault. The error text is a fixed string: the cause carries SQL and schema
-// names, and AGENTS.md forbids returning a raw error across a trust boundary.
+// A read fault must not answer 200 with an empty list (#381). An empty list is a
+// correct state for a toolkit with no attached tools. A failed read that copies
+// that same body removes the only signal that keeps the two apart. The screen
+// then shows "no tools" for a dead pool, for a missing tenant schema and for a
+// bad row. No record shows that a read was tried and lost. This handler keeps
+// the two outcomes apart. No tools gives 200 and an empty list. A lost read
+// gives 500 and a named reason.
 func (h *Handler) AvailableTools(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitID := chi.URLParam(r, "toolkitID")
 	tools, err := h.repo.AvailableTools(r.Context(), projectID, toolkitID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to read the available tools"})
+		slog.ErrorContext(r.Context(), "toolkit_available_tools: "+availableToolsReadFailed,
+			"project_id", projectID, "toolkit_id", toolkitID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": availableToolsReadFailed})
 		return
-	}
-	if tools == nil {
-		tools = []Tool{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools, "total": len(tools)})
 }
 
-// DiscoverTools lists the tools that one toolkit TYPE supplies. It answers a
-// failed read the same way AvailableTools does, and for the same reason.
+// DiscoverTools lists the tools that one toolkit type offers. It keeps the two
+// outcomes apart for the same reason that AvailableTools does (#381).
 func (h *Handler) DiscoverTools(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitType := chi.URLParam(r, "toolkitType")
 	tools, err := h.repo.DiscoverTools(r.Context(), projectID, toolkitType)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to discover the tools"})
+		slog.ErrorContext(r.Context(), "toolkit_discover_tools: "+discoverToolsReadFailed,
+			"project_id", projectID, "toolkit_type", toolkitType, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": discoverToolsReadFailed})
 		return
-	}
-	if tools == nil {
-		tools = []Tool{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools, "total": len(tools)})
 }
@@ -948,28 +970,50 @@ type pgRepo struct {
 	pool *pgxpool.Pool
 }
 
+// ListTypes reports the toolkit types that the tenant schema holds.
+//
+// The error is now returned to the caller. Before #381 this function turned a
+// failed query into an empty list and a nil error, so the handler could not
+// know that the read was lost. The handler continues to serve the static type
+// list when the read fails, because the create-toolkit form needs a type list
+// to stay usable. The difference is that the handler now records the
+// degradation. See the ListTypes handler above.
 func (r *pgRepo) ListTypes(ctx context.Context, projectID string) ([]string, error) {
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`SELECT DISTINCT type FROM %q.elitea_tools WHERE type != '' ORDER BY type`, s)
 	rows, err := r.pool.Query(ctx, q)
 	if err != nil {
-		return []string{}, nil
+		return nil, fmt.Errorf("query toolkit types in %q: %w", s, err)
 	}
 	defer rows.Close()
-	var types []string
+	types := []string{}
 	for rows.Next() {
 		var t string
 		if err := rows.Scan(&t); err != nil {
-			continue
+			return nil, fmt.Errorf("scan toolkit type row in %q: %w", s, err)
 		}
 		types = append(types, t)
 	}
-	if types == nil {
-		types = []string{}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read toolkit type rows in %q: %w", s, err)
 	}
 	return types, nil
 }
 
+// AvailableTools reads the tools that are attached to one toolkit instance.
+//
+// Every read fault is returned to the caller (#381). Three separate faults were
+// discarded here before:
+//
+//  1. The query itself failed. A dead pool or a missing tenant schema became
+//     `[]Tool{}, nil`.
+//  2. A row failed to scan. `continue` dropped that row and kept the rest, so a
+//     type change in the table could empty the list with no signal at all.
+//  3. The row set failed part way through. `rows.Err()` was never read, so a
+//     connection that died mid-read looked like the end of the data.
+//
+// All three now produce an error. Only a real empty result produces an empty
+// list, and the empty list is non-nil so that the response encodes as `[]`.
 func (r *pgRepo) AvailableTools(ctx context.Context, projectID, toolkitID string) ([]Tool, error) {
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`
@@ -979,46 +1023,38 @@ func (r *pgRepo) AvailableTools(ctx context.Context, projectID, toolkitID string
 		WHERE etm.entity_version_id = $1`, s, s)
 	rows, err := r.pool.Query(ctx, q, toolkitID)
 	if err != nil {
-		return nil, fmt.Errorf("query the available tools: %w", err)
+		return nil, fmt.Errorf("query available tools for toolkit %q in %q: %w", toolkitID, s, err)
 	}
-	defer rows.Close()
-	tools := []Tool{}
-	for rows.Next() {
-		var t Tool
-		if err := rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description); err != nil {
-			return nil, fmt.Errorf("scan an available tool: %w", err)
-		}
-		tools = append(tools, t)
-	}
-	// rows.Err() reports a failure that stops the iteration part way, such as
-	// a lost connection. Without this check the loop ends early and the caller
-	// receives a short list that looks complete.
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the available tools: %w", err)
-	}
-	return tools, nil
+	return scanTools(rows, fmt.Sprintf("available tools for toolkit %q in %q", toolkitID, s))
 }
 
+// DiscoverTools reads the tools that one toolkit type offers. It returns every
+// read fault for the same reason that AvailableTools does (#381).
 func (r *pgRepo) DiscoverTools(ctx context.Context, projectID, toolkitType string) ([]Tool, error) {
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`SELECT id, name, type, COALESCE(description, '') FROM %q.elitea_tools WHERE type = $1 ORDER BY name`, s)
 	rows, err := r.pool.Query(ctx, q, toolkitType)
 	if err != nil {
-		return nil, fmt.Errorf("query the discovered tools: %w", err)
+		return nil, fmt.Errorf("query discoverable tools of type %q in %q: %w", toolkitType, s, err)
 	}
+	return scanTools(rows, fmt.Sprintf("discoverable tools of type %q in %q", toolkitType, s))
+}
+
+// scanTools reads a four-column tool row set into a slice. A scan fault and a
+// row-set fault both stop the read and give an error. The subject names the
+// read in the error text.
+func scanTools(rows pgx.Rows, subject string) ([]Tool, error) {
 	defer rows.Close()
 	tools := []Tool{}
 	for rows.Next() {
 		var t Tool
 		if err := rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description); err != nil {
-			return nil, fmt.Errorf("scan a discovered tool: %w", err)
+			return nil, fmt.Errorf("scan row %d of %s: %w", len(tools)+1, subject, err)
 		}
 		tools = append(tools, t)
 	}
-	// See the note in AvailableTools: a part-way failure must not look like a
-	// complete list.
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the discovered tools: %w", err)
+		return nil, fmt.Errorf("read %s: %w", subject, err)
 	}
 	return tools, nil
 }
