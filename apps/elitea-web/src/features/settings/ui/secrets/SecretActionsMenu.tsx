@@ -17,7 +17,7 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
-import type { SecretPermissions } from './SecretsTable';
+import type { SecretPermissions } from '../../lib/secrets/secretPermissions';
 
 export interface SecretActionsMenuProps {
   /** Currently-anchor element (`null` = menu closed). */

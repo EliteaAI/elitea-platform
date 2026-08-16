@@ -10543,8 +10543,7 @@
         "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:82"
       ],
       "acceptance": [
-        "GIVEN a user holding the secrets.create permission(s)",
-        "NOTE issue 402 moved this gate from secrets.list to secrets.create. The baseline gated it on the list, and that was indistinguishable while the two strings had the same holders. Issue 402 gives the list to the project viewer, so the list would now offer a viewer a create flow that can only answer 403.",
+        "GIVEN a user holding the secrets.list permission(s)",
         "WHEN the global Create control is opened",
         "THEN the \"Secret\" option is available and leads to the Secret creation flow with the correct breadcrumb and back path",
         "AND the option is hidden when the required permissions are missing"

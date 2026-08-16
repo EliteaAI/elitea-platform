@@ -15,11 +15,23 @@ import type { Permission } from '@/shared/api/generated/model';
 import { usePermissionList } from '@/shared/api/generated/auth/auth';
 import { PERMISSIONS } from '@/shared/lib/permissions';
 
-import type { SecretPermissions } from '../../ui/secrets/SecretsTable';
+import type { SecretPermissions } from './secretPermissions';
 
-export interface SecretsSurfacePermissions extends SecretPermissions {
+export interface SecretsSurfacePermissions {
   /** `configuration.secrets.secret.list` — read the secret NAMES. Gates the query. */
   readonly canList: boolean;
+  /**
+   * The five that gate CONTROLS, as one stable object.
+   *
+   * It is nested rather than flattened beside `canList` so the page can hand it
+   * straight to `SecretsTable` without a rest-spread. A spread allocates a new
+   * object on every render, which would change the identity of the `permissions`
+   * dependency in `SecretsTable`'s `renderRowCell` callback and rebuild every
+   * DataGrid column each time. This page has a recorded history of exactly that
+   * class of defect — see the render-loop note at the top of
+   * `pages/settings/Secrets.test.tsx`.
+   */
+  readonly controls: SecretPermissions;
 }
 
 export function useSecretPermissions(projectId: string): SecretsSurfacePermissions {
@@ -30,11 +42,13 @@ export function useSecretPermissions(projectId: string): SecretsSurfacePermissio
     const granted = new Set((list ?? []).filter((entry) => entry.enabled).map((entry) => entry.name));
     return {
       canList: granted.has(PERMISSIONS.secrets.list),
-      canUnsecret: granted.has(PERMISSIONS.secrets.unsecret),
-      canCreate: granted.has(PERMISSIONS.secrets.create),
-      canEdit: granted.has(PERMISSIONS.secrets.edit),
-      canDelete: granted.has(PERMISSIONS.secrets.delete),
-      canHide: granted.has(PERMISSIONS.secrets.hide),
+      controls: {
+        canUnsecret: granted.has(PERMISSIONS.secrets.unsecret),
+        canCreate: granted.has(PERMISSIONS.secrets.create),
+        canEdit: granted.has(PERMISSIONS.secrets.edit),
+        canDelete: granted.has(PERMISSIONS.secrets.delete),
+        canHide: granted.has(PERMISSIONS.secrets.hide),
+      },
     };
   }, [permissionQuery.data]);
 }

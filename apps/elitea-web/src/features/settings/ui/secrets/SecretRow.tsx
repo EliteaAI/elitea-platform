@@ -29,7 +29,7 @@ import type { SecretRow } from '@/entities/secret';
 import { t } from '@/shared/i18n';
 import { EditSecretInputGridTable } from './EditSecretInputGridTable';
 import { SecretValueCell } from './SecretValueCell';
-import type { SecretPermissions } from './SecretsTable';
+import type { SecretPermissions } from '../../lib/secrets/secretPermissions';
 import { tableStyles } from './SecretsTable.styles';
 
 /* ── props ─────────────────────────────────────────────────────────────── */

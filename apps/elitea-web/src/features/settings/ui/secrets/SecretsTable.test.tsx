@@ -18,12 +18,8 @@ import { screen, within } from '@testing-library/react';
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 import type { SecretRow } from '@/entities/secret';
 
-import {
-  SECRETS_SKELETON_TESTID,
-  SecretsTable,
-  type SecretPermissions,
-  type SecretsTableProps,
-} from './SecretsTable';
+import { SECRETS_SKELETON_TESTID, SecretsTable, type SecretsTableProps } from './SecretsTable';
+import type { SecretPermissions } from '../../lib/secrets/secretPermissions';
 
 /** An admin or an editor: every secrets string granted. */
 const FULL_SECRET_PERMISSIONS: SecretPermissions = {

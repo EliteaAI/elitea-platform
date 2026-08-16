@@ -46,11 +46,10 @@ import type { SecretRow, SecretMutations, Secret } from '@/entities/secret';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { secretsFeature } from '@/features/settings';
-import { useSecretPermissions } from '@/features/settings/lib/secrets/useSecretPermissions';
 import { handleCopy } from '@/shared/lib/clipboard';
 import { EliteaApiError } from '@/shared/api/generated/mutator';
 
-const { SecretsTable } = secretsFeature;
+const { SecretsTable, useSecretPermissions } = secretsFeature;
 import { t } from '@/shared/i18n';
 
 /**
@@ -112,7 +111,7 @@ export const SecretsContent = memo(function SecretsContent({
   // `canList` gates the QUERY; the rest gate controls. #402 grants the list to
   // the viewer, which is the first role that reads this page and writes nothing
   // on it, so every write control below is gated too.
-  const { canList, ...secretPermissions } = useSecretPermissions(projectId);
+  const { canList, controls: secretPermissions } = useSecretPermissions(projectId);
   const canCreate = secretPermissions.canCreate;
 
   /* ── API query ────────────────────────────────────────────────────── */
