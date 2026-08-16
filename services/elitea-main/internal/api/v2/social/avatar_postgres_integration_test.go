@@ -140,6 +140,76 @@ func TestCurrentAvatarProductionHTTPPostgresParityAndNegativeSecurity(t *testing
 		}
 	})
 
+	// The PER-USER property (#402).
+	//
+	// #402 widened `models.social.avatar.get` and `models.social.avatar.update`
+	// to the editor and the viewer, because both routes act on the CALLER's own
+	// record. That widening is only safe if the route really is per-user. So
+	// this subtest measures the property directly, and it measures it in both
+	// directions: a caller changes their own row, and a caller cannot reach
+	// another user's row.
+	//
+	// The route offers no way to name another user — there is no user id in the
+	// path, and `currentAvatarUserID` reads the principal. A test that only
+	// uploaded as two users would not prove that, because it would never TRY to
+	// address someone else. So the second upload below carries a `user_id` form
+	// field AND a `?user_id=` query parameter that both name user 11, and user
+	// 11's row must be untouched.
+	//
+	// Users 11 and 14 share project role 101, so the two callers are equally
+	// entitled. Any difference in outcome is therefore about identity, not about
+	// permission.
+	t.Run("a caller writes only their own avatar row", func(t *testing.T) {
+		before := readStoredAvatar(t, pool, 11)
+		if before == "" {
+			t.Fatal("user 11 has no avatar yet, so this test cannot detect an overwrite")
+		}
+
+		body, contentType := currentAvatarMultipartBody(t, "second.png", []byte("second-user-bytes"))
+		request := currentAvatarIntegrationRequest(
+			http.MethodPut, "/api/v2/social/avatar/7?user_id=11", "14", "10.0.0.8:43120", body)
+		request.Header.Set("Content-Type", contentType)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("upload status=%d body=%q", response.Code, response.Body.String())
+		}
+		var uploaded struct{ Avatar *string }
+		if err := json.Unmarshal(response.Body.Bytes(), &uploaded); err != nil || uploaded.Avatar == nil {
+			t.Fatalf("decode upload response %q: %v", response.Body.String(), err)
+		}
+
+		// The caller's OWN row carries the new URL.
+		if stored := readStoredAvatar(t, pool, 14); stored != *uploaded.Avatar {
+			t.Fatalf("user 14's stored avatar=%q, want %q", stored, *uploaded.Avatar)
+		}
+		// The other user's row is untouched, despite the `user_id` field and
+		// the `?user_id=` parameter that both named them.
+		if after := readStoredAvatar(t, pool, 11); after != before {
+			t.Fatalf("user 11's avatar changed from %q to %q; the route let one caller "+
+				"write another user's record", before, after)
+		}
+		if *uploaded.Avatar == before {
+			t.Fatal("both users share one avatar URL; the route is not per-user")
+		}
+
+		// Each GET answers with the caller's own row.
+		for _, expectation := range []struct {
+			userID string
+			want   string
+		}{{"11", before}, {"14", *uploaded.Avatar}} {
+			fetch := currentAvatarIntegrationRequest(
+				http.MethodGet, "/api/v2/social/avatar/7", expectation.userID, "10.0.0.8:43120", nil)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, fetch)
+			want := fmt.Sprintf(`{"avatar":%q}`+"\n", expectation.want)
+			if recorder.Code != http.StatusOK || recorder.Body.String() != want {
+				t.Fatalf("user %s fetch status=%d body=%q want=%q",
+					expectation.userID, recorder.Code, recorder.Body.String(), want)
+			}
+		}
+	})
+
 	for _, test := range []struct {
 		name          string
 		method        string
@@ -356,6 +426,33 @@ func newCurrentAvatarPostgresPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// readStoredAvatar reads one user's persisted avatar URL straight from
+// centry.social_users.
+//
+// The assertion has to read the ROW, not the response body. A handler that
+// answered the caller's own URL while writing somebody else's row would pass an
+// assertion made against the response alone. An absent row reads as the empty
+// string, which is the "no avatar yet" state.
+func readStoredAvatar(t *testing.T, pool *pgxpool.Pool, userID int) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var avatar *string
+	err := pool.QueryRow(ctx,
+		`SELECT avatar FROM centry.social_users WHERE user_id = $1`, userID).Scan(&avatar)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read the stored avatar for user %d: %v", userID, err)
+	}
+	if avatar == nil {
+		return ""
+	}
+	return *avatar
+}
+
 func prepareCurrentAvatarDatabase(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -378,7 +475,8 @@ CREATE TABLE public.auth_core__user (
 INSERT INTO public.auth_core__user (id, email, name, last_login, suspended) VALUES
     (11, 'uploader@elitea.example', 'Uploader', NULL, FALSE),
     (12, 'viewer@elitea.example', 'Viewer', NULL, FALSE),
-    (13, 'no-permission@elitea.example', 'No Permission', NULL, FALSE);
+    (13, 'no-permission@elitea.example', 'No Permission', NULL, FALSE),
+    (14, 'second-uploader@elitea.example', 'Second Uploader', NULL, FALSE);
 
 CREATE TABLE public.auth_core__role (
     id INTEGER PRIMARY KEY,
@@ -421,7 +519,8 @@ INSERT INTO public.auth_core__project_role_permission (project_id, role_id, perm
 INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id) VALUES
     (7, 11, 101),
     (7, 12, 102),
-    (7, 13, 103);
+    (7, 13, 103),
+    (7, 14, 101);
 
 CREATE TABLE centry.social_users (
     id SERIAL PRIMARY KEY,

@@ -94,10 +94,11 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	shared, err := LoadManifest(platformmigrations.Files, ScopeShared)
 	require.NoError(t, err)
-	// 82: shared/0082_admin_panel_permissions.sql, the last of the nine
-	// per-surface permission grants #386 adds. They run 0074 to 0082 and
-	// follow shared/0073_mcp_tool_registry.sql.
-	require.EqualValues(t, 82, Head(shared))
+	// 83: shared/0083_viewer_secret_list_and_own_avatar.sql, the two role
+	// splits #402 corrects. It follows the nine per-surface permission grants
+	// #386 adds, which run 0074 to 0082 after
+	// shared/0073_mcp_tool_registry.sql.
+	require.EqualValues(t, 83, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

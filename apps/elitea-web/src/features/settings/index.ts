@@ -17,6 +17,7 @@ import { ServicePromptsBody } from './ui/system-prompts/ServicePromptsBody';
 export type { PromptConfig } from './ui/system-prompts/ServicePrompts.types';
 
 import { SecretsTable } from './ui/secrets/SecretsTable';
+export type { SecretPermissions } from './ui/secrets/SecretsTable';
 import { SecretValueCell } from './ui/secrets/SecretValueCell';
 
 import { DrawerPage } from './ui/drawer-page/DrawerPage';

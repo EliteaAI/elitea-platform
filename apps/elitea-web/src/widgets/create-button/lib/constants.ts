@@ -72,7 +72,13 @@ export const CREATE_ENTITY_PERMISSIONS: Readonly<Record<CreateEntityKind, readon
   bucket: [PERMISSIONS.artifacts.buckets.create, PERMISSIONS.artifacts.create],
   configuration: [PERMISSIONS.configuration.update],
   token: undefined,
-  secret: [PERMISSIONS.secrets.list],
+  // `.create`, not `.list` (#402). This entry routes to
+  // `/settings/secrets?createSecret=1`, which opens a new-secret row and ends
+  // in a POST that `configuration.secrets.secret.create` gates. Gating the
+  // entry on the LIST was harmless while the two strings had the same holders.
+  // #402 gives the list to the viewer, so the two sets are now different, and
+  // the list would offer a viewer a create flow that can only end in a 403.
+  secret: [PERMISSIONS.secrets.create],
   user: [PERMISSIONS.users.create],
 };
 

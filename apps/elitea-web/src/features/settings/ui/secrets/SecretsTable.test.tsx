@@ -18,7 +18,30 @@ import { screen, within } from '@testing-library/react';
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 import type { SecretRow } from '@/entities/secret';
 
-import { SECRETS_SKELETON_TESTID, SecretsTable, type SecretsTableProps } from './SecretsTable';
+import {
+  SECRETS_SKELETON_TESTID,
+  SecretsTable,
+  type SecretPermissions,
+  type SecretsTableProps,
+} from './SecretsTable';
+
+/** An admin or an editor: every secrets string granted. */
+const FULL_SECRET_PERMISSIONS: SecretPermissions = {
+  canUnsecret: true,
+  canCreate: true,
+  canEdit: true,
+  canDelete: true,
+  canHide: true,
+};
+
+/** A viewer after #402: the NAME listing, and nothing else. */
+const LIST_ONLY_SECRET_PERMISSIONS: SecretPermissions = {
+  canUnsecret: false,
+  canCreate: false,
+  canEdit: false,
+  canDelete: false,
+  canHide: false,
+};
 
 function makeProps(overrides: Partial<SecretsTableProps> = {}): SecretsTableProps {
   return {
@@ -28,7 +51,7 @@ function makeProps(overrides: Partial<SecretsTableProps> = {}): SecretsTableProp
     setRowModesModel: vi.fn(),
     isFetching: false,
     isShowSecretMap: {},
-    canUnsecret: true,
+    permissions: FULL_SECRET_PERMISSIONS,
     validationErrors: {},
     onValidationChange: vi.fn(),
     actions: {
@@ -86,5 +109,42 @@ describe('SecretsTable', () => {
     expect(within(grid).getAllByText('API_KEY').length).toBeGreaterThan(0);
     expect(screen.queryByText('No secrets')).not.toBeInTheDocument();
     expect(screen.queryAllByTestId(SECRETS_SKELETON_TESTID)).toHaveLength(0);
+  });
+});
+
+/**
+ * #402: the viewer can now LIST, and can do nothing else here.
+ *
+ * Both directions are measured. A caller with every string keeps every control,
+ * so a test that simply deleted the controls would fail. A caller with the list
+ * alone sees the secret NAMES and no control that could only answer 403.
+ */
+describe('SecretsTable — the controls a list-only caller may use (issue 402)', () => {
+  it('renders every row control for a caller that holds every secrets string', () => {
+    renderWithTheme(
+      <SecretsTable {...makeProps({ rows: [existingRow], permissions: FULL_SECRET_PERMISSIONS })} />,
+    );
+
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Show' }).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+  });
+
+  it('shows the secret name, and no write or reveal control, for a list-only caller', () => {
+    renderWithTheme(
+      <SecretsTable
+        {...makeProps({ rows: [existingRow], permissions: LIST_ONLY_SECRET_PERMISSIONS })}
+      />,
+    );
+
+    // The point of the grant: the name is on screen.
+    const grid = screen.getByRole('grid');
+    expect(within(grid).getAllByText('API_KEY').length).toBeGreaterThan(0);
+    expect(within(grid).getAllByText('{{secret.API_KEY}}').length).toBeGreaterThan(0);
+
+    // Every control that could only answer 403 is absent.
+    expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument();
   });
 });
