@@ -225,15 +225,52 @@ This helper refuses that values file at render time instead.
 
 {{/* The material volume. Every remaining runtime name is a FILE PATH, and the
      chart resolves all of them under runtime.material.mountPath, so the
-     operator supplies one volume rather than thirteen paths. */}}
+     operator supplies one source rather than thirteen paths. */}}
 {{- if not $material.mountPath -}}
 {{- fail "runtime.enabled=true needs runtime.material.mountPath. Every runtime key, password and certificate is read from a file under it." -}}
 {{- end -}}
 {{- if not (hasPrefix "/" ($material.mountPath | toString)) -}}
 {{- fail (printf "runtime.material.mountPath must be absolute. internal/security/securefile refuses a relative path. Got %q." ($material.mountPath | toString)) -}}
 {{- end -}}
-{{- if not $material.volume -}}
-{{- fail "runtime.enabled=true needs runtime.material.volume: a Kubernetes volume specification that supplies the runtime material at runtime.material.mountPath. Read the runtime.material comment in values.yaml first — a plain `secret:` volume does NOT work for the five private files, and the comment says exactly why." -}}
+{{- if eq ($material.mountPath | toString | trimSuffix "/") "" -}}
+{{- fail "runtime.material.mountPath cannot be the filesystem root. The material needs its own directory, and Config.MaterialDirectory in internal/runtimecomposition refuses the root for the same reason." -}}
+{{- end -}}
+{{/*
+  Two sources, and exactly one of them (issue #404).
+
+  runtime.material.secretName is the supported answer: a plain Kubernetes
+  Secret, which is how every other secret in this platform arrives. The chart
+  adds an init container that copies the Secret into a memory-backed emptyDir
+  with owner-only bits, because internal/security/securefile refuses the Secret
+  volume itself — it is a symlink farm, and its files belong to root while this
+  pod runs as nonroot.
+
+  runtime.material.volume stays for a deployment that already materialises the
+  files by another mechanism, such as a CSI secret driver.
+*/}}
+{{- if and $material.secretName $material.volume -}}
+{{- fail "set runtime.material.secretName OR runtime.material.volume, not both. The first makes the chart copy a Kubernetes Secret into an emptyDir; the second mounts a volume that you supply. Two sources for one mount path cannot both apply." -}}
+{{- end -}}
+{{- if not (or $material.secretName $material.volume) -}}
+{{- fail "runtime.enabled=true needs runtime.material.secretName, a Kubernetes Secret that carries the runtime material. Read the runtime.material comment in values.yaml for the key names it must hold. Use runtime.material.volume instead only when another mechanism already writes those files as real, owner-owned files." -}}
+{{- end -}}
+{{- if $material.secretName -}}
+{{/*
+  The init container has to READ the Secret, and the kubelet owns each key as
+  root. So the mode must carry the read bit for other users, or the read bit
+  for the group together with a pod fsGroup that puts this pod in that group.
+  Neither one, and the init container stops on a permission error.
+*/}}
+{{- $mode := $material.secretDefaultMode | int -}}
+{{- $otherRead := div (mod $mode 8) 4 -}}
+{{- $groupRead := div (mod (div $mode 8) 8) 4 -}}
+{{- $fsGroup := get (.Values.podSecurityContext | default dict) "fsGroup" -}}
+{{- if and (eq $otherRead 0) (or (eq $groupRead 0) (not $fsGroup)) -}}
+{{- fail (printf "runtime.material.secretDefaultMode %v does not let this pod read the Secret. The kubelet owns each key as root, so the mode needs the read bit for other users (0444), or the read bit for the group (0440) together with podSecurityContext.fsGroup. The init container would stop on a permission error." $material.secretDefaultMode) -}}
+{{- end -}}
+{{- if not $material.sizeLimit -}}
+{{- fail "runtime.material.secretName needs runtime.material.sizeLimit, the bound on the memory-backed emptyDir that holds the installed material." -}}
+{{- end -}}
 {{- end -}}
 
 {{/* Agent-execution dispatch: the four agent turn routes. */}}
@@ -386,4 +423,21 @@ colon. Kubernetes needs the number on both the container port and the Service.
 {{- define "elitea-main.runtimePort" -}}
 {{- $parts := splitList ":" (. | toString) -}}
 {{- index $parts (sub (len $parts) 1) -}}
+{{- end }}
+
+{{/*
+elitea-main.runtimeMaterialSourcePath — where the init container reads the raw
+Kubernetes Secret (issue #404).
+
+DERIVED from runtime.material.mountPath rather than configured, so the two can
+never disagree. The suffix also guarantees the two paths are siblings: a
+directory and that same directory plus a suffix cannot contain each other, so
+the raw Secret mount can never shadow, or be shadowed by, the installed
+material.
+
+The elitea-main container never mounts this path. Only the init container
+reads the Secret; the service reads the copies.
+*/}}
+{{- define "elitea-main.runtimeMaterialSourcePath" -}}
+{{- printf "%s-source" (.Values.runtime.material.mountPath | toString | trimSuffix "/") -}}
 {{- end }}

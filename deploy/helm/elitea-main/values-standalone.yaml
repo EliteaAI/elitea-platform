@@ -22,30 +22,37 @@
 #
 # READ THIS BEFORE YOU INSTALL: THE RUNTIME MATERIAL
 # The runtime plane below reads its keys, passwords and certificates through
-# internal/security/securefile, which refuses a symlinked path and requires
-# owner-only permissions on private material. A plain Kubernetes `secret:`
-# volume satisfies neither: it is a symlink farm, and a per-file `subPath`
-# mount produces root-owned files that this nonroot pod cannot read at any mode
-# securefile accepts. So runtime.material.volume below names a CSI driver,
-# which can write real files owned by the pod's own user at mode 0600.
+# internal/security/securefile, which refuses a path that resolves through a
+# symlink and requires owner-only permissions on private material. A plain
+# Kubernetes `secret:` volume satisfies neither: it is a symlink farm, and a
+# per-file `subPath` mount produces root-owned files that this nonroot pod
+# cannot read at any mode securefile accepts.
 #
-# You must provision that SecretProviderClass yourself — issue #382 puts secret
-# delivery out of scope, and the chart does not choose a mechanism for you. It
-# must present these file names, which are the ones
-# deploy/scripts/gen-runtime-certs.sh writes:
+# Issue #404 answers that inside the chart. runtime.material.secretName takes a
+# plain Kubernetes Secret, and an init container copies it into a memory-backed
+# emptyDir at mode 0600, owned by the pod's own user, before the service starts.
+# The init container runs the same image as the service and reads every file
+# back through securefile before it exits, so a missing key stops the pod there
+# with a message instead of in a restart loop.
 #
-#   PRIVATE, mode 0600, owned by the pod user:
+# Create the Secret from the output of deploy/scripts/gen-runtime-certs.sh. Its
+# KEY NAMES are the contract:
+#
+#   PRIVATE:
 #     command-signing-key.pem  redis-producer-password
 #     control-server.key       output-server.key       content-server.key
-#   PUBLIC, mode 0644 or stricter:
+#   PUBLIC:
 #     runtime-ca.crt           command-signing-keyring.json
 #     control-server.crt       output-server.crt       content-server.crt
+#
+# The init container installs every key at mode 0600, which both securefile
+# profiles accept, so the Secret itself carries no mode requirement.
 #
 # The three server certificates must carry the Service DNS name, because the
 # agent worker dials the listeners through this chart's Service.
 #
-# Set runtime.enabled=false if you have no such mechanism yet. Everything above
-# the runtime block still works and is the larger half of the gap: the
+# Set runtime.enabled=false if you have no material yet. Everything above the
+# runtime block still works and is the larger half of the gap: the
 # Configurations plane, the project-information route, the project event stream
 # and the admin console all come up without any runtime material.
 
@@ -173,11 +180,21 @@ runtime:
 
   material:
     mountPath: /run/elitea-runtime
-    # See this file's header for what this must produce. A plain `secret:`
-    # volume here renders and then fails at boot.
-    volume:
-      csi:
-        driver: secrets-store.csi.k8s.io
-        readOnly: true
-        volumeAttributes:
-          secretProviderClass: elitea-runtime-material
+    # A plain Kubernetes Secret, one key for each file name in this file's
+    # header. Create it from the output of deploy/scripts/gen-runtime-certs.sh:
+    #
+    #   kubectl create secret generic elitea-runtime-material \
+    #     --from-file=deploy/certs/runtime/runtime-ca.crt \
+    #     --from-file=deploy/certs/runtime/command-signing-key.pem \
+    #     --from-file=deploy/certs/runtime/command-signing-keyring.json \
+    #     --from-file=deploy/certs/runtime/redis-producer-password \
+    #     --from-file=deploy/certs/runtime/control-server.crt \
+    #     --from-file=deploy/certs/runtime/control-server.key \
+    #     --from-file=deploy/certs/runtime/output-server.crt \
+    #     --from-file=deploy/certs/runtime/output-server.key \
+    #     --from-file=deploy/certs/runtime/content-server.crt \
+    #     --from-file=deploy/certs/runtime/content-server.key
+    #
+    # Use runtime.material.volume instead only when another mechanism already
+    # writes these as real, owner-owned files at mountPath.
+    secretName: elitea-runtime-material

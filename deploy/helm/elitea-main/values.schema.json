@@ -149,8 +149,12 @@
         "material": {
           "type": "object",
           "additionalProperties": false,
+          "description": "Where the runtime material comes from (issue #404). secretName takes a plain Kubernetes Secret, and the chart adds an init container that installs it where internal/security/securefile can read it. volume takes a volume specification for a deployment that already writes real, owner-owned files. Exactly one of the two: templates/_helpers.tpl refuses both and refuses neither, with a message that names each field.",
           "properties": {
             "mountPath": { "type": "string", "pattern": "^/" },
+            "secretName": { "type": "string" },
+            "secretDefaultMode": { "type": "integer", "minimum": 0, "maximum": 511 },
+            "sizeLimit": { "type": "string", "minLength": 1 },
             "volume": { "type": "object" }
           }
         }
@@ -198,10 +202,11 @@
             "required": ["url", "poolSize"]
           },
           "material": {
+            "description": "The SHAPE checks only. Which of secretName and volume is present is a COMBINATION, and templates/_helpers.tpl reports it with a message that names the Go source behind it, so it is not repeated here.",
             "properties": {
-              "volume": { "minProperties": 1 }
+              "sizeLimit": { "pattern": "^[0-9]+(Ki|Mi|Gi|K|M|G)?$" }
             },
-            "required": ["mountPath", "volume"]
+            "required": ["mountPath"]
           },
           "listeners": {
             "required": ["controlAddress", "outputAddress", "contentAddress"]
