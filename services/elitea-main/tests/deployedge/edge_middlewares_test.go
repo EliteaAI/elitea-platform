@@ -13,6 +13,15 @@
 // load with it, and it FAILS CLOSED: a configuration set whose files vanished,
 // or an edge file that no set covers, is a failure and not a skip.
 //
+// A router names two more things, and each one fails in the same silent way.
+// Two sibling gates read the configuration sets declared below:
+//
+//   - edge_services_test.go resolves the SERVICE each router names, and
+//     compares the published port in the authority header with the Compose
+//     default (#379);
+//   - edge_forward_auth_test.go follows the forwardAuth ADDRESS each loaded
+//     router reaches, and checks that the stack registers it (#378).
+//
 // RUN IT WITH -count=1. The files this gate reads live in deploy/, outside
 // this module. The Go test cache does not track them, so it can serve a stale
 // pass after those files change. `task test`, `task deploy:check-edge` and the
@@ -64,6 +73,20 @@ type configSet struct {
 	// the private-repository boundary, written down so that drift in the
 	// tracked file still fails the gate.
 	externalDefinitions []string
+	// externalServices names load-balancer services that a file OUTSIDE this
+	// repository defines for this set. It is the same boundary as
+	// externalDefinitions, for the reference edge_services_test.go resolves. A
+	// service name that is absent from both this list and the tracked files
+	// still fails the gate.
+	externalServices []string
+	// composeFiles names the tracked Compose files that create this set's
+	// stack. edge_forward_auth_test.go reads them to answer one question: does
+	// the process behind a forwardAuth address register that address?
+	//
+	// Leave it empty when the Compose model is not in this repository. A set
+	// with no tracked Compose file and a forwardAuth reference fails, because
+	// nothing can answer that question for it.
+	composeFiles []string
 	// mountedBy is the evidence for the set boundary above.
 	mountedBy string
 }
@@ -71,9 +94,21 @@ type configSet struct {
 func configSets() []configSet {
 	return []configSet{
 		{
-			name:      "centry-hybrid foundation edge",
-			dir:       "deploy/centry-hybrid/traefik",
-			mountedBy: "deploy/centry-hybrid/docker-compose.yml mounts this whole directory at /etc/traefik/dynamic",
+			name: "centry-hybrid foundation edge",
+			// This set holds two files and NOT the whole directory.
+			// deploy/centry-hybrid/traefik/index-routes.yml is excluded on
+			// purpose: its routers name a forward-auth endpoint that this
+			// stack does not register (#378). The exclusion is not a claim
+			// this file makes on its own —
+			// TestHybridFoundationEdgeLoadsTheComposeMount in
+			// edge_forward_auth_test.go reads the Compose volume list and
+			// fails when the two stop agreeing.
+			files: []string{
+				"deploy/centry-hybrid/traefik/base.yml",
+				"deploy/centry-hybrid/traefik/middlewares.yml",
+			},
+			composeFiles: []string{"deploy/centry-hybrid/docker-compose.yml"},
+			mountedBy:    "deploy/centry-hybrid/docker-compose.yml mounts these two files under /etc/traefik/dynamic",
 		},
 		{
 			name:  "centry-hybrid PoV edge",
@@ -90,22 +125,36 @@ func configSets() []configSet {
 				"normalize-runtime-public-authority",
 				"go-main-forward-auth",
 			},
+			// The same private base.yml defines the two services these routers
+			// name. It points them at the private stack's own containers. A
+			// third service name in index-routes.yml still fails the gate.
+			externalServices: []string{"elitea-main", "current-main"},
+			// The Compose model of this stack is in the private centry
+			// repository, so no tracked file can be read for it. The set also
+			// contributes no forwardAuth address: the definitions above are
+			// external, so this gate never sees an address to check.
 			mountedBy: "deploy/centry-hybrid/compose.sh ELITEA_INDEX_ROUTE_FILE -> /etc/traefik/dynamic/index.yml",
 		},
 		{
-			name:      "standalone edge",
-			files:     []string{"deploy/traefik/dynamic.yml"},
-			mountedBy: "deploy/docker-compose.yml mounts it alone at /etc/traefik/dynamic.yml",
+			name:         "standalone edge",
+			files:        []string{"deploy/traefik/dynamic.yml"},
+			composeFiles: []string{"deploy/docker-compose.yml"},
+			mountedBy:    "deploy/docker-compose.yml mounts it alone at /etc/traefik/dynamic.yml",
 		},
 		{
-			name:      "standalone e2e edge",
-			files:     []string{"deploy/traefik/dynamic.e2e.yml"},
+			name:  "standalone e2e edge",
+			files: []string{"deploy/traefik/dynamic.e2e.yml"},
+			composeFiles: []string{
+				"deploy/docker-compose.e2e-standalone.yml",
+				"deploy/docker-compose.standalone-full.yml",
+			},
 			mountedBy: "deploy/docker-compose.e2e-standalone.yml and deploy/docker-compose.standalone-full.yml mount it alone",
 		},
 		{
-			name:      "runtime platform edge",
-			files:     []string{"deploy/runtime/platform-edge-dynamic.yml"},
-			mountedBy: "deploy/docker-compose.standalone-full.yml mounts it alone at /etc/traefik/dynamic.yml",
+			name:         "runtime platform edge",
+			files:        []string{"deploy/runtime/platform-edge-dynamic.yml"},
+			composeFiles: []string{"deploy/docker-compose.standalone-full.yml"},
+			mountedBy:    "deploy/docker-compose.standalone-full.yml mounts it alone at /etc/traefik/dynamic.yml",
 		},
 	}
 }

@@ -22,12 +22,17 @@
 # it on every pull request, because ci-go.yml is path-filtered and does not
 # select deploy/centry-hybrid/**.
 #
-# SCOPE. This file serves the foundation stack in
-# deploy/centry-hybrid/docker-compose.yml, which mounts this whole directory
-# at /etc/traefik/dynamic. The full PoV stack in compose.sh mounts only
-# index-routes.yml, as /etc/traefik/dynamic/index.yml, and takes its base and
-# middleware definitions from the private centry repository instead. This file
-# therefore never collides with the private definitions. See README.md.
+# SCOPE. deploy/centry-hybrid/docker-compose.yml mounts this file and base.yml
+# into the foundation stack. It does NOT mount index-routes.yml there, because
+# the foundation stack registers no forward-auth endpoint (#378). No router in
+# the foundation stack names these three middlewares today. Traefik accepts a
+# definition that no router names, and it never calls it. The definitions stay
+# loaded so that a future foundation route needs one edit and not two.
+#
+# The full PoV stack in compose.sh mounts only index-routes.yml, as
+# /etc/traefik/dynamic/index.yml, and takes its base and middleware definitions
+# from the private centry repository instead. This file therefore never
+# collides with the private definitions. See README.md.
 #
 # PROVENANCE. The private definitions are not readable from this repository.
 # These definitions come from three in-repo sources:
