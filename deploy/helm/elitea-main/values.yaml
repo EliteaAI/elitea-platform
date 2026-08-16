@@ -502,14 +502,62 @@ runtime:
     outputAddress: ":9444"
     contentAddress: ":9445"
 
+  # Where the runtime keys, passwords and certificates come from, and where the
+  # service reads them.
+  #
+  # THE KEY NAMES ARE THE CONTRACT. The chart derives every ELITEA_RUNTIME_*
+  # file path from mountPath plus one of these names, and they are the names
+  # deploy/scripts/gen-runtime-certs.sh writes:
+  #
+  #   runtime-ca.crt                the trust root: the Redis CA, and the
+  #                                 client CA of all three listeners
+  #   command-signing-key.pem       Ed25519 PKCS#8, signs dispatch envelopes
+  #   command-signing-keyring.json  its public half, keyed by signingKeyId
+  #   redis-producer-password       the runtime Redis ACL password
+  #   control-server.crt / .key     the control listener keypair
+  #   output-server.crt / .key      the output listener keypair
+  #   content-server.crt / .key     the content listener keypair
+  #
+  # The server certificates must carry the Service name, because the agent
+  # worker dials all three listeners on this Service.
   material:
     mountPath: /run/elitea-runtime
-    # A Kubernetes volume specification, without its `name`. The chart adds the
-    # name and mounts it read-only at mountPath. Read the securefile rules at
-    # the top of this block before choosing one: a plain `secret:` volume
-    # renders and then fails at boot.
+
+    # A Kubernetes Secret whose keys are the names above. This is the supported
+    # source, and it is how every other secret in this platform arrives:
     #
-    # Example shape for a CSI driver that writes owner-owned files:
+    #   kubectl create secret generic elitea-runtime-material \
+    #     --from-file=runtime-ca.crt --from-file=command-signing-key.pem ...
+    #
+    # The chart cannot mount that Secret straight at mountPath.
+    # internal/security/securefile refuses a path that resolves through a
+    # symlink and requires owner-only bits on private material, and a Secret
+    # volume gives neither: mounted whole it is a symlink farm, and mounted per
+    # file with subPath its files belong to root while this pod runs as
+    # nonroot. So the chart adds an init container (issue #404). It runs the
+    # same image and the same user, copies each key into a memory-backed
+    # emptyDir at mode 0600, and reads every file back through securefile
+    # before it exits. A missing key stops the pod there, with a message.
+    secretName: ""
+
+    # The mode the kubelet gives each key of that Secret. The init container
+    # has to read them, and the kubelet owns them as root, so without a pod
+    # fsGroup the read bit for other users is the only one that reaches this
+    # pod's user. It applies inside this pod's own mount namespace only, and
+    # the copies that the service reads are owner-only. Set
+    # podSecurityContext.fsGroup and lower this to 0440 to tighten it.
+    secretDefaultMode: 0444
+
+    # The bound on the emptyDir that holds the copies. The whole material is a
+    # few kilobytes; the rest is headroom for a large CA bundle.
+    sizeLimit: 8Mi
+
+    # An alternative source, for a deployment whose material is ALREADY real,
+    # owner-owned files at mountPath — a CSI secret driver, for example. It
+    # takes a Kubernetes volume specification without its `name`; the chart
+    # adds the name and mounts it read-only. Mutually exclusive with
+    # secretName, and no init container renders with it.
+    #
     #   volume:
     #     csi:
     #       driver: secrets-store.csi.k8s.io

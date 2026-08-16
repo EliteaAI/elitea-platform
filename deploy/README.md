@@ -90,7 +90,7 @@ asserts all of this against the rendered YAML, and it reads the required
 runtime names out of `internal/runtimecomposition/config.go`, so a newly
 required name fails the gate until the chart renders it.
 
-### The runtime plane, and the one thing that still blocks it
+### The runtime plane, and how its material arrives
 
 The runtime plane is agent execution, the execution-events stream, index
 ingest, index scheduling and configuration validation. It is **all-or-nothing**:
@@ -98,11 +98,29 @@ ingest, index scheduling and configuration validation. It is **all-or-nothing**:
 refuses to start on a partial set. The chart exposes the whole block under
 `runtime:` and refuses a partial one at render time.
 
-What it cannot do for you is deliver the material. The runtime reads its keys,
-passwords and certificates through `internal/security/securefile`, which
-refuses a path whose final component is a symlink, and requires **owner bits
-only** on private material. A plain Kubernetes `secret:` volume satisfies
-neither:
+Its material — the signing key, the verification keyring, the Redis password,
+the Redis CA and the three listener keypairs — comes from a **plain Kubernetes
+Secret**. Set `runtime.material.secretName`, and give the Secret one key for
+each of these names, which are the names `deploy/scripts/gen-runtime-certs.sh`
+writes:
+
+```
+runtime-ca.crt                command-signing-key.pem
+command-signing-keyring.json  redis-producer-password
+control-server.crt   control-server.key
+output-server.crt    output-server.key
+content-server.crt   content-server.key
+```
+
+The three server certificates must carry the Service DNS name, because the
+agent worker dials all three listeners through this chart's Service.
+
+#### Why an init container copies the Secret (issue #404)
+
+The runtime reads every one of those files through
+`internal/security/securefile`, which refuses a path that resolves through a
+symlink and requires **owner bits only** on private material. A Kubernetes
+Secret volume gives neither:
 
 - mounted whole, it is a symlink farm, so every path resolves through `..data/`
   and `securefile` refuses it;
@@ -111,17 +129,39 @@ neither:
   process read a root-owned file (`0440` with `fsGroup`, or `0444`) carry the
   group or other bits that `securefile` rejects.
 
-So the runtime plane needs a source that writes **real files owned by the pod's
-own user at mode 0600** — a CSI driver, or a sidecar that materialises them
-into an `emptyDir`. Issue #382 puts secret delivery out of scope, so the chart
-does not pick one: `runtime.material.volume` takes the volume specification and
-the chart derives every file path under `runtime.material.mountPath`. The file
-**names** are the contract, and they are the ones
-`deploy/scripts/gen-runtime-certs.sh` writes.
+So the chart adds an init container, `runtime-material`. It runs the **same
+image** as the service, and therefore the **same user**. It copies each Secret
+key into a memory-backed `emptyDir` at mode `0600`, and it removes anything in
+that directory that the Secret does not carry. Every file it writes belongs to
+the user that then reads it, and no `securefile` rule changes. The compose
+stack answers the same problem in the same way; read
+`deploy/runtime/install-material.sh`.
 
-Set `runtime.enabled: false` if you have no such mechanism yet. Everything else
-above still works without any runtime material, and it is the larger half of
-the gap.
+The init container then reads every installed file back through `securefile`,
+with the same permission profile that the service applies. **A missing Secret
+key stops the pod in the init container, with a message**, rather than in a
+restart loop of the service.
+
+The service container never mounts the Secret. It sees only the copies.
+
+Two settings go with it:
+
+- `runtime.material.secretDefaultMode` (default `0444`) is the mode the kubelet
+  gives each Secret key. The init container has to read them, and the kubelet
+  owns them as root, so without a pod `fsGroup` the read bit for other users is
+  the only one that reaches this pod's user. Those bits apply inside this pod's
+  own mount namespace; the copies that the service reads are owner-only. Set
+  `podSecurityContext.fsGroup` and lower this to `0440` to tighten it. The
+  chart refuses a mode that the pod could not read.
+- `runtime.material.sizeLimit` (default `8Mi`) bounds the `emptyDir`.
+
+`runtime.material.volume` remains, for a deployment whose material is
+**already** real, owner-owned files at `runtime.material.mountPath` — a CSI
+secret driver, for example. It is mutually exclusive with `secretName`, and it
+renders no init container. Exactly one of the two is required.
+
+Set `runtime.enabled: false` if you have no material yet. Everything else above
+still works without it, and it is the larger half of the gap.
 
 ### `ELITEA_AI_PROJECT_ID` is set in two charts
 
@@ -218,8 +258,9 @@ Which stack sets it:
    files, *and* a second pass with its non-default toggles (HPA, PVC, optional
    Services and probes, hook Jobs render zero objects otherwise, so a break in
    them would be invisible). `elitea-main` gets a third pass with
-   `values-standalone.yaml`, which renders the runtime material volume and the
-   three runtime listener ports that no other pass produces. Every pass is
+   `values-standalone.yaml`, which renders the runtime material Secret volume,
+   the material init container and the three runtime listener ports that no
+   other pass produces. Every pass is
    validated with `kubeconform -strict`. A new chart must be **added to this
    matrix** by hand.
 3. **ArgoCD Applications** — `kubeconform -strict` against the real

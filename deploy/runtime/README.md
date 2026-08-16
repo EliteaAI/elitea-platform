@@ -79,6 +79,18 @@ fix, because `PrivateMaterial` rejects any group/other bit.
 volumes instead, where owner and mode can be set independently, and gives each
 consumer only the material it needs.
 
+Kubernetes has the same problem, for the same reason, and the Helm chart
+answers it the same way (issue #404). A Secret volume mounted whole is a
+symlink farm; mounted per file with `subPath`, its files belong to root while
+the pod runs as nonroot. So `runtime.material.secretName` in
+[`../helm/elitea-main/values.yaml`](../helm/elitea-main/values.yaml) takes a
+plain Kubernetes Secret, and an init container copies each key into a
+memory-backed `emptyDir` at mode `0600`. That container is
+`cmd/elitea-runtime-material`, and it runs the same image and the same user as
+the service. It reads every file back through `securefile` before it exits, so
+a missing key stops the pod there rather than in a restart loop. The Secret's
+key names are the file names that `gen-runtime-certs.sh` writes.
+
 ## Consumer groups are created by the control plane
 
 The worker's Redis ACL user deliberately has no `XGROUP`. A consumer that can

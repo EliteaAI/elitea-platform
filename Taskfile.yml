@@ -17,6 +17,9 @@ tasks:
       - go build -o bin/cutover-ctl ./cmd/cutover-ctl
       - go build -o bin/elitea-auth-validate ./cmd/elitea-auth-validate
       - go build -o bin/index-v2-preflight ./cmd/index-v2-preflight
+      # The runtime material installer (issue #404). It ships in the same image
+      # and runs as the init container of the elitea-main pod.
+      - go build -o bin/elitea-runtime-material ./cmd/elitea-runtime-material
 
   test:
     desc: Run all Go tests across the workspace

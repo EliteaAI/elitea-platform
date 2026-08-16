@@ -24,6 +24,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 CHART="$REPO/deploy/helm/elitea-main"
 CONFIG_GO="$REPO/services/elitea-main/internal/runtimecomposition/config.go"
+CONTAINERFILE="$REPO/services/elitea-main/Containerfile"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -217,10 +218,12 @@ else
   pass "every runtime file path resolves inside the mounted directory"
 fi
 
-# The volume the paths resolve into must actually be declared on the pod.
-if yq eval-all \
-  'select(.kind == "Deployment") | .spec.template.spec.volumes[] | select(.name == "runtime-material") | has("csi")' \
-  "$WORK/standalone.yaml" | grep -qx true; then
+# The volume the paths resolve into must actually be declared on the pod. The
+# SOURCE of that volume is a values choice, so this asserts only that a source
+# exists; section 4b below asserts each shape.
+if [ -n "$(yq eval-all \
+  'select(.kind == "Deployment") | .spec.template.spec.volumes[] | select(.name == "runtime-material") | keys | .[] | select(. != "name")' \
+  "$WORK/standalone.yaml")" ]; then
   pass "the runtime material volume is declared on the pod"
 else
   fail "the pod declares no runtime-material volume source"
@@ -236,6 +239,168 @@ for port in 9443 9444 9445; do
     fail "the Service does not publish runtime port $port, so the agent worker cannot reach that listener"
   fi
 done
+
+# ---------------------------------------------------------------------------
+# 4b. The Kubernetes Secret shape — issue #404.
+#
+# securefile refuses a Secret volume: mounted whole it is a symlink farm, and
+# mounted per file with subPath its files belong to root while the pod runs as
+# nonroot. The chart answers with an init container that copies the Secret into
+# an emptyDir with owner-only bits.
+#
+# Every path below is READ OUT OF THE RENDER. Nothing here repeats a path that
+# the template also writes, so moving a mount point cannot leave this gate
+# passing on a manifest that no longer matches.
+# ---------------------------------------------------------------------------
+deployment() {
+  yq eval-all "select(.kind == \"Deployment\") | .spec.template.spec | $1" "$2"
+}
+
+init_name="$(deployment '.initContainers[]? | select(has("command")) | select(.command[0] == "/elitea-runtime-material") | .name' "$WORK/standalone.yaml")"
+if [ -n "$init_name" ]; then
+  pass "the pod runs the material init container ($init_name)"
+else
+  fail "the pod runs no init container that installs the runtime material, so a Secret volume stays unreadable to securefile"
+fi
+
+if [ -n "$init_name" ]; then
+  init() { deployment ".initContainers[] | select(.name == \"$init_name\") | $1" "$WORK/standalone.yaml"; }
+
+  # The same image as the service. A different image is a different user, and
+  # then the copies belong to the wrong owner.
+  service_image="$(deployment '.containers[0].image' "$WORK/standalone.yaml")"
+  if [ "$(init .image)" = "$service_image" ]; then
+    pass "the init container runs the same image as the service ($service_image)"
+  else
+    fail "the init container runs '$(init .image)' and the service runs '$service_image'; a different image is a different user, and the installed files would belong to the wrong owner"
+  fi
+
+  # The same ConfigMap. The destination is derived from the ELITEA_RUNTIME_*_FILE
+  # names, so the init container has to read the very names the service reads.
+  if [ "$(init '.envFrom[].configMapRef.name')" = "$config_name" ]; then
+    pass "the init container reads the same ConfigMap as the service, so it installs to the paths the service opens"
+  else
+    fail "the init container does not read $config_name, so its destination can disagree with the paths the service opens"
+  fi
+
+  # Both containers must see ONE volume at ONE path, or the service reads an
+  # empty directory.
+  init_material_path="$(init '.volumeMounts[] | select(.name == "runtime-material") | .mountPath')"
+  if [ -n "$mount_path" ] && [ "$init_material_path" = "$mount_path" ]; then
+    pass "the init container writes to the same mount the service reads ($mount_path)"
+  else
+    fail "the init container mounts runtime-material at '$init_material_path' and the service reads '$mount_path'"
+  fi
+
+  # That volume must be writable. A read-only mount, or a volume source that
+  # the kubelet populates, cannot take the copies.
+  if [ "$(init '.volumeMounts[] | select(.name == "runtime-material") | .readOnly // false')" = "false" ]; then
+    pass "the init container mounts the material volume writable"
+  else
+    fail "the init container mounts the material volume read-only, so it cannot install anything"
+  fi
+  # A volumeMount is per container, so the service can still be read-only.
+  if [ "$(deployment '.containers[0].volumeMounts[] | select(.name == "runtime-material") | .readOnly // false' "$WORK/standalone.yaml")" = "true" ]; then
+    pass "the service mounts the material read-only"
+  else
+    fail "the service mounts the material writable, and it only ever reads it"
+  fi
+  if [ "$(deployment '.volumes[] | select(.name == "runtime-material") | has("emptyDir")' "$WORK/standalone.yaml")" = "true" ]; then
+    pass "the material volume is an emptyDir, which the init container can fill"
+  else
+    fail "the material volume is not an emptyDir, so the init container has nothing it can write into"
+  fi
+
+  # The raw Secret reaches the init container and NOTHING else. The service
+  # reads the copies, never the symlink farm.
+  source_volume="$(init '.volumeMounts[] | select(.mountPath != "'"$mount_path"'") | .name')"
+  if [ -n "$source_volume" ]; then
+    pass "the init container mounts the Secret source volume ($source_volume)"
+  else
+    fail "the init container mounts no Secret source volume"
+  fi
+  if [ "$(deployment ".volumes[] | select(.name == \"$source_volume\") | has(\"secret\")" "$WORK/standalone.yaml")" = "true" ]; then
+    pass "the Secret source volume is a plain Kubernetes secret volume"
+  else
+    fail "the Secret source volume is not a 'secret:' volume, so values-standalone.yaml does not exercise the shape issue #404 is about"
+  fi
+  if [ -z "$(deployment ".containers[].volumeMounts[] | select(.name == \"$source_volume\") | .name" "$WORK/standalone.yaml")" ]; then
+    pass "the service container never mounts the raw Secret"
+  else
+    fail "the service container mounts $source_volume, and securefile refuses every path inside a Secret volume"
+  fi
+
+  # The init container must be told where the Secret is, and that path must be
+  # the one the pod mounts it at.
+  source_path="$(init '.volumeMounts[] | select(.name == "'"$source_volume"'") | .mountPath')"
+  if grep -qx -- "$source_path" <<<"$(init '.args[]')"; then
+    pass "the init container reads the Secret from the path the pod mounts it at ($source_path)"
+  else
+    fail "the init container arguments $(init '.args' | tr '\n' ' ') do not name its Secret mount path $source_path"
+  fi
+  case "$source_path" in
+    "$mount_path" | "$mount_path"/*) fail "the Secret mount $source_path sits inside the material mount $mount_path, so one shadows the other" ;;
+    *) pass "the Secret mount and the material mount are separate directories" ;;
+  esac
+
+  # The image has to ship the binary the pod runs. The chart names a path and
+  # the Containerfile builds one; a mismatch is a CrashLoopBackOff with
+  # "executable file not found", and nothing else here would see it.
+  init_binary="$(init '.command[0]')"
+  if [ ! -r "$CONTAINERFILE" ]; then
+    fail "the elitea-main Containerfile is not at $CONTAINERFILE, so the init container binary cannot be checked"
+  elif grep -qF -- "-o /out/$(basename "$init_binary") " "$CONTAINERFILE"; then
+    pass "the image builds $init_binary, which the init container runs"
+  else
+    fail "the init container runs $init_binary and $CONTAINERFILE builds no such binary"
+  fi
+fi
+
+# Every file the service opens has to arrive as a Secret KEY, and a Kubernetes
+# Secret key is a bounded name. A file name that no Secret can carry renders
+# cleanly and then leaves the pod without that file.
+bad_keys=""
+while read -r key; do
+  case "$key" in
+    *_FILE)
+      base="$(basename "$(data "$key" "$WORK/standalone.yaml")")"
+      if ! grep -qE '^[-._a-zA-Z0-9]+$' <<<"$base" || [ "${base#..}" != "$base" ]; then
+        bad_keys="$bad_keys $base"
+      fi
+      ;;
+  esac
+done <"$WORK/rendered-names.txt"
+if [ -z "$bad_keys" ]; then
+  pass "every runtime file name is usable as a Kubernetes Secret key"
+else
+  fail "these runtime file names cannot be Secret keys:$bad_keys"
+fi
+
+# The operator-supplied volume stays supported, and it renders NO init
+# container: those files are already real and owner-owned.
+cat >"$WORK/csi-material.yaml" <<'YAML'
+runtime:
+  material:
+    secretName: ""
+    volume:
+      csi:
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes:
+          secretProviderClass: elitea-runtime-material
+YAML
+helm template test-release "$CHART" \
+  -f "$CHART/values-standalone.yaml" -f "$WORK/csi-material.yaml" >"$WORK/csi-render.yaml"
+if [ "$(yq eval-all 'select(.kind == "Deployment") | .spec.template.spec.volumes[] | select(.name == "runtime-material") | has("csi")' "$WORK/csi-render.yaml")" = "true" ]; then
+  pass "runtime.material.volume still mounts the volume the operator supplies"
+else
+  fail "runtime.material.volume no longer reaches the pod"
+fi
+if [ -z "$(yq eval-all 'select(.kind == "Deployment") | .spec.template.spec.initContainers[]? | .name' "$WORK/csi-render.yaml")" ]; then
+  pass "runtime.material.volume renders no init container"
+else
+  fail "runtime.material.volume renders an init container, which would copy files that are already in place"
+fi
 
 # The runtime plane must stay OFF in a default install, and it must leave no
 # stray name behind — config.go refuses a setting whose plane is not enabled.
@@ -279,9 +444,23 @@ refuses "a runtime block with no command stream" \
   "commandStream" \
   -f "$CHART/values-standalone.yaml" --set runtime.commandStream=""
 
-refuses "a runtime block with no material volume" \
-  "material[./]volume" \
-  -f "$CHART/values-standalone.yaml" --set-json 'runtime.material.volume={}'
+refuses "a runtime block with no material source" \
+  "material[./]secretName" \
+  -f "$CHART/values-standalone.yaml" \
+  --set runtime.material.secretName="" --set-json 'runtime.material.volume={}'
+
+refuses "two material sources at once" \
+  "material[./]secretName" \
+  -f "$CHART/values-standalone.yaml" \
+  --set-json 'runtime.material.volume={"emptyDir":{}}'
+
+refuses "a Secret mode the init container cannot read" \
+  "secretDefaultMode" \
+  -f "$CHART/values-standalone.yaml" --set runtime.material.secretDefaultMode=256
+
+refuses "a material Secret set while the runtime is off" \
+  "runtime.enabled" \
+  --set runtime.material.secretName=elitea-runtime-material
 
 refuses "the runtime without production authentication" \
   "fileConfig.authConfig.enabled" \
