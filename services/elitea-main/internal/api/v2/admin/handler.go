@@ -3,7 +3,6 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
-	"runtime"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,17 +39,66 @@ func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
 	return handler
 }
 
+// systemInfoUnavailable is what `/admin/system_info/{mode}` and its ungated
+// `/admin/system_info/prompt_lib` sibling answer, and why.
+//
+// pylon's `system_info` reports the versions of six NAMED plugins —
+// elitea_core, admin, notifications, configurations, sdk_plugin and
+// indexer_worker — read out of `self.module.remote_runtimes`, the registry of
+// pylons that announced themselves on the Arbiter bus in the last 60 seconds
+// (legacy/plugins/admin/api/v2/system_info.py). It is a FLEET inventory: the
+// answer names other processes, not the process that serves the request.
+//
+// That is the same registry `RuntimeRemote` above reads, and `RuntimeRemote`
+// already answers 501 for the same reason. AGENTS.md names Pylon plugin loading
+// and Arbiter transport as things the target architecture does not preserve, so
+// this service loads no plugins and has no fleet to ask.
+//
+// Until this change the handler answered 200 with a HARDCODED map: `elitea_core`
+// and `auth`, both "active" at version "2.0.0", under a top-level `version`
+// "2.0.0" and a `build` "elitea-main-go". Every one of those values was invented.
+// `auth` is not even one of the six names pylon reports. The shape was wrong as
+// well: pylon returns `plugins` as an ARRAY of `{name, version}`, and both
+// clients index it as an array, so the fabricated map rendered as nothing. That
+// is luck, not safety — the next person to correct the shape would have made an
+// admin screen start to display invented version numbers, which an operator uses
+// to decide whether a fix is deployed (#219).
+//
+// # The three answers that were rejected
+//
+// An EMPTY list. `{"plugins": []}` reads as "this deployment runs no plugins",
+// which is a different statement from "this platform has no plugin concept". The
+// `Tasks` and `RuntimeRemote` comments in this file condemn exactly that
+// conflation.
+//
+// The RUNNING BINARY instead. Both clients render plain `name: version` rows, so
+// the shape would fit, but this service has no version to read. No `-ldflags -X`
+// exists in services/elitea-main/Containerfile, .github/workflows/ci-go.yml or
+// docker-bake.hcl; the Containerfile declares `ARG VERSION=dev` and never uses
+// it; and the build copies `services/elitea-main/` without a `.git` directory, so
+// `debug.ReadBuildInfo` reports `Main.Version` as "(devel)" and records no
+// `vcs.revision`. Reporting "(devel)" to an operator who asks which build is
+// deployed is the same failure in new clothes. Build-version plumbing is a
+// separate change, and this route can report a real version once it exists.
+//
+// REMOVING the field. A shipped screen renders it, so it cannot simply vanish.
+//
+// # What the clients do with a 501
+//
+// apps/elitea-ui reads `GET /admin/system_info/prompt_lib` and holds
+// `systemInfo?.plugins ?? []`, so the Help Center version tooltip stays closed —
+// the state it is in today. The "Version: X (date)" label beside it comes from
+// `/admin/plugin_config_values/prompt_lib/resources`, which is real and
+// administrator-owned, so the bar keeps its true content. apps/elitea-web does
+// not call this route at all; its `useResourcesConfig` returns an empty plugin
+// list on purpose. The legacy admin_ui Information card reads
+// `/admin/system_info/administration` the same defensive way and simply lists no
+// extra rows.
+const systemInfoUnavailable = "plugin version reporting reads the Pylon fleet's Arbiter runtime announcements, " +
+	"which have no equivalent in this service; see AGENTS.md architecture boundaries"
+
 func (h *Handler) SystemInfo(w http.ResponseWriter, _ *http.Request) {
-	info := map[string]any{
-		"version":    "2.0.0",
-		"build":      "elitea-main-go",
-		"go_version": runtime.Version(),
-		"plugins": map[string]any{
-			"elitea_core": map[string]any{"status": "active", "version": "2.0.0"},
-			"auth":        map[string]any{"status": "active", "version": "2.0.0"},
-		},
-	}
-	writeJSON(w, http.StatusOK, info)
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": systemInfoUnavailable})
 }
 
 // ResourcesConfig, PluginConfigValues and PluginConfigValuesSave are implemented
