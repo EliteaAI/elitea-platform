@@ -130,6 +130,9 @@ http:
     # ELITEA_HYBRID_HTTPS_PORT in docker-compose.yml and the public URL in
     # README.md. CHANGE BOTH TOGETHER: a deployment that overrides
     # ELITEA_HYBRID_HTTPS_PORT must edit this value as well.
+    #
+    # services/elitea-main/tests/deployedge/edge_services_test.go compares the
+    # port below with that compose default and fails when they differ (#379).
     normalize-runtime-public-authority:
       headers:
         customRequestHeaders:

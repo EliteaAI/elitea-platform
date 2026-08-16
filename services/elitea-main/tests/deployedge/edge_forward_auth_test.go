@@ -462,8 +462,17 @@ func TestHybridFoundationEdgeLoadsTheComposeMount(t *testing.T) {
 		)
 	}
 
+	// resolve() is what the other gates read, so this comparison reads it too.
+	// A set that declares a directory and a set that declares single files must
+	// both be comparable with the mount.
 	declared := make([]string, 0, len(set.files))
-	declared = append(declared, set.files...)
+	for _, path := range set.resolve(t, root) {
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			relative = path
+		}
+		declared = append(declared, relative)
+	}
 	sort.Strings(declared)
 	sort.Strings(loaded)
 	if strings.Join(declared, "\n") == strings.Join(loaded, "\n") {
