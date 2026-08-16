@@ -10536,17 +10536,18 @@
       "id": "SHELL-024",
       "domain": "shell",
       "kind": "shell",
-      "priority": "must",
+      "priority": "waived",
       "title": "Global Create option \"Secret\"",
       "source": [
         "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:52",
         "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:82"
       ],
       "acceptance": [
-        "GIVEN a user holding the secrets.list permission(s)",
+        "GIVEN a user holding the secrets.create permission",
         "WHEN the global Create control is opened",
         "THEN the \"Secret\" option is available and leads to the Secret creation flow with the correct breadcrumb and back path",
-        "AND the option is hidden when the required permissions are missing"
+        "AND the option is hidden when the secrets.create permission is missing",
+        "AND a user who holds only the secrets.list permission cannot use the option"
       ],
       "verify": {
         "type": "vitest",
@@ -10559,7 +10560,12 @@
         "file": "src/widgets/sidebar/index.ts",
         "min": 85
       },
-      "waiver": null
+      "waiver": {
+        "reason": "The baseline gates the global Create option \"Secret\" on the secrets.list permission. Migration 0083 gives secrets.list to the project viewer role, and does not give secrets.create. The two permissions thus have different holders. The secrets page opens no new row without secrets.create, so the option is visible and dead for a viewer. The option now uses secrets.create, which is the permission the create request is checked against. To revert this decision, gate the option on secrets.list again.",
+        "decidedBy": "issue #402 gate-consistency correction (decision record 2026-08-16, flagged for operator veto)",
+        "date": "2026-08-16",
+        "replacesBehaviour": "the baseline shows the global Create option \"Secret\" to a user who holds only the secrets.list permission"
+      }
     },
     {
       "id": "SHELL-025",
