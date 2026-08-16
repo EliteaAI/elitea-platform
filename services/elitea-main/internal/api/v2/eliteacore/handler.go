@@ -814,7 +814,8 @@ func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, ve
 }
 
 // embedSubAgents clones application-type tools from sourceVersionID onto targetVersionID.
-// For each sub-agent tool, it creates a new embedded application+version and links it.
+// For each sub-agent tool, it creates a new embedded application+version, copies the
+// tool and skill attachments of that sub-agent onto the embedded version, and links it.
 func (h *Handler) embedSubAgents(ctx context.Context, schema string, sourceVersionID string, targetVersionID int) {
 	h.embedSubAgentsRecursive(ctx, schema, sourceVersionID, targetVersionID, 0)
 }
@@ -874,6 +875,9 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 			FROM %q.applications WHERE id = $1
 			RETURNING id`, schema, schema), ref.appID).Scan(&embeddedAppID)
 		if err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent application clone failed",
+				"schema", schema, "source_application_id", ref.appID,
+				"parent_version_id", targetVersionID, "err", err)
 			continue
 		}
 
@@ -899,15 +903,51 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 			embeddedAppID, ref.versionID, ref.versionID, ref.appID, projectID,
 			strconv.Itoa(parentAppID), strconv.Itoa(targetVersionID)).Scan(&embeddedVerID)
 		if err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent version clone failed",
+				"schema", schema, "source_version_id", ref.versionID,
+				"parent_version_id", targetVersionID, "err", err)
 			continue
 		}
 
-		// Clone entity_tool_mapping for the embedded version
-		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+		// Clone entity_tool_mapping for the embedded version.
+		//
+		// The copy stays outside the publish transaction, because the publish
+		// committed before embedSubAgents ran. Its error is logged rather than
+		// discarded: the publish cannot be withdrawn, so the caller keeps its 200,
+		// and the log is the only channel that can report the loss. See the
+		// pull request for issue #406 for the full reasoning.
+		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 			SELECT $2, $3, entity_type, tool_id, selected_tools
 			FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema, schema),
-			ref.versionID, embeddedVerID, embeddedAppID) // best-effort copy
+			ref.versionID, embeddedVerID, embeddedAppID); err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: tool attachment copy failed",
+				"schema", schema, "source_version_id", ref.versionID,
+				"embedded_version_id", embeddedVerID, "err", err)
+		}
+
+		// Clone entity_skill_mapping for the embedded version. The embed copied
+		// tool attachments only, so an embedded sub-agent ran without the skills
+		// its author gave it (#406). Publish has the same copy (#351), and fork
+		// has it too (internal/api/oapiserver/publishing.go:149).
+		//
+		// The table has no `entity_id` column (001_initial.sql:422-432): a skill
+		// attachment is keyed by (entity_version_id, skill_id, entity_type) alone.
+		// That is why this statement names four columns where the tool copy above
+		// names five. `entity_type` is carried from the source row rather than
+		// defaulted, because it is part of that key and the chat read matches on it
+		// (internal/db/queries/agent_chat.sql:132). `skill_version_id` rides along
+		// because the same read LEFT JOINs it for the skill instructions — dropping
+		// it embeds a named skill with an empty body.
+		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+			SELECT $2, entity_type, skill_id, skill_version_id
+			FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema, schema),
+			ref.versionID, embeddedVerID); err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: skill attachment copy failed",
+				"schema", schema, "source_version_id", ref.versionID,
+				"embedded_version_id", embeddedVerID, "err", err)
+		}
 
 		// Create application_tools entry on the published version pointing to embedded copy
 		embeddedSettings := map[string]any{
@@ -915,10 +955,14 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 			"application_version_id": strconv.Itoa(embeddedVerID),
 		}
 		settingsJSON, _ := json.Marshal(embeddedSettings)
-		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %q.application_tools (application_version_id, name, type, settings)
 			VALUES ($1, $2, 'application', $3)`, schema),
-			targetVersionID, ref.name, settingsJSON) // best-effort link
+			targetVersionID, ref.name, settingsJSON); err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent link failed",
+				"schema", schema, "parent_version_id", targetVersionID,
+				"embedded_version_id", embeddedVerID, "err", err)
+		}
 
 		// Recursively embed sub-agents of this sub-agent
 		h.embedSubAgentsRecursive(ctx, schema, ref.versionID, embeddedVerID, depth+1)
