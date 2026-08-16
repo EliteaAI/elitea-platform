@@ -168,6 +168,110 @@ def test_argument_schemas_are_canonically_ordered_and_stable() -> None:
     )
 
 
+def _clock_toolkit_model(today: str) -> type:
+    """Build a toolkit that reads the clock, as the SDK carrier toolkit does.
+
+    elitea_sdk/tools/carrier/ui_reports_tool.py gives ``current_date`` the
+    value of ``datetime.now()`` at import time. The projected default is then
+    the date of the projection run.
+    """
+
+    class _ClockToolkitModel:
+        @classmethod
+        def model_json_schema(cls) -> dict:
+            return {
+                "title": "carrier-like",
+                "properties": {
+                    "selected_tools": {
+                        "type": "array",
+                        "args_schemas": {
+                            "get_ui_reports": {
+                                "title": "GetUIReportsInput",
+                                "type": "object",
+                                "properties": {
+                                    "current_date": {
+                                        "type": "string",
+                                        "default": today,
+                                        "description": "auto-filled",
+                                    },
+                                    "report_id": {"type": "string"},
+                                    "page_size": {"type": "integer", "default": 25},
+                                    "since": {"type": "string", "default": "2020-01-01"},
+                                    "window": {"$ref": "#/$defs/Window"},
+                                },
+                                "required": ["report_id"],
+                                "$defs": {
+                                    "Window": {
+                                        "type": "object",
+                                        "properties": {
+                                            "day": {"type": "string", "default": today}
+                                        },
+                                    }
+                                },
+                            }
+                        },
+                    }
+                },
+            }
+
+    return _ClockToolkitModel
+
+
+def test_clock_derived_defaults_leave_the_projection() -> None:
+    document = project_toolkit_schemas(
+        [_clock_toolkit_model("2026-08-13")],
+        "d" * 40,
+        frozenset({"2026-08-13"}),
+    )
+    schema = document["entries"][0]["args_schemas"]["get_ui_reports"]
+
+    # The clock default goes. Every other part of the schema stays.
+    assert schema["properties"]["current_date"] == {
+        "type": "string",
+        "description": "auto-filled",
+    }
+    assert "default" not in schema["$defs"]["Window"]["properties"]["day"]
+    assert schema["properties"]["page_size"]["default"] == 25
+    assert schema["properties"]["since"]["default"] == "2020-01-01"
+    assert schema["properties"]["window"] == {"$ref": "#/$defs/Window"}
+    assert schema["required"] == ["report_id"]
+
+
+def test_two_different_days_project_identical_documents() -> None:
+    # The snapshot needs this property. Without it the committed file becomes
+    # stale at the next midnight. The --check gate then fails for every later
+    # change to this repository.
+    first = _canonical(
+        project_toolkit_schemas(
+            [_clock_toolkit_model("2026-08-13")],
+            "d" * 40,
+            frozenset({"2026-08-13"}),
+        )
+    )
+    second = _canonical(
+        project_toolkit_schemas(
+            [_clock_toolkit_model("2026-08-16")],
+            "d" * 40,
+            frozenset({"2026-08-16"}),
+        )
+    )
+
+    assert first == second
+
+
+def test_a_projection_across_midnight_removes_both_observed_dates() -> None:
+    # The generator reads the date before the SDK import and again after the
+    # registry call. A run across midnight observes two dates.
+    document = project_toolkit_schemas(
+        [_clock_toolkit_model("2026-08-17")],
+        "d" * 40,
+        frozenset({"2026-08-16", "2026-08-17"}),
+    )
+    schema = document["entries"][0]["args_schemas"]["get_ui_reports"]
+
+    assert "default" not in schema["properties"]["current_date"]
+
+
 def test_toolkits_without_tool_selection_project_no_argument_schemas() -> None:
     assert _argument_schema_projection({"bucket": {"type": "string"}}) == {}
     assert _argument_schema_projection({"selected_tools": {"type": "array"}}) == {}

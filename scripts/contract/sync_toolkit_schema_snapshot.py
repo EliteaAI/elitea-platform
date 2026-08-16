@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Iterable, Mapping
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,17 @@ MAX_TOOLKIT_NAME_LENGTH = 4096
 # schema is an arbitrarily nested JSON Schema document with its own ``$defs``.
 TOOL_SELECTION_FIELD = "selected_tools"
 ARGUMENT_SCHEMAS_FIELD = "args_schemas"
+# One SDK tool builds an argument default from the clock. In
+# elitea_sdk/tools/carrier/ui_reports_tool.py the ``current_date`` field reads
+# ``datetime.now()`` when Python imports the module, so the projected default
+# is the date of the projection run. Such a value cannot enter an immutable
+# snapshot: the committed file becomes stale at the next midnight, and the
+# --check gate then fails for every later change to this repository. Remove
+# the ``default`` key when it holds a date that this run observed, and keep
+# the remainder of the schema verbatim. A removed default leaves the field
+# empty in the toolkit tool form. The worker then applies the model default,
+# which reads the clock of the run and gives the correct current date.
+DEFAULT_FIELD = "default"
 
 
 class ContractSyncError(RuntimeError):
@@ -198,8 +210,32 @@ def _annotation_projection(
     return projected, {"field": name_field, "max_length": max_length}
 
 
+def _without_clock_defaults(value: Any, clock_dates: frozenset[str]) -> Any:
+    """Remove each schema default that holds a date from the projection run.
+
+    The walk keeps every other key and every other value. It removes only a
+    ``default`` that is a string in ``clock_dates``, so ``$ref`` pointers keep
+    their targets and no other part of the document moves.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _without_clock_defaults(item, clock_dates)
+            for key, item in value.items()
+            if not (
+                key == DEFAULT_FIELD
+                and isinstance(item, str)
+                and item in clock_dates
+            )
+        }
+    if isinstance(value, list):
+        return [_without_clock_defaults(item, clock_dates) for item in value]
+    return value
+
+
 def _argument_schema_projection(
     properties: Mapping[str, Any],
+    clock_dates: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Project each tool's argument schema from the tool-selection property.
 
@@ -231,15 +267,16 @@ def _argument_schema_projection(
             raise ContractSyncError(
                 f"toolkit argument schema for tool {tool_name!r} is not an object"
             )
+        stable = _without_clock_defaults(schema, clock_dates)
         # Reject anything the canonical encoder cannot represent here rather
         # than at write time, so the failure names the offending tool.
         try:
-            _canonical(schema)
+            _canonical(stable)
         except (TypeError, ValueError) as exc:
             raise ContractSyncError(
                 f"toolkit argument schema for tool {tool_name!r} is not canonical JSON"
             ) from exc
-        projected[tool_name] = schema
+        projected[tool_name] = stable
     # The canonical encoder already sorts keys, but the in-memory document is
     # compared directly by the tests and by --check callers, so keep the
     # mapping ordered here too.
@@ -249,6 +286,7 @@ def _argument_schema_projection(
 def project_toolkit_schemas(
     models: Iterable[Any],
     revision: str,
+    clock_dates: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -276,7 +314,7 @@ def project_toolkit_schemas(
             {
                 "type": type_name,
                 "properties": projected,
-                "args_schemas": _argument_schema_projection(properties),
+                "args_schemas": _argument_schema_projection(properties, clock_dates),
                 "naming": naming,
             }
         )
@@ -296,6 +334,10 @@ def generate_document(sdk_root: Path, lock_path: Path) -> dict[str, Any]:
     sys.path.insert(0, str(sdk_root))
     logging.getLogger("elitea_sdk.tools").setLevel(logging.ERROR)
     try:
+        # Read the date before the import and again after the registry call.
+        # The SDK evaluates its clock default between these two points. A run
+        # that crosses midnight observes two dates, and both count as volatile.
+        clock_dates = {date.today().isoformat()}
         module = importlib.import_module("elitea_sdk.runtime.toolkits.tools")
         module_path = Path(module.__file__ or "").resolve()
         try:
@@ -314,7 +356,12 @@ def generate_document(sdk_root: Path, lock_path: Path) -> dict[str, Any]:
             raise ContractSyncError(
                 "SDK toolkit imports failed: " + ", ".join(sorted(unexpected_failures))
             )
-        return project_toolkit_schemas(models, lock["source"]["revision"])
+        clock_dates.add(date.today().isoformat())
+        return project_toolkit_schemas(
+            models,
+            lock["source"]["revision"],
+            frozenset(clock_dates),
+        )
     finally:
         sys.path.pop(0)
 
