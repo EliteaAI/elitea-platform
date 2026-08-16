@@ -42,6 +42,34 @@ const RESPONSE_REF_RE = /^#\/components\/schemas\/([^/]+)$/;
 const PARAM_REF_RE = /^#\/components\/parameters\/(.+)$/;
 const OPENAPI_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'options', 'head', 'trace'];
 
+/**
+ * Parameter locations that must NEVER reach the `<Op>Params` combiner.
+ * `path` parameters are interpolated into the URL, so orval keeps them out of
+ * `Params`; `header` and `cookie` parameters get their own `<Op>Headers` type,
+ * which orval DOES write correctly on its own. A backfilled `Params` file that
+ * repeats a header is therefore a duplicate of a file that already exists —
+ * and for a real header name like `X-SECRET` it is also invalid TypeScript,
+ * because the hyphen makes the bare object key unparseable. Verified against
+ * `getApplicationVersionDetailExpanded` (spec issue 336), whose `X-SECRET`
+ * header produced both `getApplicationVersionDetailExpandedHeaders.zod.ts`
+ * (correct) and `...Params.zod.ts` (a parse error that broke typecheck, the
+ * complexity budgets, the i18n sync check and one unit shard at once).
+ */
+const NON_QUERY_PARAM_LOCATIONS = new Set(['path', 'header', 'cookie']);
+
+/**
+ * A bare object key is only legal when it is a valid JS identifier. Query
+ * parameter names are free-form in OpenAPI (`X-Trace-Id`, `filter[name]`,
+ * `2fa`), so the emitted key is quoted whenever it is not an identifier —
+ * defence in depth alongside `NON_QUERY_PARAM_LOCATIONS`, which removes the
+ * one location where a hyphenated name is the norm rather than the exception.
+ */
+const JS_IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+function toPropertyKey(propName) {
+  return JS_IDENTIFIER_RE.test(propName) ? propName : JSON.stringify(propName);
+}
+
 /** orval sanitises a numeric-leading component key by prefixing `N` (`400` -> `N400`). */
 export function sanitizeComponentKey(key) {
   const s = String(key);
@@ -135,7 +163,7 @@ function resolveOperationParams(item, op, componentParameters) {
     }
     if (p) resolved.push(p);
   }
-  return resolved.filter((p) => p.in !== 'path');
+  return resolved.filter((p) => !NON_QUERY_PARAM_LOCATIONS.has(p.in));
 }
 
 /** One path item's operations, as `{name, operationId, fields}` candidates (or `[]` if none need a Params type). */
@@ -145,12 +173,12 @@ function paramsCandidatesForPathItem(item, componentParameters) {
   for (const method of OPENAPI_METHODS) {
     const op = item[method];
     if (!op || !op.operationId) continue;
-    const nonPath = resolveOperationParams(item, op, componentParameters);
-    if (nonPath.length === 0) continue;
+    const queryParams = resolveOperationParams(item, op, componentParameters);
+    if (queryParams.length === 0) continue;
     out.push({
       name: `${pascalCase(op.operationId)}Params`,
       operationId: op.operationId,
-      fields: nonPath.map((p) => ({ propName: p.name, schema: p.schema })),
+      fields: queryParams.map((p) => ({ propName: p.name, schema: p.schema })),
     });
   }
   return out;
@@ -158,8 +186,9 @@ function paramsCandidatesForPathItem(item, componentParameters) {
 
 /**
  * Every operation's `<PascalOperationId>Params` combiner, for operations
- * that have at least one non-path parameter (orval only emits a Params type
- * at all when there's something to put in it).
+ * that have at least one query parameter (orval only emits a Params type at
+ * all when there's something to put in it — path parameters go into the URL,
+ * and header/cookie parameters go into `<Op>Headers`).
  */
 export function computeParamsCandidates(doc) {
   const componentParameters = doc?.components?.parameters ?? {};
@@ -189,7 +218,7 @@ export function renderParamsFile(candidate) {
   const lines = fields.map((f) => {
     const { expr, warning } = schemaToZodExpr(f.schema, `${name}.${f.propName}`);
     if (warning) warnings.push(warning);
-    return `  ${f.propName}: ${expr}.optional(),`;
+    return `  ${toPropertyKey(f.propName)}: ${expr}.optional(),`;
   });
   const content =
     `${FILE_HEADER}` +
