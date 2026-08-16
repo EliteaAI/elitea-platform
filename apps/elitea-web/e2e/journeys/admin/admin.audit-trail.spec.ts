@@ -16,10 +16,12 @@
  * the Traces view and 4 in the Spans view. A stub, a client-side grouping, or a
  * view that quietly queried the wrong endpoint all collapse that difference.
  */
-import { test as adminTest, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+
+import { test as adminTest, expect, type Page } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
-import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
+import { AUDIT_FIXTURE_ANCHOR, BASE_URL, E2E_TIMEZONE, STORAGE_STATE } from '../../../playwright.config';
 
 adminTest.use({ storageState: STORAGE_STATE.admin });
 
@@ -29,15 +31,140 @@ const SEEDED_SECOND_TRACE = 'GET /agents/e2e';
 const SEEDED_LLM_SPAN = 'completion/e2e';
 const SEEDED_ERROR_SPAN = 'search/e2e';
 
-adminTest('J29: the audit trail lists seeded traces, and expands one into its spans', async ({ page }) => {
+/* ── the day this page is asked about (issue #214) ────────────────────────────
+ *
+ * This page opens on a `Today` preset — `DEFAULT_PRESET` in
+ * `src/pages/admin/auditFormat.ts` — and sends the browser's local midnight to
+ * the server as `date_from`. So every assertion below depends on the browser
+ * and the seed agreeing about which day it is, and NOTHING made them agree:
+ *
+ *  - the seed runs once, at the front of the run; this journey asserts minutes
+ *    or hours later. A run that seeded at 23:59 and arrived here at 00:01 read
+ *    an empty table, and reported it as "no audit rows rendered" — the same
+ *    symptom the page being broken would produce.
+ *  - the two even measured the day in different zones: the browser in the
+ *    runner's, the seed in the postgres session's.
+ *
+ * Both are removed rather than papered over. `E2E_TIMEZONE` pins one zone for
+ * both sides (see playwright.config.ts), and `seedAnchor` below pins one
+ * INSTANT: the seed publishes the timestamps it actually wrote, and each test
+ * freezes its browser clock just past the last of them. The window then holds
+ * the rows by construction, at any hour, on either side of any midnight.
+ *
+ * Not solved by widening the filter — that would stop exercising the default
+ * preset an operator actually arrives on, which is the thing worth testing.
+ * Not solved by `retries` either: after midnight every attempt reads the same
+ * empty window, so the suite would fail three times or pass an hour later, and
+ * either way the signal would be the time of day rather than the code.
+ */
+interface AuditFixtureAnchor {
+  readonly timeZone: string;
+  readonly rows: number;
+  readonly firstRow: string;
+  readonly lastRow: string;
+  readonly localDay: string;
+}
+
+function seedAnchor(): AuditFixtureAnchor {
+  let raw: string;
+  try {
+    raw = readFileSync(AUDIT_FIXTURE_ANCHOR, 'utf8');
+  } catch {
+    throw new Error(
+      `The audit fixture anchor is missing: ${AUDIT_FIXTURE_ANCHOR}\n` +
+        'Journey 29 pins its clock to the day the audit rows were seeded on, and the seed ' +
+        'writes that day out. Run `./scripts/e2e-stack.sh seed` against the stack under test.',
+    );
+  }
+  const anchor = JSON.parse(raw) as AuditFixtureAnchor;
+  expect(
+    anchor.rows,
+    `The seed reported ${anchor.rows} audit rows, not 4. The stack this run is pointed at was ` +
+      'seeded without them, so the table below would be empty for a reason that has nothing to ' +
+      'do with the page.',
+  ).toBe(4);
+  return anchor;
+}
+
+/**
+ * Open the audit trail with the browser's clock frozen one minute after the
+ * last seeded row, and report the window the page will therefore ask for.
+ *
+ * `setFixedTime`, not `install`: it fixes `Date.now()` and `new Date()` and
+ * leaves every timer running, so react-query, MUI and the SSE transport behave
+ * exactly as they do in an unfrozen run. Only the page's idea of "now" moves,
+ * which is the one thing this journey needs to hold still.
+ *
+ * One minute AFTER the last row, so all four rows are in the past — an audit
+ * trail showing events from the future would be a strange thing to assert
+ * against. The seed's own clamp keeps the four rows inside a single local day,
+ * so this instant is on that day too.
+ */
+async function openAuditTrail(page: Page): Promise<{ anchor: AuditFixtureAnchor; emptyWindowHint: string }> {
+  const anchor = seedAnchor();
+  const frozenNow = new Date(new Date(anchor.lastRow).getTime() + 60_000);
+  await page.clock.setFixedTime(frozenNow);
+
+  const emptyWindowHint =
+    `The four seeded audit rows must be inside the page's default \`Today\` window. ` +
+    `The seed wrote them on ${anchor.localDay} in ${anchor.timeZone} ` +
+    `(${anchor.firstRow} … ${anchor.lastRow}), and this browser's clock is frozen at ` +
+    `${frozenNow.toISOString()} in ${E2E_TIMEZONE}. An empty table here means the window and ` +
+    `the fixture are on different days (#214), not that the page failed to read the database.`;
+
+  // Registered BEFORE the navigation: the listing goes out as the page mounts,
+  // and this is the only place the window the page CHOSE is visible. Reading it
+  // back off the filter fields would read what the page renders, not what it
+  // asked the server for.
+  const listing = page.waitForRequest(
+    (r) => r.url().includes('/elitea_core/audit_traces/administration') && r.method() === 'GET',
+  );
   const response = await page.goto(BASE_URL + '/admin/app/audit', { waitUntil: 'domcontentloaded' });
   expect(response?.status(), 'the admin SPA must serve the audit route, not 404').toBeLessThan(400);
+
+  // The seed measured the day in `anchor.timeZone`; the page measures it in the
+  // zone the browser reports. A mismatch means playwright.config.ts stopped
+  // pinning `timezoneId`, and this journey would go back to passing for all but
+  // twenty minutes of the day. Say so here rather than at midnight.
+  const browserZone = await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+  expect(
+    browserZone,
+    `The browser is in ${browserZone} and the seed measured its day in ${anchor.timeZone}. ` +
+      'Both must read `E2E_TZ`: playwright.config.ts pins the browser, scripts/e2e-stack.sh ' +
+      'anchors the fixture.',
+  ).toBe(anchor.timeZone);
+
+  // The page must still be opening on its DEFAULT preset, and that default must
+  // still contain the fixture. Without this the journey could keep passing over
+  // a page that had quietly stopped opening on `Today`, or over a fixture that
+  // had drifted out of it — and the only symptom of either is an empty table.
+  const requested = new URL((await listing).url()).searchParams;
+  const dateFrom = requested.get('date_from');
+  const dateTo = requested.get('date_to');
+  expect(dateFrom, 'the listing must carry the default window as `date_from`').not.toBeNull();
+  expect(dateTo, 'the listing must carry the default window as `date_to`').not.toBeNull();
+  expect(
+    new Date(String(dateFrom)).getTime(),
+    `The page asked for events from ${dateFrom}, which is after the first seeded row ` +
+      `${anchor.firstRow}. ${emptyWindowHint}`,
+  ).toBeLessThanOrEqual(new Date(anchor.firstRow).getTime());
+  expect(
+    new Date(String(dateTo)).getTime(),
+    `The page asked for events up to ${dateTo}, which is before the last seeded row ` +
+      `${anchor.lastRow}. ${emptyWindowHint}`,
+  ).toBeGreaterThanOrEqual(new Date(anchor.lastRow).getTime());
+
+  return { anchor, emptyWindowHint };
+}
+
+adminTest('J29: the audit trail lists seeded traces, and expands one into its spans', async ({ page }) => {
+  const { emptyWindowHint } = await openAuditTrail(page);
 
   // From the DATABASE. The reads are gated server-side on
   // `models.admin.audit_trail.view`; the admin persona holds it via the seed,
   // so a 403 here would mean the gate and the seed have drifted apart.
-  await expect(page.getByText(SEEDED_ROOT_ACTION)).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText(SEEDED_SECOND_TRACE)).toBeVisible();
+  await expect(page.getByText(SEEDED_ROOT_ACTION), emptyWindowHint).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(SEEDED_SECOND_TRACE), emptyWindowHint).toBeVisible();
 
   // The empty state and the table are mutually exclusive branches. Both stubs
   // this page replaced would land here.
@@ -61,8 +188,8 @@ adminTest('J29: the audit trail lists seeded traces, and expands one into its sp
 });
 
 adminTest('J29b: the trace and span views report different counts for the same rows', async ({ page }) => {
-  await page.goto(BASE_URL + '/admin/app/audit', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText(SEEDED_ROOT_ACTION)).toBeVisible({ timeout: 20_000 });
+  const { emptyWindowHint } = await openAuditTrail(page);
+  await expect(page.getByText(SEEDED_ROOT_ACTION), emptyWindowHint).toBeVisible({ timeout: 20_000 });
 
   // Two traces over four spans. These are two different SERVER endpoints
   // answering two different questions; the seed is chosen so they cannot agree
@@ -88,8 +215,8 @@ adminTest('J29b: the trace and span views report different counts for the same r
 });
 
 adminTest('J29c: the errors-only filter is applied by the server, not the browser', async ({ page }) => {
-  await page.goto(BASE_URL + '/admin/app/audit', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText(SEEDED_ROOT_ACTION)).toBeVisible({ timeout: 20_000 });
+  const { emptyWindowHint } = await openAuditTrail(page);
+  await expect(page.getByText(SEEDED_ROOT_ACTION), emptyWindowHint).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole('tab', { name: 'Spans' }).click();
   await expect(page.getByTestId('audit-span-row')).toHaveCount(4);

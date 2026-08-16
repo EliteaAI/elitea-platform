@@ -258,6 +258,13 @@ jobs:
         # `--project` is explicit rather than `npm run e2e` so that (a) each
         # matrix leg reports one engine's result, and (b) the `visual` project
         # stays out of this job — its snapshots are the `visual` job's business.
+        #
+        # E2E_TZ pins the browser's timezone, and the seed step above anchors its
+        # calendar-day fixtures in the SAME zone (issue #214). UTC on both sides
+        # by default, so this line changes nothing today. It is here so that
+        # setting E2E_TZ on the job cannot move the seed's day boundary while
+        # leaving the browser on the runner's, which is the disagreement that
+        # made journey 29 fail after midnight.
         run: |
           docker run --rm --network host \
             -v "$PWD":/work -w /work \
@@ -265,6 +272,7 @@ jobs:
             -e E2E_REUSE_STACK=1 \
             -e E2E_PORT=8080 \
             -e PLAYWRIGHT_BASE_URL=http://localhost:8080 \
+            -e E2E_TZ="${E2E_TZ:-UTC}" \
             mcr.microsoft.com/playwright:v1.62.0-noble \
             npx playwright test --project=${{ matrix.engine }}
       - name: Give the report back to the runner user
@@ -484,9 +492,13 @@ jobs:
               exit 1
             fi
           fi
+          # -e E2E_TZ: the browser must run in the same zone the seed anchored
+          # its calendar-day fixtures in (issue #214). UTC on both sides by
+          # default; see the `e2e` job's copy of this note.
           docker run --rm --network host \
             -v "$PWD":/work -w /work \
             -e CI=1 -e E2E_REUSE_STACK=1 \
+            -e E2E_TZ="${E2E_TZ:-UTC}" \
             mcr.microsoft.com/playwright:v1.62.0-noble \
             npx playwright test --grep @visual $update_arg
 

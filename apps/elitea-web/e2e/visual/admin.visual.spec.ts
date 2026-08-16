@@ -418,16 +418,16 @@ for (const route of ADMIN_ROUTES.filter((r) => r.light)) {
  *
  *  - `/admin/app/audit` (Audit Trail). EXEMPT in
  *    `scripts/check-visual-coverage.mjs`, which prints the reason on every run.
- *    Short version: the page opens on a `Today` preset computed from the
- *    BROWSER's clock while the seed anchors its four fixture rows on the
- *    DATABASE's `date_trunc('day', now())` (#214, partly fixed), and every
- *    other visible thing on the screen is a function of the wall clock at seed
- *    time — the `Time` column is second-resolution local time, the two
- *    `DateRangeField`s render today's date, and the heatmap's column geometry
- *    and per-cell alpha are computed from where the rows fall inside the
- *    range. A baseline taken against one stack cannot match a stack seeded at a
- *    different time of day, which is every other stack. Masking is not a way
- *    out: what would have to be masked is the whole content area.
+ *    Short version: every visible thing on the screen is a function of the wall
+ *    clock at seed time — the `Time` column is second-resolution local time,
+ *    the two `DateRangeField`s render today's date, and the heatmap's column
+ *    geometry and per-cell alpha are computed from where the rows fall inside
+ *    the range. A baseline taken against one stack cannot match a stack seeded
+ *    at a different time of day, which is every other stack. Masking is not a
+ *    way out: what would have to be masked is the whole content area.
+ *    WHICH day it is is no longer on that list: #214 pinned one timezone for
+ *    the browser and the seed, and journey 29 freezes its clock to the day the
+ *    fixture was written on. The MINUTE the seed ran is what still moves.
  *
  *  - The admin INDEX route (`/admin/app/`). It renders `AdminUsers` — the same
  *    component, deliberately, rather than redirecting (`router.tsx` explains
