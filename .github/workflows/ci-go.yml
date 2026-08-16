@@ -263,6 +263,81 @@ jobs:
           cd services/elitea-main
           go test -count=1 -timeout=120s ./tests/integration/
 
+  container-scan:
+    name: Container scan — elitea-main HIGH/CRITICAL
+    runs-on: ubuntu-latest
+    # Issue #224. services/elitea-main/Containerfile carried a
+    # `FROM aquasec/trivy:latest AS scanner` stage that no other stage copied
+    # from. BuildKit and podman build only the stages a target needs, so the
+    # stage was pruned from every build graph and the gate never ran once.
+    # A stage nothing depends on is the same defect class as a gate nothing
+    # calls (#157, check-playwright-image-tag).
+    #
+    # The scan lives here instead, against the image publish.yml ships, so a
+    # scan failure reads as a scan failure and prints every finding.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      # `target: final` and `load: true` — the same target publish.yml and
+      # docker-bake.hcl name. One platform only: the scan reads Go module
+      # metadata out of the binaries, which is architecture-independent.
+      - name: Build the shipping image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./services/elitea-main/Containerfile
+          target: final
+          push: false
+          load: true
+          tags: elitea-main:ci-scan
+          platforms: linux/amd64
+          cache-from: type=gha,scope=elitea-main-ci-scan
+          cache-to: type=gha,mode=max,scope=elitea-main-ci-scan
+
+      # exit-code 0 on purpose: this step collects the report, and the step
+      # below is the gate. Splitting them lets the gate print the findings.
+      - name: Scan the shipping image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: elitea-main:ci-scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-report.json
+          exit-code: "0"
+
+      # Two failures, not one:
+      #   - an empty or binary-free report means the scan did not reach what
+      #     ships. "Found nothing" and "did not really run" must not look the
+      #     same, which is exactly how the deleted stage stayed invisible;
+      #   - any HIGH or CRITICAL vulnerability fails the job, with the list.
+      - name: Gate on HIGH and CRITICAL findings
+        run: |
+          set -euo pipefail
+          if [ ! -s trivy-report.json ]; then
+            echo "::error::trivy wrote no report — the scan did not run"
+            exit 1
+          fi
+          echo "Scanned targets:"
+          jq -r '.Results[]? | "  \(.Target) [\(.Type)]"' trivy-report.json
+          if ! jq -e '[.Results[]? | select(.Type == "gobinary")] | length > 0' trivy-report.json > /dev/null; then
+            echo "::error::the report holds no Go binary — the scan did not reach the shipped binaries"
+            exit 1
+          fi
+          jq -r '
+            .Results[]? | .Target as $target
+            | .Vulnerabilities[]?
+            | "\(.Severity)\t\($target)\t\(.PkgName) \(.InstalledVersion)\t\(.VulnerabilityID)\tfixed in \(.FixedVersion // "nothing yet")"
+          ' trivy-report.json | sort -u | tee findings.txt
+          count="$(wc -l < findings.txt | tr -d ' ')"
+          if [ "$count" -gt 0 ]; then
+            echo "::error::${count} HIGH or CRITICAL vulnerability line(s) in the shipping image — raise the pinned versions in services/elitea-main/go.mod"
+            exit 1
+          fi
+          echo "No HIGH or CRITICAL vulnerability in the shipping image."
+
   build:
     name: Build
     # CI validation only — confirms the binaries compile cleanly on every PR/push.
