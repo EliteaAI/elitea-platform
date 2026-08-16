@@ -36,8 +36,57 @@ export const STORAGE_STATE = {
   chat: path.join(__dirname, '.playwright-state', 'chat.json'),
 };
 
+/**
+ * What `scripts/e2e-stack.sh seed` says it wrote into `centry.audit_events`:
+ * the row count, the first and last timestamps, and the local day they fall on
+ * (issue #214). Journey 29 freezes its browser clock to that day rather than
+ * reading the wall clock, so the page's `Today` window and the fixture cannot
+ * end up on opposite sides of a midnight.
+ *
+ * It lives beside the persona storageState because it is the same kind of
+ * thing: per-run provisioning output, written by the seed, read by the tests,
+ * gitignored, and inside the directory CI mounts into the Playwright container.
+ */
+export const AUDIT_FIXTURE_ANCHOR = path.join(__dirname, '.playwright-state', 'audit-fixture.json');
+
 // Default 8082 locally: centry legacy stack occupies 8080; CI sets E2E_PORT=8080.
 export const BASE_URL = process.env['PLAYWRIGHT_BASE_URL'] ?? 'http://localhost:8082';
+
+/**
+ * The IANA zone EVERY browser context runs in, and the SAME zone
+ * `scripts/e2e-stack.sh` computes its fixtures' start of day in (issue #214).
+ *
+ * Two clocks decide whether a seeded row falls inside a calendar-day filter,
+ * and until now nothing made them agree:
+ *
+ *  - the BROWSER's. The admin Audit Trail opens on a `Today` preset
+ *    (`src/pages/admin/auditFormat.ts`), whose `startOfDay` is
+ *    `setHours(0,0,0,0)` on a `new Date()` — local midnight, in whatever zone
+ *    the runner's OS happens to be in, sent to the server as an instant.
+ *  - the DATABASE's. The audit fixture anchors its rows on
+ *    `date_trunc('day', now())` so they land inside that window — in whatever
+ *    zone the postgres session happens to be in.
+ *
+ * The two coincided in CI only because both sides inherited UTC by accident. At
+ * 00:15 America/New_York they did not: three of the four fixture rows landed on
+ * yesterday, and journey 29 failed "element not found" on rows that were
+ * plainly in the table. Widening the filter or retrying would each have hidden
+ * that. Pinning ONE zone and deriving BOTH day boundaries from it makes them
+ * agree by construction, at every time of day.
+ *
+ * `E2E_TZ` overrides it, and must reach the seed and the browser TOGETHER —
+ * `webServer.command` below runs the seed, so one exported variable does both.
+ * Set it to a zone whose local time is a few minutes past midnight to run the
+ * suite as if it were midnight, without touching any clock:
+ *
+ *   # at 13:05 UTC, Pacific/Guadalcanal (UTC+11) is 00:05 the next day
+ *   E2E_TZ=Pacific/Guadalcanal npx playwright test --project=chromium
+ *
+ * UTC by default, so CI and every existing local invocation keep the day
+ * boundary they already had. The difference is that they now HAVE one, rather
+ * than borrowing whatever the runner and the database happened to be set to.
+ */
+export const E2E_TIMEZONE = process.env['E2E_TZ'] ?? 'UTC';
 
 /*
  * Chromium-only launch flags — applied per project, never in the shared `use:`.
@@ -70,6 +119,9 @@ export default defineConfig({
 
   use: {
     baseURL: BASE_URL,
+    // Shared, not per-project: every project drives the same seeded stack, so
+    // every project must read the same day boundary out of it. See E2E_TIMEZONE.
+    timezoneId: E2E_TIMEZONE,
     // Trace on retry so failures in CI have full context.
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',

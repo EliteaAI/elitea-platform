@@ -34,6 +34,19 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 E2E_PROJECT="${E2E_PROJECT:-elitea-e2e}"
 COMPOSE_F="-p ${E2E_PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.e2e-standalone.yml"
 
+# The IANA zone this seed computes its calendar-day boundaries in (issue #214).
+#
+# It must be the SAME zone playwright.config.ts pins the browser to, because a
+# fixture anchored on the database's day and read through a filter computed from
+# the browser's day only agree while the two zones do. `E2E_TIMEZONE` in
+# playwright.config.ts reads this same variable and carries the full argument;
+# the audit trail fixture below is what consumes it here.
+#
+# UTC by default on both sides, so CI and every existing local invocation keep
+# the boundary they already had — but now by declaration, not by inheriting
+# whatever the runner and the postgres session happened to be set to.
+E2E_TZ="${E2E_TZ:-UTC}"
+
 # ── compose binary detection ─────────────────────────────────────────────────
 detect_compose_bin
 
@@ -55,6 +68,14 @@ case "$CMD" in
 
   seed)
     echo "→ Seeding E2E users…"
+
+    # Drop last run's audit fixture anchor BEFORE anything can fail (#214).
+    # Journey 29 freezes its clock to the day named in this file. A seed that
+    # dies halfway would otherwise leave yesterday's file in place, and the
+    # journey would run against a day this stack no longer holds rows for — a
+    # green-looking seed followed by an unreadable failure. Absent, the journey
+    # says which command to run.
+    rm -f "$(cd "$(dirname "$0")/.." && pwd)/.playwright-state/audit-fixture.json"
 
     # ── 0. Bootstrap DB schema if running on a fresh postgres ────────────────
     # elitea-main uses SKIP_MIGRATIONS=1 in dev (migrations assume a legacy pylon
@@ -140,6 +161,15 @@ case "$CMD" in
     cat > "$SEED_TMP" <<'ENDSQL'
 -- E2E seed (issue #60): member + admin personas.
 -- Idempotent via ON CONFLICT DO NOTHING.
+
+-- FIRST statement, deliberately: it is the only one that reads `:'e2e_tz'`
+-- besides the audit trail fixture ~900 lines below, and an unknown zone name
+-- must stop the seed here rather than after everything else has landed.
+-- Postgres answers `invalid value for parameter "TimeZone"` and ON_ERROR_STOP=1
+-- halts. It also prints the wall clock the fixtures will be anchored against,
+-- which is the one number a "why is journey 29 empty" investigation wants.
+\echo '  → audit fixture day boundary:'
+SELECT :'e2e_tz' AS e2e_tz, now() AT TIME ZONE :'e2e_tz' AS seed_local_now;
 
 -- Ensure suspended column exists (001_initial.sql predates this column).
 ALTER TABLE auth_core__user ADD COLUMN IF NOT EXISTS suspended BOOLEAN NOT NULL DEFAULT false;
@@ -1009,19 +1039,28 @@ $schemas$;
 -- a failure mode.
 --
 -- Timestamps are relative to now() so they land inside the page's default
--- "Today" window in any timezone the runner happens to be in.
+-- "Today" window — a window the BROWSER computes, from `DEFAULT_PRESET` in
+-- src/pages/admin/auditFormat.ts, as local midnight to local end of day.
 --
--- …which `now() - interval '20 minutes'` does NOT achieve in the twenty minutes
--- after local midnight: the page's default preset is `Today`
--- (src/pages/admin/auditFormat.ts `DEFAULT_PRESET`), computed from the
--- BROWSER's clock, so a row stamped 23:5x lands on yesterday and journey 29
--- fails with "element not found" on a row that is plainly in the table. Seen
--- for real at 00:15 local. The fix anchors the fixture on a BASE that is never
--- earlier than the start of the current day and lays the four rows out forward
--- from it, so the relative ordering the span tree needs is preserved and every
--- row is inside the window. Away from midnight the base is `now() - 20 minutes`
--- and the timestamps are exactly what they were. CI runs at arbitrary times, so
--- this was luck rather than design.
+-- `now() - interval '20 minutes'` alone does NOT land inside it in the twenty
+-- minutes after midnight: a row stamped 23:5x belongs to yesterday, and
+-- journey 29 fails with "element not found" on a row that is plainly in the
+-- table. Seen for real at 00:15 local. So the four rows anchor on a BASE that
+-- is never earlier than the start of the current day, and run forward from it
+-- (+0/+1/+2/+10 min) to preserve the ordering the span tree needs. Away from
+-- midnight the base is `now() - 20 minutes` and the timestamps are unchanged.
+--
+-- WHICH day, though, is the whole of issue #214. `date_trunc('day', now())`
+-- takes the day boundary from the postgres session's zone; the browser takes
+-- it from the runner's. Clamping to a day the browser does not agree is today
+-- only moves the failure: at UTC+10 and 00:10 local, a UTC clamp yields a base
+-- that is still yesterday for that browser. So both sides now name ONE zone —
+-- `E2E_TZ`, which playwright.config.ts pins the browser to as `E2E_TIMEZONE`
+-- and psql receives below as `:'e2e_tz'`. `now() AT TIME ZONE :'e2e_tz'` is
+-- the wall clock the browser reads, `date_trunc('day', …)` is that browser's
+-- midnight, and the second `AT TIME ZONE :'e2e_tz'` returns it as the instant
+-- the page will send as `date_from`. The two boundaries are then the same
+-- instant by construction, at every time of day, in every zone.
 --
 -- One trace of three spans, and one single-span trace. The counts are chosen
 -- so the two views CANNOT agree by accident: 4 spans, 2 traces.
@@ -1039,7 +1078,10 @@ FROM (VALUES
     (interval '10 minutes', 'api',  'GET /agents/e2e',  'GET',  200::smallint, 15.0,    false, NULL,           'e2e-trace-beta',  'e2ebetaroot',  NULL)
 ) AS seeded(offset_minutes, event_type, action, http_method, status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
 CROSS JOIN LATERAL (
-    SELECT greatest(now() - interval '20 minutes', date_trunc('day', now())) AS ts
+    SELECT greatest(
+        now() - interval '20 minutes',
+        date_trunc('day', now() AT TIME ZONE :'e2e_tz') AT TIME ZONE :'e2e_tz'
+    ) AS ts
 ) AS base
 CROSS JOIN LATERAL (
     SELECT id AS user_id, email AS user_email FROM auth_core__user WHERE email = 'e2e-admin@autotest.local'
@@ -1056,9 +1098,17 @@ ENDSQL
     # back to back, and the only thing that noticed was the postcondition below,
     # several statements later and with none of the context. A statement that
     # fails here must stop the seed at the statement that failed.
-    $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -U elitea -d elitea < "$SEED_TMP"
+    # `-v e2e_tz`: the heredoc above is quoted (`<<'ENDSQL'`), so the shell does
+    # not expand anything inside it and the zone must arrive as a psql variable.
+    # The audit trail fixture reads it as `:'e2e_tz'`, which psql expands to a
+    # quoted SQL literal. An unknown zone name raises `invalid value for
+    # parameter "TimeZone"` and ON_ERROR_STOP=1 halts the seed there, which is
+    # the correct outcome: a seed that fell back to the session's zone would
+    # reintroduce exactly the disagreement #214 is about, silently.
+    $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -v e2e_tz="$E2E_TZ" \
+      -U elitea -d elitea < "$SEED_TMP"
     rm -f "$SEED_TMP"
-    echo "  ✓ DB rows seeded."
+    echo "  ✓ DB rows seeded (calendar-day fixtures anchored in ${E2E_TZ})."
 
     # ── postcondition: the personas must actually resolve permissions ────────
     #
@@ -1198,6 +1248,64 @@ ENDSQL
       exit 1
     fi
     echo "  ✓ admin projects fixture verified: ${SEEDED_PROJECTS} project(s), ${PROJECT_PERMS}/4 permission(s)."
+
+    # ── postcondition: publish the audit fixture's DAY to the test run (#214) ──
+    #
+    # One zone (above) stops the browser and the database disagreeing about when
+    # a day STARTS. It does not stop them disagreeing about WHICH day it is: the
+    # seed runs once, at the front of the run, and journey 29 asserts minutes or
+    # hours later. A run that seeds at 23:59 and reaches that journey at 00:01
+    # has four rows on yesterday and a page filtering on today, which is the
+    # failure #214 reports and the one no clamp can reach — the two events are
+    # simply on different days.
+    #
+    # So the seed states which day it wrote, and journey 29 pins its browser
+    # clock to it (`page.clock.setFixedTime`). Neither side then reads the wall
+    # clock at assertion time, and the window contains the rows by construction.
+    #
+    # The values are READ BACK from the rows, not recomputed here. A restatement
+    # of the same expression would agree with a broken INSERT; this cannot.
+    # `.playwright-state/` is where the run already keeps per-run provisioning
+    # output (the persona storageState files), it is gitignored, and in CI it is
+    # inside the directory the Playwright container mounts at /work. The path is
+    # `AUDIT_FIXTURE_ANCHOR` in playwright.config.ts; a shell script cannot
+    # import it, so the two must be changed together.
+    APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+    AUDIT_FIXTURE_FILE="${APP_ROOT}/.playwright-state/audit-fixture.json"
+    # Over stdin, not `-c`: psql does NOT interpolate `-v` variables into a `-c`
+    # command string. Measured — `-c "… :'e2e_tz' …"` answers
+    #   ERROR:  syntax error at or near ":"
+    # so the zone would have had to be pasted in by the shell instead.
+    AUDIT_FIXTURE=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAq \
+      -v ON_ERROR_STOP=1 -v e2e_tz="$E2E_TZ" <<'ENDFIXTURE'
+SELECT json_build_object(
+  'timeZone', :'e2e_tz',
+  'rows', COUNT(*),
+  'firstRow', MIN(timestamp),
+  'lastRow', MAX(timestamp),
+  'localDay', to_char(MIN(timestamp) AT TIME ZONE :'e2e_tz', 'YYYY-MM-DD')
+)::text
+FROM centry.audit_events
+WHERE trace_id IN ('e2e-trace-alpha', 'e2e-trace-beta');
+ENDFIXTURE
+    )
+    # `"rows":4` is the whole postcondition. An empty table answers
+    # `{"rows":0,"firstRow":null,…}` — valid JSON, and a file journey 29 would
+    # read and then fail against for a reason it could not name.
+    case "$AUDIT_FIXTURE" in
+      *'"rows" : 4'*|*'"rows":4'*) ;;
+      *)
+        echo "ERROR: the audit trail fixture did not write its four rows." >&2
+        echo "  psql answered: ${AUDIT_FIXTURE:-<nothing>}" >&2
+        echo "  Journey 29 asserts 2 traces over 4 spans against them; without the rows" >&2
+        echo "  the page is correctly empty and the journey cannot tell that from a stub." >&2
+        exit 1
+        ;;
+    esac
+    mkdir -p "${APP_ROOT}/.playwright-state"
+    printf '%s\n' "$AUDIT_FIXTURE" > "$AUDIT_FIXTURE_FILE"
+    echo "  ✓ audit trail fixture verified and published: ${AUDIT_FIXTURE}"
+
     echo "→ Seed complete."
     ;;
 
