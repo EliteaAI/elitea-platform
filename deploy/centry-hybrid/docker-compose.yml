@@ -83,9 +83,34 @@ services:
       - --entrypoints.websecure.address=:443
       - --accesslog=true
       - --log.level=INFO
+    # MOUNT EACH FILE, AND NOT THE DIRECTORY (#378).
+    #
+    # traefik/index-routes.yml is deliberately absent from this list. Every
+    # router in that file names the `go-main-forward-auth` middleware, and that
+    # middleware calls http://elitea-main:8080/internal/forward-auth/main. The
+    # elitea-main service above does NOT set ELITEA_AUTH_CONFIG_FILE, so it
+    # composes no production authentication and it registers no such path.
+    # Traefik then returns the authenticator's non-2xx answer to the caller.
+    # Three of those routers carry no Host(`elitea-gateway`) guard and sit at
+    # priority 90, so a browser reaches them and the notification API fails.
+    #
+    # A directory mount put those routers into this stack as a side effect of a
+    # file that was added for the full PoV stack. Each file is now named, so a
+    # new file cannot join this stack without an edit here.
+    #
+    # traefik/middlewares.yml stays mounted. Traefik accepts a middleware
+    # definition that no router names, and it never calls it. Keeping the
+    # definitions loaded means a future Go route needs one edit and not two,
+    # which is how the missing definitions of #338 happened.
+    #
+    # services/elitea-main/tests/deployedge/edge_forward_auth_test.go reads the
+    # volume list below and fails when it stops matching the configuration set
+    # the edge gate checks. Run it with `task deploy:check-edge`.
     volumes:
       - >-
-        ${ELITEA_PLATFORM_DIR:-../elitea-platform}/deploy/centry-hybrid/traefik:/etc/traefik/dynamic:ro
+        ${ELITEA_PLATFORM_DIR:-../elitea-platform}/deploy/centry-hybrid/traefik/base.yml:/etc/traefik/dynamic/base.yml:ro
+      - >-
+        ${ELITEA_PLATFORM_DIR:-../elitea-platform}/deploy/centry-hybrid/traefik/middlewares.yml:/etc/traefik/dynamic/middlewares.yml:ro
     depends_on:
       elitea-main:
         condition: service_healthy

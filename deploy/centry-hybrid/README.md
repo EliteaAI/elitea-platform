@@ -15,8 +15,14 @@ The small foundation overlay adds:
 
 - one `elitea-main` process sharing Centry PostgreSQL and authenticated Redis;
 - one loopback-only Traefik edge sharing `pylon_main`'s network namespace;
-- exact route selection, initially limited to Go `/healthz`; and
+- exact route selection, limited to Go `/healthz`; and
 - a catch-all current-Pylon route for UI, APIs, Socket.IO and static content.
+
+The foundation stack serves `/healthz` from Go. Current Pylon serves every
+other path, and that includes the notification API and the index API. The
+foundation stack loads `traefik/base.yml` and `traefik/middlewares.yml` only.
+It does not load `traefik/index-routes.yml`. Read the next section for the
+reason.
 
 Current Main is rewritten to bind to loopback inside its container namespace,
 and its original host port is replaced with
@@ -31,13 +37,32 @@ which one you are changing.
 
 | Stack | Command | Traefik gets | Middleware definitions |
 |---|---|---|---|
-| Foundation | `task hybrid:up` | the whole `traefik/` directory at `/etc/traefik/dynamic` | `traefik/middlewares.yml` in this repository |
+| Foundation | `task hybrid:up` | `traefik/base.yml` and `traefik/middlewares.yml`, each as its own file under `/etc/traefik/dynamic` | `traefik/middlewares.yml` in this repository |
 | Full PoV | `./compose.sh up` | only `traefik/index-routes.yml`, as `/etc/traefik/dynamic/index.yml` | `hybrid_auth/traefik-dynamic.yml` in the private centry repository |
 
 Every router in `traefik/index-routes.yml` names three middlewares:
 `strip-caller-auth-context`, `normalize-runtime-public-authority` and
 `go-main-forward-auth`. Read `traefik/middlewares.yml` for what each one does
 and why the order is fixed.
+
+### Why the foundation stack does not load `traefik/index-routes.yml` (#378)
+
+`go-main-forward-auth` calls
+`http://elitea-main:8080/internal/forward-auth/main`. elitea-main registers
+that path only when it composes production authentication, and it composes
+production authentication only when `ELITEA_AUTH_CONFIG_FILE` is set.
+`docker-compose.yml` does not set that variable for the foundation stack. The
+forward-auth target therefore does not exist there, and Traefik returns the
+non-2xx answer to the caller.
+
+The full PoV stack sets that variable and defines the same middleware against
+its own `elitea-main-auth` service, so the routers work there.
+
+A directory mount loaded `traefik/index-routes.yml` into the foundation stack
+as a side effect. `docker-compose.yml` now names each file it mounts.
+`services/elitea-main/tests/deployedge/edge_forward_auth_test.go` reads that
+volume list and fails when a loaded router names a forward-auth endpoint that
+the same stack does not register.
 
 Traefik does not fail a stack whose router names a middleware that no loaded
 file defines. It logs the error, drops the router, and keeps serving. In this
