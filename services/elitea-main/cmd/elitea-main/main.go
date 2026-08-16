@@ -123,6 +123,40 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return err
 	}
 
+	// The project vault's master key (#412).
+	//
+	// This runs BEFORE the database pool and before every handler, because the
+	// fault it catches is silent everywhere else. The secrets handler holds the
+	// one key source the vault has (#411/#399), and it used to ignore a
+	// malformed value: it kept no key, then minted and wrote UNWRAPPED vaults
+	// while the operator believed the keys were wrapped. Provisioning
+	// succeeded, every later read succeeded, and nothing logged.
+	//
+	// So the check belongs here and not in the constructor. Two of the four
+	// NewHandler callers build a handler PER REQUEST, so a constructor error
+	// would arrive after provisioning had already written vaults, and one of
+	// the others builds it inside the chi route tree, which cannot report an
+	// error at all.
+	//
+	// The key bytes are discarded on purpose. Every handler reads the variable
+	// again, so passing them on would create a SECOND key source, and one key
+	// source is the rule #411/#399 established. This call decides one thing
+	// only: whether the process may continue.
+	masterKey, err := v2secrets.MasterKeyFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	if masterKey == nil {
+		// The ABSENT case stays supported: no compose file and no chart in
+		// deploy/ except the staging one supplies a key, and the E2E stack
+		// seeds unwrapped key rows on purpose. It is a real local shape, so it
+		// must not stop the service — but it must not be quiet either, because
+		// the operator cannot tell it apart from a key that failed to arrive.
+		logger.Warn("no project vault master key: every project vault key is stored UNWRAPPED, "+
+			"so anyone who can read the database can open every project secret",
+			"variable", v2secrets.MasterKeyEnvVar)
+	}
+
 	// Observability (issue #250): exports elitea-main's own request spans to
 	// the same OTLP collector internal/api/v2/tracing proxies UI/worker
 	// traces to, so the ingest pipeline is self-verifying — every request
