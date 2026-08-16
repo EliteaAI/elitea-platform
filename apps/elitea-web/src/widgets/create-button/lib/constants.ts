@@ -59,6 +59,18 @@ export function createEntityOptions(): readonly CreateEntityOption[] {
  * `credential`/`configuration`(model)/token/user permission strings the old
  * app used come from `PERMISSIONS` (S3, already ported) where a match
  * exists; the old app's bare `PERMISSIONS.users.create` maps to `user`.
+ *
+ * **`secret` deliberately diverges from the old app** (which used
+ * `PERMISSIONS.secrets.list`, commented "Allow if user can access secrets
+ * page"). That equivalence held only while `list` and `create` had
+ * identical holders. Migration `0083_viewer_secret_list_and_own_avatar.sql`
+ * (issue #402) grants `secrets.list` — and NOT `secrets.create` — to the
+ * project `viewer` role, splitting them. The entry routes to
+ * `?createSecret=1`, whose target page opens no row without
+ * `secrets.create`, so gating on `list` would show a viewer an option that
+ * does nothing. Gated on `create` instead: the permission the row's own
+ * `POST /secrets/secrets/default/{projectId}` is actually checked against.
+ * Parity item SHELL-024 carries the matching waiver.
  */
 export const CREATE_ENTITY_PERMISSIONS: Readonly<Record<CreateEntityKind, readonly string[] | undefined>> = {
   chat: [PERMISSIONS.chat.folders.create, PERMISSIONS.chat.create],
@@ -72,7 +84,7 @@ export const CREATE_ENTITY_PERMISSIONS: Readonly<Record<CreateEntityKind, readon
   bucket: [PERMISSIONS.artifacts.buckets.create, PERMISSIONS.artifacts.create],
   configuration: [PERMISSIONS.configuration.update],
   token: undefined,
-  secret: [PERMISSIONS.secrets.list],
+  secret: [PERMISSIONS.secrets.create],
   user: [PERMISSIONS.users.create],
 };
 
