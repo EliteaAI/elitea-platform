@@ -38,7 +38,6 @@
  *    without it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ReactElement } from 'react';
 
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -47,7 +46,6 @@ import Paper from '@mui/material/Paper';
 import Select from '@mui/material/Select';
 import type { SelectChangeEvent } from '@mui/material/Select';
 import TablePagination from '@mui/material/TablePagination';
-import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { createFileRoute, useRouteContext } from '@tanstack/react-router';
@@ -56,8 +54,7 @@ import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { t } from '@/shared/i18n';
 import { hasUnreadAmongSelected } from '@/entities/notification';
-import type { NormalizedNotification } from '@/features/notifications';
-import { NotificationListItem } from '@/features/notifications/ui/NotificationListItem';
+import { NotificationsListBody } from '@/features/notifications/ui/NotificationsListBody';
 import {
   useBulkDeleteNotifications,
   useBulkMarkSeenNotifications,
@@ -161,44 +158,6 @@ function filterToggleLabel(filterNew: boolean): string {
     : t('routes.settings.notifications.showNew', 'New only');
 }
 
-interface NotificationsListContentProps {
-  readonly rows: readonly NormalizedNotification[];
-  readonly isFetching: boolean;
-  readonly total: number;
-  readonly personalProjectId: string;
-}
-
-/** The list body's loading / empty / rows-of-`NotificationListItem` branch — split out for the same complexity-budget reason as the label helpers above. */
-function NotificationsListContent(props: NotificationsListContentProps): ReactElement {
-  const { rows, isFetching, total, personalProjectId } = props;
-  if (isFetching && total === 0) {
-    return (
-      <Typography variant="bodyMedium" color="text.secondary">
-        {t('routes.settings.notifications.loading', 'Loading notifications…')}
-      </Typography>
-    );
-  }
-  if (rows.length === 0) {
-    return (
-      <Typography variant="bodyMedium" color="text.secondary">
-        {t('routes.settings.notifications.empty', 'No notifications yet')}
-      </Typography>
-    );
-  }
-  return (
-    <>
-      {rows.map((notification) => (
-        <NotificationListItem
-          key={notification.id}
-          notification={notification}
-          projectId={personalProjectId}
-          context="list"
-        />
-      ))}
-    </>
-  );
-}
-
 /** Exported (not just used via `Route`'s `component:`) so tests can mount it directly — same pattern as `src/routes/_shell/settings/tokens.tsx`'s `PersonalTokensPage`. */
 export function NotificationsPage() {
   const routeContext: unknown = useRouteContext({ strict: false });
@@ -217,7 +176,7 @@ export function NotificationsPage() {
     [sortValue],
   );
 
-  const { data, isFetching } = useNotificationsList(
+  const { data, isFetching, isError, error } = useNotificationsList(
     {
       projectId: personalProjectId ?? '',
       page,
@@ -345,9 +304,11 @@ export function NotificationsPage() {
         }
       />
       <Box sx={styles.content}>
-        <NotificationsListContent
+        <NotificationsListBody
           rows={rows}
           isFetching={isFetching}
+          isError={isError}
+          error={error}
           total={total}
           personalProjectId={personalProjectId}
         />

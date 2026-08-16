@@ -170,6 +170,42 @@ describe('finding 2 — pagination, page size, sort and search are all reachable
   }, 15000);
 });
 
+/**
+ * Issue 413 — a failed list read must not render as an empty inbox.
+ *
+ * The notifications route was unregistered on every OIDC-only deployment, so
+ * the list request answered 404. `data` stayed undefined, `rows` stayed empty
+ * and `isFetching` settled false, so the screen rendered "No notifications
+ * yet" and the reader saw a healthy, empty inbox. That is why the missing
+ * route survived a clean-database walk of the UI.
+ *
+ * Both cases below are needed. The first proves the failure is shown. The
+ * second proves the empty state still works, so the first is not passing on a
+ * component that shouts "error" at everything.
+ */
+describe('issue 413 — a failed list read renders as an error, not as an empty list', () => {
+  it('shows the failure and suppresses the empty state when the list request answers 404', async () => {
+    server.use(http.get(LIST_PATH, () => new HttpResponse('404 page not found', { status: 404 })));
+
+    mountAt(authWith('personal-1', 'other-project'));
+
+    // The exact copy `shared/lib/http-error.ts` builds for a 404.
+    expect(await screen.findByRole('alert', {}, { timeout: 10_000 })).toHaveTextContent(
+      'The requested resource was not found!',
+    );
+    expect(screen.queryByText('No notifications yet')).not.toBeInTheDocument();
+  }, 15000);
+
+  it('still shows the empty state when the list request succeeds with no rows', async () => {
+    server.use(http.get(LIST_PATH, () => HttpResponse.json({ rows: [], total: 0 })));
+
+    mountAt(authWith('personal-1', 'other-project'));
+
+    expect(await screen.findByText('No notifications yet')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
 describe('finding 3 — bulk mark-toggle sends the correct isSeen', () => {
   it('sends isSeen:true when the selection contains an unread row, and labels the button "Mark read"', async () => {
     const capturedBodies: unknown[] = [];

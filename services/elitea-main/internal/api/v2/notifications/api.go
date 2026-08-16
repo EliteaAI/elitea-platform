@@ -45,8 +45,23 @@ func NewCurrentNotificationAPIRoute(
 	authConfig apimw.AuthConfig,
 	permissions auth.PermissionResolver,
 ) (*CurrentNotificationAPIRoute, error) {
-	if store == nil || authConfig.PrincipalValidator == nil ||
-		authConfig.ForwardedIdentityVerifier == nil || permissions == nil {
+	// ForwardedIdentityVerifier is optional. Only a FormGraph supplies one, and
+	// a FormGraph exists only when ELITEA_AUTH_CONFIG_FILE is set. A required
+	// verifier therefore made this route composable under Form authentication
+	// alone, so GET /api/v2/notifications/notifications/prompt_lib/{projectID}
+	// answered 404 on every OIDC-only deployment, the E2E stack included
+	// (#413). The screen showed "No notifications yet" and hid the 404. This is
+	// the same relaxation, and the same reason, as
+	// NewCurrentNotificationEventsRoute above.
+	//
+	// PrincipalValidator stays mandatory. apimw.validatePrincipal returns the
+	// session user unchanged when that field is nil, so a deactivated user's
+	// unexpired cookie would reach the handler (#314).
+	//
+	// Authorization is unchanged: apimw.Auth still refuses an unauthenticated
+	// request, and RequireResolvedPermissionsForProject still resolves the
+	// per-method permission against the requested project.
+	if store == nil || authConfig.PrincipalValidator == nil || permissions == nil {
 		return nil, ErrInvalidCurrentNotificationAPIRoute
 	}
 

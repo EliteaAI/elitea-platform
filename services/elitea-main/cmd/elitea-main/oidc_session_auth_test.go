@@ -71,6 +71,68 @@ func (r *eventReaderStub) ListAfter(
 	return nil, nil
 }
 
+// notificationStoreStub stands in for the PostgreSQL notification repository.
+// It counts every read, so a test can prove that a refusal happened before the
+// handler read a row.
+type notificationStoreStub struct{ calls int }
+
+func (s *notificationStoreStub) Count(
+	context.Context,
+	int64,
+	notificationapp.ListFilter,
+) (int64, error) {
+	s.calls++
+	return 0, nil
+}
+
+func (s *notificationStoreStub) List(
+	context.Context,
+	int64,
+	notificationapp.ListFilter,
+) ([]notificationapp.Notification, error) {
+	s.calls++
+	return nil, nil
+}
+
+func (s *notificationStoreStub) Get(
+	context.Context,
+	int64,
+	int64,
+) (notificationapp.Notification, error) {
+	s.calls++
+	return notificationapp.Notification{}, notificationapp.ErrNotificationNotFound
+}
+
+func (s *notificationStoreStub) MarkSeen(
+	context.Context,
+	int64,
+	int64,
+) (notificationapp.Notification, error) {
+	s.calls++
+	return notificationapp.Notification{}, notificationapp.ErrNotificationNotFound
+}
+
+func (s *notificationStoreStub) Delete(context.Context, int64, int64) error {
+	s.calls++
+	return notificationapp.ErrNotificationNotFound
+}
+
+func (s *notificationStoreStub) BulkSetSeen(
+	context.Context,
+	int64,
+	[]int64,
+	bool,
+	bool,
+) (int64, error) {
+	s.calls++
+	return 0, nil
+}
+
+func (s *notificationStoreStub) BulkDelete(context.Context, int64, []int64) (int64, error) {
+	s.calls++
+	return 0, nil
+}
+
 // streamingRecorder adds the two methods the notification SSE writer probes
 // for. httptest.ResponseRecorder alone makes newCurrentNotificationSSEWriter
 // fail, which would mask the status this test measures.
@@ -235,6 +297,85 @@ func TestCurrentNotificationEventsOIDCOnlyAuthRejectsADeactivatedSession(t *test
 	}
 }
 
+// TestCurrentNotificationListOIDCOnlyAuthServesASessionCookie is the same
+// proof for the notification LIST route, the route the notifications screen
+// reads (#413).
+//
+// The served row is the part that fails without the fix. Before it,
+// NewCurrentNotificationAPIRoute demanded a ForwardedIdentityVerifier, and
+// only a FormGraph supplies one. An OIDC-only deployment has no FormGraph, so
+// the constructor returned ErrInvalidCurrentNotificationAPIRoute, main.go left
+// CurrentNotifications nil, and production_router.go registered no path. GET
+// /api/v2/notifications/notifications/prompt_lib/1 then answered chi's 404.
+//
+// The refused row keeps the #314 guarantee on the same route: a deactivated
+// user's unexpired cookie must not read notifications.
+func TestCurrentNotificationListOIDCOnlyAuthServesASessionCookie(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		principals *countingPrincipals
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "deactivated principal is refused",
+			principals: &countingPrincipals{inner: deactivatedPrincipals{}},
+			wantStatus: http.StatusUnauthorized,
+			wantBody:   "authenticated principal is inactive",
+		},
+		{
+			name:       "active principal is served",
+			principals: &countingPrincipals{inner: activePrincipals{}},
+			wantStatus: http.StatusOK,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			permissions := &grantingPermissions{
+				permission: notificationsapi.CurrentNotificationsListPermission,
+			}
+			store := &notificationStoreStub{}
+			route, err := notificationsapi.NewCurrentNotificationAPIRoute(
+				store,
+				oidcSessionAuthConfig(testCase.principals, oidcSessionTestSecret),
+				permissions,
+			)
+			if err != nil {
+				t.Fatalf("compose current notification API route: %v "+
+					"(an OIDC-only deployment has no FormGraph, so it can "+
+					"supply no ForwardedIdentityVerifier — #413)", err)
+			}
+
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"/api/v2/notifications/notifications/prompt_lib/1?only_new=false&limit=20&offset=0",
+				nil,
+			)
+			request.AddCookie(&http.Cookie{
+				Name: "elitea_session",
+				Value: signedSessionCookie(
+					t, oidcSessionTestSecret, "42", time.Now().Add(time.Hour),
+				),
+			})
+			recorder := httptest.NewRecorder()
+			route.ServeHTTP(recorder, request)
+
+			assertOIDCSessionOutcome(t, oidcSessionOutcome{
+				status:     recorder.Code,
+				body:       recorder.Body.String(),
+				wantStatus: testCase.wantStatus,
+				wantBody:   testCase.wantBody,
+				consulted:  testCase.principals.consulted(),
+				reads:      store.calls,
+			})
+			if testCase.wantStatus != http.StatusOK && permissions.calls != 0 {
+				t.Fatalf("permission resolver consulted %d times on a refused "+
+					"request: the session passed the principal check (#314)",
+					permissions.calls)
+			}
+		})
+	}
+}
+
 type oidcSessionOutcome struct {
 	status     int
 	body       string
@@ -306,6 +447,10 @@ func TestOIDCOnlyRoutesUseTheSharedAuthComposition(t *testing.T) {
 	for _, constructor := range []string{
 		"NewCurrentProjectListRoute",
 		"NewCurrentNotificationEventsRoute",
+		// The notification LIST route. main.go composed it only inside the
+		// `authEnabled` block, so production_router.go registered no path on an
+		// OIDC-only deployment and the screen read a 404 (#413).
+		"NewCurrentNotificationAPIRoute",
 	} {
 		if !callPassesCallee(file, constructor, "oidcSessionAuthConfig") {
 			t.Fatalf("%s no longer builds its OIDC-only AuthConfig with "+

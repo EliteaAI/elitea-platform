@@ -428,6 +428,42 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		logger.Info("notification events route enabled (OIDC-only auth)")
 	}
 
+	// Same shape, same reason, for the notification LIST route (#413). The SSE
+	// branch above moved the stream, and left the list behind. The notification
+	// screen reads GET /api/v2/notifications/notifications/prompt_lib/
+	// {projectID}, and internal/api/production_router.go registers that path
+	// only when CurrentNotifications is non-nil. So the path answered 404 on
+	// every OIDC-only deployment, the E2E stack included, and the client turned
+	// the 404 into "No notifications yet".
+	//
+	// Setting ELITEA_AUTH_CONFIG_FILE on the E2E stack does not fix this. The
+	// AuthConfig the `authEnabled` block builds leaves SessionSecret empty, so
+	// apimw.Auth refuses a browser session cookie. That change turns the 404
+	// into a 401 and the screen stays broken.
+	if currentNotifications == nil && oidcSessionHandler != nil {
+		notificationRepository, repositoryErr := dbrepos.NewCurrentNotificationRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose OIDC-only notification repository: %w", repositoryErr)
+		}
+		// Same principal-validator reasoning as the two branches above: the
+		// session cookie is the only credential here, and without a validator a
+		// deactivated user's unexpired cookie reads and deletes notifications
+		// (#314).
+		var oidcNotificationsErr error
+		currentNotifications, oidcNotificationsErr = notificationsapi.NewCurrentNotificationAPIRoute(
+			notificationRepository,
+			oidcSessionAuthConfig(
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if oidcNotificationsErr != nil {
+			return fmt.Errorf("compose OIDC-only notification API route: %w", oidcNotificationsErr)
+		}
+		logger.Info("notification API route enabled (OIDC-only auth)")
+	}
+
 	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("load current project-info settings: %w", err)
