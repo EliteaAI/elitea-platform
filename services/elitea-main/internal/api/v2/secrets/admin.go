@@ -164,7 +164,7 @@ func (h *Handler) adminGate(permission string, next http.HandlerFunc) http.Handl
 // broken.
 func (h *Handler) AdminList(w http.ResponseWriter, r *http.Request) {
 	vault, err := h.adminVault(r.Context())
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		writeJSON(w, http.StatusOK, []adminSecretListItem{})
 		return
 	}
@@ -193,7 +193,7 @@ func (h *Handler) AdminGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vault, err := h.adminVault(r.Context())
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		writeJSON(w, http.StatusOK, map[string]*string{"secret": nil})
 		return
 	}
@@ -279,7 +279,7 @@ func (h *Handler) AdminUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vault, err := h.adminVault(r.Context())
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Project secret was not found"})
 		return
 	}
@@ -317,7 +317,7 @@ func (h *Handler) AdminDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vault, err := h.adminVault(r.Context())
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -382,7 +382,7 @@ func sortByName(items []adminSecretListItem) {
 // contract they carry is documented there, and it is now ONE contract rather
 // than two implementations of it that could drift apart.
 
-// adminVault reads and decrypts the global vault. It returns errVaultAbsent
+// adminVault reads and decrypts the global vault. It returns ErrVaultAbsent
 // ONLY when neither row exists; every other failure is returned as itself, so
 // no caller can mistake "I could not open this" for "there is nothing here"
 // and write over it.

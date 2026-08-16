@@ -374,7 +374,7 @@ func dbKey(projectID string) string {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		writeJSON(w, http.StatusOK, []SecretListItem{})
 		return
 	}
@@ -435,7 +435,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		http.Error(w, `{"error":"secret not found"}`, http.StatusNotFound)
 		return
 	}
@@ -483,7 +483,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, oldName), http.StatusBadRequest)
 		return
 	}
@@ -514,7 +514,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -539,7 +539,7 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, name), http.StatusBadRequest)
 		return
 	}
@@ -582,13 +582,13 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 // Collapsing the two is a silent data loss: the project path's old
 // readOrInitVault answered ANY read failure by writing a fresh empty vault, so
 // a single POST against an unreadable-but-present vault replaced every secret
-// in it and reported 201.  errVaultAbsent is returned for the first cause only,
+// in it and reported 201.  ErrVaultAbsent is returned for the first cause only,
 // and only a caller that has checked for it may write.
 
-// errVaultAbsent means the vault's rows do not exist yet — the only condition
+// ErrVaultAbsent means the vault's rows do not exist yet — the only condition
 // under which a write is allowed to create them.  Any OTHER read failure means
 // rows exist that could not be opened, and must never be overwritten.
-var errVaultAbsent = errors.New("secrets: vault has not been initialised")
+var ErrVaultAbsent = errors.New("secrets: vault has not been initialised")
 
 // newFernetKey returns 32 fresh random bytes — the raw form; `encryptKey`
 // renders them in centry's on-disk representation.
@@ -615,14 +615,14 @@ func (h *Handler) vaultKeyRow(ctx context.Context, vaultID string) ([]byte, erro
 
 // readVaultByID reads and decrypts one vault.
 //
-// It returns errVaultAbsent ONLY when neither row exists.  Every other failure —
+// It returns ErrVaultAbsent ONLY when neither row exists.  Every other failure —
 // a missing key row beside a present data row, a decrypt failure, a body that is
 // not the expected shape — is returned as itself, so no caller can mistake
 // "I could not open this" for "there is nothing here" and write over it.
 func (h *Handler) readVaultByID(ctx context.Context, vaultID string) (vaultData, error) {
 	keyBytes, err := h.vaultKeyRow(ctx, vaultID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return vaultData{}, errVaultAbsent
+		return vaultData{}, ErrVaultAbsent
 	}
 	if err != nil {
 		return vaultData{}, fmt.Errorf("read %s secrets_key: %w", vaultID, err)
@@ -668,7 +668,7 @@ func (h *Handler) readVaultByID(ctx context.Context, vaultID string) (vaultData,
 // and its rows are left exactly as they are.
 func (h *Handler) vaultForWriteByID(ctx context.Context, vaultID string) (vaultData, error) {
 	v, err := h.readVaultByID(ctx, vaultID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		return vaultData{Secrets: map[string]string{}, HiddenSecrets: map[string]string{}}, nil
 	}
 	return v, err
@@ -748,7 +748,7 @@ func (h *Handler) writeVaultByID(ctx context.Context, vaultID string, v vaultDat
 
 // ─── the project vault ────────────────────────────────────────────────────────
 
-// readVaultCtx reads project `projectID`'s vault.  errVaultAbsent means the
+// readVaultCtx reads project `projectID`'s vault.  ErrVaultAbsent means the
 // project has no vault yet; any other error means one exists and would not open.
 func (h *Handler) readVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
 	return h.readVaultByID(ctx, dbKey(projectID))
@@ -1000,14 +1000,14 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 // back. One minter, one rule.
 //
 // IDEMPOTENT, and deliberately narrow about which failure it acts on. Only
-// errVaultAbsent — neither row present — permits a write. A vault that exists
+// ErrVaultAbsent — neither row present — permits a write. A vault that exists
 // and will not open is reported, never replaced.
 func (h *Handler) EnsureProjectVault(ctx context.Context, projectID string) error {
 	_, err := h.readVaultCtx(ctx, projectID)
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, errVaultAbsent):
+	case errors.Is(err, ErrVaultAbsent):
 		return h.writeVaultCtx(ctx, projectID, vaultData{
 			Secrets:       map[string]string{},
 			HiddenSecrets: map[string]string{},
@@ -1119,6 +1119,14 @@ func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, n
 	return h.writeVaultCtx(ctx, projectID, vault)
 }
 
+// ErrSecretNotFound means the vault opened and holds no secret of that name.
+// It is distinct from ErrVaultAbsent (the project has no vault yet) and from
+// every other read failure (a vault that exists and would not open). A caller
+// that applies a default value must separate the three: only the first two mean
+// "not set", and treating an unreadable vault as "not set" turns a broken vault
+// into an accepted default.
+var ErrSecretNotFound = errors.New("secrets: secret not found")
+
 // ResolveSecretValue resolves a {{secret.name}} reference to its plaintext value.
 func (h *Handler) ResolveSecretValue(ctx context.Context, projectID, secretRef string) (string, error) {
 	name := strings.TrimSuffix(strings.TrimPrefix(secretRef, "{{secret."), "}}")
@@ -1132,7 +1140,7 @@ func (h *Handler) ResolveSecretValue(ctx context.Context, projectID, secretRef s
 	if val, ok := vault.HiddenSecrets[name]; ok {
 		return val, nil
 	}
-	return "", fmt.Errorf("secret %q not found", name)
+	return "", fmt.Errorf("%w: %q", ErrSecretNotFound, name)
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

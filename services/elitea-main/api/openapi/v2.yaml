@@ -1314,6 +1314,57 @@ components:
         present as "" when the DB column is NULL (COALESCE / pointer deref
         to "" — applications/handler.go:222-229).
 
+    AttachedSkill:
+      type: object
+      required: [skill_id, name, description, instructions]
+      properties:
+        skill_id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        instructions:
+          type: string
+          description: The skill body `load_skill` serves on demand.
+        icon_meta:
+          type: object
+          nullable: true
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): NOTE(#336) — the value of skill_versions.meta ->
+            'icon_meta', a jsonb column versionAttachedSkills copies without
+            inspecting it (internal/api/v2/applications/handler.go:1384). It is
+            null when the mapping references no skill version.
+      description: >
+        NOTE(#336): one entry of the runtime skill registry the SDK binds
+        `load_skill` against (elitea_sdk/runtime/tools/skill_tools.py:127-131).
+        It is the five-key projection pylon's `resolve_runtime_skills` produces
+        (legacy/plugins/elitea_core/utils/skill_utils.py:1570-1607);
+        `skill_version_id` and `version_name` are deliberately absent.
+
+    ApplicationVersionDetailExpanded:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationVersionDetail'
+        - type: object
+          properties:
+            icon_meta:
+              type: object
+              additionalProperties: true
+              x-elitea-passthrough: >-
+                NOTE(W2): NOTE(#336) — lifted verbatim from the version's `meta`
+                jsonb under the `icon_meta` key, which
+                internal/api/v2/applications/handler.go:1314 copies without
+                inspecting it. An absent or falsy value becomes `{}`, which is
+                what pylon's set_icon_meta produces.
+            attached_skills:
+              type: array
+              items: { $ref: '#/components/schemas/AttachedSkill' }
+      description: >
+        NOTE(#336): the body-less PATCH response — the expanded,
+        secret-resolved version detail elitea-sdk fetches through
+        `get_app_version_details` (elitea_sdk/runtime/clients/client.py:681-688).
+        It adds `icon_meta` and `attached_skills` to the shared version detail,
+        and its `tools[].settings` carry configurations already resolved against
+        the project secret vault.
+
     ApplicationDetail:
       type: object
       required: [id, name, description, icon, owner_id, created_at, versions]
@@ -5899,6 +5950,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationVersionDetail'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+
+    patch:
+      operationId: getApplicationVersionDetailExpanded
+      summary: Retrieve the expanded, secret-resolved detail of a version
+      description: |
+        NOTE(#336): PATCH on this path is a READ, not a partial update. It
+        serves elitea-sdk's `get_app_version_details`
+        (elitea_sdk/runtime/clients/client.py:681-688), which sends NO request
+        body. The handler reads no body and writes nothing.
+
+        The caller must send `X-SECRET`. The value must equal the project
+        vault's `secrets_header_value`, which is what pylon's
+        `check_secret_header` compares
+        (legacy/plugins/elitea_core/utils/secrets.py:4-9). A mismatch answers
+        400 `{"error": "Invalid secret header"}`, the exact pylon body.
+
+        Implementation: internal/api/v2/applications/handler.go,
+        GetVersionExpanded.
+      tags: [applications]
+      parameters:
+        - name: X-SECRET
+          in: header
+          required: true
+          schema: { type: string }
+          description: Must equal the project vault's `secrets_header_value`.
+      responses:
+        '200':
+          description: Expanded version detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationVersionDetailExpanded'
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }

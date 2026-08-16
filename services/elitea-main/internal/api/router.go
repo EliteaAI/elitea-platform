@@ -1213,6 +1213,19 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.UpdateVersion)
 					r.With(projectPermission("models.applications.version.delete")).
 						Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.DeleteVersion)
+					// PATCH on this path is a READ, not a partial update (#336).
+					// It serves the SDK's `get_app_version_details`, which sends
+					// a body-less PATCH and expects the expanded, secret-resolved
+					// version details.
+					//
+					// Pylon declares the READ permission
+					// `models.applications.version.details` on its own handler
+					// (legacy/plugins/elitea_core/api/v2/version.py:100-106), so
+					// this route takes the same permission as the GET above it —
+					// NOT `version.update`, which would refuse the viewer that
+					// pylon admits.
+					r.With(projectPermission("models.applications.version.details")).
+						Patch("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.GetVersionExpanded)
 					// pylon's default_version.py declares only `patch`; the GET
 					// beside it has no legacy verb to copy, so it takes the READ
 					// permission of the resource it returns — a version — rather
