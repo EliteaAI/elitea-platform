@@ -17,6 +17,7 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
+import type { SecretPermissions } from '../../lib/secrets/secretPermissions';
 
 export interface SecretActionsMenuProps {
   /** Currently-anchor element (`null` = menu closed). */
@@ -27,6 +28,17 @@ export interface SecretActionsMenuProps {
   isNew: boolean;
   /** Whether this is a default (non-editable) secret. */
   isDefault: boolean;
+  /**
+   * What the caller may do. Each item below is omitted when its permission is
+   * false (#402).
+   *
+   * Omitted, not disabled. A disabled item still tells the reader the action
+   * exists and gives no reason it is unavailable, and the three actions here
+   * fail in three different ways for a caller without the grant: delete and
+   * hide return 403 with NO toast at all, and edit fetches the plaintext first,
+   * so its 403 arrives before the menu closes and the item simply looks dead.
+   */
+  permissions: SecretPermissions;
   /** Close the menu. */
   onClose: () => void;
   /** Edit action. */
@@ -42,11 +54,17 @@ export const SecretActionsMenu = memo(function SecretActionsMenu({
   rowId,
   isNew,
   isDefault,
+  permissions,
   onClose,
   onEdit,
   onHide,
   onDelete,
 }: SecretActionsMenuProps) {
+  // The edit flow reveals the plaintext before it opens the editor
+  // (`entities/secret/model/hooks.ts`), so it needs BOTH strings. Without
+  // `.unsecret` the reveal 403s and the editor never opens.
+  const canEditValue = permissions.canEdit && permissions.canUnsecret;
+
   return (
     <Menu
       id={`secret-actions-${rowId}`}
@@ -62,17 +80,19 @@ export const SecretActionsMenu = memo(function SecretActionsMenu({
         },
       }}
     >
-      <MenuItem
-        onClick={onEdit}
-        disabled={isDefault}
-        sx={styles.menuItem}
-      >
-        <EditIcon sx={styles.menuIcon} />
-        <Typography variant="labelMedium" color="text.secondary">
-          {t('entities.secret.actions.edit', 'Edit value')}
-        </Typography>
-      </MenuItem>
-      {!isNew && (
+      {canEditValue && (
+        <MenuItem
+          onClick={onEdit}
+          disabled={isDefault}
+          sx={styles.menuItem}
+        >
+          <EditIcon sx={styles.menuIcon} />
+          <Typography variant="labelMedium" color="text.secondary">
+            {t('entities.secret.actions.edit', 'Edit value')}
+          </Typography>
+        </MenuItem>
+      )}
+      {!isNew && permissions.canHide && (
         <MenuItem
           onClick={onHide}
           disabled={isDefault}
@@ -84,16 +104,18 @@ export const SecretActionsMenu = memo(function SecretActionsMenu({
           </Typography>
         </MenuItem>
       )}
-      <MenuItem
-        onClick={onDelete}
-        disabled={isDefault}
-        sx={styles.menuItem}
-      >
-        <DeleteIcon sx={styles.menuIcon} />
-        <Typography variant="labelMedium" color="text.secondary">
-          {t('entities.secret.actions.delete', 'Delete')}
-        </Typography>
-      </MenuItem>
+      {permissions.canDelete && (
+        <MenuItem
+          onClick={onDelete}
+          disabled={isDefault}
+          sx={styles.menuItem}
+        >
+          <DeleteIcon sx={styles.menuIcon} />
+          <Typography variant="labelMedium" color="text.secondary">
+            {t('entities.secret.actions.delete', 'Delete')}
+          </Typography>
+        </MenuItem>
+      )}
     </Menu>
   );
 });

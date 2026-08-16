@@ -76,10 +76,18 @@ type surfaceGrant struct {
 }
 
 // The role split for every string below is transcribed from
-// testdata/postgres/legacy-rbac-matrix.json. `system` and `super_admin` are
-// dropped from the DEFAULT mode, as everywhere else in this corpus: Go seeds
-// neither role there. `system` is dropped from the ADMINISTRATION mode too, for
-// the reason 0060 and 0061 give: it is not in the Go product's role vocabulary.
+// testdata/postgres/legacy-rbac-matrix.json, with THREE stated exceptions.
+// `system` and `super_admin` are dropped from the DEFAULT mode, as everywhere
+// else in this corpus: Go seeds neither role there. `system` is dropped from the
+// ADMINISTRATION mode too, for the reason 0060 and 0061 give: it is not in the
+// Go product's role vocabulary.
+//
+// THE THREE EXCEPTIONS are `configuration.secrets.secret.list`,
+// `models.social.avatar.get` and `models.social.avatar.update`. #402 decided
+// each one against the matrix, on a product reason, and
+// shared/0083_viewer_secret_list_and_own_avatar.sql adds the holders. Read that
+// file's header before you change any holder set here. Every other row still
+// transcribes the matrix, and that stays the rule.
 var (
 	// shared/0074_artifact_permissions.sql
 	artifactGrants = []surfaceGrant{
@@ -89,11 +97,15 @@ var (
 		{"configuration.artifacts.artifacts.delete", []string{"admin", "editor"}},
 	}
 
-	// shared/0075_secret_permissions.sql. The matrix withholds every string
-	// here from the viewer, the LIST included: a secret name is itself
-	// sensitive.
+	// shared/0075_secret_permissions.sql, and shared/0083 for the LIST.
+	//
+	// The matrix withholds every string here from the viewer, the list
+	// included. #402 decided that the list is wrong for the product and 0083
+	// adds the viewer to it. The list discloses secret NAMES only; the VALUE
+	// is `unsecret`, on a different route, and it stays with admin and editor.
+	// 0083's header carries the full reason.
 	secretGrants = []surfaceGrant{
-		{"configuration.secrets.secret.list", []string{"admin", "editor"}},
+		{"configuration.secrets.secret.list", []string{"admin", "editor", "viewer"}},
 		{"configuration.secrets.secret.create", []string{"admin", "editor"}},
 		{"configuration.secrets.secret.edit", []string{"admin", "editor"}},
 		{"configuration.secrets.secret.delete", []string{"admin", "editor"}},
@@ -133,14 +145,22 @@ var (
 		{"models.notifications.notification.update", []string{"admin", "editor"}},
 	}
 
-	// shared/0080_social_permissions.sql. `models.social.avatar.update` has no
-	// matrix entry. It takes the holders of `models.social.avatar.post`, the
-	// legacy name for the same operation.
+	// shared/0080_social_permissions.sql, and shared/0083 for the two avatar
+	// strings.
+	//
+	// The matrix gives `models.social.avatar.get` to admin alone, and has no
+	// entry for `models.social.avatar.update`; 0080 mapped the second onto
+	// `models.social.avatar.post`, the legacy name for the same operation, so
+	// it took the same holders. #402 decided that both are wrong for the
+	// product, because the two routes are PER-USER: avatar.go reads the user id
+	// from the principal, so the permission decides only whether the caller may
+	// act on the caller. 0083 gives both to every default-mode role Go seeds.
+	// 0083's header records why the gate stays in place.
 	socialGrants = []surfaceGrant{
 		{"models.social.authors.get", []string{"admin", "editor", "viewer"}},
 		{"models.social.feedbacks.create", []string{"admin", "editor", "viewer"}},
-		{"models.social.avatar.get", []string{"admin"}},
-		{"models.social.avatar.update", []string{"admin"}},
+		{"models.social.avatar.get", []string{"admin", "editor", "viewer"}},
+		{"models.social.avatar.update", []string{"admin", "editor", "viewer"}},
 	}
 
 	// shared/0081_project_permissions.sql. `projects.projects.project.view`
@@ -284,10 +304,10 @@ func TestAViewerIsRefusedTheRestrictedGates(t *testing.T) {
 			resolved := slices.Contains(resolution.Permissions, grant.permission)
 			switch {
 			case entitled && !resolved:
-				t.Errorf("the %s surface: a viewer does not resolve %s, and the legacy matrix "+
-					"grants it to the default-mode viewer", surface, grant.permission)
+				t.Errorf("the %s surface: a viewer does not resolve %s, and the ledger above "+
+					"gives it to the default-mode viewer", surface, grant.permission)
 			case !entitled && resolved:
-				t.Errorf("the %s surface: a viewer resolves %s, and the legacy matrix withholds "+
+				t.Errorf("the %s surface: a viewer resolves %s, and the ledger above withholds "+
 					"it. This grant widens what a viewer may do.", surface, grant.permission)
 			}
 		}

@@ -146,6 +146,11 @@ export const AdminSecretsTable = memo(function AdminSecretsTable({
             onCopy={() => handleCopy(params.row.name)}
             onToggleVisibility={() => handleToggle(params.row.name)}
             canToggleVisibility={canReveal}
+            // Copy fetches the plaintext through the same route the reveal
+            // uses, so it carries the same permission. This prop's contract
+            // already said "absent ⇒ the reveal/copy affordances are not
+            // rendered at all"; only the reveal half was wired (#402).
+            canCopy={canReveal}
           />
         ),
       },
