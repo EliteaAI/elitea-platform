@@ -141,8 +141,13 @@ func TestListTypes_Success(t *testing.T) {
 }
 
 func TestListTypes_DBError(t *testing.T) {
-	// Even on DB error, handler ignores the error and merges nil dbTypes with
-	// the 10 knownToolkitTypes, so it always returns the static list.
+	// This route degrades on purpose. The static knownToolkitTypes list is a
+	// correct answer on its own and the create-toolkit form needs it, so a
+	// failed tenant read still gives 200 and the 10 static types. #381 changed
+	// only the record: the repository now returns the error and the handler
+	// logs the degradation instead of dropping the error with `_`. The two
+	// tool-LIST routes below are different — an empty list is a real answer
+	// there, so a lost read must not borrow it.
 	repo := &mockRepo{err: errors.New("db error")}
 	r := setupRouter(repo)
 
@@ -286,6 +291,80 @@ func TestDiscoverTools_Empty(t *testing.T) {
 	}
 	if len(tools) != 0 {
 		t.Errorf("expected 0 tools, got %d", len(tools))
+	}
+}
+
+// --- #381: a read fault and an empty result must not share one response ---
+
+// assertReadFaultResponse states what a lost read must look like: a failure
+// status, a named reason, and NO tool list. The absent list is the load-bearing
+// half. A failure status that still carried `"tools": []` would let a caller
+// that only reads the body go on showing an empty tool picker.
+func assertReadFaultResponse(t *testing.T, rec *httptest.ResponseRecorder, wantReason string) {
+	t.Helper()
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a failed read answered 200; body: %s", rec.Body.String())
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, hasTools := resp["tools"]; hasTools {
+		t.Errorf("a failed read carried a tools list: %#v", resp)
+	}
+	if _, hasTotal := resp["total"]; hasTotal {
+		t.Errorf("a failed read carried a total: %#v", resp)
+	}
+	reason, _ := resp["error"].(string)
+	if reason != wantReason {
+		t.Errorf("error = %q, want the named reason %q", reason, wantReason)
+	}
+}
+
+func TestAvailableTools_ReadFaultIsNotAnEmptyList(t *testing.T) {
+	repo := &mockRepo{err: errors.New("connection refused")}
+	r := setupRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/toolkit_available_tools/prompt_lib/proj-1/42", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	assertReadFaultResponse(t, rec, "available tools read failed")
+}
+
+func TestDiscoverTools_ReadFaultIsNotAnEmptyList(t *testing.T) {
+	repo := &mockRepo{err: errors.New("connection refused")}
+	r := setupRouter(repo)
+
+	req := httptest.NewRequest(http.MethodPost, "/toolkit_discover_tools/prompt_lib/proj-1/openapi", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	assertReadFaultResponse(t, rec, "discover tools read failed")
+}
+
+// The pair above and the two _Empty tests above it only discriminate together.
+// This test states the pair directly, so that a later edit which collapses the
+// two outcomes back into one body fails here and not only in a distant file.
+func TestToolListEmptyAndFailedReadDoNotShareAResponse(t *testing.T) {
+	empty := httptest.NewRecorder()
+	setupRouter(&mockRepo{tools: []toolkits.Tool{}}).ServeHTTP(
+		empty, httptest.NewRequest(http.MethodGet, "/toolkit_available_tools/prompt_lib/proj-1/42", nil))
+
+	failed := httptest.NewRecorder()
+	setupRouter(&mockRepo{err: errors.New("connection refused")}).ServeHTTP(
+		failed, httptest.NewRequest(http.MethodGet, "/toolkit_available_tools/prompt_lib/proj-1/42", nil))
+
+	if empty.Code != http.StatusOK {
+		t.Errorf("a toolkit with no tools answered %d, want 200", empty.Code)
+	}
+	if empty.Code == failed.Code && empty.Body.String() == failed.Body.String() {
+		t.Fatalf("an empty toolkit and a lost read give the same answer: %d %s", empty.Code, empty.Body.String())
 	}
 }
 
