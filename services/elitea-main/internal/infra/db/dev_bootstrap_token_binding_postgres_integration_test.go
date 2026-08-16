@@ -172,7 +172,11 @@ func newDevBootstrapPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// 120 s, not the old 20 s to 30 s. This DROP queues behind the
+		// CREATE DATABASE calls of every package that `go test ./...` runs at
+		// the same time, so the wait is server load and not a hang. Two full
+		// runs failed here with "drop isolated ... database: timeout" (#409).
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer dropCancel()
 		dropPool, dropErr := pgxpool.New(dropCtx, databaseURL)
 		if dropErr != nil {

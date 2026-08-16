@@ -670,6 +670,23 @@ type postgresOutboxOrderingFixture struct {
 	published   bool
 }
 
+// postgresIntegrationDeadline bounds each stage of the shared PostgreSQL
+// harness: connect and CREATE DATABASE, the embedded migration replay, and the
+// drop at cleanup.
+//
+// It used to be 20 s. Applying the embedded shared and tenant migration set
+// costs about 1.5 s to 3 s on an idle machine, so 20 s looked generous. It is
+// not. A run of this package on a busy machine failed with
+// "apply shared/0073_mcp_tool_registry.sql: timeout: context deadline
+// exceeded". The test was not wrong, and the migration was not hung. The
+// machine was slow. The failure then reads as a broken migration rather than
+// as a slow suite, which is expensive to diagnose (#409 item 2).
+//
+// The only job of a harness deadline is to stop a hang. So it must sit far
+// from the real cost. 120 s is about 40x the measured cost. A true hang is
+// still bounded: scripts/go/workspace-run.sh caps the whole package.
+const postgresIntegrationDeadline = 120 * time.Second
+
 func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv(postgresIntegrationDatabaseURL)
@@ -679,7 +696,7 @@ func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 	if databaseURL == "" {
 		t.Skipf("set %s to run the PostgreSQL 16-18 service-integration test", postgresIntegrationDatabaseURL)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), postgresIntegrationDeadline)
 	defer cancel()
 
 	adminConfig, err := pgxpool.ParseConfig(databaseURL)
@@ -735,7 +752,7 @@ func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 
 	t.Cleanup(func() {
 		pool.Close()
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), postgresIntegrationDeadline)
 		defer dropCancel()
 		if _, err := adminPool.Exec(dropCtx, "DROP DATABASE "+quotedDatabase+" WITH (FORCE)"); err != nil {
 			t.Errorf("drop isolated PostgreSQL integration database: %v", err)
@@ -747,7 +764,7 @@ func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 
 func applyPostgresIntegrationMigrations(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), postgresIntegrationDeadline)
 	defer cancel()
 	if _, err := pool.Exec(ctx, `
 CREATE SCHEMA centry;

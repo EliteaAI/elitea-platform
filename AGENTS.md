@@ -117,6 +117,20 @@ task lint
 task build
 ```
 
+Read the exit status of `task test` directly. Do not pipe it through `grep`,
+`tail` or `head` and then read `$?`. A pipeline reports the status of its LAST
+element, and that has produced several false green reports here.
+
+`task test` runs `scripts/go/workspace-run.sh test`. The script runs every
+workspace module and prints a summary. Read the summary:
+
+- A `FAIL` line names the module that failed. The run continues past it, so a
+  later `PASS` line does not cancel it.
+- A `NOT COVERED` line names a Go module on disk that this command did not
+  open. `services/elitea-llm-gateway` is always there. It sits outside
+  `go.work`, it builds with `GOWORK=off`, and `ci-gateway.yml` runs it. A green
+  `task test` is not evidence about that module.
+
 For Go-only work, run from `services/elitea-main/`:
 
 ```bash
