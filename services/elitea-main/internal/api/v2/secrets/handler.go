@@ -41,7 +41,12 @@ import (
 // (SECRETS_MASTER_KEY env var, base64url-encoded 32-byte Fernet key).
 type Handler struct {
 	pool      *pgxpool.Pool
-	masterKey []byte // nil when SECRETS_MASTER_KEY is unset
+	masterKey []byte // nil when SECRETS_MASTER_KEY is absent
+	// masterKeyErr is set when SECRETS_MASTER_KEY is present and malformed.
+	// Every vault read and every vault write then fails with it, so the
+	// handler stores NOTHING rather than storing project keys unwrapped
+	// (#412). See MasterKeyFromEnv for why the two cases differ.
+	masterKeyErr error
 	// permissionResolver authorises BOTH mode families: the `administration`
 	// routes (admin.go, central mode) and the project routes below (`default`
 	// mode, keyed on the `{projectID}` in the path). nil for the two
@@ -60,16 +65,68 @@ func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	return func(h *Handler) { h.permissionResolver = resolver }
 }
 
+// MasterKeyEnvVar names the one variable that decides whether a project
+// vault's key row is wrapped. Every message this package writes about the
+// master key names it, so an operator can search the logs for it.
+const MasterKeyEnvVar = "SECRETS_MASTER_KEY"
+
+// MasterKeyFromEnv reads the master key and validates it.
+//
+// It separates the two cases the old NewHandler answered identically:
+//
+//   - ABSENT: key is nil and err is nil. The deployment asks for unwrapped
+//     storage. That stays supported, because centry supports it and because a
+//     local stack has no key to give. The caller must say so out loud —
+//     cmd/elitea-main logs a warning that names the consequence.
+//   - MALFORMED: err is not nil. The deployment asks for wrapped storage and
+//     cannot get it. A wrong length, bad base64, or a stray space or tab from a
+//     mounted secret is an operator error. It is never an instruction to
+//     downgrade the storage.
+//
+// The old code read the second case as the first. It left masterKey nil, and
+// the handler then minted and wrote UNWRAPPED vaults while the operator
+// believed the keys were wrapped. Nothing logged and nothing failed, because
+// every later read of an unwrapped vault also succeeds (#412).
+//
+// WHAT COUNTS AS MALFORMED IS UNCHANGED. This function validates with
+// fernetDecodeKey, exactly as the old code did, and adds no whitespace rule of
+// its own. That matters for one shape in particular: Go's base64 decoder
+// IGNORES "\r" and "\n", so a key read from a file with a trailing newline
+// decodes to the same 32 bytes and keeps working. Python's
+// base64.urlsafe_b64decode ignores it too, so pylon's secrets engine agrees.
+// Rejecting a newline here would stop a deployment that works today, which is
+// the opposite of the repair. A space or a tab is a different matter: neither
+// decoder pair agrees on it, so it stays an error.
+//
+// getenv is injected so a test can supply a value without t.Setenv, which
+// forbids t.Parallel.
+func MasterKeyFromEnv(getenv func(string) string) ([]byte, error) {
+	value := getenv(MasterKeyEnvVar)
+	if value == "" {
+		return nil, nil
+	}
+	raw, err := fernetDecodeKey(value)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"%s is set and malformed: %w; supply a base64url-encoded 32-byte Fernet key "+
+				"with no stray spaces or tabs, or remove the variable to store project "+
+				"vault keys unwrapped", MasterKeyEnvVar, err)
+	}
+	return raw, nil
+}
+
 // NewHandler constructs the secrets handler.  The pool is used for
 // centry.secrets_key / centry.secrets_data reads and writes.
+//
+// A malformed SECRETS_MASTER_KEY does not stop construction, because this
+// constructor cannot report an error: two of its four callers build a handler
+// per request, so an error here would surface long after provisioning had
+// already written vaults. cmd/elitea-main validates the variable at start-up
+// instead, and stops. This constructor keeps the fault so that a handler built
+// WITHOUT that gate still fails closed (#412).
 func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	h := &Handler{pool: pool}
-	if mk := os.Getenv("SECRETS_MASTER_KEY"); mk != "" {
-		raw, err := fernetDecodeKey(mk)
-		if err == nil {
-			h.masterKey = raw
-		}
-	}
+	h.masterKey, h.masterKeyErr = MasterKeyFromEnv(os.Getenv)
 	for _, opt := range opts {
 		opt(h)
 	}
@@ -731,6 +788,12 @@ func vaultUnreadable(w http.ResponseWriter) {
 // (`fernetEncrypt` would slice a 28-byte AES key out of the 44 and fail).
 // Found while making the chat-config route reachable (#194).
 func (h *Handler) encryptKey(raw []byte) ([]byte, error) {
+	// A malformed master key stops the write here (#412). Returning the
+	// unwrapped encoding instead is what made the defect silent: the vault was
+	// minted in the clear and every later read of it succeeded.
+	if h.masterKeyErr != nil {
+		return nil, h.masterKeyErr
+	}
 	encoded := []byte(base64.URLEncoding.EncodeToString(raw))
 	if h.masterKey == nil {
 		return encoded, nil
@@ -743,6 +806,11 @@ func (h *Handler) encryptKey(raw []byte) ([]byte, error) {
 // encryptKey now writes) and the raw 32 bytes earlier builds of this handler
 // wrote, so an existing database keeps opening.
 func (h *Handler) decryptKey(stored []byte) ([]byte, error) {
+	// A malformed master key stops the read too (#412). A wrapped key row would
+	// otherwise be read as an unwrapped one, which fails later and further away.
+	if h.masterKeyErr != nil {
+		return nil, h.masterKeyErr
+	}
 	if h.masterKey != nil {
 		unwrapped, err := fernetDecrypt(h.masterKey, stored)
 		if err != nil {

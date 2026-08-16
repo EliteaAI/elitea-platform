@@ -173,6 +173,38 @@ Stated plainly, because the gap between compose and Helm is where deploys break:
 - **No model-cache pre-seed for `pylon-indexer`.** compose's `model-cache-init`
   has no Kubernetes equivalent here.
 
+## The project vault master key (`SECRETS_MASTER_KEY`)
+
+This one variable decides whether every project's vault key is encrypted. Set
+it to a base64url-encoded 32-byte Fernet key. `elitea-main` and
+`elitea-llm-gateway` must carry the **same** value, because they read the same
+`centry.secrets_key` rows.
+
+The variable has three states. They are not equivalent:
+
+| State | What `elitea-main` does | What is stored |
+|---|---|---|
+| Set, valid | Wraps each project vault key with the master key. | The key row is a Fernet token. |
+| **Not set** | Starts, and writes a **warning** to the log. | The key row is the project key **in the clear**. Anyone who can read the database can open every project secret. |
+| **Set, malformed** | **Refuses to start.** The message names the variable. | Nothing. |
+
+A malformed key stops the service on purpose (#412). Before that change the
+service ignored the bad value and stored the keys unwrapped. An operator who
+set the variable got plaintext storage, and no report of it.
+
+A trailing newline is **not** malformed. Go and Python both ignore `\r` and
+`\n` when they decode base64, so a key mounted from a file keeps working. A
+stray space or tab **is** malformed.
+
+Which stack sets it:
+
+- `docker-compose.staging.yml` requires it from your shell, and compose fails
+  if you do not export it.
+- No chart under `deploy/helm/elitea-main/` sets it. Supply it through a
+  Kubernetes Secret, or accept unwrapped storage.
+- The local compose stack and the E2E stack set no key on purpose. The E2E
+  stack seeds unwrapped key rows, so it needs none.
+
 ## CI
 
 `.github/workflows/helm-lint.yml` has three jobs:
