@@ -21,11 +21,13 @@ import type { AuthChannelLike } from './channel';
 import {
   AUTH_CALLBACK_PATH,
   AUTH_CHANNEL_PREFIX,
+  AUTH_FLIGHT_STARTED_KEY,
   AUTH_STATE_PARAM,
   AUTH_STATE_STORAGE_KEY,
   OIDC_LOGIN_PATH,
   TARGET_TO_PARAM,
   authResultStorageKey,
+  authWindowName,
   isAuthResultMessage,
 } from './constants';
 
@@ -37,6 +39,47 @@ const MAX_HEIGHT = 900;
 const WIDTH_RATIO = 0.4;
 const HEIGHT_RATIO = 0.7;
 const DEFAULT_POLL_MS = 300; // authPopup.helpers.js:96
+
+/**
+ * How long `popup.closed` must stay true before the controller believes it.
+ *
+ * DEFENCE, NOT THE MEASURED CAUSE of issue #364 — `AUTH_FLIGHT_STARTED_KEY`
+ * carries what the measurement found. Issue #364 proposed that WebKit reports
+ * `closed` as true while a popup crosses origin, and that one such reading
+ * ended the flight early. An instrumented WebKit run of J3 did not observe
+ * that: no flight ended early, and a 250-sample probe of `closed` across an
+ * origin crossing returned no true reading. The debounce stays because one
+ * reading is weak evidence in any engine, and because its cost is bounded —
+ * it delays only the rejection of a flight whose popup the user closed.
+ *
+ * A closed window cannot navigate, so a later `closed === false` reading
+ * proves the earlier one was false. The poll counts consecutive true readings
+ * and any false reading resets the count.
+ */
+const DEFAULT_CLOSE_CONFIRM_MS = 1500;
+
+/**
+ * How long a persisted flight marker stays adoptable (issue #364).
+ *
+ * A new document adopts the flight of the document it replaced, so one open
+ * popup keeps one flight across a page load. The bound matters in both
+ * directions. Too short, and a user who takes time over the login form gets a
+ * second popup. Too long, and a popup that died silently makes every later
+ * request wait. Two minutes covers an ordinary login, and the recovery after
+ * it is a new popup, not a failure.
+ */
+const DEFAULT_FLIGHT_TTL_MS = 120_000;
+
+/**
+ * Upper bound on the wait for the popup of the previous flight to go away.
+ *
+ * A popup that never closes must not kill re-auth for the whole page
+ * lifetime. `routes/auth-callback.tsx` closes the popup only when
+ * `window.opener` is present, so a popup that lost its opener stays on
+ * screen. After this grace the next flight opens its own window, which its
+ * own state-scoped name keeps separate from the stale one.
+ */
+const DEFAULT_CLOSE_GRACE_MS = 5000;
 
 export type AuthPopupFailureReason = 'popup_blocked' | 'popup_closed' | 'auth_failed';
 
@@ -62,6 +105,14 @@ export interface AuthPopupOptions {
   openWindow?: (url: string, name: string, features: string) => PopupWindowLike | null;
   createChannel?: (name: string) => AuthChannelLike | null;
   pollIntervalMs?: number;
+  /** Continuous time `popup.closed` must read true before it is believed. */
+  closeConfirmMs?: number;
+  /** Upper bound on the wait for the popup of the previous flight to go. */
+  closeGraceMs?: number;
+  /** How long a persisted flight marker stays adoptable. */
+  flightTtlMs?: number;
+  /** Clock, injected for tests. */
+  now?: () => number;
 }
 
 export interface AuthPopupController {
@@ -93,19 +144,72 @@ export function createAuthPopupController(options: AuthPopupOptions = {}): AuthP
   const openWindow = options.openWindow ?? defaultOpenWindow;
   const createChannel = options.createChannel ?? createBroadcastChannel;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_MS;
+  const closeConfirmMs = options.closeConfirmMs ?? DEFAULT_CLOSE_CONFIRM_MS;
+  const closeGraceMs = options.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
+  const flightTtlMs = options.flightTtlMs ?? DEFAULT_FLIGHT_TTL_MS;
+  const now = options.now ?? ((): number => Date.now());
+  // Two readings minimum, whatever the poll interval: one reading is exactly
+  // what a browser gets wrong during navigation (issue #364).
+  const closedReadingsNeeded = Math.max(2, Math.ceil(closeConfirmMs / pollIntervalMs));
   const session = createStorage('session');
   const local = createStorage('local');
 
   let flight: Promise<void> | null = null;
+  /** The popup of the most recent flight, until it is confirmed gone. */
+  let livePopup: PopupWindowLike | null = null;
 
-  function startFlight(): Promise<void> {
+  /** Resolves when `popup` reports closed, or when the grace runs out. */
+  function waitForPopupToGo(popup: PopupWindowLike): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let waitedMs = 0;
+      const intervalId = setInterval(() => {
+        waitedMs += pollIntervalMs;
+        if (!popup.closed && waitedMs < closeGraceMs) return;
+        clearInterval(intervalId);
+        if (livePopup === popup) livePopup = null;
+        resolve();
+      }, pollIntervalMs);
+    });
+  }
+
+  /**
+   * The state of a flight that another document of THIS tab left running, or
+   * `null`. The marker is dropped once it is older than the TTL.
+   */
+  function adoptableState(): string | null {
+    const state = session.get(AUTH_STATE_STORAGE_KEY);
+    const rawStartedAt = session.get(AUTH_FLIGHT_STARTED_KEY);
+    if (state === null || state === '') return null;
+    // A state with no timestamp is not adoptable: `Number(null)` is 0, so the
+    // deadline test alone would drop it, and by accident rather than by rule.
+    const startedAt = rawStartedAt === null ? Number.NaN : Number(rawStartedAt);
+    if (!Number.isFinite(startedAt) || now() - startedAt >= flightTtlMs) {
+      session.remove(AUTH_STATE_STORAGE_KEY);
+      session.remove(AUTH_FLIGHT_STARTED_KEY);
+      return null;
+    }
+    return state;
+  }
+
+  /**
+   * Runs one flight. `adoptedState` names a flight another document started;
+   * this controller then opens NO window and only waits for the result.
+   */
+  function startFlight(adoptedState: string | null = null): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       // Behaviour 4: cryptographically random state, verified on delivery.
-      const state = crypto.randomUUID();
-      session.set(AUTH_STATE_STORAGE_KEY, state);
+      const state = adoptedState ?? crypto.randomUUID();
+      const startedAt = adoptedState === null ? now() : Number(session.get(AUTH_FLIGHT_STARTED_KEY));
+      if (adoptedState === null) {
+        session.set(AUTH_STATE_STORAGE_KEY, state);
+        session.set(AUTH_FLIGHT_STARTED_KEY, String(startedAt));
+      }
 
       let channel: AuthChannelLike | null = null;
       let intervalId: ReturnType<typeof setInterval> | null = null;
+      let popupWindow: PopupWindowLike | null = null;
+      /** Consecutive `popup.closed === true` readings; see the constant. */
+      let closedReadings = 0;
       // Per-flight settle guard. It deliberately does NOT consult `flight`:
       // the executor can settle SYNCHRONOUSLY (a blocked popup does exactly
       // that), before `reauthenticate` has even assigned the slot, so any
@@ -119,6 +223,16 @@ export function createAuthPopupController(options: AuthPopupOptions = {}): AuthP
         if (intervalId !== null) clearInterval(intervalId);
         channel?.close();
         session.remove(AUTH_STATE_STORAGE_KEY);
+        session.remove(AUTH_FLIGHT_STARTED_KEY);
+        // The flight is over, so the popup has no more work. The callback
+        // page closes itself, but only when `window.opener` is present
+        // (routes/auth-callback.tsx). Close it here too, so a popup that lost
+        // its opener cannot hold the next flight back for the whole grace.
+        try {
+          popupWindow?.close();
+        } catch {
+          // Handled (§3.6): a window we cannot close still times out below.
+        }
       };
 
       const settle = (error: AuthPopupError | null): void => {
@@ -176,15 +290,40 @@ export function createAuthPopupController(options: AuthPopupOptions = {}): AuthP
       const popupUrl =
         `${options.baseOrigin ?? window.location.origin}${OIDC_LOGIN_PATH}` +
         `?${TARGET_TO_PARAM}=${encodeURIComponent(callbackTarget)}`;
-      const popup = openWindow(popupUrl, 'elitea-auth', popupFeatures());
-      if (popup === null) {
-        settle(new AuthPopupError('popup_blocked'));
-        return;
+      if (adoptedState === null) {
+        // The window name is STATE-SCOPED, so no later `window.open` can
+        // replace the page of this popup — see `authWindowName` (issue #364).
+        const popup = openWindow(popupUrl, authWindowName(state), popupFeatures());
+        if (popup === null) {
+          settle(new AuthPopupError('popup_blocked'));
+          return;
+        }
+        popupWindow = popup;
+        livePopup = popup;
+      } else {
+        // Adopted: the popup belongs to the document this one replaced, so a
+        // result may already sit in the fallback key. Read it before waiting.
+        consumeStoredResult();
+        if (settled) return;
       }
 
       intervalId = setInterval(() => {
         consumeStoredResult();
-        if (!settled && popup.closed) {
+        if (settled) return;
+        if (popupWindow === null) {
+          // Adopted flight: this document holds no window handle, so it
+          // cannot read `closed`. The marker deadline bounds the wait.
+          if (now() - startedAt >= flightTtlMs) settle(new AuthPopupError('popup_closed'));
+          return;
+        }
+        if (!popupWindow.closed) {
+          // A closed window cannot navigate, so this reading proves every
+          // earlier `closed` reading of this popup was false.
+          closedReadings = 0;
+          return;
+        }
+        closedReadings += 1;
+        if (closedReadings >= closedReadingsNeeded) {
           settle(new AuthPopupError('popup_closed'));
         }
       }, pollIntervalMs);
@@ -196,7 +335,17 @@ export function createAuthPopupController(options: AuthPopupOptions = {}): AuthP
       // Controller-level single-flight (§5.4 behaviour 3 backstop; the HTTP
       // client also single-flights across its own concurrent 401s).
       if (flight !== null) return flight;
-      const started = startFlight();
+      // The guard holds until the popup GOES, not until the flight settles
+      // (issue #364). A settled flight can still leave a window on screen:
+      // the callback page closes itself about 300 ms after it posts the
+      // result. Opening over that window would restart a login the user has
+      // already answered.
+      // A flight left running by another document of this tab is ADOPTED, not
+      // repeated: one open popup keeps one flight across a page load.
+      const begin = (): Promise<void> => startFlight(adoptableState());
+      const previous = livePopup;
+      const started =
+        previous !== null && !previous.closed ? waitForPopupToGo(previous).then(begin) : begin();
       // Assign BEFORE attaching the release handlers: a synchronously
       // settling flight (blocked popup — the common case, since re-auth
       // fires from a background 401 with no user activation) must still end
