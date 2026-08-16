@@ -59,11 +59,6 @@ type projectVectorStoreUnsecreter interface {
 	Unsecret(context.Context, int32, map[string]any) (map[string]any, error)
 }
 
-type projectVectorStoreVault interface {
-	EnsureProjectVault(context.Context, int64) (bool, error)
-	DeleteProjectVault(context.Context, int64) (bool, error)
-}
-
 type projectVectorStoreConfigurations interface {
 	vectorstoreapp.ProjectConfigurationRepository
 	DeleteProjectPgvectorConfiguration(context.Context, int64, string) (bool, error)
@@ -81,7 +76,6 @@ type ProjectVectorStore struct {
 	unsecreter      projectVectorStoreUnsecreter
 	materials       vectorstoreapp.ProjectMaterialRepository
 	configurations  projectVectorStoreConfigurations
-	vaults          projectVectorStoreVault
 	logger          *slog.Logger
 }
 
@@ -92,11 +86,10 @@ func newProjectVectorStore(
 	unsecreter projectVectorStoreUnsecreter,
 	materials vectorstoreapp.ProjectMaterialRepository,
 	configurations projectVectorStoreConfigurations,
-	vaults projectVectorStoreVault,
 	logger *slog.Logger,
 ) (*ProjectVectorStore, error) {
 	if publicProjectID <= 0 || schemas == nil || finder == nil || unsecreter == nil ||
-		materials == nil || configurations == nil || vaults == nil {
+		materials == nil || configurations == nil {
 		return nil, errors.New("project vector-store dependencies are required")
 	}
 	if logger == nil {
@@ -109,7 +102,6 @@ func newProjectVectorStore(
 		unsecreter:      unsecreter,
 		materials:       materials,
 		configurations:  configurations,
-		vaults:          vaults,
 		logger:          logger,
 	}, nil
 }
@@ -135,12 +127,10 @@ func (s *ProjectVectorStore) ProvisionProjectVectorStore(ctx context.Context, pr
 		return nil
 	}
 
-	// The vault must exist before the service hands its material over. Nothing
-	// else creates one for a project this route just created.
-	if _, err := s.vaults.EnsureProjectVault(ctx, projectID); err != nil {
-		return fmt.Errorf("create project vault: %w", err)
-	}
-
+	// The vault already exists. The project_secrets provisioning step creates
+	// it, and it runs before project_pgvector (#399). This step used to create
+	// one too, under a second master key, which produced a vault the material
+	// writer could not open — see ProjectVaultSecrets for the whole account.
 	databases, err := newCurrentProjectPgvectorDatabaseProvisioner(bootstrap)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrProjectVectorStoreBootstrap, err)
@@ -163,14 +153,17 @@ func (s *ProjectVectorStore) ProvisionProjectVectorStore(ctx context.Context, pr
 	return nil
 }
 
-// RemoveProjectVectorStore removes the configuration row and the project vault.
+// RemoveProjectVectorStore removes the project's `vectorstorage` configuration
+// row.
 //
 // It does NOT drop the PgVector role or database — see the step's own comment
 // in projectprovisioning for why that boundary is where it is.
 //
-// Both halves run even when the first fails, and the first error is returned.
-// Stopping at the first failure would strand the other resource, which is the
-// same rule Provisioner.compensate applies one level up.
+// IT NO LONGER REMOVES THE VAULT (#399). The project_secrets step owns the
+// vault, and removeProjectSecrets removes it. Both callers of this method reach
+// that step too: compensation walks the step list in reverse, and Deprovision
+// refuses to run without the vault bootstrapper. So the vault still goes with
+// the project, through its one owner.
 func (s *ProjectVectorStore) RemoveProjectVectorStore(ctx context.Context, projectID int64) error {
 	if s == nil {
 		return errors.New("project vector store is not configured")
@@ -179,29 +172,21 @@ func (s *ProjectVectorStore) RemoveProjectVectorStore(ctx context.Context, proje
 		return vectorstoreapp.ErrInvalidProjectPgvectorRequest
 	}
 
-	var firstErr error
 	// The tenant may already be gone: Deprovision runs every remove, and a
 	// project deleted before this step existed has no row to remove either.
 	present, err := s.tenantConfigurationPresent(ctx, projectID)
-	switch {
-	case err != nil:
-		firstErr = err
-	case present:
-		if _, err := s.configurations.DeleteProjectPgvectorConfiguration(
-			ctx, projectID, vectorstoreapp.DefaultProjectPgvectorTitle,
-		); err != nil {
-			firstErr = fmt.Errorf("delete project pgvector configuration: %w", err)
-		}
+	if err != nil {
+		return err
 	}
-
-	// The vault goes with the project. This step is the first writer to create
-	// it, and both callers of this method — create compensation and project
-	// deletion — destroy the project, so no other subsystem's secrets can
-	// legitimately outlive it. Nothing else deletes these rows.
-	if _, err := s.vaults.DeleteProjectVault(ctx, projectID); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("delete project vault: %w", err)
+	if !present {
+		return nil
 	}
-	return firstErr
+	if _, err := s.configurations.DeleteProjectPgvectorConfiguration(
+		ctx, projectID, vectorstoreapp.DefaultProjectPgvectorTitle,
+	); err != nil {
+		return fmt.Errorf("delete project pgvector configuration: %w", err)
+	}
+	return nil
 }
 
 // tenantConfigurationPresent reports whether the project's tenant configuration
@@ -278,21 +263,27 @@ func (s *ProjectVectorStore) resolveBootstrap(ctx context.Context) (*pgx.ConnCon
 }
 
 // NewProjectVectorStore composes the project vector-store collaborator from the
-// Configurations runtime, which already owns the finder, the unsecreter and the
-// vault writer this needs.
+// Configurations runtime, which owns the finder and the unsecreter this needs.
+//
+// The vault material is NOT taken from that runtime (#399). The runtime keys
+// its vault loader and its vault writer off ELITEA_VAULT_MASTER_KEY_FILE, and
+// no deployment sets that variable. The vault this step writes into is made by
+// the secrets handler under SECRETS_MASTER_KEY, which deployments do set. So
+// the caller injects the handler, and the creator and the writer hold one key.
 func (runtime *CurrentConfigurationsRuntime) NewProjectVectorStore(
 	pool *pgxpool.Pool,
+	secrets ProjectVaultSecrets,
 	logger *slog.Logger,
 ) (*ProjectVectorStore, error) {
 	if runtime == nil || runtime.rows == nil || runtime.unsecreter == nil ||
-		runtime.vaultWriter == nil || runtime.vaultLoader == nil || pool == nil {
+		secrets == nil || pool == nil {
 		return nil, errors.New("project vector-store composition is incomplete")
 	}
 	configurations, err := repos.NewCurrentProjectPgvectorConfigurationsRepository(pool)
 	if err != nil {
 		return nil, err
 	}
-	materials, err := newCurrentProjectPgvectorMaterialRepository(runtime.vaultLoader, runtime.vaultWriter)
+	materials, err := newCurrentProjectPgvectorMaterialRepository(secrets)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +294,6 @@ func (runtime *CurrentConfigurationsRuntime) NewProjectVectorStore(
 		runtime.unsecreter,
 		materials,
 		configurations,
-		runtime.vaultWriter,
 		logger,
 	)
 }

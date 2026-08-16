@@ -18,16 +18,17 @@ import (
 func TestProvisionProjectVectorStoreSkipsWhenNoBootstrapIsConfigured(t *testing.T) {
 	t.Parallel()
 
-	vaults := &projectVectorStoreVaultStub{}
-	store := newProjectVectorStoreForTest(t, &projectVectorStoreFinderStub{}, &projectVectorStoreUnsecreterStub{}, vaults, true)
+	materials := &projectVectorStoreMaterialsStub{}
+	store := newProjectVectorStoreForTest(t, &projectVectorStoreFinderStub{}, &projectVectorStoreUnsecreterStub{}, true)
+	store.materials = materials
 
 	if err := store.ProvisionProjectVectorStore(context.Background(), 7); err != nil {
 		t.Fatalf("ProvisionProjectVectorStore() = %v, want nil when the deployment runs no vector store", err)
 	}
-	// Nothing may be created for a project that gets no vector store. A vault
-	// minted here would outlive a project the step did not provision.
-	if vaults.ensured != 0 {
-		t.Fatalf("the project vault was created without a bootstrap: %d calls", vaults.ensured)
+	// Nothing may be written for a project that gets no vector store. Material
+	// stored here would name a database the step did not provision.
+	if materials.writes != 0 {
+		t.Fatalf("vault material was written without a bootstrap: %d writes", materials.writes)
 	}
 }
 
@@ -43,7 +44,7 @@ func TestProvisionProjectVectorStoreReportsAnUnusableBootstrap(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			vaults := &projectVectorStoreVaultStub{}
+			materials := &projectVectorStoreMaterialsStub{}
 			finder := &projectVectorStoreFinderStub{
 				found: true,
 				data:  map[string]any{"connection_string": connectionString},
@@ -51,14 +52,15 @@ func TestProvisionProjectVectorStoreReportsAnUnusableBootstrap(t *testing.T) {
 			// An unsecreter that fails stands in for the public project having
 			// no vault, which is the normal case for a clear-text bootstrap.
 			store := newProjectVectorStoreForTest(t, finder,
-				&projectVectorStoreUnsecreterStub{err: errors.New("no vault")}, vaults, true)
+				&projectVectorStoreUnsecreterStub{err: errors.New("no vault")}, true)
+			store.materials = materials
 
 			err := store.ProvisionProjectVectorStore(context.Background(), 7)
 			if !errors.Is(err, ErrProjectVectorStoreBootstrap) {
 				t.Fatalf("error = %v, want ErrProjectVectorStoreBootstrap", err)
 			}
-			if vaults.ensured != 0 {
-				t.Fatalf("the project vault was created for an unusable bootstrap: %d calls", vaults.ensured)
+			if materials.writes != 0 {
+				t.Fatalf("vault material was written for an unusable bootstrap: %d writes", materials.writes)
 			}
 		})
 	}
@@ -83,7 +85,7 @@ func TestProvisionProjectVectorStoreRedeemsOnlyAReference(t *testing.T) {
 			// without waiting for a timeout.
 			data: map[string]any{"connection_string": "postgresql+psycopg://u:p@127.0.0.1:1/elitea"},
 		}
-		store := newProjectVectorStoreForTest(t, finder, unsecreter, &projectVectorStoreVaultStub{}, true)
+		store := newProjectVectorStoreForTest(t, finder, unsecreter, true)
 
 		// The provision fails at the database, which is past resolution. What
 		// this case asserts is that the failure is NOT the unsecreter's.
@@ -105,7 +107,7 @@ func TestProvisionProjectVectorStoreRedeemsOnlyAReference(t *testing.T) {
 			found: true,
 			data:  map[string]any{"connection_string": "{{secret.pgvector_connstr}}"},
 		}
-		store := newProjectVectorStoreForTest(t, finder, unsecreter, &projectVectorStoreVaultStub{}, true)
+		store := newProjectVectorStoreForTest(t, finder, unsecreter, true)
 
 		err := store.ProvisionProjectVectorStore(context.Background(), 7)
 		if errors.Is(err, ErrProjectVectorStoreBootstrap) {
@@ -121,13 +123,19 @@ func TestProvisionProjectVectorStoreRedeemsOnlyAReference(t *testing.T) {
 	})
 }
 
-func TestRemoveProjectVectorStoreRemovesTheRowAndTheVault(t *testing.T) {
+// TestRemoveProjectVectorStoreRemovesTheConfigurationRow covers what this
+// method still owns.
+//
+// IT NO LONGER REMOVES THE VAULT (#399). The project_secrets step owns the
+// vault, and removeProjectSecrets removes it. A second remover here would be a
+// second owner, which is the shape that let two creators disagree about the
+// master key in the first place.
+func TestRemoveProjectVectorStoreRemovesTheConfigurationRow(t *testing.T) {
 	t.Parallel()
 
-	vaults := &projectVectorStoreVaultStub{}
 	configurations := &projectVectorStoreConfigurationsStub{}
 	store := newProjectVectorStoreForTest(t, &projectVectorStoreFinderStub{},
-		&projectVectorStoreUnsecreterStub{}, vaults, true)
+		&projectVectorStoreUnsecreterStub{}, true)
 	store.configurations = configurations
 
 	if err := store.RemoveProjectVectorStore(context.Background(), 7); err != nil {
@@ -136,9 +144,6 @@ func TestRemoveProjectVectorStoreRemovesTheRowAndTheVault(t *testing.T) {
 	if configurations.deleted != 1 || configurations.title != vectorstoreapp.DefaultProjectPgvectorTitle {
 		t.Fatalf("configuration delete = %d calls, title %q", configurations.deleted, configurations.title)
 	}
-	if vaults.removed != 1 {
-		t.Fatalf("vault delete = %d calls, want 1", vaults.removed)
-	}
 }
 
 // TestRemoveProjectVectorStoreSkipsAnAbsentTenant covers project deletion, which
@@ -146,10 +151,9 @@ func TestRemoveProjectVectorStoreRemovesTheRowAndTheVault(t *testing.T) {
 func TestRemoveProjectVectorStoreSkipsAnAbsentTenant(t *testing.T) {
 	t.Parallel()
 
-	vaults := &projectVectorStoreVaultStub{}
 	configurations := &projectVectorStoreConfigurationsStub{}
 	store := newProjectVectorStoreForTest(t, &projectVectorStoreFinderStub{},
-		&projectVectorStoreUnsecreterStub{}, vaults, false)
+		&projectVectorStoreUnsecreterStub{}, false)
 	store.configurations = configurations
 
 	if err := store.RemoveProjectVectorStore(context.Background(), 7); err != nil {
@@ -158,29 +162,21 @@ func TestRemoveProjectVectorStoreSkipsAnAbsentTenant(t *testing.T) {
 	if configurations.deleted != 0 {
 		t.Fatalf("the delete ran against an absent tenant: %d calls", configurations.deleted)
 	}
-	// The vault is not in the tenant, so it must go regardless.
-	if vaults.removed != 1 {
-		t.Fatalf("vault delete = %d calls, want 1", vaults.removed)
-	}
 }
 
-// TestRemoveProjectVectorStoreRemovesTheVaultAfterARowFailure pins the rule that
-// one failing half must not strand the other. It is the same rule
-// Provisioner.compensate applies to the step list.
-func TestRemoveProjectVectorStoreRemovesTheVaultAfterARowFailure(t *testing.T) {
+// TestRemoveProjectVectorStoreReportsARowFailure keeps the compensation honest.
+// A remove that swallowed the error would report a clean rollback while the
+// tenant kept a configuration row naming a database nothing can reach.
+func TestRemoveProjectVectorStoreReportsARowFailure(t *testing.T) {
 	t.Parallel()
 
-	vaults := &projectVectorStoreVaultStub{}
 	configurations := &projectVectorStoreConfigurationsStub{err: errors.New("row delete failed")}
 	store := newProjectVectorStoreForTest(t, &projectVectorStoreFinderStub{},
-		&projectVectorStoreUnsecreterStub{}, vaults, true)
+		&projectVectorStoreUnsecreterStub{}, true)
 	store.configurations = configurations
 
 	if err := store.RemoveProjectVectorStore(context.Background(), 7); err == nil {
 		t.Fatal("RemoveProjectVectorStore() reported success while the row delete failed")
-	}
-	if vaults.removed != 1 {
-		t.Fatalf("the vault was stranded by a failing row delete: %d calls", vaults.removed)
 	}
 }
 
@@ -192,7 +188,6 @@ func newProjectVectorStoreForTest(
 	t *testing.T,
 	finder *projectVectorStoreFinderStub,
 	unsecreter *projectVectorStoreUnsecreterStub,
-	vaults *projectVectorStoreVaultStub,
 	tenantPresent bool,
 ) *ProjectVectorStore {
 	t.Helper()
@@ -203,7 +198,6 @@ func newProjectVectorStoreForTest(
 		unsecreter,
 		&projectVectorStoreMaterialsStub{},
 		&projectVectorStoreConfigurationsStub{},
-		vaults,
 		nil,
 	)
 	if err != nil {
@@ -252,25 +246,6 @@ func (s *projectVectorStoreUnsecreterStub) Unsecret(
 	return data, nil
 }
 
-type projectVectorStoreVaultStub struct {
-	ensured    int
-	removed    int
-	ensureErr  error
-	removeErr  error
-	lastEnsure int64
-}
-
-func (s *projectVectorStoreVaultStub) EnsureProjectVault(_ context.Context, projectID int64) (bool, error) {
-	s.ensured++
-	s.lastEnsure = projectID
-	return true, s.ensureErr
-}
-
-func (s *projectVectorStoreVaultStub) DeleteProjectVault(_ context.Context, _ int64) (bool, error) {
-	s.removed++
-	return true, s.removeErr
-}
-
 type projectVectorStoreConfigurationsStub struct {
 	deleted int
 	title   string
@@ -291,7 +266,7 @@ func (s *projectVectorStoreConfigurationsStub) DeleteProjectPgvectorConfiguratio
 	return true, s.err
 }
 
-type projectVectorStoreMaterialsStub struct{}
+type projectVectorStoreMaterialsStub struct{ writes int }
 
 func (*projectVectorStoreMaterialsStub) LoadProjectPgvectorMaterial(
 	_ context.Context, _ int64,
@@ -299,9 +274,10 @@ func (*projectVectorStoreMaterialsStub) LoadProjectPgvectorMaterial(
 	return vectorstoreapp.ProjectMaterial{}, nil
 }
 
-func (*projectVectorStoreMaterialsStub) StoreProjectPgvectorMaterial(
+func (s *projectVectorStoreMaterialsStub) StoreProjectPgvectorMaterial(
 	_ context.Context, _ int64, _ string, _ string,
 ) error {
+	s.writes++
 	return nil
 }
 

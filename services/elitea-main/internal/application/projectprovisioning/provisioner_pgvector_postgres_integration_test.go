@@ -343,14 +343,29 @@ ON CONFLICT (elitea_title) DO UPDATE SET data = EXCLUDED.data`,
 
 // newProjectVectorStoreForTest composes the production collaborator. Nothing is
 // faked: a fake here would prove only that the step calls something.
+//
+// The secrets handler is built HERE, and it reads SECRETS_MASTER_KEY at
+// construction. A caller that sets that variable must set it before this runs.
 func newProjectVectorStoreForTest(t *testing.T, pool *pgxpool.Pool) *runtimecomposition.ProjectVectorStore {
+	t.Helper()
+	return newProjectVectorStoreWithSecretsForTest(t, pool, v2secrets.NewHandler(pool))
+}
+
+// newProjectVectorStoreWithSecretsForTest composes the same collaborator with a
+// caller-supplied vault port, so a case can prove what happens when the material
+// writer holds a DIFFERENT master key from the vault creator (#399).
+func newProjectVectorStoreWithSecretsForTest(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	secrets runtimecomposition.ProjectVaultSecrets,
+) *runtimecomposition.ProjectVectorStore {
 	t.Helper()
 	runtime, err := runtimecomposition.NewCurrentConfigurationsRuntime(pool, referenceProjectID, "")
 	if err != nil {
 		t.Fatalf("compose the Configurations runtime: %v", err)
 	}
 	t.Cleanup(runtime.Destroy)
-	vectorStore, err := runtime.NewProjectVectorStore(pool, slog.New(slog.DiscardHandler))
+	vectorStore, err := runtime.NewProjectVectorStore(pool, secrets, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("compose the project vector store: %v", err)
 	}
