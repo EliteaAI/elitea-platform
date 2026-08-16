@@ -90,6 +90,126 @@
     },
     "resources": { "type": "object", "additionalProperties": true },
     "env": { "type": "object", "additionalProperties": { "type": "string" } },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The runtime plane (issue #382). All-or-nothing: internal/runtimecomposition/config.go requires the whole set at once and refuses to start on a partial one. The `if enabled` blocks below reject a partial values file here, and templates/_helpers.tpl repeats the same checks with a message that names the field.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "commandStream": { "type": "string" },
+        "maxOutstanding": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "streamMaxEntries": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "signingKeyId": { "type": "string" },
+        "agentExecutionDispatch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "commandStream": { "type": "string" },
+            "consumerGroup": { "type": "string" },
+            "streamMaxEntries": { "type": "integer", "minimum": 1, "maximum": 1024 },
+            "currentMainBaseUrl": { "type": "string" }
+          }
+        },
+        "indexIngestDispatch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "commandStream": { "type": "string" },
+            "consumerGroup": { "type": "string" },
+            "streamMaxEntries": { "type": "integer", "minimum": 1, "maximum": 1024 }
+          }
+        },
+        "indexScheduling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "instanceId": { "type": "string" }
+          }
+        },
+        "redis": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": { "type": "string" },
+            "poolSize": { "type": "integer", "minimum": 1, "maximum": 64 }
+          }
+        },
+        "listeners": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "controlAddress": { "type": "string", "minLength": 1 },
+            "outputAddress": { "type": "string", "minLength": 1 },
+            "contentAddress": { "type": "string", "minLength": 1 }
+          }
+        },
+        "material": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mountPath": { "type": "string", "pattern": "^/" },
+            "volume": { "type": "object" }
+          }
+        }
+      },
+      "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+      "then": {
+        "description": "Every per-plane requirement sits INSIDE this block, so it applies only while the runtime is enabled. Do not move one back into its own subschema: a dispatch plane enabled while runtime.enabled is false would then be reported as missing sub-fields, and the operator needs to be told that the runtime is off instead. templates/_helpers.tpl owns that message.",
+        "properties": {
+          "commandStream": { "minLength": 1 },
+          "signingKeyId": { "minLength": 1 },
+          "agentExecutionDispatch": {
+            "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+            "then": {
+              "properties": {
+                "commandStream": { "minLength": 1 },
+                "consumerGroup": { "minLength": 1 },
+                "currentMainBaseUrl": { "minLength": 1, "pattern": "^https://" }
+              },
+              "required": ["commandStream", "consumerGroup", "streamMaxEntries", "currentMainBaseUrl"]
+            }
+          },
+          "indexIngestDispatch": {
+            "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+            "then": {
+              "properties": {
+                "commandStream": { "minLength": 1 },
+                "consumerGroup": { "minLength": 1 }
+              },
+              "required": ["commandStream", "consumerGroup", "streamMaxEntries"]
+            }
+          },
+          "indexScheduling": {
+            "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+            "then": {
+              "properties": {
+                "instanceId": { "minLength": 1, "pattern": "^[a-z0-9][a-z0-9._-]*$" }
+              },
+              "required": ["instanceId"]
+            }
+          },
+          "redis": {
+            "properties": {
+              "url": { "minLength": 1, "pattern": "^rediss://.+/0$" }
+            },
+            "required": ["url", "poolSize"]
+          },
+          "material": {
+            "properties": {
+              "volume": { "minProperties": 1 }
+            },
+            "required": ["mountPath", "volume"]
+          },
+          "listeners": {
+            "required": ["controlAddress", "outputAddress", "contentAddress"]
+          }
+        },
+        "required": ["commandStream", "maxOutstanding", "streamMaxEntries", "signingKeyId", "redis", "listeners", "material"]
+      }
+    },
     "secrets": {
       "type": "object",
       "additionalProperties": {

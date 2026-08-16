@@ -427,7 +427,7 @@ func deployAssignedEnv(t *testing.T, dir string) map[string]string {
 		".yml": true, ".yaml": true, ".env": true, ".sh": true, ".tpl": true, ".conf": true,
 	}
 	// `ELITEA_X: value` (compose) or `ELITEA_X=value` (env file, shell).
-	assignRe := regexp.MustCompile(`^(ELITEA_[A-Z0-9_]+)\s*[:=]`)
+	assignRe := regexp.MustCompile(`^(ELITEA_[A-Z0-9_]+)\s*[:=]\s*(.*)$`)
 	// `- name: ELITEA_X` (a Kubernetes env entry, whose value is the next key).
 	namedRe := regexp.MustCompile(`^-?\s*name:\s*"?(ELITEA_[A-Z0-9_]+)"?\s*$`)
 
@@ -449,14 +449,28 @@ func deployAssignedEnv(t *testing.T, dir string) map[string]string {
 				continue
 			}
 			trimmed = strings.TrimPrefix(trimmed, "export ")
-			for _, re := range []*regexp.Regexp{assignRe, namedRe} {
-				m := re.FindStringSubmatch(trimmed)
-				if m == nil {
+			name := ""
+			if m := assignRe.FindStringSubmatch(trimmed); m != nil {
+				// Assigned OFF is not assigned. A flag set to "false" leaves
+				// every branch behind it exactly as unreachable as no
+				// assignment at all, so counting it as deployed would report
+				// the flag as live on the strength of the line that turns it
+				// off — the same inverted answer the comment rule above
+				// avoids. It also inverts the darkFlags check: a chart that
+				// documents a dark flag as "false" would make the darkFlags
+				// entry look stale, and deleting that entry is what would
+				// then let someone flip the flag to "true" unchallenged.
+				if !envValueIsOn(m[2]) {
 					continue
 				}
-				if _, already := assigned[m[1]]; !already {
-					assigned[m[1]] = fmt.Sprintf("%s:%d", filepath.Base(path), number+1)
-				}
+				name = m[1]
+			} else if m := namedRe.FindStringSubmatch(trimmed); m != nil {
+				name = m[1]
+			} else {
+				continue
+			}
+			if _, already := assigned[name]; !already {
+				assigned[name] = fmt.Sprintf("%s:%d", filepath.Base(path), number+1)
 			}
 		}
 		return nil
@@ -465,6 +479,34 @@ func deployAssignedEnv(t *testing.T, dir string) map[string]string {
 		t.Fatalf("walk %s: %v", dir, walkErr)
 	}
 	return assigned
+}
+
+// envValueIsOn reports whether a deploy-file assignment turns a flag ON.
+//
+// Only the ELITEA_*_ENABLED booleans this file grades are ever read back, so a
+// non-boolean value (a URL, a path, a port) counts as assigned. The quotes are
+// stripped because the Helm values files write "false" and the compose files
+// write false, and a trailing comment is dropped because `FLAG: false # why`
+// is a normal way to write the line.
+//
+// GRADE BOOLEANS ONLY. Do not use this helper for a variable that holds a
+// number. It reads "0" as off, because a boolean flag written as 0 is off.
+// But 0 is also a correct value for a worker count, a replica count or a
+// port. For those variables this helper answers "not assigned" when the
+// deployment did assign them, which is the inverted answer the caller above
+// exists to prevent. If you must grade a numeric variable, give it a
+// different helper.
+func envValueIsOn(raw string) bool {
+	value := strings.TrimSpace(raw)
+	if idx := strings.Index(value, "#"); idx >= 0 {
+		value = strings.TrimSpace(value[:idx])
+	}
+	value = strings.Trim(value, `"'`)
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "false", "off", "no", "0":
+		return false
+	}
+	return true
 }
 
 func repoRootFrom(t *testing.T) string {

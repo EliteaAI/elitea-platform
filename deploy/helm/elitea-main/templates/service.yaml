@@ -11,5 +11,22 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+    {{- if .Values.runtime.enabled }}
+    # The runtime plane's three listeners (issue #382). The agent worker dials
+    # them through this Service, so the server certificates in the runtime
+    # material must carry this Service name.
+    - port: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.controlAddress }}
+      targetPort: runtime-control
+      protocol: TCP
+      name: runtime-control
+    - port: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.outputAddress }}
+      targetPort: runtime-output
+      protocol: TCP
+      name: runtime-output
+    - port: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.contentAddress }}
+      targetPort: runtime-content
+      protocol: TCP
+      name: runtime-content
+    {{- end }}
   selector:
     {{- include "elitea-main.selectorLabels" . | nindent 4 }}

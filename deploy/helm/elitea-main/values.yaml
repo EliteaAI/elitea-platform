@@ -2,6 +2,18 @@
 # split database principals, or production secret delivery. An opt-in
 # Ingress/HTTPRoute exists (ingress.enabled) but ships with no TLS secret
 # or hostname configured — see ingress.tls / ingress.hosts below.
+#
+# CAPABILITY FLAGS (issue #382). cmd/elitea-main gates whole capabilities on
+# environment variables, and this file sets every one of them. It did not
+# before, so the same image served the pylon-free configuration on compose and
+# served none of it on Kubernetes. Read the "Capability flags" block in the env
+# map below, and the runtime: block further down.
+#
+# These defaults are for a DEFAULT install, which has no production
+# authentication, so most capabilities ship off. values-standalone.yaml is the
+# values file whose capability set matches the standalone compose stack.
+# Prerequisites are checked while the chart renders, so a wrong combination
+# fails `helm template` rather than the pod.
 replicaCount: 2
 
 image:
@@ -125,6 +137,104 @@ env:
   # deployments explicitly set this to "false" while the current artifacts
   # plugin remains authoritative.
   ELITEA_ARTIFACTS_ENABLED: "true"
+
+  # --- Capability flags (issue #382) -----------------------------------------
+  # cmd/elitea-main gates whole capabilities on these names. Each one makes the
+  # composition root build a dependency, and the router registers a route group
+  # only when that dependency exists. Before issue #382 this chart set none of
+  # them, so a Kubernetes install served none of those route groups while the
+  # same image on compose served all of them.
+  #
+  # They ship "false" here, not "true". Two reasons, and both are about the
+  # DEFAULT install:
+  #   1. Most of them need production authentication, which this chart builds
+  #      only from fileConfig.authConfig (off by default). Shipping "true" with
+  #      authentication off would turn a working default install into a
+  #      CrashLoopBackOff.
+  #   2. An operator must choose a public project id and a Redis endpoint. The
+  #      chart cannot guess either.
+  #
+  # Read values-standalone.yaml for the values file that turns the set on. The
+  # chart checks every prerequisite at `helm template` time, so a wrong
+  # combination fails on the terminal, not in a restarting pod.
+
+  # The Configurations plane: eight configuration and model-catalogue routes,
+  # and the dependency that agent dispatch and index ingest both compose
+  # through. NEEDS production authentication.
+  ELITEA_CONFIGURATIONS_ENABLED: "false"
+
+  # The three configuration WRITE routes. Needs ELITEA_CONFIGURATIONS_ENABLED.
+  # The standalone compose stack leaves this off, because turning it on demands
+  # the LiteLLM lifecycle facade that the Bifrost gateway replaced. Leave it
+  # off until that facade has a successor.
+  ELITEA_CONFIGURATIONS_MUTATION_ENABLED: "false"
+
+  # The project-information route. NEEDS production authentication.
+  #
+  # With this off, the project-information path falls through to the prototype
+  # handler, which never counts teammates and always reports a null icon. The
+  # project screen reads exactly those two fields, so it shows zero teammates
+  # and no project icon — at 200, which is why nothing looked broken.
+  ELITEA_PROJECT_INFO_ENABLED: "false"
+
+  # The project whose configurations are PUBLIC and merge into every other
+  # project's option lookups. Read only when ELITEA_CONFIGURATIONS_ENABLED is
+  # on, and it must name a project that EXISTS: the model catalogue lists that
+  # project's configurations and propagates the failure, so a missing id fails
+  # every agent turn rather than yielding an empty public set.
+  #
+  # Set the SAME value in deploy/helm/elitea-llm-gateway/values.yaml, where the
+  # key has the same name. The gateway reads the public project to serve the
+  # shared models the operator publishes (issue #316). The two services must
+  # name one project, or the gateway serves a different model set from the one
+  # the UI offers. Empty on BOTH sides leaves shared models unreachable: the
+  # picker offers them and the request then finds no credential.
+  ELITEA_AI_PROJECT_ID: ""
+
+  # Whether a project may define its own LLM credentials. Empty keeps the
+  # binary's own default. Do NOT set ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS:
+  # that is the old name, and cmd/elitea-main refuses to start when it is
+  # present, because silently ignoring it would fail open.
+  ELITEA_ALLOW_PROJECT_OWN_LLMS: ""
+
+  # Path to the secret-vault master key. Empty means the vault key column holds
+  # the Fernet key itself; set means that column holds the key WRAPPED under
+  # this master key. The two readings are incompatible, so a deployment whose
+  # vault rows are unwrapped must leave this empty or every credential read
+  # fails, several layers away from anything that names a vault.
+  ELITEA_VAULT_MASTER_KEY_FILE: ""
+
+  # --- Capabilities deliberately left DARK -----------------------------------
+  # These two are exposed so the chart states them, and they must stay "false".
+  # Their routes answer a shape that the published contract and the generated
+  # client both reject, so turning either on breaks the web client. Issues #394
+  # and #395 track the contract work that must land FIRST. Change these only
+  # together with the contract and the regenerated client.
+  ELITEA_INDEX_TYPES_ENABLED: "false"
+  ELITEA_APPLICATION_SKILLS_ENABLED: "false"
+
+  # --- Project event stream (#152) -------------------------------------------
+  # Transport for GET /api/v2/events/prompt_lib/{projectID}. The router has a
+  # two-arm fallback and BOTH arms were unassigned in this chart, so the route
+  # was never registered and answered 404 — indistinguishable from a typo.
+  #
+  # Host:port of the general-purpose Redis, e.g. "elitea-redis-master:6379".
+  # This is NOT the runtime plane's Redis: that one is separate, mutually
+  # authenticated, and configured under runtime.redis below.
+  REDIS_URL: ""
+  REDIS_USERNAME: ""
+
+  # --- Admin console ---------------------------------------------------------
+  # Directory the admin single-page application is served from. The published
+  # image bakes this path and ships the bundle at it, so the value here matches
+  # the image and the standalone compose stack.
+  #
+  # CAUTION: an EMPTY value turns the admin console off, because the
+  # composition root builds the admin configuration only for a non-empty path —
+  # and this ConfigMap entry OVERRIDES the image's own setting. So clearing
+  # this key is a switch, not a no-op. Set it to "/nonexistent" when you deploy
+  # the `hybrid` image variant, which ships no admin bundle.
+  ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
 
   # --- circular-routing guard #1, upsert time (spec §2.6) --------------------
   # Comma-separated list of the platform's OWN /llm origins, e.g.
@@ -268,6 +378,145 @@ secrets:
     secretName: elitea-main-llm-gateway-secrets
     key: llm-gateway-ca-file
     optional: true
+  # Password for the general-purpose Redis named by env.REDIS_URL above — the
+  # project event stream's transport (issue #382). Optional, because a Redis
+  # with no authentication needs no password and the pod must still start.
+  REDIS_PASSWORD:
+    secretName: elitea-main-redis-secrets
+    key: redis-password
+    optional: true
+
+# --- Runtime plane (issue #382) ----------------------------------------------
+# Agent execution, the execution-events stream, index ingest, index scheduling
+# and configuration validation. This is the biggest capability the chart left
+# dark, and it is the one that decides whether a Kubernetes install can run
+# without pylon at all.
+#
+# ALL-OR-NOTHING. internal/runtimecomposition/config.go builds this
+# configuration with a `required()` helper: every name must be present and
+# non-empty, or the process exits at boot. It also REFUSES a setting whose
+# dispatch plane is not explicitly enabled. So there is no "turn on half of
+# it". The chart checks the whole set at `helm template` time and names the
+# missing field, so a partial values file fails on the terminal.
+#
+# PREREQUISITE: production authentication. cmd/elitea-main refuses to compose
+# the runtime without a principal validator and a forwarded-identity verifier,
+# and this chart builds both only from fileConfig.authConfig. Set
+# fileConfig.authConfig.enabled=true as well.
+#
+# WHAT STILL BLOCKS A KUBERNETES INSTALL — read this before you set
+# enabled: true. The runtime reads its keys, passwords and certificates through
+# internal/security/securefile, which applies three rules:
+#   1. The path must be canonical and its final component must NOT be a
+#      symlink.
+#   2. Private material (command-signing-key.pem, redis-producer-password and
+#      the three server .key files) must carry OWNER BITS ONLY — at most 0600.
+#   3. The file must be readable by the process owner.
+# A plain Kubernetes `secret:` volume breaks rule 1: it is a symlink farm, so
+# every path resolves through a ..data/ symlink and securefile refuses it. A
+# per-file `subPath` mount fixes rule 1 and then breaks rules 2 and 3 together:
+# the file is owned by root, this pod runs as nonroot, and the only modes that
+# let a nonroot process read a root-owned file (0440 with fsGroup, or 0444)
+# carry group or other bits that rule 2 rejects.
+#
+# So the runtime plane needs a material source that writes REAL files owned by
+# the pod's own user with mode 0600 — a CSI driver or a sidecar that
+# materialises them into an emptyDir. That mechanism is issue #382's declared
+# out-of-scope ("secret delivery"), so the chart does not choose one for you:
+# runtime.material.volume takes the volume specification and the chart wires
+# every file path under runtime.material.mountPath.
+#
+# deploy/scripts/gen-runtime-certs.sh mints the material and its FILE NAMES are
+# the contract — the chart derives every path from them, so whatever supplies
+# the volume must present exactly these names:
+#   runtime-ca.crt                 command-signing-key.pem
+#   control-server.crt             command-signing-keyring.json
+#   control-server.key             redis-producer-password
+#   output-server.crt              content-server.crt
+#   output-server.key              content-server.key
+runtime:
+  enabled: false
+
+  # The base plane: configuration validation. Always required when enabled.
+  # The stream name must differ from every dispatch stream below.
+  commandStream: ""
+  maxOutstanding: 64
+  streamMaxEntries: 1024
+
+  # The four agent turn routes — the chat send path.
+  agentExecutionDispatch:
+    enabled: false
+    commandStream: ""
+    consumerGroup: ""
+    streamMaxEntries: 1024
+    # An https ORIGIN, with no path, query or fragment. elitea-main calls
+    # itself on it for the next-input-suggestion policy. Cleartext fails that
+    # one call and degrades a suggestion; it does not break the send path.
+    currentMainBaseUrl: ""
+
+  # Index start, index cancel and index metadata. NEEDS
+  # env.ELITEA_CONFIGURATIONS_ENABLED="true": the handlers compose through the
+  # Configurations dependency, and the embedding binding resolves from the same
+  # configuration rows.
+  #
+  # Giving this the SAME commandStream AND the SAME consumerGroup as
+  # agentExecutionDispatch is supported, and it is what the standalone compose
+  # stack does: one worker then serves both capabilities, because the worker
+  # dispatches on the command's capability id rather than on its stream. Doing
+  # that costs no second worker, no second consumer group and no extra Redis
+  # ACL grant. Sharing the stream with a DIFFERENT group is refused.
+  indexIngestDispatch:
+    enabled: false
+    commandStream: ""
+    consumerGroup: ""
+    streamMaxEntries: 1024
+
+  # The index schedule write and delete routes. NEEDS indexIngestDispatch.
+  indexScheduling:
+    enabled: false
+    # Lowercase letters, digits, dot, underscore and hyphen; it must start with
+    # a letter or a digit.
+    instanceId: ""
+
+  # The runtime's OWN Redis — mutually authenticated, and separate from the
+  # general-purpose Redis in env.REDIS_URL above.
+  redis:
+    # Must be a rediss:// URL that carries an ACL USERNAME and NO password, and
+    # it must select database zero explicitly, e.g.
+    #   "rediss://producer@elitea-runtime-redis:6380/0"
+    # The password comes from the redis-producer-password file in the material
+    # volume, never from the URL.
+    url: ""
+    poolSize: 8
+
+  # Must equal the key id inside command-signing-keyring.json. The composition
+  # cross-checks the two and refuses to start on a mismatch.
+  signingKeyId: ""
+
+  # Three listeners, three DISTINCT addresses. The agent worker dials all three
+  # on this Service, so the server certificates must carry the Service name.
+  # The chart opens the ports on the container and the Service when the runtime
+  # is enabled.
+  listeners:
+    controlAddress: ":9443"
+    outputAddress: ":9444"
+    contentAddress: ":9445"
+
+  material:
+    mountPath: /run/elitea-runtime
+    # A Kubernetes volume specification, without its `name`. The chart adds the
+    # name and mounts it read-only at mountPath. Read the securefile rules at
+    # the top of this block before choosing one: a plain `secret:` volume
+    # renders and then fails at boot.
+    #
+    # Example shape for a CSI driver that writes owner-owned files:
+    #   volume:
+    #     csi:
+    #       driver: secrets-store.csi.k8s.io
+    #       readOnly: true
+    #       volumeAttributes:
+    #         secretProviderClass: elitea-runtime-material
+    volume: {}
 
 # Kubernetes execution path for the versioned migration corpus
 # (services/elitea-main/migrations/{shared,tenant}, applied by the separate

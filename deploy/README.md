@@ -51,6 +51,90 @@ frontend. Migrations are not their own wave: `elitea-main`'s chart runs them as
 a `pre-install,pre-upgrade` Helm hook Job, and Helm blocks the release until it
 completes, so the ordering is enforced *inside* wave 1.
 
+## Capability flags — what a Helm install serves (#382)
+
+`cmd/elitea-main` gates whole capabilities on environment variables. Each
+variable makes the composition root build a dependency, and the router
+registers a route group only when that dependency exists.
+
+The chart used to set **none** of them. So the same image served the pylon-free
+configuration on compose and served none of it on Kubernetes — the platform
+could run without pylon on compose and could not on Kubernetes, which is the
+deployment target. `deploy/helm/elitea-main/values.yaml` now carries every
+flag, and `deploy/helm/elitea-main/values-standalone.yaml` is the values file
+whose capability set matches `docker-compose.standalone-full.yml`.
+
+| Flag | Default install | `values-standalone.yaml` | Prerequisite |
+|---|---|---|---|
+| `ELITEA_ARTIFACTS_ENABLED` | on | on | object storage configured |
+| `ELITEA_CONFIGURATIONS_ENABLED` | off | **on** | production authentication |
+| `ELITEA_PROJECT_INFO_ENABLED` | off | **on** | production authentication |
+| `ELITEA_AI_PROJECT_ID` | empty | **set** | must name a project that exists |
+| `ELITEA_CONFIGURATIONS_MUTATION_ENABLED` | off | off | needs the retired LiteLLM lifecycle facade |
+| `ELITEA_INDEX_TYPES_ENABLED` | off | off | **must stay off** — issue #394 |
+| `ELITEA_APPLICATION_SKILLS_ENABLED` | off | off | **must stay off** — issue #395 |
+| `REDIS_URL` | empty | **set at install** | a Redis the cluster can reach |
+| `ADMIN_UI_STATIC_DIR` | **set** | set | the image ships the bundle at it |
+| `ELITEA_RUNTIME_ENABLED` and its block | off | **on** | production authentication **and** runtime material — read below |
+
+Two flags stay off on purpose in **both** files. Their routes answer a shape
+the published contract and the generated client both reject, so turning either
+on breaks the web client. Issues #394 and #395 track the contract work that has
+to land first.
+
+Prerequisites are checked while the chart renders, not when the pod starts. A
+values file that turns a capability on without what it needs fails
+`helm template` with a message naming the field and the Go source that would
+otherwise refuse at boot. `deploy/helm/elitea-main/tests/render-capabilities.sh`
+asserts all of this against the rendered YAML, and it reads the required
+runtime names out of `internal/runtimecomposition/config.go`, so a newly
+required name fails the gate until the chart renders it.
+
+### The runtime plane, and the one thing that still blocks it
+
+The runtime plane is agent execution, the execution-events stream, index
+ingest, index scheduling and configuration validation. It is **all-or-nothing**:
+`internal/runtimecomposition/config.go` requires about thirty names at once and
+refuses to start on a partial set. The chart exposes the whole block under
+`runtime:` and refuses a partial one at render time.
+
+What it cannot do for you is deliver the material. The runtime reads its keys,
+passwords and certificates through `internal/security/securefile`, which
+refuses a path whose final component is a symlink, and requires **owner bits
+only** on private material. A plain Kubernetes `secret:` volume satisfies
+neither:
+
+- mounted whole, it is a symlink farm, so every path resolves through `..data/`
+  and `securefile` refuses it;
+- mounted per file with `subPath`, the files are real but owned by `root`,
+  while this pod runs as nonroot — and the only modes that let a nonroot
+  process read a root-owned file (`0440` with `fsGroup`, or `0444`) carry the
+  group or other bits that `securefile` rejects.
+
+So the runtime plane needs a source that writes **real files owned by the pod's
+own user at mode 0600** — a CSI driver, or a sidecar that materialises them
+into an `emptyDir`. Issue #382 puts secret delivery out of scope, so the chart
+does not pick one: `runtime.material.volume` takes the volume specification and
+the chart derives every file path under `runtime.material.mountPath`. The file
+**names** are the contract, and they are the ones
+`deploy/scripts/gen-runtime-certs.sh` writes.
+
+Set `runtime.enabled: false` if you have no such mechanism yet. Everything else
+above still works without any runtime material, and it is the larger half of
+the gap.
+
+### `ELITEA_AI_PROJECT_ID` is set in two charts
+
+`deploy/helm/elitea-main/values.yaml` and
+`deploy/helm/elitea-llm-gateway/values.yaml` both carry this key, and **both
+must name the same project**. elitea-main merges that project's configurations
+into every other project's option lookups; the gateway reads it to serve the
+shared models an operator publishes (issue #316). Empty on the gateway side
+leaves shared models unreachable — the model picker offers them and the request
+then finds no credential. Both ship empty, because an id naming a schema that
+does not exist makes every credential read fail, so the operator must choose
+one project and set it in both places.
+
 ## What a Kubernetes install does NOT give you
 
 Stated plainly, because the gap between compose and Helm is where deploys break:
@@ -94,12 +178,18 @@ Stated plainly, because the gap between compose and Helm is where deploys break:
 `.github/workflows/helm-lint.yml` has three jobs:
 
 1. **Helm Lint** — `helm lint` over every chart under `deploy/helm/`. New
-   charts are picked up automatically.
+   charts are picked up automatically. The job also runs
+   `deploy/helm/elitea-main/tests/render-capabilities.sh`, because `helm lint`
+   never reads the rendered environment: it stayed green for as long as the
+   chart set no capability flag at all (#382).
 2. **Helm Template (per chart)** — `helm template` with the chart's values
    files, *and* a second pass with its non-default toggles (HPA, PVC, optional
    Services and probes, hook Jobs render zero objects otherwise, so a break in
-   them would be invisible). Both passes are validated with `kubeconform
-   -strict`. A new chart must be **added to this matrix** by hand.
+   them would be invisible). `elitea-main` gets a third pass with
+   `values-standalone.yaml`, which renders the runtime material volume and the
+   three runtime listener ports that no other pass produces. Every pass is
+   validated with `kubeconform -strict`. A new chart must be **added to this
+   matrix** by hand.
 3. **ArgoCD Applications** — `kubeconform -strict` against the real
    `argoproj.io` Application CRD schema, plus structural checks that no schema
    can make: a stray manifest directly in `deploy/argocd/` that the root never
