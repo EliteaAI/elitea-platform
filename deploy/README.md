@@ -209,16 +209,33 @@ Stated plainly, because the gap between compose and Helm is where deploys break:
 - **No secrets.** Every chart sources sensitive values from Kubernetes Secrets
   that must be provisioned out-of-band. `elitea-main`'s and the gateway's
   `GATEWAY_IDENTITY_SECRET` are `optional: false` — pods do not start without
-  them, and the two sides must carry the **same** value.
+  them, and the two sides must carry the **same** value. `pylon-indexer`'s
+  `SECRETS_MASTER_KEY` is `optional: false` for the same reason, described
+  next.
 - **No model-cache pre-seed for `pylon-indexer`.** compose's `model-cache-init`
   has no Kubernetes equivalent here.
 
-## The project vault master key (`SECRETS_MASTER_KEY`)
+## `SECRETS_MASTER_KEY` — one key for the whole stack
 
-This one variable decides whether every project's vault key is encrypted. Set
-it to a base64url-encoded 32-byte Fernet key. `elitea-main` and
-`elitea-llm-gateway` must carry the **same** value, because they read the same
-`centry.secrets_key` rows.
+`elitea-main`, `pylon-indexer` and `elitea-llm-gateway` all read
+`centry.secrets_key`. Each one wraps a project key with `SECRETS_MASTER_KEY`
+when it holds that value, and stores the project key in the clear when it does
+not. Two services with two answers put two row formats in one table, and
+neither can read what the other wrote.
+
+So the rule is: **one stack, one value, given to every service that reads that
+table.** Give it in the environment, never in a file. A committed default is a
+second key source, and the one `pylon-indexer` used to ship is treated as
+exposed (issue #418).
+
+Set it to a base64url-encoded 32-byte Fernet key:
+
+```bash
+export SECRETS_MASTER_KEY=$(python3 -c \
+  'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')
+```
+
+### The three states
 
 The variable has three states. They are not equivalent:
 
@@ -230,20 +247,31 @@ The variable has three states. They are not equivalent:
 
 A malformed key stops the service on purpose (#412). Before that change the
 service ignored the bad value and stored the keys unwrapped. An operator who
-set the variable got plaintext storage, and no report of it.
+set the variable got plaintext storage, and no report of it. The
+`pylon-indexer` image refuses to start on a missing or malformed value in the
+same way (`services/pylon-indexer/entrypoint.sh`).
 
 A trailing newline is **not** malformed. Go and Python both ignore `\r` and
 `\n` when they decode base64, so a key mounted from a file keeps working. A
 stray space or tab **is** malformed.
 
-Which stack sets it:
+### Which stack sets it
 
+- `deploy/docker-compose.yml` requires the variable for both services that read
+  the table, and compose fails if you do not export it (#418).
 - `docker-compose.staging.yml` requires it from your shell, and compose fails
   if you do not export it.
 - No chart under `deploy/helm/elitea-main/` sets it. Supply it through a
   Kubernetes Secret, or accept unwrapped storage.
-- The local compose stack and the E2E stack set no key on purpose. The E2E
-  stack seeds unwrapped key rows, so it needs none.
+- The E2E stack sets no key on purpose. It seeds unwrapped key rows, so it
+  needs none.
+
+### Changing the key
+
+Rows written under a different key, or under no key, do not become readable
+when the key changes. Convert them with
+[`scripts/rewrap-centry-vault.py`](scripts/rewrap-centry-vault.py), on a copy
+first. It rewraps the project key and never rewrites the secret values.
 
 ## CI
 
