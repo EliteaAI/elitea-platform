@@ -488,6 +488,14 @@ func deployAssignedEnv(t *testing.T, dir string) map[string]string {
 // stripped because the Helm values files write "false" and the compose files
 // write false, and a trailing comment is dropped because `FLAG: false # why`
 // is a normal way to write the line.
+//
+// GRADE BOOLEANS ONLY. Do not use this helper for a variable that holds a
+// number. It reads "0" as off, because a boolean flag written as 0 is off.
+// But 0 is also a correct value for a worker count, a replica count or a
+// port. For those variables this helper answers "not assigned" when the
+// deployment did assign them, which is the inverted answer the caller above
+// exists to prevent. If you must grade a numeric variable, give it a
+// different helper.
 func envValueIsOn(raw string) bool {
 	value := strings.TrimSpace(raw)
 	if idx := strings.Index(value, "#"); idx >= 0 {
