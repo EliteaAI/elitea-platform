@@ -516,11 +516,21 @@ func (h *Handler) spawnBillingGoroutine(
 		// counters are independent, and skipping the member increment because
 		// the project one erred would leave a member cap under-counted for
 		// reasons that have nothing to do with that member.
+		//
+		// It gets its OWN timeout budget rather than sharing billCtx, for the
+		// reason FIX #27 gives one to the pre-increment snapshot: a slow project
+		// increment would otherwise spend the whole 10 s and hand this call an
+		// already-expired context. That is not a missed alert, it is member
+		// spend dropped — and the member cap that admits forever afterwards is
+		// the defect #321 exists about, one layer down.
 		if uid > 0 {
 			memberEventID := uuid.NewString()
-			if err := h.budgetGate.UpdateUsage(billCtx, pid, budgetScopeUser,
+			memberCtx, memberCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+			err := h.budgetGate.UpdateUsage(memberCtx, pid, budgetScopeUser,
 				failmode.UserScopeID(pid, uid), memberEventID,
-				costNano, periodStart, periodEnd, nil); err != nil {
+				costNano, periodStart, periodEnd, nil)
+			memberCancel()
+			if err != nil {
 				h.logger.Warn("budget gate: member UpdateUsage failed; member spend may be under-counted",
 					"project_id", pid, "user_id", uid, "cost_nano", costNano,
 					"event_id", memberEventID, "err", err)
