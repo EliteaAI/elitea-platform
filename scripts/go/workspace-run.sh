@@ -33,6 +33,10 @@
 #      discovery command that fails is a FAILURE for the same reason.
 #   6. It names the Go modules on disk that this run did NOT cover, so a green
 #      summary can never be read as "the whole repository was tested".
+#   7. It NAMES every test that skipped itself, and how many (#423). `go test`
+#      prints `ok` for a package whose tests all called `t.Skip`, so a suite
+#      that never runs and a suite that passes look the same in the log.
+#      Eighteen suites did exactly that. See the skip ledger below.
 #
 # Usage:
 #   scripts/go/workspace-run.sh test              # go test -race -count=1 ./...
@@ -60,8 +64,14 @@
 # time, and the modules outside it are printed by name.
 #
 # Environment:
-#   ELITEA_GO_TEST_TIMEOUT  per-package `go test -timeout` (default below)
-#   GOLANGCI_LINT           golangci-lint binary to use (default: golangci-lint)
+#   ELITEA_GO_TEST_TIMEOUT        per-package `go test -timeout` (default below)
+#   GOLANGCI_LINT                 golangci-lint binary to use (default: golangci-lint)
+#   ELITEA_REQUIRE_DECLARED_SKIPS 1 makes an undeclared skip FAIL the run.
+#                                 CI sets it. Locally the ledger only reports,
+#                                 because a developer without PostgreSQL,
+#                                 Redis or the storage emulators should still
+#                                 be able to run `task test`. Same shape as
+#                                 CONTRACT_REQUIRE_PARITY in ci-contract.yml.
 #
 # `set -e` is deliberately absent: this script must survive a module failure to
 # run the next module. Every status is therefore checked by hand.
@@ -289,7 +299,67 @@ for module_dir in "${on_disk[@]}"; do
     fi
 done
 
-# ── 3. Run every module and record every status ──────────────────────────────
+# ── 3. Prepare the skip ledger ───────────────────────────────────────────────
+#
+# WHY (#423)
+#
+# `go test ./...` prints `ok` for a package whose every test called `t.Skip`.
+# Eighteen suites did that on every CI run: the job was green and the coverage
+# was zero. `-v` would show the skips, but it also prints a line per passing
+# test across the whole workspace, which is why nobody turned it on.
+#
+# `go test -json` carries a `skip` action per test, so the run can name every
+# skip while the human log stays the size it was. skip-ledger.py rebuilds the
+# non-verbose log from the event stream and appends each skip, with its
+# reason, to one ledger shared by every module. skip-gate.py reports the
+# ledger and, under ELITEA_REQUIRE_DECLARED_SKIPS=1, fails on a skip that
+# scripts/go/declared-skips.txt does not explain.
+#
+# `vet` produces no test events, so it uses neither.
+skip_ledger=""
+skip_filter=""
+skip_gate=""
+declared_skips="$repo_root/scripts/go/declared-skips.txt"
+if [ "$mode" != "vet" ]; then
+    skip_filter="$script_dir/skip-ledger.py"
+    skip_gate="$script_dir/skip-gate.py"
+    for helper in "$skip_filter" "$skip_gate"; do
+        if [ ! -f "$helper" ]; then
+            echo "workspace-run: ${helper} is missing; the run could not report its skips" >&2
+            exit 1
+        fi
+    done
+    if [ ! -f "$declared_skips" ]; then
+        echo "workspace-run: ${declared_skips} is missing; the run could not judge its skips" >&2
+        exit 1
+    fi
+    # A missing python3 must stop the run, not silently drop the ledger. A
+    # gate that quietly does nothing is the defect this ledger exists to find.
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "workspace-run: python3 is required to report skipped tests (#423)" >&2
+        exit 1
+    fi
+    # A caller may name the ledger file to keep it (CI can then upload it).
+    # Otherwise it is a temporary file this script removes on the way out.
+    if [ -n "${ELITEA_SKIP_LEDGER:-}" ]; then
+        skip_ledger="$ELITEA_SKIP_LEDGER"
+        : >"$skip_ledger"
+        if [ ! -f "$skip_ledger" ]; then
+            echo "workspace-run: cannot write the skip ledger at ${skip_ledger}" >&2
+            exit 1
+        fi
+    else
+        skip_ledger="$(mktemp -t elitea-skip-ledger.XXXXXX)"
+        if [ -z "$skip_ledger" ] || [ ! -f "$skip_ledger" ]; then
+            echo "workspace-run: cannot create the skip ledger file" >&2
+            exit 1
+        fi
+        trap 'rm -f "$skip_ledger"' EXIT
+    fi
+    export ELITEA_SKIP_LEDGER="$skip_ledger"
+fi
+
+# ── 4. Run every module and record every status ──────────────────────────────
 relative_to_root() {
     case "$1" in
     "$repo_root") echo "." ;;
@@ -298,8 +368,12 @@ relative_to_root() {
     esac
 }
 
+# `-o pipefail` is set at the top of this script, so the pipeline below reports
+# the `go test` status even though python3 is the last command in it. Without
+# pipefail a failed test run would read as a pass, which is #409 again.
 run_test() {
-    go test -race -count=1 -timeout "$ELITEA_GO_TEST_TIMEOUT" ./...
+    go test -json -race -count=1 -timeout "$ELITEA_GO_TEST_TIMEOUT" ./... |
+        python3 "$skip_filter"
 }
 
 run_vet() {
@@ -328,7 +402,8 @@ run_lint() {
 # It is still written on its own line, immediately after the command, so no
 # later reader has to know that rule.
 run_coverage() {
-    go test "${race_flags[@]+"${race_flags[@]}"}" -count=1 -timeout "$ELITEA_GO_TEST_TIMEOUT" -coverprofile=coverage.out ./...
+    go test -json "${race_flags[@]+"${race_flags[@]}"}" -count=1 -timeout "$ELITEA_GO_TEST_TIMEOUT" -coverprofile=coverage.out ./... |
+        python3 "$skip_filter"
     local test_status=$?
     local strip_status=0
     if [ -f coverage.out ]; then
@@ -364,7 +439,7 @@ for module_dir in "${modules[@]}"; do
     fi
 done
 
-# ── 4. Report ────────────────────────────────────────────────────────────────
+# ── 5. Report ────────────────────────────────────────────────────────────────
 echo
 echo "workspace-run summary (${mode}): ${#modules[@]} workspace module(s)"
 index=0
@@ -390,6 +465,14 @@ if [ "${#uncovered[@]}" -gt 0 ]; then
     done
 fi
 
+# The skip ledger is read even when a module failed, because both answers
+# matter and a reader should get them in one place.
+skip_status=0
+if [ -n "$skip_ledger" ]; then
+    python3 "$skip_gate" "$skip_ledger" "$declared_skips"
+    skip_status=$?
+fi
+
 if [ "${#failed[@]}" -gt 0 ]; then
     echo
     echo "workspace-run: ${#failed[@]} module(s) failed ${mode}:" >&2
@@ -397,6 +480,11 @@ if [ "${#failed[@]}" -gt 0 ]; then
         echo "  ${module_name}" >&2
     done
     exit 1
+fi
+
+if [ "$skip_status" -ne 0 ]; then
+    echo "workspace-run: every module passed ${mode}, but the skip ledger did not (#423)" >&2
+    exit "$skip_status"
 fi
 
 echo "workspace-run: every workspace module passed ${mode}"

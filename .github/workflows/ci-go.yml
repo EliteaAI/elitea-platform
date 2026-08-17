@@ -170,6 +170,21 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
+      # Backs ELITEA_TEST_REDIS_ADDR below (#423). Twelve tests across
+      # internal/transport/redisdispatch, internal/infra/db/repos,
+      # internal/infra/authsvc and internal/infra/redis want a real Redis.
+      # Every one of them skipped itself on every run, so the transport that
+      # carries every worker command had no service-backed coverage at all.
+      # A Redis container costs a few seconds.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -180,6 +195,24 @@ jobs:
             services/elitea-scheduler/go.sum
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
+
+      # Three suites need a database with NOTHING in it: they create the
+      # legacy `centry` schema and the `auth_core__*` tables themselves, then
+      # roll back. They cannot share one database, because two of them would
+      # then race on `CREATE SCHEMA centry`, and they cannot use the shared
+      # `postgres` database, because their own emptiness check would skip them
+      # again — the second-order silent skip that hid behind the first (#423).
+      #
+      # `psql -c` on a name this script controls, so no injection surface.
+      - name: Create the isolated test databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          for database in elitea_legacy_rbac_test elitea_projects_test elitea_social_authors_test; do
+            psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+              -c "CREATE DATABASE ${database}"
+          done
 
       - name: Verify generated OpenAPI server is current
         run: |
@@ -222,6 +255,54 @@ jobs:
           AZURE_STORAGE_ENDPOINT: "http://127.0.0.1:10000/devstoreaccount1"
           GCS_ENDPOINT: "http://127.0.0.1:4443/storage/v1/"
           ELITEA_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+
+          # ---- #423: the variables no workflow used to set -----------------
+          #
+          # Each name below was a guard that called t.Skip, so `go test`
+          # compiled the suite, ran nothing, and printed `ok`. The skip ledger
+          # at the end of workspace-run.sh now names every remaining skip, and
+          # ELITEA_REQUIRE_DECLARED_SKIPS below turns an undeclared one into a
+          # failure.
+
+          # An ADMIN DSN, not a test database: identityrepo, authsvc and
+          # api/v2/auth each run CREATE DATABASE and work in their own.
+          ELITEA_AUTH_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+
+          # One empty database each — see the creation step above.
+          ELITEA_LEGACY_RBAC_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/elitea_legacy_rbac_test?sslmode=disable"
+          ELITEA_PROJECTS_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/elitea_projects_test?sslmode=disable"
+          ELITEA_SOCIAL_AUTHORS_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/elitea_social_authors_test?sslmode=disable"
+
+          # The legacy-RBAC and prompt-context guards each accept a "require"
+          # flag that turns their own skips into failures. With the databases
+          # above provisioned, a skip here means the provisioning broke, and
+          # that must read as a failure rather than as silence.
+          ELITEA_REQUIRE_LEGACY_RBAC_POSTGRES_TEST: "true"
+          ELITEA_REQUIRE_PROMPT_CONTEXT_POSTGRES_TEST: "true"
+
+          # The Redis service above.
+          ELITEA_TEST_REDIS_ADDR: "localhost:6379"
+
+          # Opt-in real-service reliability tests. Each needs only the
+          # PostgreSQL and Redis services this job already runs. Measured
+          # locally: backlog 19 s, visibility repair 41 s, three Redis
+          # capacity rounds under 2 s.
+          ELITEA_RUNTIME_POSTGRES_RELIABILITY_TEST: "1"
+          ELITEA_RUNTIME_VISIBILITY_REPAIR_TEST: "1"
+          ELITEA_RUNTIME_REDIS_RELIABILITY_ROUNDS: "3"
+
+          # tests/system/index_v2_preflight_binary_system_test.go starts its
+          # own PostgreSQL and TLS Redis containers and builds the shipped
+          # binaries, so it needs no service from this job. It is the only one
+          # of the nine tests/system files that CI can run; the rest want a
+          # bootstrapped Centry compose profile or the Python SDK, and
+          # scripts/go/declared-skips.txt names each with its reason.
+          ELITEA_INDEX_V2_PREFLIGHT_SYSTEM_TEST: "1"
+
+          # A skip that nothing declares FAILS this job. Locally the ledger
+          # only reports, so a developer with no PostgreSQL or Redis can still
+          # run `task test`. Same shape as CONTRACT_REQUIRE_PARITY.
+          ELITEA_REQUIRE_DECLARED_SKIPS: "1"
         # One aggregation for CI and for `task test`. The inline loop that used
         # to live here reported the status of its LAST module, and it ended
         # each subshell with `[ -f coverage.out ] && strip-generated.sh`, which

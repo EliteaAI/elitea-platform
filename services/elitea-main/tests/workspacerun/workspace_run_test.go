@@ -100,6 +100,17 @@ func module(t *testing.T, root string, directory string, modulePath string, pass
 		"package unit\n\nimport \"testing\"\n\nfunc TestUnit(t *testing.T) {\n"+body+"}\n")
 }
 
+// skippingModule writes a module whose only test calls t.Skip. `go test` prints
+// `ok` for it, which is the whole defect the skip ledger answers (#423).
+func skippingModule(t *testing.T, root string, directory string, modulePath string) {
+	t.Helper()
+	writeFile(t, filepath.Join(root, directory, "go.mod"), "module "+modulePath+"\n\ngo 1.25\n")
+	writeFile(t, filepath.Join(root, directory, "unit_test.go"),
+		"package unit\n\nimport \"testing\"\n\n"+
+			"func TestSkipsItself(t *testing.T) {\n"+
+			"\tt.Skip(\"set THE_THING to run this\")\n}\n")
+}
+
 // fixture builds a throwaway workspace beside a copy of the script under test.
 // alphaPasses selects whether the FIRST module of the workspace fails, which is
 // the case the old inline loop could hide.
@@ -117,6 +128,20 @@ func fixture(t *testing.T, alphaPasses bool) string {
 	copyFile(t,
 		filepath.Join(repository, "scripts", "coverage", "strip-generated.sh"),
 		filepath.Join(root, "scripts", "coverage", "strip-generated.sh"))
+	// The skip ledger (#423). The script refuses to run without these, on
+	// purpose: a skip reporter that quietly disappears is the same silent
+	// absence it exists to find.
+	copyFile(t,
+		filepath.Join(repository, "scripts", "go", "skip-ledger.py"),
+		filepath.Join(root, "scripts", "go", "skip-ledger.py"))
+	copyFile(t,
+		filepath.Join(repository, "scripts", "go", "skip-gate.py"),
+		filepath.Join(root, "scripts", "go", "skip-gate.py"))
+	// An EMPTY declaration file, not the repository's own. The fixture must
+	// decide its own verdicts, so a production declaration cannot make one of
+	// these gates pass.
+	writeFile(t, filepath.Join(root, "scripts", "go", "declared-skips.txt"),
+		"# the fixture declares nothing by default\n")
 
 	writeFile(t, filepath.Join(root, "go.work"), "go 1.25\n\nuse (\n\t./modalpha\n\t./modbeta\n)\n")
 	module(t, root, "modalpha", "example.com/alpha", alphaPasses)
@@ -136,12 +161,23 @@ func fixture(t *testing.T, alphaPasses bool) string {
 // status has produced several false green reports in this repository.
 func run(t *testing.T, root string, arguments ...string) (string, int) {
 	t.Helper()
+	return runWithEnvironment(t, root, nil, arguments...)
+}
+
+// runWithEnvironment is run with extra environment entries, for the skip gate.
+func runWithEnvironment(t *testing.T, root string, extra []string, arguments ...string) (string, int) {
+	t.Helper()
 	command := exec.Command("bash", append([]string{filepath.Join(root, "scripts", "go", "workspace-run.sh")}, arguments...)...) //nolint:gosec // fixed script path
 	command.Dir = root
 	command.Env = append(os.Environ(),
 		"GOWORK="+filepath.Join(root, "go.work"),
 		"GOFLAGS=",
+		// The parent process may already carry this from ci-go.yml. The
+		// fixture must control it, so clear it and let each test set it.
+		"ELITEA_REQUIRE_DECLARED_SKIPS=",
+		"ELITEA_SKIP_LEDGER=",
 	)
+	command.Env = append(command.Env, extra...)
 	output, err := command.CombinedOutput()
 	if err == nil {
 		return string(output), 0
@@ -241,6 +277,97 @@ func TestEmptyWorkspaceIsAFailure(t *testing.T) {
 	output, status := run(t, root, "vet")
 	if status == 0 {
 		t.Fatalf("an empty module list must not report success\n%s", output)
+	}
+}
+
+// skipFixture builds a workspace whose second module holds one test, and that
+// test skips itself. `go test ./...` prints `ok` for it.
+func skipFixture(t *testing.T) string {
+	t.Helper()
+	root := fixture(t, true)
+	skippingModule(t, root, "modbeta", "example.com/beta")
+	return root
+}
+
+// TestSkippedTestIsNamedAndCounted is the regression for #423. Eighteen suites
+// called t.Skip on every CI run. `go test` printed `ok` for each, so a suite
+// that ran and a suite that did nothing looked the same. The run must name the
+// skip and count it.
+func TestSkippedTestIsNamedAndCounted(t *testing.T) {
+	root := skipFixture(t)
+	output, status := run(t, root, "test")
+
+	if status != 0 {
+		t.Fatalf("a skip alone must not fail the run without the flag; got exit %d\n%s", status, output)
+	}
+	if !strings.Contains(output, "workspace-run skip ledger: 1 skipped") {
+		t.Errorf("the run must report how many tests skipped\n%s", output)
+	}
+	if !strings.Contains(output, "TestSkipsItself") {
+		t.Errorf("the run must name the skipped test\n%s", output)
+	}
+	if !strings.Contains(output, "set THE_THING to run this") {
+		t.Errorf("the run must print the reason the test gave\n%s", output)
+	}
+	if !strings.Contains(output, "UNDECLARED (1)") {
+		t.Errorf("a skip that no line declares must read as undeclared\n%s", output)
+	}
+}
+
+// TestUndeclaredSkipFailsWhenRequired holds the gate itself. ci-go.yml sets
+// ELITEA_REQUIRE_DECLARED_SKIPS=1, so a suite cannot go back to skipping in
+// silence.
+func TestUndeclaredSkipFailsWhenRequired(t *testing.T) {
+	root := skipFixture(t)
+	output, status := runWithEnvironment(t, root,
+		[]string{"ELITEA_REQUIRE_DECLARED_SKIPS=1"}, "test")
+
+	if status == 0 {
+		t.Fatalf("an undeclared skip must fail the run under the flag; got exit 0\n%s", output)
+	}
+	if !strings.Contains(output, "TestSkipsItself") {
+		t.Errorf("the failure must name the skipped test\n%s", output)
+	}
+}
+
+// TestDeclaredSkipPassesWhenRequired holds the other half. A skip with a
+// written reason is allowed, and the run prints the reason every time. A
+// declaration file that could not make a run pass would push everybody to
+// disable the gate instead of using it.
+func TestDeclaredSkipPassesWhenRequired(t *testing.T) {
+	root := skipFixture(t)
+	writeFile(t, filepath.Join(root, "scripts", "go", "declared-skips.txt"),
+		"# one declaration\nexample.com/beta\tTestSkipsItself\tTHE_THING is a licensed appliance that CI does not hold.\n")
+
+	output, status := runWithEnvironment(t, root,
+		[]string{"ELITEA_REQUIRE_DECLARED_SKIPS=1"}, "test")
+
+	if status != 0 {
+		t.Fatalf("a declared skip must pass under the flag; got exit %d\n%s", status, output)
+	}
+	if !strings.Contains(output, "DECLARED (1)") {
+		t.Errorf("the run must count the declared skip\n%s", output)
+	}
+	if !strings.Contains(output, "licensed appliance") {
+		t.Errorf("the run must print the declared reason\n%s", output)
+	}
+}
+
+// TestMissingSkipReporterIsAFailure keeps the reporter itself honest. A gate
+// that quietly disappears is the exact defect class this repository keeps
+// finding: an absence read as correctness.
+func TestMissingSkipReporterIsAFailure(t *testing.T) {
+	root := fixture(t, true)
+	if err := os.Remove(filepath.Join(root, "scripts", "go", "skip-ledger.py")); err != nil {
+		t.Fatalf("remove the skip reporter: %v", err)
+	}
+
+	output, status := run(t, root, "test")
+	if status == 0 {
+		t.Fatalf("a missing skip reporter must not report success\n%s", output)
+	}
+	if !strings.Contains(output, "skip-ledger.py is missing") {
+		t.Errorf("the failure must name the missing file\n%s", output)
 	}
 }
 
