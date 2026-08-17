@@ -86,17 +86,24 @@ $output"
 # Deployment's first container actually consumes through envFrom. The link is
 # verified, not assumed: a correct ConfigMap that no container reads leaves the
 # process with nothing.
+#
+# The ConfigMap is selected BY THE REFERENCE THE CONTAINER MAKES, never by "the
+# only ConfigMap in the render". A render can hold more than one — the
+# authentication document is a second one since issue #444 — and a bare
+# selector then returns two names, so every read below reported a missing link.
 configValue() {
   local key="$1" file="$2" config_name env_from
-  config_name="$(yq eval-all 'select(.kind == "ConfigMap") | .metadata.name' "$file")"
   env_from="$(yq eval-all \
     'select(.kind == "Deployment") | .spec.template.spec.containers[0].envFrom[].configMapRef.name' \
     "$file")"
+  config_name="$(yq eval-all \
+    "select(.kind == \"ConfigMap\") | select(.metadata.name == \"$env_from\") | .metadata.name" "$file")"
   if [ -z "$config_name" ] || [ "$config_name" != "$env_from" ]; then
     echo "__NO_ENVFROM_LINK__"
     return
   fi
-  yq eval-all "select(.kind == \"ConfigMap\") | .data.$key // \"\"" "$file"
+  yq eval-all \
+    "select(.kind == \"ConfigMap\") | select(.metadata.name == \"$env_from\") | .data.$key // \"\"" "$file"
 }
 
 # deployEnv <key> <rendered file> — read one plain env entry off the Deployment's

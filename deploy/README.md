@@ -190,6 +190,57 @@ renders no init container. Exactly one of the two is required.
 Set `runtime.enabled: false` if you have no material yet. Everything else above
 still works without it, and it is the larger half of the gap.
 
+### The authentication material (issue #444)
+
+Production authentication reads **five more files** through the same
+`securefile`: the Auth Redis password, the Auth Redis CA, the browser-attempt
+key, the PAT signing key and the Form users JSON. `runtime.enabled` requires
+production authentication, so every Kubernetes install of the runtime plane
+needs them.
+
+Their paths are **not** chart values. They come from the authentication
+configuration document, which is the operator's. So the chart could not know
+them, rendered no volume for them, and no Kubernetes install could start from
+the chart alone.
+
+**Put the document in the chart.** `fileConfig.authConfig.document` takes the
+whole authentication configuration. The chart then renders the ConfigMap for
+you, reads the five paths out of it, and refuses — while it renders — a path
+that `fileConfig.authConfig.material.mountPath` cannot serve.
+`fileConfig.authConfig.configMapName` still points at a ConfigMap you provision
+yourself, and the two are mutually exclusive. With the external ConfigMap the
+chart cannot read the paths, so only the init container can check them.
+
+The five files arrive in a **plain Kubernetes Secret**, named by
+`fileConfig.authConfig.material.secretName`. **Its keys are yours, not the
+chart's**: each key is the last component of one of the five paths in the
+document. Unlike the runtime material, no script fixes those names.
+
+The mechanism is the one issue #404 built, and there is only one copy of it —
+`internal/security/materialinstall`. The init container `auth-material` runs the
+same image and the same user as the service, copies each Secret key into a
+memory-backed `emptyDir` at mode `0600`, removes anything the Secret does not
+carry, and reads every file back through `securefile` before it exits.
+
+One difference decides its arguments. The chart owns every runtime file name, so
+`elitea-runtime-material` derives its whole destination from the ConfigMap. The
+five authentication paths belong to the operator's document, so
+`elitea-auth-material` **reads that document**: `-config` gives it the file the
+service reads, and it derives the five paths and their directory from it.
+`-mount` states what the pod mounts, and the command refuses a disagreement by
+name.
+
+`fileConfig.authConfig.material.mountPath` must differ from
+`runtime.material.mountPath`, and the chart refuses one shared directory. Each
+install container removes anything in its directory that its own Secret does not
+carry, so one directory would make the two delete each other's files. Put a copy
+of any shared file, such as the Redis CA, in both Secrets.
+
+`fileConfig.authConfig.material.secretDefaultMode` and `.sizeLimit` behave
+exactly like their `runtime.material` counterparts, and
+`fileConfig.authConfig.material.volume` is the same alternative for a CSI secret
+driver.
+
 ### `ELITEA_AI_PROJECT_ID` is set in two charts
 
 `deploy/helm/elitea-main/values.yaml` and

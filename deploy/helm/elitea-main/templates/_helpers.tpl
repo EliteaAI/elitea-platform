@@ -126,6 +126,210 @@ because it passes a manifest the binary then rejects.
 {{- include "elitea-main.validateLLMGateway" . -}}
 {{- include "elitea-main.validateSelfLLMOrigins" . -}}
 {{- include "elitea-main.validateRuntime" . -}}
+{{- include "elitea-main.validateAuthMaterial" . -}}
+{{- end }}
+
+{{/*
+elitea-main.authConfigMapName — the ConfigMap that carries the authentication
+configuration document.
+
+Two shapes, and exactly one of them (issue #444):
+
+  * fileConfig.authConfig.document — the document is a chart value, so this
+    chart renders the ConfigMap and KNOWS the five material paths. It checks
+    them while it renders.
+  * fileConfig.authConfig.configMapName — the document stays outside the
+    chart. The chart cannot read it, so cmd/elitea-auth-material is the only
+    gate.
+*/}}
+{{- define "elitea-main.authConfigMapName" -}}
+{{- $auth := .Values.fileConfig.authConfig -}}
+{{- if $auth.document -}}
+{{- printf "%s-auth-config" (include "elitea-main.fullname" .) -}}
+{{- else -}}
+{{- required "fileConfig.authConfig.enabled=true needs fileConfig.authConfig.document or fileConfig.authConfig.configMapName" $auth.configMapName -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+elitea-main.authMaterialSourcePath — where the init container reads the raw
+Kubernetes Secret that carries the authentication material (issue #444).
+
+DERIVED from fileConfig.authConfig.material.mountPath rather than configured,
+so the two can never disagree. The suffix also guarantees the two paths are
+siblings: a directory and that same directory plus a suffix cannot contain each
+other, so the raw Secret mount can never shadow, or be shadowed by, the
+installed material.
+
+The elitea-main container never mounts this path. Only the init container reads
+the Secret; the service reads the copies.
+*/}}
+{{- define "elitea-main.authMaterialSourcePath" -}}
+{{- printf "%s-source" (.Values.fileConfig.authConfig.material.mountPath | toString | trimSuffix "/") -}}
+{{- end }}
+
+{{/*
+elitea-main.authMaterialPaths — the five file paths, one per line.
+
+internal/authcomposition/material.go opens exactly these five, and
+Config.MaterialFiles is the Go list of the same five. Keep the two in step: a
+sixth file added there must appear here, or the chart mounts a directory that
+misses it.
+
+An absent key produces an empty line. validateAuthMaterial below refuses that,
+so every other caller of this helper receives five usable paths.
+*/}}
+{{- define "elitea-main.authMaterialPaths" -}}
+{{- $document := .Values.fileConfig.authConfig.document | default dict -}}
+{{- $redis := get $document "redis" | default dict -}}
+{{- $credentials := get $document "credentials" | default dict -}}
+{{- $form := get (get $document "provider" | default dict) "form" | default dict -}}
+{{- $paths := list
+  (get $redis "password_file" | toString)
+  (get $redis "ca_file" | toString)
+  (get $redis "attempt_key_file" | toString)
+  (get $credentials "pat_signing_key_file" | toString)
+  (get $form "users_json_file" | toString) -}}
+{{- join "\n" $paths -}}
+{{- end }}
+
+{{/*
+elitea-main.validateAuthMaterial — the authentication material (issue #444).
+
+internal/authcomposition/material.go reads five files through
+internal/security/securefile. Their paths come from the operator's
+authentication-configuration document, NOT from a chart value. So the chart
+rendered no volume and no mount for them, and a Kubernetes install of the
+runtime plane could not start from the chart alone.
+
+The answer has two halves, and this helper is the first one:
+
+  1. RENDER TIME, here. With the document as a chart value the chart reads the
+     five paths, and it refuses a path that the mounted directory cannot serve.
+     The operator reads the reason on the terminal.
+  2. POD START, in cmd/elitea-auth-material. It reads the SAME document the
+     service reads, it derives the same five paths, and it refuses a
+     disagreement with the mounted directory. That half is the only one
+     available while the document stays in an external ConfigMap.
+
+This helper does NOT validate the whole document.
+internal/authcomposition/config.go owns that schema, and a second copy of it
+here would drift from it.
+*/}}
+{{- define "elitea-main.validateAuthMaterial" -}}
+{{- $auth := .Values.fileConfig.authConfig | default dict -}}
+{{- $material := $auth.material | default dict -}}
+{{- $runtime := .Values.runtime | default dict -}}
+
+{{- if not $auth.enabled -}}
+{{/*
+  Authentication OFF. cmd/elitea-main composes no FormGraph, so it opens none
+  of the five files, and a setting here is silently dead rather than active.
+  That is the failure class this chart exists to end, so say it now.
+*/}}
+{{- if $auth.document -}}
+{{- fail "fileConfig.authConfig.document is set but fileConfig.authConfig.enabled is false, so cmd/elitea-main reads no authentication configuration and the document does nothing. Set fileConfig.authConfig.enabled=true, or clear fileConfig.authConfig.document." -}}
+{{- end -}}
+{{- if $material.secretName -}}
+{{- fail "fileConfig.authConfig.material.secretName is set but fileConfig.authConfig.enabled is false. Set fileConfig.authConfig.enabled=true, or clear fileConfig.authConfig.material.secretName." -}}
+{{- end -}}
+{{- if $material.volume -}}
+{{- fail "fileConfig.authConfig.material.volume is set but fileConfig.authConfig.enabled is false. Set fileConfig.authConfig.enabled=true, or clear fileConfig.authConfig.material.volume." -}}
+{{- end -}}
+{{- else -}}
+
+{{/* One document, from one place. */}}
+{{- if and $auth.document $auth.configMapName -}}
+{{- fail "set fileConfig.authConfig.document OR fileConfig.authConfig.configMapName, not both. The first makes this chart render the ConfigMap and check the five material paths while it renders. The second points at a ConfigMap you provision, and this chart cannot read its contents." -}}
+{{- end -}}
+{{- if not (or $auth.document $auth.configMapName) -}}
+{{- fail "fileConfig.authConfig.enabled=true needs fileConfig.authConfig.document, the authentication configuration itself. Read internal/authcomposition/config.go for the schema, and deploy/runtime/auth.form.yml for an example. Use fileConfig.authConfig.configMapName instead to keep the document in a ConfigMap that you provision." -}}
+{{- end -}}
+
+{{/* The directory that carries the five files. */}}
+{{- $mountPath := $material.mountPath | toString | trimSuffix "/" -}}
+{{- if not $mountPath -}}
+{{- fail "fileConfig.authConfig.enabled=true needs fileConfig.authConfig.material.mountPath. internal/authcomposition/material.go reads five files from that directory: the Auth Redis password, the Auth Redis CA, the browser-attempt key, the PAT signing key and the Form users JSON." -}}
+{{- end -}}
+{{- if not (hasPrefix "/" $mountPath) -}}
+{{- fail (printf "fileConfig.authConfig.material.mountPath must be absolute. internal/security/securefile refuses a relative path. Got %q." ($material.mountPath | toString)) -}}
+{{- end -}}
+{{/*
+  Two directories, never one. Each material install container removes anything
+  in its own directory that its own Secret does not carry. One shared directory
+  would make the two delete each other's files on every pod start.
+*/}}
+{{- if $runtime.enabled -}}
+{{- $runtimeMount := (($runtime.material | default dict).mountPath | toString | trimSuffix "/") -}}
+{{- if eq $mountPath $runtimeMount -}}
+{{- fail (printf "fileConfig.authConfig.material.mountPath and runtime.material.mountPath are both %q, and they must differ. Each material install container removes anything in its directory that its own Secret does not carry, so one shared directory makes the two delete each other's files. Give the authentication material its own directory, and put a copy of any shared file, such as the Redis CA, in both Secrets." $mountPath) -}}
+{{- end -}}
+{{- end -}}
+{{- if eq $mountPath ($auth.mountPath | toString | trimSuffix "/") -}}
+{{- fail (printf "fileConfig.authConfig.material.mountPath and fileConfig.authConfig.mountPath are both %q. The first is a directory of secret material. The second is the configuration file itself." $mountPath) -}}
+{{- end -}}
+
+{{/*
+  Two sources, and exactly one of them. Same shape as runtime.material, and
+  the same reason: issue #404 found that securefile refuses a Secret volume
+  itself, so the supported source needs an init container that copies it.
+*/}}
+{{- if and $material.secretName $material.volume -}}
+{{- fail "set fileConfig.authConfig.material.secretName OR fileConfig.authConfig.material.volume, not both. The first makes the chart copy a Kubernetes Secret into an emptyDir; the second mounts a volume that you supply. Two sources for one mount path cannot both apply." -}}
+{{- end -}}
+{{- if not (or $material.secretName $material.volume) -}}
+{{- fail "fileConfig.authConfig.enabled=true needs fileConfig.authConfig.material.secretName, a Kubernetes Secret that carries the five authentication files. Its keys are the last component of each of the five paths in the authentication configuration. Use fileConfig.authConfig.material.volume instead only when another mechanism already writes those files as real, owner-owned files." -}}
+{{- end -}}
+{{- if $material.secretName -}}
+{{/*
+  The init container has to READ the Secret, and the kubelet owns each key as
+  root. So the mode must carry the read bit for other users, or the read bit
+  for the group together with a pod fsGroup that puts this pod in that group.
+  Neither one, and the init container stops on a permission error.
+*/}}
+{{- $mode := $material.secretDefaultMode | int -}}
+{{- $otherRead := div (mod $mode 8) 4 -}}
+{{- $groupRead := div (mod (div $mode 8) 8) 4 -}}
+{{- $fsGroup := get (.Values.podSecurityContext | default dict) "fsGroup" -}}
+{{- if and (eq $otherRead 0) (or (eq $groupRead 0) (not $fsGroup)) -}}
+{{- fail (printf "fileConfig.authConfig.material.secretDefaultMode %v does not let this pod read the Secret. The kubelet owns each key as root, so the mode needs the read bit for other users (0444), or the read bit for the group (0440) together with podSecurityContext.fsGroup. The init container would stop on a permission error." $material.secretDefaultMode) -}}
+{{- end -}}
+{{- if not $material.sizeLimit -}}
+{{- fail "fileConfig.authConfig.material.secretName needs fileConfig.authConfig.material.sizeLimit, the bound on the memory-backed emptyDir that holds the installed material." -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+  The five paths. They are reachable only with the document in this values
+  file. An external ConfigMap keeps them out of reach, and
+  cmd/elitea-auth-material checks them at pod start instead.
+*/}}
+{{- if $auth.document -}}
+{{- $names := list -}}
+{{- range $path := splitList "\n" (include "elitea-main.authMaterialPaths" .) -}}
+{{- if not $path -}}
+{{- fail "fileConfig.authConfig.document must name all five material files: redis.password_file, redis.ca_file, redis.attempt_key_file, credentials.pat_signing_key_file and provider.form.users_json_file. internal/authcomposition/config.go refuses a document without them, and cmd/elitea-main then exits at boot." -}}
+{{- end -}}
+{{- if ne (dir $path | trimSuffix "/") $mountPath -}}
+{{- fail (printf "the authentication configuration reads %s, which is outside fileConfig.authConfig.material.mountPath %s. One volume mount serves one directory, so the chart would render cleanly and the pod would then fail to open that file. Move the path into %s, or set the mount path to %s." $path $mountPath $mountPath (dir $path | trimSuffix "/")) -}}
+{{- end -}}
+{{- $name := base $path -}}
+{{/*
+  Every file has to arrive as a Secret KEY, and a Kubernetes Secret key is a
+  bounded name. A name that no Secret can carry renders cleanly and then leaves
+  the pod without that file.
+*/}}
+{{- if or (not (regexMatch "^[-._a-zA-Z0-9]+$" $name)) (hasPrefix ".." $name) -}}
+{{- fail (printf "the authentication configuration reads %s, and %q cannot be a Kubernetes Secret key. A key holds only letters, digits, '-', '_' and '.', and it cannot start with two dots." $path $name) -}}
+{{- end -}}
+{{- if has $name $names -}}
+{{- fail (printf "the authentication configuration names %q twice. internal/authcomposition/config.go refuses two material references that resolve to one file, and one Secret key cannot serve two purposes." $name) -}}
+{{- end -}}
+{{- $names = append $names $name -}}
+{{- end -}}
+{{- end -}}
+
+{{- end -}}
 {{- end }}
 
 {{/*
