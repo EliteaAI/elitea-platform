@@ -115,18 +115,29 @@ func TestLLMRoute_UnauthenticatedReturns401(t *testing.T) {
 	}
 }
 
-// TestLLMRoute_SystemProjectUser verifies the happy path with a system
-// project-user token: the Project middleware extracts the project id from the
-// name (no DB call), sets ProjectContext, and the proxy is reached.
-func TestLLMRoute_SystemProjectUser(t *testing.T) {
-	// System project-user name encodes project id 42 directly.
+// TestLLMRoute_SystemProjectUserNameIsNotAnUncheckedClaim is the router-level
+// form of issue #459.
+//
+// The route composes the membership checker from RouterConfig.Pool
+// (apimw.NewProjectMembership). This configuration has no pool, so no checker
+// is composed, and no project the principal name asks for may be admitted. The
+// caller's own project is the answer instead.
+//
+// Direction 2 — an entitled caller keeps its named project — needs an injected
+// membership answer, which RouterConfig cannot carry. It is proved in
+// internal/api/middleware (TestPrincipalName_MemberProjectIsBilled) and end to
+// end in internal/llmproxy
+// (TestEdge_PrincipalNameMemberProjectReachesTheGatewayIdentity).
+func TestLLMRoute_SystemProjectUserNameIsNotAnUncheckedClaim(t *testing.T) {
+	// System project-user name asks for project 42.
 	systemUser := auth.User{
 		ID:       "100",
+		UserID:   "100",
 		Name:     ":system:project:42:",
 		AuthType: "token",
 	}
 	validator := &stubTokenValidator{user: systemUser}
-	resolver := &stubProjectResolver{id: 999} // must NOT be consulted for system names
+	resolver := &stubProjectResolver{id: 999}
 	proxy := &recordingHandler{}
 
 	cfg := buildMinimalRouterConfig(t, validator, resolver, proxy)
@@ -137,17 +148,20 @@ func TestLLMRoute_SystemProjectUser(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
+	if proxy.project.ProjectID == 42 {
+		t.Fatal("the proxy received project 42, which only the principal name asked for")
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 	if !proxy.reached {
 		t.Fatal("proxy was not reached for authenticated /llm request")
 	}
-	if resolver.called {
-		t.Error("personal project resolver must not be consulted for system project-user names")
+	if !resolver.called {
+		t.Error("personal project resolver must run after a refused principal name")
 	}
-	if proxy.project.ProjectID != 42 {
-		t.Errorf("expected ProjectID 42 in proxy context, got %d", proxy.project.ProjectID)
+	if proxy.project.ProjectID != 999 {
+		t.Errorf("expected the caller's own project 999, got %d", proxy.project.ProjectID)
 	}
 }
 
@@ -189,11 +203,14 @@ func TestLLMRoute_PersonalProjectFallback(t *testing.T) {
 // reaches the proxy (chi Mount strips the /llm prefix; we just check the proxy
 // is reached regardless of sub-path).
 func TestLLMRoute_SubpathPreserved(t *testing.T) {
-	user := auth.User{ID: "1", Name: ":system:project:5:"}
+	// A regular user with a resolved personal project. The principal name is
+	// not a project source here (issue #459), so this test must not depend on
+	// one.
+	user := auth.User{ID: "1", UserID: "1", Name: "alice@example.com", AuthType: "token"}
 	validator := &stubTokenValidator{user: user}
 	proxy := &recordingHandler{}
 
-	cfg := buildMinimalRouterConfig(t, validator, nil, proxy)
+	cfg := buildMinimalRouterConfig(t, validator, &stubProjectResolver{id: 5}, proxy)
 	r := api.NewRouter(cfg)
 
 	for _, path := range []string{"/llm/v1/models", "/llm/v1/chat/completions", "/llm/v1/embeddings"} {

@@ -83,7 +83,7 @@ func boundEdgeRequest(binding int64, header, value string) *http.Request {
 		AuthType:       "token",
 		TokenProjectID: &binding,
 	}
-	return req.WithContext(auth.ContextWithUser(req.Context(), user))
+	return withEdgeProvenance(req, user)
 }
 
 // TestEdge_BoundTokenBillsTheBoundProject is spec §5 row 1 end to end. The

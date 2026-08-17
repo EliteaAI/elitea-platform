@@ -23,18 +23,23 @@ import (
 // The escalation it blocks:
 //
 // middleware.Project parses a project id out of auth.User.Name. A name of the
-// form ":system:project:42:" resolves to project 42, and NOTHING checks
-// membership on that branch (internal/api/middleware/project.go,
-// projectIDFromUserName). The resolved project is what the /llm edge signs into
-// X-Elitea-Project-Id. The gateway then spends that project's budget and
-// decrypts that project's provider credentials.
+// form ":system:project:42:" asks for project 42
+// (internal/api/middleware/project.go, projectIDFromUserName). The resolved
+// project is what the /llm edge signs into X-Elitea-Project-Id. The gateway
+// then spends that project's budget and decrypts that project's provider
+// credentials.
 //
 // The token `name` column is caller-supplied free text of up to 768 bytes. Any
 // user creates a token and chooses its name (internal/api/v2/auth/tokens.go).
 // So if auth.User.Name were ever populated from a token name, a caller could
-// name a token ":system:project:42:" and spend project 42's money. It is a
-// one-request, self-service escalation. No administrator is involved, and no
-// membership row is needed.
+// name a token ":system:project:42:" and ask for project 42's money.
+//
+// Issue #459 added the membership check to that branch, so the name now buys
+// only a project the caller belongs to. This gate keeps its value after that
+// change, for two reasons. It keeps the name out of the authorization input in
+// the first place, which is the rule spec-llm-project-scope §7 invariant 2
+// states. And a membership check is one line that a later edit can remove,
+// while this gate fails loudly when the dangerous value returns.
 //
 // The gate is written around the token name because that is the mechanism
 // ADR-0018 rejected for carrying scope, and because spec-llm-project-scope §7

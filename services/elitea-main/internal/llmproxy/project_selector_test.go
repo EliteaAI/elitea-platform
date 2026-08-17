@@ -80,7 +80,7 @@ func edgeRequest(header, value string) *http.Request {
 		req.Header.Set(header, value)
 	}
 	user := auth.User{ID: "42", UserID: "42", TokenID: "900", Name: "Regular User", AuthType: "token"}
-	return req.WithContext(auth.ContextWithUser(req.Context(), user))
+	return withEdgeProvenance(req, user)
 }
 
 // assertBilledProject reads the signed identity the gateway received. The
