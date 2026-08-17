@@ -146,7 +146,11 @@ func (s *BudgetAlertStore) Update(ctx context.Context, req BudgetAlertUpdateRequ
 	if s == nil || s.pool == nil {
 		return BudgetAlertConfig{}, ErrNoPool
 	}
-	patch, err := json.Marshal(storedConfig{Enabled: req.Enabled, ThresholdPct: req.ThresholdPct})
+	// A conversion, not a field-by-field copy: the request body and the stored
+	// JSONB are the same partial-config shape, and a conversion stops compiling
+	// the day they stop being the same rather than silently dropping whichever
+	// field the copy forgot.
+	patch, err := json.Marshal(storedConfig(req))
 	if err != nil {
 		return BudgetAlertConfig{}, err
 	}
