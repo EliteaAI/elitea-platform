@@ -88,6 +88,14 @@ type CurrentProviderProjectPolicy struct {
 	PublicProjectID     int32
 }
 
+// admits reports whether the project may own a provider row. It is the single
+// copy of the rule: the lifecycle reconciler and CurrentProviderAdmission both
+// call it, so a write route and the lifecycle cannot disagree about which
+// project is allowed its own credential.
+func (policy CurrentProviderProjectPolicy) admits(projectID int32) bool {
+	return policy.AllowProjectOwnLLMs || projectID == policy.PublicProjectID
+}
+
 // CurrentProviderConfigurationResolution is immutable input to the resolution
 // check that gates status_ok. Configuration.Data contains hidden-secret
 // references and declared configuration references, not resolved values; the
@@ -383,19 +391,46 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) setCurrentConfiguration
 }
 
 func (r *CurrentConfigurationLifecycleEffectsReconciler) currentProviderConfigurationAllowed(projectID int32) bool {
-	return r.policy.AllowProjectOwnLLMs || projectID == r.policy.PublicProjectID
+	return r.policy.admits(projectID)
 }
 
 func currentConfigurationLifecycleKind(
 	configuration CurrentConfigurationLifecycleSnapshot,
 ) currentConfigurationLifecycleEntityKind {
-	if configuration.Section == "ai_credentials" && currentLiteLLMCredentialType(configuration.Type) {
+	if configuration.Section == "ai_credentials" && currentProviderCredentialType(configuration.Type) {
 		return currentConfigurationLifecycleProviderCredential
 	}
 	if currentConfigurationLifecycleModelSection(configuration.Section) {
 		return currentConfigurationLifecycleProviderModel
 	}
 	return currentConfigurationLifecyclePassive
+}
+
+// currentProviderCredentialType lists the p_{projectID}.configuration `type`
+// values that the LLM data plane can consume as a provider credential.
+//
+// It is deliberately NOT currentLiteLLMCredentialType. That predicate is the
+// LiteLLM provider table, and it stays where it is: it decides which create
+// normalizer owns a registry entry. The data plane is the Bifrost gateway now,
+// and its table is larger — see providerConfigTypes in
+// services/elitea-llm-gateway/internal/account/credentials.go, which adds
+// open_ai_azure, anthropic and vllm. A credential of one of those three types
+// was left passive by the lifecycle, so it never reached status_ok = true, so
+// the gateway could never read it. The standalone stack seeds a vllm
+// credential, which is one reason its seed writes status_ok in raw SQL.
+//
+// A type outside both tables stays passive on purpose. No runtime can use it,
+// so marking it usable would say something untrue about it.
+// TestCurrentProviderCredentialTypeCoversGatewayProviderTable reads the gateway
+// source and fails when the two tables drift apart.
+func currentProviderCredentialType(typeName string) bool {
+	switch typeName {
+	case "open_ai", "azure_open_ai", "open_ai_azure", "ai_dial", "anthropic",
+		"ollama", "amazon_bedrock", "vertex_ai", "vllm":
+		return true
+	default:
+		return false
+	}
 }
 
 func currentConfigurationLifecycleModelSection(section string) bool {

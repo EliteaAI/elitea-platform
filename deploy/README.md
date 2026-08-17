@@ -70,7 +70,7 @@ whose capability set matches `docker-compose.standalone-full.yml`.
 | `ELITEA_CONFIGURATIONS_ENABLED` | off | **on** | production authentication |
 | `ELITEA_PROJECT_INFO_ENABLED` | off | **on** | production authentication |
 | `ELITEA_AI_PROJECT_ID` | empty | **set** | must name a project that exists |
-| `ELITEA_CONFIGURATIONS_MUTATION_ENABLED` | off | off | needs the retired LiteLLM lifecycle facade |
+| `ELITEA_CONFIGURATIONS_MUTATION_ENABLED` | off | off | `ELITEA_CONFIGURATIONS_ENABLED` **and** `runtime.enabled` — read below |
 | `ELITEA_INDEX_TYPES_ENABLED` | off | off | **must stay off** — issue #394 |
 | `ELITEA_APPLICATION_SKILLS_ENABLED` | off | off | **must stay off** — issue #395 |
 | `REDIS_URL` | empty | **set at install** | a Redis the cluster can reach |
@@ -81,6 +81,33 @@ Two flags stay off on purpose in **both** files. Their routes answer a shape
 the published contract and the generated client both reject, so turning either
 on breaks the web client. Issues #394 and #395 track the contract work that has
 to land first.
+
+### Why `ELITEA_CONFIGURATIONS_MUTATION_ENABLED` stays off
+
+This row used to record the prerequisite as "needs the retired LiteLLM
+lifecycle facade". That reason is gone. The configuration lifecycle takes no
+LLM transport at all now — read the comment at the end of
+`services/elitea-main/cmd/elitea-main/configurations_config.go` and the one at
+the composition site in `cmd/elitea-main/main.go`. Issue #460 records the stale
+row.
+
+The flag stays off for two reasons that are true today.
+
+1. **Its real prerequisites are larger than the flag.** The chart refuses the
+   flag without `ELITEA_CONFIGURATIONS_ENABLED="true"` and without
+   `runtime.enabled=true`, because the write routes dispatch a
+   configuration-validation command. `values.yaml` has neither, so the default
+   install cannot set the flag at all.
+2. **The flag is not what makes a saved credential usable.** The flag composes
+   a second write route, and that route wins the path when both are composed —
+   see `TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition` in
+   `services/elitea-main/internal/api`. It is a different request contract from
+   the one `apps/elitea-web` sends today, and its lifecycle reconciler writes
+   `configuration.status_ok` asynchronously. The compatibility route that every
+   install serves now writes `status_ok` itself, in the request, from the same
+   admission decision the lifecycle uses (issue #457). Turning the flag on is
+   therefore a separate cutover with its own web-client work, not a remedy for
+   an invisible credential.
 
 Prerequisites are checked while the chart renders, not when the pod starts. A
 values file that turns a capability on without what it needs fails

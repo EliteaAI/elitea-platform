@@ -39,6 +39,9 @@ type Handler struct {
 	// nil means "not configured" — the handlers then report an honest
 	// "not available" failure rather than fabricating success.
 	connectionChecker ConnectionChecker
+	// providerAdmission decides the status_ok column for a written provider
+	// row (#457, provider_admission.go). nil keeps the column at its default.
+	providerAdmission ProviderAdmission
 }
 
 type Option func(*Handler)
@@ -432,9 +435,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var authorID any
+	var snapshotAuthorID *int
 	if user, ok := auth.UserFromContext(ctx); ok {
 		if owningUserID, safe := user.OwningUserID(); safe {
 			authorID = owningUserID
+			owner := int(owningUserID)
+			snapshotAuthorID = &owner
 		}
 	}
 	configType := strVal(body, "type")
@@ -479,6 +485,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid configuration metadata"}`, http.StatusInternalServerError)
 		return
 	}
+	// The INSERT above stores the column default, false. A provider row that
+	// resolves must reach status_ok = true here, in this request, because the
+	// LLM gateway admits only status_ok = true and no other component in a
+	// shipped stack writes the column (#457).
+	c.StatusOK = h.admitConfiguration(ctx, schema, c.StatusOK, configurationAdmissionSnapshot(
+		id, uuid, pID, title, configType, section, c.Data, snapshotAuthorID,
+	))
 
 	writeJSON(w, http.StatusCreated, c)
 }
@@ -583,6 +596,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if updatedAt != nil {
 		c.UpdatedAt = updatedAt.Format(time.RFC3339)
+	}
+	// An update carries new data, so the previous decision no longer describes
+	// the row. A row that stops resolving must drop back to status_ok = false:
+	// withdrawing the row from every reader is exactly this write (#457).
+	// The path project identifier is the one the schema was built from, so it
+	// is the project whose row was just written.
+	if pID, convErr := strconv.Atoi(projectID); convErr == nil {
+		c.StatusOK = h.admitConfiguration(ctx, schema, c.StatusOK, configurationAdmissionSnapshot(
+			c.ID, c.UUID, pID, c.Name, c.Type, c.Section, c.Data, c.AuthorID,
+		))
 	}
 	writeJSON(w, http.StatusOK, c)
 }

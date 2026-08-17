@@ -573,8 +573,20 @@ services:
 
       # ── Current Configurations (issue #281) ────────────────────────────────
       # Agent dispatch composes through dependencies.CurrentConfigurations, nil
-      # unless this is on. Mutation stays off: enabling it would demand the
-      # LiteLLM lifecycle facade, which this stack replaced with Bifrost.
+      # unless this is on.
+      #
+      # It also composes the admission decision that gives a saved provider
+      # credential its status_ok = true (#457). The gateway admits only
+      # status_ok = true, so with this flag off a credential written through
+      # the configuration route is stored and stays invisible to the gateway.
+      #
+      # ELITEA_CONFIGURATIONS_MUTATION_ENABLED stays off, and NOT for the
+      # reason recorded here before: that reason named the retired LiteLLM
+      # lifecycle facade, and the lifecycle takes no LLM transport now (#460).
+      # It stays off because it composes a SECOND write route with a different
+      # request contract, and that route wins the path — see
+      # TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition. The
+      # compatibility route this stack serves already writes status_ok itself.
       ELITEA_CONFIGURATIONS_ENABLED: "true"
       # The project whose configurations are treated as PUBLIC and merged into
       # every other project's option lookups.

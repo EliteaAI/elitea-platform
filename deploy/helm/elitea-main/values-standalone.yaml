@@ -100,9 +100,14 @@ env:
   # icon, and the project screen reads exactly those two fields.
   ELITEA_PROJECT_INFO_ENABLED: "true"
 
-  # Left OFF on purpose, exactly as the compose stack leaves it: the three
-  # configuration write routes need the LiteLLM lifecycle facade that the
-  # Bifrost gateway replaced.
+  # Left OFF on purpose, exactly as the compose stack leaves it. The reason
+  # recorded here before named the retired LiteLLM lifecycle facade, which is
+  # stale (#460). It stays off because it composes a SECOND write route that
+  # wins the path from the compatibility route this stack serves, and that
+  # route takes a different request shape from the one apps/elitea-web sends.
+  # A credential saved through the compatibility route already becomes usable
+  # here, because ELITEA_CONFIGURATIONS_ENABLED above composes the admission
+  # decision that writes status_ok (#457).
   ELITEA_CONFIGURATIONS_MUTATION_ENABLED: "false"
 
   # Left OFF on purpose. Their routes answer a shape the published contract and

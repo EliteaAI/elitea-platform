@@ -960,6 +960,110 @@ except Exception as error:
           esac ;;
         *) fail "GET /llm/v1/models did not list the seeded chat model: $(printf '%s' "$MODELS_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
       esac
+
+      # ── A credential the PRODUCT created, not the seed (#457) ─────────────
+      #
+      # Every assertion above this one runs on rows `seed-llm` wrote with SQL,
+      # and those statements set status_ok = true themselves. The LLM gateway
+      # admits only status_ok = true. So a stack whose write route can never
+      # produce a usable credential passes every check above, exactly as it did
+      # before #457 was found.
+      #
+      # This step closes that hole. It writes through the product's own HTTP
+      # route, and it makes the model turn depend on what that route stored. It
+      # fails when a saved credential is invisible to the gateway.
+      #
+      # The rows go in the CALLER's personal project, because that is the
+      # project the /llm hop resolves the credential from (#290).
+      echo "→ configuration write route → gateway visibility (#457):"
+      WRITE_USER="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT user_id FROM public.auth_core__token WHERE uuid = '${LLM_PROBE}'" 2>/dev/null | tr -d '[:space:]')"
+      WRITE_PROJECT="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT id FROM centry.project WHERE name = 'project_user_${WRITE_USER}'" 2>/dev/null | tr -d '[:space:]')"
+      if [ -z "$WRITE_PROJECT" ]; then
+        echo "  ~ SKIPPED: the probe caller owns no personal project (run: $0 seed)"
+      else
+        WRITE_CRED="api-created-credential"
+        WRITE_MODEL="vllm/API-CREATED-MODEL"
+        WRITE_DANGLING="vllm/API-DANGLING-MODEL"
+        # Remove the rows of a previous run so the step is repeatable. This
+        # deletes; it never writes status_ok. elitea_title is UNIQUE, so a
+        # second run would otherwise fail on the insert and say nothing about
+        # this defect.
+        $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -q -U elitea -d elitea -c \
+          "DELETE FROM p_${WRITE_PROJECT}.configuration
+            WHERE elitea_title IN ('${WRITE_CRED}', '${WRITE_MODEL}', '${WRITE_DANGLING}')" >/dev/null 2>&1 || true
+
+        write_configuration() {
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${LLM_JWT}" -H 'Content-Type: application/json' \
+            "http://localhost:${PORT}/api/v2/configurations/configurations/${WRITE_PROJECT}" \
+            -d "$1" 2>&1 || true
+        }
+
+        # 1. The credential. Its shape is the one `seed-llm` writes with SQL:
+        # type vllm, a literal api_key and the mock's compose address.
+        CRED_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_CRED}\",\"type\":\"vllm\",\"section\":\"ai_credentials\",\"data\":{\"api_key\":\"mock-key-not-used\",\"api_base\":\"http://llm-mock:8090\"}}")"
+        case "$CRED_OUT" in
+          *'"status_ok":true'*) echo "  ✓ a credential saved through the API is usable" ;;
+          *'"status_ok":false'*)
+            fail "the API stored the credential with status_ok = false (#457).
+       The gateway admits only status_ok = true, so this credential is
+       invisible to it. Check that ELITEA_CONFIGURATIONS_ENABLED is \"true\",
+       which is what composes the admission decision.
+       Raw: $(printf '%s' "$CRED_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+          *) fail "the credential write failed: $(printf '%s' "$CRED_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+        esac
+
+        # 2. The model, bound to that credential. elitea_title is the alias the
+        # caller sends; data.name is the wire name the gateway dispatches.
+        MODEL_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_MODEL}\",\"label\":\"${WRITE_MODEL}\",\"type\":\"llm_model\",\"section\":\"llm\",\"data\":{\"name\":\"vllm/E2E-MOCK-MODEL\",\"ai_credentials\":{\"elitea_title\":\"${WRITE_CRED}\"}}}")"
+        case "$MODEL_OUT" in
+          *'"status_ok":true'*) echo "  ✓ a model saved through the API is usable" ;;
+          *) fail "the API stored the model as unusable (#457): $(printf '%s' "$MODEL_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+        esac
+
+        # 3. The negative control. A model whose credential reference does not
+        # resolve must stay refused. Without it, a step that simply stored
+        # `true` for everything would also pass step 2.
+        DANGLING_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_DANGLING}\",\"label\":\"${WRITE_DANGLING}\",\"type\":\"llm_model\",\"section\":\"llm\",\"data\":{\"name\":\"vllm/E2E-MOCK-MODEL\",\"ai_credentials\":{\"elitea_title\":\"no-such-credential\"}}}")"
+        case "$DANGLING_OUT" in
+          *'"status_ok":false'*) echo "  ✓ a model whose credential does not resolve stays refused" ;;
+          *) fail "an unresolvable model was stored as usable: $(printf '%s' "$DANGLING_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+        esac
+
+        # 4. One completion through the API-created rows. This is the assertion
+        # that cannot pass on a seeded row: the alias exists nowhere else.
+        WRITE_LLM_OUT="$(llm_probe "
+import json, ssl, urllib.error, urllib.request
+context = ssl.create_default_context(cafile='/m/runtime-ca.crt')
+body = json.dumps({'model': '${WRITE_MODEL}',
+                   'messages': [{'role': 'user', 'content': 'api-created credential check'}]}).encode()
+request = urllib.request.Request(
+    'https://elitea-platform-edge/llm/v1/chat/completions', data=body,
+    headers={'Authorization': 'Bearer ${LLM_JWT}', 'Content-Type': 'application/json'})
+try:
+    print('OK', urllib.request.urlopen(request, context=context, timeout=30).read().decode())
+except urllib.error.HTTPError as error:
+    print('HTTPERR', error.code, error.read().decode()[:200])
+except Exception as error:
+    print('ERR', type(error).__name__, error)
+")"
+        case "$WRITE_LLM_OUT" in
+          *'OK'*'api-created credential check'*)
+            echo "  ✓ a completion ran on a credential and a model the API created" ;;
+          *model_not_found*)
+            fail "the gateway does not serve the API-created model (#457).
+       The row exists, so its status_ok is false or the gateway cannot read it.
+       Check it: SELECT elitea_title, status_ok FROM p_${WRITE_PROJECT}.configuration
+         WHERE elitea_title = '${WRITE_MODEL}';
+       Raw: $(printf '%s' "$WRITE_LLM_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+          *) fail "the API-created completion failed: $(printf '%s' "$WRITE_LLM_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+        esac
+      fi
     fi
 
     echo "→ chat critical path (#284 smoke):"

@@ -20,6 +20,37 @@ import (
 // gateway instead reads those same p_{projectID}.configuration rows at request
 // time, so the graph is now entirely database-side: resolve the row's
 // references, then let status_ok decide whether any runtime may use it.
+// NewCurrentProviderAdmission composes the status_ok decision for the
+// configuration write routes (#457).
+//
+// It shares the resolution adapter and the project policy with
+// NewCurrentConfigurationLifecycleReconciler below, so the two paths cannot
+// reach different answers about the same row. It needs no lifecycle
+// persistence and no runtime plane: the decision is a read.
+func NewCurrentProviderAdmission(
+	configurations *CurrentConfigurationsRuntime,
+	allowProjectOwnLLMs bool,
+) (*configurationapp.CurrentProviderAdmission, error) {
+	if configurations == nil || configurations.publicProjectID <= 0 ||
+		configurations.expander == nil || configurations.unsecreter == nil {
+		return nil, errors.New("current configuration provider admission composition is incomplete")
+	}
+	resolution, err := newCurrentProviderConfigurationResolution(
+		configurations.expander,
+		configurations.unsecreter,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose current provider configuration resolution: %w", err)
+	}
+	return configurationapp.NewCurrentProviderAdmission(
+		resolution,
+		configurationapp.CurrentProviderProjectPolicy{
+			AllowProjectOwnLLMs: allowProjectOwnLLMs,
+			PublicProjectID:     configurations.publicProjectID,
+		},
+	)
+}
+
 func NewCurrentConfigurationLifecycleReconciler(
 	pool *pgxpool.Pool,
 	configurations *CurrentConfigurationsRuntime,
