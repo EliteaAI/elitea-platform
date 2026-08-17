@@ -110,6 +110,7 @@
 #   8085  gateway, direct (debug)   STANDALONE_GATEWAY_PORT
 #   15433 postgres                  STANDALONE_PG_PORT
 #   16380 redis                     STANDALONE_REDIS_PORT
+#   8090  llm-mock journal          STANDALONE_MOCK_PORT — see the llm-mock comment
 #   9400  oidc-provider-mock        FIXED — see the oidc-mock comment
 #
 #   The runtime plane is NOT published to the host. runtime-redis:6380 and
@@ -444,6 +445,12 @@ services:
       #
       # deploy/helm/tests/render-llm-path.sh asserts the two services agree, and
       # fails when one holds the value and the other does not.
+      #
+      # deploy/scripts/embedding-path-check.sh asserts the shared scope against a
+      # live stack (issue #470), so an empty value here fails a check rather than
+      # a production run. The index plane makes an empty value worse: the
+      # platform writes a durable admission record, dispatches the command, and
+      # the run then dies inside the worker.
       ELITEA_AI_PROJECT_ID: "${ELITEA_AI_PROJECT_ID:-1}"
 
       # Issue #467 — circular-routing guard #1 at request time. Names every
@@ -512,6 +519,16 @@ services:
       # chat streaming journey overrides it so "a partial answer was painted"
       # is deterministic rather than a race (see e2e/streaming/).
       MOCK_LLM_CHUNK_DELAY_MS: "${MOCK_LLM_CHUNK_DELAY_MS:-0}"
+    # Published for the REQUEST JOURNAL alone (issue #470). A test on the host
+    # reads GET /__journal to learn which model name the gateway put on the
+    # wire and which project's credential it used. Neither fact is visible in
+    # the response body, and a vector width identifies no model.
+    #
+    # Overridable, because two stacks on one machine would otherwise collide
+    # here. The completion path does not use this port: the gateway reaches the
+    # mock at `llm-mock:8090` on the compose network.
+    ports:
+      - "${STANDALONE_MOCK_PORT:-8090}:8090"
     healthcheck:
       # The image has no curl or wget — python is the only client available,
       # and it is guaranteed present because it is the runtime.

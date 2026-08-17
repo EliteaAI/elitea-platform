@@ -341,10 +341,28 @@ SQL
       exit 1
     fi
     for TARGET in $TARGET_PROJECTS; do
+    # The mock's key NAMES THE PROJECT (issue #470).
+    #
+    # The gateway resolves the credential from one project's own rows, and the
+    # key it then sends upstream is the only part of that decision the upstream
+    # can see. The mock records it in its request journal, so a test can assert
+    # WHICH PROJECT the gateway resolved, not merely that a vector came back.
+    # One shared key for every project would make that unknowable.
+    #
+    # The value is not a secret, and the mock ignores it for authentication. The
+    # `mock-key-` prefix tells the journal to record the value as it is. The
+    # journal records every other credential as a digest.
+    #
+    # A real provider keeps one key for all projects. The key belongs to the
+    # operator, and this stack gives no project a key of its own.
+    TARGET_API_KEY="$API_KEY"
+    if [ "$PROVIDER" = "mock" ]; then
+      TARGET_API_KEY="mock-key-project-${TARGET}"
+    fi
     echo "→ Seeding a $PROVIDER credential (type=$CRED_TYPE) + model row for project ${TARGET}…"
     $COMPOSE_BIN $COMPOSE_F exec -T postgres \
       psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
-        -v provider="$CRED_TYPE" -v apikey="$API_KEY" -v model="$MODEL" \
+        -v provider="$CRED_TYPE" -v apikey="$TARGET_API_KEY" -v model="$MODEL" \
         -v apibase="$API_BASE" -v pid="$TARGET" -v schema="p_${TARGET}" <<'SQL'
 -- Credential the gateway's Account reads (section='ai_credentials'). An empty
 -- api_base means "use the provider's default endpoint", which also keeps a
@@ -465,6 +483,49 @@ UPDATE :"schema".elitea_tools AS t
 SQL
     fi
     done
+
+    # Two rows in the PUBLIC PROJECT ONLY (issue #458, asserted by #470).
+    #
+    # Every row above goes into project 1 AND into every personal project, so no
+    # verification step ever needs the platform-shared scope. These two rows
+    # exist in project 1 alone, under titles no other project holds, so a caller
+    # in another project can reach them only through that scope.
+    #
+    # They are a matched PAIR, and the pair is the point:
+    #
+    #   standalone-shared-embedding    shared = true   must be listed and must
+    #                                                  dispatch for any caller
+    #   standalone-private-embedding   shared = false  must be invisible to
+    #                                                  every other project
+    #
+    # One row alone would prove only half. A gateway that read the public
+    # project with no `shared` predicate would pass the first assertion and fail
+    # the second, and that is a tenant-isolation fault, not a routing one.
+    #
+    # data.name is the SAME wire model as the row above, so the upstream call
+    # these two produce is the one the stack can already serve. What differs is
+    # the catalogue title the caller asks for, and therefore the scope the
+    # gateway must read to find it.
+    #
+    # deploy/scripts/embedding-path-check.sh asserts both directions.
+    if [ -n "$EMBEDDING_MODEL" ]; then
+      echo "→ Seeding the public-project embedding pair into project 1…"
+      $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
+          -v embedding="$EMBEDDING_MODEL" <<'SQL'
+INSERT INTO p_1.configuration
+    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (1, 'standalone-shared-embedding', 'standalone-shared-embedding', 'embedding_model', 'embedding',
+     jsonb_build_object('name', :'embedding'), '{}', true, true, 'user', NOW(), NOW()),
+    (1, 'standalone-private-embedding', 'standalone-private-embedding', 'embedding_model', 'embedding',
+     jsonb_build_object('name', :'embedding'), '{}', false, true, 'user', NOW(), NOW())
+ON CONFLICT (elitea_title) DO UPDATE
+    SET data = EXCLUDED.data, type = EXCLUDED.type, section = EXCLUDED.section,
+        label = EXCLUDED.label, shared = EXCLUDED.shared, status_ok = true, updated_at = NOW();
+SQL
+    fi
+
     echo "→ Seeded. Model alias: $MODEL"
     # Name BOTH names (#380). A caller sends the catalogue name; the gateway
     # maps it onto the provider's own name before it dispatches. When the two
@@ -1321,6 +1382,15 @@ except Exception as error:
       else
         echo "  ✓ the index toolkit and the catalogue name one embedding model ('${EMB_MODEL_NAME}')"
       fi
+    fi
+
+    # ── The embedding path (#470) ────────────────────────────────────────────
+    # Kept in its own script because it makes 13 assertions and reads the mock's
+    # request journal, which no other check does. The probe above asserts a
+    # vector WIDTH against one hardcoded model name; a width identifies no model
+    # and a 200 identifies no project. Read that script's own assertion lines.
+    if ! STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/embedding-path-check.sh"; then
+      fail "the embedding path check failed — read its assertion lines above"
     fi
 
     echo "→ chat critical path (#284 smoke):"

@@ -217,18 +217,37 @@ func (r *CurrentEmbeddingBindingResolver) Resolve(
 	if err != nil {
 		return EmbeddingBinding{}, err
 	}
-	if found {
-		configurationDigest, digestErr := currentEmbeddingConfigurationDigest(
-			configuration,
-			modelName,
-		)
-		if digestErr != nil {
-			return EmbeddingBinding{}, digestErr
-		}
-		binding.ConfigurationProjectID = configuration.ProjectID
-		binding.ConfigurationUUID = configuration.UUID
-		binding.ConfigurationDigest = configurationDigest
+	// A name that no row holds is refused HERE (issue #470).
+	//
+	// This branch used to admit the run. It returned a valid binding with no
+	// configuration identity, because Validate checks the identity triple only
+	// when one of its three fields is already set. The platform then wrote a
+	// durable admission record, dispatched the command, and the run died inside
+	// the worker: the gateway reads the same rows and answers 404
+	// model_not_found (internal/llmproxy/modelmap.go). The user saw a run that
+	// started and then failed, and no message named the model.
+	//
+	// The preferredProjectID branch above already fails closed for the same
+	// state (resolveCurrentEmbeddingConfiguration), so this makes one rule of
+	// two. The caller maps the error to 503 "Embedding model is unavailable"
+	// (api/v2/indexing/start_handler.go), which names the fault at the moment
+	// the caller can still act on it.
+	//
+	// It must also never fall back to another model. There is no substitute
+	// path: the binding is built from the requested name alone.
+	if !found {
+		return EmbeddingBinding{}, ErrCurrentEmbeddingBindingUnavailable
 	}
+	configurationDigest, digestErr := currentEmbeddingConfigurationDigest(
+		configuration,
+		modelName,
+	)
+	if digestErr != nil {
+		return EmbeddingBinding{}, digestErr
+	}
+	binding.ConfigurationProjectID = configuration.ProjectID
+	binding.ConfigurationUUID = configuration.UUID
+	binding.ConfigurationDigest = configurationDigest
 
 	if err := binding.Validate(); err != nil {
 		return EmbeddingBinding{}, err
