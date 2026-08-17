@@ -582,3 +582,82 @@ describe('issue 364 — a page load must not start a second flight', () => {
     expect(second.controller.pending).toBe(false);
   });
 });
+
+/**
+ * Issue #482 — a document that is logging out must start no re-auth flight.
+ *
+ * The logout endpoint clears the session cookie on the first hop of a redirect
+ * chain that the app document lives through, so a request the page still holds
+ * open answers 401 and reaches the controller. Before this rule the flight
+ * wrote `el.auth.state` and `el.auth.flight.started` back into the namespace
+ * that `performLogout()` had just swept, and it showed a sign-in popup to the
+ * user who asked to sign out.
+ *
+ * `vi.resetModules()` gives each case its own copy of the logout module, whose
+ * flag is document-scoped module state. The dynamic imports below are what
+ * bind the controller to THAT copy, so this exercises the real wiring and not
+ * an injected stand-in.
+ */
+describe('re-auth is refused while the document logs out (#482)', () => {
+  async function freshModules(): Promise<{
+    performLogout: typeof import('./logout').performLogout;
+    createController: typeof import('./popup').createAuthPopupController;
+  }> {
+    vi.resetModules();
+    const logout = await import('./logout');
+    const popup = await import('./popup');
+    return { performLogout: logout.performLogout, createController: popup.createAuthPopupController };
+  }
+
+  it('opens no window, writes no flight key, and rejects with `logging_out`', async () => {
+    const { performLogout, createController } = await freshModules();
+    const opened: string[] = [];
+    const controller = createController({
+      openWindow: (url) => {
+        opened.push(url);
+        return { closed: false, close(): void {} };
+      },
+      createChannel: () => null,
+    });
+
+    performLogout({ redirect: vi.fn(), origin: 'http://app.example' });
+
+    await expect(controller.reauthenticate()).rejects.toMatchObject({ reason: 'logging_out' });
+    expect(opened).toEqual([]);
+    expect(window.sessionStorage.getItem('el.auth.state')).toBeNull();
+    expect(window.sessionStorage.getItem('el.auth.flight.started')).toBeNull();
+    expect(controller.pending).toBe(false);
+  });
+
+  it('refuses a flight that was already running when the logout started', async () => {
+    const { performLogout, createController } = await freshModules();
+    const controller = createController({
+      openWindow: () => ({ closed: false, close(): void {} }),
+      createChannel: () => null,
+    });
+
+    const first = controller.reauthenticate();
+    // The flight is live and its keys are in the namespace.
+    expect(window.sessionStorage.getItem('el.auth.state')).not.toBeNull();
+
+    performLogout({ redirect: vi.fn(), origin: 'http://app.example' });
+
+    // The sweep took the keys...
+    expect(window.sessionStorage.getItem('el.auth.state')).toBeNull();
+    // ...and the next 401 does not put them back by joining the live flight.
+    await expect(controller.reauthenticate()).rejects.toMatchObject({ reason: 'logging_out' });
+    expect(window.sessionStorage.getItem('el.auth.state')).toBeNull();
+    void first.catch(() => undefined);
+  });
+
+  it('the rule is off until performLogout() runs', async () => {
+    const { createController } = await freshModules();
+    const controller = createController({
+      openWindow: () => ({ closed: false, close(): void {} }),
+      createChannel: () => null,
+    });
+
+    void controller.reauthenticate();
+    expect(window.sessionStorage.getItem('el.auth.state')).not.toBeNull();
+  });
+});

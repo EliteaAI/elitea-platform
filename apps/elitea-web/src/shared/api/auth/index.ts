@@ -29,6 +29,9 @@ export type { AuthCallbackDeps, AuthCallbackOutcome, OpenerLike, SendAuthResultD
 export { VERIFY_SESSION_PATH, createVerifySession } from './verify-session';
 /** @public Wave-1 surface: consumed by the callback route (R1/R2) and app shell. */
 export type { SessionProbeClient } from './verify-session';
+// `isLoggingOut` is NOT re-exported here. It is internal to this folder:
+// `popup.ts` is its only consumer, and the knip dead-code gate refuses a
+// public export with no consumer.
 export { performLogout } from './logout';
 /** @public Wave-1 surface: consumed by the callback route (R1/R2) and app shell. */
 export type { LogoutDeps } from './logout';
