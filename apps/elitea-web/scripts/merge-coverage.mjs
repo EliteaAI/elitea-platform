@@ -27,18 +27,25 @@ const fileThresholdRules = [];
 async function main() {
   const shardFiles = await findCoverageFiles();
   if (shardFiles.length === 0) {
-    if (skipValidation) {
-      // --no-validate is the coverage-merge job's mode: it merges *fresh*
-      // shard artifacts and must never go green with nothing to merge (the
-      // bug that let this job report success while uploading an empty
-      // coverage/ directory — see issue #67). The outputDir fallback below
-      // is for coverage-validation's rerun (no --no-validate), which must
-      // stay reachable.
-      console.error('No coverage shard artifacts found; refusing to report success with nothing merged.');
-      process.exit(1);
-    }
-    console.log('No coverage shard artifacts found; skipping merged coverage generation.');
-    return;
+    // NEITHER mode may report success with nothing to measure.
+    //
+    // --no-validate is the coverage-merge job's mode: it merges *fresh* shard
+    // artifacts and must never go green with nothing merged (the bug that let
+    // this job report success while uploading an empty coverage/ directory —
+    // see issue #67).
+    //
+    // The default mode is the coverage-validation job, the ONE call in this
+    // repository that enforces the thresholds. It used to `return` here — exit
+    // 0 — so the validating call passed whenever it had no numbers to validate
+    // (issue #421, item 5). findCoverageFiles()'s outputDir fallback is what
+    // makes that job's normal shape reachable, so arriving here means even the
+    // downloaded artifact was absent.
+    console.error(
+      skipValidation
+        ? 'No coverage shard artifacts found; refusing to report success with nothing merged.'
+        : 'No coverage data found; refusing to report the thresholds as met with nothing to measure.',
+    );
+    process.exit(1);
   }
 
   const coverageMap = createCoverageMap({});
