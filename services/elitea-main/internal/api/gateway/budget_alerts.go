@@ -89,15 +89,23 @@ const selectConfigSQL = `SELECT data FROM gateway.governance_config
 // the in-process store did not even have to try to get right because it never
 // persisted anything.
 //
-// The row's own `enabled` column stays true. It means "this governance_config
-// row is live", not "alerts are on"; the alert switch is data->>'enabled'.
-// Conflating them would make disabling alerts hide the row from the reader that
-// has to see it in order to know alerts are off.
+// The row's own `enabled` column is SET BACK TO TRUE on every write, and that
+// is not tidying. It means "this governance_config row is live", not "alerts
+// are on" — the alert switch is data->>'enabled'.
+//
+// The generic governance CRUD can write any row in this table, including this
+// one, and can set enabled=false on it. Both readers filter on `AND enabled`.
+// Without this line the surface reproduces #322 through the other door: Get
+// finds no row and answers the shipped defaults, Update writes into the
+// invisible row and returns the operator's new value from RETURNING, so the
+// operator sees 200 OK and a changed GET while the gateway reads nothing. A
+// write to this surface therefore asserts that the row it needs is live.
 const upsertConfigSQL = `INSERT INTO gateway.governance_config
 		(type, section, name, data, enabled)
 	VALUES ($2, $1, $3, $4::jsonb, true)
 	ON CONFLICT (section, type, name) DO UPDATE SET
 		data = gateway.governance_config.data || $4::jsonb,
+		enabled = true,
 		updated_at = now()
 	RETURNING data`
 

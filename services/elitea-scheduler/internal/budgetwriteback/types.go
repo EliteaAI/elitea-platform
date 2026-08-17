@@ -119,6 +119,13 @@ type UsageDimensions struct {
 	// usage field yields zeros; nothing here is estimated (#79).
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
+	// OccurredAtUnix is when the GATEWAY billed the request, not when this
+	// consumer stored the row. The consumer runs behind the stream, and an
+	// outage-deferred group is redelivered until the accumulator row stops
+	// being outage-owned, so the two instants can fall on different DATES and
+	// even in different billing periods. The per-day series buckets on this
+	// value, so it must be the gateway's.
+	OccurredAtUnix int64 `json:"occurred_at"`
 }
 
 // deltaKey is the coalescing / upsert key: one accumulator row per

@@ -44,11 +44,12 @@ package analytics
 // # Aggregation, and the double count that is deliberately not made
 //
 // `total_cost` sums PROJECT-scope rows only. The accumulator is keyed by
-// (scope, scope_id, period_start) and the gateway bills the project scope
-// today, but the table is designed to carry other scopes — a user-scope row
-// for the same project would be a SUBSET of that project's spend, not an
-// addition to it, so adding every row for a project would count the same
-// dollars twice. Every scope present is still reported, under `by_scope`, so
+// (scope, scope_id, period_start), and since #321 the gateway bills BOTH the
+// project scope and a user scope for the same request. A user-scope row is a
+// SUBSET of that project's spend, not an addition to it, so adding every row
+// for a project would count the same dollars twice. This rule was written
+// before a second scope existed; it is now load-bearing rather than
+// anticipatory. Every scope present is still reported, under `by_scope`, so
 // the narrower rows are visible without being summed into the headline.
 // TestCostBreakdownDoesNotDoubleCountNarrowerScopes is that rule.
 //
@@ -91,11 +92,15 @@ const (
 //
 // The date clamp above bounds ONE axis of this response. The other — the
 // accumulator's (scope, scope_id) — is not the clamp's to bound: the table is
-// keyed by (scope, scope_id, period_start), and the day anything publishes
-// user-scope deltas a project with ten thousand members has ten thousand rows
-// per period, not one. Only project-scope rows exist today, so a year's window
-// is about a dozen rows; the cap is here so that stays true when it stops being
-// true, rather than turning one GET into a hundred-thousand-object response.
+// keyed by (scope, scope_id, period_start), so a project with ten thousand
+// members has ten thousand rows per period, not one.
+//
+// That day has arrived. Issue #321 made the gateway publish user-scope deltas,
+// so a project now has one row per member per period on top of its own. A
+// year's window on a fifty-member project passes this cap, and
+// `periods_truncated` is therefore a normal answer rather than a rare one. The
+// cap is doing the job it was written for; the sentence that used to say "only
+// project-scope rows exist today" is what changed.
 //
 // The cap CANNOT silently change a number. The totals are computed by SQL
 // aggregate over every matching row (see scopeTotals) and never by summing the

@@ -16,10 +16,16 @@ import (
 	"testing"
 )
 
+// occurredAt is the gateway's billing instant carried on every delta. It is
+// deliberately DIFFERENT from any write time in these tests, so a writer that
+// fell back to now() would produce a visibly wrong value.
+const occurredAt int64 = 1_767_312_000 // 2026-01-02T00:00:00Z
+
 func dims(userID *int, model string, prompt, completion int64) *UsageDimensions {
 	return &UsageDimensions{
 		UserID: userID, Provider: "openai", Model: model,
 		PromptTokens: prompt, CompletionTokens: completion,
+		OccurredAtUnix: occurredAt,
 	}
 }
 
@@ -181,7 +187,7 @@ func TestApply_LedgerRowCarriesDimensions(t *testing.T) {
 	}
 	args := tx.usageInserts[0]
 	want := []any{"e1", 42, intPtr(7), "openai", "gpt-4o", int64(11), int64(22),
-		int64(5_000_000_000), int64(1000), int64(2000)}
+		int64(5_000_000_000), int64(1000), int64(2000), occurredAt}
 	if len(args) != len(want) {
 		t.Fatalf("ledger insert took %d args, want %d", len(args), len(want))
 	}
@@ -217,6 +223,22 @@ func TestApply_NilUserIDStaysNull(t *testing.T) {
 	}
 	if userArg != nil {
 		t.Fatalf("user_id = %d, want NULL for a call with no member", *userArg)
+	}
+}
+
+// TestApply_LedgerCarriesTheGatewaysBillingInstant pins the column that a
+// `now()` default would have filled in. The consumer runs behind the stream, so
+// its write time is not the time of the call, and the per-day series buckets on
+// this value.
+func TestApply_LedgerCarriesTheGatewaysBillingInstant(t *testing.T) {
+	tx := &fakeTx{upsertAffected: 1}
+	if _, err := NewStore(&fakeDB{tx: tx}).Apply(context.Background(), []BudgetDelta{
+		delta("e1", 1_000_000_000, dims(intPtr(7), "gpt-4o", 1, 2)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tx.usageInserts[0][10]; got != occurredAt {
+		t.Fatalf("occurred_at = %v, want the gateway's billing instant %d", got, occurredAt)
 	}
 }
 

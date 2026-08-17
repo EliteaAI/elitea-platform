@@ -90,17 +90,27 @@ const (
 	usageFilterUser    = ` AND user_id = $4`
 )
 
-// The period bound is half-open, [start, end), matching reportingPeriod. A
-// closed upper bound would attribute the last instant of a month to both
-// periods, which is the shape that made the accumulator's own period key worth
-// stating twice.
+// The period bound is the accumulator's OWN key, not a time range over
+// occurred_at.
+//
+// period_start is the exact value the gateway billed this request into, and it
+// is what keys the accumulator row the meter reads. Selecting the ledger by the
+// same value is what makes the chart and the meter describe one set of calls.
+// A range over occurred_at would not: a request billed at 23:59 on the last of
+// the month has its money in that month's accumulator, and this endpoint would
+// have to decide separately whether its ledger row belongs to the period. It
+// does not have to decide — the writer already did.
+//
+// occurred_at then does one job: it names the DAY inside the period, for the
+// per-day series. It is the gateway's billing instant, not a write-time
+// default, so the day it names is the day the call was made.
 //
 // The scope filter is appended to THIS fragment, never to a finished query:
 // the aggregates below end in GROUP BY / ORDER BY, and a filter concatenated
 // onto the end of one of those is a syntax error. It is an error only for the
 // USER scope, because the project scope's filter is the empty string — so the
 // project-scope tests would pass and the member view alone would 500.
-const usagePeriodBound = ` WHERE project_id = $1 AND occurred_at >= $2 AND occurred_at < $3`
+const usagePeriodBound = ` WHERE project_id = $1 AND period_start = $2 AND period_end > $3`
 
 // usageQuery assembles one aggregate: its SELECT ... FROM head, the period
 // bound, the caller's scope filter, and its grouping tail.
@@ -160,8 +170,12 @@ ORDER BY SUM(cost_usd) DESC, provider, model`
 func (h *Handler) readUsageDimensions(
 	ctx context.Context, projectID int64, userID *int64, period reportingPeriod,
 ) (usageDimensions, error) {
+	// $2 is the accumulator's period_start. $3 repeats period.start against
+	// period_end, so a row whose period ENDED at or before this period's start
+	// cannot match — a cheap guard against a writer that ever reuses a
+	// period_start for a different window.
 	filter := usageFilterProject
-	args := []any{projectID, period.start, period.end}
+	args := []any{projectID, period.start, period.start}
 	if userID != nil {
 		filter = usageFilterUser
 		args = append(args, *userID)

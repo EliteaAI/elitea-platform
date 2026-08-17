@@ -254,6 +254,7 @@ type usageDimsPayload struct {
 	Model            string `json:"model,omitempty"`
 	PromptTokens     int64  `json:"prompt_tokens"`
 	CompletionTokens int64  `json:"completion_tokens"`
+	OccurredAtUnix   int64  `json:"occurred_at"`
 }
 
 // usageDimsFor converts the internal dimensions to the wire form, preserving
@@ -268,6 +269,7 @@ func usageDimsFor(dims *failmode.UsageDimensions) *usageDimsPayload {
 		Model:            dims.Model,
 		PromptTokens:     dims.PromptTokens,
 		CompletionTokens: dims.CompletionTokens,
+		OccurredAtUnix:   dims.OccurredAtUnix,
 	}
 }
 

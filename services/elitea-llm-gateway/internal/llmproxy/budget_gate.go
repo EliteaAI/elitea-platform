@@ -198,10 +198,13 @@ func (h *Handler) checkBudget(
 			"budget service temporarily unavailable; try again shortly", "nats_unavailable")
 		return false
 	default:
-		// Unknown verdict: fail open (log and proceed). Should never happen.
+		// Unknown verdict: fail open on the PROJECT ceiling (log and proceed).
+		// Should never happen. The member ceiling is still applied — a verdict
+		// this code does not recognise is not a reason to skip a second,
+		// independent limit.
 		h.logger.Warn("budget gate: unknown verdict; allowing request",
 			"verdict", fmt.Sprintf("%v", dec.Verdict))
-		return true
+		return h.checkMemberBudget(w, ctx, pid, periodStart)
 	}
 }
 
@@ -234,8 +237,17 @@ func (h *Handler) checkMemberBudget(
 	projectID int,
 	periodStart int64,
 ) bool {
-	uid := parseUserID(identityUserFromCtx(ctx))
+	raw := identityUserFromCtx(ctx)
+	uid := parseUserID(raw)
 	if uid < 0 {
+		// "No member" and "a member id we could not read" are different, and
+		// only the second is a fault. Without this line they look identical in
+		// production, and a member cap that quietly stops applying is the #321
+		// shape all over again.
+		if raw != "" {
+			h.logger.Warn("budget gate: member id is present but unusable; the member cap is not applied",
+				"project_id", projectID, "user_id_header", raw)
+		}
 		return true
 	}
 	scopeID := failmode.UserScopeID(projectID, uid)
@@ -380,6 +392,11 @@ func (h *Handler) updateUsage(
 		Model:            model,
 		PromptTokens:     inputTokens,
 		CompletionTokens: outputTokens,
+		// The instant THIS gateway billed the request, taken from the same
+		// `now` the period bounds come from. The ledger row is written by the
+		// scheduler, minutes later or more, so a column default would date the
+		// request to whenever the consumer got to it.
+		OccurredAtUnix: now.Unix(),
 	}
 
 	if h.spawnBillingGoroutine(pid, userIDStr, periodStart, periodEnd, actualCost.TotalNanoUSD, dims) {
@@ -429,9 +446,10 @@ func (h *Handler) updateUsageDirect(
 	// token counts stay 0 — the provider reported none, and inventing one to
 	// fill a column would put an estimate on a page of billed figures.
 	dims := &failmode.UsageDimensions{
-		UserID:   optionalUserID(userIDStr),
-		Provider: provider,
-		Model:    model,
+		UserID:         optionalUserID(userIDStr),
+		Provider:       provider,
+		Model:          model,
+		OccurredAtUnix: now.Unix(),
 	}
 
 	if h.spawnBillingGoroutine(pid, userIDStr, periodStart, periodEnd, costNano, dims) {

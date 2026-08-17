@@ -323,7 +323,7 @@ func (s *Store) PersistOutageDelta(ctx context.Context, d OutageDelta) error {
 		if _, err := tx.ExecAffected(ctx, usageEventInsertSQL,
 			d.EventID, d.ProjectID, d.Usage.UserID, d.Usage.Provider, d.Usage.Model,
 			d.Usage.PromptTokens, d.Usage.CompletionTokens,
-			d.DeltaNanoUSD, d.PeriodStart, d.PeriodEnd,
+			d.DeltaNanoUSD, d.PeriodStart, d.PeriodEnd, d.Usage.OccurredAtUnix,
 		); err != nil {
 			return fmt.Errorf("failmode: persist outage usage event: %w", err)
 		}
@@ -348,9 +348,10 @@ func (s *Store) PersistOutageDelta(ctx context.Context, d OutageDelta) error {
 // accumulator holds, never a second source of it: no budget decision reads it.
 var usageEventInsertSQL = fmt.Sprintf(`INSERT INTO gateway.llm_usage_events
 		(event_id, project_id, user_id, provider, model,
-		 prompt_tokens, completion_tokens, cost_usd, period_start, period_end)
+		 prompt_tokens, completion_tokens, cost_usd, period_start, period_end,
+		 occurred_at)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric / %d,
-		to_timestamp($9), to_timestamp($10))
+		to_timestamp($9), to_timestamp($10), to_timestamp($11))
 	ON CONFLICT (event_id) DO NOTHING`, NanoUSD)
 
 // UsageDimensions are the reporting dimensions of one billed request: who made
@@ -375,6 +376,18 @@ type UsageDimensions struct {
 	// billing path already assumes; no count is ever estimated here (#79).
 	PromptTokens     int64
 	CompletionTokens int64
+	// OccurredAtUnix is when the GATEWAY billed the request, not when a writer
+	// stored the row.
+	//
+	// It has to travel, because the two are not the same instant and the
+	// difference lands on a date. The write-back consumer runs behind the
+	// stream, and an outage-deferred group is redelivered for as long as the
+	// accumulator row stays outage-owned. A `now()` column default would put a
+	// request billed at 23:59 on the last of the month into the NEXT month's
+	// day bucket, while its money went to the previous period — the per-day
+	// chart would then show a day the period does not contain. Issue #214 is
+	// this platform's record of that class.
+	OccurredAtUnix int64
 }
 
 // OutageDelta is a billed increment persisted to the durable tier while NATS is

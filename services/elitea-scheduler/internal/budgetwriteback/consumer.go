@@ -134,6 +134,9 @@ const pruneInterval = time.Hour
 // logged and retried on the next tick, never allowed to interrupt the drain the
 // money path depends on.
 //
+// It deletes in batches until a pass comes back short, so the prune keeps up
+// with call volume rather than with the tick interval.
+//
 // The first pass happens on the loop's first iteration, so a scheduler that
 // starts against a database holding years of rows begins reducing it
 // immediately instead of an hour later.
@@ -143,18 +146,43 @@ func (c *Consumer) pruneUsageEventsIfDue(ctx context.Context) {
 		return
 	}
 	c.lastPrune = now
-	deleted, err := c.store.PruneUsageEvents(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			c.logger.Warn("budgetwriteback: usage-ledger prune failed; retrying next tick", "err", err)
+
+	// Delete in batches until a pass comes back short. One bounded pass per
+	// hour caps the prune at pruneBatchSize rows an hour, which is BELOW the
+	// call volume of any busy deployment — the table would then grow past the
+	// retention window for ever while this function logged that it was
+	// pruning. The batch bounds one statement's lock, not the work.
+	//
+	// maxPrunePasses stops a first run against years of history from holding
+	// the drain loop; whatever is left goes on the next tick.
+	var total int64
+	for pass := 0; pass < maxPrunePasses; pass++ {
+		deleted, err := c.store.PruneUsageEvents(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				c.logger.Warn("budgetwriteback: usage-ledger prune failed; retrying next tick",
+					"deleted_before_error", total, "err", err)
+			}
+			return
 		}
-		return
+		total += deleted
+		if deleted < pruneBatchSize {
+			break
+		}
+		if ctx.Err() != nil {
+			return
+		}
 	}
-	if deleted > 0 {
+	if total > 0 {
 		c.logger.Info("budgetwriteback: pruned usage-ledger rows past retention",
-			"deleted", deleted, "retention", RetentionWindow.String())
+			"deleted", total, "retention", RetentionWindow.String())
 	}
 }
+
+// maxPrunePasses bounds one tick's prune. At pruneBatchSize=5000 this clears up
+// to 1,000,000 rows per tick, which is far above any plausible hour of billed
+// calls, so a steady-state deployment always finishes in the first short pass.
+const maxPrunePasses = 200
 
 // decoded pairs a parsed delta with its source message so the message can be
 // ACK'd/NAK'd after its group's outcome is known.

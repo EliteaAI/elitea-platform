@@ -25,11 +25,25 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// plantUsageEvent writes one ledger row the way both writers do.
+// plantUsageEvent writes one ledger row the way both writers do, billed into
+// the period under test.
 func plantUsageEvent(
 	t *testing.T, pool *pgxpool.Pool,
 	eventID string, projectID int, userID *int,
 	provider, model string, prompt, completion int64, costUSD string, occurredAt time.Time,
+) {
+	t.Helper()
+	plantUsageEventForPeriod(t, pool, eventID, projectID, userID, provider, model,
+		prompt, completion, costUSD, occurredAt, periodStart(), periodEnd())
+}
+
+// plantUsageEventForPeriod writes a row billed into an arbitrary period, so a
+// test can put a row outside the one under report.
+func plantUsageEventForPeriod(
+	t *testing.T, pool *pgxpool.Pool,
+	eventID string, projectID int, userID *int,
+	provider, model string, prompt, completion int64, costUSD string,
+	occurredAt, pStart, pEnd time.Time,
 ) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
@@ -38,7 +52,7 @@ INSERT INTO gateway.llm_usage_events
      prompt_tokens, completion_tokens, cost_usd, period_start, period_end, occurred_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10, $11)`,
 		eventID, projectID, userID, provider, model, prompt, completion, costUSD,
-		periodStart(), periodEnd(), occurredAt)
+		pStart, pEnd, occurredAt)
 	if err != nil {
 		t.Fatalf("plant usage event: %v", err)
 	}
@@ -197,21 +211,23 @@ func TestUsageRedactionReachesInsideTheDimensionRows(t *testing.T) {
 	}
 }
 
-// TestUsageIgnoresEventsOutsideThePeriod pins the half-open period bound. A
-// closed upper bound would attribute the last instant of a month to two
-// periods at once.
-func TestUsageIgnoresEventsOutsideThePeriod(t *testing.T) {
+// TestUsageIgnoresEventsOfOtherPeriods pins the period key. The ledger is
+// selected by the accumulator's own period_start, so the chart covers exactly
+// the calls the meter's spend covers.
+func TestUsageIgnoresEventsOfOtherPeriods(t *testing.T) {
 	pool, router := newBudgetsEnvironment(t)
 	admin := budgetAdminUser
 
 	plantUsageEvent(t, pool, "11111111-1111-1111-1111-111111111111", budgetProjectID, &admin,
 		"openai", "gpt-4o", 10, 20, "1.00", usageDay(3))
-	// The first instant of the NEXT period.
-	plantUsageEvent(t, pool, "55555555-5555-5555-5555-555555555555", budgetProjectID, &admin,
-		"openai", "gpt-4o", 999, 999, "9.00", periodEnd())
-	// The last instant BEFORE this period.
-	plantUsageEvent(t, pool, "66666666-6666-6666-6666-666666666666", budgetProjectID, &admin,
-		"openai", "gpt-4o", 777, 777, "7.00", periodStart().Add(-time.Second))
+	// Billed into the NEXT period.
+	plantUsageEventForPeriod(t, pool, "55555555-5555-5555-5555-555555555555", budgetProjectID, &admin,
+		"openai", "gpt-4o", 999, 999, "9.00", periodEnd().AddDate(0, 0, 1),
+		periodEnd(), periodEnd().AddDate(0, 1, 0))
+	// Billed into the PREVIOUS period.
+	plantUsageEventForPeriod(t, pool, "66666666-6666-6666-6666-666666666666", budgetProjectID, &admin,
+		"openai", "gpt-4o", 777, 777, "7.00", periodStart().AddDate(0, 0, -2),
+		periodStart().AddDate(0, -1, 0), periodStart())
 
 	recorder := budgetsDo(t, router, http.MethodGet,
 		fmt.Sprintf("/usage/prompt_lib/%d/usage", budgetProjectID), budgetAdminUser, nil)
@@ -220,6 +236,39 @@ func TestUsageIgnoresEventsOutsideThePeriod(t *testing.T) {
 
 	wantNumber(t, body, "api_requests", "1")
 	wantNumber(t, body, "total_tokens", "30")
+}
+
+// TestUsageKeepsALateWrittenEventInItsBilledPeriod is the month-boundary case
+// the period key exists for.
+//
+// The write-back consumer runs behind the stream, and an outage-deferred group
+// is redelivered until the accumulator row stops being outage-owned. So a call
+// billed at 23:59 on the last of the month can reach the ledger days later. Its
+// money is in THIS period's accumulator. A range over occurred_at would put the
+// row in the next period, and the chart and the meter would then describe
+// different sets of calls.
+func TestUsageKeepsALateWrittenEventInItsBilledPeriod(t *testing.T) {
+	pool, router := newBudgetsEnvironment(t)
+	admin := budgetAdminUser
+
+	// Billed into THIS period, on its last day, and stored with an occurred_at
+	// that the gateway supplied.
+	lastMinute := periodEnd().Add(-time.Minute)
+	plantUsageEvent(t, pool, "11111111-1111-1111-1111-111111111111", budgetProjectID, &admin,
+		"openai", "gpt-4o", 10, 20, "1.00", lastMinute)
+
+	recorder := budgetsDo(t, router, http.MethodGet,
+		fmt.Sprintf("/usage/prompt_lib/%d/usage", budgetProjectID), budgetAdminUser, nil)
+	requireStatus(t, recorder, http.StatusOK)
+	body := decodeMap(t, recorder)
+
+	wantNumber(t, body, "api_requests", "1")
+	daily := rowsOf(t, body, "daily")
+	if len(daily) != 1 {
+		t.Fatalf("daily series has %d entries, want 1", len(daily))
+	}
+	// The last day of the reporting period, not the first day of the next one.
+	wantString(t, daily[0], "date", periodEnd().AddDate(0, 0, -1).Format("2006-01-02"))
 }
 
 // TestUsageEventsAreScopedToTheProject stops one project's ledger leaking into

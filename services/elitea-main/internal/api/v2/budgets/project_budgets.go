@@ -77,7 +77,7 @@ SELECT
     limits.hard_limit_usd::text                                  AS monthly_limit,
     COALESCE(limits.enabled, false)                              AS enabled,
     (NOT COALESCE(limits.is_unlimited, true))                    AS enforced,
-    COALESCE(limits.soft_alert_pct, `+globalWarningPctSQL+`, $4::smallint) AS warning_pct,
+    COALESCE(limits.soft_alert_pct, ` + globalWarningPctSQL + `, $4::smallint) AS warning_pct,
     COALESCE(accrued.accumulated_cost, 0)::text                  AS spend,
     (accrued.accumulated_cost IS NOT NULL)                       AS spend_available,
     CASE WHEN NOT COALESCE(limits.is_unlimited, true) AND limits.hard_limit_usd IS NOT NULL
@@ -444,7 +444,7 @@ SELECT p.id,
        limits.hard_limit_usd::text                                   AS monthly_limit,
        COALESCE(limits.enabled, false)                               AS enabled,
        (NOT COALESCE(limits.is_unlimited, true))                     AS enforced,
-       COALESCE(limits.soft_alert_pct, `+globalWarningPctSQL+`, $1::smallint) AS warning_pct,
+       COALESCE(limits.soft_alert_pct, ` + globalWarningPctSQL + `, $1::smallint) AS warning_pct,
        COALESCE(accrued.accumulated_cost, 0)::text                   AS spend,
        (accrued.accumulated_cost IS NOT NULL)                        AS spend_available,
        CASE WHEN NOT COALESCE(limits.is_unlimited, true) AND limits.hard_limit_usd IS NOT NULL

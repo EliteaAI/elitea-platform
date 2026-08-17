@@ -168,6 +168,7 @@ func TestPersistOutageDelta_WritesLedgerRow(t *testing.T) {
 		Usage: &UsageDimensions{
 			UserID: &userID, Provider: "openai", Model: "gpt-4o",
 			PromptTokens: 11, CompletionTokens: 22,
+			OccurredAtUnix: 1500,
 		},
 	})
 	if err != nil {
@@ -181,6 +182,11 @@ func TestPersistOutageDelta_WritesLedgerRow(t *testing.T) {
 	}
 	if !strings.Contains(tx.statements[1], "ON CONFLICT (event_id) DO NOTHING") {
 		t.Fatal("the ledger insert is not idempotent; a redelivery would duplicate the row")
+	}
+	// The gateway's billing instant travels with the row. A now() default here
+	// would date an outage-window request to whenever the write succeeded.
+	if got := tx.args[1][10]; got != int64(1500) {
+		t.Fatalf("occurred_at arg = %v, want the billing instant 1500", got)
 	}
 	if !tx.committed {
 		t.Fatal("transaction was not committed")
