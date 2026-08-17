@@ -64,14 +64,28 @@ func TestForeignPrivateModelIsNotListed(t *testing.T) {
 			t.Fatalf("resolver queried an unrelated tenant's schema: %s", q)
 		}
 	}
-	if len(db.gotSQL) != 2 {
-		t.Fatalf("got %d queries, want 2 (own + public)", len(db.gotSQL))
+	models := db.modelStatements()
+	if len(models) != 2 {
+		t.Fatalf("got %d model queries, want 2 (own + public)", len(models))
 	}
-	if strings.Contains(db.gotSQL[0], "shared = true") {
+	if strings.Contains(models[0], "shared = true") {
 		t.Error("the caller's OWN scope must not be filtered to shared rows")
 	}
-	if !strings.Contains(db.gotSQL[1], "shared = true") {
+	if !strings.Contains(models[1], "shared = true") {
 		t.Error("the public scope MUST carry the shared predicate")
+	}
+	// Issue #451 reads the credentials of the SAME two scopes, under the same
+	// predicate rule. A credential read that lost the predicate would hand a
+	// caller the provider and the key of an unpublished credential.
+	creds := db.credentialStatements()
+	if len(creds) != 2 {
+		t.Fatalf("got %d credential queries, want 2 (own + public)", len(creds))
+	}
+	if strings.Contains(creds[0], "shared = true") {
+		t.Error("the caller's OWN credential scope must not be filtered to shared rows")
+	}
+	if !strings.Contains(creds[1], "shared = true") {
+		t.Error("the public credential scope MUST carry the shared predicate")
 	}
 }
 
@@ -125,8 +139,8 @@ func TestSharedModelScopeOffByDefault(t *testing.T) {
 	if len(got) != 1 || got[0] != ownModelID {
 		t.Fatalf("ids = %v, want [%s] only", got, ownModelID)
 	}
-	if len(db.gotSQL) != 1 {
-		t.Fatalf("got %d queries, want 1 (own scope only)", len(db.gotSQL))
+	if len(db.gotSQL) != queriesPerScope {
+		t.Fatalf("got %d queries, want %d (own scope only)", len(db.gotSQL), queriesPerScope)
 	}
 }
 
@@ -141,8 +155,8 @@ func TestPublicProjectCallerListsModelsOnce(t *testing.T) {
 	if len(got) != 1 || got[0] != sharedModelID {
 		t.Fatalf("ids = %v, want [%s] exactly once", got, sharedModelID)
 	}
-	if len(db.gotSQL) != 1 {
-		t.Fatalf("got %d queries, want 1", len(db.gotSQL))
+	if len(db.gotSQL) != queriesPerScope {
+		t.Fatalf("got %d queries, want %d", len(db.gotSQL), queriesPerScope)
 	}
 }
 

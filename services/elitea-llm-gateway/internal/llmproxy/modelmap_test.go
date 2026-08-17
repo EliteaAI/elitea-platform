@@ -438,7 +438,7 @@ func TestModelNames_IDAndProviderModel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			id, providerModel := modelNames(tc.title, []byte(tc.data))
+			id, providerModel, _ := modelNames(tc.title, []byte(tc.data))
 			if id != tc.wantID || providerModel != tc.wantProvider {
 				t.Fatalf("modelNames = (%q, %q), want (%q, %q)", id, providerModel, tc.wantID, tc.wantProvider)
 			}

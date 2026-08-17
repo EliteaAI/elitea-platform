@@ -294,6 +294,16 @@ func (a *EliteaAccount) GetKeysForProvider(ctx context.Context, provider schemas
 		return nil, fmt.Errorf("account: load credentials for project %s provider %s: %w", projectID, provider, err)
 	}
 
+	// Issue #451: a model row names ONE credential. Use that credential alone.
+	// Without this the whole provider set goes to bifrost/core, and core picks
+	// one by its own rotation — so a project with two credentials of one
+	// provider can call the endpoint the model did not name. See
+	// credential_selector.go.
+	creds, err = a.selectLinkedCredential(ctx, projectID, provider, creds)
+	if err != nil {
+		return nil, err
+	}
+
 	keys := make([]schemas.Key, 0, len(creds))
 	for _, c := range creds {
 		// Self-referential guard: reject any credential pointing back at the
