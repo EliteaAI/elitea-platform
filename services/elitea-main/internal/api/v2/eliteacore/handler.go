@@ -2250,6 +2250,18 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 				VALUES ($1, $2, 'draft', $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, '{}'::jsonb) RETURNING id`, s),
 				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID)
 			if err != nil {
+				// Sibling of the tool-link defect below (#420). The bare
+				// `continue` dropped the version and told nobody. The insert
+				// above had already written the agent row. The import therefore
+				// answered 201, and the agent held fewer versions than the file.
+				// An agent whose every version failed held no version at all.
+				slog.ErrorContext(ctx, "import: application version insert failed",
+					"schema", s, "application_id", appID, "version_name", vName, "error", err)
+				errorAgents = append(errorAgents, map[string]any{
+					"index": ae.entityIdx,
+					"name":  name,
+					"msg":   "Import function has been failed: unable to import version " + vName + ": " + err.Error(),
+				})
 				continue
 			}
 
@@ -2377,7 +2389,15 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		agentResult := resultAgents[resultIdx]
 		resultIdx++
 
+		name, _ := ae.raw["name"].(string)
 		hasLinkError := false
+		// #420: the insert below ran as `_, _ = h.pool.Exec(...)`. A failed link
+		// was therefore silent. `hasLinkError` above cannot carry this fault. That
+		// flag has one message, and the message says the toolkit was not
+		// imported. A failed insert is a different fault. The toolkit IS
+		// imported, and the row that joins it to the agent is missing. Each lost
+		// link therefore gets its own message.
+		var linkInsertFailures []string
 		var vTools []any
 
 		// Get version IDs from the created versions
@@ -2407,10 +2427,17 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 							selToolsJSON = string(b)
 						}
 					}
-					_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 						INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 						VALUES ($1, $2, 'application', $3, $4::jsonb)`, s),
-						vID, info.appID, toolID, selToolsJSON) // best-effort link
+						vID, info.appID, toolID, selToolsJSON); err != nil {
+						slog.ErrorContext(ctx, "import: tool link insert failed",
+							"schema", s, "application_id", info.appID, "version_id", vID, "tool_id", toolID, "error", err)
+						linkInsertFailures = append(linkInsertFailures,
+							"Import function has been failed: unable to link toolkit "+strconv.Itoa(toolID)+": "+err.Error())
+						// The response must not name a link that has no row.
+						continue
+					}
 					vTools = append(vTools, map[string]any{"id": strconv.Itoa(toolID), "type": "custom", "name": ""})
 				} else {
 					hasLinkError = true
@@ -2418,8 +2445,15 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Update version_details.tools with resolved tools
-		if vd, ok := agentResult["version_details"].(map[string]any); ok {
+		// Update version_details.tools with resolved tools.
+		//
+		// `vd != nil` is load-bearing. It is not defensive. `versionDetails` in
+		// phase 1 is a `var` of map type. Only a successful version insert fills
+		// it. An agent whose every version insert fails therefore stores a NIL
+		// map in this key. The type assertion below still succeeds, because the
+		// interface holds a type. The write then panics with "assignment to entry
+		// in nil map". A request can reach that panic today.
+		if vd, ok := agentResult["version_details"].(map[string]any); ok && vd != nil {
 			if vTools == nil {
 				vTools = []any{}
 			}
@@ -2427,11 +2461,17 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if hasLinkError {
-			name, _ := ae.raw["name"].(string)
 			errorAgents = append(errorAgents, map[string]any{
 				"index": ae.entityIdx,
 				"name":  name,
 				"msg":   "Import function has been failed: unable to link tools cause the later was not imported",
+			})
+		}
+		for _, message := range linkInsertFailures {
+			errorAgents = append(errorAgents, map[string]any{
+				"index": ae.entityIdx,
+				"name":  name,
+				"msg":   message,
 			})
 		}
 	}

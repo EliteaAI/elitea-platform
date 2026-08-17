@@ -137,3 +137,73 @@ func TestPolicyJSONShapeIsStable(t *testing.T) {
 		t.Fatalf("policy=%s err=%v", raw, err)
 	}
 }
+
+// TestNextInputSuggestionResolverNamesTheCause covers the repair #334 records.
+// Eight failure paths returned one bare sentinel, so a missing endpoint, a
+// cleartext origin and a malformed body were one indistinguishable value and
+// nothing was written to the log. The sentinel must stay comparable, and it must
+// now carry the reason.
+func TestNextInputSuggestionResolverNamesTheCause(t *testing.T) {
+	for name, test := range map[string]struct {
+		status int
+		body   string
+		want   string
+	}{
+		// The shape of #334 itself: the path is routed, and no server answers.
+		"missing endpoint": {status: http.StatusNotFound, body: `not found`, want: "answered 404"},
+		"unknown field": {
+			status: http.StatusOK,
+			body:   `{"enabled":true,"min_response_chars":150,"timeout_seconds":15,"extra":true}`,
+			want:   "does not match the contract",
+		},
+		"invalid bounds": {
+			status: http.StatusOK,
+			body:   `{"enabled":true,"min_response_chars":0,"timeout_seconds":15}`,
+			want:   "outside the permitted range",
+		},
+		"not an object": {status: http.StatusOK, body: `[]`, want: "not a JSON object"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.WriteHeader(test.status)
+				_, _ = writer.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			resolver, err := NewNextInputSuggestionResolver(
+				server.URL,
+				&actorTokenIssuerStub{token: "actor-pat"},
+				server.Client(),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = resolver.ResolveNextInputSuggestionPolicy(context.Background(), 7, 11)
+			if !errors.Is(err, ErrNextInputSuggestionPolicyUnavailable) {
+				t.Fatalf("error=%v, want the unavailable sentinel", err)
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%q, want it to name %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestNextInputSuggestionResolverWrapsTheTransportError proves the transport
+// cause survives, which is what tells an operator a cleartext origin from an
+// absent route.
+func TestNextInputSuggestionResolverWrapsTheTransportError(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	client := server.Client()
+	server.Close() // nothing listens on the origin any more
+	resolver, err := NewNextInputSuggestionResolver(server.URL, &actorTokenIssuerStub{token: "actor-pat"}, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolver.ResolveNextInputSuggestionPolicy(context.Background(), 7, 11)
+	if !errors.Is(err, ErrNextInputSuggestionPolicyUnavailable) {
+		t.Fatalf("error=%v, want the unavailable sentinel", err)
+	}
+	if !strings.Contains(err.Error(), "did not reach the current platform") {
+		t.Fatalf("error=%q, want the transport reason", err)
+	}
+}

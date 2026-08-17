@@ -222,3 +222,25 @@ in the hybrid for the same reason. A plain adhoc turn touches none of them.
 
 The web chat surface also still emits into a noop socket.io client rather than
 subscribing to `{events_url}`; that port is #93.
+
+Next-input suggestions are inert. This is a deliberate gap (#334). Each turn asks
+the current platform for the suggestion policy at
+`GET /api/v2/elitea_core/next_input_suggestion_config/prompt_lib/{projectID}`,
+over `ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL`. **No readable repository implements
+that path.** This monorepo does not. The pylon runtime and the plugin
+repositories do not.
+
+Both stacks make the call fail. The hybrid edge sends the path to legacy Centry,
+which registers no such rule. The standalone stack aims an `https` origin at a
+cleartext port. The turn is not affected. The policy is optional metadata, and
+the caller fails open by design. Each turn therefore carries
+`next_input_suggestion: null`.
+
+The cost is one bounded request of 3 s for each send, regeneration, continuation
+and ad-hoc turn. The failure is now visible. The client writes the cause to the
+log once for each process, at warning level. It names the endpoint and the
+reason.
+
+The product owner must settle #334. The Go stack can own the policy, or the team
+can drop the feature. Nobody can read the original policy shape, because it is on
+an unpublished branch.
