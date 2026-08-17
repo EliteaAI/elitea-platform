@@ -94,30 +94,30 @@ func TestStoredConfigResolvesTheShippedDefaults(t *testing.T) {
 	pct := 55
 
 	for _, tc := range []struct {
-		name  string
-		stored     storedConfig
-		want  BudgetAlertConfig
-		notes string
+		name   string
+		stored storedConfig
+		want   BudgetAlertConfig
+		notes  string
 	}{
 		{
-			name: "empty row",
-			stored:    storedConfig{},
-			want: BudgetAlertConfig{Enabled: true, ThresholdPct: DefaultSoftAlertThresholdPct},
+			name:   "empty row",
+			stored: storedConfig{},
+			want:   BudgetAlertConfig{Enabled: true, ThresholdPct: DefaultSoftAlertThresholdPct},
 		},
 		{
-			name: "only enabled",
-			stored:    storedConfig{Enabled: &enabled},
-			want: BudgetAlertConfig{Enabled: false, ThresholdPct: DefaultSoftAlertThresholdPct},
+			name:   "only enabled",
+			stored: storedConfig{Enabled: &enabled},
+			want:   BudgetAlertConfig{Enabled: false, ThresholdPct: DefaultSoftAlertThresholdPct},
 		},
 		{
-			name: "only threshold",
-			stored:    storedConfig{ThresholdPct: &pct},
-			want: BudgetAlertConfig{Enabled: true, ThresholdPct: 55},
+			name:   "only threshold",
+			stored: storedConfig{ThresholdPct: &pct},
+			want:   BudgetAlertConfig{Enabled: true, ThresholdPct: 55},
 		},
 		{
-			name: "both",
-			stored:    storedConfig{Enabled: &enabled, ThresholdPct: &pct},
-			want: BudgetAlertConfig{Enabled: false, ThresholdPct: 55},
+			name:   "both",
+			stored: storedConfig{Enabled: &enabled, ThresholdPct: &pct},
+			want:   BudgetAlertConfig{Enabled: false, ThresholdPct: 55},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

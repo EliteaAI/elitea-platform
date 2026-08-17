@@ -55,9 +55,26 @@ const defaultSoftAlertPctSQL = `80`
 // are read as NULL-able: a deployment whose migration seeded no row, or an
 // operator who saved only one of the two keys, falls back to the shipped
 // defaults rather than to a zero that would read as "alerts off, threshold 0".
+//
+// BOTH CASTS ARE GUARDED, and the guard is the difference between one bad row
+// and a platform outage. This subquery runs inside the snapshot read on EVERY
+// /llm call, and a bare `(data->>'threshold_pct')::smallint` over a value that
+// is not a number raises 22P02 — which fails the snapshot, which fails closed,
+// which 503s every request for every project until somebody finds the row. The
+// authoring API validates 1..100, but this JSONB column is reachable by direct
+// SQL and by any future writer, so the hot path does not depend on that
+// validation. A value that fails the guard reads as NULL and falls back to the
+// shipped default, exactly as a missing key does.
+//
+// The `{1,3}` length bound is part of the guard, not decoration: '99999'
+// matches `^[0-9]+$` and then overflows smallint, raising 22003 from the same
+// place.
 const globalAlertConfigSQL = `(
-		SELECT (data->>'enabled')::boolean       AS alerts_enabled,
-		       (data->>'threshold_pct')::smallint AS threshold_pct
+		SELECT CASE WHEN data->>'enabled' IN ('true','false')
+		            THEN (data->>'enabled')::boolean END       AS alerts_enabled,
+		       CASE WHEN data->>'threshold_pct' ~ '^[0-9]{1,3}$'
+		             AND (data->>'threshold_pct')::int BETWEEN 1 AND 100
+		            THEN (data->>'threshold_pct')::smallint END AS threshold_pct
 		FROM gateway.governance_config
 		WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global'
 		  AND enabled

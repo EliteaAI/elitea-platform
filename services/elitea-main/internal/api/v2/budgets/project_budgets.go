@@ -165,7 +165,15 @@ const DefaultWarningPct = 80
 // percentage, so the API and the gateway resolve the same threshold for the
 // same project. A reader that stopped at DefaultWarningPct would show an
 // operator 80 while the gateway alerted at the value they set.
-const globalWarningPctSQL = `(SELECT (data->>'threshold_pct')::smallint
+//
+// The cast is guarded for the same reason the gateway's copy is: this JSONB
+// column is reachable by direct SQL, and a bare cast over a non-numeric value
+// raises 22P02 and turns one bad row into a 500 on every budget read. A value
+// that fails the guard falls through to DefaultWarningPct.
+const globalWarningPctSQL = `(SELECT CASE
+	    WHEN data->>'threshold_pct' ~ '^[0-9]{1,3}$'
+	     AND (data->>'threshold_pct')::int BETWEEN 1 AND 100
+	    THEN (data->>'threshold_pct')::smallint END
 	FROM gateway.governance_config
 	WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global'
 	  AND enabled)`

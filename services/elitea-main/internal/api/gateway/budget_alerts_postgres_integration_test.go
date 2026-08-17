@@ -185,23 +185,9 @@ func TestTheGatewaySeesTheSameValue(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 
-	// Transcribed from services/elitea-llm-gateway/internal/failmode/store.go.
-	// The gateway is outside go.work, so this cannot import the constant; the
-	// column names and the three key values are the contract between them.
-	const gatewayRead = `SELECT
-		NOT COALESCE(ga.alerts_enabled, true),
-		COALESCE(ga.threshold_pct, 80)
-	FROM (
-		SELECT (data->>'enabled')::boolean        AS alerts_enabled,
-		       (data->>'threshold_pct')::smallint AS threshold_pct
-		FROM gateway.governance_config
-		WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global'
-		  AND enabled
-	) ga`
-
 	var alertsDisabled bool
 	var thresholdPct int
-	if err := pool.QueryRow(context.Background(), gatewayRead).Scan(&alertsDisabled, &thresholdPct); err != nil {
+	if err := pool.QueryRow(context.Background(), gatewayAlertRead).Scan(&alertsDisabled, &thresholdPct); err != nil {
 		t.Fatalf("the gateway's snapshot subquery found no row for the config this API wrote: %v", err)
 	}
 	if !alertsDisabled {
@@ -209,6 +195,72 @@ func TestTheGatewaySeesTheSameValue(t *testing.T) {
 	}
 	if thresholdPct != 42 {
 		t.Fatalf("the gateway would use threshold %d, not the saved 42", thresholdPct)
+	}
+}
+
+// gatewayAlertRead is transcribed from
+// services/elitea-llm-gateway/internal/failmode/store.go globalAlertConfigSQL.
+// The gateway is outside go.work, so this cannot import the constant; the
+// column names, the three key values and the cast guards are the contract
+// between them.
+const gatewayAlertRead = `SELECT
+	NOT COALESCE(ga.alerts_enabled, true),
+	COALESCE(ga.threshold_pct, 80)
+FROM (
+	SELECT CASE WHEN data->>'enabled' IN ('true','false')
+	            THEN (data->>'enabled')::boolean END       AS alerts_enabled,
+	       CASE WHEN data->>'threshold_pct' ~ '^[0-9]{1,3}$'
+	             AND (data->>'threshold_pct')::int BETWEEN 1 AND 100
+	            THEN (data->>'threshold_pct')::smallint END AS threshold_pct
+	FROM gateway.governance_config
+	WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global'
+	  AND enabled
+) ga`
+
+// TestAMalformedConfigRowDoesNotBreakTheLLMPath is the blast-radius test. The
+// subquery above runs inside the budget snapshot on EVERY /llm call, and an
+// unguarded cast over a value that is not a number raises 22P02 there — which
+// fails the snapshot, which fails closed, which 503s every request for every
+// project until somebody finds the row.
+//
+// The authoring API validates 1..100, but this JSONB column is reachable by
+// direct SQL, so the hot path must not depend on that validation. Each case
+// below is written straight into the row, as a bad migration or an operator at
+// a psql prompt would.
+func TestAMalformedConfigRowDoesNotBreakTheLLMPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{name: "threshold is a word", data: `{"enabled": true, "threshold_pct": "abc"}`},
+		{name: "threshold overflows smallint", data: `{"enabled": true, "threshold_pct": "99999"}`},
+		{name: "threshold is out of range", data: `{"enabled": true, "threshold_pct": 0}`},
+		{name: "threshold is a float", data: `{"enabled": true, "threshold_pct": 12.5}`},
+		{name: "enabled is a word", data: `{"enabled": "sometimes", "threshold_pct": 42}`},
+		{name: "both are junk", data: `{"enabled": [], "threshold_pct": {}}`},
+		{name: "keys are absent", data: `{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newAlertPool(t)
+			if _, err := pool.Exec(context.Background(), `
+UPDATE gateway.governance_config SET data = $1::jsonb
+WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global'`, tc.data); err != nil {
+				t.Fatal(err)
+			}
+
+			var alertsDisabled bool
+			var thresholdPct int
+			if err := pool.QueryRow(context.Background(), gatewayAlertRead).
+				Scan(&alertsDisabled, &thresholdPct); err != nil {
+				t.Fatalf("a malformed config row broke the gateway's budget snapshot: %v", err)
+			}
+			// A value that fails the guard falls back to the shipped default,
+			// exactly as a missing key does — never to a zero that would read
+			// as "alerts off, threshold 0".
+			if thresholdPct < 1 || thresholdPct > 100 {
+				t.Fatalf("threshold resolved to %d, want a usable percentage", thresholdPct)
+			}
+		})
 	}
 }
 
@@ -264,5 +316,47 @@ VALUES (902, 100, false, true, 95)`); err != nil {
 	}
 	if authored != 95 {
 		t.Fatalf("an authored threshold resolved to %d, want the project's own 95", authored)
+	}
+}
+
+// gatewayStorePath is the gateway source the constant above is transcribed
+// from. The gateway is a separate Go module (outside go.work, built with
+// GOWORK=off), so this package cannot import it.
+const gatewayStorePath = "../../../../elitea-llm-gateway/internal/failmode/store.go"
+
+// TestTheTranscribedGatewayReadStillMatchesTheGateway is the test that keeps
+// the test above honest.
+//
+// Everything else in this file proves that the SQL WRITTEN HERE is safe, which
+// is worth nothing if the gateway's own SQL has since changed. That is the
+// standing weakness of a transcribed contract across a module boundary, and
+// this repo has shipped it before: a gate that reads a hardcoded path stops
+// gating the moment the real thing moves, and reports success either way.
+//
+// So this reads the gateway source and asserts the two guards are still there.
+// It deliberately checks for the GUARD, not for string equality with the whole
+// constant: formatting churn should not fail a build, but deleting the guard
+// must.
+func TestTheTranscribedGatewayReadStillMatchesTheGateway(t *testing.T) {
+	source, err := os.ReadFile(gatewayStorePath)
+	if err != nil {
+		// Not a skip. A missing file means the path is stale, and a stale path
+		// is exactly how this class of gate stops gating without saying so.
+		t.Fatalf("cannot read the gateway source this file transcribes (%s): %v", gatewayStorePath, err)
+	}
+	text := string(source)
+
+	// The constant must still exist and still be joined into the snapshot.
+	if !strings.Contains(text, "globalAlertConfigSQL") {
+		t.Fatal("the gateway no longer declares globalAlertConfigSQL; the transcription above is stale")
+	}
+	for _, guard := range []string{
+		`data->>'enabled' IN ('true','false')`,
+		`data->>'threshold_pct' ~ '^[0-9]{1,3}$'`,
+		`(data->>'threshold_pct')::int BETWEEN 1 AND 100`,
+	} {
+		if !strings.Contains(text, guard) {
+			t.Fatalf("the gateway's budget snapshot lost the guard %q — a malformed config row would 503 every /llm call", guard)
+		}
 	}
 }
