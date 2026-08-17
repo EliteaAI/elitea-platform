@@ -21,6 +21,11 @@ WEB_DIR="${REPO_ROOT}/apps/elitea-web"
 
 PROJECT="${INDEX_STREAM_PROJECT:-elitea-indexstream}"
 PORT="${INDEX_STREAM_PORT:-8087}"
+# The mock provider's request journal (#470). The journey reads it to learn
+# which model name the gateway put on the wire and which project's credential
+# it used. 8091 rather than the compose default 8090, so this stack can sit
+# beside a plain standalone one.
+MOCK_PORT="${INDEX_STREAM_MOCK_PORT:-8091}"
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
 
@@ -37,7 +42,7 @@ cleanup() {
 trap cleanup EXIT
 
 run_stack() {
-  STANDALONE_PROJECT="$PROJECT" STANDALONE_PORT="$PORT" \
+  STANDALONE_PROJECT="$PROJECT" STANDALONE_PORT="$PORT" STANDALONE_MOCK_PORT="$MOCK_PORT" \
     "${REPO_ROOT}/deploy/scripts/standalone-stack.sh" "$@"
 }
 
@@ -73,6 +78,14 @@ run_stack seed-llm
 # Indexes tab present but every run failing at resolution.
 run_stack seed-index
 
+# The gateway-facing half of the embedding path (#470): the negative direction
+# and the public-project scope, neither of which a browser journey can reach.
+# Read its assertion lines — it reports how many assertions ran, and a run that
+# skips one exits non-zero.
+echo "→ Embedding path assertions…"
+STANDALONE_PROJECT="$PROJECT" \
+  "${REPO_ROOT}/deploy/scripts/embedding-path-check.sh"
+
 echo "→ Running the index-stream journey…"
 cd "$WEB_DIR"
 # Built as a flat string, not an array: macOS ships bash 3.2, where expanding an
@@ -94,5 +107,6 @@ REPEAT_ARGS=""
 # this covers `--repeat-each` copies, which Playwright otherwise spreads.
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
+STANDALONE_MOCK_PORT="${MOCK_PORT}" \
 E2E_REUSE_STACK=1 \
   npx playwright test --project=index-stream --workers 1 $REPEAT_ARGS

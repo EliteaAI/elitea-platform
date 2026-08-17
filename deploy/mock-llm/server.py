@@ -11,6 +11,24 @@ What it serves, which is exactly what bifrost's vLLM provider asks for:
   GET  /v1/models             so a model list through the gateway is not empty
   GET  /healthz               for the compose healthcheck
 
+It also keeps a REQUEST JOURNAL, and serves it (issue #470):
+
+  GET    /__journal           the recorded requests, newest last
+  DELETE /__journal           empty the journal
+
+The journal is the only place a test can read what the gateway actually put on
+the wire. A vector width does not identify a model, and a 200 does not prove
+which project's credential resolved. The journal records both: the model name
+as it arrived, and a label for the credential the gateway sent. Seed a
+different mock key per project and that label names the project the gateway
+resolved.
+
+The journal holds no secret. A credential that starts with the literal prefix
+`mock-key-` is recorded as it is, because the seed script writes that prefix
+and the value is not a secret. Any other credential is recorded as a SHA-256
+prefix, so a real key can never reach the journal even if an operator points a
+real credential at this mock.
+
 The reply is an echo of the last user message, prefixed, so a test can assert
 on content it supplied rather than on a fixed string that could also come from
 a cached or misrouted response.
@@ -31,6 +49,7 @@ import json
 import math
 import os
 import struct
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -63,6 +82,40 @@ CHUNK_DELAY_SECONDS = float(os.environ.get("MOCK_LLM_CHUNK_DELAY_MS", "0")) / 10
 # token-id arrays, which is an order of magnitude larger than any chat body and
 # would otherwise be rejected as "body too large" on the index path alone.
 MAX_BODY_BYTES = 16 << 20
+# The journal is bounded so a long soak run cannot grow the process without a
+# limit. A test reads it after a few requests, so the oldest entries are the
+# ones to drop.
+MAX_JOURNAL_ENTRIES = int(os.environ.get("MOCK_LLM_JOURNAL_LIMIT", "500"))
+# The prefix that marks a credential as a seeded mock value rather than a
+# secret. Keep it in step with `seed-llm` in deploy/scripts/standalone-stack.sh.
+MOCK_CREDENTIAL_PREFIX = "mock-key-"
+
+_JOURNAL: list[dict] = []
+_JOURNAL_LOCK = threading.Lock()
+
+
+def _credential_label(authorization: str) -> str:
+    """Name the credential the caller sent, without ever storing a secret.
+
+    A seeded mock key is recorded as it is, because the test asserts on it and
+    the value is public. Anything else becomes a digest prefix, which still
+    tells two credentials apart but discloses nothing.
+    """
+    token = (authorization or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if not token:
+        return "none"
+    if token.startswith(MOCK_CREDENTIAL_PREFIX):
+        return token
+    return "sha256:" + hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _record(entry: dict) -> None:
+    with _JOURNAL_LOCK:
+        _JOURNAL.append(entry)
+        if len(_JOURNAL) > MAX_JOURNAL_ENTRIES:
+            del _JOURNAL[:-MAX_JOURNAL_ENTRIES]
 
 
 def _reply_for(messages: list[dict]) -> str:
@@ -98,6 +151,26 @@ def _embedding_key(item: object) -> str:
     if isinstance(item, list):
         return ",".join(_embedding_key(part) for part in item)
     return json.dumps(item, sort_keys=True, separators=(",", ":"))
+
+
+def _split_embedding_inputs(raw_input: object) -> list:
+    """Split the OpenAI `input` union into the list of items to embed.
+
+    A bare string, or a bare token-id list, is ONE input. A list of strings, or
+    a list of token-id lists, is a batch. That is how the OpenAI API
+    disambiguates the same union, and the journal counts items the same way the
+    handler does.
+    """
+    if isinstance(raw_input, list) and raw_input and isinstance(raw_input[0], (str, list)):
+        return list(raw_input)
+    return [raw_input]
+
+
+def _input_count(raw_input: object) -> int:
+    """How many items an embeddings request asks for. 0 for any other route."""
+    if raw_input is None or raw_input == [] or raw_input == "":
+        return 0
+    return len(_split_embedding_inputs(raw_input))
 
 
 def _embedding_for(text: str, dimensions: int) -> list[float]:
@@ -165,10 +238,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_DELETE(self) -> None:  # noqa: N802 - stdlib naming
+        """Empty the journal, so a test can bound the window it asserts over."""
+        if self.path.split("?", 1)[0] != "/__journal":
+            self._send(404, {"error": {"message": "not found", "type": "invalid_request_error"}})
+            return
+        with _JOURNAL_LOCK:
+            _JOURNAL.clear()
+        self._send(200, {"object": "list", "data": [], "count": 0})
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         path = self.path.split("?", 1)[0]
         if path == "/healthz":
             self._send(200, {"status": "ok"})
+            return
+        if path == "/__journal":
+            with _JOURNAL_LOCK:
+                entries = list(_JOURNAL)
+            self._send(200, {"object": "list", "data": entries, "count": len(entries)})
             return
         if path == "/v1/models":
             self._send(200, {
@@ -196,6 +283,25 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._send(400, {"error": {"message": "invalid JSON", "type": "invalid_request_error"}})
             return
+
+        # Recorded BEFORE the request is served, and recorded for every POST,
+        # so a request that this server then rejects is still visible. A journal
+        # that only held successes could not prove the negative direction: that
+        # a refused model made NO upstream call at all.
+        #
+        # `model` is the name exactly as it arrived. Do not strip the provider
+        # prefix here — the point of the record is to show what the gateway put
+        # on the wire, and the prefix is part of that.
+        raw_model = request.get("model")
+        _record({
+            "path": path,
+            "model": raw_model if isinstance(raw_model, str) else None,
+            "credential": _credential_label(self.headers.get("Authorization") or ""),
+            "inputs": _input_count(request.get("input")),
+            "encoding_format": request.get("encoding_format"),
+            "dimensions": request.get("dimensions"),
+            "at": time.time(),
+        })
 
         if path == "/v1/embeddings":
             self._embeddings(request)
@@ -231,10 +337,7 @@ class Handler(BaseHTTPRequestHandler):
         # strings or a list of token-id lists is a batch. The discriminator is
         # whether the first element is itself a str/list, which is exactly how
         # the OpenAI API disambiguates the same union.
-        if isinstance(raw_input, list) and raw_input and isinstance(raw_input[0], (str, list)):
-            items = list(raw_input)
-        else:
-            items = [raw_input]
+        items = _split_embedding_inputs(raw_input)
         if len(items) > MAX_EMBEDDING_INPUTS:
             self._send(400, {"error": {"message": "too many inputs", "type": "invalid_request_error"}})
             return

@@ -42,16 +42,71 @@
  * guess` (below) is the negative guard that proves it: with the events stream
  * blocked, the very same click must NOT reach that terminal state.
  *
- * MEASURED, and EXPECTED — an artifact index reports `0 / 0` documents and
- * still terminates green. The SDK lists its bucket over an S3-compatible API
- * (`{base_url}/artifacts/s3/{bucket}?list-type=2`) that elitea-main does not
- * serve, and swallows the 404 into an empty listing. That is a separate,
- * known backend gap; this journey deliberately asserts the RUN LIFECYCLE and
- * not a document count, so it neither hides that gap nor fails on it.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * §7 — THE PIPELINE, NOT ONLY THE SCREEN (issue #470)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * This journey used to index ZERO documents and still finish green, and its own
+ * header recorded that as expected: the SDK listed its bucket over an
+ * S3-compatible API that elitea-main did not serve, and swallowed the 404 into
+ * an empty listing. Commits c951afe2, f54e3a82 and 2ef4f462 now serve that
+ * surface, so the reason has gone.
+ *
+ * A `0 / 0` journey proved the screen works and proved nothing about the
+ * 18-hop embedding path underneath it. Two real defects on that path (#468,
+ * #458) were found by reading and passed every gate.
+ *
+ * §0 therefore PUTS A DOCUMENT IN THE BUCKET first, through the product's own
+ * artifact API, and §7 then asserts three things a green run cannot give on its
+ * own:
+ *
+ *   - the server's own index record reports at least one indexed document;
+ *   - the provider was really called, read from the mock's request journal;
+ *   - the call carried the expected model NAME and the caller's own project
+ *     credential. A vector width identifies no model, and a 200 identifies no
+ *     project.
+ *
+ * MEASURED, and it matters for how these assertions are read: a run over an
+ * EMPTY bucket still makes 2 single-input embedding calls, from the vector
+ * store's own set-up, and reports `indexed: 0` with state `completed`. So "an
+ * embedding call happened" is NOT by itself evidence that a document was
+ * embedded. §7a — the stored document count — is the assertion that carries
+ * that, and §7b to §7d exist to identify the model and the project, not the
+ * count.
+ *
+ * The journal is served by `deploy/mock-llm/server.py` and published on
+ * STANDALONE_MOCK_PORT. `seed-llm` gives each project its own mock key, so the
+ * credential the gateway sends names the project it resolved.
  */
 import { expect, test, type Page } from '@playwright/test';
 
 import { BASE_URL } from '../../playwright.config';
+
+/**
+ * The mock provider's request journal. Published by
+ * `deploy/docker-compose.standalone-full.yml`; the port is overridable there
+ * and here so two stacks can coexist.
+ */
+const MOCK_JOURNAL_URL = `http://localhost:${process.env.STANDALONE_MOCK_PORT ?? '8090'}/__journal`;
+
+/** One recorded upstream request. See `deploy/mock-llm/server.py`. */
+type JournalEntry = {
+  readonly path: string;
+  readonly model: string | null;
+  readonly credential: string;
+  readonly inputs: number;
+};
+
+/** The bucket `seed-index` points toolkit 9002 at. */
+const BUCKET = 'elitea-artifacts';
+
+/**
+ * The wire model name the gateway is expected to dispatch.
+ *
+ * `seed-index` seeds `vllm/E2E-MOCK-EMBEDDING`. The `vllm/` prefix selects the
+ * credential and is stripped before dispatch, so the provider sees the bare
+ * name. Overridable for a stack seeded with another model.
+ */
+const EXPECTED_WIRE_MODEL = (process.env.INDEX_EMBEDDING_MODEL ?? 'vllm/E2E-MOCK-EMBEDDING').replace(/^.*\//, '');
 
 /** The toolkit `seed-index` provisions: an `artifact` toolkit, the one indexable type needing no third-party credential. */
 const TOOLKIT_ID = '9002';
@@ -69,10 +124,93 @@ function uniqueIndexName(): string {
 }
 
 /** The rail's own list request — awaited before "Add index" is clicked. See `openCreateIndexForm`. */
-const INDEX_META_RE = /\/elitea_core\/index_meta\/prompt_lib\/\d+\/\d+/;
+const INDEX_META_RE = /\/elitea_core\/index_meta\/prompt_lib\/(\d+)\/\d+/;
 
-/** Opens the toolkit's Indexes tab and clicks "Add index", leaving the create form on screen. */
-async function openCreateIndexForm(page: Page): Promise<void> {
+/**
+ * Empties the mock provider's request journal, so a later read reports only the
+ * calls this run made.
+ */
+async function resetJournal(page: Page): Promise<void> {
+  const cleared = await page.request.delete(MOCK_JOURNAL_URL, { timeout: 15_000 });
+  expect(
+    cleared.ok(),
+    `the mock provider's journal is not reachable at ${MOCK_JOURNAL_URL}. The llm-mock service must publish STANDALONE_MOCK_PORT — see deploy/docker-compose.standalone-full.yml.`,
+  ).toBe(true);
+}
+
+/** Reads the mock provider's request journal. */
+async function readJournal(page: Page): Promise<readonly JournalEntry[]> {
+  const response = await page.request.get(MOCK_JOURNAL_URL, { timeout: 15_000 });
+  expect(response.ok(), `the mock provider's journal is not readable at ${MOCK_JOURNAL_URL}`).toBe(true);
+  const body = (await response.json()) as { data?: readonly JournalEntry[] };
+  return body.data ?? [];
+}
+
+/**
+ * Puts ONE document in the bucket the toolkit indexes, through the product's
+ * own artifact API — the same two calls `seed-index` prints.
+ *
+ * Without this the run has nothing to embed. It reports "No new documents to
+ * index.", terminates green, and makes no embedding call at all, so every
+ * assertion below it would measure the screen and not the pipeline.
+ *
+ * The bucket may already exist from an earlier run, and 409 is the success of
+ * that case. Anything else is a real failure and must not be swallowed: a
+ * swallowed error here would put the journey straight back to indexing nothing.
+ */
+async function seedIndexableDocument(page: Page, projectId: string, body: string): Promise<string> {
+  const created = await page.request.post(`${BASE_URL}/api/v2/artifacts/buckets/${projectId}`, {
+    data: { name: BUCKET },
+    timeout: 30_000,
+  });
+  expect(
+    [200, 201, 409],
+    `creating the bucket answered ${created.status()}: ${(await created.text()).slice(0, 300)}`,
+  ).toContain(created.status());
+
+  // The multipart FILENAME is the object key, and the extension decides whether
+  // the toolkit treats the object as a document at all — an unknown extension
+  // is skipped, which would leave the run at zero documents again.
+  const key = `e2e-${Date.now()}.txt`;
+  const uploaded = await page.request.post(
+    `${BASE_URL}/api/v2/artifacts/objects/${projectId}/${BUCKET}?overwrite=true`,
+    {
+      multipart: { file: { name: key, mimeType: 'text/plain', buffer: Buffer.from(body, 'utf8') } },
+      timeout: 30_000,
+    },
+  );
+  expect(
+    uploaded.ok(),
+    `uploading ${key} answered ${uploaded.status()}: ${(await uploaded.text()).slice(0, 300)}`,
+  ).toBe(true);
+
+  // Read it back through the SAME S3-shaped listing the toolkit uses. A
+  // successful upload does not prove the toolkit can see the object: the
+  // listing is a separate root-mounted route, and the SDK swallows its 404 into
+  // an empty listing with no error anywhere. That swallow is what kept this
+  // journey at zero documents, so it is asserted here rather than trusted.
+  const listed = await page.request.get(
+    `${BASE_URL}/artifacts/s3/${BUCKET}?project_id=${projectId}&format=json&list-type=2`,
+    { timeout: 30_000 },
+  );
+  expect(
+    listed.ok(),
+    `the toolkit's own bucket listing answered ${listed.status()}. The toolkit would read this as an empty bucket and index nothing.`,
+  ).toBe(true);
+  expect(
+    await listed.text(),
+    'the object must appear in the listing the toolkit reads, not only in the upload response',
+  ).toContain(key);
+  return key;
+}
+
+/**
+ * Opens the toolkit's Indexes tab and clicks "Add index", leaving the create
+ * form on screen. Returns the project id the rail's own list request used —
+ * the driver's personal project, which is where the run happens and where the
+ * gateway resolves the credential.
+ */
+async function openCreateIndexForm(page: Page): Promise<string> {
   await page.goto(`${BASE_URL}/app/toolkits/all/${TOOLKIT_ID}`, { waitUntil: 'domcontentloaded' });
 
   // The tab is not unconditional: `resolveIndexesTabVisibility` hides it for any
@@ -94,12 +232,16 @@ async function openCreateIndexForm(page: Page): Promise<void> {
   const listed = page.waitForResponse((r) => INDEX_META_RE.test(r.url()), { timeout: 30_000 });
   await page.getByRole('tab', { name: 'Indexes' }).click();
   await expect(page.getByTestId('edit-toolkit-indexes-tab-panel')).toBeVisible({ timeout: 15_000 });
-  await listed;
+  const listResponse = await listed;
 
   await page.getByRole('button', { name: 'Add index' }).click();
   // The create form's own field, so a swallowed or overridden click fails here
   // rather than three assertions later against a detail view.
   await expect(page.getByLabel('Index Name', { exact: true })).toBeVisible({ timeout: 20_000 });
+
+  const projectId = INDEX_META_RE.exec(listResponse.url())?.[1] ?? '';
+  expect(projectId, 'the rail must list this toolkit inside a project').not.toBe('');
+  return projectId;
 }
 
 test('the index loop works end to end: form, start, progress, terminal state', async ({ page }) => {
@@ -123,7 +265,17 @@ test('the index loop works end to end: form, start, progress, terminal state', a
     if (START_RE.test(url) || EVENTS_RE.test(url)) runRequests.push(`${request.method()} ${url}`);
   });
 
-  await openCreateIndexForm(page);
+  const projectId = await openCreateIndexForm(page);
+
+  // ── §0. Give the run something to index ───────────────────────────────────
+  // One document, put in the bucket through the product's own artifact API.
+  // Its body is unique to this run, so the chunk that reaches the provider
+  // cannot come from an earlier run or from a fixture.
+  const documentBody = `elitea index journey document ${String(Date.now())}`;
+  await seedIndexableDocument(page, projectId, documentBody);
+  // Bound the journal to this run alone. Every embedding call read in §7 was
+  // made after this line.
+  await resetJournal(page);
 
   // ── §1. The form draws the SERVED schema ──────────────────────────────────
   // Every control below is one property of `args_schemas.index_data`. Before
@@ -195,8 +347,10 @@ test('the index loop works end to end: form, start, progress, terminal state', a
   expect(startResponse.status(), 'the index run must be admitted').toBe(200);
   const startBody = (await startResponse.json()) as { task_id?: string };
   expect(startBody.task_id, 'the start response must carry the task to stream').toMatch(/^[0-9a-f]+$/);
-  const projectId = START_RE.exec(startResponse.url())?.[1] ?? '';
-  expect(projectId, 'the run must belong to a project').not.toBe('');
+  expect(
+    START_RE.exec(startResponse.url())?.[1] ?? '',
+    'the run must happen in the project the document was seeded into',
+  ).toBe(projectId);
 
   const streamResponse = await streamed;
   expect(streamResponse.status(), 'the browser must be able to READ the stream it is meant to render').toBe(200);
@@ -246,6 +400,66 @@ test('the index loop works end to end: form, start, progress, terminal state', a
   // stack that painted the run and stored nothing.
   await openCreateIndexForm(page);
   await expect(panel.getByText(indexName).first(), 'the index must survive a reload').toBeVisible({ timeout: 30_000 });
+
+  // ── §7. The PIPELINE ran, not only the screen (issue #470) ────────────────
+  //
+  // Everything above this line passes against a run that indexed nothing. This
+  // section is what separates "the index feature works" from "an embedding was
+  // computed for a real document by the model the operator configured".
+
+  // §7a. The server's own record of how many documents the run indexed. This
+  // is the number the rail renders, so a `0 / 0` run fails here.
+  //
+  // MEASURED: an empty bucket gives `indexed: 0` and state `completed`, so this
+  // assertion is what separates the two. Do not move the weight of it onto §7b.
+  await expect
+    .poll(
+      async () => {
+        const stored = await page.request.get(`${BASE_URL}/api/v2/elitea_core/index_meta/prompt_lib/${projectId}/${TOOLKIT_ID}`);
+        if (!stored.ok()) return -1;
+        const body = (await stored.json()) as readonly { metadata?: Record<string, unknown> }[];
+        const row = Array.isArray(body) ? body.find((entry) => entry.metadata?.['collection'] === indexName) : undefined;
+        return Number(row?.metadata?.['indexed'] ?? -1);
+      },
+      {
+        timeout: 30_000,
+        message:
+          'the run indexed no document. An empty bucket terminates green with indexed: 0, and every section above this one passes against it — MEASURED, by disabling §0 and re-running.',
+      },
+    )
+    .toBeGreaterThanOrEqual(1);
+
+  // §7b. The provider was really called, and the whole 18-hop path was walked.
+  // Read from the mock's own request journal — the only record of what went on
+  // the wire. Neither the run's terminal state nor the stored count can show
+  // this: both are written by elitea-main, upstream of the gateway.
+  //
+  // This is the CARRIER for §7c and §7d, not a document-count assertion. See
+  // the note on §7a.
+  const journal = await readJournal(page);
+  const embeddingCalls = journal.filter((entry) => entry.path === '/v1/embeddings');
+  expect(
+    embeddingCalls.length,
+    `the run reported indexed documents but made no embedding call. Journal: ${JSON.stringify(journal)}`,
+  ).toBeGreaterThanOrEqual(1);
+
+  // §7c. WHICH model. A vector width identifies no model, and that width was
+  // the only thing the stack's `check` asserted. The gateway maps the
+  // catalogue name onto the row's `data.name` and strips the provider prefix,
+  // so this is the name the provider itself was asked for.
+  expect(
+    [...new Set(embeddingCalls.map((entry) => entry.model))],
+    'the embedding call carried a different model name than the one seeded for this toolkit',
+  ).toEqual([EXPECTED_WIRE_MODEL]);
+
+  // §7d. WHICH project. `seed-llm` gives every project its own mock key, so
+  // the credential the gateway sent names the project it resolved. A gateway
+  // that resolved the public project, or another tenant's, would still return
+  // a valid-looking vector.
+  expect(
+    [...new Set(embeddingCalls.map((entry) => entry.credential))],
+    `the gateway resolved the wrong project's credential. Expected project ${projectId}.`,
+  ).toEqual([`mock-key-project-${projectId}`]);
 });
 
 test('the terminal state comes off the stream, not a client-side guess', async ({ page }) => {
