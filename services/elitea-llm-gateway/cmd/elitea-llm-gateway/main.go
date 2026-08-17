@@ -25,11 +25,13 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -64,6 +66,12 @@ func main() {
 	// probe the NATS circuit breaker.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", livenessHandler)
+
+	// Issue #465: mount the operator controls on THIS mux. expvar publishes
+	// /debug/vars on http.DefaultServeMux, which this process never serves, so
+	// every published variable was unreadable. /metrics serves an allowlist —
+	// see gatewayMetrics for why the full expvar surface stays unpublished.
+	mux.Handle("/metrics", makeMetricsHandler(gatewayMetrics()))
 
 	// Open the Postgres pool BEFORE the server: it backs the vault-backed
 	// Account (BFF.6), the governance/failmode store (FIX #0), and the
@@ -572,20 +580,101 @@ func parseLevel(s string) slog.Level {
 	}
 }
 
-// budgetEnforcementEnabled is the scrapable expvar gauge for budget enforcement
-// status (Fix round-3 #9). Set once at startup; operators can alert on 0.
+// metricBudgetEnforcementEnabled is the name of the budget-enforcement gauge.
+const metricBudgetEnforcementEnabled = "gateway_budget_enforcement_enabled"
+
+// budgetEnforcementEnabled is the budget-enforcement gauge (Fix round-3 #9).
+// It is set once at startup. The gateway serves it on GET /metrics, so an
+// operator can alarm on the value 0.
 //
 //	gateway_budget_enforcement_enabled == 1 → enforcement active
 //	gateway_budget_enforcement_enabled == 0 → enforcement DISABLED (loud startup warning already logged)
-var budgetEnforcementEnabled = expvar.NewInt("gateway_budget_enforcement_enabled")
+//
+// Issue #465: this gauge had NO route for its whole life. expvar registers
+// /debug/vars on http.DefaultServeMux, and this process never serves that mux.
+// The alarm this gauge exists for could not be built. That mattered most for
+// issue #304: a gateway that starts while NATS is unreachable enforces nothing
+// for the life of the process, and this gauge is the control that reports it.
+var budgetEnforcementEnabled = expvar.NewInt(metricBudgetEnforcementEnabled)
 
-// recordBudgetEnforcementEnabled sets the expvar gauge. Called once at startup
+// recordBudgetEnforcementEnabled sets the gauge. Called once at startup
 // after governance assembly succeeds or fails.
 func recordBudgetEnforcementEnabled(enabled bool) {
 	if enabled {
 		budgetEnforcementEnabled.Set(1)
 	} else {
 		budgetEnforcementEnabled.Set(0)
+	}
+}
+
+// gatewayMetric is one variable that GET /metrics serves.
+type gatewayMetric struct {
+	name string
+	// kind is the Prometheus metric type: "gauge" or "counter".
+	kind string
+	help string
+	v    expvar.Var
+}
+
+// gatewayMetrics lists every variable GET /metrics serves, in a fixed order.
+//
+// The list is an ALLOWLIST, and that is the answer to the second half of issue
+// #465: /debug/vars must NOT be public. expvar.Handler() writes every variable
+// the process publishes, which includes `cmdline` (the process arguments) and
+// `memstats`, plus anything any dependency publishes. This route writes the
+// gateway's own controls and nothing else.
+//
+// The listener that serves this route also serves /llm. In the shipped
+// deployment that listener is a ClusterIP Service with mutual TLS, and the
+// edge proxies only the /llm paths, so /metrics is reachable from inside the
+// cluster and not from a tenant.
+//
+// The model-map names come from llmproxy.ModelMapMetricNames, so the package
+// that publishes a counter also states its name. Nothing here copies a name
+// from another file.
+func gatewayMetrics() []gatewayMetric {
+	metrics := []gatewayMetric{{
+		name: metricBudgetEnforcementEnabled,
+		kind: "gauge",
+		help: "1 when this gateway enforces budgets. 0 when enforcement is off.",
+		v:    budgetEnforcementEnabled,
+	}}
+	for _, name := range llmproxy.ModelMapMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "counter",
+			help: "Count of requests the model map refused because it could not read the project model set.",
+			v:    expvar.Get(name),
+		})
+	}
+	return metrics
+}
+
+// makeMetricsHandler answers GET /metrics with the given variables, in the
+// Prometheus text exposition format. That format is what an operator's alarm
+// reads, and the gateway published no metrics route before issue #465.
+//
+// A variable that is not published writes an `# UNPUBLISHED` comment line. It
+// does not write nothing: a name that silently disappears from a scrape looks
+// the same as a control that reports zero, and this repository has lost several
+// controls that way. TestGatewayMetrics_EveryListedMetricIsPublished fails
+// before an operator ever sees such a line.
+func makeMetricsHandler(metrics []gatewayMetric) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var b strings.Builder
+		for _, m := range metrics {
+			if m.v == nil {
+				b.WriteString("# UNPUBLISHED " + m.name + "\n")
+				continue
+			}
+			b.WriteString("# HELP " + m.name + " " + m.help + "\n")
+			b.WriteString("# TYPE " + m.name + " " + m.kind + "\n")
+			b.WriteString(m.name + " " + m.v.String() + "\n")
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, b.String())
 	}
 }
 

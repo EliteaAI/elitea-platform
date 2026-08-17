@@ -438,6 +438,66 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   route. It also keeps the invariant `modelmap.go` states: list and dispatch
   agree.
 
+- **[human decision] 2026-08-17 (issue #469) — an unreadable model set REFUSES
+  the request. It does not forward the caller's model unmapped.** *Finding:* the
+  three conditions in which the resolver cannot read a project's model set all
+  produced one outcome: HTTP 200, with the caller's model name sent to the
+  provider with no map. The deleted elitea-main handler refused the same
+  condition with 502. Pull request #285 reversed that direction and recorded no
+  reason. *Decision, per condition:*
+
+  | Condition | Behaviour | Why |
+  |---|---|---|
+  | Empty project identifier | 404 `model_not_found` | A condition of the request, not a fault. A caller with no project has no configured model and no credential: `GetKeysForProvider` returns zero keys for an empty project. The budget gate also skips a request with no project, so an accepted request would be unmapped AND unmetered. |
+  | Nil database handle | 502 `model_catalogue_unavailable` | A wiring fault. `main.go` gives a gateway with no pool NO resolver, and that posture forwards every model unchanged. A resolver that exists with no database can never map anything, so forwarding would make the degraded path permanent. |
+  | Query failure, nothing cached | 502 `model_catalogue_unavailable` | A database fault, and the gateway has never read this project's list. |
+
+  *Why no new permissive path is bounded and kept:* the bounded permissive path
+  already exists one layer down. A query failure WITH a cached list serves the
+  last good list and reports the set as known, so the request maps and dispatches
+  as normal (`models.go`, `List`). That list is bounded because every name in it
+  came from a real configuration row. The three conditions above are exactly the
+  ones in which no list exists, so "permit only a cached name" would permit
+  nothing. `TestModelMap_QueryFailureWithACachedListStillDispatches` pins the
+  stale path; delete it and a database blip becomes a total outage.
+
+  *Accepted cost:* a project whose model set has never been read gets 502 for
+  every request during a database outage, instead of a provider error. The
+  counters below make that state visible.
+
+- **A refusal an operator cannot count is a refusal nobody sees.** Each condition
+  above increments its own `expvar` counter
+  (`gateway_model_map_refused_no_project_total`, `..._no_database_total`,
+  `..._lookup_failed_total`). `llmproxy.ModelMapMetricNames` is the ONE named
+  path by which they reach `GET /metrics`, so the package that publishes a
+  counter also states its name. No name is copied into a second file.
+
+## Observability
+- **[human decision] 2026-08-17 (issue #465) — `GET /metrics` serves a named
+  allowlist. `/debug/vars` stays unpublished.** *Finding:* the
+  `gateway_budget_enforcement_enabled` gauge had no route for its whole life.
+  `expvar` registers `/debug/vars` on `http.DefaultServeMux`, and this process
+  serves its own multiplexer. The comment said operators could alarm on the
+  value 0, and no operator could read the value at all. This mattered most for
+  issue #304: a gateway that starts while NATS is unreachable enforces nothing
+  for the life of the process, and this gauge is the control that reports it.
+
+  *Decision:* mount `/metrics` on the gateway multiplexer, in the Prometheus
+  text exposition format, serving the variables `gatewayMetrics` names and
+  nothing else. `expvar.Handler()` is NOT used: it writes every variable the
+  process publishes, `cmdline` (the process arguments) and `memstats` included,
+  on the same listener that serves `/llm`. The wiring gate in `main_test.go`
+  forbids the call, and requires the `mux.Handle("/metrics"` mount.
+
+  *Exposure:* the shipped Service is ClusterIP with mutual TLS, and the edge
+  proxies only the `/llm` paths, so `/metrics` is reachable from inside the
+  cluster and not from a tenant.
+
+  *Proof rule for this route:* a test that reads the variable in the same
+  process does not prove a route exists. `TestMetricsRoute_IsServedByTheRunningGateway`
+  builds the binary, starts it, and scrapes it over HTTP. Remove the mount and
+  that test answers 404, while every handler-level test still passes.
+
 ## Resolved follow-ups
 - ✅ `SECRETS_MASTER_KEY` + `GATEWAY_IDENTITY_SECRET` now wired via the chart's
   `secrets:` block (valueFrom.secretKeyRef, optional:true default) — provision the
