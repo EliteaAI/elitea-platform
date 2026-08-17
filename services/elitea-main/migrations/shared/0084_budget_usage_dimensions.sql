@@ -13,8 +13,9 @@
 -- enforces it. Enforcement needs no new table: gateway.llm_budget_accumulators
 -- already keys rows by (scope, scope_id, period_start), and elitea-main already
 -- reads scope='user' with scope_id='{project_id}:{user_id}'. Only the gateway
--- write and admission path were missing. This file adds the index that the
--- gateway's per-member snapshot point-read needs.
+-- write and admission path were missing, and both are Go. So #321 needs no DDL
+-- of its own here; it needs the threshold column below to behave the same way
+-- for a member as for a project.
 --
 -- #322 — PUT /admin/gateway/budget-alerts held its value in a process-local
 -- struct, so it was lost on restart and diverged per replica, and no gateway
