@@ -210,17 +210,18 @@ func TestModelSections_StatementBindsEveryPairInDeclaredOrder(t *testing.T) {
 	resolver := NewModelResolver(ModelResolverConfig{DB: db})
 	resolver.List(t.Context(), mapProjectID)
 
-	if len(db.gotSQL) != 1 || len(db.gotArgs) != 1 {
-		t.Fatalf("got %d statements, want 1", len(db.gotSQL))
+	models := db.modelStatements()
+	if len(models) != 1 {
+		t.Fatalf("got %d model statements, want 1", len(models))
 	}
-	sql := db.gotSQL[0]
+	sql := models[0]
 	for _, want := range []string{"unnest($1::text[], $2::text[])", "WITH ORDINALITY", "ORDER BY s.ord, c.id"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("statement is missing %q:\n%s", want, sql)
 		}
 	}
 
-	args := db.gotArgs[0]
+	args := db.modelArgs()[0]
 	if len(args) != 2 {
 		t.Fatalf("statement bound %d arguments, want 2 (sections, types)", len(args))
 	}

@@ -19,6 +19,8 @@ import (
 	"net/http"
 
 	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/account"
 )
 
 // modelLookup is the outcome of mapping a caller's model id for one project.
@@ -45,10 +47,13 @@ const (
 // accepting the second keeps a caller that already sends wire names working
 // while the advertised list stays callable. It never widens the set: a name
 // that no configured row carries still resolves to modelNotAdvertised.
-func (m *ModelResolver) resolve(ctx context.Context, projectID string, ids []string) (string, modelLookup) {
+// It returns the whole resolved row, not the wire name alone: the row also
+// carries the provider its linked credential serves, which for a bare model
+// name is the only provider there is (issue #451).
+func (m *ModelResolver) resolve(ctx context.Context, projectID string, ids []string) (modelObject, modelLookup) {
 	models, known := m.list(ctx, projectID)
 	if !known {
-		return "", modelSetUnknown
+		return modelObject{}, modelSetUnknown
 	}
 	for _, id := range ids {
 		if id == "" {
@@ -56,16 +61,16 @@ func (m *ModelResolver) resolve(ctx context.Context, projectID string, ids []str
 		}
 		for _, mo := range models {
 			if mo.ID == id {
-				return mo.providerModel, modelResolved
+				return mo, modelResolved
 			}
 		}
 		for _, mo := range models {
 			if mo.providerModel == id {
-				return mo.providerModel, modelResolved
+				return mo, modelResolved
 			}
 		}
 	}
-	return "", modelNotAdvertised
+	return modelObject{}, modelNotAdvertised
 }
 
 // requestModelCandidates lists the spellings that can name an advertised model,
@@ -113,7 +118,7 @@ func requestModelCandidates(provider schemas.ModelProvider, model string) []stri
 // taking the address of a field of a nil request panics at the call site.
 func (h *Handler) mapModel(
 	w http.ResponseWriter,
-	ctx context.Context,
+	ctx *schemas.BifrostContext,
 	provider *schemas.ModelProvider,
 	model *string,
 ) bool {
@@ -121,14 +126,39 @@ func (h *Handler) mapModel(
 		return true
 	}
 	projectID := identityProjectFromCtx(ctx)
-	target, outcome := h.models.resolve(ctx, projectID, requestModelCandidates(*provider, *model))
+	mo, outcome := h.models.resolve(ctx, projectID, requestModelCandidates(*provider, *model))
 	switch outcome {
 	case modelResolved:
 		// The mapped name can carry its own provider prefix (e.g.
 		// "openai/gpt-4o"). Re-split it, keeping the request's provider as the
 		// default so an unprefixed wire name does not lose it.
-		p, mdl := schemas.ParseModelString(target, *provider)
+		p, mdl := schemas.ParseModelString(mo.providerModel, *provider)
+		// ISSUE #451: the row's linked credential decides the provider, and it
+		// OVERRIDES the prefix. The link is the explicit, structured statement
+		// of which provider serves this model; a prefix is a substring of a
+		// name. The deleted LiteLLM mapper made the same choice: it took
+		// custom_llm_provider from the credential type and never from the name.
+		//
+		// This is also the only path that works for a real row. Measured on the
+		// staging dump of 2026-07-09: 48 of 48 chat rows and 8 of 8 embedding
+		// rows hold a BARE name, so ParseModelString returns the empty default
+		// for every one of them, and bifrost/core rejects an empty provider
+		// (core@v1.7.3 utils.go:152-155). Without the link every model row in
+		// that database is undispatchable.
+		//
+		// The provider is assigned as a schemas.ModelProvider value and is never
+		// spliced into the model string. That matters: ParseModelString accepts
+		// a prefix only when IsKnownProvider admits it, so a name-based fix
+		// would fail silently for any provider spelling core does not know.
+		if mo.credentialProvider != "" {
+			p = mo.credentialProvider
+		}
 		*provider, *model = p, mdl
+		// Pin the credential for the account package. Absent means "the model
+		// named no credential", which keeps the whole provider set on offer.
+		if link, ok := mo.linkedCredential(); ok {
+			ctx.SetValue(account.ContextKeyLinkedCredential, link)
+		}
 		return true
 	case modelNotAdvertised:
 		h.logger.WarnContext(ctx, "model is not configured for this project",

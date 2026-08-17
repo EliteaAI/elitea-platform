@@ -3,6 +3,7 @@ package llmproxy
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -65,7 +66,16 @@ func (it *staticModelRowsIter) Close()     {}
 // compile-time assertions.
 var _ modelRows = (*staticModelRowsIter)(nil)
 
-func (q *staticModelQuerier) Query(_ context.Context, _ string, _ ...any) (modelRows, error) {
+// Query ignores the schema name but NOT the statement. The resolver issues two
+// different statements with two different column shapes: the model read that
+// staticModelRowsIter serves, and the credential read of issue #451. Answering
+// the credential read with model rows would fail on the scan arity, so it
+// yields no credentials — a static model set links to nothing and keeps taking
+// its provider from the model-name prefix.
+func (q *staticModelQuerier) Query(_ context.Context, sql string, _ ...any) (modelRows, error) {
+	if strings.Contains(sql, credentialSection) {
+		return &staticModelRowsIter{}, nil
+	}
 	return &staticModelRowsIter{rows: q.rows}, nil
 }
 
