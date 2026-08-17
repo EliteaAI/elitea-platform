@@ -2153,6 +2153,30 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		mountLLM(cfg.GatewayProxy, cfg.GatewayProjectResolver)
 	} else if cfg.LLMProxy != nil {
 		mountLLM(cfg.LLMProxy, cfg.LLMProjectResolver)
+	} else {
+		// Issue #463: NO backend is composed, because LLM_GATEWAY_URL is empty.
+		//
+		// This arm used to be absent. The path then stayed unregistered and
+		// answered 404, and the comment in production_router.go called that
+		// "visible". It is not visible. A 404 on /llm/v1/models is the same
+		// answer the caller gets for a misspelt path, so an operator who
+		// forgot the variable and a user who typed the URL wrongly read one
+		// response and cannot tell the two apart. The chart's own default for
+		// LLM_GATEWAY_URL is the empty value, so this was the DEFAULT state of
+		// a Kubernetes install: the gateway pods ran and nothing routed to
+		// them, silently.
+		//
+		// 503 with a named code is the same refusal, said out loud. It names
+		// the variable that turns the path on, so the answer itself is the
+		// remedy. It does NOT route anywhere: there is still exactly one
+		// composed backend for /llm, and nothing here reintroduces a fallback
+		// to a superseded data plane.
+		// Mount, not Handle, and on the same "/llm" pattern the composed arm
+		// uses. The route-surface snapshot in production_router_test.go and the
+		// spec-conformance suite both classify a /llm MOUNT as router plumbing
+		// and exclude it; two r.Handle registrations would instead appear as
+		// nine new API routes each and change a surface that has not changed.
+		r.Mount("/llm", llmNotConfiguredHandler())
 	}
 
 	// Register reviewed current-compatible routes last. Some broad prototype
@@ -2167,6 +2191,33 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	mountReviewedProductionRoutes(r, cfg)
 
 	return r
+}
+
+// LLMNotConfiguredCode is the machine-readable code the /llm path answers with
+// when no gateway backend is composed (issue #463). It is a DISTINCT code from
+// the proxy's own upstream_unavailable: that one means "the gateway is
+// configured and did not answer", this one means "no gateway is configured at
+// all". An operator who cannot tell those apart cannot tell a broken deployment
+// from an unconfigured one.
+const LLMNotConfiguredCode = "llm_gateway_not_configured"
+
+// llmNotConfiguredHandler answers every /llm request while LLM_GATEWAY_URL is
+// empty.
+//
+// The body mirrors the shape internal/llmproxy already writes on an upstream
+// error, so a client parses one envelope for both. 503 rather than 404: the
+// path exists and the capability is off, which is a server state, and a client
+// may retry after the operator sets the variable.
+//
+// The message names the environment variable on purpose. This response is read
+// by the person who has to fix it far more often than by an end user, and the
+// alternative is a log line in a pod they have not thought to look at.
+func llmNotConfiguredHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"the LLM gateway is not configured: LLM_GATEWAY_URL is empty, so no /llm backend is composed","type":"service_unavailable","code":"` + LLMNotConfiguredCode + `"}}`))
+	})
 }
 
 func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {

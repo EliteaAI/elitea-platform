@@ -1540,28 +1540,25 @@ func TestProductionRouterMountsCurrentAvailableAliasesAsGetOnly(t *testing.T) {
 // This replaces TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath,
 // which pinned the opposite contract: a bare RouterConfig carrying only a
 // CurrentLLMFacade served /llm from that facade. There is no facade and no
-// last-resort arm any more — the Bifrost gateway is the only backend, and with
-// nothing composed /llm must not be registered at all. A reintroduced fallback
-// would turn the second half of this test from 404 into a served response.
+// last-resort arm any more — the Bifrost gateway is the only backend.
+//
+// Issue #463 changed HOW the uncomposed state answers, not WHAT it serves. The
+// path is now registered and answers 503 llm_gateway_not_configured. So the
+// discriminating signal can no longer be "no /llm pattern exists": it is the
+// not-configured code in the body, which no real backend would ever produce.
+// A reintroduced fallback turns this test from that code into a served
+// response, exactly as the 404 assertion used to.
 func TestProductionRouterLLMRouteHasNoLastResortBackend(t *testing.T) {
-	// Registered patterns are the discriminating signal here: the routes
-	// GatewayProxy mounts sit behind Auth+Project middleware, so a bare
-	// unauthenticated request cannot tell "mounted but rejecting" from
-	// "never mounted" — both answer non-2xx.
-	uncomposed := routePatterns(t, NewRouter(RouterConfig{}))
-	for _, pattern := range uncomposed {
-		if strings.Contains(pattern, "/llm") {
-			t.Fatalf("uncomposed router registered %q — /llm must have no backend when none is composed", pattern)
-		}
-	}
-
 	recorder := httptest.NewRecorder()
 	NewRouter(RouterConfig{}).ServeHTTP(
 		recorder,
 		httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`)),
 	)
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("uncomposed /llm status=%d body=%s (want 404: no LiteLLM fallback exists)", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("uncomposed /llm status=%d body=%s (want 503: no backend is composed)", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), LLMNotConfiguredCode) {
+		t.Fatalf("uncomposed /llm body=%s — want the %s code, which proves nothing served the request", recorder.Body.String(), LLMNotConfiguredCode)
 	}
 
 	// With the gateway composed the pattern appears, so the assertion above is

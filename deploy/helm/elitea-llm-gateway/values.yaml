@@ -125,6 +125,13 @@ env:
   # public and in-cluster origin that reaches the /llm surface; empty leaves
   # the request-time guard inert (the elitea-main upsert-time guard remains).
   # e.g. "https://dev.elitea.ai/llm/v1,http://elitea-main:8080/llm/v1"
+  #
+  # ISSUE #467: this MUST be set. The chart refuses to render while it is empty
+  # (elitea-llm-gateway.validateGuards in templates/_helpers.tpl), because an
+  # empty value makes the guard admit every credential and the process then
+  # writes one warning line and serves anyway. There is no default: only the
+  # operator knows the origins, and a guessed origin would guard a name nobody
+  # uses while leaving the real one open.
   GATEWAY_SELF_LLM_ORIGINS: ""
 
   # Issue #13 — egress allowlist for TENANT-AUTHORED credential `api_base`
@@ -146,6 +153,12 @@ env:
   # tenant shipping its own vault secrets to an arbitrary PUBLIC host as a
   # Bearer token — leaving it empty accepts that risk.
   # e.g. "vllm.ml.svc.cluster.local:8000,ollama.ml.svc.cluster.local:11434"
+  #
+  # ISSUE #467: this key is governed by `egressPosture` at the bottom of this
+  # file. The chart refuses to render until that posture is stated, because the
+  # empty value is permissive and restrictive AT THE SAME TIME — it accepts any
+  # PUBLIC host and refuses every PRIVATE one — and an operator who did not
+  # choose it has almost certainly not understood which half applies to them.
   GATEWAY_EGRESS_ALLOWLIST: ""
 
   # Issue #316 — the platform's SHARED ("public") project. Elitea has always had
@@ -242,6 +255,39 @@ secrets:
 # collector live. Enable it only after filling in `egress` below — otherwise the
 # gateway loses its own dependencies. Requires a CNI that enforces
 # NetworkPolicy; on one that does not, the object renders but does nothing.
+# egressPosture — issue #467. Which egress policy this deployment runs.
+#
+# The chart REFUSES TO RENDER until this names one of the two values below.
+# That is deliberate. The alternative was the shipped default, an empty
+# GATEWAY_EGRESS_ALLOWLIST, which no operator had chosen and which behaves in
+# two opposite ways at once.
+#
+# Read internal/account/egress.go and internal/account/account.go. The gateway
+# sets AllowPrivateNetwork from whether the allowlist is configured, so:
+#
+#   "allowlist"            env.GATEWAY_EGRESS_ALLOWLIST names every host a
+#                          tenant may put in api_base. Private destinations
+#                          become reachable for the self-hosted provider
+#                          classes (vLLM, Ollama). This is the only posture in
+#                          which a self-hosted model on a private network
+#                          works. The host check runs BEFORE the Fernet vault
+#                          decrypts the api_key, so a host that is not on the
+#                          list never receives a resolved secret.
+#
+#   "public-unrestricted"  env.GATEWAY_EGRESS_ALLOWLIST stays empty. A tenant
+#                          may name ANY public host in api_base, and the
+#                          gateway then sends that tenant's credential to it.
+#                          bifrost's SSRF-safe dialer stays armed, so no tenant
+#                          can steer the gateway at a private address — and a
+#                          self-hosted vLLM or Ollama CANNOT WORK at all.
+#                          Choose this only when every model is a public
+#                          provider AND you accept that a tenant may ship its
+#                          own vault secret to an address of its choosing.
+#
+# There is deliberately no third mode in which a tenant reaches an arbitrary
+# private address.
+egressPosture: ""
+
 networkPolicy:
   enabled: false
   # allowPublicEgress opens 0.0.0.0/0 minus every private/link-local range, so

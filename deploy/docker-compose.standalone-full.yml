@@ -428,6 +428,29 @@ services:
       # allowlist would have silently got the mock allowlisted back, and a
       # negative test written against it would pass while proving nothing.
       GATEWAY_EGRESS_ALLOWLIST: "${GATEWAY_EGRESS_ALLOWLIST-llm-mock:8090}"
+
+      # Issue #458 — the platform's SHARED ("public") project.
+      #
+      # This MUST hold the same value as the elitea-main service below, which
+      # sets "1". It did not: the value was set on elitea-main only, so the
+      # gateway read the caller's project alone. The model picker offered every
+      # model that project 1 published with shared = true, and a request for one
+      # of them then found no credential and answered 404 model_not_found.
+      #
+      # This stack creates schema p_1 (see the database seed above), so "1"
+      # names a project that exists. An id that names a schema which does not
+      # exist makes every credential read fail, which is why the Helm chart
+      # leaves the same key empty and this file does not.
+      #
+      # deploy/helm/tests/render-llm-path.sh asserts the two services agree, and
+      # fails when one holds the value and the other does not.
+      ELITEA_AI_PROJECT_ID: "${ELITEA_AI_PROJECT_ID:-1}"
+
+      # Issue #467 — circular-routing guard #1 at request time. Names every
+      # origin that reaches this stack's /llm surface, so a credential whose
+      # api_base points back at the platform is refused with
+      # SELF_REFERENTIAL_CREDENTIAL instead of looping.
+      GATEWAY_SELF_LLM_ORIGINS: "${GATEWAY_SELF_LLM_ORIGINS-http://elitea-main:8080/llm/v1,http://localhost:8080/llm/v1}"
       GATEWAY_LOG_LEVEL: "${GATEWAY_LOG_LEVEL:-info}"
     volumes:
       # Three FILES, never the ./certs directory (#327). The gateway is the
@@ -603,7 +626,16 @@ services:
       # So it points at the seeded project. Unlike VITE_PUBLIC_PROJECT_ID below,
       # which selects a UI view and must NOT be 1, this must name a project that
       # exists.
-      ELITEA_AI_PROJECT_ID: "1"
+      # Issue #458: the elitea-llm-gateway service above MUST hold this same
+      # value, or the gateway serves a different model set from the one this
+      # service's model picker offers.
+      ELITEA_AI_PROJECT_ID: "${ELITEA_AI_PROJECT_ID:-1}"
+
+      # Issue #467 — circular-routing guard #1 at upsert time. The platform's
+      # own /llm origins. With this and DEPLOYMENT_URL both empty,
+      # internal/api/v2/configurations/selfref.go builds an empty list and the
+      # guard admits every credential, including one that points back here.
+      ELITEA_SELF_LLM_ORIGINS: "${ELITEA_SELF_LLM_ORIGINS-http://elitea-main:8080/llm/v1,http://localhost:8080/llm/v1}"
 
       # ── Current project-info (issue #367) ──────────────────────────────────
       # On, because the handler behind it is the only one that can answer the

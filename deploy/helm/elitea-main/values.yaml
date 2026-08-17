@@ -304,9 +304,50 @@ env:
   # override" — the handler falls back to its own default (365 days).
   ARTIFACT_ATTACHMENT_RETENTION_DAYS: ""
 
-  # --- LLM gateway proxy (BF0.9c) -----------------------------------------------
-  # URL of the elitea-llm-gateway service. Empty disables GatewayProxy.
+  # --- LLM gateway proxy (BF0.9c; issue #463) ---------------------------------
+  # URL of the elitea-llm-gateway service. Empty composes no GatewayProxy, and
+  # the /llm path then answers 503 llm_gateway_not_configured.
+  #
+  # WHY THERE IS NO DEFAULT VALUE HERE, and why that is not the old defect.
+  #
+  # The old defect was that an empty value made /llm answer 404, which is the
+  # same answer a misspelt path gets. That is fixed in the CODE, not here:
+  # internal/api/router.go now registers the path and answers 503 with the code
+  # llm_gateway_not_configured and the name of this variable. So the empty
+  # value is now a stated posture instead of a silent one.
+  #
+  # A default URL cannot be correct, and would be worse than the empty value:
+  #   1. internal/llmproxy/proxy.go ALWAYS builds an mTLS transport. With no
+  #      readable client certificate, tls.LoadX509KeyPair fails, llmproxy.New
+  #      returns an error, and cmd/elitea-main turns that into a FATAL boot
+  #      error. A default URL with no certificates is a crash loop, not a
+  #      working /llm path.
+  #   2. This chart cannot supply those certificates. They are issued by the
+  #      gateway chart's cert-manager Certificate into the `elitea-gateway`
+  #      namespace, and a Secret is namespace-scoped. See the "Cross-namespace
+  #      Secrets" section of deploy/README.md.
+  # So the chart refuses the half-configured combination instead: set this URL
+  # and the three file paths below together, or set none of them.
+  # elitea-main.validateLLMGateway in _helpers.tpl performs that check at
+  # `helm template` time, so the terminal that ran the command shows the reason.
+  #
+  # Cross-namespace: this must be an FQDN when the gateway is in another
+  # namespace, e.g.
+  #   https://elitea-llm-gateway-svc.elitea-gateway.svc.cluster.local:8083
   LLM_GATEWAY_URL: ""
+
+  # The mTLS material for the hop above. These three are FILE PATHS, not the
+  # certificate text: internal/llmproxy/proxy.go passes them to
+  # tls.LoadX509KeyPair and os.ReadFile.
+  #
+  # They were previously declared in the `secrets:` block as secretKeyRef
+  # entries. That shape cannot work: a secretKeyRef sets the variable to the
+  # CONTENT of the Secret key, so the process then tried to open a file whose
+  # name was a PEM block. Mount the material as a volume and put the paths
+  # here.
+  LLM_GATEWAY_CLIENT_CERT: ""
+  LLM_GATEWAY_CLIENT_KEY: ""
+  LLM_GATEWAY_CA_FILE: ""
 
   # --- Tracing / observability (issue #250) -----------------------------------
   # OTLP/HTTP collector base URL. Read by both libs/go/observability (elitea-main's
@@ -374,18 +415,12 @@ secrets:
     secretName: elitea-main-llm-gateway-secrets
     key: gateway-identity-secret
     optional: false
-  LLM_GATEWAY_CLIENT_CERT:
-    secretName: elitea-main-llm-gateway-secrets
-    key: llm-gateway-client-cert
-    optional: true
-  LLM_GATEWAY_CLIENT_KEY:
-    secretName: elitea-main-llm-gateway-secrets
-    key: llm-gateway-client-key
-    optional: true
-  LLM_GATEWAY_CA_FILE:
-    secretName: elitea-main-llm-gateway-secrets
-    key: llm-gateway-ca-file
-    optional: true
+  # LLM_GATEWAY_CLIENT_CERT, LLM_GATEWAY_CLIENT_KEY and LLM_GATEWAY_CA_FILE were
+  # here as secretKeyRef entries. They are removed (issue #463), because that
+  # shape cannot work: internal/llmproxy/proxy.go reads all three as FILE PATHS,
+  # and a secretKeyRef sets the variable to the CONTENT of the Secret key. The
+  # pod then tried to open a file whose name was a PEM block. They are now plain
+  # path entries in the `env:` map above; mount the material as a volume.
   # Password for the general-purpose Redis named by env.REDIS_URL above — the
   # project event stream's transport (issue #382). Optional, because a Redis
   # with no authentication needs no password and the pod must still start.

@@ -64,9 +64,24 @@ env:
   # probe time rather than silently listening on the wrong port.
   HTTP_ADDR: ":8081"
 
-  # Price-catalog sync (design §8.8). Off by default: enabling it against a
-  # database without gateway.gateway_models does nothing useful.
-  PRICE_SYNC_ENABLED: "false"
+  # Price-catalog sync (design §8.8). ON by default since issue #464.
+  #
+  # It was off, and it was off in the code too, so nothing ever filled
+  # gateway.gateway_models. With no prices the cost calculator values every call
+  # at zero. A budget whose spend is always zero never reaches its soft alert
+  # and never reaches its hard limit, so the whole budget feature was inert
+  # rather than merely unreported.
+  #
+  # The old reason for "off" was that enabling it against a database without
+  # gateway.gateway_models does nothing useful. That table is created by
+  # services/elitea-main/migrations/shared/0067_gateway_budget_schema.sql, which
+  # this chart's elitea-main sibling applies as a pre-install hook, so the table
+  # is present in every deployment that has the budget routes at all.
+  #
+  # PRICE_SYNC_SEED below carries a built-in catalogue, so this needs NO network
+  # access to be useful. PRICE_SYNC_LITELLM adds the public catalogue on top; a
+  # deployment with no egress can set that one to "false" and keep the seed.
+  PRICE_SYNC_ENABLED: "true"
   PRICE_SYNC_INTERVAL: "24h"
   PRICE_SYNC_LITELLM: "true"
   PRICE_SYNC_SEED: "true"
@@ -79,8 +94,34 @@ env:
   # `elitea-gateway` namespace (deploy/argocd/applications/nats.yaml) while this
   # chart's ArgoCD Application targets `elitea`. The short name `nats` does NOT
   # resolve across namespaces — use the FQDN below if you enable this.
-  BUDGET_WRITEBACK_ENABLED: "false"
-  GATEWAY_NATS_URL: ""  # e.g. nats://nats.elitea-gateway.svc.cluster.local:4222
+  # ON by default since issue #464, with the FQDN filled in.
+  #
+  # WHY THIS IS NOT AN OPTIONAL EXTRA. gateway.llm_budget_accumulators is not
+  # only the table the budget screens read. The gateway's fail-mode FSM reads it
+  # as the Postgres DURABLE TIER: internal/failmode/store.go selects acc_found
+  # and age_seconds from it, and the shipped LLM_BUDGET_NATS_FAIL_MODE is
+  # "tiered_hybrid", which decides whether to allow or refuse a call from that
+  # snapshot's freshness while NATS is down.
+  #
+  # With no consumer, the ONLY writer of that table is the gateway's own outage
+  # UPSERT. So the durable tier was filled during outages and never during
+  # healthy traffic — exactly backwards. The snapshot the degraded path consults
+  # was permanently absent or stale, and every budget route reported no data.
+  #
+  # If you turn this off, turn it off knowingly: the budget screens then report
+  # spend_available=false, which is the honest "no figure was collected" signal
+  # rather than a zero.
+  BUDGET_WRITEBACK_ENABLED: "true"
+  # CROSS-NAMESPACE, so this is an FQDN and not the short name `nats`. NATS is
+  # installed by deploy/helm/nats into `elitea-gateway`
+  # (deploy/argocd/applications/nats.yaml) while this chart's Application
+  # targets `elitea`. Change it if your topology differs.
+  #
+  # A NATS that does not answer is NOT fatal: cmd/elitea-scheduler logs
+  # "budget write-back: NATS connect failed; consumer disabled" and keeps
+  # running its other jobs. So this default degrades loudly instead of
+  # preventing a deployment that has no NATS from starting.
+  GATEWAY_NATS_URL: "nats://nats.elitea-gateway.svc.cluster.local:4222"
   BUDGET_WRITEBACK_BATCH_SIZE: "500"
   BUDGET_WRITEBACK_ACK_WAIT: "30s"
   BUDGET_WRITEBACK_MAX_DELIVER: "10"

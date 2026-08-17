@@ -123,7 +123,87 @@ because it passes a manifest the binary then rejects.
 {{- end -}}
 {{- end -}}
 
+{{- include "elitea-main.validateLLMGateway" . -}}
+{{- include "elitea-main.validateSelfLLMOrigins" . -}}
 {{- include "elitea-main.validateRuntime" . -}}
+{{- end }}
+
+{{/*
+elitea-main.validateLLMGateway — issue #463.
+
+The /llm proxy is all-or-nothing, and the failure it produces when half
+configured is a CrashLoopBackOff rather than a disabled feature.
+
+internal/llmproxy/proxy.go builds an mTLS transport whenever Config.Transport is
+nil, and the only seam for a plaintext transport is a struct field with no
+environment binding, so it is test-only. With LLM_GATEWAY_URL set and any of the
+three material paths empty, tls.LoadX509KeyPair or os.ReadFile fails,
+llmproxy.New returns an error, and cmd/elitea-main returns
+"compose llm gateway proxy" as a fatal boot error.
+
+So this refuses the half-configured values file at `helm template` time.
+
+The reverse direction is NOT an error. A deployment may legitimately run without
+the /llm path. That state is no longer silent: with no URL the router answers
+503 llm_gateway_not_configured, which names this variable.
+*/}}
+{{- define "elitea-main.validateLLMGateway" -}}
+{{- $env := .Values.env | default dict -}}
+{{- $url := get $env "LLM_GATEWAY_URL" | toString -}}
+{{- $material := dict
+  "LLM_GATEWAY_CLIENT_CERT" (get $env "LLM_GATEWAY_CLIENT_CERT" | toString)
+  "LLM_GATEWAY_CLIENT_KEY" (get $env "LLM_GATEWAY_CLIENT_KEY" | toString)
+  "LLM_GATEWAY_CA_FILE" (get $env "LLM_GATEWAY_CA_FILE" | toString) -}}
+{{- if $url -}}
+{{- if not (or (hasPrefix "https://" $url) (hasPrefix "http://" $url)) -}}
+{{- fail (printf "env.LLM_GATEWAY_URL must be an absolute URL with a scheme and a host. internal/llmproxy/proxy.go refuses anything else: \"target url %q missing scheme or host\"." $url) -}}
+{{- end -}}
+{{- range $name, $value := $material -}}
+{{- if not $value -}}
+{{- fail (printf "env.LLM_GATEWAY_URL is set, so env.%s must be set too. internal/llmproxy/proxy.go always builds an mTLS transport and reads this value as a FILE PATH; an empty path makes cmd/elitea-main exit at boot with \"compose llm gateway proxy\". Set all three of LLM_GATEWAY_CLIENT_CERT, LLM_GATEWAY_CLIENT_KEY and LLM_GATEWAY_CA_FILE, and mount the material at those paths." $name) -}}
+{{- end -}}
+{{- if not (hasPrefix "/" $value) -}}
+{{- fail (printf "env.%s must be an absolute file path, not certificate text. Got %q. internal/llmproxy/proxy.go passes it to tls.LoadX509KeyPair / os.ReadFile." $name $value) -}}
+{{- end -}}
+{{- end -}}
+{{- else -}}
+{{- range $name, $value := $material -}}
+{{- if $value -}}
+{{- fail (printf "env.%s is set but env.LLM_GATEWAY_URL is empty, so no proxy is composed and the material is never read. Set env.LLM_GATEWAY_URL, or clear env.%s." $name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+elitea-main.validateSelfLLMOrigins — issue #467, guard #1 at upsert time.
+
+internal/api/v2/configurations/selfref.go builds the self-origin list from
+ELITEA_SELF_LLM_ORIGINS plus DEPLOYMENT_URL with "/llm" appended. When the list
+is empty, validateNotSelfReferential returns nil for EVERY credential, so a
+credential whose api_base points back at this platform's own /llm origin is
+saved. The gateway's request-time check is the backstop, and issue #467 ships
+that one empty too.
+
+The chart shipped both names empty, so the guard was inert in every Kubernetes
+install. It is NOT given a default value: this chart cannot know the
+deployment's public origin, and a guessed origin would guard a name nobody uses
+while leaving the real one open, which reads as armed and is not.
+
+DEPLOYMENT_URL alone satisfies this. That is the zero-extra-configuration path
+selfref.go already promises for a single-domain deployment.
+
+Checked only when the Configurations plane is on, because that plane owns the
+credential write routes this guard runs on. With the plane off there is no
+upsert to guard.
+*/}}
+{{- define "elitea-main.validateSelfLLMOrigins" -}}
+{{- $env := .Values.env | default dict -}}
+{{- if eq (get $env "ELITEA_CONFIGURATIONS_ENABLED" | toString) "true" -}}
+{{- if not (or (get $env "ELITEA_SELF_LLM_ORIGINS") (get $env "DEPLOYMENT_URL")) -}}
+{{- fail "env.ELITEA_CONFIGURATIONS_ENABLED=\"true\" needs env.DEPLOYMENT_URL or env.ELITEA_SELF_LLM_ORIGINS. With both empty, internal/api/v2/configurations/selfref.go builds an empty self-origin list and the SELF_REFERENTIAL_CREDENTIAL guard (spec §2.6 guard #1) admits every credential, including one whose api_base points back at this platform's own /llm origin. Set env.DEPLOYMENT_URL to this deployment's public base URL (the guard then appends \"/llm\" itself), or list the origins explicitly in env.ELITEA_SELF_LLM_ORIGINS." -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*
