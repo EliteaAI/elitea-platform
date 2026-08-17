@@ -568,9 +568,12 @@ func TestProjectIDFromContext(t *testing.T) {
 // TestBuildKey_VLLM asserts a vllm credential's api_base is threaded into
 // VLLMKeyConfig.URL (bifrost requires it) with no key-level model filter.
 func TestBuildKey_VLLM(t *testing.T) {
-	k := buildKey(schemas.VLLM, credential{
+	k, err := buildKey(schemas.VLLM, credential{
 		configID: "c1", name: "local-vllm", apiBase: "http://192.168.0.1:8000/v1",
-	}, "sk-anything")
+	}, "sk-anything", "")
+	if err != nil {
+		t.Fatalf("buildKey: %v", err)
+	}
 	if k.VLLMKeyConfig == nil {
 		t.Fatal("VLLMKeyConfig = nil, want URL set from api_base")
 	}
@@ -609,11 +612,17 @@ func TestProviderConfigTypes_VLLM(t *testing.T) {
 // request to the upstream's Anthropic-compatible /v1/messages surface
 // (BFF.9a: an OpenAI-compatible gateway that also serves the Anthropic dialect).
 func TestBuildKey_VLLM_UseAnthropicEndpoints(t *testing.T) {
-	off := buildKey(schemas.VLLM, credential{configID: "c1", apiBase: "https://up.example"}, "sk")
+	off, err := buildKey(schemas.VLLM, credential{configID: "c1", apiBase: "https://up.example"}, "sk", "")
+	if err != nil {
+		t.Fatalf("buildKey: %v", err)
+	}
 	if off.UseAnthropicEndpoints != nil {
 		t.Errorf("UseAnthropicEndpoints = %v, want nil when the flag is unset", *off.UseAnthropicEndpoints)
 	}
-	on := buildKey(schemas.VLLM, credential{configID: "c2", apiBase: "https://up.example", useAnthropicEndpoints: true}, "sk")
+	on, err := buildKey(schemas.VLLM, credential{configID: "c2", apiBase: "https://up.example", useAnthropicEndpoints: true}, "sk", "")
+	if err != nil {
+		t.Fatalf("buildKey: %v", err)
+	}
 	if on.UseAnthropicEndpoints == nil || !*on.UseAnthropicEndpoints {
 		t.Fatal("UseAnthropicEndpoints must be true when the credential sets use_anthropic_endpoints")
 	}
