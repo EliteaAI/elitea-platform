@@ -739,8 +739,47 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, descriptors)
 }
 
+// ttsVoicesUnavailable is what GET /configurations/tts_voices/{projectID}
+// answers, and why (#466).
+//
+// The reference resolves a voice list from two sources, and both of them are
+// provider audio calls (legacy/plugins/configurations/api/v2/tts_voices.py,
+// `_resolve_voices`):
+//
+//   - `meta.voices` on the project's tts configuration row. The reference fills
+//     that cache with a provider round trip when the configuration is saved.
+//   - the provider itself, on `refresh=true`.
+//
+// This platform makes no audio call to any provider. The gateway serves no audio
+// route (#323), no code path writes `meta.voices`, and the create path stores
+// only the `meta` object the client sends. Both sources are therefore empty by
+// construction, for every project, forever.
+//
+// Reading the cache anyway would restore the same defect in a longer form: the
+// answer would still be an empty list, and the caller still could not tell an
+// empty cache from a route that does no work. So the route reports the missing
+// capability instead.
+//
+// Do not restore the 200 with an empty list. Issue #323 owns the audio data
+// plane; when a synthesis route exists, this handler serves the real voices and
+// this constant goes with the stub.
+const ttsVoicesUnavailable = "the TTS voice list is not available in this platform. The reference reads voices " +
+	"from the TTS provider, and caches them on the configuration row from the same provider call. This platform " +
+	"serves no audio route to any provider (issue #323), so neither source holds data. This route reports the " +
+	"missing capability rather than answering an empty list, which a caller cannot tell from a project that has " +
+	"no voices."
+
+// TTSVoices refuses. It answered 200 with `{"voices": []}` for every project
+// until #466 — see ttsVoicesUnavailable for why that answer was worse than a
+// refusal, and why a real list has nothing behind it today.
+//
+// Both web callers already treat a failed query as an empty option list
+// (apps/elitea-web features/chat-input/lib/hooks/useReadAloud.hooks.ts and
+// features/settings/ui/profile/voice-config/VoicePersonalizationSection.tsx), so
+// the page shows what it showed before. The difference is that the API now says
+// which of the two states it is in.
 func (h *Handler) TTSVoices(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"voices": []map[string]string{}})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": ttsVoicesUnavailable})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
