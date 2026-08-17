@@ -29,7 +29,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { resetConfigForTests } from '@/shared/config/get-config';
 
 import { server } from '../../../test/setup';
-import { PersonalTokensPage } from './tokens';
+import { PersonalTokensPage } from '@/routes/-pages/PersonalTokens';
 
 const BASE = '/api/v2';
 const PUBLIC_PROJECT_ID = '1';

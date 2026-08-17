@@ -53,13 +53,12 @@ import Typography from '@mui/material/Typography';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AdminSecretDialog } from './AdminSecretDialog';
 import { AdminSecretsTable } from './AdminSecretsTable';
 import { useAdminSecretsPage, type AdminSecretsPageState } from './useAdminSecretsPage';
 
-const { DrawerPage } = drawerPage;
 
 function savedText(message: string): string {
   if (message === 'created') return t('pages.admin.secrets.saved.created', 'Secret created.');

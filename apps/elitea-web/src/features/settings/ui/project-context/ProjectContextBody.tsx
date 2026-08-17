@@ -14,7 +14,7 @@ import { useTheme } from '@mui/material/styles';
 import Alert from '@mui/material/Alert';
 import { BannerMessage } from '@/shared/ui/BannerMessage';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
-import { DrawerPage } from '@/features/settings/ui/drawer-page/DrawerPage';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 import { t } from '@/shared/i18n';
 import { projectContextStyles } from './ProjectContext.styles';
 import { ProjectParamsHeader } from './ProjectParamsHeader';

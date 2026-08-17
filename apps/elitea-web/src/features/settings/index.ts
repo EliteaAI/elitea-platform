@@ -20,7 +20,6 @@ import { SecretsTable } from './ui/secrets/SecretsTable';
 import { SecretValueCell } from './ui/secrets/SecretValueCell';
 import { useSecretPermissions } from './lib/secrets/useSecretPermissions';
 
-import { DrawerPage } from './ui/drawer-page/DrawerPage';
 
 import { ProjectContextBody, ProjectContextToasts } from './ui/project-context/ProjectContextBody';
 import { projectContextStyles } from './ui/project-context/ProjectContext.styles';
@@ -56,9 +55,6 @@ export const servicePromptsFeature = { ServicePromptsBody };
  * plaintext instead of reading the rendered text — is the same component.
  */
 export const secretsFeature = { SecretsTable, SecretValueCell, useSecretPermissions };
-
-/** Shared full-height tab-content layout wrapper, ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/drawer-page/DrawerPage.jsx`. */
-export const drawerPage = { DrawerPage };
 
 /** Project-context tab (`pages/settings/ProjectContext.tsx`). */
 export const projectContextFeature = { ProjectContextBody, ProjectContextToasts, projectContextStyles };

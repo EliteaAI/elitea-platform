@@ -68,7 +68,7 @@ import LinearProgress from '@mui/material/LinearProgress';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AdminServiceDescriptorsTable } from './ServiceDescriptorsTable';
 import {
@@ -77,7 +77,6 @@ import {
   useAdminServiceDescriptors,
 } from './api/adminServiceDescriptorsApi';
 
-const { DrawerPage } = drawerPage;
 
 export function AdminServiceDescriptors() {
   const query = useAdminServiceDescriptors();
