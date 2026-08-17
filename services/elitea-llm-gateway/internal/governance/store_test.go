@@ -138,9 +138,9 @@ func (d *fakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 	if d.rowErr != nil {
 		return scriptedRow{scanErr: d.rowErr}
 	}
-	// Encode the snapshot as the seven columns ReadSnapshot scans:
+	// Encode the snapshot as the eight columns ReadSnapshot scans:
 	// is_unlimited, hard_limit_nano, accumulated_nano, soft_alert_pct,
-	// nats_fail_mode (*string), acc_found, age_seconds
+	// nats_fail_mode (*string), acc_found, age_seconds, soft_alerts_disabled
 	//
 	// nats_fail_mode must be a nil interface (not a nil *string wrapped in
 	// interface{}) so that assignVal's nil check fires correctly for a NULL column.
@@ -158,6 +158,7 @@ func (d *fakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 		natsFM,
 		d.row.Found,
 		ageSeconds,
+		d.row.SoftAlertsDisabled,
 	}}
 }
 
@@ -443,7 +444,7 @@ func TestUpdateUsage_IncrementsAndPublishes(t *testing.T) {
 
 	const costNano = int64(2) * failmode.NanoUSD
 	const eventID = "evt-001"
-	err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd)
+	err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd, nil)
 	if err != nil {
 		t.Fatalf("UpdateUsage: %v", err)
 	}
@@ -473,11 +474,11 @@ func TestUpdateUsage_IdempotentOnRetry(t *testing.T) {
 	const eventID = "evt-idem"
 
 	// First call.
-	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd); err != nil {
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd, nil); err != nil {
 		t.Fatalf("first UpdateUsage: %v", err)
 	}
 	// Second call with same eventID (retry simulation).
-	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd); err != nil {
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd, nil); err != nil {
 		t.Fatalf("second UpdateUsage: %v", err)
 	}
 
@@ -503,7 +504,7 @@ func TestUpdateUsage_NATSDown_DegradedCounterUpdated(t *testing.T) {
 	gs := newStore(nc, db)
 
 	const costNano = int64(3) * failmode.NanoUSD
-	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-down", costNano, testPeriod, testPeriodEnd); err != nil {
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-down", costNano, testPeriod, testPeriodEnd, nil); err != nil {
 		t.Fatalf("UpdateUsage must not error on NATS-down: %v", err)
 	}
 
@@ -673,7 +674,7 @@ func TestUpdateUsage_DeltaPayloadRoundTrip(t *testing.T) {
 
 	const costNano = int64(7) * failmode.NanoUSD
 	const eventID = "evt-payload-roundtrip"
-	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd); err != nil {
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd, nil); err != nil {
 		t.Fatalf("UpdateUsage: %v", err)
 	}
 
@@ -734,7 +735,7 @@ func TestUpdateUsage_NATSDown_PersistOutageDelta_Called(t *testing.T) {
 	gs := newStore(nc, db)
 
 	const costNano = int64(4) * failmode.NanoUSD
-	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-outage", costNano, testPeriod, testPeriodEnd); err != nil {
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-outage", costNano, testPeriod, testPeriodEnd, nil); err != nil {
 		t.Fatalf("UpdateUsage must not error: %v", err)
 	}
 
@@ -773,7 +774,7 @@ func TestUpdateUsage_NATSHealthy_PersistOutageDelta_NotCalled(t *testing.T) {
 	gs := newStore(nc, db)
 
 	const costNano = int64(2) * failmode.NanoUSD
-	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-healthy", costNano, testPeriod, testPeriodEnd); err != nil {
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-healthy", costNano, testPeriod, testPeriodEnd, nil); err != nil {
 		t.Fatalf("UpdateUsage: %v", err)
 	}
 
@@ -927,7 +928,7 @@ func TestDrain_BlocksUntilInFlightPersistsComplete(t *testing.T) {
 	gs.Start(context.Background())
 
 	const costNano = int64(3) * failmode.NanoUSD
-	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-drain", costNano, testPeriod, testPeriodEnd); err != nil {
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-drain", costNano, testPeriod, testPeriodEnd, nil); err != nil {
 		t.Fatalf("UpdateUsage: %v", err)
 	}
 

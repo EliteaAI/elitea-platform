@@ -312,6 +312,10 @@ type streamSettler struct {
 	loop             string
 	provider, model  string
 	projectID        string
+	// userID is captured with projectID rather than read from the context at
+	// settle time: the detached drain outlives the request, and the member the
+	// call is billed to must be the one who made it (issue #321).
+	userID           string
 	ctx              *schemas.BifrostContext
 	sc               *streamCancel
 	ch               chan *schemas.BifrostStreamChunk
@@ -334,6 +338,7 @@ func (h *Handler) newChatSettler(
 	return &streamSettler{
 		h: h, loop: loop, provider: provider, model: model,
 		projectID: identityProjectFromCtx(ctx),
+		userID:    identityUserFromCtx(ctx),
 		ctx:       ctx, sc: sc, ch: ch,
 		usageFrom: chatUsageFromChunk, deltaFrom: chatDeltaBytes,
 	}
@@ -351,6 +356,7 @@ func (h *Handler) newResponsesSettler(
 	return &streamSettler{
 		h: h, loop: loop, provider: provider, model: model,
 		projectID: identityProjectFromCtx(ctx),
+		userID:    identityUserFromCtx(ctx),
 		ctx:       ctx, sc: sc, ch: ch,
 		usageFrom: responsesUsageFromChunk, deltaFrom: responsesDeltaBytes,
 	}
@@ -570,7 +576,7 @@ func (s *streamSettler) report(reason, outcome string) {
 		// happens the spend is gone, and it must NOT disappear as a lone WARN:
 		// it is exactly the loss this event exists to make alarmable
 		// (gateway-review blocker 1, reproduced on the deploy path).
-		switch s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID) {
+		switch s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID, s.userID) {
 		case billBilled:
 			return
 		case billNotBillable:

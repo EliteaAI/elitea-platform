@@ -112,9 +112,9 @@ func (t *storeFakeTx) Rollback(context.Context) error { t.rolledBack = true; ret
 
 func TestReadSnapshot_Found(t *testing.T) {
 	// cols: is_unlimited, hard_limit_nano, accumulated_nano, soft_alert_pct,
-	//       nats_fail_mode, acc_found, age_seconds
+	//       nats_fail_mode, acc_found, age_seconds, soft_alerts_disabled
 	db := &storeFakeDB{queryRow: scriptedRow{vals: []any{
-		false, int64(100) * NanoUSD, int64(42) * NanoUSD, 80, "tiered_hybrid", true, 30.0,
+		false, int64(100) * NanoUSD, int64(42) * NanoUSD, 80, "tiered_hybrid", true, 30.0, false,
 	}}}
 	s := NewStore(db)
 	snap, err := s.ReadSnapshot(context.Background(), 7, "project", "7", 1000)
@@ -135,7 +135,7 @@ func TestReadSnapshot_Found(t *testing.T) {
 func TestReadSnapshot_MissingAccumulatorRowIsFreshZero(t *testing.T) {
 	// acc_found=false ⇒ Age must be left zero regardless of the age column.
 	db := &storeFakeDB{queryRow: scriptedRow{vals: []any{
-		false, int64(100) * NanoUSD, int64(0), 80, nil, false, 0.0,
+		false, int64(100) * NanoUSD, int64(0), 80, nil, false, 0.0, false,
 	}}}
 	s := NewStore(db)
 	snap, err := s.ReadSnapshot(context.Background(), 7, "project", "7", 1000)

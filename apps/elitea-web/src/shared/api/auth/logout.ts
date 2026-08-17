@@ -20,37 +20,6 @@ export interface LogoutDeps {
 }
 
 /**
- * True from the moment `performLogout()` starts until this document dies.
- *
- * MEASURED DEFECT, not a precaution (issue #482). A logout does not end the
- * document: the browser stays on the app page for the whole redirect chain
- * `/forward-auth/logout` → `/forward-auth/auth_oidc/login` → the provider's
- * authorize endpoint. The logout endpoint clears the session cookie on the
- * first hop, so any request the page still has open then answers 401. That
- * 401 reaches `shared/api/http.ts`'s `runReauth()`, which starts a re-auth
- * flight, and the flight writes `el.auth.state` and `el.auth.flight.started`
- * back into sessionStorage — AFTER `clearNamespace()` swept them.
- *
- * Two costs, and the second is the product one:
- *  1. the namespace the logout is contracted to clear is not clear;
- *  2. the user who asked to sign out is shown a sign-in popup.
- *
- * Observed on WebKit, in 2 of 60 runs of end-to-end journey J4, with exactly
- * those two keys surviving. It is a race against the network, so it is rare
- * and it never stops being possible.
- *
- * The flag is module state, not storage: its correct lifetime is exactly the
- * lifetime of the document that starts the logout, and storage would outlive
- * that and would itself be a key in the namespace.
- */
-let loggingOut = false;
-
-/** True once `performLogout()` has run in this document. */
-export function isLoggingOut(): boolean {
-  return loggingOut;
-}
-
-/**
  * Clears the entire `el.` namespace (local + session), then hands the browser
  * to the backend logout (old UserButton.jsx:32 preserved:
  * `{origin}/forward-auth/logout`) with the OIDC login entry point as its
@@ -78,9 +47,6 @@ export function isLoggingOut(): boolean {
  * of this function.)
  */
 export function performLogout(deps: LogoutDeps = {}): void {
-  // Set BEFORE the sweep, not after. A flight that starts between the two
-  // lines would write its keys after `clearNamespace()` has passed them.
-  loggingOut = true;
   clearNamespace();
   const origin = deps.origin ?? window.location.origin;
   const redirect =

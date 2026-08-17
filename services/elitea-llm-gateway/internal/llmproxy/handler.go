@@ -488,7 +488,7 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromChatResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 	}
 }
 
@@ -518,7 +518,7 @@ func (h *Handler) TextCompletion(w http.ResponseWriter, r *http.Request) {
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromTextCompletionResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 	}
 }
 
@@ -548,7 +548,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromEmbeddingResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 	}
 }
 
@@ -591,7 +591,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	// FIX #3: bill the unary response after writing to the client.
 	if bErr == nil && resp != nil {
 		in, out := usageFromResponsesResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 	}
 }
 
@@ -630,9 +630,9 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 		//   - Usage == nil  →  in=out=0, imgCount = len(Data)  →  direct billing path.
 		in, out, imgCount := usageFromImageResponse(resp)
 		if in > 0 || out > 0 {
-			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 		} else if imgCount > 0 {
-			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), imgCount*perImageFallbackNano)
+			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), identityUserFromCtx(ctx), provider, model, imgCount*perImageFallbackNano)
 		}
 	}
 }
@@ -687,7 +687,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	// Write the response first, then bill asynchronously (FIX #18).
 	writeJSON(w, http.StatusOK, anthropic.ToAnthropicResponsesResponse(ctx, resp))
 	in, out := usageFromResponsesResponse(resp)
-	h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 }
 
 // CountTokens handles POST /llm/v1/messages/count_tokens — a synchronous

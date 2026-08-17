@@ -27,6 +27,18 @@ var migrations embed.FS
 // how the two silently diverge.
 const gatewayMigrationPath = "shared/0067_gateway_budget_schema.sql"
 
+// usageDimensionsMigrationPath is the SECOND half of the gateway schema
+// (issues #320/#321/#322): the per-request usage ledger, the nullable
+// soft_alert_pct that lets a platform default exist, and the seeded global
+// budget-alert row.
+//
+// It is listed beside 0067 rather than folded into it because a shipped
+// migration is content-checksummed and must never be edited. Both are needed
+// together: the gateway's snapshot query joins the global alert row on every
+// /llm call and the write-back consumer inserts into the ledger, so a database
+// carrying only 0067 answers 42P01 on the billing path.
+const usageDimensionsMigrationPath = "shared/0084_budget_usage_dimensions.sql"
+
 // tokenBindingMigrationPath is the access-token project binding (ADR-0018,
 // spec-llm-project-scope §3), inside the LEDGERED corpus.
 //
@@ -55,6 +67,7 @@ const tokenBindingMigrationPath = "shared/0071_token_project_binding.sql"
 // shim for one dev flag, not a second migration runner.
 var dumpGuardExemptMigrations = []string{
 	gatewayMigrationPath,
+	usageDimensionsMigrationPath,
 	tokenBindingMigrationPath,
 }
 
@@ -110,8 +123,25 @@ func ledgeredMigrationSQL(path string) (string, error) {
 // reading the REAL migration means a schema change cannot pass a test against
 // a hand-copied DDL and then fail against production. Runtime code must call
 // RunMigrations instead — this returns SQL, it does not run it.
+//
+// It returns BOTH files that make up that schema, in ledger order. Every caller
+// wants "the gateway tables", not "one particular migration", so a caller that
+// had to know a second file existed would be a caller that eventually forgets:
+// the usage-ledger table added by 0084 is written on the billing path, and a
+// test database missing it fails at runtime rather than at setup.
 func GatewayMigrationSQL() (string, error) {
-	return ledgeredMigrationSQL(gatewayMigrationPath)
+	base, err := ledgeredMigrationSQL(gatewayMigrationPath)
+	if err != nil {
+		return "", err
+	}
+	dimensions, err := ledgeredMigrationSQL(usageDimensionsMigrationPath)
+	if err != nil {
+		return "", err
+	}
+	// A newline between them: the ledgered runner executes each file separately,
+	// and concatenating without a separator would splice the last statement of
+	// one onto the first of the other.
+	return base + "\n" + dimensions, nil
 }
 
 // TokenBindingMigrationSQL returns the token project binding migration as SQL,

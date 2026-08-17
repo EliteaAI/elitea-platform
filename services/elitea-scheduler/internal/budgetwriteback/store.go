@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -41,6 +42,55 @@ var upsertSQL = fmt.Sprintf(`INSERT INTO gateway.llm_budget_accumulators AS acc
 		last_updated = now()
 	WHERE NOT (acc.outage_mode AND NOT acc.reconciled)`, nanoUSDPerUSD)
 
+// usageEventSQL appends one billed request to the per-request usage ledger
+// (issue #320). Same shape as the gateway's outage-window insert
+// (failmode/store.go usageEventInsertSQL); both are idempotent on event_id.
+//
+// The nano-USD → USD conversion is the same exact NUMERIC division the
+// accumulator UPSERT uses. cost_usd here and accumulated_cost there are the
+// same money seen two ways — a sum of this column over a period equals that
+// period's accumulator, and summing BOTH would double-count. No budget decision
+// reads this table.
+var usageEventSQL = fmt.Sprintf(`INSERT INTO gateway.llm_usage_events
+		(event_id, project_id, user_id, provider, model,
+		 prompt_tokens, completion_tokens, cost_usd, period_start, period_end)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric / %d,
+		to_timestamp($9), to_timestamp($10))
+	ON CONFLICT (event_id) DO NOTHING`, nanoUSDPerUSD)
+
+// RetentionWindow is how long a usage-ledger row is kept (issue #320).
+//
+// gateway.llm_usage_events is the first table in this schema whose size follows
+// call volume rather than the number of projects or periods, so it needs an
+// answer to "how big does this get" that is written down and executed, not
+// deferred. 400 days keeps a full year of month-over-month comparison plus a
+// month of slack for a late reconciliation, and bounds the table at
+// (calls per day × 400).
+//
+// It is a compiled constant rather than an environment variable on purpose: an
+// operator cannot set it to something that never prunes, and there is no new
+// setting for a values file to drift from.
+const RetentionWindow = 400 * 24 * time.Hour
+
+// pruneUsageEventsSQL deletes ledger rows past the retention window. It is
+// bounded per pass (LIMIT via a sub-select) so a first run against a long-lived
+// deployment cannot hold a lock over millions of rows; the loop calls it again
+// on the next tick until it stops deleting.
+//
+// It touches gateway.llm_usage_events ONLY. The accumulator rows the deleted
+// events contributed to are NOT adjusted, and must not be: the accumulator is
+// the money, the ledger is the report, and rewriting a past period's spend to
+// match a pruned report would corrupt the durable enforcement tier.
+const pruneUsageEventsSQL = `DELETE FROM gateway.llm_usage_events
+	WHERE event_id IN (
+		SELECT event_id FROM gateway.llm_usage_events
+		WHERE occurred_at < now() - make_interval(secs => $1)
+		LIMIT $2
+	)`
+
+// pruneBatchSize bounds one prune pass.
+const pruneBatchSize = 5000
+
 // applyOutcome is the result of persisting one coalesced key-group.
 type applyOutcome int
 
@@ -63,6 +113,33 @@ type Store struct {
 
 // NewStore builds a Store over the given DB seam.
 func NewStore(db DB) *Store { return &Store{db: db} }
+
+// PruneUsageEvents deletes up to pruneBatchSize usage-ledger rows older than
+// RetentionWindow and reports how many it removed. A non-zero return means
+// there may be more, so the caller can run it again.
+//
+// It is deliberately NOT part of Apply's transaction: a delete of old reporting
+// rows must never be able to roll back, retry or defer a billing write.
+func (s *Store) PruneUsageEvents(ctx context.Context) (int64, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// make_interval(secs => …) rather than a cast of RetentionWindow.String():
+	// Go renders a Duration as "9600h0m0s", which Postgres does not accept as
+	// an interval literal, and the failure would only appear at runtime.
+	deleted, err := tx.ExecAffected(ctx, pruneUsageEventsSQL,
+		RetentionWindow.Seconds(), pruneBatchSize)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
 
 // Apply persists one coalesced key-group in a single transaction (design §8.6):
 //
@@ -101,6 +178,27 @@ func (s *Store) Apply(ctx context.Context, group []BudgetDelta) (applyOutcome, e
 		}
 		newEvents++
 		sumNano += d.DeltaNanoUSD
+
+		// The usage-ledger row for this event (issue #320), written inside the
+		// SAME dedup gate as the money. Putting it here rather than beside the
+		// UPSERT is what stops it double-counting: an event whose id was already
+		// in processed_event_ids `continue`s above, so a redelivery cannot add a
+		// second row for a request that is already in the ledger.
+		//
+		// The insert also carries its own ON CONFLICT DO NOTHING, because the
+		// gateway's outage-window path writes the same row under the same id
+		// while NATS is down. Either writer may get there first; neither can
+		// duplicate the other.
+		if d.Usage == nil {
+			continue
+		}
+		if _, err := tx.ExecAffected(ctx, usageEventSQL,
+			d.EventID, d.ProjectID, d.Usage.UserID, d.Usage.Provider, d.Usage.Model,
+			d.Usage.PromptTokens, d.Usage.CompletionTokens,
+			d.DeltaNanoUSD, d.PeriodStart, d.PeriodEnd,
+		); err != nil {
+			return outcomeApplied, err
+		}
 	}
 
 	if newEvents == 0 {

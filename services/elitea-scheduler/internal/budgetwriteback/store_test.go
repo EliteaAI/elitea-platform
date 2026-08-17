@@ -45,12 +45,16 @@ type fakeTx struct {
 	upsertErr error
 	commitErr error
 
+	// usageErr is injected on the usage-ledger insert.
+	usageErr error
+
 	// recorded
-	dedupProbes []string
-	upsertArgs  []any
-	upsertRan   bool
-	committed   bool
-	rolledBack  bool
+	dedupProbes  []string
+	upsertArgs   []any
+	usageInserts [][]any
+	upsertRan    bool
+	committed    bool
+	rolledBack   bool
 }
 
 func (t *fakeTx) QueryRow(_ context.Context, sql string, args ...any) Row {
@@ -69,6 +73,16 @@ func (t *fakeTx) QueryRow(_ context.Context, sql string, args ...any) Row {
 }
 
 func (t *fakeTx) ExecAffected(_ context.Context, sql string, args ...any) (int64, error) {
+	// The usage-ledger insert (issue #320) rides the same transaction as the
+	// accumulator UPSERT. It is recorded separately so a test can assert one
+	// ledger row per NEW event without disturbing the accumulator assertions.
+	if strings.Contains(sql, "llm_usage_events") {
+		t.usageInserts = append(t.usageInserts, args)
+		if t.usageErr != nil {
+			return 0, t.usageErr
+		}
+		return 1, nil
+	}
 	if !strings.Contains(sql, "llm_budget_accumulators") {
 		return 0, errors.New("unexpected Exec sql")
 	}

@@ -75,6 +75,9 @@ type Consumer struct {
 	fetch  Fetcher
 	store  *Store
 	logger *slog.Logger
+	// lastPrune is when the usage-ledger retention prune last ran. It is only
+	// ever touched from Run's single goroutine, so it needs no lock.
+	lastPrune time.Time
 }
 
 // NewConsumer builds a write-back Consumer over a message Fetcher and a Store.
@@ -97,6 +100,7 @@ func (c *Consumer) Run(ctx context.Context) {
 			c.logger.Info("budgetwriteback: consumer stopping")
 			return
 		}
+		c.pruneUsageEventsIfDue(ctx)
 		msgs, err := c.fetch.Fetch(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -115,6 +119,40 @@ func (c *Consumer) Run(ctx context.Context) {
 			continue
 		}
 		c.processBatch(ctx, msgs)
+	}
+}
+
+// pruneInterval is how often the drain loop prunes the usage ledger. The prune
+// is a bounded DELETE of rows past RetentionWindow, so it does not need to be
+// frequent; hourly keeps the table inside its bound without competing with the
+// drain for the pool.
+const pruneInterval = time.Hour
+
+// pruneUsageEventsIfDue runs the retention prune when the interval has elapsed
+// (issue #320). It rides the drain loop rather than a goroutine of its own so
+// it stops when the loop stops, and it is best-effort: a prune failure is
+// logged and retried on the next tick, never allowed to interrupt the drain the
+// money path depends on.
+//
+// The first pass happens on the loop's first iteration, so a scheduler that
+// starts against a database holding years of rows begins reducing it
+// immediately instead of an hour later.
+func (c *Consumer) pruneUsageEventsIfDue(ctx context.Context) {
+	now := time.Now()
+	if !c.lastPrune.IsZero() && now.Sub(c.lastPrune) < pruneInterval {
+		return
+	}
+	c.lastPrune = now
+	deleted, err := c.store.PruneUsageEvents(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			c.logger.Warn("budgetwriteback: usage-ledger prune failed; retrying next tick", "err", err)
+		}
+		return
+	}
+	if deleted > 0 {
+		c.logger.Info("budgetwriteback: pruned usage-ledger rows past retention",
+			"deleted", deleted, "retention", RetentionWindow.String())
 	}
 }
 
