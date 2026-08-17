@@ -673,6 +673,32 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	if artifactResolver == nil {
 		artifactResolver = permissionResolver
 	}
+
+	// projectPermission gates one route on the named legacy permission,
+	// resolved in DEFAULT mode against the {projectID} path segment.
+	//
+	// It is declared HERE, above every group that uses it, rather than inside
+	// /elitea_core where #302 first wrote it. /notifications, /context_manager
+	// and the /admin project listings are SIBLINGS of that group, not children,
+	// so a helper local to it could not reach them — and each of those groups
+	// names {projectID} in every path and then reads that project's rows.
+	//
+	// cfg.ProjectPermissionResolver overrides the live resolver for the route
+	// tests, exactly as cfg.ArtifactPermissionResolver does above. Production
+	// leaves it unset and gets permissionResolver. It is resolved through a
+	// local for the reason the /elitea_core note gives:
+	// TestNilGatedRouterFieldsAreWiredOrDeclared reads this file as TEXT and
+	// treats a nil-comparison against a config field as a gate that decides
+	// REGISTRATION. These two decide only the authorization answer; the same
+	// routes register either way.
+	coreResolver := cfg.ProjectPermissionResolver
+	if coreResolver == nil {
+		coreResolver = permissionResolver
+	}
+	projectPermission := func(permission string) func(http.Handler) http.Handler {
+		return apimw.RequireResolvedPermissions(
+			coreResolver, platformauth.PermissionModeDefault, permission)
+	}
 	artifactHandler := cfg.ArtifactHandler
 	if artifactHandler == nil {
 		artifactHandler, _ = newArtifactHandler(cfg)
@@ -929,7 +955,58 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// nothing. They now reach real handlers, each gated on the same
 				// pylon permission its Python counterpart declares
 				// (legacy/plugins/admin/api/v2/users.py).
-				r.Get("/users/{mode}/{projectID}", coreHandler.Users)
+				// The member LISTING was the last write-free route in this block
+				// with no gate at all, and it is the one that discloses the most:
+				// coreHandler.Users joins auth_core__project_user_role for the
+				// named project and answers with every member's EMAIL, name and
+				// roles. Any authenticated principal, a PAT holder included,
+				// could enumerate any project's membership by editing the
+				// {projectID} segment. Its own three writes beside it have been
+				// gated since #130.
+				//
+				// pylon declares `configuration.users.users.view` on the same
+				// handler (legacy/plugins/admin/api/v2/users.py, API.get), which
+				// is the string the /elitea_core fallback copy of this route
+				// already carries.
+				//
+				// TWO REGISTRATIONS, BECAUSE THE MODE DIFFERS — the same split
+				// the create and edit writes below needed, for the same reason.
+				// Read them together.
+				//
+				//   `{mode}` resolves in DEFAULT mode. It serves the project
+				//   settings Members page, which the web app calls as
+				//   `/admin/users/default/{projectID}`. legacyrbac answers a
+				//   default-mode gate purely from the caller's membership OF
+				//   THAT PROJECT, which is what this page means.
+				//
+				//   `administration` is a STATIC segment resolved CENTRALLY. It
+				//   serves the admin panel's project member dialog and activity
+				//   drawer, which call `/admin/users/administration/{projectID}`
+				//   (apps/elitea-web/src/pages/admin/api/adminProjectsApi.ts).
+				//   An operator acting on projects they are not a member of
+				//   scores zero in default mode, so the default-mode gate alone
+				//   would answer 403 to every legitimate caller of that dialog.
+				//
+				// The static registration is REQUIRED, not decorative: chi falls
+				// through to the `{mode}` route for a method the static node does
+				// not carry, so without a static GET here the admin panel's read
+				// would land on the default-mode gate and break.
+				//
+				// migrations/shared/0084 grants the administration-mode holders.
+				// The default-mode ones are already 0068's.
+				//
+				// The two default-mode reads take `projectPermission`, not the
+				// inline RequireResolvedPermissions the three writes below use.
+				// The two are the same middleware over the same resolver in
+				// production — cfg.ProjectPermissionResolver is unset there —
+				// but the helper is the one a route test can inject, and a gate
+				// with no injectable resolver can be proved only in the refusing
+				// direction. Without the admitting direction, a gate that
+				// refuses EVERY caller reads as a pass.
+				r.With(projectPermission("configuration.users.users.view")).
+					Get("/users/{mode}/{projectID}", coreHandler.Users)
+				r.With(central("configuration.users.users.view")).
+					Get("/users/administration/{projectID}", coreHandler.Users)
 				r.With(apimw.RequireResolvedPermissions(
 					permissionResolver, platformauth.PermissionModeDefault,
 					"configuration.users.users.create",
@@ -966,7 +1043,25 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					permissionResolver, platformauth.PermissionModeAdministration,
 					"configuration.users.users.edit",
 				)).Put("/users/administration/{projectID}", coreHandler.UsersUpdate)
-				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
+				// The project ROLE listing, gated the same way and for the same
+				// reason as the member listing above: `coreHandler.Roles` reads
+				// auth_core__project_role for the named project, pylon declares
+				// `configuration.roles.roles.view` on the same handler
+				// (legacy/plugins/admin/api/v2/roles.py, ProjectAPI.get), and
+				// two callers reach it in two modes — the project settings page
+				// as `/admin/roles/default/{projectID}` and the admin panel's
+				// member dialog as `/admin/roles/administration/{projectID}`
+				// (apps/elitea-web/src/pages/admin/ProjectMemberDialog.tsx).
+				//
+				// The two role listings do NOT get the same holders. The legacy
+				// matrix gives the administration-mode viewer
+				// `configuration.roles.roles.view` and withholds
+				// `configuration.users.users.view` from that same role. 0084
+				// transcribes that difference rather than levelling it.
+				r.With(projectPermission("configuration.roles.roles.view")).
+					Get("/roles/{mode}/{projectID}", coreHandler.Roles)
+				r.With(central("configuration.roles.roles.view")).
+					Get("/roles/administration/{projectID}", coreHandler.Roles)
 
 				// App requests / moderation (unit A14). Four routes, of which
 				// three did not exist and the fourth answered from a constant:
@@ -1113,12 +1208,45 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			).Routes())
 
 			// === Notifications ===
+			//
+			// Every route here names {projectID} and then reads or writes
+			// centry.notifications for that project. They shipped with NO gate
+			// of any kind: not a permission, not a membership check.
+			//
+			// The permissions are transcribed from the pylon notifications
+			// plugin, which is the same source the REVIEWED copy of this surface
+			// uses — internal/api/v2/notifications/api.go gates the identical
+			// paths on the identical four strings. That copy is registered by
+			// production_router.go only when cfg.CurrentNotifications is
+			// composed, and chi prefers its static path over this group's mount,
+			// so it SHADOWS these five registrations wherever it exists. Where it
+			// does not exist, this group is what answers, and until now it
+			// answered ungated. Two registrations of one surface must not carry
+			// two different authorization contracts.
+			//
+			//   notifications.py GET    → models.notifications.notifications.list
+			//   notifications.py PUT    → models.notifications.notification.update
+			//   notifications.py DELETE → models.notifications.notification.delete
+			//   notification.py  PUT    → models.notifications.notification.update
+			//   notification.py  DELETE → models.notifications.notification.delete
+			//
+			// migrations/shared/0079_notification_permissions.sql grants all
+			// four in DEFAULT mode, with the legacy matrix split: the list and
+			// the delete go to admin, editor and viewer, and the update goes to
+			// admin and editor alone.
+			requireNotificationUpdate := projectPermission("models.notifications.notification.update")
+			requireNotificationDelete := projectPermission("models.notifications.notification.delete")
 			r.Route("/notifications", func(r chi.Router) {
-				r.Get("/notifications/prompt_lib/{projectID}", coreHandler.Notifications)
-				r.Put("/notification/prompt_lib/{projectID}/{notificationID}", coreHandler.UpdateNotification)
-				r.Delete("/notification/prompt_lib/{projectID}/{notificationID}", coreHandler.UpdateNotification)
-				r.Delete("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
-				r.Put("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
+				r.With(projectPermission("models.notifications.notifications.list")).
+					Get("/notifications/prompt_lib/{projectID}", coreHandler.Notifications)
+				r.With(requireNotificationUpdate).
+					Put("/notification/prompt_lib/{projectID}/{notificationID}", coreHandler.UpdateNotification)
+				r.With(requireNotificationDelete).
+					Delete("/notification/prompt_lib/{projectID}/{notificationID}", coreHandler.UpdateNotification)
+				r.With(requireNotificationDelete).
+					Delete("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
+				r.With(requireNotificationUpdate).
+					Put("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
 			})
 
 			// === elitea_core plugin routes ===
@@ -1180,24 +1308,20 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					projectScoped = apimw.RequireProjectAccessWith(projectAccessQuerier)
 				}
 
-				// projectPermission gates one route on the named legacy
+				// `projectPermission` gates one route on the named legacy
 				// permission, resolved in DEFAULT mode against the {projectID}
-				// path segment. Every name passed to it is transcribed from the
-				// pylon `check_api` declaration of the matching
-				// elitea_core/api/v2/*.py module and verb;
-				// router_elitea_core_permission_map_test.go re-derives both
-				// directions from testdata/legacy/legacy-rbac-static-catalog.json
-				// and from 0068, so a name that legacy never declared — or one
-				// that nothing grants — fails the build instead of shipping as
-				// a 403 nobody can clear.
-				coreResolver := cfg.ProjectPermissionResolver
-				if coreResolver == nil {
-					coreResolver = permissionResolver
-				}
-				projectPermission := func(permission string) func(http.Handler) http.Handler {
-					return apimw.RequireResolvedPermissions(
-						coreResolver, platformauth.PermissionModeDefault, permission)
-				}
+				// path segment. It is declared above the /notifications group,
+				// because /notifications and /context_manager need the same
+				// helper and are siblings of this group rather than children.
+				//
+				// Every name passed to it is transcribed from the pylon
+				// `check_api` declaration of the matching elitea_core/api/v2/*.py
+				// module and verb; router_elitea_core_permission_map_test.go
+				// re-derives both directions from
+				// testdata/legacy/legacy-rbac-static-catalog.json and from 0068,
+				// so a name that legacy never declared — or one that nothing
+				// grants — fails the build instead of shipping as a 403 nobody
+				// can clear.
 
 				// Applications
 				if cfg.AppsRepo != nil {
@@ -1822,7 +1946,23 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.With(requireProjectContextEdit).
 					Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
 
-				// Platform settings
+				// Platform settings — left ungated on purpose, and the reason is
+				// recorded here because a project in the path makes the route
+				// look gateable. platform_settings.py is one of the thirty-seven
+				// handlers testdata/legacy/legacy-rbac-static-catalog.json lists
+				// as UNGUARDED, so there is no permission to transcribe, and
+				// #302's acceptance notes forbid tightening what legacy leaves
+				// open.
+				//
+				// The handler DOES read the project: eliteacore/handler.go:104
+				// overlays `p_{projectID}.configuration` where
+				// type = 'environment_settings' onto ten built-in defaults. So
+				// this is not an ungated route that happens to read nothing. What
+				// it discloses is the project's own feature switches —
+				// chat_enabled, mcp_enabled and eight more booleans of the same
+				// shape — which the web app reads to decide which menu entries to
+				// draw. No credential, no member, no content.
+				// TestEliteaCoreLegacyUngatedRoutesStayUngated pins this.
 				r.Get("/platform_settings/prompt_lib/{projectID}", coreHandler.PlatformSettings)
 				r.Get("/platform_settings/prompt_lib", coreHandler.PlatformSettings)
 
@@ -2074,14 +2214,62 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// deadlines (S12).
 
 			// === Context Manager ===
+			//
+			// Six routes that shipped with NO gate of any kind. Each one names
+			// {projectID} and then builds that project's schema from the segment
+			// — internal/api/v2/contextmgr/handler.go:121 does
+			// `fmt.Sprintf("p_%s", projectID)` and reads chat_message_group from
+			// it — so any authenticated caller could read and write any
+			// project's conversation summaries by editing one path segment. That
+			// is the #302 hole in a group #302 did not reach.
+			//
+			// THE LEGACY MATRIX HAS NO ENTRY FOR THIS SURFACE, and this file
+			// says so rather than implying a transcription. There is no
+			// context_manager module in pylon at all:
+			// testdata/legacy/legacy-rbac-static-catalog.json lists none, guarded
+			// or unguarded. So there is no `check_api` declaration to copy and no
+			// legacy role split to read.
+			//
+			// THE SPLIT THIS FILE PROPOSES, and why. Every route acts on ONE
+			// conversation, named by {conversationID}, and the data is derived
+			// from that conversation's own messages. So each route takes the
+			// permission the conversation itself takes:
+			//
+			//   the two reads  → models.chat.conversation.details
+			//   the four writes → models.chat.conversation.edit
+			//
+			// This is the rule this router already applies to the other Go-only
+			// routes that act on a conversation and have no pylon module:
+			// `attachment_storage` and `context_strategy` both take
+			// `models.chat.conversation.edit` for the same reason, and their note
+			// states it. Reusing the conversation strings also keeps the surface
+			// GRANTABLE: 0068 seeds both in DEFAULT mode with the legacy matrix
+			// split — `details` to admin, editor and viewer, `edit` to admin and
+			// editor. A name invented for this surface would be granted by
+			// nothing and would answer 403 to every caller (#354, #359).
+			//
+			// A VIEWER KEEPS THE READS AND LOSES THE WRITES. That is the same
+			// line the chat screen already draws: a viewer may open a
+			// conversation and may not edit it. `optimize_context` is a write by
+			// that rule even though its handler is a stub today, because the
+			// name states what the route is for and a gate must match the route,
+			// not the current body.
+			requireConversationContextRead := projectPermission("models.chat.conversation.details")
+			requireConversationContextWrite := projectPermission("models.chat.conversation.edit")
 			ctxMgrHandler := v2contextmgr.NewHandler(cfg.Pool)
 			r.Route("/context_manager", func(r chi.Router) {
-				r.Post("/optimize_context/{projectID}/{conversationID}", ctxMgrHandler.OptimizeContext)
-				r.Get("/analytics/{projectID}/{conversationID}", ctxMgrHandler.GetAnalytics)
-				r.Get("/summaries/{projectID}/{conversationID}", ctxMgrHandler.ListSummaries)
-				r.Post("/summaries/{projectID}/{conversationID}", ctxMgrHandler.CreateSummary)
-				r.Put("/summary/{projectID}/{conversationID}/{summaryID}", ctxMgrHandler.UpdateSummary)
-				r.Delete("/summary/{projectID}/{conversationID}/{summaryID}", ctxMgrHandler.DeleteSummary)
+				r.With(requireConversationContextWrite).
+					Post("/optimize_context/{projectID}/{conversationID}", ctxMgrHandler.OptimizeContext)
+				r.With(requireConversationContextRead).
+					Get("/analytics/{projectID}/{conversationID}", ctxMgrHandler.GetAnalytics)
+				r.With(requireConversationContextRead).
+					Get("/summaries/{projectID}/{conversationID}", ctxMgrHandler.ListSummaries)
+				r.With(requireConversationContextWrite).
+					Post("/summaries/{projectID}/{conversationID}", ctxMgrHandler.CreateSummary)
+				r.With(requireConversationContextWrite).
+					Put("/summary/{projectID}/{conversationID}/{summaryID}", ctxMgrHandler.UpdateSummary)
+				r.With(requireConversationContextWrite).
+					Delete("/summary/{projectID}/{conversationID}/{summaryID}", ctxMgrHandler.DeleteSummary)
 			})
 
 			// === Support Assistant ===

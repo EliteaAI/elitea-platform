@@ -99,7 +99,10 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// need. It follows shared/0083_viewer_secret_list_and_own_avatar.sql, the
 	// two role splits #402 corrects, which itself follows the nine per-surface
 	// permission grants #386 adds in 0074 to 0082.
-	require.EqualValues(t, 84, Head(shared))
+	// 85: shared/0085_project_member_and_role_listings_administration.sql, the
+	// two administration-mode listing grants #313 needs. It follows
+	// shared/0084_budget_usage_dimensions.sql above.
+	require.EqualValues(t, 85, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
