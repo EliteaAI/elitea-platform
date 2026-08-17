@@ -28,8 +28,7 @@ func (r *claimClockCaptureRepository) RenewLease(ctx context.Context, fence runt
 // PostgreSQL 16 service-integration test. It proves lease minting and renewal
 // use the state-owner clock; it does not claim transport E2E coverage.
 func TestPostgresLeaseAuthorityUsesDatabaseClockDespiteApplicationSkew(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	for _, test := range []struct {
 		name string

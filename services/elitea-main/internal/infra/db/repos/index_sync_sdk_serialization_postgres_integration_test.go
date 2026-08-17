@@ -70,8 +70,7 @@ func TestPostgresPgvectorSameTargetSerializationAcrossInstalledSDKProcess(
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	requirePostgresSDKSerializationPrerequisites(t, ctx, container)
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	requirePostgresVectorExtension(t, ctx, pool)
 
 	policy := IndexIngestDispatchPolicy{

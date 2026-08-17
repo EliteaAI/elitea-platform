@@ -23,8 +23,7 @@ import (
 // existing replay table can order progress followed by terminal output without
 // a schema migration; it is not full gRPC/SSE end-to-end evidence.
 func TestPostgresNodeEventThenTerminalProjection(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	dispatchPolicy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",
@@ -148,8 +147,7 @@ WHERE execution_id = $1
 }
 
 func TestPostgresReplayRetentionBoundsProgressAndResetsExpiredCursor(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	progress, terminal := preparePostgresNodeEventConcurrencyFixture(t, pool, "retention")
 	store, err := newPostgresSharedStore(pool)
 	if err != nil {
@@ -304,8 +302,7 @@ WHERE execution_id = $1
 }
 
 func TestPostgresReplayRetentionCountCap(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	progress, _ := preparePostgresNodeEventConcurrencyFixture(t, pool, "retention-count")
 	store, err := newPostgresSharedStore(pool)
 	if err != nil {
@@ -355,8 +352,7 @@ WHERE execution_id = $1 AND generation = 1`,
 }
 
 func TestPostgresReplayRetentionJanitorBoundsAgePass(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	progress, _ := preparePostgresNodeEventConcurrencyFixture(t, pool, "retention-age-pass")
 	store, err := newPostgresSharedStore(pool)
 	if err != nil {
@@ -423,8 +419,7 @@ WHERE execution_id = $1
 // writer waiting behind sequence N evaluates replay state after N commits. A
 // one-statement lock-and-read query uses its pre-wait snapshot and rejects N+1.
 func TestPostgresNodeEventSequenceLinearization(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	first, _ := preparePostgresNodeEventConcurrencyFixture(t, pool, "sequence")
 	second := first
 	second.Sequence = 2
@@ -483,8 +478,7 @@ WHERE execution_id = $1 AND generation = 1 AND event_type = 'execution.node_even
 // behind a terminal writer sees the committed terminal row and cannot append
 // post-terminal replay data from a stale statement snapshot.
 func TestPostgresTerminalExcludesWaitingNodeEvent(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	progress, terminal := preparePostgresNodeEventConcurrencyFixture(t, pool, "terminal")
 	record, _, err := indexOutputRecord(terminal)
 	if err != nil {

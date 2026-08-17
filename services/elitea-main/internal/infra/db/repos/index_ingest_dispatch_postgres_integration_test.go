@@ -24,8 +24,7 @@ import (
 // boundary; the existing real-Redis test separately proves atomic capacity and
 // delivery-index behavior.
 func TestPostgresServiceBackedIndexIngestDispatch(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	policy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",

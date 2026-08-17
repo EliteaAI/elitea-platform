@@ -14,8 +14,7 @@ import (
 // resolved entirely from the tenant configuration rows — the same rows the
 // Bifrost gateway reads per project — with no LLM proxy registry involved.
 func TestCurrentEmbeddingBindingResolvesFromTenantPostgres(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	configurations, err := NewCurrentConfigurationsRepository(pool)
 	if err != nil {
 		t.Fatal(err)
@@ -118,8 +117,7 @@ INSERT INTO p_2.configuration (
 }
 
 func TestPostgresServiceBackedCurrentModelCatalogBoundsBeforeJSONProjection(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if _, err := pool.Exec(ctx, `

@@ -19,8 +19,7 @@ import (
 )
 
 func TestPostgresCurrentIndexActivityPreservesOrderedStepsAndTenantIsolation(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentActivitySchemas(t, pool)
 
 	dispatchPolicy := IndexIngestDispatchPolicy{

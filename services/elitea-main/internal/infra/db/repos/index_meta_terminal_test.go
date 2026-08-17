@@ -394,8 +394,7 @@ func TestIndexGenerationMigrationDefinesTargetScopedAuthority(t *testing.T) {
 // logical generation is the primary order even when admitted_at is equal;
 // it does not cross PgVector or the runtime reconciler process.
 func TestPostgresCurrentIndexMetaLogicalGenerationSupersession(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	policy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",

@@ -17,8 +17,7 @@ import (
 )
 
 func TestCurrentConfigurationMutationRepositoryPostgresAtomicityAndOrdering(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	prepareCurrentMutationVault(t, pool)
 
 	repository, err := NewCurrentConfigurationMutationRepository(pool, nil)

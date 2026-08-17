@@ -13,8 +13,7 @@ import (
 )
 
 func TestCurrentEmbeddingConfigurationPostgresResolutionIsTenantRoutedAndAmbiguitySafe(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repository, err := NewCurrentConfigurationsRepository(pool)
 	if err != nil {
 		t.Fatal(err)
@@ -67,8 +66,7 @@ INSERT INTO p_1.configuration (
 }
 
 func TestCurrentConfigurationsRepositoryPostgresParity(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	prepareCurrentConfigurationsProjectTwo(t, pool)
 
 	repository, err := NewCurrentConfigurationsRepository(pool)

@@ -37,6 +37,7 @@ import (
 
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/dbtest"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 )
@@ -45,6 +46,59 @@ const (
 	databaseURLEnv  = "ELITEA_TEST_DATABASE_URL"
 	bootstrapSchema = "../../infra/db/migrations/001_initial.sql"
 )
+
+// provisioningTemplate names the template database that every test in this
+// package copies. TestMain sets it.
+var provisioningTemplate string
+
+// TestMain builds one template database for the whole package.
+//
+// Before #425 each of the 23 tests here replayed the ledgered migration corpus
+// into its own database. Now the corpus runs one time, into a template, and
+// each test gets its database from CREATE DATABASE ... TEMPLATE. The template
+// is built by the same migrate.Runner that a deployment uses, and its name
+// carries the SHA-256 checksum of every migration and of the bootstrap schema.
+func TestMain(m *testing.M) {
+	databaseURL := provisioningDatabaseURL()
+	if databaseURL == "" {
+		os.Exit(m.Run())
+	}
+
+	bootstrap, err := os.ReadFile(bootstrapSchema)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read bootstrap schema: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := dbtest.BuildContext(context.Background())
+	adminPool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open admin pool: %v\n", err)
+		cancel()
+		os.Exit(1)
+	}
+	templateName, err := dbtest.EnsureTemplate(ctx, adminPool, dbtest.Spec{
+		Files:   platformmigrations.Files,
+		Seed:    string(bootstrap),
+		Tenants: []int64{1},
+	})
+	adminPool.Close()
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build project provisioning template: %v\n", err)
+		os.Exit(1)
+	}
+	provisioningTemplate = templateName
+	os.Exit(m.Run())
+}
+
+func provisioningDatabaseURL() string {
+	databaseURL := os.Getenv(databaseURLEnv)
+	if databaseURL == "" && os.Getenv("ELITEA_TEST_USE_SERVICE_DATABASE_URL") == "1" {
+		databaseURL = os.Getenv("DATABASE_URL")
+	}
+	return databaseURL
+}
 
 func TestProvisionBuildsATenantEqualToTheReference(t *testing.T) {
 	pool := newProvisioningPool(t)
@@ -674,15 +728,15 @@ func newTestProvisioner(
 // a defect. Same shape as migrations/corpus_postgres_integration_test.go.
 func newProvisioningPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	databaseURL := os.Getenv(databaseURLEnv)
-	if databaseURL == "" && os.Getenv("ELITEA_TEST_USE_SERVICE_DATABASE_URL") == "1" {
-		databaseURL = os.Getenv("DATABASE_URL")
-	}
+	databaseURL := provisioningDatabaseURL()
 	if databaseURL == "" {
 		t.Skipf("set %s to run the project provisioning integration test", databaseURLEnv)
 	}
+	if provisioningTemplate == "" {
+		t.Fatalf("TestMain did not build the project provisioning template")
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	adminPool, err := pgxpool.New(ctx, databaseURL)
@@ -692,7 +746,7 @@ func newProvisioningPool(t *testing.T) *pgxpool.Pool {
 	defer adminPool.Close()
 
 	databaseName := fmt.Sprintf("elitea_provision_%d_%d", os.Getpid(), time.Now().UnixNano())
-	if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{databaseName}.Sanitize()); err != nil {
+	if err := dbtest.CreateFromTemplate(ctx, adminPool, provisioningTemplate, databaseName); err != nil {
 		t.Fatalf("create isolated database: %v", err)
 	}
 
@@ -723,22 +777,19 @@ func newProvisioningPool(t *testing.T) *pgxpool.Pool {
 			"DROP DATABASE IF EXISTS "+pgx.Identifier{databaseName}.Sanitize()+" WITH (FORCE)")
 	})
 
-	bootstrap, err := os.ReadFile(bootstrapSchema)
-	if err != nil {
-		t.Fatalf("read bootstrap schema: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(bootstrap)); err != nil {
-		t.Fatalf("apply bootstrap schema: %v", err)
-	}
-
-	runner := migrate.New(pool, platformmigrations.Files)
-	if err := runner.ApplyShared(ctx); err != nil {
-		t.Fatalf("apply shared migrations: %v", err)
-	}
+	// The template already holds the bootstrap schema and the full ledgered
+	// history. Prove that on every copy, rather than trust the copy: CheckHead
+	// compares the recorded SHA-256 of every migration against the embedded
+	// corpus. A template that drifted from the corpus fails here.
+	//
 	// p_1 is the reference tenant every assertion compares against, so it must
 	// be at head before any test runs.
-	if err := runner.ApplyTenant(ctx, 1); err != nil {
-		t.Fatalf("apply tenant migrations to p_1: %v", err)
+	runner := migrate.New(pool, platformmigrations.Files)
+	if err := runner.CheckHead(ctx, migrate.ScopeShared, "platform"); err != nil {
+		t.Fatalf("verify shared migration head: %v", err)
+	}
+	if err := runner.CheckHead(ctx, migrate.ScopeTenant, "1"); err != nil {
+		t.Fatalf("verify tenant migration head for p_1: %v", err)
 	}
 	return pool
 }

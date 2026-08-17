@@ -13,8 +13,7 @@ import (
 // cancellation, migration constraints, terminal-readiness gates, lease
 // reclaim, and resolution. PgVector deletion is covered independently.
 func TestPostgresServiceBackedCurrentIndexManualStopCleanupIntent(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

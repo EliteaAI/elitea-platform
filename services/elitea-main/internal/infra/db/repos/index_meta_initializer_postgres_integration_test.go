@@ -34,8 +34,7 @@ func (c postgresFrozenToolkitClaimer) ClaimFrozenToolkitConfiguration(
 // gate. The two logical stores share the isolated test database server; this is
 // not a multi-cluster, Redis, worker, TLS, load, or browser E2E.
 func TestPostgresPgvectorIndexMetaInitializationConvergence(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	var vectorAvailable bool
@@ -614,8 +613,7 @@ WHERE execution_id = $1
 func TestPostgresIndexMetaInitializationQuarantineConvergesExpiredExecution(
 	t *testing.T,
 ) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -973,8 +971,7 @@ func newPostgresIndexMetaInitializationRaceFixture(
 	toolkitID int32,
 ) postgresIndexMetaInitializationRaceFixture {
 	t.Helper()
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 	installPostgresIndexMetaInitializationRaceBarriers(t, ctx, pool)

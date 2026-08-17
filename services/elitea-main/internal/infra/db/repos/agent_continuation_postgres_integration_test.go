@@ -16,8 +16,7 @@ import (
 )
 
 func TestPostgresCurrentApplicationTurnAllowsASecondMessageOnTheSameConversation(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -219,8 +218,7 @@ LEFT JOIN chat_messages_text AS text
 }
 
 func TestPostgresCurrentApplicationTurnAdmitsDefaultInternalMCPAndRejectsUnsupportedFeatures(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -382,8 +380,7 @@ WHERE uuid = '80000000-0000-4000-8000-000000000039'`,
 }
 
 func TestPostgresCurrentPipelineTurnAdmitsDirectAndAdhocEntryModes(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -476,8 +473,7 @@ WHERE id = 30`); err != nil {
 }
 
 func TestPostgresCurrentNestedApplicationTurnPreservesThreeTierContract(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -597,8 +593,7 @@ WHERE conversation_id = 2 AND participant_id = 30;`); err != nil {
 }
 
 func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -721,8 +716,7 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 }
 
 func TestPostgresCurrentAdhocTurnAdmitsSameProjectMCPToolkit(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -828,8 +822,7 @@ WHERE id = 25`); err != nil {
 }
 
 func TestPostgresCurrentAdhocTurnAdmitsApplicationWithMCPChild(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -901,8 +894,7 @@ INSERT INTO entity_tool_mapping (
 }
 
 func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipantBoundaries(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -983,8 +975,7 @@ WHERE id = 41`,
 }
 
 func TestPostgresCurrentRegenerationResolvesOwnershipAndAtomicallyReusesResponse(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -1149,8 +1140,7 @@ WHERE uuid = $1`, responseID); err != nil {
 }
 
 func TestPostgresCurrentSequentialNestedHITLContinuationConsumesExistingResponseAtomically(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -1290,8 +1280,7 @@ WHERE response.uuid = $1`, responseID).Scan(
 }
 
 func TestPostgresCurrentParallelHITLContinuationConsumesExactDecisionSetAtomically(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -1447,8 +1436,7 @@ WHERE response.uuid = $1`, responseID).Scan(
 }
 
 func TestPostgresCurrentAuthorizationContinuationConsumesExactRequestAtomically(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})

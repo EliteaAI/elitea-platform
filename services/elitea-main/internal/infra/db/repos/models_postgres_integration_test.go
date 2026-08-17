@@ -12,8 +12,7 @@ import (
 )
 
 func TestCurrentModelsRepositoryPostgresParity(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	prepareCurrentConfigurationsProjectTwo(t, pool)
 	seedCurrentModelConfigurations(t, pool)
 
