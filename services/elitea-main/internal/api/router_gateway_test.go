@@ -67,9 +67,15 @@ func TestGatewayProxy_UnauthenticatedReturns401(t *testing.T) {
 	}
 }
 
+// TestGatewayProxy_AuthenticatedWithProjectContext mirrors
+// TestLLMRoute_SystemProjectUserNameIsNotAnUncheckedClaim for the GatewayProxy
+// mount. The gateway mount composes the same membership checker from
+// RouterConfig.Pool, and this configuration has no pool, so a project the
+// principal name asks for is never admitted (issue #459).
 func TestGatewayProxy_AuthenticatedWithProjectContext(t *testing.T) {
 	systemUser := auth.User{
 		ID:       "100",
+		UserID:   "100",
 		Name:     ":system:project:42:",
 		AuthType: "token",
 	}
@@ -85,17 +91,20 @@ func TestGatewayProxy_AuthenticatedWithProjectContext(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
+	if proxy.project.ProjectID == 42 {
+		t.Fatal("the proxy received project 42, which only the principal name asked for")
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 	if !proxy.reached {
 		t.Fatal("proxy was not reached for authenticated /llm request")
 	}
-	if proxy.project.ProjectID != 42 {
-		t.Errorf("expected ProjectID 42, got %d", proxy.project.ProjectID)
+	if proxy.project.ProjectID != 999 {
+		t.Errorf("expected the caller's own project 999, got %d", proxy.project.ProjectID)
 	}
-	if resolver.called {
-		t.Error("resolver must not be consulted for system project-user names")
+	if !resolver.called {
+		t.Error("personal project resolver must run after a refused principal name")
 	}
 }
 
@@ -136,11 +145,14 @@ func TestGatewayProxy_PersonalProjectFallback(t *testing.T) {
 }
 
 func TestGatewayProxy_SubpathsReachProxy(t *testing.T) {
-	user := auth.User{ID: "1", Name: ":system:project:5:"}
+	// A regular user with a resolved personal project. The principal name is
+	// not a project source here (issue #459), so this test must not depend on
+	// one.
+	user := auth.User{ID: "1", UserID: "1", Name: "alice@example.com", AuthType: "token"}
 	validator := &stubTokenValidator{user: user}
 	proxy := &recordingHandler{}
 
-	cfg := buildGatewayRouterConfig(t, validator, nil, proxy)
+	cfg := buildGatewayRouterConfig(t, validator, &stubProjectResolver{id: 5}, proxy)
 	r := api.NewRouter(cfg)
 
 	for _, path := range []string{"/llm/v1/models", "/llm/v1/chat/completions", "/llm/v1/embeddings", "/llm/v1/messages"} {

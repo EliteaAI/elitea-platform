@@ -55,7 +55,7 @@ func boundRequest(binding int64, header, value string) *http.Request {
 		AuthType:       "token",
 		TokenProjectID: &binding,
 	}
-	return req.WithContext(auth.ContextWithUser(req.Context(), user))
+	return withTokenProvenance(req, user)
 }
 
 // runBound drives the middleware over resolver and reports what the next
@@ -296,7 +296,7 @@ func TestProjectBinding_BeatsThePrincipalNameBranch(t *testing.T) {
 		AuthType:       "token",
 		TokenProjectID: &binding,
 	}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 
 	rec, seen, invoked := runBound(t, &fakeResolver{id: personalProject}, req)
 
@@ -342,7 +342,7 @@ func TestProjectBinding_UnboundTokenIsUnchanged(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
 	user := auth.User{ID: "42", UserID: "42", TokenID: "900", Name: "Regular User", AuthType: "token"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 
 	var seen ProjectContext
 	var invoked bool

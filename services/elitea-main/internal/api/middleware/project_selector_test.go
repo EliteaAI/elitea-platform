@@ -48,7 +48,7 @@ func selectorRequest(header, value string) *http.Request {
 		req.Header.Set(header, value)
 	}
 	user := auth.User{ID: "42", UserID: "42", TokenID: "900", Name: "Regular User", AuthType: "token"}
-	return req.WithContext(auth.ContextWithUser(req.Context(), user))
+	return withTokenProvenance(req, user)
 }
 
 // runSelector drives the middleware and reports what the next handler saw.
@@ -408,7 +408,7 @@ func TestProjectSelector_TokenScopedCallerCannotMoveSpend(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
 	req.Header.Set(HeaderProjectSelector, "4321")
 	user := auth.User{ID: "42", UserID: "42", TokenID: "900", Name: ":system:project:7:", AuthType: "token"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 
 	rec, seen, invoked := runSelector(NewProjectMembershipWith(queries), req)
 
@@ -436,7 +436,7 @@ func TestProjectSelector_UnresolvedOwnerIsIgnored(t *testing.T) {
 	req.Header.Set(HeaderProjectSelector, "4321")
 	// TokenID set, UserID empty: the owner was never resolved.
 	user := auth.User{ID: "900", TokenID: "900", Name: "Regular User", AuthType: "token"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 
 	rec, seen, invoked := runSelector(NewProjectMembershipWith(queries), req)
 

@@ -143,9 +143,9 @@ type ProjectConfig struct {
 	// PublicProjectID is the platform's shared project id. When zero it is read
 	// from the AI_PROJECT_ID environment variable, defaulting to 1.
 	PublicProjectID int
-	// Membership admits a caller-supplied project selector. A nil checker
-	// admits no selector that names a project other than the caller's own: the
-	// request proceeds on the resolved project instead.
+	// Membership admits a project the caller names. Two paths ask it: the
+	// selector header, and the system project-user name. A nil checker admits
+	// neither: the request proceeds on the caller's own project instead.
 	Membership ProjectMembershipChecker
 }
 
@@ -158,9 +158,10 @@ type ProjectConfig struct {
 //  2. Token bound, selector equal to the binding → the bound project.
 //  3. Token bound, selector naming a different project → HTTP 400
 //     project_scope_conflict.
-//  4. Token unbound → the caller's own project (system project-user name, else
-//     the personal-project lookup), which a selector header may then replace
-//     after a membership check (issue #318). See admitProjectSelector.
+//  4. Token unbound → the caller's own project (a system project-user name that
+//     passes the membership check, else the personal-project lookup), which a
+//     selector header may then replace after the same membership check (issues
+//     #318 and #459). See resolveProjectID and admitProjectSelector.
 //
 // The binding is read BEFORE the personal-project lookup, so a bound token
 // whose owner has no resolvable personal project still succeeds on its binding.
@@ -173,8 +174,10 @@ type ProjectConfig struct {
 // When a user is present but no project can be resolved, the request is rejected
 // with HTTP 400, matching pylon's behaviour.
 //
-// Row 3 is the only refusal here. Every other inadmissible selector is ignored
-// in silence. See admitProjectSelector for why.
+// Row 3 is the only selector refusal here. Every other inadmissible selector is
+// ignored in silence. See admitProjectSelector for why. requireRuntimePrincipal
+// adds the one other refusal on this path, and it is an authentication refusal
+// rather than a selector one.
 func Project(cfg ProjectConfig) func(http.Handler) http.Handler {
 	publicProjectID := cfg.PublicProjectID
 	if publicProjectID == 0 {
@@ -187,6 +190,9 @@ func Project(cfg ProjectConfig) func(http.Handler) http.Handler {
 			if !ok {
 				// Unauthenticated: let downstream auth handling decide.
 				next.ServeHTTP(w, r)
+				return
+			}
+			if !requireRuntimePrincipal(w, r) {
 				return
 			}
 
@@ -207,6 +213,45 @@ func Project(cfg ProjectConfig) func(http.Handler) http.Handler {
 	}
 }
 
+// requireRuntimePrincipal proves that the identity in the request context came
+// from the authentication middleware, and not from some other writer. It
+// returns false when it has already written HTTP 401 to w.
+//
+// This restores the rule the deleted runtimecomposition.CurrentLLMCallerResolver
+// enforced on the /llm edge (issue #461). That resolver called
+// auth.RuntimePrincipalFromContext and refused the request when the call
+// failed. The two refusals it pinned by name are restored with it:
+//
+//   - "plain context identity" — a user placed by auth.ContextWithUser, which
+//     records no provenance.
+//   - "development provenance" — auth.AuthenticationSourceDevelopment, which
+//     ADR-0017 retired and which no producer may reintroduce here.
+//
+// The signed X-Elitea-Project-Id header does NOT make this check redundant.
+// That signature proves the header was written by this process
+// (internal/llmproxy/identity.go). It says nothing about how the caller
+// authenticated, because the signing input is the project, the user and the
+// tenant, and none of them carries the authentication source. An identity with
+// no provenance is signed exactly like an identity with provenance.
+//
+// The check sits here because this is the single place where an identity
+// becomes a billing project. auth.UserFromContext keeps its wide behaviour, so
+// the many other routes that read it are unaffected.
+//
+// A request with NO user in the context is a different case, and Project still
+// passes it through: the absence of an identity is the Auth middleware's
+// decision, not this middleware's. The presence of an identity that no
+// authentication path recorded is a claim, and this middleware must not act on
+// a claim.
+func requireRuntimePrincipal(w http.ResponseWriter, r *http.Request) bool {
+	if _, ok := auth.RuntimePrincipalFromContext(r.Context()); ok {
+		return true
+	}
+	writeJSONError(w, http.StatusUnauthorized, "authentication_error", "unauthenticated",
+		"the request identity carries no accepted authentication provenance")
+	return false
+}
+
 // resolveEdgeProject returns the project to bill, or false when it has already
 // written the refusal to w.
 //
@@ -225,7 +270,7 @@ func resolveEdgeProject(
 		return admitSelectorAgainstBinding(w, r, boundID)
 	}
 
-	projectID, err := resolveProjectID(ctx, cfg.Resolver, user)
+	projectID, err := resolveProjectID(ctx, cfg, user)
 	if err != nil || projectID <= 0 {
 		writeJSONError(w, http.StatusBadRequest, errTypeInvalidRequest, codeProjectNotResolved,
 			"could not resolve project for caller")
@@ -336,23 +381,44 @@ func admitProjectSelector(
 	if requestedID == resolvedID {
 		return resolvedID
 	}
-	if membership == nil {
-		return resolvedID
-	}
-
-	// Membership is a property of the owning user, never of the token. A token
-	// principal whose owner was not resolved cannot be checked, so it cannot
-	// name a project. OwningUserID refuses to answer for such a principal.
-	owningUserID, resolved := user.OwningUserID()
-	if !resolved {
-		return resolvedID
-	}
-
-	member, err := membership.IsProjectMember(ctx, owningUserID, requestedID)
-	if err != nil || !member {
+	if !isEntitledToProject(ctx, membership, user, requestedID) {
 		return resolvedID
 	}
 	return requestedID
+}
+
+// isEntitledToProject reports whether user may spend inside projectID.
+//
+// It is the single membership decision on the /llm edge. Both callers use it:
+// the selector header (admitProjectSelector) and the system project-user name
+// (resolveProjectID). One function keeps the two paths on one predicate, so a
+// project can never enter the signed identity through a weaker test than the
+// other path applies.
+//
+// It fails closed on every uncertainty, per spec-llm-project-scope §7
+// invariant 5:
+//
+//   - No membership checker composed: false. A missing checker is not a licence.
+//   - The owning user is unresolved: false. Membership is a property of the
+//     owning user, never of the token. OwningUserID refuses to answer for a
+//     token principal whose owner was not resolved.
+//   - The query errors: false. A database outage must not authorize spend on an
+//     arbitrary project.
+func isEntitledToProject(
+	ctx context.Context,
+	membership ProjectMembershipChecker,
+	user auth.User,
+	projectID int,
+) bool {
+	if membership == nil {
+		return false
+	}
+	owningUserID, resolved := user.OwningUserID()
+	if !resolved {
+		return false
+	}
+	member, err := membership.IsProjectMember(ctx, owningUserID, projectID)
+	return err == nil && member
 }
 
 // projectSelectorFromHeaders returns the project named by the first accepted
@@ -416,19 +482,58 @@ func positiveProjectID(value string) (int, bool) {
 
 // resolveProjectID derives the caller's project id, mirroring pylon's
 // prepare_request token branch:
-//   - system project-user name (":system:project:<id>:") → parse id from name
-//   - otherwise → personal project lookup via the resolver
+//   - system project-user name (":system:project:<id>:") → parse the id from the
+//     name, and admit it only after the membership check
+//   - otherwise, or when the membership check refuses → personal project lookup
+//     via the resolver
 //
 // It returns 0 (with no error) when the project cannot be determined.
-func resolveProjectID(ctx context.Context, resolver PersonalProjectResolver, user auth.User) (int, error) {
+//
+// # The membership check on the name branch (issue #459)
+//
+// The name branch used to return its id with no check. That id became the
+// resolved project, and the resolved project becomes the signed
+// X-Elitea-Project-Id header (internal/llmproxy/identity.go). The gateway
+// spends that project's budget and decrypts that project's provider
+// credentials. So the branch was an unchecked claim on another project. Any
+// writer of auth.User.Name could make that claim.
+//
+// The branch was latent and not reachable: authsvc.New has no non-test caller,
+// RouterConfig.AuthClient is never assigned, and the Pylon Redis RPC client is
+// the one non-test writer of the field. Latent is not safe. deploy/centry-hybrid
+// composes a Pylon auth plane, and a hybrid deployment that composes that client
+// makes the branch live at once.
+//
+// The check is the same predicate the selector header passes, through the same
+// function. A name-derived project therefore has exactly the power an
+// X-Project-Id header has, and no more: it names a project the caller belongs
+// to, or it is ignored.
+//
+// # Why the branch is checked and not deleted
+//
+// ADR-0018 and spec-llm-project-scope §5.1 delete this branch. That deletion is
+// rollout Stage 3, and spec §11 states that Stage 3 MUST NOT run before Stage 2
+// (the token binding) is live in production. This change cannot prove that
+// production condition, so it makes the branch safe now and leaves the deletion
+// to Stage 3. A checked branch is not the end state. It is the end state minus
+// one scheduled removal.
+func resolveProjectID(ctx context.Context, cfg ProjectConfig, user auth.User) (int, error) {
 	if id, ok := projectIDFromUserName(user.Name); ok {
-		return id, nil
+		if isEntitledToProject(ctx, cfg.Membership, user, id) {
+			return id, nil
+		}
+		// The name asked for a project the caller may not use. Fall through to
+		// the caller's own project. The refusal is silent, for the same reason the
+		// selector refusal is silent (spec §5 row 5): a real Pylon system
+		// project-user resolves to the same project through the
+		// system_user_(\d+)@centry.user email fallback inside the resolver, so
+		// the fallback is the parity path and not a failure.
 	}
 
-	if resolver == nil {
+	if cfg.Resolver == nil {
 		return 0, nil
 	}
-	return resolver.PersonalProjectID(ctx, user.ID)
+	return cfg.Resolver.PersonalProjectID(ctx, user.ID)
 }
 
 // projectIDFromUserName parses the project id from a system project-user name of
