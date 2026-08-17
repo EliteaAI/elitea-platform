@@ -219,7 +219,13 @@ func mountReviewedProductionRoutes(r chi.Router, cfg RouterConfig) {
 	// LiteLLM facade whenever neither gateway backend was composed. That facade
 	// is gone: the Bifrost gateway reads per-project credentials and models
 	// from p_{projectID}.configuration directly, so there is no push-model
-	// proxy left to fall back to. With no backend composed, /llm is simply not
-	// registered and answers 404 — deliberately, so a missing LLM_GATEWAY_URL
-	// fails visibly instead of silently routing to a superseded data plane.
+	// proxy left to fall back to. Nothing may reintroduce that fallback.
+	//
+	// With no backend composed, NewRouter registers the /llm path with the
+	// not-configured handler, which answers 503 llm_gateway_not_configured
+	// (issue #463). This comment previously said the path was left unregistered
+	// so that a missing LLM_GATEWAY_URL "fails visibly". A 404 is not visible:
+	// it is the same answer a misspelt path gets, and the chart shipped the
+	// empty value by default, so every Kubernetes install answered it. The 503
+	// keeps the refusal and names the variable that causes it.
 }

@@ -117,10 +117,25 @@ env:
   ELITEA_APPLICATION_SKILLS_ENABLED: "false"
 
   # The gateway serves every model. Point this at the gateway Service and give
-  # the pod the client certificates in the secrets: block — llmproxy always
-  # builds an mTLS transport, so an empty certificate path is a fatal boot
-  # error rather than a fall back to cleartext.
+  # the pod the client certificates — llmproxy always builds an mTLS transport,
+  # so an empty certificate path is a fatal boot error rather than a fall back
+  # to cleartext.
+  #
+  # The three paths below are FILE PATHS and they are mandatory beside the URL.
+  # elitea-main.validateLLMGateway refuses the half-configured pair at
+  # `helm template` time (issue #463). Mount the material at this directory; the
+  # names match what deploy/scripts/gen-gateway-certs.sh writes.
   LLM_GATEWAY_URL: "https://elitea-llm-gateway:8083"
+  LLM_GATEWAY_CLIENT_CERT: "/run/certs/client.crt"
+  LLM_GATEWAY_CLIENT_KEY: "/run/certs/client.key"
+  LLM_GATEWAY_CA_FILE: "/run/certs/ca.crt"
+
+  # Circular-routing guard #1 at upsert time (issue #467). DEPLOYMENT_URL alone
+  # arms it: internal/api/v2/configurations/selfref.go appends "/llm" itself, so
+  # a single-domain deployment needs nothing else. A credential whose api_base
+  # points back at this origin is then refused with SELF_REFERENTIAL_CREDENTIAL.
+  # Set this to the real public base URL of your deployment.
+  DEPLOYMENT_URL: "https://elitea.example.com"
 
   # Object storage for artifacts. Fill in for your environment.
   STORAGE_BACKEND: "s3"

@@ -1,3 +1,10 @@
+{{/*
+  Guard prerequisites are checked HERE, and this Deployment always renders, so
+  `helm template` runs every check on every values file (issue #467). Read
+  elitea-llm-gateway.validateGuards in _helpers.tpl for what each guard protects
+  and which Go source reads it.
+*/}}
+{{- include "elitea-llm-gateway.validateGuards" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

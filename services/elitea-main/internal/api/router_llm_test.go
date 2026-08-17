@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -81,9 +82,17 @@ func buildMinimalRouterConfig(t *testing.T, validator apimw.TokenValidator, reso
 
 // --- tests -------------------------------------------------------------------
 
-// TestLLMRoute_NotMountedWhenProxyNil verifies that when LLMProxy is nil the
-// /llm path returns 404 so existing deployments are unaffected.
-func TestLLMRoute_NotMountedWhenProxyNil(t *testing.T) {
+// TestLLMRoute_SaysNotConfiguredWhenProxyNil verifies that when no proxy is
+// composed the /llm path answers 503 llm_gateway_not_configured (issue #463).
+//
+// This test previously required 404. That was the defect: the chart ships
+// LLM_GATEWAY_URL empty, so 404 was the answer every Kubernetes install gave,
+// and it is the same answer a misspelt path gives. The operator could not tell
+// an unconfigured deployment from a typo.
+//
+// The body is asserted, not only the status. A status alone would still pass if
+// some other layer began answering 503 for an unrelated reason.
+func TestLLMRoute_SaysNotConfiguredWhenProxyNil(t *testing.T) {
 	cfg := buildMinimalRouterConfig(t, nil, nil, nil)
 	r := api.NewRouter(cfg)
 
@@ -91,8 +100,16 @@ func TestLLMRoute_NotMountedWhenProxyNil(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 when LLMProxy is nil, got %d", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no LLM backend is composed, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), api.LLMNotConfiguredCode) {
+		t.Fatalf("expected the body to carry %q, got %s", api.LLMNotConfiguredCode, rec.Body.String())
+	}
+	// The remedy has to be in the answer. An operator reading this response
+	// must learn which variable turns the path on.
+	if !strings.Contains(rec.Body.String(), "LLM_GATEWAY_URL") {
+		t.Fatalf("expected the body to name LLM_GATEWAY_URL, got %s", rec.Body.String())
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
@@ -21,7 +22,14 @@ func buildGatewayRouterConfig(t *testing.T, validator apimw.TokenValidator, reso
 	}
 }
 
-func TestGatewayProxy_NotMountedWhenNil(t *testing.T) {
+// Issue #463 renamed this from TestGatewayProxy_NotMountedWhenNil and changed
+// the expected status from 404 to 503.
+//
+// The chart ships LLM_GATEWAY_URL empty, so a nil GatewayProxy was the DEFAULT
+// state of a Kubernetes install, and 404 is the same answer a misspelt path
+// gets. An operator could not tell an unconfigured deployment from a typo. The
+// path is now registered with a handler that says which variable is missing.
+func TestGatewayProxy_SaysNotConfiguredWhenNil(t *testing.T) {
 	cfg := buildGatewayRouterConfig(t, nil, nil, nil)
 	r := api.NewRouter(cfg)
 
@@ -29,8 +37,11 @@ func TestGatewayProxy_NotMountedWhenNil(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 when GatewayProxy is nil, got %d", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when GatewayProxy is nil, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), api.LLMNotConfiguredCode) {
+		t.Fatalf("expected the body to carry %q, got %s", api.LLMNotConfiguredCode, rec.Body.String())
 	}
 }
 
