@@ -43,10 +43,13 @@ tasks:
       - bash scripts/go/workspace-run.sh coverage
 
   lint:
-    desc: Run golangci-lint on Go code
-    dir: "{{.SERVICE}}"
+    desc: Run golangci-lint across the workspace
     cmds:
-      - golangci-lint run ./...
+      # This task used to run in `{{.SERVICE}}` only, so it linted one module of
+      # nine and `task all` then reported "all checks" (#427). Same aggregation
+      # as `test` and `vet`: every module runs, every failed module is named,
+      # and the modules this command does NOT cover are named as well.
+      - bash scripts/go/workspace-run.sh lint
 
   vet:
     desc: Run go vet across the workspace

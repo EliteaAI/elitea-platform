@@ -37,6 +37,7 @@
 # Usage:
 #   scripts/go/workspace-run.sh test              # go test -race -count=1 ./...
 #   scripts/go/workspace-run.sh vet               # go vet ./...
+#   scripts/go/workspace-run.sh lint              # golangci-lint run ./...
 #   scripts/go/workspace-run.sh coverage          # go test -coverprofile, then strip
 #   scripts/go/workspace-run.sh coverage --race   # the same, with the race detector
 #
@@ -45,8 +46,22 @@
 # does not need to pay for it. The flag is written at the call site on purpose:
 # an environment variable would drift out of sight.
 #
+# WHY `lint` IS HERE TOO (#427)
+#
+# The ci-go.yml Lint job named two modules in a hand-written matrix, and
+# `task lint` ran in one module. The workspace holds nine. So an errcheck,
+# staticcheck or unused finding in gen/go, libs/go/**, libs/proto/gen/go or
+# tools/uictl passed every gate in this repository. The head of .golangci.yml
+# said "Applied to every module". That was a statement of intent, not of fact.
+#
+# The same six rules above now hold for lint as well. Point 6 matters most: a
+# hand-written matrix cannot name what it left out, so a module added to
+# go.work stayed unlinted in silence. This list is read from go.work at run
+# time, and the modules outside it are printed by name.
+#
 # Environment:
 #   ELITEA_GO_TEST_TIMEOUT  per-package `go test -timeout` (default below)
+#   GOLANGCI_LINT           golangci-lint binary to use (default: golangci-lint)
 #
 # `set -e` is deliberately absent: this script must survive a module failure to
 # run the next module. Every status is therefore checked by hand.
@@ -110,10 +125,11 @@ set -uo pipefail
 
 usage() {
     cat >&2 <<'USAGE'
-usage: scripts/go/workspace-run.sh <test|vet|coverage> [--race]
+usage: scripts/go/workspace-run.sh <test|vet|lint|coverage> [--race]
 
   test      go test -race -count=1 ./...    in every workspace module
   vet       go vet ./...                    in every workspace module
+  lint      golangci-lint run ./...         in every workspace module
   coverage  go test -coverprofile=coverage.out ./..., then strip generated code
   --race    add -race to `coverage` (`test` already uses it)
 USAGE
@@ -121,7 +137,7 @@ USAGE
 
 mode="${1:-}"
 case "$mode" in
-test | vet | coverage) ;;
+test | vet | lint | coverage) ;;
 *)
     usage
     exit 2
@@ -133,8 +149,8 @@ race_flags=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --race)
-        if [ "$mode" = "vet" ]; then
-            echo "workspace-run: --race does not apply to vet" >&2
+        if [ "$mode" = "vet" ] || [ "$mode" = "lint" ]; then
+            echo "workspace-run: --race does not apply to ${mode}" >&2
             exit 2
         fi
         race_flags=(-race)
@@ -157,6 +173,32 @@ repo_root="$(cd "$script_dir/../.." && pwd)"
 if [ -z "$repo_root" ]; then
     echo "workspace-run: cannot resolve the repository root" >&2
     exit 1
+fi
+
+# ── 0. Preflight for `lint` ──────────────────────────────────────────────────
+#
+# A missing linter must STOP the run. It must not print a note and continue,
+# because "the linter was absent" and "the linter found nothing" then produce
+# the same green step, which is the defect this script exists to remove.
+#
+# The config path is passed to golangci-lint explicitly. Without it the tool
+# walks up from each module directory and picks the first config it meets, so
+# a config dropped into one module would quietly change what that module is
+# held to. .golangci.yml says "Applied to every module"; naming the file makes
+# that sentence a fact instead of a hope.
+: "${GOLANGCI_LINT:=golangci-lint}"
+golangci_config="$repo_root/.golangci.yml"
+if [ "$mode" = "lint" ]; then
+    if ! command -v "$GOLANGCI_LINT" >/dev/null 2>&1; then
+        echo "workspace-run: ${GOLANGCI_LINT} is not on PATH; refusing to report success" >&2
+        echo "workspace-run: install it, or set GOLANGCI_LINT to the binary" >&2
+        exit 1
+    fi
+    if [ ! -f "$golangci_config" ]; then
+        echo "workspace-run: ${golangci_config} is missing; refusing to lint without it" >&2
+        exit 1
+    fi
+    "$GOLANGCI_LINT" --version
 fi
 
 # ── 1. Discover the workspace modules ────────────────────────────────────────
@@ -264,6 +306,13 @@ run_vet() {
     go vet ./...
 }
 
+# golangci-lint exits 1 when it reports issues and 3 (or higher) when it cannot
+# run at all — a broken config, a package that will not load. Both are failures
+# here, and both name the module in the summary below.
+run_lint() {
+    "$GOLANGCI_LINT" run --config "$golangci_config" ./...
+}
+
 # Generated code leaves the PROFILE, not the test run: oapi-codegen's
 # internal/api/generated and sqlc's internal/db/sqlcgen are about 3.4k
 # instrumented blocks that nobody writes tests for. Leaving them in moves the
@@ -301,6 +350,7 @@ for module_dir in "${modules[@]}"; do
         case "$mode" in
         test) run_test ;;
         vet) run_vet ;;
+        lint) run_lint ;;
         coverage) run_coverage ;;
         esac
     )

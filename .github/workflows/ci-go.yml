@@ -91,13 +91,20 @@ jobs:
             services/elitea-main/internal services/elitea-main/cmd
 
   lint:
-    name: Lint (${{ matrix.service }})
+    name: Lint (workspace)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service:
-          - services/elitea-main
-          - services/elitea-scheduler
+    # Issue #427. This job used to carry a hand-written matrix of two modules,
+    # `services/elitea-main` and `services/elitea-scheduler`, while go.work
+    # names nine. gen/go, libs/go/authlib, libs/go/eventslib,
+    # libs/go/observability, libs/go/rpclib, libs/proto/gen/go and tools/uictl
+    # were never linted, and this workflow triggers on `libs/go/**` — so it ran
+    # on their changes and looked at none of them.
+    #
+    # A hand-written matrix cannot report what it left out. The module list is
+    # read from go.work at run time instead, by the same script the vet and
+    # test steps use, and that script prints the Go modules on disk that the
+    # run did NOT cover (services/elitea-llm-gateway, which ci-gateway.yml
+    # lints on its own Go release).
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -108,10 +115,26 @@ jobs:
             services/elitea-scheduler/go.sum
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: latest
-          working-directory: ${{ matrix.service }}
+
+      # golangci-lint-action installs AND runs in one step, and it runs in one
+      # working directory. Nine directories therefore need the binary on its
+      # own. The version is PINNED: `version: latest` made the gate a moving
+      # target, so a new release could red an untouched branch, and the local
+      # run that proves a change can never match what CI will do. Raise this
+      # value deliberately, and read the release notes when you do.
+      - name: Install golangci-lint
+        env:
+          GOLANGCI_LINT_VERSION: v2.9.0
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # The script fails when the binary is absent, so a broken install above
+      # cannot turn into a green "nothing to report" below.
+      - name: golangci-lint (workspace)
+        run: bash scripts/go/workspace-run.sh lint
 
   test:
     name: Test
