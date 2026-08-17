@@ -10,12 +10,14 @@ package llmproxy
 import (
 	"encoding/json"
 	"errors"
+	"expvar"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -375,20 +377,143 @@ func TestModelMap_NoResolverForwardsUnchanged(t *testing.T) {
 	}
 }
 
-// TestModelMap_UnreadableModelSetForwardsUnchanged pins the degraded path. When
-// the resolver cannot read the project's model set — here the query fails and
-// nothing is cached — the gateway cannot prove the model is wrong. It forwards
-// the caller's model rather than turning a database blip into a 404 for every
-// request.
-func TestModelMap_UnreadableModelSetForwardsUnchanged(t *testing.T) {
+// ── issue #469: the three conditions in which the model set is unreadable ─────
+//
+// Each condition gets its OWN test and its OWN expected behaviour. Before issue
+// #469 all three produced one outcome: HTTP 200, and the caller's model name
+// sent to the provider with no map. Every test below fails on that behaviour.
+
+// counterDelta returns the increase of v across fn.
+//
+// The counters are process-wide expvar variables, so an absolute value depends
+// on which other tests ran first. Only the delta is stable.
+func counterDelta(t *testing.T, v *expvar.Int, fn func()) int64 {
+	t.Helper()
+	before := v.Value()
+	fn()
+	return v.Value() - before
+}
+
+// assertRefused checks the status, the OpenAI error body, and that the provider
+// was never called.
+func assertRefused(t *testing.T, rec *httptest.ResponseRecorder, spy *dispatchSpy, wantStatus int, wantCode string) {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, wantStatus, rec.Body.String())
+	}
+	if spy.count() != 0 {
+		got, _ := spy.last()
+		t.Fatalf("the provider was called with %+v; an unmapped model must never reach it", got)
+	}
+	var body openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error.Code != wantCode {
+		t.Fatalf("error code = %q, want %q (body=%s)", body.Error.Code, wantCode, rec.Body.String())
+	}
+}
+
+// TestModelMap_NoProjectIsRefused covers condition 1: the request carries no
+// project identity.
+//
+// This is a condition of the REQUEST, not a fault. A caller with no project has
+// no configured model and no credential, so the gateway answers the OpenAI 404
+// that says exactly that. It must not send the caller's model name onward: with
+// no project the budget gate also does not run, so an accepted request would be
+// unmapped AND unmetered.
+func TestModelMap_NoProjectIsRefused(t *testing.T) {
+	h, spy := newMapHandler(t, modelMapRows())
+	var rec *httptest.ResponseRecorder
+	delta := counterDelta(t, modelMapRefusedNoProject, func() {
+		rec = postAs(t, h, "/llm/v1/chat/completions", "", `{"model":"anything","messages":[]}`)
+	})
+	assertRefused(t, rec, spy, http.StatusNotFound, "model_not_found")
+	if delta != 1 {
+		t.Fatalf("%s rose by %d, want 1 — an operator cannot see this refusal",
+			MetricModelMapRefusedNoProject, delta)
+	}
+}
+
+// TestModelMap_NoDatabaseIsRefused covers condition 2: the resolver holds no
+// database handle, so it can never read any project's model set.
+//
+// This is a WIRING fault, not a deployment posture. A gateway that runs with no
+// database gets no resolver at all, and that posture is covered by
+// TestModelMap_NoResolverForwardsUnchanged.
+func TestModelMap_NoDatabaseIsRefused(t *testing.T) {
+	spy := newDispatchSpy()
+	resolver := NewModelResolver(ModelResolverConfig{DB: nil})
+	h := NewHandler(spy, nil, nil, WithModelResolver(resolver))
+
+	var rec *httptest.ResponseRecorder
+	delta := counterDelta(t, modelMapRefusedNoDatabase, func() {
+		rec = postAs(t, h.route(), "/llm/v1/chat/completions", mapProjectID,
+			`{"model":"gpt-5.1","messages":[]}`)
+	})
+	assertRefused(t, rec, spy, http.StatusBadGateway, "model_catalogue_unavailable")
+	if delta != 1 {
+		t.Fatalf("%s rose by %d, want 1 — an operator cannot see this refusal",
+			MetricModelMapRefusedNoDatabase, delta)
+	}
+}
+
+// TestModelMap_LookupFailureIsRefused covers condition 3: the query fails and
+// no cached list exists.
+//
+// Reaching this outcome means the gateway has NEVER read this project's model
+// set, so there is no last good list to bound a permissive path with. The
+// deleted elitea-main handler answered 502 for the same condition.
+func TestModelMap_LookupFailureIsRefused(t *testing.T) {
 	spy := newDispatchSpy()
 	resolver := NewModelResolver(ModelResolverConfig{DB: &fakeModelDB{err: errors.New("connection refused")}})
 	h := NewHandler(spy, nil, nil, WithModelResolver(resolver))
 
-	rec := postAs(t, h.route(), "/llm/v1/chat/completions", mapProjectID,
-		`{"model":"gpt-5.1","messages":[]}`)
+	var rec *httptest.ResponseRecorder
+	delta := counterDelta(t, modelMapRefusedLookupFailed, func() {
+		rec = postAs(t, h.route(), "/llm/v1/chat/completions", mapProjectID,
+			`{"model":"gpt-5.1","messages":[]}`)
+	})
+	assertRefused(t, rec, spy, http.StatusBadGateway, "model_catalogue_unavailable")
+	if delta != 1 {
+		t.Fatalf("%s rose by %d, want 1 — an operator cannot see this refusal",
+			MetricModelMapRefusedLookupFailed, delta)
+	}
+}
+
+// TestModelMap_QueryFailureWithACachedListStillDispatches is the other half of
+// the issue #469 decision, and the reason the three refusals above are safe.
+//
+// A database fault must not stop all inference. It does not: once the gateway
+// has read a project's model set, a later query failure serves the last good
+// list, and the request maps and dispatches as normal. That stale list is the
+// bounded permissive path — every name in it came from a real configuration
+// row. Delete this behaviour and a database blip becomes a total outage.
+func TestModelMap_QueryFailureWithACachedListStillDispatches(t *testing.T) {
+	clock := time.Now()
+	db := &fakeModelDB{rows: modelMapRows()}
+	spy := newDispatchSpy()
+	resolver := NewModelResolver(ModelResolverConfig{
+		DB:  db,
+		Now: func() time.Time { return clock },
+	})
+	h := NewHandler(spy, nil, nil, WithModelResolver(resolver)).route()
+
+	// First call: the query succeeds and fills the cache.
+	if rec := postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"Prod GPT","messages":[]}`); rec.Code != http.StatusOK {
+		t.Fatalf("first call: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// The cache expires, and the database is now down.
+	clock = clock.Add(2 * DefaultModelsCacheTTL)
+	db.err = errors.New("connection refused")
+
+	rec := postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"Prod GPT","messages":[]}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d, want 200; a cached list must survive a database fault; body=%s",
+			rec.Code, rec.Body.String())
 	}
 	got, ok := spy.last()
 	if !ok {
@@ -399,22 +524,66 @@ func TestModelMap_UnreadableModelSetForwardsUnchanged(t *testing.T) {
 	}
 }
 
-// TestModelMap_NoProjectForwardsUnchanged covers a request that carries no
-// project identity: there is no model set to check it against, so the model
-// passes through.
-func TestModelMap_NoProjectForwardsUnchanged(t *testing.T) {
-	h, spy := newMapHandler(t, modelMapRows())
-	rec := postAs(t, h, "/llm/v1/chat/completions", "",
-		`{"model":"anything","messages":[]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+// TestModelMap_ResolveClassifiesEachUnknownCondition holds resolve and List in
+// step.
+//
+// resolve names the three conditions itself, in the order List applies them.
+// This test proves the two agree: each case is one List reports as unknown, and
+// resolve reports the matching outcome. If List ever changes its order or adds
+// a fourth unknown condition, the pairing below breaks here rather than in
+// production.
+func TestModelMap_ResolveClassifiesEachUnknownCondition(t *testing.T) {
+	cases := []struct {
+		name      string
+		resolver  *ModelResolver
+		projectID string
+		want      modelLookup
+	}{
+		{
+			name:      "empty project id",
+			resolver:  NewModelResolver(ModelResolverConfig{DB: &fakeModelDB{rows: modelMapRows()}}),
+			projectID: "",
+			want:      modelSetNoProject,
+		},
+		{
+			name:      "nil database handle",
+			resolver:  NewModelResolver(ModelResolverConfig{DB: nil}),
+			projectID: mapProjectID,
+			want:      modelSetNoDatabase,
+		},
+		{
+			name:      "query failure with no cache",
+			resolver:  NewModelResolver(ModelResolverConfig{DB: &fakeModelDB{err: errors.New("down")}}),
+			projectID: mapProjectID,
+			want:      modelSetLookupFailed,
+		},
 	}
-	got, ok := spy.last()
-	if !ok {
-		t.Fatal("the provider was not called")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, known := tc.resolver.list(t.Context(), tc.projectID); known {
+				t.Fatalf("List reports the model set as known; this case is not an unknown set at all")
+			}
+			_, got := tc.resolver.resolve(t.Context(), tc.projectID, []string{"gpt-5.1"})
+			if got != tc.want {
+				t.Fatalf("resolve outcome = %d, want %d", got, tc.want)
+			}
+		})
 	}
-	if got.model != "anything" {
-		t.Fatalf("provider received model %q, want %q", got.model, "anything")
+}
+
+// TestModelMapMetricNames_AreAllPublished proves the counters this package
+// declares are the counters it publishes. The composition root builds the
+// /metrics allowlist from ModelMapMetricNames, so a name that no expvar
+// variable carries would serve nothing and report nothing.
+func TestModelMapMetricNames_AreAllPublished(t *testing.T) {
+	names := ModelMapMetricNames()
+	if len(names) != 3 {
+		t.Fatalf("ModelMapMetricNames returned %d names, want 3", len(names))
+	}
+	for _, name := range names {
+		if expvar.Get(name) == nil {
+			t.Errorf("metric %q is named but not published; /metrics would serve nothing for it", name)
+		}
 	}
 }
 

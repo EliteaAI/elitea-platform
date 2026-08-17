@@ -54,6 +54,7 @@ func TestMainWiring(t *testing.T) {
 		{"makeReadyzHandler(", "the NATS circuit-breaker /readyz handler is never mounted — a pod with a dead budget-enforcement path stays in the load-balancer rotation"},
 		{"budgetEnforcementUnwired(", "the /readyz gate for a NATS that never connected is never computed — a pod that boots during a NATS outage serves /llm unmetered, for the life of the process, while reporting ready (issue #304)"},
 		{`mux.HandleFunc("/healthz"`, "the liveness /healthz route is never mounted — issue #242's healthz/readyz split silently loses liveness, and the chart's livenessProbe would 404 every pod"},
+		{`mux.Handle("/metrics"`, "the operator controls have no route — the budget-enforcement gauge and the model-map refusal counters cannot be read, so the alarm for a gateway that enforces nothing (issue #304) cannot be built (issue #465)"},
 		{"drainForShutdown(", "in-flight billing + persist goroutines must be drained before pool.Close() or spend is dropped / a pool races"},
 		{"grace.StopStreamGrace(", "phase 1 of shutdown is missing — the stream grace would extend the pod's termination window (issue #9)"},
 		{"srv.ShutdownHTTP(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
@@ -113,6 +114,23 @@ func TestMainWiring(t *testing.T) {
 				"A lifecycle method that isn't called from the composition root is a "+
 				"'built but not wired' bug (this class recurred 3x in review). Wire it in main().",
 				r.call, r.why)
+		}
+	}
+
+	// The gate also holds one decision in place. Issue #465 asked whether the
+	// whole expvar surface must be public, and the answer is no: /metrics serves
+	// an allowlist (see gatewayMetrics). expvar.Handler() writes every published
+	// variable, `cmdline` and `memstats` included, on the same listener that
+	// serves /llm.
+	forbidden := []struct {
+		call string
+		why  string
+	}{
+		{"expvar.Handler(", "expvar.Handler() publishes EVERY variable this process holds, including the process arguments and the memory statistics. /metrics serves a named allowlist instead (issue #465). Add the variable to gatewayMetrics rather than publishing the whole surface"},
+	}
+	for _, f := range forbidden {
+		if calls[f.call] {
+			t.Errorf("WIRING GATE: %s is called from package main — %s.", f.call, f.why)
 		}
 	}
 }

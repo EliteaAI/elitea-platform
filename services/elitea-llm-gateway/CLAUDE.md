@@ -28,8 +28,16 @@ because each was a real bug found across 3 review rounds.
   dispatch** (`mapModel`, internal/llmproxy/modelmap.go). Adding a new endpoint
   that carries a model? It MUST call `mapModel` after the decode and BEFORE
   `checkBudget` — the provider must not see an unmapped id, and the cost tables
-  are keyed by the provider's name. Do not make the unreadable-model-set path
-  fail closed without a human (DECISIONS.md, "Model-name mapping").
+  are keyed by the provider's name.
+- An **unreadable model set REFUSES the request** (issue #469, 2026-08-17; this
+  line replaces the earlier "do not fail closed without a human"). The three
+  conditions get three behaviours: an empty project identifier answers 404
+  `model_not_found`; a nil database handle and a query failure with no cache
+  answer 502 `model_catalogue_unavailable`. Do not make any of them forward the
+  caller's model unmapped again without a human (DECISIONS.md, "Model-name
+  mapping"). The permissive path is the STALE CACHE in `List`: a query failure
+  with a cached list still maps and dispatches, so a database blip is not an
+  outage. Do not delete that path.
 - `mapModel` gates every dialect against ONE model set, built from the
   `(section, type)` pairs in `addressableModelSections`
   (internal/llmproxy/models.go). Add the pair there when you add a route that
@@ -61,6 +69,14 @@ because each was a real bug found across 3 review rounds.
   Helm chart (`deploy/helm/elitea-llm-gateway/values.yaml`) or be on
   `scripts/env-drift-allowlist.txt` with a justification. `scripts/env-drift-check.sh`
   enforces this in CI.
+- An operator control MUST have a route. A published `expvar` variable has none:
+  `expvar` registers `/debug/vars` on `http.DefaultServeMux`, and this process
+  serves its own multiplexer (issue #465). Add the variable to `gatewayMetrics()`
+  in `main.go`, and it reaches `GET /metrics`. Do NOT mount `expvar.Handler()`:
+  it publishes every variable, `cmdline` and `memstats` included, and
+  `TestMainWiring` forbids the call. Prove such a route with an HTTP request to
+  a RUNNING gateway; a test that reads the variable in the same process proves
+  nothing.
 
 ## Language (ASD-STE100)
 Write ALL agent-authored text in ASD-STE100 Simplified Technical English: GitHub
