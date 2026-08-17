@@ -461,15 +461,19 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #426. Both the checker and the manifest it reads are in the tree,
+      # so the "pending" branch that let this job pass with neither is gone.
+      # A missing file is now a red job with the name of the file in it.
       - name: Validate endpoint manifest
         run: |
-          if [ -f scripts/check-endpoint-manifest.mjs ]; then
-            node scripts/check-endpoint-manifest.mjs
-          elif [ -f src/shared/api/endpoints.manifest.json ]; then
-            echo "endpoints.manifest.json exists but scripts/check-endpoint-manifest.mjs is missing (R-A5)"; exit 1
-          else
-            echo "endpoint manifest pending (units S4+W2)"
-          fi
+          set -euo pipefail
+          for subject in scripts/check-endpoint-manifest.mjs src/shared/api/endpoints.manifest.json; do
+            test -f "${subject}" || {
+              echo "::error::apps/elitea-web/${subject} is missing, so the endpoint manifest gate cannot check anything. Restore the file under its old name, or point this job at the new one. Do not let the job pass."
+              exit 1
+            }
+          done
+          node scripts/check-endpoint-manifest.mjs
 
   gate-msw-handler-hygiene:
     name: MSW handler hygiene
@@ -483,13 +487,16 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #426. The script is in the tree. The "pending" branch made this
+      # job a green no-op on the day somebody renamed it.
       - name: Run MSW handler hygiene
         run: |
-          if [ -f scripts/check-handlers.mjs ]; then
-            node scripts/check-handlers.mjs
-          else
-            echo "check-handlers.mjs pending (unit M1); rule logic proven by the self-test (scripts/lib/mock-rules-core.mjs)"
-          fi
+          set -euo pipefail
+          test -f scripts/check-handlers.mjs || {
+            echo "::error::apps/elitea-web/scripts/check-handlers.mjs is missing, so the MSW handler hygiene gate cannot check anything. Restore the file under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          node scripts/check-handlers.mjs
 
   gate-i18n-sync:
     name: i18n en.json sync
@@ -503,13 +510,15 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #426. Same shape as the gate above, same repair.
       - name: Check en.json sync (issue #44)
         run: |
-          if [ -f scripts/i18n-backfill.mjs ]; then
-            node scripts/i18n-backfill.mjs --check
-          else
-            echo "i18n-backfill.mjs pending (issue #44); rule logic proven by scripts/lib/i18n-backfill-core.test.mjs"
-          fi
+          set -euo pipefail
+          test -f scripts/i18n-backfill.mjs || {
+            echo "::error::apps/elitea-web/scripts/i18n-backfill.mjs is missing, so the en.json sync gate cannot check anything. Restore the file under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          node scripts/i18n-backfill.mjs --check
 
   gate-fixture-freshness:
     name: Fixture freshness
@@ -523,13 +532,15 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #426. Same shape as the two gates above, same repair.
       - name: Run fixture freshness
         run: |
-          if [ -f scripts/check-fixture-freshness.mjs ]; then
-            node scripts/check-fixture-freshness.mjs
-          else
-            echo "check-fixture-freshness.mjs pending (unit M1); rule logic proven by the self-test"
-          fi
+          set -euo pipefail
+          test -f scripts/check-fixture-freshness.mjs || {
+            echo "::error::apps/elitea-web/scripts/check-fixture-freshness.mjs is missing, so the fixture freshness gate cannot check anything. Restore the file under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          node scripts/check-fixture-freshness.mjs
 
   gate-layer-cycle:
     name: Layer + cycle gate
@@ -574,6 +585,22 @@ jobs:
           node-version: "24"
       - name: Check the container tag matches package.json
         run: node scripts/check-playwright-image-tag.mjs
+
+  gate-wave2-partition:
+    name: Wave-2 partition
+    # Issue #424. check-partition.mjs says "Exit code 0 = partition valid,
+    # non-zero = violation" and ran in no workflow, so no exit code was ever
+    # read. Its subject, apps/elitea-web/parity/wave2-partition.json, sits
+    # under apps/elitea-web/**, which this workflow's trigger already selects.
+    # The script needs no dependency, so this job skips `npm ci`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Check the Wave-2 unit partition
+        run: node scripts/check-partition.mjs
 
   gate-visual-coverage:
     name: Visual coverage
@@ -668,15 +695,19 @@ jobs:
         run: npm ci
       - name: Build (app + admin + maintenance)
         run: npm run build
+      # Issue #426. This step used to ask whether lighthouserc.json existed and
+      # print "lhci bundle budget pending" when it did not. Neither that file
+      # nor .lighthouserc.json has ever been in the tree, so the step was a
+      # green tick for a budget that nothing measured.
+      #
+      # check-bundle-budget.mjs measures the build output that the step above
+      # just produced. It derives the target list from dist/, the initial set
+      # from each target's own HTML, and the route-chunk set from the rest, so
+      # a renamed output directory or a changed chunking strategy moves the
+      # subject with it. Every count has a floor and the budget file must be
+      # present: a run that finds nothing fails.
       - name: Bundle budget (§3.5 — 300 KB initial, 250 KB per route chunk)
-        # @lhci/cli is pinned; its config lands when the app has routes to
-        # measure (post-R1). Until then the guard documents the pending gate.
-        run: |
-          if [ -f lighthouserc.json ] || [ -f .lighthouserc.json ]; then
-            npx lhci autorun
-          else
-            echo "lhci bundle budget pending (needs the R1 route tree; §3.5 last two rows)"
-          fi
+        run: node scripts/check-bundle-budget.mjs
       - name: Upload dist
         uses: actions/upload-artifact@v7
         with:

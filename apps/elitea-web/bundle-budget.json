@@ -1,0 +1,28 @@
+{
+  "spec": "§3.5, last two rows — 300 KB initial, 250 KB per route chunk",
+  "measure": "gzip KiB, as the bundler and the browser both report transfer size",
+  "note": [
+    "scripts/check-bundle-budget.mjs reads this file. The gate fails when the",
+    "file is absent, when the build produces a target this file does not",
+    "declare, and when this file declares a target the build does not produce.",
+    "Raise a number here only with the measurement that justifies it."
+  ],
+  "targets": {
+    "app": {
+      "html": "index.html",
+      "initialKB": 300,
+      "routeChunkKB": 250
+    },
+    "admin": {
+      "html": "index.html",
+      "initialKB": 300,
+      "routeChunkKB": 250
+    },
+    "maintenance": {
+      "html": "maintenance.html",
+      "minJsChunks": 0,
+      "initialKB": 300,
+      "routeChunkKB": 250
+    }
+  }
+}

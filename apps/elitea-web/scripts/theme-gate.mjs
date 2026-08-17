@@ -33,6 +33,16 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(SCRIPT_DIR, '..');
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git']);
 
+// Floors on the walk itself (issue #426). Checks 2 to 6 each report PASS on an
+// empty file list, and the walk used to skip a missing src/ without a word, so
+// five of the seven checks passed on an empty tree. The floor is derived from
+// the tree under test: the app tree holds about 3,700 scannable files, and the
+// gate self-test points --root at fixture trees of five files each. Both
+// floors reject zero.
+const MIN_FILES_APP = 500;
+const MIN_FILES_FIXTURE = 1;
+const BRAND_PACK_CONTRACT_TEST = 'src/shared/brand/__tests__/brandPack.contract.test.ts';
+
 function parseArgs(argv) {
   const args = { root: APP_DIR };
   for (let i = 0; i < argv.length; i++) {
@@ -64,6 +74,9 @@ function loadTree(root) {
   const files = [];
   const assetPaths = [];
   const srcRoot = join(root, 'src');
+  // A missing src/ used to be skipped in silence, which left checks 2 to 6
+  // reporting PASS over an empty file list (issue #426). The caller applies
+  // the file-count floor, so report the absence and let the floor speak.
   if (existsSync(srcRoot)) {
     for (const file of allFiles(srcRoot)) {
       const rel = relative(root, file).split('\\').join('/');
@@ -72,6 +85,8 @@ function loadTree(root) {
         files.push({ path: rel, text: readFileSync(file, 'utf8') });
       }
     }
+  } else {
+    console.error(`theme-gate: ${srcRoot} does not exist`);
   }
   const indexHtml = join(root, 'index.html');
   if (existsSync(indexHtml)) {
@@ -119,6 +134,19 @@ function main() {
   }
 
   const { files, assetPaths } = loadTree(root);
+
+  // Floor before any check reports (issue #426). report(name, []) prints PASS,
+  // so checks 2 to 6 all passed on an empty tree.
+  const minFiles = root === APP_DIR ? MIN_FILES_APP : MIN_FILES_FIXTURE;
+  if (files.length < minFiles) {
+    console.error(
+      `theme-gate: FAIL — loaded ${files.length} scannable file(s) under ${root}, under the floor of ${minFiles}. ` +
+        'The walk stopped matching, so a PASS from checks 2 to 6 would prove nothing. Check that the source tree ' +
+        'is still at src/ and that its files still carry a .ts/.tsx/.js/.jsx/.html/.css suffix.',
+    );
+    process.exit(2);
+  }
+
   failed = report('2-mode-branches', checkModeBranches(files)) || failed;
   failed = report('3-theme-palette', checkThemePalette(files)) || failed;
   failed = report('4-mui-selectors', checkMuiSelectors(files)) || failed;
@@ -126,7 +154,22 @@ function main() {
   failed = report('6-external-origins', checkExternalOrigins(files)) || failed;
 
   // 7 — brand-pack round trip (unit T1 owns the test; §4.6 check 7).
-  const contractTest = join(root, 'src/shared/brand/__tests__/brandPack.contract.test.ts');
+  //
+  // The self-skip below used to apply to every tree, so a renamed or deleted
+  // contract test turned a blocking check into a printed notice (issue #426).
+  // The test landed long ago, so for the app tree its absence is now a
+  // failure. A --root fixture tree has no brand package and never had this
+  // test, so it still skips — and the skip cannot reach the production run,
+  // which passes no --root at all.
+  const contractTest = join(root, BRAND_PACK_CONTRACT_TEST);
+  if (root === APP_DIR && !existsSync(contractTest)) {
+    console.error(
+      `theme-gate 7-brand-pack: FAIL — ${BRAND_PACK_CONTRACT_TEST} is not in the tree. ` +
+        'The brand-pack round trip cannot run. Restore the test under its old name, or point this check at the new one.',
+    );
+    console.error('theme-gate: FAIL — see findings above (§4.6: every check is blocking)');
+    process.exit(1);
+  }
   if (existsSync(contractTest)) {
     const vitest = spawnSync(
       join(APP_DIR, 'node_modules', '.bin', 'vitest'),
