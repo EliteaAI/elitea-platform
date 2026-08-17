@@ -62,9 +62,9 @@ set -uo pipefail
 # above every measured duration, on purpose.
 #
 # services/elitea-main/internal/infra/db/repos runs 89 PostgreSQL integration
-# tests. Each test runs CREATE DATABASE, and 78 of them replay the full embedded
-# migration set. The package is expensive by construction. #409 named it. It is
-# not alone.
+# tests. Each test runs CREATE DATABASE, and 78 of them used to replay the full
+# embedded migration set. The package was expensive by construction. #409 named
+# it. It is not alone.
 #
 # Package durations from a full `task test`, macOS arm64, `-race -count=1`,
 # PostgreSQL 16 in podman. The right column is the SAME command while a second
@@ -86,8 +86,26 @@ set -uo pipefail
 # is the same package on a faster day.
 #
 # 45m clears the worst observation with room. A hung test still fails, later,
-# with the same goroutine dump. #425 removes the cost itself, which is the
-# durable answer; this value is the safe one until that lands.
+# with the same goroutine dump.
+#
+# WHY 45m STAYS AFTER #425
+#
+# #425 removed the replay. `repos` and `projectprovisioning` now copy one
+# template database instead. Both packages halved on CI, measured against three
+# packages that #425 does not touch:
+#
+#   package                                   base median     after
+#   internal/infra/db/repos                      89.7 s      44.6 s
+#   internal/application/projectprovisioning     19.3 s       9.7 s
+#   internal/api/v2/admin       (control)        34.2 s      31.1 s
+#   internal/api/v2/eliteacore  (control)        20.7 s      18.1 s
+#   internal/api/v2/mcp         (control)        14.7 s      12.7 s
+#
+# Apply that halving to the table above and the two `repos` observations become
+# about 320 s and 750 s. 750 s is still past the 600 s Go default, so the
+# default is still not safe. 45m is about 3.6x the new worst case, which is the
+# margin this comment asks for. Keep it. A large timeout costs nothing when the
+# tests pass, and #409 measured what a small one costs when they are slow.
 : "${ELITEA_GO_TEST_TIMEOUT:=45m}"
 
 usage() {

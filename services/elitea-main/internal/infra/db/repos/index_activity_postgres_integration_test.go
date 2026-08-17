@@ -19,8 +19,7 @@ import (
 )
 
 func TestPostgresCurrentIndexActivityPreservesOrderedStepsAndTenantIsolation(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentActivitySchemas(t, pool)
 
 	dispatchPolicy := IndexIngestDispatchPolicy{
@@ -511,8 +510,9 @@ CREATE SCHEMA p_2;`); err != nil {
 		t.Fatal(err)
 	}
 	// p_1 only: tenant/0123 (#287) now owns the chat tables, and
-	// applyPostgresIntegrationMigrations applies the tenant history to project 1
-	// before this seed runs — creating them again there is a duplicate relation.
+	// newMigratedPostgresIntegrationPool gives a database that already holds the
+	// tenant history of project 1 before this seed runs — creating them again
+	// there is a duplicate relation.
 	// p_2 exists purely to prove tenant isolation and gets no tenant history, so
 	// it still needs the tables declared by hand. The two shapes differ slightly
 	// (p_2 keeps the deployed-legacy extras attachment_participant_id and

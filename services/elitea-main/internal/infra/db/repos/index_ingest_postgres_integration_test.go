@@ -18,8 +18,7 @@ import (
 // queries, migration constraints and one database transaction; it is not a
 // Redis/worker/system E2E, load, soak or penetration test.
 func TestPostgresServiceBackedIndexIngestAdmission(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	policy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",
@@ -244,8 +243,7 @@ WHERE execution_id = $1`, created.ExecutionID); err == nil {
 }
 
 func TestPostgresIndexIngestSameTargetAdmissionExclusion(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	policy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",
@@ -312,8 +310,7 @@ WHERE toolkit_id = 19
 }
 
 func TestPostgresConcurrentSameTargetReturnsExactWinner(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	policy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",
@@ -399,8 +396,7 @@ WHERE j.resource_project_id = 1
 }
 
 func TestPostgresIndexMetaInitializationRejectsCancelledAdmission(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	policy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",

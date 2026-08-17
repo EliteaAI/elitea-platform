@@ -13,8 +13,7 @@ import (
 )
 
 func TestCurrentEmbeddingConfigurationPostgresResolutionIsTenantRoutedAndAmbiguitySafe(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repository, err := NewCurrentConfigurationsRepository(pool)
 	if err != nil {
 		t.Fatal(err)
@@ -67,8 +66,7 @@ INSERT INTO p_1.configuration (
 }
 
 func TestCurrentConfigurationsRepositoryPostgresParity(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	prepareCurrentConfigurationsProjectTwo(t, pool)
 
 	repository, err := NewCurrentConfigurationsRepository(pool)
@@ -303,7 +301,7 @@ INSERT INTO centry.social_pins (
 	}
 	typesFilter.ProjectID = 1
 	typesFilter.Section = "credentials"
-	// Two rows seed project 1's credentials section: applyPostgresIntegrationMigrations'
+	// Two rows seed project 1's credentials section: postgresIntegrationSeedSQL's
 	// own base fixture ("integration_fixture", type=openapi) and this test's own
 	// prepareCurrentConfigurationsProjectTwo call above ("public_shared_github",
 	// type=github, project_id=1 despite the helper's name — it seeds a shared
@@ -322,7 +320,7 @@ func prepareCurrentConfigurationsProjectTwo(t *testing.T, pool *pgxpool.Pool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := pool.Exec(ctx, `
--- centry.social_pins is created by applyPostgresIntegrationMigrations:
+-- centry.social_pins is created by newMigratedPostgresIntegrationPool:
 -- shared/0064 took ownership of it, so declaring it again here is a duplicate
 -- relation. The transcribed shape was identical, which is why this only broke
 -- once the shared history reached 0064.

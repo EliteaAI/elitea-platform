@@ -12,8 +12,7 @@ import (
 )
 
 func TestCurrentIndexSchedulePatchRepositoryPostgresTenantAndConcurrentParity(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	prepareCurrentIndexSchedulePatchProjects(t, pool)
 	prepareCurrentIndexSchedulePatchFixtures(t, pool)
 

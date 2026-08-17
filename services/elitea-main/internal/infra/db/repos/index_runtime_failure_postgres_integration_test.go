@@ -18,8 +18,7 @@ import (
 // PostgreSQL admission, index claim, capability-bound failure projection,
 // durable replay and settlement. It is not a gRPC-listener or browser E2E.
 func TestPostgresServiceBackedIndexRuntimeFailureSettlement(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	dispatchPolicy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",

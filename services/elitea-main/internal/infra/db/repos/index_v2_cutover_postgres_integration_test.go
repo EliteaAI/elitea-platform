@@ -16,8 +16,7 @@ import (
 )
 
 func TestPostgresServiceBackedIndexV2CutoverAcceptsExactProductionSettlements(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repository := newPostgresIndexV2CutoverRepository(t, pool)
 	assertPostgresIndexV1CutoverState(t, repository, 0, 0, 0)
 
@@ -301,8 +300,7 @@ func newPostgresIndexV2CutoverFixture(
 	t *testing.T,
 ) (*pgxpool.Pool, *CurrentIndexV2CutoverRepository) {
 	t.Helper()
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	return pool, newPostgresIndexV2CutoverRepository(t, pool)
 }
 

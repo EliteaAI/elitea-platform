@@ -14,8 +14,7 @@ import (
 )
 
 func TestPostgresCurrentAgentCancelAllowsPausedRootSettledExecution(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	for _, test := range []struct {
@@ -165,8 +164,7 @@ WHERE uuid = $1`, responseMessageID).Scan(&remainingResponses); err != nil {
 }
 
 func TestPostgresCurrentAgentCancelRejectsSettledExecutionWithoutPauseProjection(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})

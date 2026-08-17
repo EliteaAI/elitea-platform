@@ -12,8 +12,7 @@ import (
 
 func newArtifactBucketsTestRepo(t *testing.T) *ArtifactBucketsRepository {
 	t.Helper()
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repo, err := NewArtifactBucketsRepository(pool)
 	if err != nil {
 		t.Fatalf("NewArtifactBucketsRepository: %v", err)

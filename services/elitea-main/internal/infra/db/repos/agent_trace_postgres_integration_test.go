@@ -19,8 +19,7 @@ import (
 )
 
 func TestPostgresCurrentAgentTraceUsesExistingTenantAccumulatorAndStableRows(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentActivitySchemas(t, pool)
 
 	const (

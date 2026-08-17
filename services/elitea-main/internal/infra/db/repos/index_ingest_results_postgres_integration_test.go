@@ -26,8 +26,7 @@ import (
 // this test deliberately does not pretend that elitea-main stores artifact
 // bytes or implements that upload path.
 func TestPostgresServiceBackedIndexIngestOutput(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	dispatchPolicy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
@@ -142,8 +141,7 @@ WHERE execution_id = $1 AND generation = 1`, expected.ExecutionID).Scan(
 // the outer SDK result and redeemed toolkit configuration never cross this
 // contract.
 func TestPostgresServiceBackedInlineIndexSummary(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	dispatchPolicy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
@@ -284,8 +282,7 @@ WHERE uuid = $1::text::uuid`,
 // error loading and failed settlement. The raw SDK error is intentionally not
 // represented: the worker replaces it with the fixed safe summary first.
 func TestPostgresServiceBackedIndexBusinessFailure(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	policy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",

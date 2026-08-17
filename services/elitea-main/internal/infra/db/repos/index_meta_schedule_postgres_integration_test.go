@@ -14,8 +14,7 @@ import (
 func TestCurrentIndexMetaScheduleRepositoryPostgresTenantParity(
 	t *testing.T,
 ) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

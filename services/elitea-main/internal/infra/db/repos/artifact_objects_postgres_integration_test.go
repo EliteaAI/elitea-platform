@@ -12,8 +12,7 @@ import (
 // tests almost always need a bucket to hang objects off first.
 func newArtifactObjectsTestRepo(t *testing.T) (*ArtifactBucketsRepository, *ArtifactObjectsRepository, *pgxpool.Pool) {
 	t.Helper()
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	buckets, err := NewArtifactBucketsRepository(pool)
 	if err != nil {
 		t.Fatalf("NewArtifactBucketsRepository: %v", err)

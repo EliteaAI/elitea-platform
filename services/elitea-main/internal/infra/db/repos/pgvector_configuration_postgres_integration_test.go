@@ -10,8 +10,7 @@ import (
 )
 
 func TestCurrentProjectPgvectorConfigurationsRepositoryPostgresIdentityGuard(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repository, err := NewCurrentProjectPgvectorConfigurationsRepository(pool)
 	if err != nil {
 		t.Fatal(err)
