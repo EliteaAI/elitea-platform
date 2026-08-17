@@ -9,10 +9,12 @@
 #   seed-runtime authorize the agent worker's certificate identity (#281)
 #   seed-llm     credential the gateway serves completions with, plus the chat
 #                model and the embedding model. Defaults to the offline mock
-#                (#283) unless OPENAI_API_KEY/ANTHROPIC_API_KEY is set
+#                (#283) unless OPENAI_API_KEY/ANTHROPIC_API_KEY is set.
+#                seed-llm OWNS the embedding model name (#468)
 #   seed-index   vector store + an indexable toolkit, so the index-start route
-#                and its SSE stream can be driven (#93). It re-seeds the same
-#                embedding model row as seed-llm, so either order works
+#                and its SSE stream can be driven (#93). It creates the
+#                embedding model row only when no row exists yet, so it can
+#                never overwrite the name seed-llm wrote (#468)
 #   check        verify the gateway mTLS hop, the runtime plane and the chat
 #                critical path (delegates the last to chat-smoke.py)
 #   down         tear down (add -v yourself to drop volumes)
@@ -42,6 +44,80 @@ COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.y
 detect_compose_bin
 
 PORT="${STANDALONE_PORT:-8084}"
+
+# ─── The embedding model name: one variable, one resolver, one writer (#468) ──
+#
+# `seed-llm` and `seed-index` both need this name. Both touch ONE row:
+# p_<id>.configuration with elitea_title = 'standalone-embedding'.
+#
+# Until #468 the two steps read two variables — LLM_EMBEDDING_MODEL and
+# INDEX_EMBEDDING_MODEL — and both wrote `data`. The step that ran last
+# overwrote the other step's name. The two defaults agree only for the `mock`
+# provider, so the defect stayed invisible on every default run and on every
+# continuous-integration job.
+#
+# The rule now:
+#
+#   1. LLM_EMBEDDING_MODEL is the ONLY variable that names the model.
+#   2. `seed-llm` OWNS the name. It seeds the credential, so it is the only
+#      step that knows which provider must serve the model.
+#   3. `seed-index` never overwrites the name. Its conflict action leaves
+#      `data` alone. It writes a name only when the row does not exist yet, so
+#      it still provisions a complete index plane on its own.
+#   4. The toolkit's copy of the name is READ OUT of that row, in SQL. No step
+#      copies a shell variable into it, so the two cannot drift apart.
+#
+# Rules 3 and 4 are what make the order harmless. Do not add a second writer of
+# `data` for this row: two writers put the outcome back in the hands of the
+# order, and an index run then starts, becomes durable, and dies in the worker
+# with a 404.
+
+# reject_retired_embedding_var stops a run that still sets the retired variable.
+# A silent no-op would hide the reason the value stopped taking effect.
+reject_retired_embedding_var() {
+  if [ -n "${INDEX_EMBEDDING_MODEL:-}" ]; then
+    echo "ERROR: INDEX_EMBEDDING_MODEL is retired (#468)." >&2
+    echo "       Set LLM_EMBEDDING_MODEL instead. One variable names the" >&2
+    echo "       embedding model for seed-llm and for seed-index." >&2
+    exit 1
+  fi
+}
+
+# resolve_llm_provider prints the provider this stack seeds a credential for.
+# `seed-index` calls it too, so both steps compute ONE default.
+resolve_llm_provider() {
+  local provider="${LLM_PROVIDER:-}"
+  if [ -z "$provider" ] && [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    provider="mock"
+  fi
+  printf '%s' "${provider:-open_ai}"
+}
+
+# resolve_embedding_model prints the embedding model name for one provider.
+# An empty result means the provider serves no embeddings API.
+resolve_embedding_model() {
+  local provider="$1" name
+  case "$provider" in
+    mock)    name="${LLM_EMBEDDING_MODEL:-vllm/E2E-MOCK-EMBEDDING}" ;;
+    open_ai) name="${LLM_EMBEDDING_MODEL:-text-embedding-3-small}" ;;
+    # Anthropic serves no embeddings API, so there is no default to seed. Set
+    # LLM_EMBEDDING_MODEL to name a model some other provider serves.
+    anthropic) name="${LLM_EMBEDDING_MODEL:-}" ;;
+    # `seed-llm` rejects an unknown provider before it calls this function.
+    # `seed-index` calls this function first, so the same refusal must live
+    # here too. Without it a typed LLM_PROVIDER makes `seed-index` seed no
+    # name at all, and the operator sees only a missing row.
+    *) echo "ERROR: LLM_PROVIDER must be mock, open_ai or anthropic (got '$provider')." >&2
+       exit 1 ;;
+  esac
+  # The mock wire name must carry the provider prefix, for the same reason as
+  # the chat model below: bifrost reads the provider from the model string
+  # alone (ParseModelString), and its default is EMPTY.
+  if [ "$provider" = "mock" ] && [ -n "$name" ]; then
+    name="vllm/${name#vllm/}"
+  fi
+  printf '%s' "$name"
+}
 
 case "${1:-}" in
   certs)
@@ -207,11 +283,8 @@ SQL
     # ANTHROPIC_API_KEY, or an explicit LLM_PROVIDER) set, behaviour is exactly
     # what it was: the real credential is seeded and the mock is not, so nothing
     # can quietly answer a request the operator meant to bill to a provider.
-    PROVIDER="${LLM_PROVIDER:-}"
-    if [ -z "$PROVIDER" ] && [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-      PROVIDER="mock"
-    fi
-    PROVIDER="${PROVIDER:-open_ai}"
+    reject_retired_embedding_var
+    PROVIDER="$(resolve_llm_provider)"
     case "$PROVIDER" in
       mock)
         # `vllm`, not `open_ai`, and that is load-bearing rather than a label:
@@ -223,16 +296,13 @@ SQL
         # own /llm origin.
         API_KEY="mock-key-not-used"; MODEL="${LLM_MODEL:-E2E-MOCK-MODEL}"
         API_BASE="http://llm-mock:8090"; CRED_TYPE="vllm"
-        EMBEDDING_MODEL="${LLM_EMBEDDING_MODEL:-vllm/E2E-MOCK-EMBEDDING}"
         ;;
-      open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai"
-                 EMBEDDING_MODEL="${LLM_EMBEDDING_MODEL:-text-embedding-3-small}" ;;
-      # Anthropic serves no embeddings API, so there is no default to seed. Set
-      # LLM_EMBEDDING_MODEL to name a model some other provider serves.
-      anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic"
-                 EMBEDDING_MODEL="${LLM_EMBEDDING_MODEL:-}" ;;
+      open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai" ;;
+      anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic" ;;
       *) echo "ERROR: LLM_PROVIDER must be mock, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
     esac
+    # One resolver, shared with `seed-index`. Read the block above the `case`.
+    EMBEDDING_MODEL="$(resolve_embedding_model "$PROVIDER")"
     if [ -z "$API_KEY" ]; then
       echo "ERROR: \$$KEY_VAR is empty. Usage: $KEY_VAR=... $0 seed-llm" >&2
       exit 1
@@ -244,11 +314,9 @@ SQL
       # never gets as far as the credential. The `llm_model` row below is
       # therefore titled `vllm/E2E-MOCK-MODEL`, which is what the model picker
       # hands to the SDK and what the SDK puts on the wire.
+      #
+      # resolve_embedding_model applies the same prefix to the embedding name.
       MODEL="vllm/${MODEL#vllm/}"
-      # The embedding model needs the same prefix, and for the same reason. The
-      # gateway maps the request model onto this row's data.name and re-splits
-      # the result, so the prefix is what selects the `vllm` credential.
-      [ -n "$EMBEDDING_MODEL" ] && EMBEDDING_MODEL="vllm/${EMBEDDING_MODEL#vllm/}"
     fi
     # A LITERAL api_key deliberately avoids the Fernet vault entirely: vault
     # Resolve returns any value that is not a {{secret.NAME}} reference verbatim,
@@ -358,8 +426,11 @@ SQL
     # model row: repos/models.go REJECTS an unlabelled row with an error rather
     # than skipping it, emptying the whole catalogue.
     #
-    # The elitea_title matches the row `seed-index` writes, so the two steps
-    # agree and running both in either order is idempotent.
+    # `seed-llm` OWNS the model NAME in this row (#468). This is the ONE
+    # statement in the script that writes `data` for elitea_title
+    # 'standalone-embedding'. `seed-index` writes the same row, but its
+    # conflict action leaves `data` alone, so it cannot overwrite this name.
+    # Read the rule above the `case` before you add a second writer.
     if [ -n "$EMBEDDING_MODEL" ]; then
       $COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -v ON_ERROR_STOP=1 -U elitea -d elitea \
@@ -372,6 +443,25 @@ VALUES
 ON CONFLICT (elitea_title) DO UPDATE
     SET data = EXCLUDED.data, type = EXCLUDED.type, section = EXCLUDED.section,
         label = EXCLUDED.label, shared = true, status_ok = true, updated_at = NOW();
+
+-- The index plane keeps a SECOND copy of the name, in the toolkit's settings.
+-- Bring that copy back to the row above whenever `seed-index` already ran.
+--
+-- The resolver matches an index run on configuration.data->>'name'
+-- (db/queries/configurations.sql, FindCurrentEmbeddingConfigurations). A stale
+-- toolkit copy therefore admits the run, makes the run durable, and then kills
+-- it in the worker with a 404.
+--
+-- The new value is READ OUT of the row. It is not a copy of the shell
+-- variable, so the two names cannot disagree. `seed-index` builds the same
+-- setting the same way.
+UPDATE :"schema".elitea_tools AS t
+   SET settings = jsonb_set(t.settings, '{embedding_model}', to_jsonb(c.data->>'name'))
+  FROM :"schema".configuration AS c
+ WHERE c.elitea_title = 'standalone-embedding'
+   AND t.name = 'standalone-artifact-index'
+   AND t.settings ? 'embedding_model'
+   AND t.settings->>'embedding_model' IS DISTINCT FROM c.data->>'name';
 SQL
     fi
     done
@@ -415,8 +505,12 @@ SQL
     #
     # Read the KNOWN LIMIT at the end of this block before concluding that a
     # run which indexes nothing means a broken stack.
+    reject_retired_embedding_var
     TOOLKIT_ID="${INDEX_TOOLKIT_ID:-9002}"
-    EMBEDDING_MODEL="${INDEX_EMBEDDING_MODEL:-vllm/E2E-MOCK-EMBEDDING}"
+    # The SAME resolver `seed-llm` uses (#468). This value is a BOOTSTRAP only:
+    # the statement below writes it when the row does not exist yet, and leaves
+    # an existing name alone.
+    EMBEDDING_MODEL="$(resolve_embedding_model "$(resolve_llm_provider)")"
     INDEX_TARGETS="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
         "SELECT p.id FROM centry.project p
@@ -459,9 +553,13 @@ ON CONFLICT (elitea_title) DO UPDATE
 
 -- 2. The embedding model the resolver binds.
 --
--- `seed-llm` writes this SAME row, under the same elitea_title (#380). It is
--- repeated here so `seed-index` still provisions a complete index plane on its
--- own. Both statements are idempotent, so either order gives the same rows.
+-- `seed-llm` OWNS the model NAME in this row (#468). This statement is a
+-- BOOTSTRAP: it creates the row when no row exists, so `seed-index` still
+-- provisions a complete index plane on its own.
+--
+-- `data` is deliberately ABSENT from the conflict action below. That absence is
+-- the whole fix for #468: it makes an existing name survive this step, so the
+-- order of the two steps cannot change the outcome. Do not add `data` back.
 --
 -- section='embedding' + type='embedding_model' is a FOURTH configuration section,
 -- distinct from the three `seed-llm` writes. The gateway reads this section
@@ -481,11 +579,11 @@ ON CONFLICT (elitea_title) DO UPDATE
 -- uses DisallowUnknownFields, so any extra key is an invalid binding (503).
 INSERT INTO :"schema".configuration
     (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
-VALUES
-    (:pid, 'standalone-embedding', 'standalone-embedding', 'embedding_model', 'embedding',
-     jsonb_build_object('name', :'embedding'), '{}', true, true, 'user', NOW(), NOW())
+SELECT :pid, 'standalone-embedding', 'standalone-embedding', 'embedding_model', 'embedding',
+       jsonb_build_object('name', :'embedding'), '{}'::jsonb, true, true, 'user', NOW(), NOW()
+ WHERE :'embedding' <> ''
 ON CONFLICT (elitea_title) DO UPDATE
-    SET data = EXCLUDED.data, type = EXCLUDED.type, section = EXCLUDED.section,
+    SET type = EXCLUDED.type, section = EXCLUDED.section,
         label = EXCLUDED.label, shared = true, status_ok = true, updated_at = NOW();
 
 -- 3. An indexable toolkit.
@@ -499,16 +597,52 @@ ON CONFLICT (elitea_title) DO UPDATE
 -- `bucket` is not in the Go schema snapshot — that snapshot only declares
 -- configuration-typed properties — but the SDK toolkit raises KeyError without
 -- it. Settings are frozen and forwarded verbatim, so it simply has to be here.
+--
+-- `embedding_model` is READ OUT of the row above, not copied from the shell
+-- variable (#468). The resolver matches an index run on
+-- configuration.data->>'name', so these two names must be one name. A SELECT
+-- from that row makes them one name by construction. A shell variable here
+-- makes them agree only by luck.
+--
+-- The SELECT also gates the whole statement: with no embedding row there is no
+-- toolkit either, and the assertion after this block names the missing row.
 INSERT INTO :"schema".elitea_tools (id, name, type, description, owner_id, author_id, meta, settings)
-VALUES (:toolkit, 'standalone-artifact-index', 'artifact', 'index plane (#93)', :pid, 1, '{}'::jsonb,
-        jsonb_build_object(
-            'bucket', 'elitea-artifacts',
-            'embedding_model', :'embedding',
-            'pgvector_configuration',
-                jsonb_build_object('elitea_title', 'elitea-pgvector', 'private', false)))
+SELECT :toolkit, 'standalone-artifact-index', 'artifact', 'index plane (#93)', :pid, 1, '{}'::jsonb,
+       jsonb_build_object(
+           'bucket', 'elitea-artifacts',
+           'embedding_model', c.data->>'name',
+           'pgvector_configuration',
+               jsonb_build_object('elitea_title', 'elitea-pgvector', 'private', false))
+  FROM :"schema".configuration AS c
+ WHERE c.elitea_title = 'standalone-embedding'
 ON CONFLICT (id) DO UPDATE
     SET settings = EXCLUDED.settings, type = EXCLUDED.type, meta = EXCLUDED.meta;
 SQL
+
+    # Assert the invariant this step exists to keep (#468). The two names are
+    # stored twice, so read both back and compare them. A seed that leaves them
+    # different must stop here, not in the worker on the first index run.
+    SEEDED_EMBEDDING="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT data->>'name' FROM p_${TARGET}.configuration
+          WHERE elitea_title = 'standalone-embedding'" 2>/dev/null | tr -d '[:space:]')"
+    TOOLKIT_EMBEDDING="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+        psql -U elitea -d elitea -tAc \
+        "SELECT settings->>'embedding_model' FROM p_${TARGET}.elitea_tools
+          WHERE id = ${TOOLKIT_ID}" 2>/dev/null | tr -d '[:space:]')"
+    if [ -z "$SEEDED_EMBEDDING" ]; then
+      echo "ERROR: project ${TARGET} has no embedding model row, and this step" >&2
+      echo "       has no name to write. Run:" >&2
+      echo "         LLM_EMBEDDING_MODEL=<model> $0 seed-llm" >&2
+      exit 1
+    fi
+    if [ "$TOOLKIT_EMBEDDING" != "$SEEDED_EMBEDDING" ]; then
+      echo "ERROR: project ${TARGET} stores two different embedding model names (#468)." >&2
+      echo "       configuration.data->>'name'            = ${SEEDED_EMBEDDING}" >&2
+      echo "       elitea_tools.settings.embedding_model  = ${TOOLKIT_EMBEDDING:-<none>}" >&2
+      exit 1
+    fi
+    echo "   embedding model ${SEEDED_EMBEDDING}: catalogue row and toolkit setting agree"
     done
     INDEX_DRIVER_PROJECT="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
@@ -818,16 +952,18 @@ PY
     # dev@elitea.ai, who has none, and the hop then reports
     # `project_not_resolved` — a true statement about the wrong caller, which
     # made this check permanently SKIPPED even on a correctly seeded stack.
-    LLM_PROBE="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+    LLM_PROBE_ROW="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
-        "SELECT t.uuid
+        "SELECT t.uuid || ' ' || p.id
            FROM public.auth_core__token t
            JOIN centry.project p ON p.name = 'project_user_' || t.user_id::text
            JOIN public.auth_core__project_user_role pur
              ON pur.project_id = p.id AND pur.user_id = t.user_id
           WHERE t.uuid IS NOT NULL
           ORDER BY t.user_id
-          LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+          LIMIT 1" 2>/dev/null | tr -d '\r')"
+    LLM_PROBE="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $1}')"
+    LLM_PROJECT="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $2}')"
     if [ -z "$LLM_PROBE" ]; then
       echo "  ~ SKIPPED: no PAT to authenticate with (run: $0 seed-runtime)"
     else
@@ -1003,23 +1139,62 @@ except Exception as error:
           esac
         done
       fi
+
+      # Probe the model names the SEED wrote. Read them from the same project
+      # the probe authenticates as, because the gateway resolves the model set
+      # from the caller's own project.
+      #
+      # A hardcoded pair of names was wrong in both directions (#468). It made
+      # `check` FAIL on a stack an operator seeded correctly with
+      # LLM_PROVIDER=open_ai. It made `check` PASS on a stack whose two seed
+      # steps had written two different embedding names, because the name it
+      # probed was the one `seed-index` happened to write last.
+      CHAT_MODEL_TITLE="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT elitea_title FROM p_${LLM_PROJECT}.configuration
+            WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
+            ORDER BY id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+      CHAT_MODEL_NAME="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT data->>'name' FROM p_${LLM_PROJECT}.configuration
+            WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
+            ORDER BY id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+      EMB_MODEL_NAME="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT data->>'name' FROM p_${LLM_PROJECT}.configuration
+            WHERE elitea_title = 'standalone-embedding'" 2>/dev/null | tr -d '[:space:]')"
+      if [ -z "$CHAT_MODEL_NAME" ]; then
+        fail "project ${LLM_PROJECT} holds no chat model row — run: $0 seed-llm"
+      fi
+      if [ -z "$EMB_MODEL_NAME" ]; then
+        fail "project ${LLM_PROJECT} holds no embedding model row — run: $0 seed-llm"
+      fi
+      echo "  · seeded chat model '${CHAT_MODEL_NAME}', embedding model '${EMB_MODEL_NAME}'"
+
       LLM_OUT="$(llm_probe "
 import json, ssl, urllib.error, urllib.request
 context = ssl.create_default_context(cafile='/m/runtime-ca.crt')
-body = json.dumps({'model': 'vllm/E2E-MOCK-MODEL',
+body = json.dumps({'model': '${CHAT_MODEL_NAME}',
                    'messages': [{'role': 'user', 'content': 'standalone check'}]}).encode()
 request = urllib.request.Request(
     'https://elitea-platform-edge/llm/v1/chat/completions', data=body,
     headers={'Authorization': 'Bearer ${LLM_JWT}', 'Content-Type': 'application/json'})
 try:
-    print('OK', urllib.request.urlopen(request, context=context, timeout=30).read().decode())
+    payload = json.loads(urllib.request.urlopen(request, context=context, timeout=30).read())
+    choices = payload.get('choices') or []
+    content = ((choices[0].get('message') or {}).get('content') or '') if choices else ''
+    print('LEN', len(content), repr(content[:80]))
 except urllib.error.HTTPError as error:
     print('HTTPERR', error.code, error.read().decode()[:200])
 except Exception as error:
     print('ERR', type(error).__name__, error)
 ")"
+      # Assert on the LENGTH of the answer, not on the mock's echo. A real
+      # provider answers a real completion, so an echo assertion made `check`
+      # fail on every stack that was not the mock.
       case "$LLM_OUT" in
-        *'OK'*'standalone check'*) echo "  ✓ completion returned the mock's echo of the request" ;;
+        *'LEN 0'*)                 fail "completion hop returned an empty answer: $(printf '%s' "$LLM_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
+        *'LEN '[1-9]*)             echo "  ✓ completion returned an answer from '${CHAT_MODEL_NAME}'" ;;
         *project_not_resolved*)    echo "  ~ SKIPPED: caller has no personal project (run: $0 seed)" ;;
         *'HTTPERR 502'*)           fail "gateway could not reach llm-mock — is GATEWAY_EGRESS_ALLOWLIST set? (see the compose comment)" ;;
         *)                         fail "completion hop failed: $(printf '%s' "$LLM_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
@@ -1040,7 +1215,7 @@ except Exception as error:
       EMB_OUT="$(llm_probe "
 import json, ssl, urllib.error, urllib.request
 context = ssl.create_default_context(cafile='/m/runtime-ca.crt')
-body = json.dumps({'model': 'vllm/E2E-MOCK-EMBEDDING',
+body = json.dumps({'model': '${EMB_MODEL_NAME}',
                    'encoding_format': 'float',
                    'input': 'standalone embedding check'}).encode()
 request = urllib.request.Request(
@@ -1067,6 +1242,8 @@ except Exception as error:
        Check the row: SELECT elitea_title, type, section, data->>'name'
          FROM p_<id>.configuration WHERE section = 'embedding';
        It must be type='embedding_model' AND section='embedding'.
+       The probe asked for '${EMB_MODEL_NAME}', which is that row's own
+       data->>'name' in project ${LLM_PROJECT}.
        No row at all means seed-llm did not seed one — run: $0 seed-llm
        Raw: $(printf '%s' "$EMB_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
         *)                      fail "embedding hop failed: $(printf '%s' "$EMB_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
@@ -1100,10 +1277,14 @@ except Exception as error:
       # Both names are required, so an empty list cannot pass. A list that
       # holds the chat model alone means the embedding section is invisible to
       # the resolver, which is the defect #398 corrected.
+      #
+      # The list reports elitea_title as `id` (llmproxy/models.go, modelObject),
+      # so compare against the TITLES the seed wrote, not against a hardcoded
+      # mock name (#468).
       case "$MODELS_OUT" in
-        *'E2E-MOCK-MODEL'*)
+        *"${CHAT_MODEL_TITLE}"*)
           case "$MODELS_OUT" in
-            *'E2E-MOCK-EMBEDDING'*|*'standalone-embedding'*)
+            *'standalone-embedding'*)
               echo "  ✓ GET /llm/v1/models lists the chat model and the embedding model" ;;
             *)
               fail "GET /llm/v1/models omits the embedding model (#398).
@@ -1113,9 +1294,33 @@ except Exception as error:
            WHERE section = 'embedding';
        Raw: $(printf '%s' "$MODELS_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
           esac ;;
-        *) fail "GET /llm/v1/models did not list the seeded chat model: $(printf '%s' "$MODELS_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+        *) fail "GET /llm/v1/models did not list the seeded chat model '${CHAT_MODEL_TITLE}': $(printf '%s' "$MODELS_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
       esac
 
+      # The two stored names must agree (#468). The catalogue row is what the
+      # gateway serves; the toolkit setting is what an index run asks for. Two
+      # different names admit the run, make it durable, and then kill it in the
+      # worker with a 404, so a static comparison here is worth more than the
+      # live hop above.
+      #
+      # SKIPPED, not failed, when no toolkit row exists: `seed-index` is a
+      # separate step and the `chat-stream` job never runs it.
+      TOOLKIT_EMBEDDING="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT settings->>'embedding_model' FROM p_${LLM_PROJECT}.elitea_tools
+            WHERE name = 'standalone-artifact-index'" 2>/dev/null | tr -d '[:space:]')"
+      if [ -z "$TOOLKIT_EMBEDDING" ]; then
+        echo "  ~ SKIPPED: project ${LLM_PROJECT} holds no index toolkit (run: $0 seed-index)"
+      elif [ "$TOOLKIT_EMBEDDING" != "$EMB_MODEL_NAME" ]; then
+        fail "the index toolkit and the catalogue name two different embedding models (#468).
+       p_${LLM_PROJECT}.configuration data->>'name'           = ${EMB_MODEL_NAME}
+       p_${LLM_PROJECT}.elitea_tools settings.embedding_model = ${TOOLKIT_EMBEDDING}
+       The index resolver matches on data->>'name', so this run starts, becomes
+       durable, and then fails in the worker with a 404.
+       Re-run: $0 seed-llm && $0 seed-index"
+      else
+        echo "  ✓ the index toolkit and the catalogue name one embedding model ('${EMB_MODEL_NAME}')"
+      fi
     fi
 
     echo "→ chat critical path (#284 smoke):"
@@ -1199,7 +1404,10 @@ except Exception as error:
     ;;
 
   *)
-    sed -n '2,18p' "$0"
+    # Print the header block: every comment line down to the first line of
+    # code. A hardcoded line range stops printing the last option the moment
+    # the header grows, and nothing reports that.
+    awk 'NR > 1 { if (substr($0, 1, 1) != "#") exit; print }' "$0"
     exit 1
     ;;
 esac
