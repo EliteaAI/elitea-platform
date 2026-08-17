@@ -65,7 +65,11 @@ const (
 	// at `/admin/gateway/governance` writing `gateway.governance_config`. That
 	// surface is real, but nothing reads it — see internal/api/gateway/governance.go
 	// and the note in the PR: the gateway's GovernanceStore never queries the
-	// table, despite both the migration and this file previously claiming it did.
+	// table, despite two artefacts claiming that it does. #466 corrected the
+	// second claim, in governanceSection() below. The first claim is still in
+	// the header of migrations/shared/0067_gateway_budget_schema.sql; that file
+	// is checksum-immutable once applied (internal/infra/db/migrate/manifest.go),
+	// so a later migration, not an edit, must carry the correction. #218 owns it.
 	governanceElsewhereUnavailable = "LLM governance is authored through /admin/gateway/governance, not through this " +
 		"page. It is withheld here because the gateway does not yet read gateway.governance_config, so definitions " +
 		"saved through either surface are not enforced."
@@ -603,15 +607,29 @@ func litellmSection() map[string]any {
 // governance CRUD routes (§4) — this attribute is convenience only.
 //
 // All values authored here are DEFINITIONS written to the global
-// gateway.governance_config table; the gateway GovernanceStore reads them at load
-// and enforces them. Budget limits are USD numbers (§5.1) — the gateway scales
-// them to nano-USD for counter comparison.
+// gateway.governance_config table. NOTHING READS THEM. `grep -rn
+// governance_config services/elitea-llm-gateway` returns no hit, and the
+// gateway's GovernanceStore is constructed with no pool, so no definition
+// written through this schema or through /admin/gateway/governance reaches an
+// admission check. Budget limits are USD numbers (§5.1); a gateway that begins
+// to read them must scale them to nano-USD for counter comparison.
+//
+// This comment asserted the opposite until #466, while
+// governanceElsewhereUnavailable (this file, ~line 70) denied it. The denial was
+// correct. The `description` below carried the same false assertion into the
+// admin-page payload, where an operator read it, authored a rule, and believed a
+// limit was in force.
+//
+// Do not restore an enforcement claim in either place. Issue #218 owns the
+// decision about whether the gateway must read this table, and the two
+// statements are pinned together by TestGovernanceSchemaMakesNoEnforcementClaim
+// in config_schemas_claims_internal_test.go.
 func governanceSection() map[string]any {
 	return map[string]any{
 		"id":                  "governance",
 		"unavailable_reason":  governanceElsewhereUnavailable,
 		"title":               "LLM Governance",
-		"description":         "Author LLM-gateway governance: budgets, rate limits, credential billing policy, per-model/provider scopes, MCP allowlists, and CEL routing rules. Definitions are read by the gateway for enforcement.",
+		"description":         "Author LLM-gateway governance: budgets, rate limits, credential billing policy, per-model/provider scopes, MCP allowlists, and CEL routing rules. Definitions are stored, but the gateway does not enforce them yet.",
 		"order":               5,
 		"icon":                "policy",
 		"required_permission": "configuration.governance",

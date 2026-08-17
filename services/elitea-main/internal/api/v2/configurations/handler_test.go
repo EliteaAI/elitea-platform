@@ -645,24 +645,71 @@ func TestListTypes_Success(t *testing.T) {
 }
 
 // ---- TTSVoices --------------------------------------------------------------
+//
+// Both directions of #466. The route answered 200 with `{"voices": []}` for
+// every project and every model, and the test below asserted only that the
+// `voices` key was present — so it passed on the defect. The route now reports
+// the missing capability: this platform serves no audio route to any provider
+// (#323), and no code path fills the `meta.voices` cache the reference reads.
 
-func TestTTSVoices_Success(t *testing.T) {
+// TestTTSVoicesReportsTheMissingCapability — direction one. The refusal must
+// carry a reason the caller can act on, not a bare status.
+func TestTTSVoicesReportsTheMissingCapability(t *testing.T) {
+	r := setupConfigRouter()
+
+	for _, path := range []string{
+		"/api/v2/tts_voices/proj-1",
+		"/api/v2/tts_voices/default/proj-1",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotImplemented {
+			t.Fatalf("%s: expected 501, got %d; body: %s", path, rec.Code, rec.Body.String())
+		}
+
+		var body map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("%s: failed to decode response: %v", path, err)
+		}
+		reason, _ := body["error"].(string)
+		if reason == "" {
+			t.Fatalf("%s: the refusal names no reason: %v", path, body)
+		}
+		if !strings.Contains(reason, "audio route") {
+			t.Errorf("%s: the reason does not say why the voices are missing: %q", path, reason)
+		}
+	}
+}
+
+// TestTTSVoicesNeverAnswersAnEmptyVoiceList — direction two, and the guard.
+//
+// A caller cannot tell "this project has no voices" from "this route does no
+// work" when both answers are 200 with an empty list. This fails if the stub
+// comes back, whatever status it uses.
+func TestTTSVoicesNeverAnswersAnEmptyVoiceList(t *testing.T) {
 	r := setupConfigRouter()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v2/tts_voices/proj-1", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Fatalf("the route answers 200 again; body: %s", rec.Body.String())
 	}
 
 	var body map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if _, ok := body["voices"]; !ok {
-		t.Error("expected 'voices' key in TTSVoices response")
+	voices, present := body["voices"]
+	if !present {
+		return
+	}
+	list, isList := voices.([]any)
+	if isList && len(list) == 0 {
+		t.Error("the route offers an empty voice list again; a caller cannot tell that from a project with no voices")
 	}
 }
 
