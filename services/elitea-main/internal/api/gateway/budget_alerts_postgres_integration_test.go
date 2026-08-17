@@ -360,3 +360,56 @@ func TestTheTranscribedGatewayReadStillMatchesTheGateway(t *testing.T) {
 		}
 	}
 }
+
+// TestAWriteReEnablesTheRowItNeeds closes #322 through its other door.
+//
+// Both readers filter on `AND enabled`. The generic governance CRUD writes the
+// same table and can set that column false on this row. The surface then
+// behaves exactly as it did before #322: Get finds no row and answers the
+// shipped defaults, Update writes into the invisible row and returns the
+// operator's value from RETURNING, and the gateway reads nothing. The operator
+// sees 200 OK and a changed GET for a setting with no effect.
+//
+// A write to this surface therefore has to assert that the row it needs is
+// live. This test drives that state directly.
+func TestAWriteReEnablesTheRowItNeeds(t *testing.T) {
+	pool := newAlertPool(t)
+	ctx := context.Background()
+
+	// Somebody disabled the row through the generic governance surface.
+	if _, err := pool.Exec(ctx, `
+UPDATE gateway.governance_config SET enabled = false
+WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator turns soft alerts off and gets a 200.
+	rr := alertDo(t, pool, http.MethodPut, `{"enabled":false,"threshold_pct":33}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body.String())
+	}
+
+	// The gateway must now see exactly what the operator saved. Before the fix
+	// this read found no row, so it fell back to "alerts on, threshold 80" —
+	// the 200 above was for a value nothing read.
+	var alertsDisabled bool
+	var thresholdPct int
+	if err := pool.QueryRow(ctx, gatewayAlertRead).Scan(&alertsDisabled, &thresholdPct); err != nil {
+		t.Fatalf("the gateway cannot see the row the operator just wrote: %v", err)
+	}
+	if !alertsDisabled {
+		t.Fatal("the gateway would still emit soft alerts; the write reported success and changed nothing")
+	}
+	if thresholdPct != 33 {
+		t.Fatalf("the gateway would use threshold %d, not the saved 33", thresholdPct)
+	}
+
+	// And the surface's own read agrees with the gateway.
+	cfg, err := gateway.NewBudgetAlertStore(pool).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Enabled || cfg.ThresholdPct != 33 {
+		t.Fatalf("GET reports %+v, want {false 33}", cfg)
+	}
+}
