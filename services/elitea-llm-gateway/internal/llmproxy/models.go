@@ -417,10 +417,15 @@ func (m *ModelResolver) List(ctx context.Context, projectID string) []modelObjec
 // a query failure with nothing cached — and true when the returned set is the
 // project's real (possibly stale, possibly empty) model set.
 //
+// A query failure WITH something cached is NOT unknown: the stale list is
+// served and reported as known. The three conditions above are therefore the
+// whole of the unknown case.
+//
 // The two cases must stay distinct because the inference path acts on them
-// differently: an unknown set forwards the caller's model unchanged, while a
-// known set rejects a model that is not in it (see resolve). List collapses
-// both to an empty slice, which is correct for the /llm/v1/models surface.
+// differently. mapModel owns that policy and is the only place that states it;
+// do not restate the outcome here, because it has changed once already. List
+// collapses both cases to an empty slice, which is correct for the
+// /llm/v1/models surface.
 func (m *ModelResolver) list(ctx context.Context, projectID string) (models []modelObject, known bool) {
 	if projectID == "" {
 		return []modelObject{}, false
