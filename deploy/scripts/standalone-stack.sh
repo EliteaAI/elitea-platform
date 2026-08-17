@@ -907,7 +907,16 @@ PY
 
         # 2. The model, bound to that credential. elitea_title is the alias the
         # caller sends; data.name is the wire name the gateway dispatches.
-        MODEL_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_MODEL}\",\"label\":\"${WRITE_MODEL}\",\"type\":\"llm_model\",\"section\":\"llm\",\"data\":{\"name\":\"vllm/E2E-MOCK-MODEL\",\"ai_credentials\":{\"elitea_title\":\"${WRITE_CRED}\"}}}")"
+        #
+        # data.name must NOT be the seeded model's name. The web chat model
+        # picker reads elitea-main's catalogue, which keys a model on
+        # data.name, so a second row carrying the seeded name collapses with
+        # the seeded row in that list and the picker then offers only one of
+        # the two, under this row's label. Measured: the #284 chat journey
+        # failed with "the seeded model E2E-MOCK-MODEL must be offered".
+        # llm-mock echoes whatever model it is asked for, so a distinct name
+        # costs nothing here.
+        MODEL_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_MODEL}\",\"label\":\"${WRITE_MODEL}\",\"type\":\"llm_model\",\"section\":\"llm\",\"data\":{\"name\":\"${WRITE_MODEL}\",\"ai_credentials\":{\"elitea_title\":\"${WRITE_CRED}\"}}}")"
         case "$MODEL_OUT" in
           *'"status_ok":true'*) echo "  ✓ a model saved through the API is usable" ;;
           *) fail "the API stored the model as unusable (#457): $(printf '%s' "$MODEL_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
@@ -916,7 +925,7 @@ PY
         # 3. The negative control. A model whose credential reference does not
         # resolve must stay refused. Without it, a step that simply stored
         # `true` for everything would also pass step 2.
-        DANGLING_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_DANGLING}\",\"label\":\"${WRITE_DANGLING}\",\"type\":\"llm_model\",\"section\":\"llm\",\"data\":{\"name\":\"vllm/E2E-MOCK-MODEL\",\"ai_credentials\":{\"elitea_title\":\"no-such-credential\"}}}")"
+        DANGLING_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_DANGLING}\",\"label\":\"${WRITE_DANGLING}\",\"type\":\"llm_model\",\"section\":\"llm\",\"data\":{\"name\":\"${WRITE_DANGLING}\",\"ai_credentials\":{\"elitea_title\":\"no-such-credential\"}}}")"
         case "$DANGLING_OUT" in
           *'"status_ok":false'*) echo "  ✓ a model whose credential does not resolve stays refused" ;;
           *) fail "an unresolvable model was stored as usable: $(printf '%s' "$DANGLING_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
@@ -971,6 +980,28 @@ except Exception as error:
        Raw: $(printf '%s' "$WRITE_LLM_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
           *) fail "the API-created completion failed: $(printf '%s' "$WRITE_LLM_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
         esac
+
+        # 5. Put the project back as it was found. `check` runs before the #284
+        # chat journey on a shared stack, and these are real product rows: a
+        # model row in the `llm` section is a SELECTABLE chat model, so leaving
+        # them behind changes what the next reader sees. The delete goes
+        # through the product's own route, so it is one more thing this step
+        # proves rather than a side channel. It runs whether or not the
+        # assertions above passed.
+        for write_title in "$WRITE_CRED" "$WRITE_MODEL" "$WRITE_DANGLING"; do
+          write_id="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+              psql -U elitea -d elitea -tAc \
+              "SELECT id FROM p_${WRITE_PROJECT}.configuration
+                WHERE elitea_title = '${write_title}'" 2>/dev/null | tr -d '[:space:]')"
+          [ -z "$write_id" ] && continue
+          write_code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer ${LLM_JWT}" \
+              "http://localhost:${PORT}/api/v2/configurations/configuration/${WRITE_PROJECT}/${write_id}" || true)"
+          case "$write_code" in
+            204) ;;
+            *) fail "the API-created row '${write_title}' was not removed (HTTP ${write_code}); it stays a selectable model" ;;
+          esac
+        done
       fi
       LLM_OUT="$(llm_probe "
 import json, ssl, urllib.error, urllib.request
