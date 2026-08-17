@@ -308,10 +308,10 @@ func responsesDeltaBytes(c *schemas.BifrostStreamChunk) int64 {
 // Billing evidence is provider-reported usage and nothing else. Providers emit
 // cumulative counts, so a later usage chunk overrides an earlier one.
 type streamSettler struct {
-	h                *Handler
-	loop             string
-	provider, model  string
-	projectID        string
+	h               *Handler
+	loop            string
+	provider, model string
+	projectID       string
 	// userID is captured with projectID rather than read from the context at
 	// settle time: the detached drain outlives the request, and the member the
 	// call is billed to must be the one who made it (issue #321).

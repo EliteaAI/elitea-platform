@@ -376,4 +376,3 @@ func newHandlerWithScopedGate(router *trackingRouter, gate *scopedBudgetChecker,
 
 // compile-time assertion that the scoped fake still satisfies the port.
 var _ BudgetChecker = (*scopedBudgetChecker)(nil)
-
