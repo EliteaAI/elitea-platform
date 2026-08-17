@@ -32,6 +32,36 @@ name: CI — Image scan
 #      different, because looking the same is how the dead stage survived.
 #   3. The threshold is HIGH,CRITICAL for every image. There is no ignore file,
 #      no `--ignore-unfixed`, and no waiver.
+#
+# ONE IMAGE DOES NOT BLOCK, AND IT SAYS SO
+#
+# `pylon-indexer` is scanned, reports its full finding count, and does NOT fail
+# the merge. Every other image blocks.
+#
+#   WHY: all 604 findings come from `ghcr.io/eliteaai/pylon:1.2.25`. This
+#   repository does not build that image; `services/pylon-indexer/Containerfile`
+#   copies three config files on top of it. Issue #509 holds the finding list.
+#   Issue #339 retires the image: the index plane moves to index v2 and
+#   pylon-indexer is deleted.
+#
+#   WHY NOT LET IT BLOCK: a job that is red on every branch, for a cause no
+#   branch can fix, teaches every reader to ignore this workflow. That would
+#   cost the other five scans their meaning.
+#
+#   WHAT THE EXEMPTION DOES NOT COVER: the threshold is unchanged, no CVE is
+#   suppressed, and the dormancy guards still BLOCK for this image. A missing
+#   report, or a report without a `python-pkg` target, fails the job like any
+#   other. Only the finding count is downgraded, from an error to a warning.
+#
+#   HOW IT ENDS: delete the `pylon-indexer` entry when #339 deletes the image.
+#   Until then the job FAILS if the image ever reports zero findings, because an
+#   exemption that outlives its cause is the next stale gate.
+#
+#   Two files must agree before an image stops blocking: the `blocking` field in
+#   the matrix below, and `.github/image-scan-exempt.txt`. The `coverage` job
+#   fails when they differ. So one edit cannot quietly exempt a second image,
+#   and a pull request that adds an exemption changes a file whose only subject
+#   is exemptions.
 
 on:
   pull_request:
@@ -52,6 +82,8 @@ on:
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/ci-image-scan.yml"
+      # The exemption register. An edit to it must run the check that reads it.
+      - ".github/image-scan-exempt.txt"
       # The coverage job below reads publish.yml's image list. A new image added
       # there must run this workflow, or the gap it opens stays unreported.
       - ".github/workflows/publish.yml"
@@ -72,6 +104,8 @@ on:
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/ci-image-scan.yml"
+      # The exemption register. An edit to it must run the check that reads it.
+      - ".github/image-scan-exempt.txt"
       - ".github/workflows/publish.yml"
   # A commit-triggered scan only measures the day the commit landed. A CVE
   # published tomorrow against code that did not change is invisible to it, and
@@ -140,9 +174,61 @@ jobs:
 
           echo "Every published image has a scan."
 
+      # The second half of the exemption control. `blocking: false` in the scan
+      # matrix stops an image failing the merge; `.github/image-scan-exempt.txt`
+      # is the register of images allowed to carry it. TWO FILES must agree, so
+      # one edit cannot quietly exempt a second image, and a pull request that
+      # adds an exemption touches a file whose only subject is exemptions.
+      #
+      # This step also proves the check above still bites. Removing an exempt
+      # image from the matrix does NOT make this workflow green: the image is
+      # still in publish.yml, so the comparison above reports it as missing.
+      - name: Check that only the registered image is exempt
+        run: |
+          set -euo pipefail
+          indent() { while IFS= read -r line; do printf '  %s\n' "$line"; done; }
+
+          register=.github/image-scan-exempt.txt
+          if [ ! -f "$register" ]; then
+            echo "::error::${register} is missing — the exemption register must exist, even when it is empty"
+            exit 1
+          fi
+          registered="$(grep -vE '^[[:space:]]*(#|$)' "$register" | sort -u || true)"
+
+          total="$(yq -r '.jobs.scan.strategy.matrix.image | length' .github/workflows/ci-image-scan.yml)"
+          with_field="$(yq -r '[.jobs.scan.strategy.matrix.image[] | select(has("blocking"))] | length' .github/workflows/ci-image-scan.yml)"
+          if [ "$total" -eq 0 ]; then
+            echo "::error::read no image from the scan matrix — this check would pass on an empty set"
+            exit 1
+          fi
+          if [ "$total" != "$with_field" ]; then
+            echo "::error::${with_field} of ${total} scan matrix entries carry a blocking field; every entry must state it"
+            exit 1
+          fi
+
+          exempt="$(yq -r '.jobs.scan.strategy.matrix.image[] | select(.blocking == false) | .name' .github/workflows/ci-image-scan.yml | sort -u)"
+
+          if [ "$exempt" != "$registered" ]; then
+            echo "::error::the scan matrix and ${register} disagree about which images are exempt."
+            echo "registered in ${register}:"
+            echo "${registered:-(none)}" | indent
+            echo "marked blocking: false in the scan matrix:"
+            echo "${exempt:-(none)}" | indent
+            echo "::error::an image stops blocking only when BOTH files say so. Record the findings issue and the retirement issue in ${register}."
+            exit 1
+          fi
+
+          echo "Exempt — scanned, reported, does not block:"
+          echo "${exempt:-(none)}" | indent
+          echo "Every other published image blocks on a HIGH or CRITICAL finding."
+
   # ── Build each published image and scan it ──────────────────────────────────
   scan:
-    name: Scan ${{ matrix.image.name }}
+    # The check name states the mode. A reader who sees only the check list must
+    # be able to tell which images gate the merge and which one does not.
+    # Neither arm of the expression is an empty string: `x && '' || y` always
+    # returns y, because '' is falsy.
+    name: Scan ${{ matrix.image.name }} (${{ matrix.image.blocking && 'blocking' || 'exempt, reports only' }})
     runs-on: ubuntu-latest
     # fail-fast is off on purpose. One red image must not hide the state of the
     # other five — a partial report tells the reader less than a complete one.
@@ -164,36 +250,48 @@ jobs:
           # system, so a scan that reads the base layers and stops short still
           # fails. A report without that type means the scan did not reach what
           # the image ships, and it fails instead of reading as clean.
+          #
+          # `blocking: false` means the FINDING COUNT is reported and does not
+          # fail the merge. It never relaxes the threshold and it never relaxes
+          # the dormancy guards. Read the header for the one image that carries
+          # it, and for the two files that must agree before a second one does.
           - name: elitea-main
             context: .
             dockerfile: ./services/elitea-main/Containerfile
             target: final
             expect_type: gobinary
+            blocking: true
           - name: elitea-scheduler
             context: .
             dockerfile: ./services/elitea-scheduler/Containerfile
             target: ""
             expect_type: gobinary
+            blocking: true
           - name: elitea-llm-gateway
             context: ./services/elitea-llm-gateway
             dockerfile: ./services/elitea-llm-gateway/Containerfile
             target: final
             expect_type: gobinary
+            blocking: true
           - name: elitea-ui
             context: .
             dockerfile: ./deploy/docker/Containerfile.elitea-ui
             target: ""
             expect_type: alpine
+            blocking: true
           - name: elitea-web
             context: .
             dockerfile: ./apps/elitea-web/Containerfile
             target: ""
             expect_type: alpine
+            blocking: true
+          # Retired by #339. Findings recorded in #509. See the header.
           - name: pylon-indexer
             context: ./services/pylon-indexer
             dockerfile: ./services/pylon-indexer/Containerfile
             target: ""
             expect_type: python-pkg
+            blocking: false
 
     steps:
       - uses: actions/checkout@v7
@@ -237,10 +335,15 @@ jobs:
       #   - a report without the expected target type: the scan ran but never
       #     reached what the image ships;
       #   - any HIGH or CRITICAL finding, with the list.
+      #
+      # The first two BLOCK for every image, including the exempt one. The
+      # exemption covers a known finding set that this repository cannot fix. It
+      # does not cover a scan that stopped running.
       - name: Gate on HIGH and CRITICAL findings
         env:
           IMAGE_NAME: ${{ matrix.image.name }}
           EXPECT_TYPE: ${{ matrix.image.expect_type }}
+          BLOCKING: ${{ matrix.image.blocking }}
         run: |
           set -euo pipefail
           if [ ! -s trivy-report.json ]; then
@@ -259,8 +362,45 @@ jobs:
             | "\(.Severity)\t\($target)\t\(.PkgName) \(.InstalledVersion)\t\(.VulnerabilityID)\tfixed in \(.FixedVersion // "nothing yet")"
           ' trivy-report.json | sort -u | tee findings.txt
           count="$(wc -l < findings.txt | tr -d ' ')"
-          if [ "$count" -gt 0 ]; then
-            echo "::error::${count} HIGH or CRITICAL vulnerability line(s) in ${IMAGE_NAME} — raise the pinned versions, do not lower this threshold"
+          critical="$(grep -c '^CRITICAL' findings.txt || true)"
+          high="$(grep -c '^HIGH' findings.txt || true)"
+
+          if [ "$BLOCKING" = "true" ]; then
+            if [ "$count" -gt 0 ]; then
+              echo "::error::${count} HIGH or CRITICAL vulnerability line(s) in ${IMAGE_NAME} — raise the pinned versions, do not lower this threshold"
+              exit 1
+            fi
+            echo "No HIGH or CRITICAL vulnerability in ${IMAGE_NAME}."
+            exit 0
+          fi
+
+          # ── The exempt arm ───────────────────────────────────────────────────
+          #
+          # Zero findings means the cause of the exemption is gone. The
+          # exemption must go with it, so this FAILS. A waiver that outlives its
+          # reason is the next gate nobody reads.
+          if [ "$count" -eq 0 ]; then
+            echo "::error::${IMAGE_NAME} reports 0 findings, so its exemption is no longer needed — delete the entry or set blocking: true in .github/workflows/ci-image-scan.yml"
             exit 1
           fi
-          echo "No HIGH or CRITICAL vulnerability in ${IMAGE_NAME}."
+
+          echo "::warning::${IMAGE_NAME}: ${count} HIGH or CRITICAL line(s) (${critical} CRITICAL, ${high} HIGH). This image is EXEMPT and does not block the merge. Cause: the base image ghcr.io/eliteaai/pylon, which this repository does not build. Findings: issue #509. Retirement: issue #339."
+          {
+            echo "### Scan ${IMAGE_NAME} — EXEMPT, reports but does not block"
+            echo ""
+            echo "| Severity | Lines |"
+            echo "|---|---|"
+            echo "| CRITICAL | ${critical} |"
+            echo "| HIGH | ${high} |"
+            echo "| total | ${count} |"
+            echo ""
+            echo "Every finding comes from the base image \`ghcr.io/eliteaai/pylon\`."
+            echo "This repository does not build that image."
+            echo ""
+            echo "- Findings: issue #509."
+            echo "- Retirement: issue #339 deletes this image with the index v2 cut-over."
+            echo ""
+            echo "The threshold stays at HIGH,CRITICAL. No CVE is suppressed."
+            echo "The exemption ends when the image is deleted."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
