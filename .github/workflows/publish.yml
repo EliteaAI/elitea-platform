@@ -146,6 +146,34 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Job 2: Build each image on its native runner ────────────────────────────
+  #
+  # VULNERABILITY SCAN — WHERE IT RUNS, AND WHY NOT HERE (issue #433)
+  #
+  #   DECISION: the images below are scanned by
+  #   .github/workflows/ci-image-scan.yml, not by a job inside this workflow.
+  #   That workflow builds every image in the matrix below, scans it with trivy
+  #   at HIGH,CRITICAL, and fails on any finding. It runs on every pull request
+  #   and every push to main that touches an image input, and again every day at
+  #   05:17 UTC. A release is cut from main, so the code it ships was scanned at
+  #   most 24 hours earlier.
+  #
+  #   RESIDUAL RISK, stated rather than hidden: a CVE published between the last
+  #   scan of main and this release ships. The window is bounded by the daily
+  #   run. A scan job here would shrink it to the length of one release, and it
+  #   would cost either a second build of all six images or a scan of images
+  #   that are already pushed. Issue #501 holds that work.
+  #
+  #   OWNER: Platform Engineering — the same owner the release parity audit
+  #   above names, because this is the same release gate register.
+  #
+  #   REVIEW BY: 2026-11-30. Re-read this then. If a release has shipped a
+  #   finding that the daily scan reported after the fact, close #501 by
+  #   building the gate here instead.
+  #
+  #   The image list below is not free-form. ci-image-scan.yml reads it and
+  #   fails when it ships an image that no scan covers, so a seventh entry
+  #   cannot arrive unscanned in silence.
+  #
   # NOTE (issue #244): elitea-worker-python has a Containerfile
   # (services/elitea-worker-python/Containerfile) but deliberately has no bake
   # target and no entry in this matrix. The worker plane it belongs to
