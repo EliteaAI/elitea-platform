@@ -583,6 +583,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentConfigurationMutation http.Handler
 	var currentModelCatalog http.Handler
 	var currentModelDefault http.Handler
+	var configProviderAdmission configurationapi.ProviderAdmission
 	var currentPromptContextReads *promptcontextreadsapi.CurrentRoutes
 	if currentConfigurationsConfig.Enabled {
 		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
@@ -667,6 +668,31 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		)
 		if err != nil {
 			return fmt.Errorf("compose current Configurations model-default route: %w", err)
+		}
+		// The status_ok decision for the compatibility write routes (#457).
+		//
+		// Those routes are the write path every deployed stack serves: the
+		// reviewed mutation route below needs
+		// ELITEA_CONFIGURATIONS_MUTATION_ENABLED, and no deployment file sets
+		// it. Their INSERT never named status_ok, so a saved credential kept
+		// the column default of false, and the gateway admits only
+		// status_ok = true. The decision composes here rather than with the
+		// lifecycle because it needs no runtime plane and no mutation flag:
+		// it reads the vault and the expander this Configurations runtime
+		// already owns.
+		providerAdmission, admissionErr := runtimecomposition.NewCurrentProviderAdmission(
+			currentConfigurationsRoot,
+			currentConfigurationsConfig.AllowProjectOwnLLMs,
+		)
+		if admissionErr != nil {
+			return fmt.Errorf("compose current Configurations provider admission: %w", admissionErr)
+		}
+		// Assigned only when non-nil, for the reason spelled out at
+		// configConnectionChecker below: boxing a nil pointer into the
+		// interface would make the handler's nil test false and call a method
+		// on a nil receiver instead of leaving the column alone.
+		if providerAdmission != nil {
+			configProviderAdmission = providerAdmission
 		}
 		// No /llm data plane is composed here. This block used to build the
 		// LiteLLM facade (an authenticated reverse proxy plus an administration
@@ -1197,6 +1223,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		GatewayProxy:                  gatewayProxy,
 		GatewayProjectResolver:        gatewayProjectResolver,
 		ConfigConnectionChecker:       configConnectionChecker,
+		ConfigProviderAdmission:       configProviderAdmission,
 		ObjectStore:                   objectStore,
 		ProjectVectorStore:            projectVectorStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering

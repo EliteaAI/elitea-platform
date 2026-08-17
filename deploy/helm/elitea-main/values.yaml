@@ -163,10 +163,18 @@ env:
   # through. NEEDS production authentication.
   ELITEA_CONFIGURATIONS_ENABLED: "false"
 
-  # The three configuration WRITE routes. Needs ELITEA_CONFIGURATIONS_ENABLED.
-  # The standalone compose stack leaves this off, because turning it on demands
-  # the LiteLLM lifecycle facade that the Bifrost gateway replaced. Leave it
-  # off until that facade has a successor.
+  # A SECOND set of three configuration WRITE routes. Needs
+  # ELITEA_CONFIGURATIONS_ENABLED and runtime.enabled; this file has neither.
+  #
+  # The reason recorded here before — "demands the LiteLLM lifecycle facade" —
+  # is stale (#460). The lifecycle takes no LLM transport now. The flag stays
+  # off for two reasons that are true: the chart refuses it without the two
+  # prerequisites above, and it is not what makes a saved credential usable.
+  # The routes it composes WIN the path from the compatibility routes that
+  # every install serves — see
+  # TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition — and they
+  # take a different request shape from the one apps/elitea-web sends. Turning
+  # this on is a cutover with its own web-client work.
   ELITEA_CONFIGURATIONS_MUTATION_ENABLED: "false"
 
   # The project-information route. NEEDS production authentication.

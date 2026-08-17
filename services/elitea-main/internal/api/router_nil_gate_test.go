@@ -245,21 +245,26 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	// intended". It carries the same obligation as declaredAbsent above: a
 	// reason, and a tracking issue.
 	darkFlags := map[string]string{
-		// Off on purpose, and the deployment that turns its parent flag on
-		// says why: deploy/docker-compose.standalone-full.yml:575-577 keeps
-		// mutation off because enabling it "would demand the LiteLLM lifecycle
-		// facade, which this stack replaced with Bifrost".
+		// Off on purpose. The reason recorded here before was the retired
+		// LiteLLM lifecycle facade; that reason is stale (#460), because the
+		// lifecycle takes no LLM transport now.
 		//
 		// It also cannot be set on its own.
 		// currentConfigurationsConfigFromEnv rejects a deployment that sets it
 		// while ELITEA_CONFIGURATIONS_ENABLED is off, so it can never be the
 		// only flag standing between a route and its handler.
 		//
-		// Unlike the four families #367 removed, nothing answers in its place:
-		// the mutation routes are POST/PUT/DELETE, and no lower-priority
-		// handler is registered on those methods. Dark here means 404, which
-		// is a refusal a caller can see.
-		"ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "#281 — the standalone stack keeps configuration mutation off; it needs the retired LiteLLM lifecycle facade",
+		// Two earlier claims here were wrong, and the correction is the point
+		// of this entry. "Nothing answers in its place" and "dark here means
+		// 404" both fail: router.go mounts the compatibility configuration
+		// handler on the same three methods and the same two paths, with no
+		// flag on the mount. So the flag does not darken a route — it decides
+		// WHICH of two handlers answers.
+		// TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition
+		// runs both compositions and records the answer: the reviewed route
+		// wins when it is composed, and the compatibility mount serves the
+		// path in every shipped install, where it is not.
+		"ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "#460 — the compatibility write routes serve this path in every install; turning the flag on is a cutover to a second route with a different request shape",
 		// #367 — cannot be turned on until the response contract is
 		// reconciled, and must not be deleted while it is the only
 		// SDK-derived implementation. A dedicated follow-up issue should

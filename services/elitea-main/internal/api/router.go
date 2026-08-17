@@ -214,6 +214,10 @@ type RouterConfig struct {
 	// routes reporting an honest "not available" failure rather than the
 	// previous unconditional-success stub.
 	ConfigConnectionChecker v2configs.ConnectionChecker
+	// ConfigProviderAdmission decides configuration.status_ok for a row the
+	// compatibility write routes store (#457). nil leaves every written row at
+	// the column default, false, which the LLM gateway refuses.
+	ConfigProviderAdmission v2configs.ProviderAdmission
 }
 
 type RuntimeRoutes struct {
@@ -1079,6 +1083,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				cfg.Pool,
 				v2configs.WithPermissionResolver(permissionResolver),
 				v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
+				v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
 			).Routes())
 
 			// === Secrets ===
