@@ -314,6 +314,7 @@ tasks:
         fi
         echo "helm:lint: $found chart(s) passed"
       - task: helm:capabilities
+      - task: helm:llmpath
 
   helm:capabilities:
     desc: Check that the elitea-main chart renders the capability flags the composition root reads
@@ -325,6 +326,16 @@ tasks:
       # reads the required runtime names out of the Go source, so a new one
       # fails here until the chart renders it.
       - bash deploy/helm/elitea-main/tests/render-capabilities.sh
+
+  helm:llmpath:
+    desc: Check that the charts do not ship the LLM path off, and that the gateway guards refuse
+    cmds:
+      # #473 wrote this script for issues #463, #467, #458 and #464, and no job
+      # ran it. It asserts both directions: the charts render the LLM path ON,
+      # and the gateway chart REFUSES an empty guard variable. Without this
+      # step, a deleted guard leaves every other Helm gate green (#497).
+      # Needs yq on PATH.
+      - bash deploy/helm/tests/render-llm-path.sh
 
   # ── All ───────────────────────────────────────────────────────────────────────
   all:
