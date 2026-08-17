@@ -6,12 +6,19 @@ on:
       - "deploy/helm/**"
       - "deploy/argocd/**"
       - ".github/workflows/helm-lint.yml"
+      # The capability gate below reads the required runtime names straight out
+      # of runtimecomposition/config.go. Without this path a pull request that
+      # adds a new `required("ELITEA_RUNTIME_X")` and touches nothing under
+      # deploy/helm/ never runs the gate that exists to catch it — the same
+      # false green as a workflow that never triggers at all (#429).
+      - "services/elitea-main/internal/runtimecomposition/**"
   push:
     branches:
       - main
     paths:
       - "deploy/helm/**"
       - "deploy/argocd/**"
+      - "services/elitea-main/internal/runtimecomposition/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -41,13 +48,37 @@ jobs:
         with:
           version: v3.16.0
 
+      # A bare loop takes the status of its LAST iteration, so a broken early
+      # chart read as a pass. `bash -e` hides that today by stopping the step on
+      # the first failure — but that is a property of the caller, not of the
+      # loop, and the loop is what gets copied. #409 gave `task helm:lint` the
+      # collecting form; this is the same shape (#429).
+      #
+      # A glob that matches nothing is a failure too. Zero charts linted is not
+      # "all charts pass"; it means the charts moved and this gate stopped
+      # measuring anything.
       - name: Lint charts
         run: |
+          failed=""
+          found=0
           for chart in deploy/helm/*/Chart.yaml; do
-            dir=$(dirname "$chart")
+            [ -f "$chart" ] || continue
+            found=$((found + 1))
+            dir="$(dirname "$chart")"
             echo "Linting $dir..."
-            helm lint "$dir"
+            if ! helm lint "$dir"; then
+              failed="$failed $dir"
+            fi
           done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no chart matched deploy/helm/*/Chart.yaml — this gate linted nothing"
+            exit 1
+          fi
+          if [ -n "$failed" ]; then
+            echo "::error::these charts failed helm lint:$failed"
+            exit 1
+          fi
+          echo "helm lint: $found chart(s) passed"
 
       # `helm lint` proves a chart is well formed. It never reads the rendered
       # environment, so it stayed green for as long as the elitea-main chart
@@ -58,6 +89,49 @@ jobs:
       # a newly required name fails here until the chart renders it.
       - name: Capability flags reach the container environment
         run: bash deploy/helm/elitea-main/tests/render-capabilities.sh
+
+      # `helm lint` covers every chart. The `template` job below covers only the
+      # charts its matrix names, and a chart in neither list is never rendered
+      # and never schema-checked, with nothing reporting the hole.
+      # otel-collector was exactly that chart until #429: the matrix comment
+      # excused nats/ and nats-bootstrap/ by name and said nothing about it.
+      #
+      # This step reads the matrix out of this file, so adding a chart
+      # directory fails here until somebody either templates it or writes down
+      # why it cannot be templated.
+      - name: Every chart is templated or excluded on purpose
+        run: |
+          # Charts `helm template` cannot cover on this runner, with the reason:
+          # nats/ vendors an upstream subchart, so templating it needs
+          # `helm dependency build` and network access to the upstream repo,
+          # and nats-bootstrap/ is its companion hook chart.
+          excluded="nats nats-bootstrap"
+          matrix="$(grep -oE '^ +- chart: [a-z0-9-]+' .github/workflows/helm-lint.yml \
+                      | awk '{print $3}' | tr '\n' ' ')"
+          if [ -z "$matrix" ]; then
+            echo "::error::read no chart name out of the template matrix — this check measured nothing"
+            exit 1
+          fi
+          found=0
+          missing=""
+          for chart in deploy/helm/*/Chart.yaml; do
+            [ -f "$chart" ] || continue
+            found=$((found + 1))
+            name="$(basename "$(dirname "$chart")")"
+            case " $matrix $excluded " in
+              *" $name "*) ;;
+              *) missing="$missing $name" ;;
+            esac
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no chart matched deploy/helm/*/Chart.yaml — this check measured nothing"
+            exit 1
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::these charts are neither in the template matrix nor excluded:$missing"
+            exit 1
+          fi
+          echo "chart coverage: $found chart(s), all templated or excluded on purpose"
 
   template:
     name: Helm Template (${{ matrix.chart }})
@@ -88,10 +162,15 @@ jobs:
           - chart: pylon-indexer
             values: ""
             toggles: --set persistence.enabled=true --set probes.startup.enabled=false --set probes.liveness.enabled=false
+          - chart: otel-collector
+            values: ""
+            toggles: --set serviceAccount.create=false --set service.type=NodePort
           # nats/ and nats-bootstrap/ are excluded on purpose: nats vendors an
           # upstream subchart, so templating it needs `helm dependency build`
           # and network access to the upstream repo. `helm lint` above still
-          # covers them.
+          # covers them. The "Every chart is templated or excluded on purpose"
+          # step in the lint job holds this list and the matrix together, so a
+          # new chart cannot quietly join neither.
     steps:
       - uses: actions/checkout@v7
 

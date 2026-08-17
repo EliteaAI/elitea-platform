@@ -42,6 +42,35 @@ check_target() {
   shift 3
   local srcs=("$@")
 
+  # --- 0. the inputs, asserted before any result is read ----------------------
+  #
+  # Every extraction below is `|| true`-guarded and writes its errors to
+  # /dev/null. That is right for "this pattern matched nothing", and wrong for
+  # "this directory does not exist": a renamed package or a moved service makes
+  # `code_all` EMPTY, the FAIL loop then iterates over nothing, and the gate
+  # prints "0 fail" and exits 0 while reading no Go source at all.
+  #
+  # The only direction that survives an empty extraction is the dead-config one,
+  # and that tier is WARN — so the whole gate goes silently green. Assert the
+  # inputs, the way render-capabilities.sh asserts its required-name floor.
+  local d
+  for d in "${srcs[@]}"; do
+    if [ ! -d "$d" ]; then
+      echo "== env-drift-check: $label =="
+      echo "FAIL: source directory '$d' does not exist. This gate read no Go source, so its result means nothing."
+      echo "== $label summary: 1 fail, 0 warn =="
+      total_fail=$((total_fail + 1))
+      return
+    fi
+  done
+  if [ ! -d "$chart" ]; then
+    echo "== env-drift-check: $label =="
+    echo "FAIL: chart directory '$chart' does not exist. There is nothing to compare the code against."
+    echo "== $label summary: 1 fail, 0 warn =="
+    total_fail=$((total_fail + 1))
+    return
+  fi
+
   # --- 1. env vars the code READS, split by whether they have a default -------
   # os.Getenv("X")  -> required (no default)  -> FAIL tier if unset by chart
   # *Or("X", ...)   -> defaulted              -> WARN tier if unset by chart
@@ -146,6 +175,21 @@ check_target() {
 
   local fail=0 warn=0 v
   echo "== env-drift-check: $label =="
+
+  # The extraction floor. The directories exist, but a change to how the code
+  # reads env — a new helper name, a package split — can still leave both
+  # patterns matching nothing. Zero extracted names produces zero FAILs, which
+  # reads as a pass. Report what each side found, and refuse an empty code side.
+  local code_count chart_count
+  code_count="$(printf '%s\n' "$code_all" | sed '/^$/d' | wc -l | tr -d ' ')"
+  chart_count="$(printf '%s\n' "$chart_all" | sed '/^$/d' | wc -l | tr -d ' ')"
+  echo "read $code_count env name(s) from ${srcs[*]}, $chart_count from $chart"
+  if [ "$code_count" -eq 0 ]; then
+    echo "FAIL: no env read was extracted from the $label source. The patterns in this script no longer match the code, so a comparison of 0 names against $chart_count is not a pass."
+    echo "== $label summary: 1 fail, 0 warn =="
+    total_fail=$((total_fail + 1))
+    return
+  fi
 
   # code-read but chart-can't-set
   while IFS= read -r v; do
