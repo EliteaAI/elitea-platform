@@ -72,3 +72,61 @@ jobs:
       - name: Validate that every gated permission has a grant
         working-directory: services/elitea-main
         run: go test -count=1 ./internal/api/
+
+  # Issue #424. Six gate scripts validated the checked-in evidence snapshots
+  # under testdata/, and no workflow, Taskfile task or other script called any
+  # of them. A gate that nothing calls cannot fail, and its presence in the
+  # tree reads as coverage.
+  #
+  # They live here, and not in a path-filtered workflow, for the reason the
+  # header of this file gives. Their subjects are spread over three trees
+  # (testdata/baseline, testdata/legacy, testdata/postgres) plus the scripts
+  # themselves, so a path-filtered home would need four more filters to keep
+  # correct — and this repository has twice shipped a gate that stopped running
+  # because a filter or a path stopped matching (#157, #426). This workflow has
+  # no path filter at all.
+  #
+  # The scripts are a separate job, not more steps in the job above, so a
+  # failing evidence check does not hide the binary scan and the reverse.
+  evidence-baselines:
+    name: Checked-in evidence baselines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # Every check reads only the standard library and the committed JSON, so
+      # there is nothing to install.
+      - name: Validate the checked-in security and database evidence
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          checks=(scripts/security/check_*.py scripts/database/check_*.py)
+          # The list comes from the tree, not from a written-down set of names.
+          # A renamed or deleted script therefore changes the count, and the
+          # floor below turns that into a red job instead of a shorter loop
+          # that still says "passed".
+          if [ "${#checks[@]}" -lt 6 ]; then
+            echo "::error::found ${#checks[@]} evidence check scripts, expected at least 6 — the glob stopped matching, so this job would pass without checking anything"
+            exit 1
+          fi
+          for check in "${checks[@]}"; do
+            echo "== ${check}"
+            python "${check}"
+          done
+      - name: Install the test runner
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2
+      # pytest exits 5 when it collects nothing, so an empty run is red rather
+      # than green. The glob floor covers the narrower case where one file of
+      # the set is renamed and the rest still collect.
+      - name: Run the evidence checker unit tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(scripts/security/test_*.py)
+          if [ "${#tests[@]}" -lt 4 ]; then
+            echo "::error::found ${#tests[@]} test files under scripts/security/, expected at least 4 — the glob stopped matching"
+            exit 1
+          fi
+          python -m pytest -q "${tests[@]}"

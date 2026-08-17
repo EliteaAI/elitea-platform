@@ -33,23 +33,26 @@ export default defineConfig({
           globals: true,
           setupFiles: ['./src/test/setup.ts'],
           include: ['src/**/*.{test,spec}.{ts,tsx}'],
-          exclude: ['src/**/*.browser.{test,spec}.{ts,tsx}'],
         },
       },
-      {
-        extends: true,
-        test: {
-          name: 'browser',
-          include: ['src/**/*.browser.{test,spec}.{ts,tsx}'],
-          browser: { enabled: true, provider: playwright(), instances: [{ browser: 'chromium' }] },
-        },
-      },
+      // [#424] The `browser` project that used to sit here is GONE. No CI job
+      // ever selected it: ci-web.yml runs `--project node` and
+      // `--project storybook` only. There are no `*.browser.test.*` files
+      // today, so the first one somebody wrote would have run nowhere, and the
+      // `node` project excluded that same pattern, so it would not have run
+      // there either. Both halves are removed together: a `*.browser.test.ts`
+      // added now is collected by the `node` project above and runs.
+      //
+      // Browser-mode coverage has not been lost. The `storybook` project below
+      // runs in a real Chromium through the same @vitest/browser-playwright
+      // factory. If a browser-mode unit-test project is wanted again, it
+      // arrives with the CI job that selects it.
       // [S1] Storybook project (§6.3/§6.4): activated now that `.storybook/`
       // (main.ts + preview.tsx + vitest.setup.ts) has landed. Runs every
       // `shared/ui/**/*.stories.tsx` as a Vitest test, executing each story's
       // `play` function and the a11y addon's check (parameters.a11y.test is
-      // 'error' in preview.tsx). Browser mode uses the same
-      // `@vitest/browser-playwright` factory as the `browser` project above
+      // 'error' in preview.tsx). Browser mode uses the
+      // `@vitest/browser-playwright` factory
       // (D2 addendum: the string form `provider: 'playwright'` is rejected).
       {
         extends: true,
