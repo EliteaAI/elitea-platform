@@ -31,6 +31,22 @@ type credential struct {
 	name      string // human-readable label (elitea_title)
 	apiBase   string // provider endpoint (subject to the self-referential guard)
 	apiKeyRef string // stored api_key: literal or {{secret.NAME}} reference
+	// apiVersion is the Azure OpenAI / DIAL api-version (issue #455). Empty
+	// means the credential names no version and bifrost applies its own.
+	apiVersion string
+	// awsAccessKeyID, awsSecretAccessKeyRef and awsRegion are the amazon_bedrock
+	// credential fields (issue #454). awsSecretAccessKeyRef is the stored value
+	// and may be a {{secret.NAME}} reference; it is never logged.
+	awsAccessKeyID        string
+	awsSecretAccessKeyRef string
+	awsRegion             string
+	// vertexProject, vertexLocation and vertexCredentialsRef are the vertex_ai
+	// credential fields (issue #453). vertexCredentialsRef holds the Google
+	// service-account document and may be a {{secret.NAME}} reference; it is
+	// never logged.
+	vertexProject        string
+	vertexLocation       string
+	vertexCredentialsRef string
 	// useAnthropicEndpoints routes vllm-class credentials through the
 	// upstream's Anthropic-compatible /v1/messages surface (see credentialData).
 	useAnthropicEndpoints bool
@@ -66,6 +82,24 @@ type credentialData struct {
 	APIBase  string `json:"api_base"`
 	APIKey   string `json:"api_key"`
 	APIToken string `json:"api_token"`
+	// APIVersion is the azure_open_ai / ai_dial api-version (issue #455). The
+	// legacy mapper copied it into the credential values; the gateway threads
+	// it into the per-request Azure alias so bifrost does not substitute its
+	// own default.
+	APIVersion string `json:"api_version"`
+	// AWSAccessKeyID, AWSSecretAccessKey and AWSRegionName are the
+	// amazon_bedrock credential fields (issue #454). Without them bifrost
+	// builds an empty bedrock_key_config and AWS falls back to the ambient
+	// credentials of the pod, which is a tenant-isolation fault.
+	AWSAccessKeyID     string `json:"aws_access_key_id"`
+	AWSSecretAccessKey string `json:"aws_secret_access_key"`
+	AWSRegionName      string `json:"aws_region_name"`
+	// VertexProject, VertexLocation and VertexCredentials are the vertex_ai
+	// credential fields (issue #453). bifrost rejects a Vertex key that has no
+	// vertex_key_config.
+	VertexProject     string   `json:"vertex_project"`
+	VertexLocation    string   `json:"vertex_location"`
+	VertexCredentials jsonText `json:"vertex_credentials"`
 	// UseAnthropicEndpoints routes vllm-class credentials through the
 	// upstream's Anthropic-compatible endpoints (/v1/messages) instead of the
 	// OpenAI-compatible ones. Threaded into schemas.Key.UseAnthropicEndpoints;
@@ -74,13 +108,54 @@ type credentialData struct {
 	UseAnthropicEndpoints bool `json:"use_anthropic_endpoints"`
 }
 
-// credentialKeyRef returns the credential secret reference, preferring api_key
-// and falling back to the legacy api_token field.
-func (d credentialData) credentialKeyRef() string {
-	if d.APIKey != "" {
-		return d.APIKey
+// noValueSentinel is the platform's "this field has no value" marker. The
+// credential screens write a single dash rather than an empty string, so a
+// keyless credential arrives as "-" and not as "" (issue #456). The deleted
+// LiteLLM mapper dropped both forms (copyOptionalNonDashString); the gateway
+// must do the same, or the dash reaches the provider as a Bearer token.
+const noValueSentinel = "-"
+
+// storedValue returns the usable text of a stored credential field. It maps the
+// no-value sentinel onto the empty string so every caller can test one thing.
+func storedValue(raw string) string {
+	if raw == noValueSentinel {
+		return ""
 	}
-	return d.APIToken
+	return raw
+}
+
+// jsonText decodes a JSONB field the platform stores either as a JSON string or
+// as a nested JSON object. vertex_credentials is the field that needs it: the
+// Google service-account document is written as an escaped string by one screen
+// and as an object by another. A plain `string` field makes the object form fail
+// to decode, and a failed decode drops the whole credential row.
+type jsonText string
+
+func (t *jsonText) UnmarshalJSON(raw []byte) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		*t = ""
+		return nil
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return err
+		}
+		*t = jsonText(s)
+		return nil
+	}
+	*t = jsonText(raw)
+	return nil
+}
+
+// credentialKeyRef returns the credential secret reference, preferring api_key
+// and falling back to the legacy api_token field. The no-value sentinel counts
+// as absent for both, so a keyless credential yields "" (issue #456).
+func (d credentialData) credentialKeyRef() string {
+	if k := storedValue(d.APIKey); k != "" {
+		return k
+	}
+	return storedValue(d.APIToken)
 }
 
 // credentialsSQL reads the ai_credentials rows for one project scope. %q is the
@@ -218,6 +293,13 @@ func (a *EliteaAccount) loadCredentialScope(
 			name:                  title,
 			apiBase:               d.APIBase,
 			apiKeyRef:             d.credentialKeyRef(),
+			apiVersion:            storedValue(d.APIVersion),
+			awsAccessKeyID:        storedValue(d.AWSAccessKeyID),
+			awsSecretAccessKeyRef: storedValue(d.AWSSecretAccessKey),
+			awsRegion:             storedValue(d.AWSRegionName),
+			vertexProject:         storedValue(d.VertexProject),
+			vertexLocation:        storedValue(d.VertexLocation),
+			vertexCredentialsRef:  storedValue(string(d.VertexCredentials)),
 			useAnthropicEndpoints: d.UseAnthropicEndpoints,
 		})
 	}

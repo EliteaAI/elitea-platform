@@ -123,6 +123,7 @@ func (h *Handler) mapModel(
 	model *string,
 ) bool {
 	if h.models == nil {
+		publishRequestModel(ctx, *model)
 		return true
 	}
 	projectID := identityProjectFromCtx(ctx)
@@ -159,6 +160,7 @@ func (h *Handler) mapModel(
 		if link, ok := mo.linkedCredential(); ok {
 			ctx.SetValue(account.ContextKeyLinkedCredential, link)
 		}
+		publishRequestModel(ctx, *model)
 		return true
 	case modelNotAdvertised:
 		h.logger.WarnContext(ctx, "model is not configured for this project",
@@ -170,6 +172,25 @@ func (h *Handler) mapModel(
 	default: // modelSetUnknown
 		h.logger.WarnContext(ctx, "model set unavailable; forwarding the caller's model unmapped",
 			"project_id", projectID, "model", *model)
+		publishRequestModel(ctx, *model)
 		return true
+	}
+}
+
+// publishRequestModel records the model this request dispatches, so the account
+// can build the Azure api-version alias for it (issue #455). bifrost accepts a
+// per-key api-version only inside Key.Aliases, and it resolves that map by the
+// requested model name — but the schemas.Account interface gives the account a
+// context and a provider only, so the model must travel on the context.
+//
+// It is deliberately best effort. A context that is not a *BifrostContext, or a
+// handler that never maps a model, simply leaves the value unset, and the key is
+// then built with no alias exactly as before.
+func publishRequestModel(ctx context.Context, model string) {
+	if model == "" {
+		return
+	}
+	if bc, ok := ctx.(*schemas.BifrostContext); ok && bc != nil {
+		bc.SetValue(account.ContextKeyRequestModel, model)
 	}
 }
