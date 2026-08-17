@@ -147,23 +147,35 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - id: shard
-        name: Unit tests (coverage shard)
+      - name: Unit tests (coverage shard)
         env:
           VITEST_SKIP_COVERAGE_THRESHOLDS: true
+        # Issue #421, item 4. A pipeline decided whether coverage ran at all:
+        # `find … | grep -q .`.
+        #
+        # The status of a pipeline is the status of its last element. GitHub's
+        # default shell does not set `pipefail`. So a failing `find` gave no
+        # output, `grep` reported no match, and the else arm ran the suite
+        # without --coverage. The shard then uploaded no artifact. The merge,
+        # the coverage validation and the mutator gate had nothing to read.
+        #
+        # This step captures the `find` status and tests it on its own. The
+        # else arm is gone with it. That arm was written before the first unit
+        # test landed. The tree holds 1126 unit test files today. An empty
+        # result must fail here. It must not downgrade the run silently.
         run: |
-          if find src \( -name '*.test.*' -o -name '*.spec.*' \) \
-               ! -path 'src/smoke/*' ! -path 'src/test/*' | grep -q .; then
-            echo "coverage_ran=true" >> $GITHUB_OUTPUT
-            echo "real unit tests present — §6.6 coverage thresholds armed"
-            npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }} --coverage --coverage.reporter=json --coverage.reportsDirectory=coverage-shards/shard-${{ matrix.shardIndex }} --coverage.clean=false --coverage.thresholds.lines=0 --coverage.thresholds.statements=0 --coverage.thresholds.functions=0 --coverage.thresholds.branches=0 --coverage.thresholds.perFile=false
-          else
-            echo "coverage_ran=false" >> $GITHUB_OUTPUT
-            echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
-            npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }}
+          if ! unit_tests=$(find src \( -name '*.test.*' -o -name '*.spec.*' \) \
+               ! -path 'src/smoke/*' ! -path 'src/test/*'); then
+            echo "FAIL: find could not scan src/ for unit tests"
+            exit 1
           fi
+          if [ -z "$unit_tests" ]; then
+            echo "FAIL: no unit test files under src/ — the coverage shard would be vacuous"
+            exit 1
+          fi
+          echo "$(grep -c '' <<< "$unit_tests") unit test file(s) found — §6.6 coverage thresholds armed"
+          npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }} --coverage --coverage.reporter=json --coverage.reportsDirectory=coverage-shards/shard-${{ matrix.shardIndex }} --coverage.clean=false --coverage.thresholds.lines=0 --coverage.thresholds.statements=0 --coverage.thresholds.functions=0 --coverage.thresholds.branches=0 --coverage.thresholds.perFile=false
       - name: Upload coverage shard
-        if: steps.shard.outputs.coverage_ran == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-shard-${{ matrix.shardIndex }}
@@ -191,12 +203,17 @@ jobs:
           pattern: coverage-shard-*
           path: apps/elitea-web/coverage-shards/
       - name: Merge coverage (no validation — thresholds checked in coverage-validation)
-        id: merge
-        run: |
-          node scripts/merge-coverage.mjs --no-validate
-          echo "merged=$?" >> $GITHUB_OUTPUT
+        # Issue #421, item 3. This step ended with
+        # `echo "merged=$?" >> $GITHUB_OUTPUT`. The upload below then read
+        # `steps.merge.outputs.merged == '0'`.
+        #
+        # GitHub runs each `run:` block with `bash -e`. A non-zero `node`
+        # status ends the step before the echo. So the output could hold only
+        # `0` or nothing. The guard read as a check on the merge. It tested
+        # nothing. A failed merge ends this step, this job, and the two jobs
+        # that need this one. That is the behaviour the guard described.
+        run: node scripts/merge-coverage.mjs --no-validate
       - name: Upload merged coverage
-        if: steps.merge.outputs.merged == '0'
         uses: actions/upload-artifact@v7
         with:
           name: elitea-web-coverage
@@ -411,56 +428,26 @@ jobs:
         # working-directory makes the cwd apps/elitea-web/ where
         # ./coverage/ resolves to apps/elitea-web/coverage/
         working-directory: apps/elitea-web
-        # mutator.ts is generated code — coverage is enforced via the merged
-        # shard artifact, not a separate vitest run. Reads the JSON directly.
-        run: |
-          node -e '
-            const fs = require("fs");
-            const path = require("path");
-            const coveragePath = path.join(process.cwd(), "coverage", "coverage-final.json");
-            if (!fs.existsSync(coveragePath)) {
-              console.error("Coverage file not found at: " + coveragePath);
-              console.error("Files in cwd: " + fs.readdirSync(process.cwd()));
-              console.error("Files in coverage dir: " + (fs.existsSync(path.join(process.cwd(), "coverage")) ? fs.readdirSync(path.join(process.cwd(), "coverage")) : "N/A"));
-              process.exit(1);
-            }
-            const data = require(coveragePath);
-            // istanbul map format: s/b/f are objects {id: hits}, not arrays
-            let coveredStmts = 0, totalStmts = 0;
-            let coveredFns = 0, totalFns = 0;
-            let coveredBranches = 0, totalBranches = 0;
-            for (const [file, f] of Object.entries(data)) {
-              if (!file.includes("src/shared/api/generated/mutator.ts") && !file.includes("mutator.test.ts")) continue;
-              // s/b/f can be arrays (vitest V8) or objects {id: hits} (istanbul map)
-              if (Array.isArray(f.s)) {
-                totalStmts += f.s.length; coveredStmts += f.s.filter(v => v > 0).length;
-                totalFns += f.f.length; coveredFns += f.f.filter(v => v > 0).length;
-                totalBranches += f.b.reduce((a, row) => a + row.length, 0);
-                coveredBranches += f.b.reduce((a, row) => a + row.filter(v => v > 0).length, 0);
-              } else {
-                totalStmts += Object.keys(f.s || {}).length;
-                coveredStmts += Object.values(f.s || {}).filter(v => v > 0).length;
-                totalFns += Object.keys(f.f || {}).length;
-                coveredFns += Object.values(f.f || {}).filter(v => v > 0).length;
-                totalBranches += Object.keys(f.b || {}).length;
-                coveredBranches += Object.values(f.b || {}).filter(v => v > 0).length;
-              }
-            }
-            if (totalStmts === 0) { console.log("mutator.ts not in coverage (excluded per config) — skipping"); process.exit(0); }
-            function pct(covered, total) { return total ? Math.round(covered / total * 100) : 100; }
-            const lp = pct(coveredStmts, totalStmts);
-            const fp = pct(coveredFns, totalFns);
-            const bp = pct(coveredBranches, totalBranches);
-            const sp = pct(totalStmts, totalStmts);
-            console.log("Mutator coverage — lines: " + lp + "% functions: " + fp + "% branches: " + bp + "% statements: " + sp + "%");
-            let fail = false;
-            if (lp < 90) { console.error("Lines below 90% threshold (" + lp + "%)"); fail = true; }
-            if (fp < 90) { console.error("Functions below 90% threshold (" + fp + "%)"); fail = true; }
-            if (bp < 85) { console.error("Branches below 85% threshold (" + bp + "%)"); fail = true; }
-            if (sp < 90) { console.error("Statements below 90% threshold (" + sp + "%)"); fail = true; }
-            if (fail) process.exit(1);
-            console.log("OK — thresholds met");
-          '
+        # mutator.ts is hand-written, not orval output. See its own header. It
+        # is the `eliteaFetch` adapter that every generated hook calls, so it
+        # carries a real coverage floor. The numbers come from the merged shard
+        # artifact. This job starts no vitest run of its own.
+        #
+        # This step held the gate as an inline `node -e` program. It carried
+        # three of issue #421's defects:
+        #   • `pct(totalStmts, totalStmts)` divided a count by itself. The
+        #     statement percentage read 100 on every run. `if (sp < 90)` was
+        #     dead code.
+        #   • `if (totalStmts === 0) … process.exit(0)` fired on every run.
+        #     vitest.config.ts excluded the whole generated directory from
+        #     coverage, so the gate never saw its target.
+        #   • A `file.includes("mutator.test.ts")` filter let the test file's
+        #     own near-100% score into the module's numbers.
+        #
+        # The rules live in scripts/lib/mutator-coverage-core.mjs now. The
+        # gate-script-coverage job holds that file at 100%. Each rule has a RED
+        # case and a GREEN case.
+        run: node scripts/check-mutator-coverage.mjs
 
   gate-endpoint-manifest:
     name: Endpoint manifest

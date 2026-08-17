@@ -79,7 +79,7 @@ if (exclusions.length === 0) {
 const NOT_DORMANCY = new Set([
   'src/**/*.stories.tsx',
   'src/**/*.d.ts',
-  'src/shared/api/generated/**',
+  'src/shared/api/generated/*/**',
   'src/test/**',
   'src/**/__mocks__/**',
   'src/app/main.tsx',

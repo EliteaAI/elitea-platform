@@ -106,7 +106,20 @@ export default defineConfig({
       exclude: [
         'src/**/*.stories.tsx',
         'src/**/*.d.ts',
-        'src/shared/api/generated/**', // generated: covered by contract tests, not line coverage
+        // orval writes its hook and schema modules into the per-tag
+        // SUBDIRECTORIES of src/shared/api/generated/ (admin/, chat/, …).
+        // Those stay excluded. The contract tests cover generated code, not
+        // line coverage.
+        //
+        // The glob was `src/shared/api/generated/**`. That form also waived
+        // the one hand-written file in the tree: `generated/mutator.ts`, the
+        // `eliteaFetch` adapter that every generated hook calls. See its own
+        // header, and mutator.test.ts's "carries the ≥90% infra floor" note.
+        // ci-web.yml's gate-mutator-coverage job reads that floor out of the
+        // merged coverage report. The old glob made the job unable to see a
+        // number. The job took its "not in coverage — skipping" exit on every
+        // run it ever had (issue #421, item 2).
+        'src/shared/api/generated/*/**',
         // `src/shared/api/sse.ts` used to be excluded here. It was removed
         // (issue #309, Gate 3) and removing it excluded nothing further: the
         // module became the DIRECTORY src/shared/api/sse/, so the glob had
