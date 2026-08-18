@@ -115,6 +115,12 @@ var eliteaCoreProjectScopedRoutes = []eliteaCoreProjectScopedRoute{
 	{http.MethodPost, "/api/v2/elitea_core/skills/prompt_lib/7", "/api/v2/elitea_core/skills/prompt_lib/8", "models.applications.skills.create"},
 	{http.MethodGet, "/api/v2/elitea_core/skill/prompt_lib/7/1", "/api/v2/elitea_core/skill/prompt_lib/8/1", "models.applications.skills.details"},
 	{http.MethodPut, "/api/v2/elitea_core/skill/prompt_lib/7/1", "/api/v2/elitea_core/skill/prompt_lib/8/1", "models.applications.skills.update"},
+	// PATCH on the same path is overloaded: a body with `has_relation`
+	// attaches or detaches a skill (#38). It writes to another project's
+	// entity_skill_mapping, so it takes the same gate as the PUT beside it.
+	// Pylon declares the same permission on its own PATCH handler
+	// (legacy/plugins/elitea_core/api/v2/skill.py:202-207).
+	{http.MethodPatch, "/api/v2/elitea_core/skill/prompt_lib/7/1", "/api/v2/elitea_core/skill/prompt_lib/8/1", "models.applications.skills.update"},
 	{http.MethodDelete, "/api/v2/elitea_core/skill/prompt_lib/7/1", "/api/v2/elitea_core/skill/prompt_lib/8/1", "models.applications.skills.delete"},
 	{http.MethodGet, "/api/v2/elitea_core/skill_export/prompt_lib/7/1", "/api/v2/elitea_core/skill_export/prompt_lib/8/1", "models.applications.skills.export"},
 	{http.MethodGet, "/api/v2/elitea_core/application_skills/prompt_lib/7/1", "/api/v2/elitea_core/application_skills/prompt_lib/8/1", "models.applications.applications.details"},
