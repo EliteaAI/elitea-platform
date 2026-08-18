@@ -65,11 +65,12 @@ EXEMPT_WORKFLOWS = {
         "It has no push arm at all. It is a weekly cadence job plus manual "
         "dispatch, not a per-merge gate."
     ),
-    # A time-limited entry. Remove it with the change that adds the arm.
+    # A time-limited entry. ISSUE #526 owns it. Remove this entry with the
+    # change that adds the arm.
     "ci-web.yml": (
-        "Another change owns this file in the current wave (issue #483), so "
-        "the staging arm belongs to that change and not to #518. Tracked "
-        "separately; remove this entry when the arm lands."
+        "Issue #483 owns this file in the current wave, so the staging arm "
+        "belongs to that change and not to #518. Issue #526 tracks the arm and "
+        "the removal of this entry."
     ),
 }
 
