@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
 )
 
@@ -235,4 +236,32 @@ func waitForLiveness(t *testing.T, url string, log *strings.Builder) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("the gateway did not answer %s in 30s\nlog:\n%s", url, log.String())
+}
+
+// TestMetricsRoute_ServesTheBudgetOutageControls is issue #515's third
+// requirement: the wedge must not be invisible.
+//
+// A row the recovery pass owns bars the write-back consumer, so the durable
+// spend for that scope stops advancing. Before this, the only report of that
+// condition was a log line. The two controls ride the route issue #465 added
+// rather than a second mechanism.
+func TestMetricsRoute_ServesTheBudgetOutageControls(t *testing.T) {
+	srv := newMetricsServer(t)
+	status, body := scrape(t, srv.URL+"/metrics")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	if !strings.Contains(body, "# TYPE "+failmode.MetricBudgetOutageRows+" gauge") {
+		t.Errorf("scrape does not carry the outage-rows gauge:\n%s", body)
+	}
+	if !strings.Contains(body, "# TYPE "+failmode.MetricBudgetRecoveryFailuresTotal+" counter") {
+		t.Errorf("scrape does not carry the recovery-failure counter:\n%s", body)
+	}
+	// Every name the failmode package publishes must reach the scrape, so a
+	// control added there cannot be forgotten here.
+	for _, name := range failmode.RecoveryMetricNames() {
+		if !strings.Contains(body, "\n"+name+" ") && !strings.HasPrefix(body, name+" ") {
+			t.Errorf("scrape carries no value line for %q:\n%s", name, body)
+		}
+	}
 }

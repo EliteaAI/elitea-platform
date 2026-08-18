@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -518,7 +519,12 @@ func (d *FakeDB) Begin(_ context.Context) (failmode.Tx, error) {
 // fakeNopTx is a no-op failmode.Tx for the reconciler in test harness.
 type fakeNopTx struct{}
 
-func (t *fakeNopTx) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
+func (t *fakeNopTx) QueryRow(_ context.Context, sql string, args ...any) failmode.Row {
+	// Issue #515: the outage-window write claims its event id first.
+	if strings.Contains(sql, "processed_event_ids") {
+		id, _ := args[0].(string)
+		return fakeRow{vals: []any{id}}
+	}
 	return fakeRow{err: errors.New("fakeNopTx: not used")}
 }
 func (t *fakeNopTx) Query(_ context.Context, _ string, _ ...any) (failmode.Rows, error) {

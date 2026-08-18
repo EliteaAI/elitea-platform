@@ -142,6 +142,30 @@ var outageUpsertSQL = fmt.Sprintf(`INSERT INTO gateway.llm_budget_accumulators A
 		reconciliation_in_progress = false,
 		last_updated = now()`, NanoUSD)
 
+// outageDedupSQL claims the billing event id for the outage-window write
+// (issue #515). It is the SAME statement, against the SAME table, that the
+// scheduler's write-back consumer uses (budgetwriteback.dedupSQL): whichever
+// writer inserts the id first owns that event's money, and the other one adds
+// nothing.
+//
+// This gate is what makes the outage-window write exactly-once against the
+// consumer, and the recovery sweep is why it has to be. The outage branch is
+// entered on a SINGLE failed counter increment, and the write-behind publish
+// that follows it runs on a healthy connection and usually succeeds. So the
+// same request can reach the accumulator twice: once directly here, and once
+// through the delta the consumer later applies. Until issue #515 nothing
+// exposed that, because the outage flag it set was never cleared and the
+// consumer's guard deferred the delta for the rest of the period. Clearing the
+// flag without this gate would turn a wedged row into a double-counted one,
+// which is worse.
+//
+// pgx.ErrNoRows from the RETURNING clause means the consumer already applied
+// this event. The caller then writes nothing at all — not the accumulator, not
+// the usage ledger, and not the outage flag. There is no outage to record for a
+// request whose money is already durable.
+const outageDedupSQL = `INSERT INTO gateway.processed_event_ids (event_id) VALUES ($1)
+	ON CONFLICT DO NOTHING RETURNING event_id`
+
 // ErrNoBudgetRow is returned by ReadSnapshot when the scope has no budget
 // config row at all. The caller treats a scope with no budget config as
 // unlimited (there is nothing to enforce).
@@ -291,11 +315,12 @@ func (s *Store) PerProjectFailMode(ctx context.Context, projectID int) (string, 
 // persistence" step. It runs off the response path (the caller spawns it in a
 // short-lived goroutine) so a slow Postgres does not stall the /llm stream.
 //
-// It opens its own transaction: the UPSERT is idempotent under redelivery only
-// via the event stream, so this direct write is intentionally at-least-once —
-// the recovery reconciliation sums whatever landed. A commit failure is
-// returned for the caller to log; the in-process degraded counter remains the
-// authoritative per-replica bound while degraded.
+// It opens its own transaction and claims the event id in that transaction
+// (outageDedupSQL), so this write and the write-back consumer are exactly-once
+// against each other on the same event: whichever gets there first adds the
+// money, and the other adds none. A commit failure is returned for the caller
+// to log; the in-process degraded counter remains the authoritative per-replica
+// bound while degraded.
 func (s *Store) PersistOutageDelta(ctx context.Context, d OutageDelta) error {
 	if err := d.validate(); err != nil {
 		return err
@@ -305,6 +330,18 @@ func (s *Store) PersistOutageDelta(ctx context.Context, d OutageDelta) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Claim the event id before anything is written. A conflict means the
+	// write-back consumer already applied this delta, so there is nothing to
+	// add and no outage to flag; the deferred rollback discards the (empty)
+	// transaction.
+	var claimed string
+	switch err := tx.QueryRow(ctx, outageDedupSQL, d.EventID).Scan(&claimed); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("failmode: claim outage event id: %w", err)
+	}
 
 	if _, err := tx.ExecAffected(ctx, outageUpsertSQL,
 		d.ProjectID, d.OrgID, d.Scope, d.ScopeID,
@@ -399,9 +436,10 @@ type OutageDelta struct {
 	OrgID     *int
 	Scope     string
 	ScopeID   string
-	// EventID is the billing event id. It is required only when Usage is set,
-	// where it is the usage ledger's primary key and the reason a redelivery
-	// cannot duplicate the row.
+	// EventID is the billing event id. It is required: it is the key this write
+	// claims in gateway.processed_event_ids so the write-back consumer cannot
+	// apply the same money a second time (issue #515), and it is the usage
+	// ledger's primary key when Usage is set.
 	EventID      string
 	PeriodStart  int64
 	PeriodEnd    int64
@@ -424,6 +462,11 @@ func (d OutageDelta) validate() error {
 		return errors.New("failmode: empty scope")
 	case d.ScopeID == "":
 		return errors.New("failmode: empty scope_id")
+	case d.EventID == "":
+		// Without an id this write cannot be deduplicated against the write-back
+		// consumer, and the same request would be billed twice as soon as the
+		// recovery sweep hands the row back (issue #515).
+		return errors.New("failmode: empty event_id")
 	case d.PeriodStart <= 0:
 		return fmt.Errorf("failmode: non-positive period_start %d", d.PeriodStart)
 	case d.PeriodEnd <= d.PeriodStart:

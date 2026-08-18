@@ -647,6 +647,24 @@ func gatewayMetrics() []gatewayMetric {
 			v:    expvar.Get(name),
 		})
 	}
+	// Issue #515: the budget-outage controls. A row that the recovery pass owns
+	// holds back the durable spend for its scope, and before these two lines
+	// nothing outside the log said so. The name and the value both come from
+	// the failmode package, which publishes them.
+	metrics = append(metrics,
+		gatewayMetric{
+			name: failmode.MetricBudgetOutageRows,
+			kind: "gauge",
+			help: "Accumulator rows the gateway recovery pass still owns. Above zero, the durable spend for those scopes does not advance.",
+			v:    expvar.Get(failmode.MetricBudgetOutageRows),
+		},
+		gatewayMetric{
+			name: failmode.MetricBudgetRecoveryFailuresTotal,
+			kind: "counter",
+			help: "Count of scopes a recovery pass could not reconcile. The rows stay held until a later pass succeeds.",
+			v:    expvar.Get(failmode.MetricBudgetRecoveryFailuresTotal),
+		},
+	)
 	return metrics
 }
 
