@@ -190,6 +190,52 @@ var eliteaCoreProjectScopedRoutes = []eliteaCoreProjectScopedRoute{
 	{http.MethodGet, "/api/v2/elitea_core/search_options/prompt_lib/7", "/api/v2/elitea_core/search_options/prompt_lib/8", "models.promptlib_shared.search"},
 	// Batch version replacement and the two attachment-storage writes.
 	{http.MethodPost, "/api/v2/elitea_core/batch_replace_version/prompt_lib/7/1/2", "/api/v2/elitea_core/batch_replace_version/prompt_lib/8/1/2", "models.applications.version.update"},
+
+	// ── The three SIBLING groups #313 left behind ───────────────────────────
+	//
+	// These are not under /elitea_core. They are separate r.Route groups in the
+	// same /api/v2 scope, and every path below names {projectID} and then reads
+	// or writes that project. Each shipped with NO gate of any kind, so the
+	// #302 hole this table was written for stayed open in three places the
+	// table did not look. They are listed here rather than in a file of their
+	// own so the three claims this table already makes — refuse another
+	// project, refuse an under-privileged member, ADMIT an entitled one — apply
+	// to them unchanged.
+
+	// Notifications. The permissions are the four the pylon notifications
+	// plugin declares, and the same four the reviewed copy of this surface
+	// (internal/api/v2/notifications/api.go) gates the identical paths on.
+	// 0079 grants them.
+	{http.MethodGet, "/api/v2/notifications/notifications/prompt_lib/7", "/api/v2/notifications/notifications/prompt_lib/8", "models.notifications.notifications.list"},
+	{http.MethodPut, "/api/v2/notifications/notifications/prompt_lib/7", "/api/v2/notifications/notifications/prompt_lib/8", "models.notifications.notification.update"},
+	{http.MethodDelete, "/api/v2/notifications/notifications/prompt_lib/7", "/api/v2/notifications/notifications/prompt_lib/8", "models.notifications.notification.delete"},
+	{http.MethodPut, "/api/v2/notifications/notification/prompt_lib/7/1", "/api/v2/notifications/notification/prompt_lib/8/1", "models.notifications.notification.update"},
+	{http.MethodDelete, "/api/v2/notifications/notification/prompt_lib/7/1", "/api/v2/notifications/notification/prompt_lib/8/1", "models.notifications.notification.delete"},
+
+	// Context manager. Pylon has NO context_manager module, so these two
+	// permissions are not a transcription: they are the conversation strings
+	// the router applies to every other Go-only route that acts on one
+	// conversation. See the note at the registration for the reasoning, and
+	// migrations/shared/0068 for the grant.
+	{http.MethodGet, "/api/v2/context_manager/analytics/7/1", "/api/v2/context_manager/analytics/8/1", "models.chat.conversation.details"},
+	{http.MethodGet, "/api/v2/context_manager/summaries/7/1", "/api/v2/context_manager/summaries/8/1", "models.chat.conversation.details"},
+	{http.MethodPost, "/api/v2/context_manager/summaries/7/1", "/api/v2/context_manager/summaries/8/1", "models.chat.conversation.edit"},
+	{http.MethodPost, "/api/v2/context_manager/optimize_context/7/1", "/api/v2/context_manager/optimize_context/8/1", "models.chat.conversation.edit"},
+	{http.MethodPut, "/api/v2/context_manager/summary/7/1/2", "/api/v2/context_manager/summary/8/1/2", "models.chat.conversation.edit"},
+	{http.MethodDelete, "/api/v2/context_manager/summary/7/1/2", "/api/v2/context_manager/summary/8/1/2", "models.chat.conversation.edit"},
+
+	// The project member and role listings under /admin, in DEFAULT mode —
+	// what the project settings page calls as /admin/{users,roles}/default/.
+	// The /elitea_core fallback copies of these two rows are already in this
+	// table above; these are the PRIMARY registrations, and they carried no
+	// gate at all while the copies carried one. coreHandler.Users answers with
+	// every member's email for whatever project id the path names.
+	//
+	// Their ADMINISTRATION-mode twins are static registrations resolved
+	// centrally, so this project-scoped table cannot express them.
+	// TestAdminProjectListingsAreGatedInBothModes below covers those.
+	{http.MethodGet, "/api/v2/admin/users/default/7", "/api/v2/admin/users/default/8", "configuration.users.users.view"},
+	{http.MethodGet, "/api/v2/admin/roles/default/7", "/api/v2/admin/roles/default/8", "configuration.roles.roles.view"},
 }
 
 // allEliteaCorePermissions is every permission named in the table above.
