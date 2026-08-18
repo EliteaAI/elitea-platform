@@ -54,11 +54,32 @@ import (
 // e2eSeedScript is the seed the end-to-end stack applies.
 const e2eSeedScript = "../../../../apps/elitea-web/scripts/e2e-stack.sh"
 
-// projectOneGrantMarker starts the INSERT that grants project 1's per-project
-// rows. It is matched as a whole line so a second INSERT into the same table —
-// the personal-project block further down, which serves one persona — cannot be
-// mistaken for it.
-const projectOneGrantMarker = "SELECT 1, r.id, p.permission"
+// The seed writes per-project rows for TWO projects, and both must carry every
+// string these gates name.
+//
+// Each marker is matched as a whole line, so one block cannot be mistaken for
+// the other.
+//
+//   - Project 1 is the shared project every browser journey runs in.
+//   - The personal project belongs to the chat driver persona. It matters
+//     beyond the browser: deploy/scripts/standalone-stack.sh reuses this seeder
+//     verbatim, and its own #457 check writes and deletes configuration rows
+//     through the product route as that persona, in that project. Checking
+//     project 1 alone missed that, and the standalone check failed with
+//     "insufficient permissions" — measured, on the first run of this change.
+const (
+	projectOneGrantMarker      = "SELECT 1, r.id, p.permission"
+	personalProjectGrantMarker = "SELECT r.project_id, r.id, p.permission"
+)
+
+// seededGrantBlocks names each block for the failure message.
+var seededGrantBlocks = []struct {
+	name   string
+	marker string
+}{
+	{"project 1", projectOneGrantMarker},
+	{"the chat driver's personal project", personalProjectGrantMarker},
+}
 
 // seedGrantValue matches one `('permission'),` row of a VALUES list.
 var seedGrantValue = regexp.MustCompile(`^\s*\('([a-z0-9_.]+)'\),?\s*$`)
@@ -67,32 +88,34 @@ var seedGrantValue = regexp.MustCompile(`^\s*\('([a-z0-9_.]+)'\),?\s*$`)
 func TestTheEndToEndSeedGrantsEveryStringTheThreeSurfacesGateOn(t *testing.T) {
 	t.Parallel()
 
-	seeded := projectOneSeededPermissions(t)
+	for _, block := range seededGrantBlocks {
+		seeded := seededPermissions(t, block.marker)
 
-	// Premise guard. A parser that finds nothing must fail, never pass quietly:
-	// "no rows found, so nothing is missing" is how check-playwright-image-tag
-	// stopped gating and nobody noticed.
-	if len(seeded) < 40 {
-		t.Fatalf("parsed %d permissions out of %s; the project-1 grant block has far more.\n"+
-			"  The seed's shape changed and this check is no longer reading it.",
-			len(seeded), e2eSeedScript)
-	}
-
-	var missing []string
-	for _, permission := range allProjectSurfacePermissions {
-		if !slices.Contains(seeded, permission) {
-			missing = append(missing, permission)
+		// Premise guard. A parser that finds nothing must fail, never pass
+		// quietly: "no rows found, so nothing is missing" is how
+		// check-playwright-image-tag stopped gating and nobody noticed.
+		if len(seeded) < 40 {
+			t.Fatalf("parsed %d permissions out of %s for %s; that block has far more.\n"+
+				"  The seed's shape changed and this check is no longer reading it.",
+				len(seeded), e2eSeedScript, block.name)
 		}
-	}
-	sort.Strings(missing)
-	for _, permission := range missing {
-		t.Errorf("the end-to-end seed does not grant %q to project 1, and a route of the "+
-			"/configurations, /webhooks or /events group gates on it.\n"+
-			"  Project 1 carries per-project rows, which SUPPRESS the central default-mode\n"+
-			"  fallback, so the corpus grant does not reach it. Add the string to the\n"+
-			"  project-1 VALUES list in %s.\n"+
-			"  Without it the route answers 403 and the page reads as broken.",
-			permission, e2eSeedScript)
+
+		var missing []string
+		for _, permission := range allProjectSurfacePermissions {
+			if !slices.Contains(seeded, permission) {
+				missing = append(missing, permission)
+			}
+		}
+		sort.Strings(missing)
+		for _, permission := range missing {
+			t.Errorf("the end-to-end seed does not grant %q to %s, and a route of the "+
+				"/configurations, /webhooks or /events group gates on it.\n"+
+				"  That project carries per-project rows, which SUPPRESS the central\n"+
+				"  default-mode fallback, so the corpus grant does not reach it. Add the\n"+
+				"  string to that block's VALUES list in %s.\n"+
+				"  Without it the route answers 403 and the page reads as broken.",
+				permission, block.name, e2eSeedScript)
+		}
 	}
 }
 
@@ -118,8 +141,15 @@ func TestTheSeedParserReadsTheProjectOneBlockAndNoOther(t *testing.T) {
 }
 
 // projectOneSeededPermissions returns the permissions the seed grants to
-// project 1's three roles.
+// project 1's three roles. It is what the credential-screen journey seeds.
 func projectOneSeededPermissions(t *testing.T) []string {
+	t.Helper()
+	return seededPermissions(t, projectOneGrantMarker)
+}
+
+// seededPermissions returns the VALUES list of the grant block that starts at
+// the given marker line.
+func seededPermissions(t *testing.T, marker string) []string {
 	t.Helper()
 
 	raw, err := os.ReadFile(filepath.Clean(e2eSeedScript))
@@ -132,14 +162,14 @@ func projectOneSeededPermissions(t *testing.T) []string {
 	lines := strings.Split(string(raw), "\n")
 	start := -1
 	for i, line := range lines {
-		if strings.TrimSpace(line) == projectOneGrantMarker {
+		if strings.TrimSpace(line) == marker {
 			start = i
 			break
 		}
 	}
 	if start < 0 {
-		t.Fatalf("%q is not in %s. The project-1 grant block changed shape and this check "+
-			"is reading nothing.", projectOneGrantMarker, e2eSeedScript)
+		t.Fatalf("%q is not in %s. That grant block changed shape and this check "+
+			"is reading nothing.", marker, e2eSeedScript)
 	}
 
 	permissions := []string{}

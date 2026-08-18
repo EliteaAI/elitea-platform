@@ -754,6 +754,20 @@ CROSS JOIN (VALUES
     -- details), and granting only that leaves the picker empty behind a 403.
     ('configurations.configurations.list'),
     ('configurations.configuration.details'),
+    -- The three configuration WRITES, for the same reason as the two reads
+    -- above and for one more that is specific to this project (#496).
+    --
+    -- deploy/scripts/standalone-stack.sh reuses this seeder verbatim, and its
+    -- own `#457` check writes a credential and two model rows through the
+    -- product route — POST /api/v2/configurations/configurations/{projectID} —
+    -- as THIS persona, in THIS project, then deletes them again through the
+    -- product's delete route. That mount applied no permission at all until
+    -- #496, so the write needed no grant. It does now, and without these three
+    -- rows the check reports "the credential write failed: insufficient
+    -- permissions" — measured.
+    ('configurations.configuration.create'),
+    ('configurations.configuration.update'),
+    ('configurations.configuration.delete'),
     -- #302/#313: the /elitea_core group no longer enforces membership alone —
     -- every route now resolves the permission its pylon module declares
     -- (services/elitea-main/internal/api/router.go). This project carries
