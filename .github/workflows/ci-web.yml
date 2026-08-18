@@ -97,6 +97,37 @@ jobs:
   storybook:
     name: Storybook tests
     runs-on: ubuntu-latest
+    # @storybook/addon-vitest launches a real headless Chromium for every
+    # story's interaction/a11y test (independently of the plain vitest
+    # `browser` project, which this job never runs — see package.json's
+    # test:unit script). `npx playwright install --with-deps chromium` used
+    # to provide it and cost up to 20 minutes: the browser download is
+    # ~14s, the rest is `apt-get` fetching ~114 MB of system libraries onto a
+    # runner that then throws them away, and on a slow/rate-limited mirror
+    # that apt run is what stretched to 20 minutes.
+    #
+    # `mcr.microsoft.com/playwright:vX.Y.Z-noble` ships Chromium AND those
+    # system libraries pre-installed, so running the whole job inside it
+    # removes the install step instead of caching around it (caching
+    # ~/.cache/ms-playwright only recovers the ~14s download, not the apt
+    # cost). This is the same mechanism ci-web-e2e.yml's `e2e`/`chat-stream`/
+    # `index-stream` jobs use — see their "No `npx playwright install
+    # --with-deps`" comments — except THIS job can use a job-level
+    # `container:` where those can't: they reach a compose stack on the
+    # HOST's network, which a job container doesn't share, while this job
+    # talks to nothing outside itself (vitest's own browser-mode server).
+    #
+    # `--ipc=host`: Playwright's documented Docker recommendation, avoids
+    # Chromium running out of /dev/shm. No `--user`: playwright-core adds
+    # `--no-sandbox` for Chromium automatically when it detects uid 0.
+    #
+    # The tag is kept honest by scripts/check-playwright-image-tag.mjs, which
+    # scans EVERY workflow and asserts each
+    # `mcr.microsoft.com/playwright:vX.Y.Z-noble` matches the pinned
+    # @playwright/test — so this reference is gated automatically.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.0-noble
+      options: --ipc=host
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -106,28 +137,6 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Install Playwright browser (Storybook's @storybook/addon-vitest)
-        # Real CI gap, found the first time this job ran end-to-end against
-        # a populated .storybook/ (draft-PR CI hadn't executed before unit
-        # S1 landed): @storybook/addon-vitest launches a real headless
-        # browser for interaction/a11y tests, independently of the plain
-        # vitest `browser` project (which this job never runs — see
-        # package.json's test:unit script) — nothing upstream of this step
-        # installs it. The E2E/visual-regression jobs already do their own
-        # `playwright install`; this is the same fix for the job that was
-        # missing it.
-        #
-        # Issue #483. The `if [ -d .storybook ]` shape was written before unit
-        # S1 landed the directory. The directory is in the tree now, so the
-        # silent-skip arm can only fire when somebody moves it — and then this
-        # step installs no browser and the step below prints a pass.
-        run: |
-          set -euo pipefail
-          test -d .storybook || {
-            echo "::error::apps/elitea-web/.storybook is missing, so the Storybook suite cannot run. Restore the directory under its old name, or point this job at the new one. Do not let the job pass."
-            exit 1
-          }
-          npx playwright install --with-deps chromium
       - name: Storybook tests
         # Issue #483, the fourth gate of the same shape. This step read
         # `if [ -d .storybook ] … else echo "storybook project pending"`. The
