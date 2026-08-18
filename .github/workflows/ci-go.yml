@@ -91,27 +91,55 @@ jobs:
             services/elitea-main/internal services/elitea-main/cmd
 
   lint:
-    name: Lint (${{ matrix.service }})
+    name: Lint (workspace)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service:
-          - services/elitea-main
-          - services/elitea-scheduler
+    # Issue #427. This job used to carry a hand-written matrix of two modules,
+    # `services/elitea-main` and `services/elitea-scheduler`, while go.work
+    # names nine. gen/go, libs/go/authlib, libs/go/eventslib,
+    # libs/go/observability, libs/go/rpclib, libs/proto/gen/go and tools/uictl
+    # were never linted, and this workflow triggers on `libs/go/**` — so it ran
+    # on their changes and looked at none of them.
+    #
+    # A hand-written matrix cannot report what it left out. The module list is
+    # read from go.work at run time instead, by the same script the vet and
+    # test steps use, and that script prints the Go modules on disk that the
+    # run did NOT cover (services/elitea-llm-gateway, which ci-gateway.yml
+    # lints on its own Go release).
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+          # This job lints nine modules now, so the cache key reads every module
+          # that has a go.sum. tools/uictl has none — it declares no external
+          # dependency. The block below is a literal string, so a comment
+          # inside it would become a path.
           cache-dependency-path: |
             services/elitea-main/go.sum
             services/elitea-scheduler/go.sum
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: latest
-          working-directory: ${{ matrix.service }}
+            gen/go/go.sum
+
+      # golangci-lint-action installs AND runs in one step, and it runs in one
+      # working directory. Nine directories therefore need the binary on its
+      # own. The version is PINNED: `version: latest` made the gate a moving
+      # target, so a new release could red an untouched branch, and the local
+      # run that proves a change can never match what CI will do. Raise this
+      # value deliberately, and read the release notes when you do.
+      - name: Install golangci-lint
+        env:
+          GOLANGCI_LINT_VERSION: v2.9.0
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # The script fails when the binary is absent, so a broken install above
+      # cannot turn into a green "nothing to report" below.
+      - name: golangci-lint (workspace)
+        run: bash scripts/go/workspace-run.sh lint
 
   test:
     name: Test
@@ -274,80 +302,16 @@ jobs:
           cd services/elitea-main
           go test -count=1 -timeout=120s ./tests/integration/
 
-  container-scan:
-    name: Container scan — elitea-main HIGH/CRITICAL
-    runs-on: ubuntu-latest
-    # Issue #224. services/elitea-main/Containerfile carried a
-    # `FROM aquasec/trivy:latest AS scanner` stage that no other stage copied
-    # from. BuildKit and podman build only the stages a target needs, so the
-    # stage was pruned from every build graph and the gate never ran once.
-    # A stage nothing depends on is the same defect class as a gate nothing
-    # calls (#157, check-playwright-image-tag).
-    #
-    # The scan lives here instead, against the image publish.yml ships, so a
-    # scan failure reads as a scan failure and prints every finding.
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: docker/setup-buildx-action@v4
-
-      # `target: final` and `load: true` — the same target publish.yml and
-      # docker-bake.hcl name. One platform only: the scan reads Go module
-      # metadata out of the binaries, which is architecture-independent.
-      - name: Build the shipping image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./services/elitea-main/Containerfile
-          target: final
-          push: false
-          load: true
-          tags: elitea-main:ci-scan
-          platforms: linux/amd64
-          cache-from: type=gha,scope=elitea-main-ci-scan
-          cache-to: type=gha,mode=max,scope=elitea-main-ci-scan
-
-      # exit-code 0 on purpose: this step collects the report, and the step
-      # below is the gate. Splitting them lets the gate print the findings.
-      - name: Scan the shipping image
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: elitea-main:ci-scan
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          format: json
-          output: trivy-report.json
-          exit-code: "0"
-
-      # Two failures, not one:
-      #   - an empty or binary-free report means the scan did not reach what
-      #     ships. "Found nothing" and "did not really run" must not look the
-      #     same, which is exactly how the deleted stage stayed invisible;
-      #   - any HIGH or CRITICAL vulnerability fails the job, with the list.
-      - name: Gate on HIGH and CRITICAL findings
-        run: |
-          set -euo pipefail
-          if [ ! -s trivy-report.json ]; then
-            echo "::error::trivy wrote no report — the scan did not run"
-            exit 1
-          fi
-          echo "Scanned targets:"
-          jq -r '.Results[]? | "  \(.Target) [\(.Type)]"' trivy-report.json
-          if ! jq -e '[.Results[]? | select(.Type == "gobinary")] | length > 0' trivy-report.json > /dev/null; then
-            echo "::error::the report holds no Go binary — the scan did not reach the shipped binaries"
-            exit 1
-          fi
-          jq -r '
-            .Results[]? | .Target as $target
-            | .Vulnerabilities[]?
-            | "\(.Severity)\t\($target)\t\(.PkgName) \(.InstalledVersion)\t\(.VulnerabilityID)\tfixed in \(.FixedVersion // "nothing yet")"
-          ' trivy-report.json | sort -u | tee findings.txt
-          count="$(wc -l < findings.txt | tr -d ' ')"
-          if [ "$count" -gt 0 ]; then
-            echo "::error::${count} HIGH or CRITICAL vulnerability line(s) in the shipping image — raise the pinned versions in services/elitea-main/go.mod"
-            exit 1
-          fi
-          echo "No HIGH or CRITICAL vulnerability in the shipping image."
+  # The `container-scan` job that PR #432 added here (issue #224) now lives in
+  # .github/workflows/ci-image-scan.yml, together with the five other published
+  # images that had no scan at all (#433). Nothing about the elitea-main scan
+  # changed — same `target: final` build, same HIGH,CRITICAL threshold, same
+  # "a report with no Go binary is a failure" guard.
+  #
+  # It moved because path filters are per workflow. elitea-web and elitea-ui are
+  # published images too, and adding apps/elitea-web/** to this workflow's
+  # triggers would run the Postgres service, the storage emulators and the whole
+  # Go test suite on every front-end change.
 
   build:
     name: Build

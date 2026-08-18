@@ -124,7 +124,10 @@ func decodeFile(path string) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open manifest: %w", err)
 	}
-	defer f.Close()
+	// The handle is read-only, so Close reports nothing the caller can act on.
+	// The value is discarded on purpose, in the form the rest of the tree uses
+	// (#427 — this module was never linted, so errcheck never saw this line).
+	defer func() { _ = f.Close() }()
 	dec := json.NewDecoder(f)
 	dec.DisallowUnknownFields()
 	var m Manifest
@@ -139,7 +142,8 @@ func decodeShard(path string) (*shardFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
-	defer f.Close()
+	// Read-only handle; see decodeFile above.
+	defer func() { _ = f.Close() }()
 	dec := json.NewDecoder(f)
 	dec.DisallowUnknownFields()
 	var s shardFile
