@@ -88,9 +88,14 @@ Source ownership is split deliberately:
 - Rust owns the immutable policy generation and will apply the same value at
   materialization and invocation boundaries.
 
-This is a static deny policy, not sensitive-action authorization. Sensitive
-tools, MCP smart auth and direct HITL retain their separate durable invocation
-identity and `interrupt_id` state machines.
+This is a static deny policy, not sensitive-action authorization. The SDK's
+`read`/`write`/`search`/`index` grouping describes an operation; it does not
+exempt a tool from deployment sensitivity. Trusted environment configuration
+may mark any concrete tool, including a read used for testing, as sensitive.
+Sensitive tools, MCP smart auth and direct HITL therefore retain a shared
+durable invocation identity and `interrupt_id` state machine independent of
+family metadata. An approval for identical arguments is never authority for a
+later function call.
 
 ## Shared kernel mapping
 
@@ -122,7 +127,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `configurations/families/service_now.rs`; `toolkits/families/service_now/` | Planned; source has no focused family tests |
 | `testrail` | `configurations/testrail.py::TestRailConfiguration` | `tools/testrail::TestrailToolkit` | 23 | Yes | `configurations/families/testrail.rs`; `toolkits/families/testrail/` | Planned |
 | `slack` | `configurations/slack.py::SlackConfiguration` | `tools/slack::SlackToolkit` | 7 | No | `configurations/families/slack.rs`; `toolkits/families/slack/` | Planned |
-| `azure_search` | `configurations/azure_search.py::AzureSearchConfiguration` | `tools/azure_ai/search::AzureSearchToolkit` | 2 | No | `configurations/families/azure_search.rs`; `toolkits/families/azure_search/` | Planned |
+| `azure_search` | `configurations/azure_search.py::AzureSearchConfiguration` | `tools/azure_ai/search::AzureSearchToolkit` | 2 | No | `toolkits/families/azure_search/{config,client,tools}.rs` | Capability-disabled complete read family: fixed configured index, two bounded reads, SDK 11.5.2 wire/result projection and no unbounded continuation; authorized materialization and live provider proof remain gates |
 | `delta_lake` | `configurations/delta_lake.py::DeltaLakeConfiguration` | `tools/aws/delta_lake::DeltaLakeToolkit` | 3 | No | `configurations/families/delta_lake.rs`; `toolkits/families/delta_lake/` | Planned; source has no focused family tests |
 | `bigquery` | `configurations/bigquery.py::BigQueryConfiguration` | `tools/google/bigquery::BigQueryToolkit` | 11 | No | `configurations/families/bigquery.rs`; `toolkits/families/bigquery/` | Planned; source has no focused family tests |
 | `xray` | `configurations/xray.py::XrayConfiguration` | `tools/xray::XrayToolkit` as `xray_cloud` | 12 | Yes | `configurations/families/xray.rs`; `toolkits/families/xray/` | Planned; preserve runtime alias |
@@ -405,6 +410,97 @@ compatibility, exact project isolation, redirects disabled, and Sonar's
 documented `503` behavior while issue indexing is active. The future assembler
 also owns the invocation-wide tool-concurrency ceiling; the HTTP idle-pool
 setting is not an execution limit.
+
+### Azure Search complete read family
+
+Azure Search is a complete two-tool read family over one configured index. The
+evidence baseline is current SDK
+`9bba9da409771803f28c0ee21f5d0b9a8f456219` (`0.9.19`), Python worker's
+pinned SDK `b5113a129329b85d23c2d5c2bf55f18e307414ec` (`0.9.8`), legacy
+indexer worker `62656d2b3bd51ded513693a1bd9b2f3a303ce09c`, and
+`azure-search-documents==11.5.2` with `azure-core==1.30.2`. The current SDK
+only adds `read` group annotations to this family; its public schemas, request
+construction and result projection otherwise match the worker pin. The lean
+standalone Python worker image does not install `azure-search-documents`, so
+the source contract is evidence, not proof that the current Python deployment
+can execute this family.
+
+Main freezes `index_name`, selected tools and the owned
+`azure_search_configuration` through
+`internal/application/agentexecution/tools.go`, then
+`internal/infra/storage/configurations_materializer.go` resolves the endpoint
+and API key into the claim-scoped input. Python worker
+`agents/sdk_adapter.py::EliteaSdkAgentAdapter` carries the same snapshot for
+application and ad-hoc execution. The model can choose search text, a bounded
+result count, ordering, selected fields or a document key; it cannot replace
+the endpoint, index, API key or API version.
+
+SDK `elitea_sdk/tools/azure_ai/search/api_wrapper.py::AzureSearchApiWrapper`
+registers exactly `text_search` and `get_document`; vector and hybrid helpers
+are present but commented out of `get_available_tools`. Empty selection means
+both in source order. `api_version`, `api_base`, `openai_api_key` and
+`model_name` do not affect either registered read. The wrapper creates
+`SearchClient` without an API version, so its exact wire uses stable
+`2024-07-01`:
+
+- `text_search` posts to
+  `/indexes('{index}')/docs/search.post.search?api-version=2024-07-01` with
+  `search`, optional `top`, comma-joined `orderby` and comma-joined `select`;
+- `get_document` gets
+  `/indexes('{index}')/docs('{key}')?api-version=2024-07-01` with optional
+  `$select`;
+- both send a sensitive `api-key` and
+  `Accept: application/json;odata.metadata=none`.
+
+The Python default `limit=-1` omits `top`, and `list(SearchItemPaged)` then
+posts every provider continuation body to the same route without a total page,
+item, byte or time limit. Empty field/order arrays also become empty strings due
+to an unreachable normalization condition. Rust deliberately maps null or
+`-1` to `top=100`, admits only `1..=100`, makes one bounded request and omits
+empty arrays. It never follows `@odata.nextLink` or
+`@search.nextPageParameters`. This is a visible resource-safety correction,
+not claimed byte-for-byte behavior.
+
+Search output remains a list of provider document objects. As in SDK
+`_paging.py::convert_search_result`, every item contains
+`@search.score`, `@search.reranker_score`, `@search.highlights` and
+`@search.captions`, inserting null when absent; the underscore spelling of
+`reranker_score` intentionally preserves Python's projection rather than the
+REST `@search.rerankerScore` name. Document lookup returns the bounded provider
+object unchanged.
+
+`src/toolkits/families/azure_search/config.rs` parses only the materialized
+HTTPS origin, provider-valid index name and zeroized non-`Clone`, non-`Debug`
+key. `client.rs` owns one invocation-scoped pool, disables redirects and
+automatic retries, fixes the API version and original origin/index, encodes
+document keys, caps query lists/request/body/result/output, and retains no
+endpoint, key, query or provider body in diagnostics. `tools.rs` publishes the
+two native ADK tools in SDK order and preserves their `read` classification.
+That classification is independent from environment-sensitive policy: the
+shared direct-tool HITL adapter may still require an exact `interrupt_id`
+approval for either read.
+
+| Current business source | Preserved behavior | Rust owner / deliberate hardening |
+| --- | --- | --- |
+| Main tool freezer and configuration materializer | Freeze the exact index/tool selection and redeem the owned endpoint/key only inside one claimed execution | `config.rs` accepts the nested materialized shape and creates no environment fallback, global client or second credential authority |
+| Python worker `EliteaSdkAgentAdapter::{execute_application,execute_adhoc}` | Both agent kinds delegate the same standard-toolkit snapshot | Future authorized assembly selects this same family for both kinds; capability registration remains empty |
+| SDK `AzureSearchApiWrapper::{validate_fields,text_search}` plus Azure Search SDK 11.5.2 | One configured-index text search, optional order/projection and Python result metadata | `client.rs::AzureSearchApi::text_search` retains the wire/result meaning while bounding `-1`, order clauses, selected fields, response bytes and total items and refusing continuation fanout |
+| SDK `AzureSearchApiWrapper::get_document` | Retrieve one key from the configured index with optional selected fields | `client.rs::AzureSearchApi::get_document` preserves the encoded key route and bounded provider dictionary |
+| SDK `AzureSearchToolkit` and shared `BaseAction` | Empty/subset selection, top-level null normalization, descriptions and `read` grouping | `tools.rs` plus the shared invocation/policy kernel expose exactly the two registered tools and apply the immutable deployment policy |
+
+Connection checking is contradictory upstream and is not reproduced. The
+configuration class has no check, the static catalog truthfully says
+`check_connection_supported=false`, and the legacy configuration path returns
+unsupported. The toolkit schema separately attaches a broken method that reads
+nonexistent top-level fields and probes Azure OpenAI deployments rather than
+Azure Search. Current Go Main's generic route also returns unconditional
+success and is not provider evidence. Rust exposes no check in this slice.
+
+Production registration remains disabled until the authorized tool materializer
+composes the family into both agent kinds and a credentialed component test
+proves real TLS/private-endpoint policy, exact index isolation, bounds, error
+redaction and configuration-driven sensitivity. A future truthful Search probe
+may reuse this family client, but must not revive the Azure OpenAI check.
 
 ## Special runtime toolsets
 
