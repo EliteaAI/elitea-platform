@@ -126,12 +126,12 @@ func (f *fakeNATS) fireStateChange(from, to gobreaker.State) {
 // ─── fake failmode.DB for in-memory snapshot reads ───────────────────────────
 
 type fakeDB struct {
-	row          failmode.Snapshot
-	rowErr       error
-	beginErr     error
-	beginCalls   int // counts calls to Begin (proxy for PersistOutageDelta invocations)
-	commitCalls  int // counts successful Commits — asserts the txn was actually committed
-	mu           sync.Mutex
+	row         failmode.Snapshot
+	rowErr      error
+	beginErr    error
+	beginCalls  int // counts calls to Begin (proxy for PersistOutageDelta invocations)
+	commitCalls int // counts successful Commits — asserts the txn was actually committed
+	mu          sync.Mutex
 }
 
 func (d *fakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
@@ -249,10 +249,10 @@ func (t *trackingNopTx) Rollback(_ context.Context) error { return nil }
 // ─── test helpers ─────────────────────────────────────────────────────────────
 
 const (
-	testProject = 7
-	testScope   = "project"
-	testScopeID = "42"
-	testPeriod  = int64(1_000_000)
+	testProject   = 7
+	testScope     = "project"
+	testScopeID   = "42"
+	testPeriod    = int64(1_000_000)
 	testPeriodEnd = int64(1_086_400) // +1 day
 )
 
@@ -802,8 +802,8 @@ func TestCheckBudget_PerProjectFailModeOverride(t *testing.T) {
 		AccumulatedNano: 10 * failmode.NanoUSD, // 10% spent — well under limit
 		SoftAlertPct:    80,
 		Found:           true,
-		Age:             1 * time.Minute,          // fresh
-		NatsFailMode:    failmode.ModeFailClosed,  // per-project override
+		Age:             1 * time.Minute,         // fresh
+		NatsFailMode:    failmode.ModeFailClosed, // per-project override
 	}}
 	gs := newStore(nc, db) // baseline is tiered_hybrid
 
@@ -1033,3 +1033,113 @@ func TestCheckBudget_OutageExceededMax_ResetsOnClosed(t *testing.T) {
 	}
 }
 
+// TestUpdateUsage_PublishesUsageDimensions covers the branch of usageDimsFor
+// that every other test in this file skips: they all pass nil dims, so only the
+// "no dimensions" half was exercised.
+//
+// It is not a coverage errand. This is the ONLY assertion on the gateway side
+// of the usage-ledger wire contract (issue #320). The consumer that reads these
+// bytes lives in another Go module — services/elitea-scheduler/internal/
+// budgetwriteback — so no compiler checks that the two structs agree. The JSON
+// KEYS below are transcribed from that package's UsageDimensions. A rename on
+// either side silently produces a delta whose usage object decodes to zeros,
+// and the per-model table then reports every call as 0 tokens.
+func TestUpdateUsage_PublishesUsageDimensions(t *testing.T) {
+	nc := newFakeNATS()
+	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
+	gs := newStore(nc, db)
+
+	userID := 7
+	dims := &failmode.UsageDimensions{
+		UserID:           &userID,
+		Provider:         "openai",
+		Model:            "gpt-4o",
+		PromptTokens:     11,
+		CompletionTokens: 22,
+		OccurredAtUnix:   1767225600,
+	}
+
+	const costNano = int64(3) * failmode.NanoUSD
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID,
+		"evt-dims", costNano, testPeriod, testPeriodEnd, dims); err != nil {
+		t.Fatalf("UpdateUsage: %v", err)
+	}
+
+	nc.mu.Lock()
+	published := append([][]byte(nil), nc.deltas...)
+	nc.mu.Unlock()
+	if len(published) != 1 {
+		t.Fatalf("published %d deltas, want 1", len(published))
+	}
+
+	// Decoded through a struct declared HERE with the scheduler's key names,
+	// not through the producer's own type. Decoding with usageDimsPayload would
+	// pass whatever that type happened to spell.
+	var envelope struct {
+		DeltaNanoUSD int64 `json:"delta_nano_usd"`
+		Usage        *struct {
+			UserID           *int   `json:"user_id"`
+			Provider         string `json:"provider"`
+			Model            string `json:"model"`
+			PromptTokens     int64  `json:"prompt_tokens"`
+			CompletionTokens int64  `json:"completion_tokens"`
+			OccurredAtUnix   int64  `json:"occurred_at"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(published[0], &envelope); err != nil {
+		t.Fatalf("decode delta %s: %v", published[0], err)
+	}
+	if envelope.Usage == nil {
+		t.Fatalf("delta carries no usage object; the ledger row would never be written: %s", published[0])
+	}
+	if envelope.Usage.UserID == nil || *envelope.Usage.UserID != userID {
+		t.Fatalf("usage.user_id = %v, want %d", envelope.Usage.UserID, userID)
+	}
+	if envelope.Usage.Provider != "openai" || envelope.Usage.Model != "gpt-4o" {
+		t.Fatalf("usage provider/model = (%q, %q), want (openai, gpt-4o)",
+			envelope.Usage.Provider, envelope.Usage.Model)
+	}
+	if envelope.Usage.PromptTokens != 11 || envelope.Usage.CompletionTokens != 22 {
+		t.Fatalf("usage tokens = (%d, %d), want (11, 22)",
+			envelope.Usage.PromptTokens, envelope.Usage.CompletionTokens)
+	}
+	if envelope.Usage.OccurredAtUnix != 1767225600 {
+		t.Fatalf("usage.occurred_at = %d, want the gateway's billing instant 1767225600",
+			envelope.Usage.OccurredAtUnix)
+	}
+	// The money is unchanged by the dimensions riding along.
+	if envelope.DeltaNanoUSD != costNano {
+		t.Fatalf("delta_nano_usd = %d, want %d", envelope.DeltaNanoUSD, costNano)
+	}
+}
+
+// TestUpdateUsage_OmitsTheUsageObjectWhenThereAreNoDimensions is the other half
+// of usageDimsFor, asserted rather than assumed.
+//
+// The member-scope delta of a request carries no dimensions, because the
+// project-scope delta already recorded them. `omitempty` on a nil pointer is
+// what keeps the key ABSENT rather than null, and absent is what the consumer
+// tests for before it writes a ledger row. A second row per request would
+// double every token and request count the per-model table reports.
+func TestUpdateUsage_OmitsTheUsageObjectWhenThereAreNoDimensions(t *testing.T) {
+	nc := newFakeNATS()
+	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
+	gs := newStore(nc, db)
+
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID,
+		"evt-no-dims", failmode.NanoUSD, testPeriod, testPeriodEnd, nil); err != nil {
+		t.Fatalf("UpdateUsage: %v", err)
+	}
+
+	nc.mu.Lock()
+	published := append([][]byte(nil), nc.deltas...)
+	nc.mu.Unlock()
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(published[0], &raw); err != nil {
+		t.Fatalf("decode delta: %v", err)
+	}
+	if _, present := raw["usage"]; present {
+		t.Fatalf("delta carries a usage key with no dimensions to report: %s", published[0])
+	}
+}
