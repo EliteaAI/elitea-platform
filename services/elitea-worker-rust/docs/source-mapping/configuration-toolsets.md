@@ -94,7 +94,7 @@ identity and `interrupt_id` state machines.
 | SDK `configurations/__init__.py` | Configuration registry and schemas | `src/configurations/registry.rs`, family modules | Registry/catalog golden and schema differential tests | Planned |
 | SDK `tools/__init__.py::{toolkit_config_schema,get_tools}` | Toolkit registry, selected tools, dispatch, blocked tools and metadata | `src/toolkits/registry.rs`, `src/toolkits/materialize.rs` | Complete family/tool inventory and invalid-selection tests | Planned |
 | SDK `runtime/toolkits/tools.py::get_tools` | Runtime toolsets before standard/community dispatch | `src/toolkits/materialize.rs` | Runtime/family dispatch tests | Planned |
-| SDK `tools/base/tool.py::BaseAction` and `tools/elitea_base.py::BaseToolApiWrapper.run` | Map selected tool name to bounded invocation | `src/toolkits/invocation.rs` | Argument schema, callback event, cancellation and safe-error tests | Planned |
+| SDK `tools/base/tool.py::BaseAction` and `tools/elitea_base.py::BaseToolApiWrapper.run` | Map selected tool name to bounded invocation | `src/toolkits/invocation.rs` | Native ADK metadata, top-level null normalization, bounds, cancellation and safe-error tests | Implemented shared kernel; family operations remain planned |
 | SDK `runtime/toolkits/security.py` | Separator-insensitive blocked toolkit/tool policy | `src/toolkits/policy.rs` | Alias, scope, bound and pre-materialization filter corpus | Implemented foundation; serve-time config generation swap remains planned |
 | SDK `runtime/middleware/sensitive_tool_guard.py` | Sensitive effect admission | `src/agents/sensitive_tools.rs` | Exact invocation-ID and at-most-once tests | Planned |
 
@@ -180,3 +180,35 @@ Non-overlapping batches are:
 9. SharePoint, Figma and PPTX as content-heavy independent batches.
 10. Special runtime toolsets as architecture work, not ordinary family ports.
 11. Shared indexing overlay last.
+
+## Shared executable boundary
+
+`src/toolkits/invocation.rs` deliberately wraps ADK-Rust 2.0.0's native
+`Tool` and returns its native `BasicToolset`; it is not a replacement toolkit
+framework. The wrapper freezes bounded model-visible action metadata, applies
+the immutable deployment blocklist to each concrete action, validates bounded
+object arguments, preserves the SDK's removal of top-level null optionals, and
+redacts delegated failures while retaining stable categories and retry hints.
+It owns no background task and performs no retry. Externally visible effects
+still require a family-specific effect identity or idempotency boundary because
+dropping a future cannot prove a remote effect did not happen. Expected,
+model-actionable business failures remain bounded structured tool results;
+`AdkError` is reserved for redacted infrastructure and control failures.
+
+The SDK toolkit families are still product functionality and will be ported,
+not replaced by configuration descriptors. Main retains the public
+`check_connection` routes, project authorization, configuration revision and
+audit/result contract. Its current handlers return unconditional success, while
+the Python `EliteaSdkConfigurationAdapter.check_connection` still performs the
+real family probe. The target route therefore delegates a bounded probe to the
+same claim-scoped family client used for execution instead of duplicating every
+vendor client in Go. If a future Main-owned connector uses the identical
+credential and egress boundary, that family can remain entirely in Main.
+
+Each Rust family owns configuration parsing needed by its client, claim-scoped
+materialization, the actual probe operation when delegated, and its concrete
+ADK tools. The first full family is the reference implementation before
+independent families are split into separate work. Sensitive-tool confirmation,
+MCP smart authorization, nested applications, code execution and indexing
+overlays remain separate capabilities because their durable authority and
+isolation rules differ from an ordinary function call.

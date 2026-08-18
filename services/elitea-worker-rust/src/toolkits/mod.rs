@@ -6,9 +6,12 @@
 
 #![allow(dead_code)] // Materialization remains capability-gated.
 
+mod invocation;
 mod policy;
 mod snapshot;
 
+#[cfg(test)]
+mod invocation_tests;
 #[cfg(test)]
 mod policy_tests;
 #[cfg(test)]
