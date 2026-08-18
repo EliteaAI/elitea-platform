@@ -12,10 +12,14 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::{Map, Value, json};
 
 use super::families::github::client::{
-    GitHubApi, GitHubClient, GitHubClientError, GitHubClientErrorCode, GitHubFileScope,
-    GitHubRequestKind, test_map_status, test_project_branches, test_project_issue_detail,
-    test_project_issue_list, test_project_issue_search, test_project_text_file,
-    test_project_tree_files, test_project_tree_sha, test_project_user, test_validate_file_path,
+    GitHubApi, GitHubClient, GitHubClientError, GitHubClientErrorCode, GitHubCommitQuery,
+    GitHubFileScope, GitHubRequestKind, test_map_status, test_project_branches,
+    test_project_issue_detail, test_project_issue_list, test_project_issue_search,
+    test_project_text_file, test_project_tree_files, test_project_tree_sha, test_project_user,
+    test_validate_file_path,
+};
+use super::families::github::commits::{
+    test_project_commit_changes, test_project_commit_comparison, test_project_commit_list,
 };
 use super::families::github::config::{GitHubAuthKind, GitHubToolkitConfig};
 use super::families::github::pull_requests::{
@@ -522,6 +526,181 @@ fn pull_request_fixture() -> Value {
 }
 
 #[test]
+fn commit_projection_preserves_the_sdk_fields_and_safe_fallbacks() {
+    let commit = commit_fixture();
+    assert_eq!(
+        test_project_commit_list(&json!([commit.clone()]), 1).expect("bounded commit list"),
+        json!([{
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "author": "Commit Author",
+            "date": "2026-08-18T10:00:00+00:00",
+            "message": "feat: bound commit inspection",
+            "url": "https://github.example.test/EliteaAI/elitea-platform/commit/aaaaaaaa"
+        }])
+    );
+    assert_eq!(
+        test_project_commit_changes(std::slice::from_ref(&commit)).expect("bounded commit changes"),
+        json!({
+            "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "commit_message": "feat: bound commit inspection",
+            "author": "Commit Author",
+            "date": "2026-08-18T10:00:00+00:00",
+            "total_files_changed": 1,
+            "total_additions": 2,
+            "total_deletions": 1,
+            "files": [{
+                "filename": "src/lib.rs",
+                "status": "modified",
+                "additions": 2,
+                "deletions": 1,
+                "changes": 3,
+                "patch": "@@ -1 +1 @@",
+                "blob_url": "https://github.example.test/blob/src/lib.rs",
+                "raw_url": null
+            }]
+        })
+    );
+
+    let mut fallback = commit;
+    fallback["commit"]["author"] = Value::Null;
+    fallback["author"] = json!({"login": "fallback-login"});
+    assert_eq!(
+        test_project_commit_list(&json!([fallback]), 1).expect("safe commit author fallback")[0]
+            .clone(),
+        json!({
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "author": "fallback-login",
+            "date": null,
+            "message": "feat: bound commit inspection",
+            "url": "https://github.example.test/EliteaAI/elitea-platform/commit/aaaaaaaa"
+        })
+    );
+}
+
+#[test]
+fn commit_comparison_requires_complete_bounded_collections() {
+    let base = commit_fixture_with_sha('a');
+    let head = commit_fixture_with_sha('b');
+    let file = head["files"][0].clone();
+    let comparison = json!({
+        "base_commit": base,
+        "status": "ahead",
+        "ahead_by": 1,
+        "behind_by": 0,
+        "total_commits": 1,
+        "commits": [head.clone()],
+        "files": [file]
+    });
+    assert_eq!(
+        test_project_commit_comparison(&comparison).expect("bounded comparison"),
+        json!({
+            "base_commit": {
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "message": "feat: bound commit inspection",
+                "author": "Commit Author",
+                "date": "2026-08-18T10:00:00+00:00"
+            },
+            "head_commit": {
+                "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "message": "feat: bound commit inspection",
+                "author": "Commit Author",
+                "date": "2026-08-18T10:00:00+00:00"
+            },
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+            "total_commits": 1,
+            "commits": [{
+                "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "author": "Commit Author",
+                "date": "2026-08-18T10:00:00+00:00",
+                "message": "feat: bound commit inspection",
+                "url": "https://github.example.test/EliteaAI/elitea-platform/commit/bbbbbbbb"
+            }],
+            "files": [{
+                "filename": "src/lib.rs",
+                "status": "modified",
+                "additions": 2,
+                "deletions": 1,
+                "changes": 3,
+                "patch": "@@ -1 +1 @@",
+                "blob_url": "https://github.example.test/blob/src/lib.rs",
+                "raw_url": null
+            }],
+            "summary": {
+                "total_files_changed": 1,
+                "total_additions": 2,
+                "total_deletions": 1
+            }
+        })
+    );
+
+    let identical = json!({
+        "base_commit": commit_fixture_with_sha('a'),
+        "status": "identical",
+        "ahead_by": 0,
+        "behind_by": 0,
+        "total_commits": 0,
+        "commits": [],
+        "files": []
+    });
+    assert!(test_project_commit_comparison(&identical).is_ok());
+
+    let behind = json!({
+        "base_commit": commit_fixture_with_sha('a'),
+        "merge_base_commit": commit_fixture_with_sha('b'),
+        "status": "behind",
+        "ahead_by": 0,
+        "behind_by": 1,
+        "total_commits": 0,
+        "commits": [],
+        "files": []
+    });
+    assert_eq!(
+        test_project_commit_comparison(&behind).expect("same-snapshot behind comparison")["head_commit"]
+            ["sha"],
+        json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    );
+
+    let mut too_many = comparison;
+    too_many["total_commits"] = json!(101);
+    assert!(test_project_commit_comparison(&too_many).is_err());
+}
+
+fn commit_fixture() -> Value {
+    commit_fixture_with_sha('a')
+}
+
+fn commit_fixture_with_sha(character: char) -> Value {
+    let sha = character.to_string().repeat(40);
+    json!({
+        "sha": sha,
+        "html_url": format!(
+            "https://github.example.test/EliteaAI/elitea-platform/commit/{}",
+            character.to_string().repeat(8)
+        ),
+        "commit": {
+            "message": "feat: bound commit inspection",
+            "author": {
+                "name": "Commit Author",
+                "date": "2026-08-18T10:00:00Z"
+            }
+        },
+        "author": null,
+        "files": [{
+            "filename": "src/lib.rs",
+            "status": "modified",
+            "additions": 2,
+            "deletions": 1,
+            "changes": 3,
+            "patch": "@@ -1 +1 @@",
+            "blob_url": "https://github.example.test/blob/src/lib.rs",
+            "raw_url": null
+        }]
+    })
+}
+
+#[test]
 fn github_rate_limits_remain_distinct_from_authorization_failures() {
     let permission = test_map_status(StatusCode::FORBIDDEN, &HeaderMap::new())
         .expect_err("plain forbidden must be an authorization failure");
@@ -997,6 +1176,125 @@ async fn native_pull_request_inspection_preserves_public_scope_and_limits() {
     );
 }
 
+#[tokio::test]
+async fn native_commit_inspection_normalizes_filters_and_accepts_general_refs() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    let selected = vec![
+        "get_commits".to_owned(),
+        "get_commit_changes".to_owned(),
+        "get_commits_diff".to_owned(),
+    ];
+    let toolset = test_build_with_api(
+        "team-github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &(client.clone() as Arc<dyn GitHubApi>),
+    )
+    .expect("native commit toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset.tools(readonly).await.expect("commit tools");
+
+    for (name, arguments) in [
+        (
+            "get_commits",
+            json!({
+                "repo_name": "EliteaAI/other",
+                "sha": "release/v2",
+                "path": "docs/",
+                "since": "2026-08-18T12:00:00+03:00",
+                "until": "2026-08-19",
+                "author": "octocat",
+                "max_count": 17
+            }),
+        ),
+        (
+            "get_commit_changes",
+            json!({"sha": "release/v2", "repo_name": "EliteaAI/other"}),
+        ),
+        (
+            "get_commits_diff",
+            json!({
+                "base_sha": "release/v1",
+                "head_sha": "release/v2",
+                "repo_name": "EliteaAI/other"
+            }),
+        ),
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .expect("selected commit tool");
+        assert!(tool.execute(context(), arguments).await.is_ok());
+    }
+    assert_eq!(
+        client
+            .commit_calls
+            .lock()
+            .expect("commit calls fixture lock")
+            .as_slice(),
+        &[
+            "list:EliteaAI/other:release/v2:docs/:2026-08-18T09:00:00Z:2026-08-19T00:00:00Z:octocat:17".to_owned(),
+            "changes:release/v2:EliteaAI/other".to_owned(),
+            "compare:release/v1:release/v2:EliteaAI/other".to_owned(),
+        ]
+    );
+
+    let list = tools
+        .iter()
+        .find(|tool| tool.name() == "get_commits")
+        .expect("get commits tool");
+    let calls_before = client
+        .commit_calls
+        .lock()
+        .expect("commit calls fixture lock")
+        .len();
+    assert!(
+        list.execute(
+            context(),
+            json!({"since": "2026-08-19", "until": "2026-08-18"}),
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        list.execute(context(), json!({"max_count": 101}))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        client
+            .commit_calls
+            .lock()
+            .expect("commit calls fixture lock")
+            .len(),
+        calls_before
+    );
+    assert_commit_tool_schemas(&tools);
+}
+
+fn assert_commit_tool_schemas(tools: &[Arc<dyn Tool>]) {
+    let list = tools
+        .iter()
+        .find(|tool| tool.name() == "get_commits")
+        .expect("get commits tool");
+    assert_eq!(
+        list.parameters_schema()
+            .and_then(|schema| schema.pointer("/properties/max_count/maximum").cloned()),
+        Some(json!(100))
+    );
+    let comparison = tools
+        .iter()
+        .find(|tool| tool.name() == "get_commits_diff")
+        .expect("compare commits tool");
+    assert_eq!(
+        comparison
+            .parameters_schema()
+            .and_then(|schema| schema.get("required").cloned()),
+        Some(json!(["base_sha", "head_sha"]))
+    );
+}
+
 #[test]
 fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
@@ -1024,6 +1322,7 @@ struct FixtureGitHubApi {
     file_list_calls: Mutex<Vec<FileListCall>>,
     issue_calls: Mutex<Vec<String>>,
     pull_request_calls: Mutex<Vec<String>>,
+    commit_calls: Mutex<Vec<String>>,
 }
 
 type FileCall = (String, Option<String>, Option<String>);
@@ -1153,5 +1452,53 @@ impl GitHubApi for FixtureGitHubApi {
                 repository.unwrap_or("default")
             ));
         Ok(json!([]))
+    }
+
+    async fn list_commits(&self, query: GitHubCommitQuery) -> Result<Value, GitHubClientError> {
+        self.commit_calls
+            .lock()
+            .expect("commit calls fixture lock")
+            .push(format!(
+                "list:{}:{}:{}:{}:{}:{}:{}",
+                query.repository.as_deref().unwrap_or("default"),
+                query.reference.as_deref().unwrap_or("default"),
+                query.path.as_deref().unwrap_or("none"),
+                query.since.as_deref().unwrap_or("none"),
+                query.until.as_deref().unwrap_or("none"),
+                query.author.as_deref().unwrap_or("none"),
+                query.max_count,
+            ));
+        Ok(json!([]))
+    }
+
+    async fn get_commit_changes(
+        &self,
+        reference: &str,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        self.commit_calls
+            .lock()
+            .expect("commit calls fixture lock")
+            .push(format!(
+                "changes:{reference}:{}",
+                repository.unwrap_or("default")
+            ));
+        Ok(json!({"commit_sha": reference}))
+    }
+
+    async fn compare_commits(
+        &self,
+        base_reference: &str,
+        head_reference: &str,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        self.commit_calls
+            .lock()
+            .expect("commit calls fixture lock")
+            .push(format!(
+                "compare:{base_reference}:{head_reference}:{}",
+                repository.unwrap_or("default")
+            ));
+        Ok(json!({"status": "ahead"}))
     }
 }

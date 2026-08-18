@@ -4,13 +4,16 @@ use std::sync::Arc;
 use adk_rust::tool::BasicToolset;
 use adk_rust::{AdkError, ErrorCategory, ErrorComponent, Tool, ToolContext};
 use async_trait::async_trait;
+use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use regex::{Regex, RegexBuilder};
 use serde_json::{Map, Value, json};
 
 use crate::toolkits::invocation::{MaterializedToolsetError, admit_materialized_toolset};
 use crate::toolkits::policy::ToolAdmissionPolicy;
 
-use super::client::{GitHubApi, GitHubClient, GitHubClientError, GitHubFileScope};
+use super::client::{
+    GitHubApi, GitHubClient, GitHubClientError, GitHubCommitQuery, GitHubFileScope,
+};
 use super::config::{GitHubToolkitConfig, GitHubToolkitConfigError};
 
 const GET_ME: &str = "get_me";
@@ -27,6 +30,9 @@ const SEARCH_ISSUES: &str = "search_issues";
 const LIST_PULL_REQUESTS: &str = "list_open_pull_requests";
 const GET_PULL_REQUEST: &str = "get_pull_request";
 const LIST_PULL_REQUEST_DIFFS: &str = "list_pull_request_diffs";
+const LIST_COMMITS: &str = "get_commits";
+const GET_COMMIT_CHANGES: &str = "get_commit_changes";
+const COMPARE_COMMITS: &str = "get_commits_diff";
 const MAX_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_OUTPUT_CHARS: usize = 200_000;
 const MAX_BATCH_FILES: usize = 32;
@@ -111,7 +117,7 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
 /// Build the capability-disabled first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. Fourteen explicitly selected ordinary read
+/// until the full family is ported. Seventeen explicitly selected ordinary read
 /// operations can use this path. The production capability remains disabled
 /// until sensitive effects, the rest of the read catalog, GitHub App
 /// installation auth and cross-process TLS integration are complete.
@@ -150,6 +156,9 @@ fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
                     | LIST_PULL_REQUESTS
                     | GET_PULL_REQUEST
                     | LIST_PULL_REQUEST_DIFFS
+                    | LIST_COMMITS
+                    | GET_COMMIT_CHANGES
+                    | COMPARE_COMMITS
             )
         })
     {
@@ -184,6 +193,9 @@ fn build_with_api(
             LIST_PULL_REQUESTS => GitHubReadToolKind::ListPullRequests,
             GET_PULL_REQUEST => GitHubReadToolKind::GetPullRequest,
             LIST_PULL_REQUEST_DIFFS => GitHubReadToolKind::ListPullRequestDiffs,
+            LIST_COMMITS => GitHubReadToolKind::ListCommits,
+            GET_COMMIT_CHANGES => GitHubReadToolKind::GetCommitChanges,
+            COMPARE_COMMITS => GitHubReadToolKind::CompareCommits,
             _ => {
                 return Err(GitHubToolsetError {
                     code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -216,6 +228,9 @@ enum GitHubReadToolKind {
     ListPullRequests,
     GetPullRequest,
     ListPullRequestDiffs,
+    ListCommits,
+    GetCommitChanges,
+    CompareCommits,
 }
 
 struct GitHubReadTool {
@@ -270,6 +285,15 @@ impl GitHubReadTool {
             GitHubReadToolKind::ListPullRequestDiffs => {
                 "List bounded changed-file metadata and GitHub patch fragments for one pull request."
             }
+            GitHubReadToolKind::ListCommits => {
+                "List up to 100 commits using bounded repository, ref, path, date and author filters."
+            }
+            GitHubReadToolKind::GetCommitChanges => {
+                "Inspect one commit and its bounded, complete changed-file projection."
+            }
+            GitHubReadToolKind::CompareCommits => {
+                "Compare two refs with bounded commit and changed-file summaries."
+            }
         };
         let description = bounded_description(&format!(
             "Toolkit: {toolkit_name}\nRepository: {repository}\n{action}"
@@ -300,6 +324,9 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ListPullRequests => LIST_PULL_REQUESTS,
             GitHubReadToolKind::GetPullRequest => GET_PULL_REQUEST,
             GitHubReadToolKind::ListPullRequestDiffs => LIST_PULL_REQUEST_DIFFS,
+            GitHubReadToolKind::ListCommits => LIST_COMMITS,
+            GitHubReadToolKind::GetCommitChanges => GET_COMMIT_CHANGES,
+            GitHubReadToolKind::CompareCommits => COMPARE_COMMITS,
         }
     }
 
@@ -332,6 +359,9 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::GetPullRequest | GitHubReadToolKind::ListPullRequestDiffs => {
                 get_pull_request_schema()
             }
+            GitHubReadToolKind::ListCommits => list_commits_schema(),
+            GitHubReadToolKind::GetCommitChanges => get_commit_changes_schema(),
+            GitHubReadToolKind::CompareCommits => compare_commits_schema(),
         })
     }
 
@@ -405,6 +435,11 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ListPullRequestDiffs => {
                 self.execute_list_pull_request_diffs(arguments).await
             }
+            GitHubReadToolKind::ListCommits => self.execute_list_commits(arguments).await,
+            GitHubReadToolKind::GetCommitChanges => {
+                self.execute_get_commit_changes(arguments).await
+            }
+            GitHubReadToolKind::CompareCommits => self.execute_compare_commits(arguments).await,
         }
     }
 }
@@ -648,6 +683,77 @@ fn get_pull_request_schema() -> Value {
     })
 }
 
+fn list_commits_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "repo_name": optional_string_schema(512, "Optional repository in owner/name form."),
+            "sha": optional_string_schema(1024, "Commit SHA, branch, or tag to list from."),
+            "path": optional_string_schema(4096, "File or directory path filter."),
+            "since": optional_string_schema(64, "Inclusive lower ISO-8601 date or timestamp."),
+            "until": optional_string_schema(64, "Inclusive upper ISO-8601 date or timestamp."),
+            "author": optional_string_schema(1024, "GitHub username or email author filter."),
+            "max_count": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "maximum": 100,
+                "default": 30,
+                "description": "Maximum number of commits to return."
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn get_commit_changes_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "sha": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "description": "Commit SHA, branch, or tag to inspect."
+            },
+            "repo_name": optional_string_schema(512, "Optional repository in owner/name form.")
+        },
+        "required": ["sha"],
+        "additionalProperties": false
+    })
+}
+
+fn compare_commits_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "base_sha": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "description": "Base commit SHA, branch, or tag."
+            },
+            "head_sha": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "description": "Head commit SHA, branch, or tag."
+            },
+            "repo_name": optional_string_schema(512, "Optional repository in owner/name form.")
+        },
+        "required": ["base_sha", "head_sha"],
+        "additionalProperties": false
+    })
+}
+
+fn optional_string_schema(max_length: usize, description: &str) -> Value {
+    json!({
+        "type": ["string", "null"],
+        "minLength": 1,
+        "maxLength": max_length,
+        "description": description
+    })
+}
+
 impl GitHubReadTool {
     async fn execute_read_file(&self, arguments: &Map<String, Value>) -> adk_rust::Result<Value> {
         reject_unknown_keys(
@@ -872,6 +978,80 @@ impl GitHubReadTool {
             .await
             .map_err(GitHubClientError::into_adk)
     }
+
+    async fn execute_list_commits(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        reject_unknown_keys(
+            arguments,
+            &[
+                "repo_name",
+                "sha",
+                "path",
+                "since",
+                "until",
+                "author",
+                "max_count",
+            ],
+        )?;
+        let repository = optional_text(arguments, "repo_name", 512)?.map(ToOwned::to_owned);
+        let reference = optional_text(arguments, "sha", 1_024)?.map(ToOwned::to_owned);
+        let path = optional_text(arguments, "path", 4 * 1_024)?.map(ToOwned::to_owned);
+        let author = optional_text(arguments, "author", 1_024)?.map(ToOwned::to_owned);
+        let since = optional_commit_boundary(arguments, "since")?;
+        let until = optional_commit_boundary(arguments, "until")?;
+        if since
+            .as_ref()
+            .zip(until.as_ref())
+            .is_some_and(|(since, until)| since.0 > until.0)
+        {
+            return Err(invalid_arguments());
+        }
+        let max_count = optional_positive_usize(arguments, "max_count")?.unwrap_or(30);
+        if max_count > 100 {
+            return Err(invalid_arguments());
+        }
+        self.client
+            .list_commits(GitHubCommitQuery {
+                repository,
+                reference,
+                path,
+                since: since.map(|boundary| boundary.1),
+                until: until.map(|boundary| boundary.1),
+                author,
+                max_count,
+            })
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
+
+    async fn execute_get_commit_changes(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["sha", "repo_name"])?;
+        let reference = required_text(arguments, "sha", 1_024)?;
+        let repository = optional_text(arguments, "repo_name", 512)?;
+        self.client
+            .get_commit_changes(reference, repository)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
+
+    async fn execute_compare_commits(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["base_sha", "head_sha", "repo_name"])?;
+        let base = required_text(arguments, "base_sha", 1_024)?;
+        let head = required_text(arguments, "head_sha", 1_024)?;
+        let repository = optional_text(arguments, "repo_name", 512)?;
+        self.client
+            .compare_commits(base, head, repository)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
 }
 
 fn reject_unknown_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> adk_rust::Result<()> {
@@ -899,6 +1079,25 @@ fn optional_text<'a>(
         None | Some(Value::Null) => Ok(None),
         Some(value) => validate_text_value(value, max_bytes).map(Some),
     }
+}
+
+fn optional_commit_boundary(
+    arguments: &Map<String, Value>,
+    key: &str,
+) -> adk_rust::Result<Option<(DateTime<Utc>, String)>> {
+    let Some(raw) = optional_text(arguments, key, 64)? else {
+        return Ok(None);
+    };
+    let timestamp = if let Ok(date) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        let midnight = date.and_hms_opt(0, 0, 0).ok_or_else(invalid_arguments)?;
+        DateTime::<Utc>::from_naive_utc_and_offset(midnight, Utc)
+    } else {
+        DateTime::parse_from_rfc3339(raw)
+            .map_err(|_| invalid_arguments())?
+            .with_timezone(&Utc)
+    };
+    let canonical = timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
+    Ok(Some((timestamp, canonical)))
 }
 
 fn validate_text_value(value: &Value, max_bytes: usize) -> adk_rust::Result<&str> {

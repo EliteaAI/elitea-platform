@@ -13,6 +13,10 @@ use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
+use super::commits::{
+    COMMIT_FILES_PER_PAGE, MAX_COMMIT_FILES, MAX_COMMITS, append_commit_file_page,
+    commit_response_sha, finish_commit_changes, project_commit_comparison, project_commit_list,
+};
 use super::config::{GitHubAuthKind, GitHubToolkitConfig};
 use super::pull_requests::{
     MAX_PULL_REQUEST_FILES, MAX_PULL_REQUESTS, PULL_REQUEST_FILES_PER_PAGE,
@@ -41,6 +45,8 @@ const MAX_ISSUE_METADATA_BYTES: usize = 1_024;
 const MAX_ISSUE_COLLECTION_ITEMS: usize = 100;
 const MAX_SEARCH_QUERY_BYTES: usize = 4 * 1_024;
 const MAX_PULL_REQUEST_FILE_PAGE_BYTES: usize = 2 * 1_024 * 1_024;
+const MAX_COMMIT_PAGE_BYTES: usize = 2 * 1_024 * 1_024;
+const MAX_COMMIT_REF_BYTES: usize = 1_024;
 const MAX_BRANCHES: usize = 100;
 const MAX_BRANCH_BYTES: usize = 1_024;
 const MAX_FILE_PATH_BYTES: usize = 4 * 1_024;
@@ -231,6 +237,21 @@ pub(crate) trait GitHubApi: Send + Sync {
         pull_request_number: u64,
         repository: Option<&str>,
     ) -> Result<Value, GitHubClientError>;
+
+    async fn list_commits(&self, query: GitHubCommitQuery) -> Result<Value, GitHubClientError>;
+
+    async fn get_commit_changes(
+        &self,
+        reference: &str,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError>;
+
+    async fn compare_commits(
+        &self,
+        base_reference: &str,
+        head_reference: &str,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError>;
 }
 
 /// Selects one of the two immutable branches admitted with the toolkit.
@@ -238,6 +259,17 @@ pub(crate) trait GitHubApi: Send + Sync {
 pub(in crate::toolkits) enum GitHubFileScope {
     BaseBranch,
     ActiveBranch,
+}
+
+/// Validated, bounded query for the current commit-list tool.
+pub(in crate::toolkits) struct GitHubCommitQuery {
+    pub(in crate::toolkits) repository: Option<String>,
+    pub(in crate::toolkits) reference: Option<String>,
+    pub(in crate::toolkits) path: Option<String>,
+    pub(in crate::toolkits) since: Option<String>,
+    pub(in crate::toolkits) until: Option<String>,
+    pub(in crate::toolkits) author: Option<String>,
+    pub(in crate::toolkits) max_count: usize,
 }
 
 /// One invocation-scoped, pooled and origin-bound GitHub client.
@@ -682,6 +714,106 @@ impl GitHubApi for GitHubClient {
             append_pull_request_file_page(&response, &mut files)?;
         }
         finish_pull_request_files(files, expected_count)
+    }
+
+    async fn list_commits(&self, query: GitHubCommitQuery) -> Result<Value, GitHubClientError> {
+        if query.max_count == 0 || query.max_count > MAX_COMMITS {
+            return Err(invalid_configuration());
+        }
+        let repository = query
+            .repository
+            .as_deref()
+            .unwrap_or_else(|| self.config.repository());
+        let (owner, repository) = validate_repository(repository)?;
+        let mut parameters = Vec::with_capacity(8);
+        for (name, value) in [
+            ("sha", query.reference),
+            ("path", query.path),
+            ("since", query.since),
+            ("until", query.until),
+            ("author", query.author),
+        ] {
+            if let Some(value) = value {
+                validate_runtime_text(&value, MAX_FILE_PATH_BYTES)?;
+                parameters.push((name, value));
+            }
+        }
+        parameters.push(("per_page", query.max_count.to_string()));
+        parameters.push(("page", "1".to_owned()));
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "commits"],
+                &parameters,
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        project_commit_list(&response, query.max_count)
+    }
+
+    async fn get_commit_changes(
+        &self,
+        reference: &str,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        validate_runtime_text(reference, MAX_COMMIT_REF_BYTES)?;
+        let repository = repository.unwrap_or_else(|| self.config.repository());
+        let (owner, repository) = validate_repository(repository)?;
+        let mut first_page = None;
+        let mut expected_sha = None;
+        let mut files = Vec::new();
+        for page in 1..=(MAX_COMMIT_FILES / COMMIT_FILES_PER_PAGE + 1) {
+            let response = self
+                .get_json(
+                    GitHubRequestKind::Repository,
+                    &["repos", owner, repository, "commits", reference],
+                    &[
+                        ("per_page", COMMIT_FILES_PER_PAGE.to_string()),
+                        ("page", page.to_string()),
+                    ],
+                    MAX_COMMIT_PAGE_BYTES,
+                )
+                .await?;
+            let sha = if let Some(sha) = expected_sha.as_deref() {
+                sha
+            } else {
+                expected_sha = Some(commit_response_sha(&response)?);
+                expected_sha.as_deref().ok_or_else(invalid_response)?
+            };
+            let page_len = append_commit_file_page(&response, sha, &mut files)?;
+            if first_page.is_none() {
+                first_page = Some(response);
+            }
+            if page_len < COMMIT_FILES_PER_PAGE {
+                break;
+            }
+        }
+        finish_commit_changes(first_page.as_ref().ok_or_else(invalid_response)?, &files)
+    }
+
+    async fn compare_commits(
+        &self,
+        base_reference: &str,
+        head_reference: &str,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        validate_runtime_text(base_reference, MAX_COMMIT_REF_BYTES)?;
+        validate_runtime_text(head_reference, MAX_COMMIT_REF_BYTES)?;
+        let repository = repository.unwrap_or_else(|| self.config.repository());
+        let (owner, repository) = validate_repository(repository)?;
+        let comparison_reference = format!("{base_reference}...{head_reference}");
+        let comparison = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "compare", &comparison_reference],
+                &[
+                    ("per_page", MAX_COMMITS.to_string()),
+                    ("page", "1".to_owned()),
+                ],
+                MAX_COMMIT_PAGE_BYTES,
+            )
+            .await?;
+        project_commit_comparison(&comparison)
     }
 }
 
