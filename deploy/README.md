@@ -51,6 +51,50 @@ frontend. Migrations are not their own wave: `elitea-main`'s chart runs them as
 a `pre-install,pre-upgrade` Helm hook Job, and Helm blocks the release until it
 completes, so the ordering is enforced *inside* wave 1.
 
+## Distribution — the charts are published to GHCR as OCI artifacts
+
+Every chart in the table above is packaged and pushed on each release by the
+`chart` job in `.github/workflows/publish.yml`, next to the images:
+
+```
+oci://ghcr.io/eliteaai/charts/<chart>
+```
+
+Install without cloning this repository:
+
+```bash
+helm install elitea-main oci://ghcr.io/eliteaai/charts/elitea-main --version 1.2.3
+```
+
+Four properties of the published artifact that the in-repo chart does not have:
+
+- **`--version` is required in practice.** There is no `latest` chart tag, and
+  there will not be one: an OCI chart reference resolves by SemVer, so a
+  non-SemVer tag is a foot-gun for every tool that enumerates the repository.
+  The in-repo `Chart.yaml` files all stay at the placeholder `0.1.0`; only the
+  packaged artifact carries a release number.
+- **`image.tag` defaults to the chart version**, for the five charts whose
+  image this repository publishes. The in-repo default is `"latest"` with
+  `pullPolicy: IfNotPresent`, which means a node holding an older cached
+  `latest` layer keeps serving it — the release job stamps the tag at package
+  time so the published chart cannot install that way.
+- **`appVersion` tracks the platform release** for those same five charts. The
+  charts that deploy a third-party image (`nats`, `nats-bootstrap`,
+  `otel-collector`) keep their deliberate upstream pin, because a platform
+  release number means nothing to those images' registries.
+- **Charts are cosign-signed**, keyless, exactly as the images are:
+
+  ```bash
+  cosign verify ghcr.io/eliteaai/charts/elitea-main:1.2.3 \
+    --certificate-identity-regexp '^https://github.com/eliteaai/elitea-platform/' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  ```
+
+The job runs after the images are pushed and signed, so a chart never reaches
+the registry referencing a tag that does not exist yet. If any part of a
+release fails, the rollback job deletes the pushed charts along with the
+images.
+
 ## Capability flags — what a Helm install serves (#382)
 
 `cmd/elitea-main` gates whole capabilities on environment variables. Each
@@ -359,7 +403,13 @@ first. It rewraps the project key and never rewrites the secret values.
    charts are picked up automatically. The job also runs
    `deploy/helm/elitea-main/tests/render-capabilities.sh`, because `helm lint`
    never reads the rendered environment: it stayed green for as long as the
-   chart set no capability flag at all (#382).
+   chart set no capability flag at all (#382). Two coverage checks live here
+   rather than in the jobs they guard: every chart directory must appear in
+   the **Helm Template** matrix below or be excluded by name with a reason,
+   and every chart directory must appear in the `chart` matrix of
+   `publish.yml`. A chart that no release publishes is a chart nobody outside
+   this repository can install, and neither `helm lint` nor the template
+   matrix would ever go red for it.
 2. **Helm Template (per chart)** — `helm template` with the chart's values
    files, *and* a second pass with its non-default toggles (HPA, PVC, optional
    Services and probes, hook Jobs render zero objects otherwise, so a break in

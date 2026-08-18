@@ -12,6 +12,9 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io/eliteaai
+  # Read by the chart job. Pinned, not "latest" — an unpinned third-party
+  # download is a hard dependency of every release.
+  YQ_VERSION: v4.44.6
 
 permissions:
   contents: write
@@ -354,10 +357,210 @@ jobs:
 
           cosign sign --yes "${IMAGE}@${DIGEST}"
 
-  # ── Job 5: Rollback — delete release, tag, and images on failure ────────────
+  # ── Job 5: Package and push the Helm charts to the GHCR OCI registry ────────
+  # The images are only half of a release. Until this job existed, a consumer
+  # could `docker pull ghcr.io/eliteaai/elitea-main:1.2.3` but had no way to
+  # obtain the chart that deploys it other than cloning this repository at the
+  # matching tag — which is not a distribution channel, it is a workaround.
+  #
+  # `needs: sign` on purpose, not `needs: release`. A chart whose values point
+  # at an image tag that does not exist yet is a chart that cannot install, so
+  # the charts go out strictly after the manifests they reference are pushed
+  # and signed.
+  #
+  # No `latest` chart tag, unlike the image manifests above: an OCI chart
+  # reference resolves by SemVer version, `helm pull --version latest` is not
+  # a thing, and a non-SemVer tag in a chart repository is a foot-gun for
+  # every tool that enumerates it. Consumers pin `--version`.
+  chart:
+    name: Chart ${{ matrix.chart }}
+    needs: [release, sign]
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `image:` names the image THIS workflow publishes for the chart, and
+          # it is what makes the chart's default `image.tag` get stamped with
+          # the release version below. Leave it empty for a chart that deploys
+          # a third-party image: stamping those would replace a deliberate
+          # upstream pin (NATS 2.12.0, otel-collector 0.114.0) with a version
+          # number that means nothing to that image's registry.
+          - chart: elitea-main
+            image: elitea-main
+          - chart: elitea-scheduler
+            image: elitea-scheduler
+          - chart: elitea-web
+            image: elitea-web
+          - chart: elitea-llm-gateway
+            image: elitea-llm-gateway
+          - chart: pylon-indexer
+            image: pylon-indexer
+          # Vendors the upstream nats subchart, so packaging it needs
+          # `helm dependency build` and network access to the upstream repo.
+          # The step below runs it for any chart that declares dependencies.
+          - chart: nats
+            image: ""
+          - chart: nats-bootstrap
+            image: ""
+          - chart: otel-collector
+            image: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.new_release_git_tag }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.16.0
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      # Pinned for the same reason ci-helm pins it: an unpinned third-party
+      # download is a hard dependency of every release. The runner image
+      # usually ships yq already, so this normally downloads nothing.
+      - name: Install yq
+        run: |
+          if ! command -v yq >/dev/null 2>&1; then
+            sudo wget -qO /usr/local/bin/yq \
+              "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          yq --version
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # Chart.yaml and values.yaml are BOTH edited, rather than passing
+      # `helm package --version/--app-version`. Those flags exist in Helm 3 and
+      # were dropped in Helm 4, so a routine bump of the pinned Helm above
+      # would turn this job red — or, if a future edit ever drops the pin,
+      # publish every chart at the placeholder 0.1.0. yq works on both.
+      #
+      # The working tree keeps the placeholder 0.1.0; only the packaged
+      # artifact carries a release number.
+      #
+      # values.yaml matters just as much as the version: a chart published at
+      # 1.2.3 whose default `image.tag` is still "latest" installs whatever a
+      # node happens to have cached — the exact trap the elitea-web values.yaml
+      # comment already warns operators about.
+      #
+      # Every edit is read back. An unstamped chart that publishes and reports
+      # success is worse than a failed release, and a values.yaml that reshapes
+      # its image block is the way that happens quietly.
+      - name: Stamp the release version into the chart
+        run: |
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          CHART="deploy/helm/${{ matrix.chart }}/Chart.yaml"
+          VALUES="deploy/helm/${{ matrix.chart }}/values.yaml"
+
+          yq -i ".version = \"${VERSION}\"" "$CHART"
+          got="$(yq -r '.version' "$CHART")"
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error file=${CHART}::version is '${got}', expected '${VERSION}'"
+            exit 1
+          fi
+
+          # appVersion tracks the platform release ONLY for a chart that ships
+          # an image from this repository. For a chart that deploys a
+          # third-party image it keeps the deliberate upstream pin already
+          # written in Chart.yaml (NATS 2.12.0, otel-collector 0.114.0) — a
+          # release number means nothing to those images' registries.
+          if [ -n "${{ matrix.image }}" ]; then
+            yq -i ".appVersion = \"${VERSION}\"" "$CHART"
+            got="$(yq -r '.appVersion' "$CHART")"
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error file=${CHART}::appVersion is '${got}', expected '${VERSION}'"
+              exit 1
+            fi
+
+            before="$(yq -r '.image.tag' "$VALUES")"
+            if [ "$before" = "null" ]; then
+              echo "::error file=${VALUES}::no .image.tag to stamp — the chart's image block moved"
+              exit 1
+            fi
+            yq -i ".image.tag = \"${VERSION}\"" "$VALUES"
+            got="$(yq -r '.image.tag' "$VALUES")"
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error file=${VALUES}::image.tag is '${got}', expected '${VERSION}'"
+              exit 1
+            fi
+
+            # The image the stamped tag names must be one this workflow
+            # actually pushed. A repository that drifted from the build matrix
+            # produces a chart pointing at a tag that will never exist.
+            repo="$(yq -r '.image.repository' "$VALUES")"
+            if [ "$repo" != "${REGISTRY}/${{ matrix.image }}" ]; then
+              echo "::error file=${VALUES}::image.repository is '${repo}', expected '${REGISTRY}/${{ matrix.image }}'"
+              exit 1
+            fi
+
+            echo "stamped ${VALUES}: image.tag ${before} -> ${VERSION}"
+          fi
+
+          yq '{"version": .version, "appVersion": .appVersion}' "$CHART"
+
+      - name: Build chart dependencies
+        run: |
+          CHART_DIR="deploy/helm/${{ matrix.chart }}"
+          if [ "$(yq -r '.dependencies // [] | length' "${CHART_DIR}/Chart.yaml")" -gt 0 ]; then
+            helm dependency build "$CHART_DIR"
+          else
+            echo "no dependencies declared"
+          fi
+
+      - name: Package chart
+        run: |
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          helm package "deploy/helm/${{ matrix.chart }}" --destination /tmp/charts
+          ls -l "/tmp/charts/${{ matrix.chart }}-${VERSION}.tgz"
+
+      - name: Push chart and sign it
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          TGZ="/tmp/charts/${{ matrix.chart }}-${VERSION}.tgz"
+
+          # `helm push` prints the pushed digest on stderr. Capture it here
+          # rather than re-resolving the tag afterwards, so the signature is
+          # bound to the artifact this job pushed and not to whatever the tag
+          # points at by the time the next step runs.
+          # `bash -e` — the default shell here — takes the exit status of the
+          # LAST command in a pipeline, so `helm push | tee` would report
+          # success for a push that failed. pipefail for the push itself, then
+          # off again so the digest grep below reaches its own error message
+          # instead of aborting the step silently.
+          set -o pipefail
+          helm push "$TGZ" "oci://${REGISTRY}/charts" 2>&1 | tee /tmp/push.log
+          set +o pipefail
+
+          DIGEST="$(grep -oE 'sha256:[0-9a-f]{64}' /tmp/push.log | head -1)"
+          if [ -z "$DIGEST" ]; then
+            echo "::error::helm push printed no digest — refusing to sign an unknown artifact"
+            exit 1
+          fi
+
+          cosign sign --yes "${REGISTRY}/charts/${{ matrix.chart }}@${DIGEST}"
+
+      # A push that reported success and a chart a consumer can actually pull
+      # are different claims. This asserts the second one, from the registry.
+      - name: The published chart is pullable
+        run: |
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          helm show chart "oci://${REGISTRY}/charts/${{ matrix.chart }}" --version "$VERSION"
+
+  # ── Job 6: Rollback — delete release, tag, and images on failure ────────────
   rollback:
     name: Rollback
-    needs: [release, build, manifest, sign]
+    needs: [release, build, manifest, sign, chart]
     if: failure() && needs.release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -415,6 +618,30 @@ jobs:
               --jq ".[] | select(.metadata.container.tags[] == \"${VERSION}\") | .id" 2>/dev/null || true)
             if [ -n "$VERSION_ID" ]; then
               gh api -X DELETE "orgs/${ORG}/packages/container/${img}/versions/${VERSION_ID}" 2>/dev/null || true
+            fi
+          done
+
+          echo "Image rollback complete."
+
+      # The charts are pushed under a `charts/` path prefix, so their GHCR
+      # package names are `charts/<chart>` and the API path segment must be
+      # URL-encoded (`charts%2F<chart>`). Without this the release would roll
+      # back its images and leave a chart published at a version whose images
+      # no longer exist — a chart that installs into a permanent ImagePullBackOff.
+      - name: Delete pushed charts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          CHARTS=("elitea-main" "elitea-scheduler" "elitea-web" "elitea-llm-gateway" "pylon-indexer" "nats" "nats-bootstrap" "otel-collector")
+          ORG="eliteaai"
+
+          for chart in "${CHARTS[@]}"; do
+            echo "Deleting chart ${chart}:${VERSION}..."
+            VERSION_ID=$(gh api "orgs/${ORG}/packages/container/charts%2F${chart}/versions" \
+              --jq ".[] | select(.metadata.container.tags[] == \"${VERSION}\") | .id" 2>/dev/null || true)
+            if [ -n "$VERSION_ID" ]; then
+              gh api -X DELETE "orgs/${ORG}/packages/container/charts%2F${chart}/versions/${VERSION_ID}" 2>/dev/null || true
             fi
           done
 

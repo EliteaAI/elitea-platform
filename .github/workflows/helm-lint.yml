@@ -15,6 +15,11 @@ on:
       # The LLM-path gate below compares the charts with the standalone compose
       # file. A change to that file alone must run the gate that reads it.
       - "deploy/docker-compose.standalone-full.yml"
+      # The publish-coverage gate below reads the chart matrix out of
+      # publish.yml. Without this path a pull request that drops a chart from
+      # that matrix and touches nothing under deploy/helm/ never runs the gate
+      # that exists to catch it — the #429/#518 shape again.
+      - ".github/workflows/publish.yml"
   push:
     branches:
       - main
@@ -23,6 +28,7 @@ on:
       - "deploy/argocd/**"
       - "services/elitea-main/internal/runtimecomposition/**"
       - "deploy/docker-compose.standalone-full.yml"
+      - ".github/workflows/publish.yml"
       # This workflow's own file. The pull_request arm above names it and this
       # arm did not, so a push that edited only the gate could not start the
       # gate it edited (#518).
@@ -189,6 +195,47 @@ jobs:
             exit 1
           fi
           echo "chart coverage: $found chart(s), all templated or excluded on purpose"
+
+      # A chart that no release publishes is a chart nobody outside this
+      # repository can install. `helm lint` and the template matrix both stay
+      # green for it, because neither one asks whether the chart is
+      # distributed — the same "absence reads as correctness" shape the two
+      # coverage checks above exist for.
+      #
+      # This reads the chart matrix out of publish.yml, so adding a chart
+      # directory fails here until somebody either publishes it or writes down
+      # why it must not be published.
+      - name: Every chart is published or excluded on purpose
+        run: |
+          # Charts deliberately not pushed to the OCI registry, with the
+          # reason. Empty today: all eight charts are published.
+          excluded=""
+          published="$(grep -oE '^ +- chart: [a-z0-9-]+' .github/workflows/publish.yml \
+                        | awk '{print $3}' | tr '\n' ' ')"
+          if [ -z "$published" ]; then
+            echo "::error::read no chart name out of publish.yml — this check measured nothing"
+            exit 1
+          fi
+          found=0
+          missing=""
+          for chart in deploy/helm/*/Chart.yaml; do
+            [ -f "$chart" ] || continue
+            found=$((found + 1))
+            name="$(basename "$(dirname "$chart")")"
+            case " $published $excluded " in
+              *" $name "*) ;;
+              *) missing="$missing $name" ;;
+            esac
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no chart matched deploy/helm/*/Chart.yaml — this check measured nothing"
+            exit 1
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::these charts are published by no release:$missing"
+            exit 1
+          fi
+          echo "publish coverage: $found chart(s), all published or excluded on purpose"
 
   template:
     name: Helm Template (${{ matrix.chart }})
