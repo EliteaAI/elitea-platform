@@ -88,6 +88,20 @@ exact-`interrupt_id` sensitive-tool flow and cancellation-safe effect
 identity/reconciliation are composed. Read/write grouping remains metadata,
 not approval authority.
 
+The complete capability-disabled `Zephyr Squad` family adds all fifteen
+current SDK tools in source order: five reads, eight writes and two deletes
+covering test steps, BDD content, cycles, folders and executions. Its inline
+claim-materialized account/access/secret settings remain distinct from the
+separately configured Zephyr variants. One invocation-scoped client signs the
+exact fixed-origin route with a five-minute HS256 JWT, preserves query order
+for QSH, disables redirects and retries, and bounds JSON objects, response
+bodies and model output. All effects are implemented, but production
+composition remains closed until authorized application/ad-hoc
+materialization, a harmless live credential read, the shared exact
+`interrupt_id` sensitive-tool flow and cancellation-safe effect
+identity/reconciliation are composed. Read/write/delete grouping is catalog
+metadata and never grants effect authority.
+
 ## Parallel node decision
 
 The new YAML node is a graph construct, not concurrent subagent dispatch. Its

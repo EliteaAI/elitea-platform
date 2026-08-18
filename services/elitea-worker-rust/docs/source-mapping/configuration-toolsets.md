@@ -141,6 +141,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `bigquery` | `configurations/bigquery.py::BigQueryConfiguration` | `tools/google/bigquery::BigQueryToolkit` | 11 | No | `configurations/families/bigquery.rs`; `toolkits/families/bigquery/` | Planned; source has no focused family tests |
 | `xray` | `configurations/xray.py::XrayConfiguration` | `tools/xray::XrayToolkit` as `xray_cloud` | 12 | Yes | `configurations/families/xray.rs`; `toolkits/families/xray/` | Planned; preserve runtime alias |
 | `zephyr` | `configurations/zephyr.py::ZephyrConfiguration` | Zephyr and Zephyr Scale | 30 | No | `configurations/families/zephyr.rs`; `toolkits/families/zephyr/` | Planned; all Zephyr variants one batch |
+| `zephyr_squad` | None; credentials are inline toolkit settings | `tools/zephyr_squad::ZephyrSquadToolkit` | 15 | No | `toolkits/families/zephyr_squad/{config,client,tools}.rs` | Capability-disabled complete family: five bounded reads plus all eight writes and two deletes over fixed Squad Cloud JWT routes; authorized materialization, live credential proof, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
 | `zephyr_enterprise` | `ZephyrEnterpriseConfiguration` | `ZephyrEnterpriseToolkit` | 11 | Yes | corresponding family paths | Planned; source has no focused family tests |
 | `zephyr_essential` | `ZephyrEssentialConfiguration` | `ZephyrEssentialToolkit` | 51 | Yes | corresponding family paths | Planned; largest fixed catalog, no focused tests |
 | `figma` | `configurations/figma.py::FigmaConfiguration` | `tools/figma::FigmaToolkit` | 17 | Yes | corresponding family paths | Planned; content/artifact limits required |
@@ -160,7 +161,9 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 
 Additional standard toolkits without a registered same-named configuration are
 tracked separately: AWS (1), Azure (2), GCP (1), Kubernetes (2), Keycloak (1),
-Elastic (1), LocalGit (13), PPTX (2), Yagmail (1), and Zephyr Squad (15).
+Elastic (1), PPTX (2), and Yagmail (1). LocalGit (13) is intentionally
+deferred: its local-filesystem/process isolation boundary is outside the
+remote toolkit migration priority.
 Their authority source and admission policy must be explicit before live porting.
 
 The SDK also defines `EmbeddingConfiguration`, but it is not one of the 32
@@ -870,6 +873,82 @@ HITL wrapper, and cancellation-safe effect reconciliation. The implementation
 is complete rather than read-only: both create and update remain compiled and
 tested behind those gates.
 
+### Zephyr Squad complete Jira test-management family
+
+Zephyr Squad is a complete fifteen-tool family over the fixed
+`https://prod-api.zephyr4jiracloud.com/connect` endpoint. The implementation
+is based on SDK revision `9bba9da409771803f28c0ee21f5d0b9a8f456219` and
+worker-pinned SDK revision
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`; the two revisions have the
+same methods, schemas and wire behavior, while the current revision adds the
+five `read`, eight `write` and two `delete` group annotations. The worker's
+two pinned SDK patches are MCP-only. The SDK has no focused Zephyr Squad
+tests, making the Rust route/JWT/body fixtures primary compatibility proof.
+
+Unlike the other Zephyr variants, `zephyr_squad` has no separately registered
+configuration model and no `check_connection`. Its public toolkit settings
+contain required `account_id`, secret `access_key`, secret `secret_key`, and
+`selected_tools` defaulting to empty/all. Main's current toolkit snapshot and
+generic freezer preserve this inline shape; the claim-scoped configuration
+materializer is the only component allowed to redeem its sealed secret
+values. `config.rs` accepts that materialized shape directly and never reads
+credentials from the environment. The non-cloneable authority and client also
+remove the SDK validator's class-global `_client` credential crossover.
+
+The exact public catalog is preserved in source order:
+
+1. `get_test_step` (`read`) reads one issue/project/step tuple.
+2. `update_test_step` (`write`) replaces a step from a JSON object.
+3. `delete_test_step` (`delete`) removes one step.
+4. `create_new_test_step` (`write`) appends a step.
+5. `get_all_test_steps` (`read`) uses the source's v2 test-step route.
+6. `get_all_test_step_statuses` (`read`) reads the status catalog.
+7. `get_bdd_content` (`read`) reads Gherkin content.
+8. `update_bdd_content` (`write`) replaces Gherkin content.
+9. `delete_bdd_content` (`delete`) sends the source-compatible `[]` body.
+10. `create_new_cycle` (`write`) creates a cycle.
+11. `create_folder` (`write`) creates a uniquely named cycle folder.
+12. `add_test_to_cycle` (`write`) adds or copies tests by method.
+13. `add_test_to_folder` (`write`) adds issue keys to a folder.
+14. `create_execution` (`write`) creates a test execution.
+15. `get_execution` (`read`) reads one execution and status.
+
+`client.rs` reproduces the SDK's route spelling and query order because they
+are part of the JWT QSH. Each request carries `Authorization: JWT` with
+HS256 claims `sub`, `iss`, `iat`, `exp=iat+300`, and the SHA-256 query-string
+hash, plus sensitive `zapiAccessKey`. Rust samples the clock once rather than
+the SDK's two calls around a possible second boundary. It uses the existing
+`ring` and `base64` dependencies, disables redirects and automatic retries,
+and enforces fixed request, response and output limits.
+
+The top-level `json` arguments remain strings for YAML/SDK compatibility but
+are decoded before dispatch, must be bounded JSON objects rather than arrays
+or scalars, and enforce the documented required/conditional fields. Opaque
+path IDs are bounded single URL-safe segments and numeric issue/project IDs
+must be positive. Model-facing descriptions state each tool's purpose,
+required fields, formats, examples, result type and mutation/duplicate risk.
+Provider JSON is returned as canonical JSON instead of Python's non-JSON
+`str(dict)` representation; text remains bounded. Provider bodies, routes,
+credentials and payloads never enter errors.
+
+| Current business source | Preserved behavior | Rust owner / deliberate improvement |
+| --- | --- | --- |
+| SDK `tools/zephyr_squad/__init__.py::{get_tools,toolkit_config_schema,get_toolkit}` and Main toolkit snapshot/freezer/materializer | Inline claim-materialized credentials, empty/subset selection, source order, toolkit identity and groups | `config.rs` and `tools.rs` retain all fifteen operations, reject unknown persisted selections and apply immutable deployment blocking without exposing secrets |
+| SDK `ZephyrSquadApiWrapper::{validate_toolkit,get_available_tools}` | One concrete client and exact public schemas/descriptions | Invocation-scoped authority replaces the class-global client; tested selection-oriented descriptions and bounded schemas improve model choice without changing tool names |
+| SDK `ZephyrSquadCloud` fifteen methods | Exact v1/v2 methods, paths, query names/order and BDD bodies | `client.rs::ZephyrSquadApi` preserves every route and method, validates path segments and sends one attempt only |
+| SDK `_generate_jwt_token` | Five-minute HS256 JWT and QSH over method plus exact API path | Deterministic injected-clock signer has a fixed golden vector and marks both authorization headers sensitive |
+| SDK `_do_request` | JSON or text success and provider failures | Bounded canonical JSON/text projection and stable redacted error taxonomy; post-dispatch transport, 408/429/5xx or decoding ambiguity for effects is nonretryable `UnknownOutcome` |
+
+PyJWT is an undeclared direct SDK dependency currently obtained transitively
+through the Python image dependency graph; the worker lock has no
+family-specific import assertion. The Rust implementation removes that
+fragility. Production registration remains disabled pending authorized
+application/ad-hoc materialization, a credentialed harmless status-catalog
+read against the currently supported SmartBear endpoint, the shared durable
+exact-`interrupt_id` HITL wrapper, and cancellation-safe effect
+identity/reconciliation. Any read may independently be configured sensitive;
+catalog effect groups never authorize execution.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -896,7 +975,8 @@ Non-overlapping batches are:
 
 1. GitHub completion as the broad reference family, including its gated effects.
 2. Independent simple REST families using the Google Places/Sonar ownership pattern.
-3. GitLab plus GitLab Org, Bitbucket and LocalGit with separate owners.
+3. GitLab plus GitLab Org and Bitbucket with separate owners; LocalGit stays
+   intentionally deferred.
 4. All four ADO toolsets under one owner.
 5. Jira and Confluence after one shared Atlassian normalizer.
 6. qTest, TestRail, Xray and all Zephyr variants as coherent test-management
