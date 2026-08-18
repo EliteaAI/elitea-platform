@@ -3,6 +3,7 @@ package authsvc_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -11,19 +12,37 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func skipIfNoRedis(t *testing.T, rdb *redis.Client) {
+// redisAddressEnv is the one name the whole repository uses for a test Redis.
+// It used to be absent here: the address was the literal "localhost:6379" and
+// the guard skipped whenever nothing answered. That skip could not be turned
+// off from outside the process, so these five tests never ran in CI and their
+// green said nothing (#423).
+const redisAddressEnv = "ELITEA_TEST_REDIS_ADDR"
+
+// newTestRedis returns a client for the configured test Redis.
+//
+// With ELITEA_TEST_REDIS_ADDR set, a Redis was PROMISED, so an unreachable
+// one is a FAILURE. Only the unset case skips, so that a developer with no
+// Redis can still run `go test ./...`. Same shape as CONTRACT_REQUIRE_PARITY
+// in .github/workflows/ci-contract.yml.
+func newTestRedis(t *testing.T) *redis.Client {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		t.Skipf("Redis not available: %v", err)
+	address := os.Getenv(redisAddressEnv)
+	if address == "" {
+		t.Skipf("set %s to run the real-Redis auth RPC test", redisAddressEnv)
 	}
+	client := redis.NewClient(&redis.Options{Addr: address})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatalf("ping the %s Redis at %s: %v", redisAddressEnv, address, err)
+	}
+	return client
 }
 
 func TestClient_ValidateToken_Timeout(t *testing.T) {
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	skipIfNoRedis(t, rdb)
-	defer func() { _ = rdb.Close() }()
+	rdb := newTestRedis(t)
 
 	client := authsvc.New(rdb, authsvc.WithRPCTimeout(100*time.Millisecond))
 
@@ -38,9 +57,7 @@ func TestClient_ValidateToken_Timeout(t *testing.T) {
 }
 
 func TestClient_ValidateToken_Success(t *testing.T) {
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	skipIfNoRedis(t, rdb)
-	defer func() { _ = rdb.Close() }()
+	rdb := newTestRedis(t)
 
 	client := authsvc.New(rdb, authsvc.WithRPCTimeout(2*time.Second))
 
@@ -100,9 +117,7 @@ func TestClient_ValidateToken_Success(t *testing.T) {
 }
 
 func TestClient_ValidateToken_ErrorResponse(t *testing.T) {
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	skipIfNoRedis(t, rdb)
-	defer func() { _ = rdb.Close() }()
+	rdb := newTestRedis(t)
 
 	client := authsvc.New(rdb, authsvc.WithRPCTimeout(2*time.Second))
 
@@ -145,9 +160,7 @@ func TestClient_ValidateToken_ErrorResponse(t *testing.T) {
 }
 
 func TestClient_Cache(t *testing.T) {
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	skipIfNoRedis(t, rdb)
-	defer func() { _ = rdb.Close() }()
+	rdb := newTestRedis(t)
 
 	// Clean test keys
 	rdb.Del(context.Background(), "auth:token:testkey")
@@ -187,9 +200,7 @@ func TestClient_Cache(t *testing.T) {
 }
 
 func TestClient_ContextCancelled(t *testing.T) {
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	skipIfNoRedis(t, rdb)
-	defer func() { _ = rdb.Close() }()
+	rdb := newTestRedis(t)
 
 	client := authsvc.New(rdb, authsvc.WithRPCTimeout(5*time.Second))
 

@@ -169,13 +169,15 @@ func TestList_Success(t *testing.T) {
 	}
 }
 
-func TestGet_Success(t *testing.T) {
-	// getVersions() calls h.pool.Query() directly with no nil-pool guard (handler.go:145).
-	// Without a live pgxpool.Pool there is no observable behaviour — only a nil-pointer
-	// panic.  Full coverage of the Get() success path requires an integration test with a
-	// real database pool; skip here and rely on that tier.
-	t.Skip("getVersions() dereferences h.pool without a nil guard; integration-test coverage required")
-}
+// The Get() success path is covered by
+// TestHandlerPostgres_CreateThenReadBackIsWhatJourney14Asserts in
+// handler_postgres_integration_test.go, which drives the real pool and reads
+// the created application back with its versions and version_details.
+//
+// A `TestGet_Success` used to sit here holding one unconditional `t.Skip`.
+// It ran on every CI run, executed nothing, and printed `ok` (#423). A test
+// that can never fail is not coverage; it is the appearance of coverage, so
+// the real one above is now the only claim made.
 
 func TestGet_NotFound(t *testing.T) {
 	repo := &mockRepo{apps: nil}
