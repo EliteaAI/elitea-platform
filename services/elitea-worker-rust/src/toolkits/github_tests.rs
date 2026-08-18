@@ -32,6 +32,7 @@ use super::families::github::pull_requests::{
 use super::families::github::tools::{
     GitHubToolsetErrorCode, build_github_read_only_toolset, test_build_with_api,
 };
+use super::families::github::workflow_runs::test_project_workflow_status;
 use super::policy::ToolAdmissionPolicy;
 
 const TEST_PKCS8_KEY_BODY: &str = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDIp4UApaJQ247TbIW43Pg8S+GVMRT6qsdhbg6iSSL6a3qwH4VYLIFcw73rXtRnYrxTasyqi3JwWwDO8xay7FCPuWlyQbnjQjhBnMz3M57riwYhR69PWTL2E9m8CucL9tVtRDLoPhN2dYdTG/qd1WUxdBJEvnXovJImufpEtLihATWNfou3XQxySk8R7Od3diY/rv55YS6x1xZG536JgoZr4UAOr8NYDTE5tBqqc4AYc3LyLjW9VbKISWFlyIHtFU1YESRcUtVswJ1JFtTypQvPWuCiY39M+mv52q/BE9uoODtt19pt2Nsi2FEKjTEVmDMIkJoaAzJReqVeiW4VQkmzAgMBAAECggEAI6TukZDa5rY6BwDOOGq4hi2Moy4W5fiUdpBQdS+80PNq1gKjc2hkipATGs67uKnnfoIIXXtsFt1zpU+1ho9IOF/dhXh7hw1qZO1v07IN1xXZPuw3DkdwMBqSoT7mkE+G1mQ5DtyIJJD4OyFLQeJ4mXJfFGspEvD8nXiIJtBbw+3cMzbUJRYwTWfTxIHfkq7uuXUs1zn3hGm1Ku3WIQo/e3+y1eiecSTqJqrGGWLtZjB6689c59RI0leT6jM4tizOIQ3BkUXAetn/HRFbKZRcNFhh0e7+G6QIVTFX/wXHbLZsJWkPzHxNX2USoWqgpnmgiGZSGTbAt/CJ492NeX0K8QKBgQD4W6jcKVAjlu6SKrhVlhO8RdjYs4IC+Mi4/1eyhvCtgtPhrHxWb/5zHPrlYZrt3E5rdhvcshNkcOM9cS1MxwPCnJshs+eWnjXwkl+tWy3ceroc21xAhu9XHrPqNLuyX04YHV/B0Rg23aC+/C8aQmikq30yeLxFpTiz0jQdSDgnFwKBgQDO1BfuiMQBoDRDYfUx3NfwJXcw5AX81U625OU5aOZc5WBC3I/F4W5S5r3D3CbsiunD+JGxxEuR+xFjSinxQkT9hQ/Vjp5PX53wJ1WmGQmM/VyBlSN6htfCR/Y8ra9nuUiV1qphlTrckdy1wY2VreK/RG3QZcFRlrlv+mFWGXaTxQKBgQC/yYCHq3uQUDChPU4mAYPyAvomtdBzXQ0cF0rwuVXIl9vpTNqjoU6cNEfntM0AW/1O7OEtN3LUQHyq6Ogzfwf/VBJUH2p6nGhJA6/Q3jV3Kmrod9kwl0LiQvpqpRhA8WoMIzrcIA0T6WgFtBbnr1rBtxAyVpwFKEa2TmAiMK/0NwKBgDW7gCQmP9W0Sx+eWVcE6symzxpSgwO2XubA/JQ3nnFP3fxA1NExybmb3Hz/utUFGcohz6gBOSjJszC6Wb8l2kqKwRxYGuTAEIYNkgC+zG5mfBvmJPt2AKOmkmAdN06ZIjRbOpRzcoFPG6nUiPXz4M6T9nuHk/ugTri6sYLuxpGJAoGBALI0mlazlyncjdZYq8GNnN8HaQu6uMahky1cgJjnN5LSq8jC03gEhHwyPlFSmjKVXD0En2YyQC5dEZAtFde76EJMAqtU3ZbEDADY/0H1ajcguEPUXBtey/xQ2y5tWgsXtaF0PeIfamGlgC2pAnH72m5MbRKuM5IiUql/qXNlOreq";
@@ -207,6 +208,52 @@ fn code_search_request_uses_one_origin_bound_provider_page() {
     assert_eq!(
         request.url().as_str(),
         "https://github.example.test/api/v3/search/code?q=fn+main+repo%3AEliteaAI%2Felitea-platform&sort=indexed&order=desc&per_page=30&page=2"
+    );
+}
+
+#[test]
+fn workflow_status_requests_are_origin_bound_and_job_paging_is_explicit() {
+    let client = GitHubClient::new(token_config(&["get_workflow_status"]))
+        .expect("GitHub workflow-status client");
+    let run = client
+        .test_request(
+            GitHubRequestKind::Repository,
+            &[
+                "repos",
+                "EliteaAI",
+                "elitea-platform",
+                "actions",
+                "runs",
+                "9001",
+            ],
+            &[],
+            UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        )
+        .expect("origin-bound workflow-run request");
+    assert_eq!(
+        run.url().as_str(),
+        "https://github.example.test/api/v3/repos/EliteaAI/elitea-platform/actions/runs/9001"
+    );
+
+    let jobs = client
+        .test_request(
+            GitHubRequestKind::Repository,
+            &[
+                "repos",
+                "EliteaAI",
+                "elitea-platform",
+                "actions",
+                "runs",
+                "9001",
+                "jobs",
+            ],
+            &[("per_page", "100".to_owned()), ("page", "1".to_owned())],
+            UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        )
+        .expect("origin-bound workflow-jobs request");
+    assert_eq!(
+        jobs.url().as_str(),
+        "https://github.example.test/api/v3/repos/EliteaAI/elitea-platform/actions/runs/9001/jobs?per_page=100&page=1"
     );
 }
 
@@ -801,6 +848,88 @@ fn code_search_scope_and_projection_are_bounded_and_provider_truthful() {
     let mut oversized = response;
     oversized["items"] = Value::Array((0..101).map(|_| json!({})).collect());
     assert!(test_project_code_search(&oversized, 1, 100).is_err());
+}
+
+#[test]
+fn workflow_status_projection_preserves_sdk_fields_and_exposes_job_truncation() {
+    let run = json!({
+        "id": 9001,
+        "name": "Rust worker checks",
+        "workflow_id": 71,
+        "event": "pull_request",
+        "status": "in_progress",
+        "conclusion": null,
+        "created_at": "2026-08-18T10:00:00Z",
+        "updated_at": "2026-08-18T10:01:00Z",
+        "head_branch": "feature/runtime",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "html_url": "https://github.example.test/EliteaAI/elitea-platform/actions/runs/9001",
+        "upstream_only": "not projected"
+    });
+    let jobs = json!({
+        "total_count": 2,
+        "jobs": [{
+            "id": 44,
+            "run_id": 9001,
+            "name": "rust-1.95",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-08-18T10:00:05Z",
+            "completed_at": "2026-08-18T10:00:55Z",
+            "html_url": "https://github.example.test/EliteaAI/elitea-platform/actions/runs/9001/job/44",
+            "steps": [{"name": "not projected"}]
+        }]
+    });
+    assert_eq!(
+        test_project_workflow_status(&run, &jobs, 9001).expect("bounded workflow-status response"),
+        json!({
+            "id": 9001,
+            "name": "Rust worker checks",
+            "workflow_id": 71,
+            "event": "pull_request",
+            "status": "in_progress",
+            "conclusion": null,
+            "created_at": "2026-08-18T10:00:00+00:00",
+            "updated_at": "2026-08-18T10:01:00+00:00",
+            "head_branch": "feature/runtime",
+            "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "jobs": [{
+                "id": 44,
+                "name": "rust-1.95",
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": "2026-08-18T10:00:05+00:00",
+                "completed_at": "2026-08-18T10:00:55+00:00",
+                "url": "https://github.example.test/EliteaAI/elitea-platform/actions/runs/9001/job/44"
+            }],
+            "jobs_total_count": 2,
+            "jobs_truncated": true,
+            "url": "https://github.example.test/EliteaAI/elitea-platform/actions/runs/9001"
+        })
+    );
+    assert!(test_project_workflow_status(&run, &jobs, 9002).is_err());
+
+    let mut nullable_run = run.clone();
+    nullable_run["name"] = Value::Null;
+    nullable_run["status"] = Value::Null;
+    let mut nullable_jobs = jobs.clone();
+    nullable_jobs["jobs"][0]["html_url"] = Value::Null;
+    let nullable = test_project_workflow_status(&nullable_run, &nullable_jobs, 9001)
+        .expect("provider-nullable workflow fields");
+    assert_eq!(nullable["name"], Value::Null);
+    assert_eq!(nullable["status"], Value::Null);
+    assert_eq!(nullable["jobs"][0]["url"], Value::Null);
+
+    let mut wrong_run_jobs = jobs.clone();
+    wrong_run_jobs["jobs"][0]["run_id"] = json!(9002);
+    assert!(test_project_workflow_status(&run, &wrong_run_jobs, 9001).is_err());
+
+    let job = jobs["jobs"][0].clone();
+    let oversized = json!({
+        "total_count": 101,
+        "jobs": vec![job; 101]
+    });
+    assert!(test_project_workflow_status(&run, &oversized, 9001).is_err());
 }
 
 #[test]
@@ -1494,6 +1623,73 @@ async fn native_code_search_preserves_scopes_defaults_and_one_page_window() {
     );
 }
 
+#[tokio::test]
+async fn native_workflow_status_preserves_the_string_id_and_optional_repository_contract() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    let selected = vec!["get_workflow_status".to_owned()];
+    let toolset = test_build_with_api(
+        "team-github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &(client.clone() as Arc<dyn GitHubApi>),
+    )
+    .expect("native workflow-status toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset.tools(readonly).await.expect("workflow-status tool");
+    let status = tools
+        .iter()
+        .find(|tool| tool.name() == "get_workflow_status")
+        .expect("selected workflow-status tool");
+
+    assert!(
+        status
+            .execute(
+                context(),
+                json!({"run_id": "9001", "repo_name": "EliteaAI/other"}),
+            )
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        client
+            .workflow_status_calls
+            .lock()
+            .expect("workflow-status calls fixture lock")
+            .as_slice(),
+        &["9001:EliteaAI/other".to_owned()]
+    );
+    assert_eq!(
+        status
+            .parameters_schema()
+            .and_then(|schema| schema.get("required").cloned()),
+        Some(json!(["run_id"]))
+    );
+
+    let calls_before = client
+        .workflow_status_calls
+        .lock()
+        .expect("workflow-status calls fixture lock")
+        .len();
+    for invalid in [
+        json!({"run_id": 9001}),
+        json!({"run_id": "0"}),
+        json!({"run_id": "-1"}),
+        json!({"run_id": "9223372036854775808"}),
+        json!({"run_id": "9001", "unknown": true}),
+    ] {
+        assert!(status.execute(context(), invalid).await.is_err());
+    }
+    assert_eq!(
+        client
+            .workflow_status_calls
+            .lock()
+            .expect("workflow-status calls fixture lock")
+            .len(),
+        calls_before
+    );
+}
+
 #[test]
 fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
@@ -1523,6 +1719,7 @@ struct FixtureGitHubApi {
     pull_request_calls: Mutex<Vec<String>>,
     commit_calls: Mutex<Vec<String>>,
     code_search_calls: Mutex<Vec<String>>,
+    workflow_status_calls: Mutex<Vec<String>>,
 }
 
 type FileCall = (String, Option<String>, Option<String>);
@@ -1721,5 +1918,17 @@ impl GitHubApi for FixtureGitHubApi {
             "page": query.page,
             "per_page": query.per_page
         }))
+    }
+
+    async fn get_workflow_status(
+        &self,
+        run_id: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        self.workflow_status_calls
+            .lock()
+            .expect("workflow-status calls fixture lock")
+            .push(format!("{run_id}:{}", repository.unwrap_or("default")));
+        Ok(json!({"id": run_id, "jobs": []}))
     }
 }

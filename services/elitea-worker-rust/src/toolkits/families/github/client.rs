@@ -27,6 +27,9 @@ use super::pull_requests::{
     append_pull_request_file_page, finish_pull_request_files, project_pull_request_detail,
     project_pull_request_list, pull_request_file_count,
 };
+use super::workflow_runs::{
+    MAX_WORKFLOW_JOBS, MAX_WORKFLOW_JOBS_RESPONSE_BYTES, project_workflow_status,
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -265,6 +268,12 @@ pub(crate) trait GitHubApi: Send + Sync {
     ) -> Result<Value, GitHubClientError>;
 
     async fn search_code(&self, query: GitHubCodeSearchQuery) -> Result<Value, GitHubClientError>;
+
+    async fn get_workflow_status(
+        &self,
+        run_id: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError>;
 }
 
 /// Selects one of the two immutable branches admitted with the toolkit.
@@ -868,6 +877,54 @@ impl GitHubApi for GitHubClient {
             )
             .await?;
         project_code_search(&response, query.page, query.per_page)
+    }
+
+    async fn get_workflow_status(
+        &self,
+        run_id: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        if run_id == 0 || i64::try_from(run_id).is_err() {
+            return Err(invalid_input());
+        }
+        let repository = repository.unwrap_or_else(|| self.config.repository());
+        let (owner, repository) = validate_repository(repository)?;
+        let run_id_segment = run_id.to_string();
+        let run = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &[
+                    "repos",
+                    owner,
+                    repository,
+                    "actions",
+                    "runs",
+                    &run_id_segment,
+                ],
+                &[],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        let jobs = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &[
+                    "repos",
+                    owner,
+                    repository,
+                    "actions",
+                    "runs",
+                    &run_id_segment,
+                    "jobs",
+                ],
+                &[
+                    ("per_page", MAX_WORKFLOW_JOBS.to_string()),
+                    ("page", "1".to_owned()),
+                ],
+                MAX_WORKFLOW_JOBS_RESPONSE_BYTES,
+            )
+            .await?;
+        project_workflow_status(&run, &jobs, run_id)
     }
 }
 

@@ -35,6 +35,7 @@ const LIST_COMMITS: &str = "get_commits";
 const GET_COMMIT_CHANGES: &str = "get_commit_changes";
 const COMPARE_COMMITS: &str = "get_commits_diff";
 const SEARCH_CODE: &str = "search_code";
+const GET_WORKFLOW_STATUS: &str = "get_workflow_status";
 const MAX_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_OUTPUT_CHARS: usize = 200_000;
 const MAX_BATCH_FILES: usize = 32;
@@ -119,7 +120,7 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
 /// Build the capability-disabled first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. Eighteen explicitly selected ordinary read
+/// until the full family is ported. Nineteen explicitly selected ordinary read
 /// operations can use this path. The production capability remains disabled
 /// until sensitive effects, the rest of the read catalog, GitHub App
 /// installation auth and cross-process TLS integration are complete.
@@ -162,6 +163,7 @@ fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
                     | GET_COMMIT_CHANGES
                     | COMPARE_COMMITS
                     | SEARCH_CODE
+                    | GET_WORKFLOW_STATUS
             )
         })
     {
@@ -200,6 +202,7 @@ fn build_with_api(
             GET_COMMIT_CHANGES => GitHubReadToolKind::GetCommitChanges,
             COMPARE_COMMITS => GitHubReadToolKind::CompareCommits,
             SEARCH_CODE => GitHubReadToolKind::SearchCode,
+            GET_WORKFLOW_STATUS => GitHubReadToolKind::GetWorkflowStatus,
             _ => {
                 return Err(GitHubToolsetError {
                     code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -236,6 +239,7 @@ enum GitHubReadToolKind {
     GetCommitChanges,
     CompareCommits,
     SearchCode,
+    GetWorkflowStatus,
 }
 
 struct GitHubReadTool {
@@ -302,6 +306,9 @@ impl GitHubReadTool {
             GitHubReadToolKind::SearchCode => {
                 "Search GitHub code through one bounded provider page without per-result fetches."
             }
+            GitHubReadToolKind::GetWorkflowStatus => {
+                "Inspect one GitHub Actions run and its first bounded page of job status details."
+            }
         };
         let description = bounded_description(&format!(
             "Toolkit: {toolkit_name}\nRepository: {repository}\n{action}"
@@ -336,6 +343,7 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::GetCommitChanges => GET_COMMIT_CHANGES,
             GitHubReadToolKind::CompareCommits => COMPARE_COMMITS,
             GitHubReadToolKind::SearchCode => SEARCH_CODE,
+            GitHubReadToolKind::GetWorkflowStatus => GET_WORKFLOW_STATUS,
         }
     }
 
@@ -372,6 +380,7 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::GetCommitChanges => get_commit_changes_schema(),
             GitHubReadToolKind::CompareCommits => compare_commits_schema(),
             GitHubReadToolKind::SearchCode => search_code_schema(),
+            GitHubReadToolKind::GetWorkflowStatus => get_workflow_status_schema(),
         })
     }
 
@@ -451,6 +460,9 @@ impl Tool for GitHubReadTool {
             }
             GitHubReadToolKind::CompareCommits => self.execute_compare_commits(arguments).await,
             GitHubReadToolKind::SearchCode => self.execute_search_code(arguments).await,
+            GitHubReadToolKind::GetWorkflowStatus => {
+                self.execute_get_workflow_status(arguments).await
+            }
         }
     }
 }
@@ -794,6 +806,24 @@ fn search_code_schema() -> Value {
             }
         },
         "required": ["query"],
+        "additionalProperties": false
+    })
+}
+
+fn get_workflow_status_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 19,
+                "pattern": "^[0-9]+$",
+                "description": "Decimal GitHub Actions workflow-run ID."
+            },
+            "repo_name": optional_string_schema(512, "Optional repository in owner/name form.")
+        },
+        "required": ["run_id"],
         "additionalProperties": false
     })
 }
@@ -1142,6 +1172,27 @@ impl GitHubReadTool {
                 per_page,
                 page,
             })
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
+
+    async fn execute_get_workflow_status(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["run_id", "repo_name"])?;
+        let run_id = required_text(arguments, "run_id", 19)?;
+        if !run_id.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid_arguments());
+        }
+        let run_id = run_id
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0 && i64::try_from(*value).is_ok())
+            .ok_or_else(invalid_arguments)?;
+        let repository = optional_text(arguments, "repo_name", 512)?;
+        self.client
+            .get_workflow_status(run_id, repository)
             .await
             .map_err(GitHubClientError::into_adk)
     }
