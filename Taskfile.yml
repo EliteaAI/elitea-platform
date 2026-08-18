@@ -321,6 +321,7 @@ tasks:
         echo "helm:lint: $found chart(s) passed"
       - task: helm:capabilities
       - task: helm:llmpath
+      - task: helm:bf02b
 
   helm:capabilities:
     desc: Check that the elitea-main chart renders the capability flags the composition root reads
@@ -342,6 +343,31 @@ tasks:
       # step, a deleted guard leaves every other Helm gate green (#497).
       # Needs yq on PATH.
       - bash deploy/helm/tests/render-llm-path.sh
+
+  helm:bf02b:
+    desc: Check the NATS profiles, the KV/stream bootstrap, the gateway Service and the ArgoCD sync-wave order
+    cmds:
+      # It was `deploy/test_bf0_2b.sh`, and no workflow, task or script called
+      # it (#485). Two defects came out on the first run: the gateway chart has
+      # refused an empty guard since #467/#473 and the script rendered it with
+      # no values, and the ArgoCD assertion read a path that moved in #265.
+      # Needs helm, python3 and PyYAML.
+      - bash deploy/helm/tests/render-bf0-2b.sh
+
+  migrations:check:
+    desc: Check that each added migration number is above the highest on the base branch
+    summary: |
+      Reads the base branch as origin holds it NOW, not the branch under test.
+      Give the base branch name, for example:
+
+        task migrations:check -- main
+
+      Two authors can each read the branch head, each find a number free, and
+      still collide when both merge (#520). This finds the collision early. It
+      does not renumber: the rename at merge time stays with the merge queue,
+      because only the queue knows the order in which pull requests land.
+    cmds:
+      - bash scripts/database/check-migration-version.sh {{.CLI_ARGS}}
 
   # ── All ───────────────────────────────────────────────────────────────────────
   all:

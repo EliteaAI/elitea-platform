@@ -1,15 +1,44 @@
 #!/usr/bin/env bash
-# test_bf0_2b.sh — render/config assertions for BF0.2b (NATS JetStream cluster +
-# gateway Helm/ArgoCD app). Deterministic, no live cluster required: it renders
+# render-bf0-2b.sh — render/config assertions for BF0.2b (NATS JetStream cluster
+# + gateway Helm/ArgoCD app). Deterministic, no live cluster required: it renders
 # the Helm charts with `helm template` and greps the profile/config files.
 #
-# Run: deploy/test_bf0_2b.sh   (requires helm + python3)
+# Run: deploy/helm/tests/render-bf0-2b.sh   (requires helm + python3 + PyYAML)
+#
+# It was `deploy/test_bf0_2b.sh`, and no workflow, Taskfile task or script
+# called it (#485). It sits beside render-capabilities.sh and render-llm-path.sh
+# now, under deploy/helm/, so helm-lint.yml's `deploy/helm/**` trigger path
+# covers the script itself as well as the charts it reads. A gate outside the
+# path that starts it is the same false green in another costume (#409, #429).
 set -euo pipefail
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# deploy/helm/tests -> deploy. The chart and ArgoCD paths below are relative to
+# it, so this must follow the file if it ever moves again.
+DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# The gateway chart REFUSES to render until the operator states two postures
+# (#467, #473): the self-referential-credential origins and the egress posture.
+# Neither can have a chart default, because both name addresses that only the
+# operator knows. So this file supplies them exactly as helm-lint.yml's template
+# matrix does, and for the same reason: a render that skips them measures the
+# refusal, not the Service. render-llm-path.sh owns the assertion that the
+# refusal still fires on an empty guard.
+#
+# RENDER-ONLY values. `.invalid` is reserved by RFC 2606 and never resolves, and
+# the label says what the value is for, so no reader can mistake either one for
+# a shipped default.
+GATEWAY_RENDER_VALUES=(
+  --set-string env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1
+  --set-string egressPosture=public-unrestricted
+)
 HELM="${HELM:-helm}"
 PASS=0
 FAIL=0
+# Every assertion this file is meant to make. A run that makes fewer has
+# skipped one, and a skipped assertion proves nothing. Same shape as
+# deploy/scripts/embedding-path-check.sh, which is the reference honest
+# validator in this repository. Raise this number with each new assertion.
+EXPECTED_ASSERTIONS=16
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -53,7 +82,7 @@ grep -q  -- '--replicas "${REPLICAS}"'      "$BS" && ok "replicas parameterised 
 if grep -qE 'kv add +GATEWAY_CUTOVER' "$BS"; then bad "must NOT create GATEWAY_CUTOVER (big-bang)"; else ok "no GATEWAY_CUTOVER bucket created"; fi
 
 echo "== gateway Service: mTLS-only ClusterIP, port 8083 (design §9.1) =="
-"$HELM" template gw "$DIR/helm/elitea-llm-gateway" > "$TMP/gw.yaml"
+"$HELM" template gw "$DIR/helm/elitea-llm-gateway" "${GATEWAY_RENDER_VALUES[@]}" > "$TMP/gw.yaml"
 python3 - "$TMP/gw.yaml" <<'PY' && ok "elitea-llm-gateway-svc ClusterIP:8083; server+client certs" || bad "gateway service/certs render"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
@@ -69,7 +98,8 @@ assert "server auth" in usages and "client auth" in usages, "need both server + 
 PY
 
 echo "== gateway HPA: custom /llm SSE metric (design §9.5) =="
-"$HELM" template gw "$DIR/helm/elitea-llm-gateway" --set autoscaling.enabled=true > "$TMP/gw-hpa.yaml"
+"$HELM" template gw "$DIR/helm/elitea-llm-gateway" "${GATEWAY_RENDER_VALUES[@]}" \
+  --set autoscaling.enabled=true > "$TMP/gw-hpa.yaml"
 python3 - "$TMP/gw-hpa.yaml" <<'PY' && ok "HPA scales on gateway_llm_sse_active_connections Pods metric" || bad "HPA custom metric"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
@@ -92,16 +122,27 @@ c = job["spec"]["template"]["spec"]["containers"][0]
 assert "bootstrap.sh" in " ".join(c["command"]), "Job must run bootstrap.sh"
 PY
 
+# deploy/argocd/applications/, NOT deploy/argocd/. The children moved into
+# the applications/ directory with the app-of-apps layout (#265), and this
+# assertion went on reading the old path. It raised FileNotFoundError, and no
+# caller ran it, so nothing printed the failure anywhere (#485).
 echo "== ArgoCD apps ordered by sync-wave =="
-python3 - "$DIR/argocd" <<'PY' && ok "nats(-2) < nats-bootstrap(-1) < gateway(0)" || bad "argocd sync-wave ordering"
+python3 - "$DIR/argocd/applications" <<'PY' && ok "nats(-2) < nats-bootstrap(-1) < gateway(0)" || bad "argocd sync-wave ordering"
 import sys, yaml, pathlib
 d = pathlib.Path(sys.argv[1])
 def wave(f):
-    a = yaml.safe_load(open(d/f))
+    path = d / f
+    assert path.is_file(), f"{path} does not exist; the ArgoCD layout moved and this assertion stopped measuring"
+    a = yaml.safe_load(open(path))
     return int(a["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"])
 assert wave("nats.yaml") < wave("nats-bootstrap.yaml") < wave("elitea-llm-gateway.yaml"), "waves out of order"
 PY
 
 echo
-echo "BF0.2b render assertions: ${PASS} passed, ${FAIL} failed"
+RAN=$((PASS+FAIL))
+echo "BF0.2b render assertions: ${RAN} ran, ${PASS} passed, ${FAIL} failed"
+if [ "$RAN" -lt "$EXPECTED_ASSERTIONS" ]; then
+  echo "FAIL: ${RAN} assertion(s) ran, expected ${EXPECTED_ASSERTIONS}. A run that skips an assertion proves nothing." >&2
+  exit 1
+fi
 [ "$FAIL" -eq 0 ]
