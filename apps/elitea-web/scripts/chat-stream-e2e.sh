@@ -123,6 +123,13 @@ CHECK_LOG="$(mktemp "${TMPDIR:-/tmp}/chat-stream-check.XXXXXX")"
 # non-zero on any failed assertion, and the loop below still requires the three
 # #326 lines by name. Do not add `--allow-skips` anywhere the caller has not
 # written down which assertion it gives up, and why.
+#
+# It does not accept a MISSING assertion either (#422). `check` states how many
+# assertions it makes, and a run that reports fewer results than that exits
+# non-zero whatever this flag says. That rule matters most on this path: one
+# guard inside `check` stands for eleven assertions and raises a single skip, so
+# without the count this caller would accept eleven unmeasured assertions as
+# one stated skip.
 if ! run_stack check --allow-skips 2>&1 | tee "$CHECK_LOG"; then
   echo "ERROR: the standalone stack failed its own check; see the output above" >&2
   exit 1

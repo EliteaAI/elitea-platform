@@ -114,8 +114,15 @@ deploy/scripts/standalone-stack.sh certs
 deploy/scripts/standalone-stack.sh up
 deploy/scripts/standalone-stack.sh seed
 deploy/scripts/standalone-stack.sh seed-runtime
+deploy/scripts/standalone-stack.sh seed-llm
 deploy/scripts/standalone-stack.sh check
 ```
+
+`seed-llm` is in that list because `check` asserts the model hop as well as the
+runtime plane. Read the last line of the output: it reports the passes, the
+failures, the skips, and how many of the expected assertions reported a result.
+A skipped assertion exits non-zero unless you pass `--allow-skips`, and a
+shortfall against the expected count exits non-zero even with that flag (#422).
 
 Note what `check` does **not** assert, and why. The intuitive probe — "POST
 `…/messages/…` must not be 404" — does not discriminate: auth runs before route

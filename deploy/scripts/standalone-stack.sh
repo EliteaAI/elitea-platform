@@ -19,7 +19,9 @@
 #                critical path (delegates the last to chat-smoke.py). It counts
 #                passes, failures AND skips, and a skipped assertion exits
 #                non-zero: add --allow-skips to accept an unmeasured
-#                precondition on purpose (#429)
+#                precondition on purpose (#429). It also states how many
+#                assertions it is written to make, and a run that reports fewer
+#                results than that exits non-zero whatever the flags say (#422)
 #   down         tear down (add -v yourself to drop volumes)
 #
 # Typical first run:
@@ -762,28 +764,10 @@ SQL
     ;;
 
   check)
-    # Talk to the gateway directly over mTLS. /llm routes need signed identity
-    # headers that only elitea-main can produce, so this checks transport and
-    # liveness, not the completion path.
     CERTS="${REPO_ROOT}/deploy/certs"
     GW_PORT="${STANDALONE_GATEWAY_PORT:-8085}"
-    echo "→ GET https://localhost:${GW_PORT}/healthz (mTLS)…"
-    # --http1.1 is required, not cosmetic: curl offers h2 via ALPN, the gateway
-    # accepts it, and the response then fails with an INTERNAL_ERROR stream
-    # reset. elitea-main's own transport pins NextProtos to http/1.1 for the
-    # same reason, so this matches the real client.
-    curl -sS --http1.1 --cert "$CERTS/client.crt" --key "$CERTS/client.key" \
-         --cacert "$CERTS/ca.crt" --resolve "elitea-llm-gateway:${GW_PORT}:127.0.0.1" \
-         "https://elitea-llm-gateway:${GW_PORT}/healthz" && echo
-    echo "→ elitea-main /llm reachability:"
-    # NOT a mount check, despite appearances. Auth runs before route matching, so
-    # every /api/v2 path answers 401 to an unauthenticated caller whether or not
-    # it is registered — measured against a stack with the route absent. A
-    # non-401 here means elitea-main is not answering at all.
-    curl -sS -o /dev/null -w '  HTTP %{http_code} (401/403 = elitea-main answering under auth)\n' \
-         "http://localhost:${PORT}/api/v2/llm/v1/models" || true
 
-    # ── Result accounting (issue #429) ───────────────────────────────────────
+    # ── Result accounting (issues #429 and #422) ───────────────────────────────────────
     #
     # Three counters, not one. "Nothing failed" and "something was measured" are
     # different statements, and only the second one is a pass.
@@ -796,6 +780,28 @@ SQL
     #
     # `--allow-skips` restores the old soft behaviour for a caller that wants
     # it. The count and the reasons are printed either way.
+    #
+    # A FOURTH number, and the reason it is here (#422). The three counters
+    # above measure the assertions that reached a counter. They cannot see an
+    # assertion that reached none: a deleted block, a `case` whose arms all
+    # miss, an early exit, or ONE guard that stands in for many assertions and
+    # raises a SINGLE skip.
+    #
+    # That last shape is not hypothetical here. The `if [ -z "$LLM_PROBE" ]`
+    # guard below gates ELEVEN assertions and raises one skip, and
+    # `apps/elitea-web/scripts/chat-stream-e2e.sh` calls this subcommand with
+    # `--allow-skips`. On that path one skip line stands for eleven unmeasured
+    # assertions, and the run passes.
+    #
+    # EXPECTED_ASSERTIONS is a floor, in the idiom .github/workflows/
+    # no-binaries.yml already uses for its script globs: state the number, and
+    # let a shortfall turn the run red. `passes + failures + skips` must equal
+    # it. `--allow-skips` does NOT lift this rule, because that flag accepts a
+    # NAMED and COUNTED skip, not an assertion that reported nothing.
+    #
+    # Move this number when you add or remove an assertion. Do not lower it to
+    # make a run agree.
+    EXPECTED_ASSERTIONS=28
     ALLOW_SKIPS=0
     for check_arg in "${@:2}"; do
       case "$check_arg" in
@@ -814,6 +820,114 @@ SQL
     ok()   { echo "  ✓ $1"; runtime_passes=$((runtime_passes + 1)); }
     fail() { echo "  ✗ $1" >&2; runtime_failures=$((runtime_failures + 1)); }
     skip() { echo "  ~ SKIPPED: $1" >&2; runtime_skips=$((runtime_skips + 1)); }
+
+    # The verdict runs from an EXIT trap, not from a block at the foot of this
+    # subcommand (#422). `set -e` can end `check` before that block is reached,
+    # and the run that stops early is the run whose count matters most.
+    # Measured on this stack with the database stopped: the first psql read
+    # ended the subcommand, and the operator saw no count at all.
+    report_check_result() {
+      check_status=$?
+      check_total=$((runtime_passes + runtime_failures + runtime_skips))
+      echo "→ runtime plane: ${runtime_passes} assertion(s) passed, ${runtime_failures} failed, ${runtime_skips} skipped; ${check_total} of ${EXPECTED_ASSERTIONS} expected assertions reported a result."
+      if [ "$check_status" -ne 0 ]; then
+        echo "→ FAILED: the check ended early with status ${check_status}." >&2
+        echo "   Every assertion after that point did not run. Read the last" >&2
+        echo "   line of output above this one for the command that ended it." >&2
+        exit "$check_status"
+      fi
+      # The floor, and --allow-skips cannot lift it. A shortfall means an
+      # assertion reported NOTHING: it was deleted, it became unreachable, or
+      # one guard stood in for many and raised a single result.
+      if [ "$check_total" -ne "$EXPECTED_ASSERTIONS" ]; then
+        echo "→ FAILED: ${check_total} assertion(s) reported a result, and ${EXPECTED_ASSERTIONS} were expected." >&2
+        echo "   An assertion that reports nothing is not a passed assertion." >&2
+        echo "   Seed the preconditions the SKIPPED lines name. If you added or" >&2
+        echo "   removed an assertion, move EXPECTED_ASSERTIONS with it." >&2
+        echo "   --allow-skips does not lift this rule." >&2
+        exit 1
+      fi
+      if [ "$runtime_failures" -ne 0 ]; then
+        echo "→ ${runtime_failures} runtime-plane check(s) failed." >&2
+        exit 1
+      fi
+      if [ "$runtime_skips" -ne 0 ]; then
+        if [ "$ALLOW_SKIPS" -eq 1 ]; then
+          echo "→ ${runtime_skips} check(s) did not run. --allow-skips was given, so they do not fail this run." >&2
+        else
+          echo "→ FAILED: ${runtime_skips} check(s) did not run. A skipped check is not a passed check." >&2
+          echo "   Seed the preconditions the SKIPPED lines name, or state the choice:" >&2
+          echo "     $0 check --allow-skips" >&2
+          exit 1
+        fi
+      fi
+      echo "→ runtime plane OK."
+    }
+    trap report_check_result EXIT
+
+    # ── The gateway mTLS hop ─────────────────────────────────────────────────
+    # Talk to the gateway directly over mTLS. /llm routes need signed identity
+    # headers that only elitea-main can produce, so this checks transport and
+    # liveness, not the completion path.
+    echo "→ gateway mTLS on https://localhost:${GW_PORT}:"
+    # --http1.1 is required, not cosmetic: curl offers h2 via ALPN, the gateway
+    # accepts it, and the response then fails with an INTERNAL_ERROR stream
+    # reset. elitea-main's own transport pins NextProtos to http/1.1 for the
+    # same reason, so this matches the real client.
+    #
+    # The answer is CAPTURED and compared (#422). The probe used to end in
+    # `&& echo`, which makes the curl a non-final member of an AND list. `set -e`
+    # does not act on such a command, and nothing counted the result, so the
+    # FIRST assertion of `check` could not turn `check` red.
+    gw_health="$(curl -sS --http1.1 --cert "$CERTS/client.crt" --key "$CERTS/client.key" \
+         --cacert "$CERTS/ca.crt" --resolve "elitea-llm-gateway:${GW_PORT}:127.0.0.1" \
+         -w '\nHTTP %{http_code}' \
+         "https://elitea-llm-gateway:${GW_PORT}/healthz" 2>&1 || true)"
+    case "$gw_health" in
+      *'"status":"ok"'*'HTTP 200'*)
+        ok "the gateway answers /healthz over mTLS (HTTP 200)" ;;
+      *) fail "the gateway did not answer /healthz over mTLS: $(printf '%s' "$gw_health" | tr '\n' ' ' | cut -c1-200)" ;;
+    esac
+
+    # The negative control, and the reason the assertion above is not enough on
+    # its own. A 200 proves that the gateway ANSWERED a caller that offered a
+    # certificate. It does not prove the listener REQUIRED one: a listener that
+    # loses RequireAndVerifyClientCert answers the same 200, because the client
+    # offers a certificate the server never asks for. So repeat the request with
+    # NO client certificate. It must be refused in the handshake.
+    #
+    # The failure MODE is read as well. A gateway that is not running refuses
+    # this request too, and calling that a pass reports "mTLS is enforced" about
+    # a dead process. curl reports a refused or timed-out connection as (7) or
+    # (28); neither reached a handshake, so neither measures the requirement.
+    gw_anon="$(curl -sS --http1.1 --cacert "$CERTS/ca.crt" \
+         --resolve "elitea-llm-gateway:${GW_PORT}:127.0.0.1" \
+         -o /dev/null -w 'HTTP %{http_code}' \
+         "https://elitea-llm-gateway:${GW_PORT}/healthz" 2>&1 || true)"
+    case "$gw_anon" in
+      *'HTTP 200'*)
+        fail "the gateway served /healthz to a caller with NO client certificate. The listener does not require one, so the elitea-main → gateway hop is not mutually authenticated" ;;
+      *'curl: (7)'*|*'curl: (28)'*|*'Failed to connect'*|*'Connection refused'*|*'Could not resolve'*)
+        fail "the no-certificate probe never reached a TLS handshake, so the mTLS requirement was not measured: $(printf '%s' "$gw_anon" | tr '\n' ' ' | cut -c1-160)" ;;
+      *) ok "the gateway refuses a caller with no client certificate ($(printf '%s' "$gw_anon" | tr '\n' ' ' | cut -c1-120))" ;;
+    esac
+
+    echo "→ elitea-main /llm reachability:"
+    # NOT a mount check, despite appearances. Auth runs before route matching, so
+    # every /api/v2 path answers 401 to an unauthenticated caller whether or not
+    # it is registered — measured against a stack with the route absent. A
+    # non-401 here means elitea-main is not answering at all.
+    #
+    # The code is CAPTURED and compared (#422). It used to be printed beside a
+    # comment that named 401 and 403 as the passing values, with `|| true`
+    # discarding the status and nothing reading the code. A dead elitea-main
+    # printed `HTTP 000` and the step passed.
+    main_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+         "http://localhost:${PORT}/api/v2/llm/v1/models" 2>/dev/null || true)"
+    case "$main_code" in
+      401|403) ok "elitea-main answers /api/v2/llm/v1/models under auth (HTTP ${main_code})" ;;
+      *) fail "elitea-main answered HTTP ${main_code:-000} on /api/v2/llm/v1/models. An unauthenticated caller gets 401 or 403 from a live elitea-main, so this one is not answering" ;;
+    esac
 
     # ── Edge identity-header strip (#326) ────────────────────────────────────
     # elitea-main accepts X-Auth-Type + X-Auth-Id as a finished identity from
@@ -1215,6 +1329,13 @@ except Exception as error:
         # through the product's own route, so it is one more thing this step
         # proves rather than a side channel. It runs whether or not the
         # assertions above passed.
+        #
+        # ONE assertion, on the END STATE, and the count is why (#422). The
+        # per-row status made the number of results depend on how many rows the
+        # writes above happened to create, so a step that wrote nothing reported
+        # nothing. It also believed the status code: a 204 that deleted no row
+        # passed. Counting what is LEFT in the table answers both.
+        write_codes=""
         for write_title in "$WRITE_CRED" "$WRITE_MODEL" "$WRITE_DANGLING"; do
           write_id="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
               psql -U elitea -d elitea -tAc \
@@ -1224,11 +1345,17 @@ except Exception as error:
           write_code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
               -H "Authorization: Bearer ${LLM_JWT}" \
               "http://localhost:${PORT}/api/v2/configurations/configuration/${WRITE_PROJECT}/${write_id}" || true)"
-          case "$write_code" in
-            204) ;;
-            *) fail "the API-created row '${write_title}' was not removed (HTTP ${write_code}); it stays a selectable model" ;;
-          esac
+          write_codes="${write_codes}${write_title}=${write_code} "
         done
+        write_left="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+            psql -U elitea -d elitea -tAc \
+            "SELECT count(*) FROM p_${WRITE_PROJECT}.configuration
+              WHERE elitea_title IN ('${WRITE_CRED}', '${WRITE_MODEL}', '${WRITE_DANGLING}')" 2>/dev/null | tr -d '[:space:]')"
+        if [ "${write_left:-1}" = "0" ]; then
+          ok "the API-created rows were removed through the product's own delete route"
+        else
+          fail "${write_left} API-created row(s) stay in p_${WRITE_PROJECT}.configuration after the delete (${write_codes:-no delete was attempted}); a leftover row in the llm section stays a selectable chat model"
+        fi
       fi
 
       # Probe the model names the SEED wrote. Read them from the same project
@@ -1254,13 +1381,19 @@ except Exception as error:
           psql -U elitea -d elitea -tAc \
           "SELECT data->>'name' FROM p_${LLM_PROJECT}.configuration
             WHERE elitea_title = 'standalone-embedding'" 2>/dev/null | tr -d '[:space:]')"
-      if [ -z "$CHAT_MODEL_NAME" ]; then
+      # Counted in BOTH directions (#422). A bare `if empty then fail` reported
+      # nothing on the normal path, so the count could not tell a run that read
+      # these rows from a run that never reached this code.
+      if [ -n "$CHAT_MODEL_NAME" ]; then
+        ok "project ${LLM_PROJECT} holds a usable chat model row ('${CHAT_MODEL_NAME}')"
+      else
         fail "project ${LLM_PROJECT} holds no chat model row — run: $0 seed-llm"
       fi
-      if [ -z "$EMB_MODEL_NAME" ]; then
+      if [ -n "$EMB_MODEL_NAME" ]; then
+        ok "project ${LLM_PROJECT} holds an embedding model row ('${EMB_MODEL_NAME}')"
+      else
         fail "project ${LLM_PROJECT} holds no embedding model row — run: $0 seed-llm"
       fi
-      echo "  · seeded chat model '${CHAT_MODEL_NAME}', embedding model '${EMB_MODEL_NAME}'"
 
       LLM_OUT="$(llm_probe "
 import json, ssl, urllib.error, urllib.request
@@ -1422,7 +1555,9 @@ except Exception as error:
     # request journal, which no other check does. The probe above asserts a
     # vector WIDTH against one hardcoded model name; a width identifies no model
     # and a 200 identifies no project. Read that script's own assertion lines.
-    if ! STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/embedding-path-check.sh"; then
+    if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/embedding-path-check.sh"; then
+      ok "the embedding path check passed all of its own assertions"
+    else
       fail "the embedding path check failed — read its assertion lines above"
     fi
 
@@ -1507,26 +1642,12 @@ except Exception as error:
       fi
     fi
 
-    # The count line. Read it, not the exit status alone: it separates "nothing
-    # failed" from "something was measured". The embedding path check reports
-    # its own 13 assertions on its own line above; these are this script's.
-    echo "→ runtime plane: ${runtime_passes} assertion(s) passed, ${runtime_failures} failed, ${runtime_skips} skipped."
-
-    if [ "$runtime_failures" -ne 0 ]; then
-      echo "→ ${runtime_failures} runtime-plane check(s) failed." >&2
-      exit 1
-    fi
-    if [ "$runtime_skips" -ne 0 ]; then
-      if [ "$ALLOW_SKIPS" -eq 1 ]; then
-        echo "→ ${runtime_skips} check(s) did not run. --allow-skips was given, so they do not fail this run." >&2
-      else
-        echo "→ FAILED: ${runtime_skips} check(s) did not run. A skipped check is not a passed check." >&2
-        echo "   Seed the preconditions the SKIPPED lines name, or state the choice:" >&2
-        echo "     $0 check --allow-skips" >&2
-        exit 1
-      fi
-    fi
-    echo "→ runtime plane OK."
+    # The count line, the floor and the verdict all live in
+    # report_check_result, which the EXIT trap above runs. Read that line, not
+    # the exit status alone: it separates "nothing failed" from "everything was
+    # measured". The embedding path check reports its own assertions on its own
+    # line above; these are this script's.
+    exit 0
     ;;
 
   *)

@@ -434,7 +434,23 @@ jobs:
               || echo "::warning::background pull of the pinned Playwright image failed or timed out; the snapshot step will pull it inline"
           ) &
           pw_pull=$!
-          ./scripts/e2e-stack.sh up && ./scripts/e2e-stack.sh seed
+          # ONE COMMAND PER LINE, and not `up && seed` (issue #422).
+          #
+          # GitHub runs this block with `bash -e`. `errexit` does not act on a
+          # command that is a non-final member of an AND list, so a failed `up`
+          # did not stop the step: `seed` was skipped and the step took its
+          # status from the last command instead. That last command is
+          # `wait "$pw_pull"`, and the background job is a subshell that ends in
+          # `|| echo`, so it always exits 0. The step therefore reported success
+          # on a stack that never came up and was never seeded, and the failure
+          # first appeared in the snapshot step as an unreachable base URL.
+          #
+          # Written as two simple commands, `errexit` acts on each one.
+          ./scripts/e2e-stack.sh up
+          ./scripts/e2e-stack.sh seed
+          # Only joins the background pull; the subshell swallows its own
+          # failure, so this cannot fail the step and must not be the last word
+          # on whether the stack came up.
           wait "$pw_pull"
 
       # Only the TEST RUN is containerised, in the image pinned to the same
