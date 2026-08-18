@@ -23,7 +23,6 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
 )
 
-
 // natsClient is the minimal NATS surface the GovernanceStore needs. *nats.Client
 // satisfies it; tests inject a fake so no live NATS is required.
 type natsClient interface {
@@ -109,6 +108,14 @@ func NewGovernanceStore(
 		gs.brkMu.Unlock()
 		gs.rec.HandleBreakerChange(from, to)
 	})
+	// Issue #515: the breaker edge is not the only way an outage row is cleared
+	// any more — the reconciler also sweeps on a timer, because a single failed
+	// counter operation marks a row outage-owned without ever opening the
+	// breaker, so no edge follows to clear it. Give that sweep the breaker
+	// state, so it attempts recovery only while the authoritative counter is
+	// reachable. A project that is genuinely in outage keeps its row, which is
+	// the point: the flag must never be cleared unconditionally.
+	rec.SetHealthCheck(func() bool { return nc.BreakerState() == gobreaker.StateClosed })
 	return gs
 }
 

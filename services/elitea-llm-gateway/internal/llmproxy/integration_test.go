@@ -26,6 +26,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -235,7 +236,12 @@ func (d *integDB) Begin(_ context.Context) (failmode.Tx, error) {
 // intNopTx is a no-op failmode.Tx for the reconciler in integration tests.
 type intNopTx struct{}
 
-func (t *intNopTx) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
+func (t *intNopTx) QueryRow(_ context.Context, sql string, args ...any) failmode.Row {
+	// Issue #515: the outage-window write claims its event id first.
+	if strings.Contains(sql, "processed_event_ids") {
+		id, _ := args[0].(string)
+		return intRow{vals: []any{id}}
+	}
 	return intRow{err: errors.New("intNopTx: not used")}
 }
 func (t *intNopTx) Query(_ context.Context, _ string, _ ...any) (failmode.Rows, error) {

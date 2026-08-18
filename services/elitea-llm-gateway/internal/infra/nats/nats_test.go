@@ -964,3 +964,56 @@ func TestPublishOpsEvent_ExpiredContextDoesNotEnqueue(t *testing.T) {
 		t.Errorf("published %d messages on an expired context, want 0", len(fc.published))
 	}
 }
+
+// TestSingleTimeoutMapsUnavailableWithoutABreakerEdge is the premise of issue
+// #515, stated where the two pieces of it live.
+//
+// One slow counter operation is enough to send the governance store down the
+// outage branch, because mapErr turns context.DeadlineExceeded into
+// ErrUnavailable. It is NOT enough to move the breaker: the default threshold is
+// three consecutive failures. So the caller marks the accumulator row
+// outage-owned and no state transition follows to hand it back. The recovery
+// reconciliation used to be wired to that transition alone, which is why the row
+// stayed wedged for the rest of the billing period.
+func TestSingleTimeoutMapsUnavailableWithoutABreakerEdge(t *testing.T) {
+	pub := &fakePublisher{ackVal: "0", block: 500 * time.Millisecond}
+	c := newTestClient(Config{}, pub, nil, nil) // withDefaults ⇒ threshold 3
+
+	var mu sync.Mutex
+	var transitions int
+	c.onStateChange = func(_, _ gobreaker.State) {
+		mu.Lock()
+		transitions++
+		mu.Unlock()
+	}
+
+	// ONE slow operation.
+	_, _, err := c.IncrBudgetIdempotent(context.Background(), "s", "evt-1", 1)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("single timeout err = %v, want ErrUnavailable — the caller must take the outage branch", err)
+	}
+
+	if c.BreakerState() != gobreaker.StateClosed {
+		t.Fatalf("breaker state = %v after one failure, want Closed", c.BreakerState())
+	}
+	mu.Lock()
+	seen := transitions
+	mu.Unlock()
+	if seen != 0 {
+		t.Fatalf("%d breaker transitions after one failure; the recovery edge would have fired", seen)
+	}
+
+	// The connection is healthy for everything else, which is why the delta
+	// publish that follows the failed increment succeeds and the write-back
+	// consumer receives a delta for a row it is barred from touching.
+	pub.block = 0
+	if err := c.PublishDelta(context.Background(), "evt-1", []byte("{}")); err != nil {
+		t.Fatalf("publish on the same healthy connection failed: %v", err)
+	}
+	mu.Lock()
+	seen = transitions
+	mu.Unlock()
+	if seen != 0 {
+		t.Fatalf("%d breaker transitions after the recovery of a single failure", seen)
+	}
+}

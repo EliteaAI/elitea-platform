@@ -242,7 +242,13 @@ type multiExecTx struct {
 	committed  bool
 }
 
-func (t *multiExecTx) QueryRow(context.Context, string, ...any) Row {
+func (t *multiExecTx) QueryRow(_ context.Context, sql string, args ...any) Row {
+	// Issue #515: the outage-window write claims its event id first. This fake
+	// models a fresh claim; the conflict path is covered in store_test.go.
+	if strings.Contains(sql, "processed_event_ids") {
+		id, _ := args[0].(string)
+		return scriptedRow{vals: []any{id}}
+	}
 	return scriptedRow{scanErr: context.Canceled}
 }
 func (t *multiExecTx) Query(context.Context, string, ...any) (Rows, error) {

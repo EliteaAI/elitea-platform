@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +28,11 @@ type fakeNATS struct {
 	incrErr  error
 	pubErr   error
 	alertErr error
+
+	// incrFailuresLeft makes the next N IncrBudgetIdempotent calls fail with
+	// ErrUnavailable and then heal. It models the single slow counter operation
+	// of issue #515, which does not reach the breaker's failure threshold.
+	incrFailuresLeft int
 
 	// deltas published via PublishDelta.
 	deltas  [][]byte
@@ -71,6 +77,10 @@ func (f *fakeNATS) IncrBudgetIdempotent(_ context.Context, subject, eventID stri
 	defer f.mu.Unlock()
 	if f.incrErr != nil {
 		return 0, false, f.incrErr
+	}
+	if f.incrFailuresLeft > 0 {
+		f.incrFailuresLeft--
+		return 0, false, nats.ErrUnavailable
 	}
 	if f.applied[eventID] {
 		return f.totals[subject], false, nil
@@ -229,7 +239,13 @@ type trackingNopTx struct {
 	db *fakeDB
 }
 
-func (t *trackingNopTx) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
+func (t *trackingNopTx) QueryRow(_ context.Context, sql string, args ...any) failmode.Row {
+	// The outage-window write claims its event id first (issue #515). Model the
+	// claim as always succeeding: this fake has no earlier write-back consumer.
+	if strings.Contains(sql, "processed_event_ids") {
+		id, _ := args[0].(string)
+		return scriptedRow{vals: []any{id}}
+	}
 	return scriptedRow{scanErr: errors.New("nop")}
 }
 func (t *trackingNopTx) Query(_ context.Context, _ string, _ ...any) (failmode.Rows, error) {
