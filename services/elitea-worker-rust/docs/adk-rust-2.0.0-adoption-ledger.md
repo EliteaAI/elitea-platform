@@ -74,6 +74,20 @@ and ad-hoc materialization, live Slack scope/rate-limit proof, the shared exact
 identity/reconciliation owner are composed; reads may be sensitive regardless
 of their catalog group.
 
+The complete capability-disabled `Rally` family adds all eight current SDK
+tools in source order: six WSAPI reads plus create and update. One lazy,
+invocation-scoped client owns the claim-materialized API key or Basic
+credential and exact HTTPS origin; it replaces the SDK's eager class-global
+`pyral` client. Reads use bounded first pages and structured query encoding,
+Basic effects obtain a same-session security token, and neither effect is
+retried after dispatch ambiguity. Tested descriptions expose type aliases,
+query syntax, context fallback, field/identifier requirements, result shape
+and effect risk to the model. Production composition remains closed until
+authorized application/ad-hoc materialization, live Rally proof, the shared
+exact-`interrupt_id` sensitive-tool flow and cancellation-safe effect
+identity/reconciliation are composed. Read/write grouping remains metadata,
+not approval authority.
+
 ## Parallel node decision
 
 The new YAML node is a graph construct, not concurrent subagent dispatch. Its

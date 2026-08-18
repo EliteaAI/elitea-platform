@@ -783,6 +783,93 @@ mark message, membership or user-email access sensitive. Operation group never
 grants execution authority. Live Slack scope/rate-limit proof and both
 application/ad-hoc claim-materialization component tests remain gates.
 
+### Rally complete WSAPI family
+
+Rally is a complete eight-tool family over its fixed WSAPI v2.0 root. The
+source baseline is SDK `9bba9da409771803f28c0ee21f5d0b9a8f456219`, the
+Python worker's pinned SDK source is
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`, and the two worker patches are
+MCP-only. Current and pinned Rally behavior differs only by current
+`read`/`write` group metadata. `pyral==1.6.0` is the provider implementation
+evidence; the standalone Python worker's selective dependency lock does not
+install it, so package presence is not treated as deployed-runtime proof.
+
+Main freezes `type`, stable `toolkit_name`, selected operations, optional
+workspace/project and the nested Rally configuration. Claim-scoped
+materialization resolves either the API key or username/password only for an
+accepted application or ad-hoc command. Rust accepts authority only from that
+nested map. API-key authentication takes source-compatible precedence over
+stale Basic fields. A bare saved hostname and a pathless HTTPS origin normalize
+to the same exact authority; HTTP, userinfo, alternate paths, query and fragment
+input fail before a request.
+
+The SDK constructs `pyral.Rally` inside a Pydantic validator and assigns it to
+a class attribute. Construction performs user, subscription, workspace,
+project and schema requests, and a second wrapper can replace the first
+wrapper's endpoint, credential and context. Rust deliberately performs none of
+that during parsing, catalog enumeration or assembly. One non-`Clone`,
+non-`Debug`, zeroizing invocation owner creates a lazy bounded client with no
+redirect or implicit retry. Workspace/project references are resolved lazily
+inside that owner and never enter model-visible descriptions.
+
+The complete source-order catalog is:
+
+1. `get_types` (`read`) lists visible WSAPI entity API names.
+2. `get_entities` (`read`) performs one bounded entity/query read. Story,
+   UserStory and User Story map to HierarchicalRequirement, while a safe
+   `PortfolioItem/<Subtype>` route remains supported.
+3. `get_project` (`read`) selects projects by exact name or the configured
+   context.
+4. `get_workspace` (`read`) selects workspaces by exact name or configured
+   context.
+5. `get_user` (`read`) optionally selects exact UserName values.
+6. `get_context` (`read`) joins the project, workspace and user reads into one
+   structured result; the independent requests use structured concurrency.
+7. `create_artifact` (`write`) sends the source-compatible WSAPI `PUT` to the
+   dynamic entity's `/create` route.
+8. `update_artifact` (`write`) resolves FormattedID when necessary and sends
+   one WSAPI `POST` to the exact ObjectID route.
+
+There is no public delete operation in `RallyApiWrapper.get_available_tools`;
+the fact that `pyral` internally exposes delete is not authority to add a ninth
+tool. Conversely, both public writes are implemented and are not omitted while
+HITL is under construction.
+
+Tool and parameter descriptions are tested model contracts. They explain when
+to list entity types, the Rally query expression and examples, `fetch`
+semantics, exact-name/default behavior, first-page result shapes, the `1..=100`
+entity cap, canonical field names, identifier requirements and the
+non-retryable ambiguity of create/update effects. This intentionally replaces
+source descriptions such as “Get user stories” for an arbitrary entity query
+and the incorrect user-only description on `get_context`.
+
+| Python/SDK source | Observable responsibility | Rust owner / deliberate improvement |
+| --- | --- | --- |
+| `RallyConfiguration`, `RallyToolkit::get_toolkit` and Main/Python materialization | Nested credential, workspace/project, empty/subset selection, toolkit identity and source grouping | `config.rs` and `tools.rs` retain the exact eight operations with claim-scoped authority, stable order and immutable deployment filtering |
+| `RallyApiWrapper::{get_types,get_entities}` and `pyral.query_builder` | Dynamic type names, aliases, caller query, fetch mode and result limiting | `client.rs` structurally encodes one WSAPI request and sets provider `pagesize` to the approved result cap instead of downloading the SDK's 1,000-record page and slicing afterward |
+| `RallyApiWrapper::{get_project,get_workspace,get_user,get_context}` | Context discovery and exact-name reads | Rust repairs the SDK's `Name = "None"` fallback and ToolException-in-string composite, returns bounded structured JSON and keeps the three context reads owned |
+| `RallyApiWrapper::{create_entity,update_entity}` and `pyral.Rally::{obtainSecurityToken,put,post}` | API-key or same-session Basic security-token effects and returned artifact identity | Rust retains `PUT /create` and `POST /{ObjectID}`, validates object input and identifiers, performs no automatic effect retry, and does not issue the SDK's failure-prone post-commit presentation GET |
+| SDK eager schema validation/case normalization and `Rally._greased` | Friendly field-name normalization plus relationship-list shorthand using a downloaded workspace schema | Rust requires bounded canonical WSAPI ElementName keys, preserves `entity/123` list-to-`_ref` transformation and relies on the provider's effect response; only friendly case/custom-field normalization is intentionally stricter, removing eager schema fanout |
+
+Successful effects retain the provider's available FormattedID or ObjectID in
+the result. A transport/timeout failure after dispatch, a server failure after
+dispatch, or an unprojectable successful effect response is a nonretryable
+`UnknownOutcome`; neither cancellation nor an ADK timeout proves that Rally did
+not commit. Reads can be marked sensitive independently of their `read` group,
+and both writes require the shared exact-`interrupt_id` approval plus an owned
+effect identity/reconciliation boundary before activation.
+
+Neither the Rally configuration nor toolkit defines `check_connection`, and
+the catalogs report it unsupported. Rust does not replace the SDK's accidental
+constructor-time discovery with a hidden probe. A future connection check must
+be an explicit audited contract using the same bounded client.
+
+Production registration remains disabled pending authorized application/ad-hoc
+materialization, both API-key and Basic live WSAPI proofs, the shared durable
+HITL wrapper, and cancellation-safe effect reconciliation. The implementation
+is complete rather than read-only: both create and update remain compiled and
+tested behind those gates.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -801,7 +888,7 @@ application/ad-hoc claim-materialization component tests remain gates.
 The shared schema, bounded HTTP, credential, policy, invocation-event,
 cancellation and ADK `Toolset` kernel is now stable enough for independent
 REST families; Google Places, Sonar and Azure Search are complete reads, while
-ServiceNow, Salesforce and Slack prove the same boundary can retain bounded
+ServiceNow, Salesforce, Slack and Rally prove the same boundary can retain bounded
 create/update/delete effects without activating them ahead of durable approval.
 These follow the partial GitHub reference family. Parallel family work still
 must not share mutable files or weaken the capability gate.
