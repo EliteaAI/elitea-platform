@@ -13,6 +13,10 @@ use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
+use super::code_search::{
+    MAX_CODE_SEARCH_RESPONSE_BYTES, project_code_search, scope_code_search_query,
+    validate_code_search_window,
+};
 use super::commits::{
     COMMIT_FILES_PER_PAGE, MAX_COMMIT_FILES, MAX_COMMITS, append_commit_file_page,
     commit_response_sha, finish_commit_changes, project_commit_comparison, project_commit_list,
@@ -59,6 +63,7 @@ const USER_AGENT: &str = "elitea-worker-rust/0.1";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GitHubClientErrorCode {
     InvalidConfiguration,
+    InvalidInput,
     UnsupportedAuthentication,
     Authentication,
     Authorization,
@@ -100,6 +105,11 @@ impl GitHubClientError {
                 ErrorCategory::InvalidInput,
                 "github.configuration.invalid",
                 "the GitHub toolkit configuration is invalid",
+            ),
+            GitHubClientErrorCode::InvalidInput => (
+                ErrorCategory::InvalidInput,
+                "github.request.invalid",
+                "the GitHub request is invalid",
             ),
             GitHubClientErrorCode::UnsupportedAuthentication => (
                 ErrorCategory::Unsupported,
@@ -170,6 +180,7 @@ impl fmt::Display for GitHubClientError {
             GitHubClientErrorCode::InvalidConfiguration => {
                 "the GitHub client configuration is invalid"
             }
+            GitHubClientErrorCode::InvalidInput => "the GitHub request is invalid",
             GitHubClientErrorCode::UnsupportedAuthentication => {
                 "the GitHub authentication mode is not supported for this operation"
             }
@@ -252,6 +263,8 @@ pub(crate) trait GitHubApi: Send + Sync {
         head_reference: &str,
         repository: Option<&str>,
     ) -> Result<Value, GitHubClientError>;
+
+    async fn search_code(&self, query: GitHubCodeSearchQuery) -> Result<Value, GitHubClientError>;
 }
 
 /// Selects one of the two immutable branches admitted with the toolkit.
@@ -270,6 +283,15 @@ pub(in crate::toolkits) struct GitHubCommitQuery {
     pub(in crate::toolkits) until: Option<String>,
     pub(in crate::toolkits) author: Option<String>,
     pub(in crate::toolkits) max_count: usize,
+}
+
+/// Validated, bounded query for one GitHub code-search provider page.
+pub(in crate::toolkits) struct GitHubCodeSearchQuery {
+    pub(in crate::toolkits) query: String,
+    pub(in crate::toolkits) sort: Option<String>,
+    pub(in crate::toolkits) order: Option<String>,
+    pub(in crate::toolkits) per_page: usize,
+    pub(in crate::toolkits) page: usize,
 }
 
 /// One invocation-scoped, pooled and origin-bound GitHub client.
@@ -815,6 +837,38 @@ impl GitHubApi for GitHubClient {
             .await?;
         project_commit_comparison(&comparison)
     }
+
+    async fn search_code(&self, query: GitHubCodeSearchQuery) -> Result<Value, GitHubClientError> {
+        validate_code_search_window(query.page, query.per_page)?;
+        let scoped_query = scope_code_search_query(&query.query, self.config.repository())?;
+        if query.sort.as_deref().is_some_and(|sort| sort != "indexed")
+            || query
+                .order
+                .as_deref()
+                .is_some_and(|order| !matches!(order, "asc" | "desc"))
+        {
+            return Err(invalid_input());
+        }
+        let mut parameters = Vec::with_capacity(5);
+        parameters.push(("q", scoped_query));
+        if let Some(sort) = query.sort {
+            parameters.push(("sort", sort));
+        }
+        if let Some(order) = query.order {
+            parameters.push(("order", order));
+        }
+        parameters.push(("per_page", query.per_page.to_string()));
+        parameters.push(("page", query.page.to_string()));
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["search", "code"],
+                &parameters,
+                MAX_CODE_SEARCH_RESPONSE_BYTES,
+            )
+            .await?;
+        project_code_search(&response, query.page, query.per_page)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1307,6 +1361,7 @@ fn map_status(status: StatusCode, headers: &HeaderMap) -> Result<(), GitHubClien
         }
         StatusCode::FORBIDDEN => Err(error(GitHubClientErrorCode::Authorization)),
         StatusCode::NOT_FOUND => Err(error(GitHubClientErrorCode::NotFound)),
+        StatusCode::UNPROCESSABLE_ENTITY => Err(invalid_input()),
         StatusCode::TOO_MANY_REQUESTS => Err(error(GitHubClientErrorCode::RateLimited)),
         status if status.is_server_error() => {
             Err(error(GitHubClientErrorCode::DependencyUnavailable))
@@ -1453,6 +1508,10 @@ const fn error_code(code: GitHubClientErrorCode) -> GitHubClientError {
 
 const fn invalid_configuration() -> GitHubClientError {
     error(GitHubClientErrorCode::InvalidConfiguration)
+}
+
+pub(super) const fn invalid_input() -> GitHubClientError {
+    error(GitHubClientErrorCode::InvalidInput)
 }
 
 const fn unsupported_authentication() -> GitHubClientError {

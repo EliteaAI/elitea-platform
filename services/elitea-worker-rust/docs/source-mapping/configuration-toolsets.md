@@ -53,7 +53,7 @@ tools.
 | SDK `runtime/toolkits/tools.py::get_tools` | Sanitize references, first-ID-wins deduplication, family dispatch, blocked-tool policy, MCP smart-auth and nested applications | `src/toolkits/{snapshot,materialize,policy}.rs` | Deduplication/classification and immutable blocklist implemented; materialization, MCP and application execution remain capability-gated |
 
 Evidence was refreshed against the platform/Python worker commit
-`671226301b1b2a47c3a37767217df22ac9ed1d23`, SDK commit
+`66d68b414e0be77bbfd8f340401b31bc2485c1a7`, SDK commit
 `c0443b175adb8437e89826c17150330e32074faf`, and legacy indexer-worker commit
 `b6c4ce83d997acbbbeb58fe040317a9e9352236f` on 2026-08-18. Later slices must
 refresh these pins because all three Python sources continue to evolve.
@@ -111,7 +111,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 
 | Configuration family | Python configuration symbol | Python toolkit symbol(s) | Fixed tools | Check | Rust targets | Status / notable gate |
 | --- | --- | --- | ---: | :---: | --- | --- |
-| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,commits,pull_requests,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus seventeen explicit identity, branch, file, repository-navigation, issue, pull-request and commit inspection reads; the other 27 tools, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
+| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,code_search,commits,pull_requests,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus eighteen explicit identity, branch, file, repository-navigation, issue, pull-request, commit and server-side code-search reads; the other 26 tools, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
 | `ado` | `configurations/ado.py::AdoConfiguration` | `tools/ado` dispatcher; repos, plans, boards, wiki toolkits | 74 | Yes | `configurations/families/ado.rs`; `toolkits/families/ado/` | Planned; one owner for shared auth/client and aliases |
 | `gitlab` | `configurations/gitlab.py::GitlabConfiguration` | `EliteAGitlabToolkit`, GitLab Org toolkit | 44 | Yes | `configurations/families/gitlab.rs`; `toolkits/families/gitlab/` | Planned; standard and org stay together |
 | `qtest` | `configurations/qtest.py::QtestConfiguration` | `tools/qtest::QtestToolkit` | 25 | Yes | `configurations/families/qtest.rs`; `toolkits/families/qtest/` | Planned |
@@ -189,7 +189,7 @@ validation-only success, token/basic call `/user`, and App JWT calls `/app`.
 App-backed tool execution is still rejected because an installation-token
 exchange has not been implemented.
 
-`src/toolkits/families/github/tools.rs` exposes seventeen explicitly selected
+`src/toolkits/families/github/tools.rs` exposes eighteen explicitly selected
 ordinary reads through ADK-Rust 2.0.0's native `Tool`/`BasicToolset` boundary
 and the shared immutable blocklist. Empty selection still means all 44 SDK
 tools, so the partial Rust family rejects it instead of silently shrinking
@@ -212,6 +212,7 @@ The first file group follows this source-to-Rust chain:
 | SDK `tools/github/github_client.py::{get_issues,get_issue,validate_search_query,search_issues}` plus `schemas.py::{NoInput,GetIssue,SearchIssues}` | `get_issues` is exposed as configured-repository/open-only despite a wider Python signature; detail and search permit an optional repository; search prepends `repo:`, distinguishes issues from pull requests and returns the current empty-result message | `client.rs::GitHubApi::{list_open_issues,get_issue,search_issues}` and `tools.rs` preserve those callable schemas, projected field names and Python `datetime.isoformat()` timestamp form. Rust keeps one bounded page of at most 100 results, caps response/body/metadata/serialized output, rejects the SDK's dangerous-query patterns before transport and omits unknown upstream fields and error bodies |
 | SDK `tools/github/github_client.py::{list_open_pull_requests,get_pull_request,list_pull_request_diffs}` plus `schemas.py::{ListPullRequestsInput,GetPR}` | Configured-repository open-listing; optional repository for one PR; PR metadata, issue comments, commit messages and changed-file patch fragments | `client.rs::GitHubApi::{list_open_pull_requests,get_pull_request,list_pull_request_files}`, `pull_requests.rs` and `tools.rs` preserve names, callable scopes and success field meanings. Rust deliberately replaces double-stringified comments/commits and token-budget-dependent missing fields with complete bounded typed arrays, preserves null bodies/users, normalizes timestamps like Python, caps detail items at ten, caps changed files at 300 and verifies the PR's declared `changed_files` before bounded local pagination. GitHub patch fragments remain fragments and null remains null; no tool claims full file contents |
 | SDK `tools/github/github_client.py::{get_commits,get_commit_changes,get_commits_diff}` plus `schemas.py::{GetCommits,GetCommitChanges,GetCommitsDiff}` | List commits with optional repository/ref/path/time/author filters; inspect one commit's totals and changed-file fragments; compare two general commit, branch or tag refs | `client.rs::GitHubApi::{list_commits,get_commit_changes,compare_commits}`, `commits.rs` and `tools.rs` preserve the public names, default count, success field names, renamed-file metadata and Python timestamp form. Rust canonicalizes date-only and offset timestamps to UTC before transport, safely projects missing authors as `Unknown`/null, caps list and compare commits at 100, commit files at 300, compare files below GitHub's ambiguous 300-file ceiling, patch fragments at 64 KiB and total output at 200,000 characters. It pages one commit until complete and rejects mismatched SHAs or overflow instead of silently returning a partial change set. Empty identical/behind comparisons derive the head only from the same compare snapshot (`base_commit`/`merge_base_commit`), so a mutable ref cannot be substituted by a later fallback request |
+| SDK `tools/github/github_client.py::search_code` plus `schemas.py::SearchCode` and PyGithub 2.3.0 `Github.search_code` | Blank-query rejection; configured-repository auto-scope unless an explicit `repo:`, `org:` or `user:` scope exists; optional indexed sort/order and caller-visible page metadata; file/repository/text-match success fields | `client.rs::GitHubApi::search_code`, `code_search.rs` and `tools.rs` preserve the public schema and explicit-scope behavior. Rust sends `page`/`per_page` in one direct `/search/code` request instead of walking and discarding lazy PyGithub pages, reports GitHub's actual `incomplete_results`, omits unknown provider fields, and never performs a per-result content request merely to discover absent text matches. Query, first-1,000 search window, page size, response, item/fragment/match collections and 200,000-character output are bounded; enums and 422 responses become stable invalid-input failures, and query/repository/upstream bodies are not logged or rendered |
 
 The GitHub REST projection accepts only a `type=file`, exact base64-declared
 size and valid UTF-8 payload. Directories, symlinks, submodules, malformed
@@ -241,7 +242,7 @@ not one prescribed language.
 Production registration remains disabled. Before this family can execute live
 agent work it still needs the authorized materializer connection, platform
 egress/private-DNS and Enterprise-CA policy, real GitHub TLS component proof,
-GitHub App installation-token support, the remaining 27 SDK operations
+GitHub App installation-token support, the remaining 26 SDK operations
 (including six indexing-only operations), and direct sensitive-tool/HITL
 fencing.
 

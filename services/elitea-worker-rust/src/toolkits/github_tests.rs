@@ -12,11 +12,14 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::{Map, Value, json};
 
 use super::families::github::client::{
-    GitHubApi, GitHubClient, GitHubClientError, GitHubClientErrorCode, GitHubCommitQuery,
-    GitHubFileScope, GitHubRequestKind, test_map_status, test_project_branches,
+    GitHubApi, GitHubClient, GitHubClientError, GitHubClientErrorCode, GitHubCodeSearchQuery,
+    GitHubCommitQuery, GitHubFileScope, GitHubRequestKind, test_map_status, test_project_branches,
     test_project_issue_detail, test_project_issue_list, test_project_issue_search,
     test_project_text_file, test_project_tree_files, test_project_tree_sha, test_project_user,
     test_validate_file_path,
+};
+use super::families::github::code_search::{
+    test_project_code_search, test_scope_code_search_query,
 };
 use super::families::github::commits::{
     test_project_commit_changes, test_project_commit_comparison, test_project_commit_list,
@@ -178,6 +181,32 @@ fn request_builder_is_origin_bound_and_uses_the_current_auth_contract() {
             .get("x-github-api-version")
             .expect("GitHub version header"),
         "2022-11-28"
+    );
+}
+
+#[test]
+fn code_search_request_uses_one_origin_bound_provider_page() {
+    let client =
+        GitHubClient::new(token_config(&["search_code"])).expect("GitHub code-search client");
+    let query = test_scope_code_search_query("fn main", "EliteaAI/elitea-platform")
+        .expect("configured code-search scope");
+    let request = client
+        .test_request(
+            GitHubRequestKind::Repository,
+            &["search", "code"],
+            &[
+                ("q", query),
+                ("sort", "indexed".to_owned()),
+                ("order", "desc".to_owned()),
+                ("per_page", "30".to_owned()),
+                ("page", "2".to_owned()),
+            ],
+            UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        )
+        .expect("one code-search request");
+    assert_eq!(
+        request.url().as_str(),
+        "https://github.example.test/api/v3/search/code?q=fn+main+repo%3AEliteaAI%2Felitea-platform&sort=indexed&order=desc&per_page=30&page=2"
     );
 }
 
@@ -701,11 +730,90 @@ fn commit_fixture_with_sha(character: char) -> Value {
 }
 
 #[test]
+fn code_search_scope_and_projection_are_bounded_and_provider_truthful() {
+    assert_eq!(
+        test_scope_code_search_query("fn main language:rust", "EliteaAI/elitea-platform")
+            .expect("configured repository scope"),
+        "fn main language:rust repo:EliteaAI/elitea-platform"
+    );
+    for explicitly_scoped in [
+        "symbol repo:EliteaAI/other",
+        "symbol ORG:EliteaAI",
+        "symbol user:octocat",
+    ] {
+        assert_eq!(
+            test_scope_code_search_query(explicitly_scoped, "EliteaAI/elitea-platform")
+                .expect("explicit search scope"),
+            explicitly_scoped
+        );
+    }
+    assert!(test_scope_code_search_query("   ", "EliteaAI/elitea-platform").is_err());
+
+    let response = json!({
+        "total_count": 37,
+        "incomplete_results": true,
+        "items": [{
+            "name": "lib.rs",
+            "path": "src/lib.rs",
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "html_url": "https://github.example.test/EliteaAI/elitea-platform/blob/main/src/lib.rs",
+            "repository": {
+                "full_name": "EliteaAI/elitea-platform",
+                "html_url": "https://github.example.test/EliteaAI/elitea-platform",
+                "description": null,
+                "private": true,
+                "owner": {"raw": "not projected"}
+            },
+            "text_matches": [{
+                "fragment": "fn main() {\n}",
+                "matches": [{"text": "main", "indices": [3, 7]}],
+                "object_url": "not projected"
+            }],
+            "raw_internal": "not projected"
+        }]
+    });
+    assert_eq!(
+        test_project_code_search(&response, 2, 30).expect("bounded code-search response"),
+        json!({
+            "total_count": 37,
+            "incomplete_results": true,
+            "items": [{
+                "name": "lib.rs",
+                "path": "src/lib.rs",
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "html_url": "https://github.example.test/EliteaAI/elitea-platform/blob/main/src/lib.rs",
+                "repository": {
+                    "full_name": "EliteaAI/elitea-platform",
+                    "html_url": "https://github.example.test/EliteaAI/elitea-platform",
+                    "description": null,
+                    "private": true
+                },
+                "text_matches": [{
+                    "fragment": "fn main() {\n}",
+                    "matches": [{"text": "main", "indices": [3, 7]}]
+                }]
+            }],
+            "page": 2,
+            "per_page": 30
+        })
+    );
+    assert!(test_project_code_search(&response, 11, 100).is_err());
+    let mut oversized = response;
+    oversized["items"] = Value::Array((0..101).map(|_| json!({})).collect());
+    assert!(test_project_code_search(&oversized, 1, 100).is_err());
+}
+
+#[test]
 fn github_rate_limits_remain_distinct_from_authorization_failures() {
     let permission = test_map_status(StatusCode::FORBIDDEN, &HeaderMap::new())
         .expect_err("plain forbidden must be an authorization failure");
     assert_eq!(permission.code(), GitHubClientErrorCode::Authorization);
     assert!(!permission.retryable());
+
+    let invalid_query = test_map_status(StatusCode::UNPROCESSABLE_ENTITY, &HeaderMap::new())
+        .expect_err("unprocessable search must be invalid input");
+    assert_eq!(invalid_query.code(), GitHubClientErrorCode::InvalidInput);
+    assert!(!invalid_query.retryable());
 
     let mut primary_limit = HeaderMap::new();
     primary_limit.insert("x-ratelimit-remaining", HeaderValue::from_static("0"));
@@ -1295,6 +1403,97 @@ fn assert_commit_tool_schemas(tools: &[Arc<dyn Tool>]) {
     );
 }
 
+#[tokio::test]
+async fn native_code_search_preserves_scopes_defaults_and_one_page_window() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    let selected = vec!["search_code".to_owned()];
+    let toolset = test_build_with_api(
+        "team-github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &(client.clone() as Arc<dyn GitHubApi>),
+    )
+    .expect("native code-search toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset.tools(readonly).await.expect("code-search tool");
+    let search = tools
+        .iter()
+        .find(|tool| tool.name() == "search_code")
+        .expect("selected code-search tool");
+
+    assert!(
+        search
+            .execute(
+                context(),
+                json!({
+                    "query": "struct Worker repo:EliteaAI/other",
+                    "sort": "indexed",
+                    "order": "asc",
+                    "per_page": 17,
+                    "page": 3
+                }),
+            )
+            .await
+            .is_ok()
+    );
+    assert!(
+        search
+            .execute(
+                context(),
+                json!({
+                    "query": "fn main",
+                    "sort": null,
+                    "order": null,
+                    "per_page": null,
+                    "page": null
+                }),
+            )
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        client
+            .code_search_calls
+            .lock()
+            .expect("code-search calls fixture lock")
+            .as_slice(),
+        &[
+            "struct Worker repo:EliteaAI/other:indexed:asc:17:3".to_owned(),
+            "fn main:none:none:30:1".to_owned(),
+        ]
+    );
+    assert_eq!(
+        search
+            .parameters_schema()
+            .and_then(|schema| schema.get("required").cloned()),
+        Some(json!(["query"]))
+    );
+
+    let calls_before = client
+        .code_search_calls
+        .lock()
+        .expect("code-search calls fixture lock")
+        .len();
+    for invalid in [
+        json!({"query": " "}),
+        json!({"query": "x", "sort": "created"}),
+        json!({"query": "x", "order": "sideways"}),
+        json!({"query": "x", "per_page": 100, "page": 11}),
+        json!({"query": "x", "unknown": true}),
+    ] {
+        assert!(search.execute(context(), invalid).await.is_err());
+    }
+    assert_eq!(
+        client
+            .code_search_calls
+            .lock()
+            .expect("code-search calls fixture lock")
+            .len(),
+        calls_before
+    );
+}
+
 #[test]
 fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
@@ -1323,6 +1522,7 @@ struct FixtureGitHubApi {
     issue_calls: Mutex<Vec<String>>,
     pull_request_calls: Mutex<Vec<String>>,
     commit_calls: Mutex<Vec<String>>,
+    code_search_calls: Mutex<Vec<String>>,
 }
 
 type FileCall = (String, Option<String>, Option<String>);
@@ -1500,5 +1700,26 @@ impl GitHubApi for FixtureGitHubApi {
                 repository.unwrap_or("default")
             ));
         Ok(json!({"status": "ahead"}))
+    }
+
+    async fn search_code(&self, query: GitHubCodeSearchQuery) -> Result<Value, GitHubClientError> {
+        self.code_search_calls
+            .lock()
+            .expect("code-search calls fixture lock")
+            .push(format!(
+                "{}:{}:{}:{}:{}",
+                query.query,
+                query.sort.as_deref().unwrap_or("none"),
+                query.order.as_deref().unwrap_or("none"),
+                query.per_page,
+                query.page,
+            ));
+        Ok(json!({
+            "total_count": 0,
+            "incomplete_results": false,
+            "items": [],
+            "page": query.page,
+            "per_page": query.per_page
+        }))
     }
 }

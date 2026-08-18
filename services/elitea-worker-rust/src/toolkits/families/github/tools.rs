@@ -12,7 +12,8 @@ use crate::toolkits::invocation::{MaterializedToolsetError, admit_materialized_t
 use crate::toolkits::policy::ToolAdmissionPolicy;
 
 use super::client::{
-    GitHubApi, GitHubClient, GitHubClientError, GitHubCommitQuery, GitHubFileScope,
+    GitHubApi, GitHubClient, GitHubClientError, GitHubCodeSearchQuery, GitHubCommitQuery,
+    GitHubFileScope,
 };
 use super::config::{GitHubToolkitConfig, GitHubToolkitConfigError};
 
@@ -33,6 +34,7 @@ const LIST_PULL_REQUEST_DIFFS: &str = "list_pull_request_diffs";
 const LIST_COMMITS: &str = "get_commits";
 const GET_COMMIT_CHANGES: &str = "get_commit_changes";
 const COMPARE_COMMITS: &str = "get_commits_diff";
+const SEARCH_CODE: &str = "search_code";
 const MAX_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_OUTPUT_CHARS: usize = 200_000;
 const MAX_BATCH_FILES: usize = 32;
@@ -117,7 +119,7 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
 /// Build the capability-disabled first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. Seventeen explicitly selected ordinary read
+/// until the full family is ported. Eighteen explicitly selected ordinary read
 /// operations can use this path. The production capability remains disabled
 /// until sensitive effects, the rest of the read catalog, GitHub App
 /// installation auth and cross-process TLS integration are complete.
@@ -159,6 +161,7 @@ fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
                     | LIST_COMMITS
                     | GET_COMMIT_CHANGES
                     | COMPARE_COMMITS
+                    | SEARCH_CODE
             )
         })
     {
@@ -196,6 +199,7 @@ fn build_with_api(
             LIST_COMMITS => GitHubReadToolKind::ListCommits,
             GET_COMMIT_CHANGES => GitHubReadToolKind::GetCommitChanges,
             COMPARE_COMMITS => GitHubReadToolKind::CompareCommits,
+            SEARCH_CODE => GitHubReadToolKind::SearchCode,
             _ => {
                 return Err(GitHubToolsetError {
                     code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -231,6 +235,7 @@ enum GitHubReadToolKind {
     ListCommits,
     GetCommitChanges,
     CompareCommits,
+    SearchCode,
 }
 
 struct GitHubReadTool {
@@ -294,6 +299,9 @@ impl GitHubReadTool {
             GitHubReadToolKind::CompareCommits => {
                 "Compare two refs with bounded commit and changed-file summaries."
             }
+            GitHubReadToolKind::SearchCode => {
+                "Search GitHub code through one bounded provider page without per-result fetches."
+            }
         };
         let description = bounded_description(&format!(
             "Toolkit: {toolkit_name}\nRepository: {repository}\n{action}"
@@ -327,6 +335,7 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ListCommits => LIST_COMMITS,
             GitHubReadToolKind::GetCommitChanges => GET_COMMIT_CHANGES,
             GitHubReadToolKind::CompareCommits => COMPARE_COMMITS,
+            GitHubReadToolKind::SearchCode => SEARCH_CODE,
         }
     }
 
@@ -362,6 +371,7 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ListCommits => list_commits_schema(),
             GitHubReadToolKind::GetCommitChanges => get_commit_changes_schema(),
             GitHubReadToolKind::CompareCommits => compare_commits_schema(),
+            GitHubReadToolKind::SearchCode => search_code_schema(),
         })
     }
 
@@ -440,6 +450,7 @@ impl Tool for GitHubReadTool {
                 self.execute_get_commit_changes(arguments).await
             }
             GitHubReadToolKind::CompareCommits => self.execute_compare_commits(arguments).await,
+            GitHubReadToolKind::SearchCode => self.execute_search_code(arguments).await,
         }
     }
 }
@@ -741,6 +752,48 @@ fn compare_commits_schema() -> Value {
             "repo_name": optional_string_schema(512, "Optional repository in owner/name form.")
         },
         "required": ["base_sha", "head_sha"],
+        "additionalProperties": false
+    })
+}
+
+fn search_code_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "description": "GitHub code-search query. A configured repository scope is added when no repo, org, or user scope is present."
+            },
+            "sort": {
+                "type": ["string", "null"],
+                "enum": ["indexed", null],
+                "default": null,
+                "description": "Optional GitHub code-search sort field."
+            },
+            "order": {
+                "type": ["string", "null"],
+                "enum": ["asc", "desc", null],
+                "default": null,
+                "description": "Optional result order."
+            },
+            "per_page": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "maximum": 100,
+                "default": 30,
+                "description": "Results requested from one provider page."
+            },
+            "page": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "maximum": 1000,
+                "default": 1,
+                "description": "One-indexed provider page inside GitHub's first 1,000 accessible results."
+            }
+        },
+        "required": ["query"],
         "additionalProperties": false
     })
 }
@@ -1049,6 +1102,46 @@ impl GitHubReadTool {
         let repository = optional_text(arguments, "repo_name", 512)?;
         self.client
             .compare_commits(base, head, repository)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
+
+    async fn execute_search_code(&self, arguments: &Map<String, Value>) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["query", "sort", "order", "per_page", "page"])?;
+        let query = required_text(arguments, "query", 4 * 1_024)?;
+        if query.trim().is_empty() {
+            return Err(invalid_arguments());
+        }
+        let query = query.to_owned();
+        let sort = optional_text(arguments, "sort", 32)?.map(ToOwned::to_owned);
+        if sort.as_deref().is_some_and(|sort| sort != "indexed") {
+            return Err(invalid_arguments());
+        }
+        let order = optional_text(arguments, "order", 32)?.map(ToOwned::to_owned);
+        if order
+            .as_deref()
+            .is_some_and(|order| !matches!(order, "asc" | "desc"))
+        {
+            return Err(invalid_arguments());
+        }
+        let per_page = optional_positive_usize(arguments, "per_page")?.unwrap_or(30);
+        let page = optional_positive_usize(arguments, "page")?.unwrap_or(1);
+        let within_window = page
+            .checked_sub(1)
+            .and_then(|page| page.checked_mul(per_page))
+            .and_then(|offset| offset.checked_add(per_page))
+            .is_some_and(|end| per_page <= 100 && end <= 1_000);
+        if !within_window {
+            return Err(invalid_arguments());
+        }
+        self.client
+            .search_code(GitHubCodeSearchQuery {
+                query,
+                sort,
+                order,
+                per_page,
+                page,
+            })
             .await
             .map_err(GitHubClientError::into_adk)
     }
