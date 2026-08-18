@@ -13,6 +13,46 @@ Target convention:
 - tests: `tests/configurations/<family>.rs` and
   `tests/toolkits/<family>_{catalog,materialization,invocation}.rs`
 
+## Frozen agent-tool snapshot boundary
+
+The first Rust tool slice validates the immutable references admitted with an
+agent request; it does not instantiate a toolkit. Main remains responsible for
+freezing configuration settings into reference form. Rust borrows those JSON
+documents from the owned request, applies explicit count/identifier bounds and
+classifies configured, MCP and nested-application references without cloning or
+formatting the settings.
+
+The authoritative list depends on the current command kind:
+
+- application execution reads `application.version_details.tools` and requires
+  the top-level `tools` list to be empty;
+- ad-hoc execution reads the top-level `tools` list and rejects a second nested
+  nonempty list;
+- the first reference with a non-null toolkit ID wins, matching the current SDK
+  deduplication rule. Identity-only ad-hoc application references have a null
+  toolkit ID and remain distinct.
+
+The snapshot is bounded to 1,024 references, 1,024 selected/excluded tool names
+per reference and 1,024 bytes per common identifier, in addition to the input
+protocol's 256 KiB per-JSON-value, 64-level nesting and 64 KiB string limits.
+Positive identifiers must fit PostgreSQL/Go signed 64-bit counters. These are
+worker hardening bounds, not a claim that the UI supports that many active
+tools.
+
+| Source evidence | Business responsibility | Rust target | Status / deviation |
+| --- | --- | --- | --- |
+| Main `internal/application/agentexecution/tools.go::CurrentApplicationToolSnapshotService.FreezeCurrentApplicationVersion` | Freeze configured settings as references, preserve selected tools, assign the stable toolkit name and keep nested-application settings identity-only | `src/toolkits/snapshot.rs::FrozenToolSnapshot` | Implemented validation foundation; settings remain sealed and borrowed |
+| Main `internal/application/agentexecution/start.go::currentApplicationInput` and `adhoc.go::currentAdhocInput` | Put application tools in frozen version details and ad-hoc tools at the top level | `FrozenToolSnapshot::from_request` | Implemented as one unambiguous source per request kind |
+| Python worker `agents/sdk_adapter.py::EliteaSdkAgentAdapter::{execute_application,execute_adhoc}` | Carry the selected snapshot and claim-scoped MCP/HITL inputs into the SDK execution path | future authorized materializer | Snapshot only; no PAT, MCP token or toolkit client is created here |
+| Legacy indexer worker `methods/indexer_agent.py::_indexer_agent_task_inner` and `methods/indexer_predict_agent.py::_indexer_predict_agent_task_inner` | Historical application/ad-hoc selection, MCP secret expansion and SDK invocation behavior | source evidence for materialization and compatibility tests | Intentional deviation: Rust will redeem credentials at the authorized use boundary instead of mutating copied dictionaries before SDK construction |
+| SDK `runtime/toolkits/tools.py::get_tools` | Sanitize references, first-ID-wins deduplication, family dispatch, blocked-tool policy, MCP smart-auth and nested applications | `src/toolkits/{snapshot,materialize,policy}.rs` | Deduplication/classification implemented; materialization, policy, MCP and application execution remain capability-gated |
+
+Evidence was refreshed against the platform/Python worker commit
+`e69bb5b3ce5629ba95c3fd1ee50022e0b87cb65a`, SDK commit
+`c0443b175adb8437e89826c17150330e32074faf`, and legacy indexer-worker commit
+`b6c4ce83d997acbbbeb58fe040317a9e9352236f` on 2026-08-18. Later slices must
+refresh these pins because all three Python sources continue to evolve.
+
 ## Shared kernel mapping
 
 | Python source | Responsibility | Rust target | Proof | Status / deviation |
