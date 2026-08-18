@@ -186,9 +186,30 @@ test.describe('JRNY-018 — MCP OAuth callback round trip', () => {
     await checkA11y(page);
   });
 
-  test('J18: the MCP list renders exactly the MCP-typed toolkits the API returns', async ({ page }) => {
+  test('J18: the MCP list renders exactly the MCP-typed toolkits the API returns', async ({ page }, testInfo) => {
     /*
-     * ONE SAMPLE, RETAKEN UNTIL IT IS CONSISTENT (issue #519).
+     * THIS TEST OWNS A ROW, AND IT TAKES ONE SAMPLE (issue #519).
+     *
+     * ## Why it owns a row
+     *
+     * `/app/mcps/all` renders no list when the project holds no MCP.
+     * `shouldRedirectToCreatePage` (pages/toolkits/Toolkits.tsx) sends the
+     * browser to the create page when `scopedItemCount === 0`, so
+     * `mcps-list-panel` never appears and there is nothing to compare. The E2E
+     * seed puts no MCP in project 1.
+     *
+     * So on a clean stack this test proved nothing — its expectation was the
+     * empty set — and it became a real measurement only when a DIFFERENT test
+     * had a fixture in flight. Measured on the corrected tree: 2 failures in
+     * 12 runs, both on the absent list panel, both because no sibling row
+     * existed at that moment.
+     *
+     * It therefore creates its own MCP, one name per browser project, and
+     * removes it again. The expectation is never empty, the list panel always
+     * renders, and the comparison never depends on another journey.
+     *
+     * ## Why it takes one sample
+     *
      *
      * The claim is an EQUALITY between two surfaces, and it used to be
      * measured with three reads spread over several seconds: the API, then
@@ -221,40 +242,81 @@ test.describe('JRNY-018 — MCP OAuth callback round trip', () => {
         .sort();
     };
 
-    let expectedMcpNames: readonly string[] = [];
-    await expect
-      .poll(
-        async () => {
-          const before = await apiMcpNames();
-          await page.goto(`${BASE_URL}/app/mcps/all`, { waitUntil: 'domcontentloaded' });
+    // One name per browser project: both engines read project 1 when the suite
+    // runs locally with both, and a shared name would collide.
+    const ownName = `${AUTOTEST_PREFIX}j18-list-${testInfo.project.name}`;
+    const createResp = await page.request.post(
+      `${API_BASE}/elitea_core/tools/prompt_lib/${DEFAULT_PROJECT_ID}`,
+      { data: { name: ownName, type: 'mcp', description: 'JRNY-018 list fixture' } },
+    );
+    expect(
+      createResp.status(),
+      `the list fixture must be created; got ${createResp.status()} ${(await createResp.text()).slice(0, 300)}`,
+    ).toBe(201);
+    const own = (await createResp.json()) as { id: string };
 
-          // The MCP branch of the list panel testid (Toolkits.tsx:360) — the
-          // toolkits branch renders `toolkits-list-panel`, so this also proves
-          // the page was mounted with `isMCP`.
-          await expect(page.getByTestId('mcps-list-panel')).toBeVisible({ timeout: 15_000 });
+    try {
+      let expectedMcpNames: readonly string[] = [];
+      await expect
+        .poll(
+          async () => {
+            const before = await apiMcpNames();
+            // The row this test owns must be in the API answer, or the sample
+            // says nothing about a list.
+            if (!before.includes(ownName)) {
+              return 'the API does not answer with the row this test created';
+            }
+            await page.goto(`${BASE_URL}/app/mcps/all`, { waitUntil: 'domcontentloaded' });
 
-          const rendered = (await page.getByTestId('toolkit-card').allInnerTexts())
-            .map((textOfCard) => textOfCard.split('\n')[0])
-            .sort();
-          const after = await apiMcpNames();
+            // The MCP branch of the list panel testid (Toolkits.tsx:365) — the
+            // toolkits branch renders `toolkits-list-panel`, so this also
+            // proves the page was mounted with `isMCP`.
+            const panelRendered = await page
+              .getByTestId('mcps-list-panel')
+              .waitFor({ state: 'visible', timeout: 5_000 })
+              .then(
+                () => true,
+                () => false,
+              );
+            if (!panelRendered) {
+              return `the MCP list panel is not on the screen; the browser is at ${page.url()}`;
+            }
 
-          if (before.join(' ') !== after.join(' ')) {
-            return 'the MCP set of the project changed while the page loaded';
-          }
-          expectedMcpNames = before;
-          return rendered.join(' ') === before.join(' ')
-            ? 'the screen and the API agree'
-            : `the screen shows ${JSON.stringify(rendered)} and the API answers ${JSON.stringify(before)}`;
-        },
-        { timeout: 30_000, intervals: [500, 1_000, 2_000] },
-      )
-      .toBe('the screen and the API agree');
+            const rendered = (await page.getByTestId('toolkit-card').allInnerTexts())
+              .map((textOfCard) => textOfCard.split('\n')[0])
+              .sort();
+            const after = await apiMcpNames();
 
-    // The card count is part of the equality above; asserted again on the
-    // settled page so a reader sees the number the sample agreed on.
-    await expect(page.getByTestId('toolkit-card')).toHaveCount(expectedMcpNames.length);
+            if (before.join(' ') !== after.join(' ')) {
+              return 'the MCP set of the project changed while the page loaded';
+            }
+            expectedMcpNames = before;
+            return rendered.join(' ') === before.join(' ')
+              ? 'the screen and the API agree'
+              : `the screen shows ${JSON.stringify(rendered)} and the API answers ${JSON.stringify(before)}`;
+          },
+          // Under the 30 s test budget, so the poll reports its own last
+          // answer instead of the test dying on a timeout with nothing to read.
+          { timeout: 20_000, intervals: [500, 1_000, 2_000] },
+        )
+        .toBe('the screen and the API agree');
 
-    await checkA11y(page);
+      // Not a formality: it fails a sample that agreed on the empty set, which
+      // is what this test used to pass on.
+      expect(
+        expectedMcpNames.length,
+        'the comparison must have had a row to compare',
+      ).toBeGreaterThan(0);
+      // The card count is part of the equality above; asserted again on the
+      // settled page so a reader sees the number the sample agreed on.
+      await expect(page.getByTestId('toolkit-card')).toHaveCount(expectedMcpNames.length);
+
+      await checkA11y(page);
+    } finally {
+      await page.request.delete(
+        `${API_BASE}/elitea_core/tool/prompt_lib/${DEFAULT_PROJECT_ID}/${own.id}`,
+      );
+    }
   });
 
   test('J18: the MCP create page offers exactly the MCP types the catalogue endpoint returns', async ({ page }) => {
