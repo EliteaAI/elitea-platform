@@ -53,7 +53,7 @@ tools.
 | SDK `runtime/toolkits/tools.py::get_tools` | Sanitize references, first-ID-wins deduplication, family dispatch, blocked-tool policy, MCP smart-auth and nested applications | `src/toolkits/{snapshot,materialize,policy}.rs` | Deduplication/classification and immutable blocklist implemented; materialization, MCP and application execution remain capability-gated |
 
 Evidence was refreshed against the platform/Python worker commit
-`56176cb230fd9d7f4f145ca1f2756bf503447bed`, SDK commit
+`3f10332e67392fddeb65f716ee80af19113a1688`, SDK commit
 `c0443b175adb8437e89826c17150330e32074faf`, and legacy indexer-worker commit
 `b6c4ce83d997acbbbeb58fe040317a9e9352236f` on 2026-08-18. Later slices must
 refresh these pins because all three Python sources continue to evolve.
@@ -111,7 +111,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 
 | Configuration family | Python configuration symbol | Python toolkit symbol(s) | Fixed tools | Check | Rust targets | Status / notable gate |
 | --- | --- | --- | ---: | :---: | --- | --- |
-| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus eleven explicit identity, branch, file, repository-navigation and issue-query reads; the other 33 tools, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
+| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,pull_requests,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus fourteen explicit identity, branch, file, repository-navigation, issue-query and pull-request inspection reads; the other 30 tools, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
 | `ado` | `configurations/ado.py::AdoConfiguration` | `tools/ado` dispatcher; repos, plans, boards, wiki toolkits | 74 | Yes | `configurations/families/ado.rs`; `toolkits/families/ado/` | Planned; one owner for shared auth/client and aliases |
 | `gitlab` | `configurations/gitlab.py::GitlabConfiguration` | `EliteAGitlabToolkit`, GitLab Org toolkit | 44 | Yes | `configurations/families/gitlab.rs`; `toolkits/families/gitlab/` | Planned; standard and org stay together |
 | `qtest` | `configurations/qtest.py::QtestConfiguration` | `tools/qtest::QtestToolkit` | 25 | Yes | `configurations/families/qtest.rs`; `toolkits/families/qtest/` | Planned |
@@ -189,7 +189,7 @@ validation-only success, token/basic call `/user`, and App JWT calls `/app`.
 App-backed tool execution is still rejected because an installation-token
 exchange has not been implemented.
 
-`src/toolkits/families/github/tools.rs` exposes eleven explicitly selected
+`src/toolkits/families/github/tools.rs` exposes fourteen explicitly selected
 ordinary reads through ADK-Rust 2.0.0's native `Tool`/`BasicToolset` boundary
 and the shared immutable blocklist. Empty selection still means all 44 SDK
 tools, so the partial Rust family rejects it instead of silently shrinking
@@ -210,6 +210,7 @@ The first file group follows this source-to-Rust chain:
 | SDK `tools/utils/file_metadata.py::{guard_text_read,capped_read_multiple_files}` and `runtime/langchain/constants.py::DEFAULT_MAX_OUTPUT_CHARS` | Plain content below the cap; schema `1.0` `content_too_large` guidance above it; line-range honesty for an unchunkable single line; one cumulative 200,000-character batch budget | Rust emits the same machine discriminator, line instructions and skip notice. Per-file batch failures are data-free so upstream exception bodies, private repositories and credentials cannot enter model context or logs |
 | SDK `tools/github/github_client.py::{_get_files,list_files_in_main_branch,list_files_in_bot_branch,get_files_from_directory}` | Resolve the configured base or active ref, fetch one recursive Git tree, retain only blobs, and optionally filter one directory prefix | `client.rs::GitHubApi::list_repository_files` preserves the base/active scopes and recursive path results. It bounds the tree body, entry/path/file counts and serialized output. GitHub's `truncated=true` is a resource error instead of the SDK's warning plus a silently incomplete list |
 | SDK `tools/github/github_client.py::{get_issues,get_issue,validate_search_query,search_issues}` plus `schemas.py::{NoInput,GetIssue,SearchIssues}` | `get_issues` is exposed as configured-repository/open-only despite a wider Python signature; detail and search permit an optional repository; search prepends `repo:`, distinguishes issues from pull requests and returns the current empty-result message | `client.rs::GitHubApi::{list_open_issues,get_issue,search_issues}` and `tools.rs` preserve those callable schemas, projected field names and Python `datetime.isoformat()` timestamp form. Rust keeps one bounded page of at most 100 results, caps response/body/metadata/serialized output, rejects the SDK's dangerous-query patterns before transport and omits unknown upstream fields and error bodies |
+| SDK `tools/github/github_client.py::{list_open_pull_requests,get_pull_request,list_pull_request_diffs}` plus `schemas.py::{ListPullRequestsInput,GetPR}` | Configured-repository open-listing; optional repository for one PR; PR metadata, issue comments, commit messages and changed-file patch fragments | `client.rs::GitHubApi::{list_open_pull_requests,get_pull_request,list_pull_request_files}`, `pull_requests.rs` and `tools.rs` preserve names, callable scopes and success field meanings. Rust deliberately replaces double-stringified comments/commits and token-budget-dependent missing fields with complete bounded typed arrays, preserves null bodies/users, normalizes timestamps like Python, caps detail items at ten, caps changed files at 300 and verifies the PR's declared `changed_files` before bounded local pagination. GitHub patch fragments remain fragments and null remains null; no tool claims full file contents |
 
 The GitHub REST projection accepts only a `type=file`, exact base64-declared
 size and valid UTF-8 payload. Directories, symlinks, submodules, malformed
@@ -239,7 +240,7 @@ not one prescribed language.
 Production registration remains disabled. Before this family can execute live
 agent work it still needs the authorized materializer connection, platform
 egress/private-DNS and Enterprise-CA policy, real GitHub TLS component proof,
-GitHub App installation-token support, the remaining 33 SDK operations
+GitHub App installation-token support, the remaining 30 SDK operations
 (including six indexing-only operations), and direct sensitive-tool/HITL
 fencing.
 

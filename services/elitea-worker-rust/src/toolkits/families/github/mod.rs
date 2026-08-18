@@ -10,4 +10,5 @@
 
 pub(in crate::toolkits) mod client;
 pub(in crate::toolkits) mod config;
+pub(in crate::toolkits) mod pull_requests;
 pub(in crate::toolkits) mod tools;

@@ -18,6 +18,10 @@ use super::families::github::client::{
     test_project_tree_files, test_project_tree_sha, test_project_user, test_validate_file_path,
 };
 use super::families::github::config::{GitHubAuthKind, GitHubToolkitConfig};
+use super::families::github::pull_requests::{
+    test_project_pull_request_detail, test_project_pull_request_files,
+    test_project_pull_request_list,
+};
 use super::families::github::tools::{
     GitHubToolsetErrorCode, build_github_read_only_toolset, test_build_with_api,
 };
@@ -386,6 +390,135 @@ fn issue_projection_matches_the_current_sdk_fields_and_is_bounded() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn pull_request_projection_is_complete_typed_and_bounded() {
+    let pull = pull_request_fixture();
+    assert_eq!(
+        test_project_pull_request_list(&json!([pull.clone()]), 1)
+            .expect("bounded pull-request list"),
+        json!([{
+            "number": 42,
+            "title": "Bound the worker",
+            "state": "open",
+            "created_at": "2026-08-18T10:00:00+00:00",
+            "updated_at": null,
+            "html_url": "https://github.example.test/EliteaAI/elitea-platform/pull/42",
+            "user": null,
+            "head": "feature/runtime",
+            "base": "main"
+        }])
+    );
+    assert_eq!(
+        test_project_pull_request_detail(
+            &pull,
+            &json!([{"body": "Looks good", "user": {"login": "reviewer"}}]),
+            &json!([{"commit": {"message": "feat: bound output"}}]),
+            42,
+        )
+        .expect("bounded typed pull-request detail"),
+        json!({
+            "title": "Bound the worker",
+            "number": 42,
+            "body": null,
+            "pr_url": "https://github.example.test/EliteaAI/elitea-platform/pull/42",
+            "state": "open",
+            "head": "feature/runtime",
+            "base": "main",
+            "comments": [{"body": "Looks good", "user": "reviewer"}],
+            "commits": [{"message": "feat: bound output"}]
+        })
+    );
+}
+
+#[test]
+fn pull_request_file_projection_is_complete_and_bounded() {
+    let pull = pull_request_fixture();
+    assert_eq!(
+        test_project_pull_request_files(
+            &pull,
+            &[json!([
+                {
+                    "filename": "src/lib.rs",
+                    "status": "modified",
+                    "additions": 2,
+                    "deletions": 1,
+                    "changes": 3,
+                    "patch": "@@ -1 +1 @@"
+                },
+                {
+                    "filename": "src/new.rs",
+                    "status": "added",
+                    "additions": 1,
+                    "deletions": 0,
+                    "changes": 1,
+                    "patch": null
+                }
+            ])],
+            42,
+        )
+        .expect("bounded pull-request files"),
+        json!([
+            {
+                "path": "src/lib.rs",
+                "patch": "@@ -1 +1 @@",
+                "filename": "src/lib.rs",
+                "status": "modified",
+                "additions": 2,
+                "deletions": 1,
+                "changes": 3
+            },
+            {
+                "path": "src/new.rs",
+                "patch": null,
+                "filename": "src/new.rs",
+                "status": "added",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1
+            }
+        ])
+    );
+    let mut oversized = pull;
+    oversized["changed_files"] = json!(301);
+    assert!(test_project_pull_request_files(&oversized, &[], 42).is_err());
+    let mut incomplete = pull_request_fixture();
+    incomplete["changed_files"] = json!(1);
+    assert!(test_project_pull_request_files(&incomplete, &[json!([])], 42).is_err());
+}
+
+#[test]
+fn pull_request_detail_rejects_an_over_limit_collection() {
+    assert!(
+        test_project_pull_request_detail(
+            &pull_request_fixture(),
+            &Value::Array(
+                (0..11)
+                    .map(|_| json!({"body": null, "user": null}))
+                    .collect(),
+            ),
+            &json!([]),
+            42,
+        )
+        .is_err()
+    );
+}
+
+fn pull_request_fixture() -> Value {
+    json!({
+        "number": 42,
+        "title": "Bound the worker",
+        "body": null,
+        "state": "open",
+        "html_url": "https://github.example.test/EliteaAI/elitea-platform/pull/42",
+        "created_at": "2026-08-18T10:00:00Z",
+        "updated_at": null,
+        "user": null,
+        "head": {"ref": "feature/runtime"},
+        "base": {"ref": "main"},
+        "changed_files": 2
+    })
 }
 
 #[test]
@@ -777,6 +910,93 @@ async fn native_issue_reads_preserve_the_current_sdk_schemas_and_bounds() {
     );
 }
 
+#[tokio::test]
+async fn native_pull_request_inspection_preserves_public_scope_and_limits() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    let selected = vec![
+        "list_open_pull_requests".to_owned(),
+        "get_pull_request".to_owned(),
+        "list_pull_request_diffs".to_owned(),
+    ];
+    let toolset = test_build_with_api(
+        "team-github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &(client.clone() as Arc<dyn GitHubApi>),
+    )
+    .expect("native pull-request toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset.tools(readonly).await.expect("pull-request tools");
+
+    for (name, arguments) in [
+        ("list_open_pull_requests", json!({"max_count": 17})),
+        (
+            "get_pull_request",
+            json!({"pr_number": 42, "repo_name": "EliteaAI/other"}),
+        ),
+        (
+            "list_pull_request_diffs",
+            json!({"pr_number": 42, "repo_name": "EliteaAI/other"}),
+        ),
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .expect("selected pull-request tool");
+        assert!(tool.execute(context(), arguments).await.is_ok());
+    }
+    assert_eq!(
+        client
+            .pull_request_calls
+            .lock()
+            .expect("pull-request calls fixture lock")
+            .as_slice(),
+        &[
+            "list:17".to_owned(),
+            "get:42:EliteaAI/other".to_owned(),
+            "files:42:EliteaAI/other".to_owned(),
+        ]
+    );
+    let list = tools
+        .iter()
+        .find(|tool| tool.name() == "list_open_pull_requests")
+        .expect("list pull requests tool");
+    assert_eq!(
+        list.parameters_schema()
+            .and_then(|schema| schema.pointer("/properties/max_count/maximum").cloned()),
+        Some(json!(100))
+    );
+    let detail = tools
+        .iter()
+        .find(|tool| tool.name() == "get_pull_request")
+        .expect("get pull request tool");
+    assert_eq!(
+        detail
+            .parameters_schema()
+            .and_then(|schema| schema.get("required").cloned()),
+        Some(json!(["pr_number"]))
+    );
+    assert!(
+        list.execute(context(), json!({"max_count": null}))
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        client
+            .pull_request_calls
+            .lock()
+            .expect("pull-request calls fixture lock")
+            .last(),
+        Some(&"list:100".to_owned())
+    );
+    assert!(
+        list.execute(context(), json!({"max_count": 101}))
+            .await
+            .is_err()
+    );
+}
+
 #[test]
 fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
@@ -803,6 +1023,7 @@ struct FixtureGitHubApi {
     file_calls: Mutex<Vec<FileCall>>,
     file_list_calls: Mutex<Vec<FileListCall>>,
     issue_calls: Mutex<Vec<String>>,
+    pull_request_calls: Mutex<Vec<String>>,
 }
 
 type FileCall = (String, Option<String>, Option<String>);
@@ -891,6 +1112,44 @@ impl GitHubApi for FixtureGitHubApi {
             .expect("issue calls fixture lock")
             .push(format!(
                 "search:{search_query}:{}:{max_count}",
+                repository.unwrap_or("default")
+            ));
+        Ok(json!([]))
+    }
+
+    async fn list_open_pull_requests(&self, max_count: usize) -> Result<Value, GitHubClientError> {
+        self.pull_request_calls
+            .lock()
+            .expect("pull-request calls fixture lock")
+            .push(format!("list:{max_count}"));
+        Ok(json!([]))
+    }
+
+    async fn get_pull_request(
+        &self,
+        pull_request_number: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        self.pull_request_calls
+            .lock()
+            .expect("pull-request calls fixture lock")
+            .push(format!(
+                "get:{pull_request_number}:{}",
+                repository.unwrap_or("default")
+            ));
+        Ok(json!({"number": pull_request_number}))
+    }
+
+    async fn list_pull_request_files(
+        &self,
+        pull_request_number: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        self.pull_request_calls
+            .lock()
+            .expect("pull-request calls fixture lock")
+            .push(format!(
+                "files:{pull_request_number}:{}",
                 repository.unwrap_or("default")
             ));
         Ok(json!([]))

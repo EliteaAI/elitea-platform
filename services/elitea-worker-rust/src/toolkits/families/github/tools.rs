@@ -24,6 +24,9 @@ const LIST_DIRECTORY_FILES: &str = "get_files_from_directory";
 const LIST_ISSUES: &str = "get_issues";
 const GET_ISSUE: &str = "get_issue";
 const SEARCH_ISSUES: &str = "search_issues";
+const LIST_PULL_REQUESTS: &str = "list_open_pull_requests";
+const GET_PULL_REQUEST: &str = "get_pull_request";
+const LIST_PULL_REQUEST_DIFFS: &str = "list_pull_request_diffs";
 const MAX_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_OUTPUT_CHARS: usize = 200_000;
 const MAX_BATCH_FILES: usize = 32;
@@ -108,7 +111,7 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
 /// Build the capability-disabled first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. Eleven explicitly selected ordinary read
+/// until the full family is ported. Fourteen explicitly selected ordinary read
 /// operations can use this path. The production capability remains disabled
 /// until sensitive effects, the rest of the read catalog, GitHub App
 /// installation auth and cross-process TLS integration are complete.
@@ -144,6 +147,9 @@ fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
                     | LIST_ISSUES
                     | GET_ISSUE
                     | SEARCH_ISSUES
+                    | LIST_PULL_REQUESTS
+                    | GET_PULL_REQUEST
+                    | LIST_PULL_REQUEST_DIFFS
             )
         })
     {
@@ -175,6 +181,9 @@ fn build_with_api(
             LIST_ISSUES => GitHubReadToolKind::ListIssues,
             GET_ISSUE => GitHubReadToolKind::GetIssue,
             SEARCH_ISSUES => GitHubReadToolKind::SearchIssues,
+            LIST_PULL_REQUESTS => GitHubReadToolKind::ListPullRequests,
+            GET_PULL_REQUEST => GitHubReadToolKind::GetPullRequest,
+            LIST_PULL_REQUEST_DIFFS => GitHubReadToolKind::ListPullRequestDiffs,
             _ => {
                 return Err(GitHubToolsetError {
                     code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -204,6 +213,9 @@ enum GitHubReadToolKind {
     ListIssues,
     GetIssue,
     SearchIssues,
+    ListPullRequests,
+    GetPullRequest,
+    ListPullRequestDiffs,
 }
 
 struct GitHubReadTool {
@@ -249,6 +261,15 @@ impl GitHubReadTool {
             GitHubReadToolKind::SearchIssues => {
                 "Search issues and pull requests with bounded GitHub query syntax."
             }
+            GitHubReadToolKind::ListPullRequests => {
+                "List up to 100 open pull requests in the configured repository."
+            }
+            GitHubReadToolKind::GetPullRequest => {
+                "Inspect one pull request with bounded comments and commit summaries."
+            }
+            GitHubReadToolKind::ListPullRequestDiffs => {
+                "List bounded changed-file metadata and GitHub patch fragments for one pull request."
+            }
         };
         let description = bounded_description(&format!(
             "Toolkit: {toolkit_name}\nRepository: {repository}\n{action}"
@@ -276,6 +297,9 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ListIssues => LIST_ISSUES,
             GitHubReadToolKind::GetIssue => GET_ISSUE,
             GitHubReadToolKind::SearchIssues => SEARCH_ISSUES,
+            GitHubReadToolKind::ListPullRequests => LIST_PULL_REQUESTS,
+            GitHubReadToolKind::GetPullRequest => GET_PULL_REQUEST,
+            GitHubReadToolKind::ListPullRequestDiffs => LIST_PULL_REQUEST_DIFFS,
         }
     }
 
@@ -304,6 +328,10 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ListDirectoryFiles => list_directory_files_schema(),
             GitHubReadToolKind::GetIssue => get_issue_schema(),
             GitHubReadToolKind::SearchIssues => search_issues_schema(),
+            GitHubReadToolKind::ListPullRequests => list_pull_requests_schema(),
+            GitHubReadToolKind::GetPullRequest | GitHubReadToolKind::ListPullRequestDiffs => {
+                get_pull_request_schema()
+            }
         })
     }
 
@@ -370,6 +398,13 @@ impl Tool for GitHubReadTool {
             }
             GitHubReadToolKind::GetIssue => self.execute_get_issue(arguments).await,
             GitHubReadToolKind::SearchIssues => self.execute_search_issues(arguments).await,
+            GitHubReadToolKind::ListPullRequests => {
+                self.execute_list_pull_requests(arguments).await
+            }
+            GitHubReadToolKind::GetPullRequest => self.execute_get_pull_request(arguments).await,
+            GitHubReadToolKind::ListPullRequestDiffs => {
+                self.execute_list_pull_request_diffs(arguments).await
+            }
         }
     }
 }
@@ -575,6 +610,44 @@ fn search_issues_schema() -> Value {
     })
 }
 
+fn list_pull_requests_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "max_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 100,
+                "description": "Maximum number of open pull requests to return."
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn get_pull_request_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "pr_number": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": i64::MAX,
+                "description": "Pull-request number."
+            },
+            "repo_name": {
+                "type": ["string", "null"],
+                "minLength": 3,
+                "maxLength": 512,
+                "description": "Optional repository in owner/name form."
+            }
+        },
+        "required": ["pr_number"],
+        "additionalProperties": false
+    })
+}
+
 impl GitHubReadTool {
     async fn execute_read_file(&self, arguments: &Map<String, Value>) -> adk_rust::Result<Value> {
         reject_unknown_keys(
@@ -759,6 +832,46 @@ impl GitHubReadTool {
             .await
             .map_err(GitHubClientError::into_adk)
     }
+
+    async fn execute_list_pull_requests(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["max_count"])?;
+        if arguments.get("max_count").is_some_and(Value::is_null) {
+            return Err(invalid_arguments());
+        }
+        let max_count = optional_positive_usize(arguments, "max_count")?.unwrap_or(100);
+        if max_count > 100 {
+            return Err(invalid_arguments());
+        }
+        self.client
+            .list_open_pull_requests(max_count)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
+
+    async fn execute_get_pull_request(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        let (number, repository) = pull_request_arguments(arguments)?;
+        self.client
+            .get_pull_request(number, repository)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
+
+    async fn execute_list_pull_request_diffs(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        let (number, repository) = pull_request_arguments(arguments)?;
+        self.client
+            .list_pull_request_files(number, repository)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
 }
 
 fn reject_unknown_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> adk_rust::Result<()> {
@@ -833,6 +946,13 @@ fn required_positive_u64(arguments: &Map<String, Value>, key: &str) -> adk_rust:
         .and_then(Value::as_u64)
         .filter(|value| *value > 0 && i64::try_from(*value).is_ok())
         .ok_or_else(invalid_arguments)
+}
+
+fn pull_request_arguments(arguments: &Map<String, Value>) -> adk_rust::Result<(u64, Option<&str>)> {
+    reject_unknown_keys(arguments, &["pr_number", "repo_name"])?;
+    let number = required_positive_u64(arguments, "pr_number")?;
+    let repository = optional_text(arguments, "repo_name", 512)?;
+    Ok((number, repository))
 }
 
 fn valid_issue_search_query(query: &str) -> bool {

@@ -14,6 +14,11 @@ use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 use super::config::{GitHubAuthKind, GitHubToolkitConfig};
+use super::pull_requests::{
+    MAX_PULL_REQUEST_FILES, MAX_PULL_REQUESTS, PULL_REQUEST_FILES_PER_PAGE,
+    append_pull_request_file_page, finish_pull_request_files, project_pull_request_detail,
+    project_pull_request_list, pull_request_file_count,
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -35,6 +40,7 @@ const MAX_ISSUE_URL_BYTES: usize = 4 * 1_024;
 const MAX_ISSUE_METADATA_BYTES: usize = 1_024;
 const MAX_ISSUE_COLLECTION_ITEMS: usize = 100;
 const MAX_SEARCH_QUERY_BYTES: usize = 4 * 1_024;
+const MAX_PULL_REQUEST_FILE_PAGE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_BRANCHES: usize = 100;
 const MAX_BRANCH_BYTES: usize = 1_024;
 const MAX_FILE_PATH_BYTES: usize = 4 * 1_024;
@@ -210,6 +216,20 @@ pub(crate) trait GitHubApi: Send + Sync {
         search_query: &str,
         repository: Option<&str>,
         max_count: usize,
+    ) -> Result<Value, GitHubClientError>;
+
+    async fn list_open_pull_requests(&self, max_count: usize) -> Result<Value, GitHubClientError>;
+
+    async fn get_pull_request(
+        &self,
+        pull_request_number: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError>;
+
+    async fn list_pull_request_files(
+        &self,
+        pull_request_number: u64,
+        repository: Option<&str>,
     ) -> Result<Value, GitHubClientError>;
 }
 
@@ -569,6 +589,99 @@ impl GitHubApi for GitHubClient {
             )
             .await?;
         project_issue_search(&response, max_count)
+    }
+
+    async fn list_open_pull_requests(&self, max_count: usize) -> Result<Value, GitHubClientError> {
+        if max_count == 0 || max_count > MAX_PULL_REQUESTS {
+            return Err(invalid_configuration());
+        }
+        let (owner, repository) = validate_repository(self.config.repository())?;
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "pulls"],
+                &[
+                    ("state", "open".to_owned()),
+                    ("per_page", max_count.to_string()),
+                    ("page", "1".to_owned()),
+                ],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        project_pull_request_list(&response, max_count)
+    }
+
+    async fn get_pull_request(
+        &self,
+        pull_request_number: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        validate_pull_request_number(pull_request_number)?;
+        let repository = repository.unwrap_or_else(|| self.config.repository());
+        let (owner, repository) = validate_repository(repository)?;
+        let number = pull_request_number.to_string();
+        let pull = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "pulls", &number],
+                &[],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        let comments = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "issues", &number, "comments"],
+                &[("per_page", "10".to_owned()), ("page", "1".to_owned())],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        let commits = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "pulls", &number, "commits"],
+                &[("per_page", "10".to_owned()), ("page", "1".to_owned())],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        project_pull_request_detail(&pull, &comments, &commits, pull_request_number)
+    }
+
+    async fn list_pull_request_files(
+        &self,
+        pull_request_number: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        validate_pull_request_number(pull_request_number)?;
+        let repository = repository.unwrap_or_else(|| self.config.repository());
+        let (owner, repository) = validate_repository(repository)?;
+        let number = pull_request_number.to_string();
+        let pull = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "pulls", &number],
+                &[],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        let expected_count = pull_request_file_count(&pull, pull_request_number)?;
+        let page_count = expected_count.div_ceil(PULL_REQUEST_FILES_PER_PAGE);
+        let mut files = Vec::with_capacity(expected_count.min(MAX_PULL_REQUEST_FILES));
+        for page in 1..=page_count {
+            let response = self
+                .get_json(
+                    GitHubRequestKind::Repository,
+                    &["repos", owner, repository, "pulls", &number, "files"],
+                    &[
+                        ("per_page", PULL_REQUEST_FILES_PER_PAGE.to_string()),
+                        ("page", page.to_string()),
+                    ],
+                    MAX_PULL_REQUEST_FILE_PAGE_BYTES,
+                )
+                .await?;
+            append_pull_request_file_page(&response, &mut files)?;
+        }
+        finish_pull_request_files(files, expected_count)
     }
 }
 
@@ -985,6 +1098,13 @@ fn validate_repository(value: &str) -> Result<(&str, &str), GitHubClientError> {
     Ok((owner, repository))
 }
 
+fn validate_pull_request_number(value: u64) -> Result<(), GitHubClientError> {
+    if value == 0 || i64::try_from(value).is_err() {
+        return Err(invalid_configuration());
+    }
+    Ok(())
+}
+
 fn valid_repository_segment(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
@@ -1207,11 +1327,11 @@ const fn unsupported_authentication() -> GitHubClientError {
     error(GitHubClientErrorCode::UnsupportedAuthentication)
 }
 
-const fn invalid_response() -> GitHubClientError {
+pub(super) const fn invalid_response() -> GitHubClientError {
     error(GitHubClientErrorCode::InvalidResponse)
 }
 
-const fn resource_exhausted() -> GitHubClientError {
+pub(super) const fn resource_exhausted() -> GitHubClientError {
     error(GitHubClientErrorCode::ResourceExhausted)
 }
 
