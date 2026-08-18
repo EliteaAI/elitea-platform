@@ -325,31 +325,73 @@ func TestUploadIcon(t *testing.T) {
 
 // ---- Export / Import --------------------------------------------------------
 
-func TestExportImportPost(t *testing.T) {
+// TestExportImportPostRefusesWithNoPool corrects a test that agreed with a
+// defect (#505).
+//
+// It read:
+//
+//	// With nil pool and empty body, the handler returns 201 with result/errors shape.
+//	assertStatus(t, w, http.StatusCreated)
+//
+// The comment describes the behaviour correctly and the assertion approves of
+// it. 201 Created is the answer "every entity in your file was imported". A
+// handler with no pool imported nothing and can import nothing, so the answer
+// was untrue, and the import wizard reads any 2xx as a completed import: it
+// marks each selected entity green and closes. The test would have failed the
+// repair, which is worse than having no test at all.
+//
+// The condition is not reachable in the production router, which always builds
+// the handler with a pool. It is reachable in this package, and the assertion
+// is what the repair has to be measured against: a handler that cannot write
+// must not report a write.
+func TestExportImportPostRefusesWithNoPool(t *testing.T) {
 	h := newHandler()
 	w := httptest.NewRecorder()
 	h.ExportImportPost(w, httptest.NewRequest(http.MethodPost, "/", nil))
 
-	// With nil pool and empty body, the handler returns 201 with result/errors shape.
-	assertStatus(t, w, http.StatusCreated)
+	assertStatus(t, w, http.StatusInternalServerError)
 	body := decodeObj(t, w)
-	if _, hasResult := body["result"]; !hasResult {
-		t.Error("response must contain 'result' key")
+	if _, hasResult := body["result"]; hasResult {
+		t.Error("a refusal must not carry a 'result' key: nothing was imported")
 	}
-	if _, hasErrors := body["errors"]; !hasErrors {
-		t.Error("response must contain 'errors' key")
+	message, _ := body["error"].(string)
+	if message == "" {
+		t.Errorf("response must name the reason, got %v", body)
 	}
 }
 
-func TestExportImportGet(t *testing.T) {
+// TestExportImportGetRefusesWithNoPool is the same correction on the export.
+//
+// The old assertion was `assertStatus(t, w, http.StatusOK)` on a body of
+// {"ok": true}. That body has no `applications` key at all, and the export
+// button saves whatever it is given as the agent's backup file. An empty
+// backup that reports success is the failure mode this whole issue is about.
+func TestExportImportGetRefusesWithNoPool(t *testing.T) {
 	h := newHandler()
 	w := httptest.NewRecorder()
 	h.ExportImportGet(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	assertStatus(t, w, http.StatusOK)
+	assertStatus(t, w, http.StatusInternalServerError)
 	body := decodeObj(t, w)
-	if ok, _ := body["ok"].(bool); !ok {
-		t.Error("ok should be true")
+	if ok, _ := body["ok"].(bool); ok {
+		t.Error("a failed export must not answer ok")
+	}
+	if _, hasApplications := body["applications"]; hasApplications {
+		t.Error("a failed export must not carry an 'applications' key")
+	}
+}
+
+// TestForkRefusesWithNoPool is the third of the same shape. Fork now has a
+// route (#505), so the answer it gives when it cannot write is a real answer.
+func TestForkRefusesWithNoPool(t *testing.T) {
+	h := newHandler()
+	w := httptest.NewRecorder()
+	h.Fork(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"applications":[{"name":"a"}]}`)))
+
+	assertStatus(t, w, http.StatusInternalServerError)
+	body := decodeObj(t, w)
+	if _, hasResult := body["result"]; hasResult {
+		t.Error("a refusal must not carry a 'result' key: nothing was forked")
 	}
 }
 
