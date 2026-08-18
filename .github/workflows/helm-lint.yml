@@ -18,11 +18,22 @@ on:
   push:
     branches:
       - main
+      # The release staging branch (#518). Pull requests merge here first,
+      # and this branch merges into main later, so a push arm that names
+      # only `main` cannot guard the tree that becomes main. The name is
+      # held once in .github/staging-branch.txt, and
+      # scripts/ci/check_workflow_branch_coverage.py fails when a workflow
+      # that names `main` here does not also name that branch.
+      - claude/issue-248-c5b380
     paths:
       - "deploy/helm/**"
       - "deploy/argocd/**"
       - "services/elitea-main/internal/runtimecomposition/**"
       - "deploy/docker-compose.standalone-full.yml"
+      # This workflow's own file. The pull_request arm above names it and this
+      # arm did not, so a push that edited only the gate could not start the
+      # gate it edited (#518).
+      - ".github/workflows/helm-lint.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -119,6 +130,29 @@ jobs:
       # red (#497).
       - name: The charts do not ship the LLM path off, and the guards refuse
         run: bash deploy/helm/tests/render-llm-path.sh
+
+      # The BF0.2b render assertions (#485). This file was `deploy/test_bf0_2b.sh`
+      # and no workflow, Taskfile task or script called it. Wiring it found two
+      # defects on the first run:
+      #
+      #   1. It could not render the gateway chart at all. The chart has refused
+      #      an empty `env.GATEWAY_SELF_LLM_ORIGINS` since #467/#473, and the
+      #      script still called `helm template` with no values. It now supplies
+      #      the same render-only postures the template matrix supplies.
+      #   2. Its ArgoCD sync-wave assertion read `deploy/argocd/nats.yaml`. The
+      #      children moved into `deploy/argocd/applications/` with the
+      #      app-of-apps layout (#265), so the assertion raised
+      #      FileNotFoundError. With no caller, nothing printed it.
+      #
+      # It covers what no other step here covers: the two NATS profiles, the KV
+      # and stream bootstrap, the gateway Service shape and its SSE autoscaling
+      # metric, and the sync-wave ORDER (the argocd job below asserts only that a
+      # wave annotation is present).
+      - name: The NATS and gateway render assertions (BF0.2b)
+        run: |
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          bash deploy/helm/tests/render-bf0-2b.sh
 
       # `helm lint` covers every chart. The `template` job below covers only the
       # charts its matrix names, and a chart in neither list is never rendered
