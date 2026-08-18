@@ -18,6 +18,15 @@ Target convention:
   `tests/toolkits/<family>_{catalog,materialization,invocation}.rs` when the
   public registry and cross-process composition land
 
+Model-facing tool metadata is part of the functional contract for every
+family. A complete port must give each tool a concise selection description
+that distinguishes its operation and side effect, and give every argument its
+meaning, required format, defaults, bounds and useful examples. Rust may
+clarify or shorten weak source prose rather than copy it byte-for-byte, but it
+must preserve the source operation and result meaning. Focused family tests
+inspect names, descriptions and parameter schemas so selection quality cannot
+silently regress or force avoidable model retries and token use.
+
 ## Frozen agent-tool snapshot boundary
 
 The first Rust tool slice validates the immutable references admitted with an
@@ -124,7 +133,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `confluence` | `configurations/confluence.py::ConfluenceConfiguration` | `tools/confluence::ConfluenceToolkit` | 25 | Yes | `configurations/families/confluence.rs`; `toolkits/families/confluence/` | Planned; shared Atlassian auth normalizer |
 | `jira` | `configurations/jira.py::JiraConfiguration` | `tools/jira::JiraToolkit` | 23 | Yes | `configurations/families/jira.rs`; `toolkits/families/jira/` | Planned; shared Atlassian auth normalizer |
 | `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `configurations/families/postman.rs`; `toolkits/families/postman/` | Planned |
-| `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `configurations/families/service_now.rs`; `toolkits/families/service_now/` | Planned; source has no focused family tests |
+| `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `toolkits/families/service_now/{config,client,tools}.rs` | Capability-disabled complete family: one bounded incident read plus create and update effects over fixed-origin Table API; shared durable sensitive-tool approval, authorized materialization and cancellation-safe effect reconciliation remain gates |
 | `testrail` | `configurations/testrail.py::TestRailConfiguration` | `tools/testrail::TestrailToolkit` | 23 | Yes | `configurations/families/testrail.rs`; `toolkits/families/testrail/` | Planned |
 | `slack` | `configurations/slack.py::SlackConfiguration` | `tools/slack::SlackToolkit` | 7 | No | `configurations/families/slack.rs`; `toolkits/families/slack/` | Planned |
 | `azure_search` | `configurations/azure_search.py::AzureSearchConfiguration` | `tools/azure_ai/search::AzureSearchToolkit` | 2 | No | `toolkits/families/azure_search/{config,client,tools}.rs` | Capability-disabled complete read family: fixed configured index, two bounded reads, SDK 11.5.2 wire/result projection and no unbounded continuation; authorized materialization and live provider proof remain gates |
@@ -502,6 +511,100 @@ proves real TLS/private-endpoint policy, exact index isolation, bounds, error
 redaction and configuration-driven sensitivity. A future truthful Search probe
 may reuse this family client, but must not revive the Azure OpenAI check.
 
+### ServiceNow complete incident family
+
+The source baseline is current SDK
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, worker-pinned SDK
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`, Python worker/Main
+`1282fc7d2111a46d3e2e7ec15ecdc013e8b3c93e` and exact transport dependency
+`pysnc==1.1.10`. The current-versus-pinned SDK diff only adds the
+`read`/`write`/`write` group annotations; configuration, public argument
+schemas, operations and results are otherwise unchanged.
+
+Main freezes `{type, toolkit_name, settings}` through
+`internal/application/agentexecution/tools.go` and claim-time
+`internal/infra/storage/configurations_materializer.go` resolves the nested
+`servicenow_configuration`. Python worker
+`agents/sdk_adapter.py::EliteaSdkAgentAdapter` passes that same frozen snapshot
+to both application and ad-hoc SDK entry points. Rust therefore accepts only
+the claimed nested configuration and has no environment or secondary lookup
+fallback.
+
+SDK `tools/servicenow/api_wrapper.py::ServiceNowAPIWrapper` registers all three
+incident operations in this exact order:
+
+1. `get_incidents` (`read`) accepts an optional filter object;
+2. `create_incident` (`write`) accepts an optional string-valued field object,
+   including an intentional empty default incident;
+3. `update_incident` (`write`) accepts a required `sys_id` and a JSON-object
+   string of fields to update.
+
+Empty selection means all three; a nonempty subset preserves source order.
+Successful tools return the SDK-compatible JSON *string* containing an array
+of raw-value incident records. With `sysparm_display_value=all`, `pysnc`
+unwraps each `{value, display_value, link}` field to the non-null raw value and
+falls back to `display_value` when the raw value is null; Rust preserves that
+projection and discards the provider envelope.
+
+`pysnc` uses Basic authentication and fixed Table API routes under
+`/api/now/table/incident`. Every request carries
+`sysparm_display_value=all`, `sysparm_exclude_reference_link=true` and
+`sysparm_suppress_pagination_header=true`. List additionally sends the encoded
+query, response fields, limit and offset zero. Create is one POST expecting
+201. Update deliberately retains the source's GET-then-PATCH behavior so a
+missing incident fails before mutation; PATCH expects 200. Neither effect is
+retried by the family.
+
+Rust fixes bounded defects without removing functionality:
+
+- one materialized toolkit owns one non-`Clone`, non-`Debug`, zeroizing
+  credential and HTTP pool; this removes the SDK validator's class-global
+  endpoint/credential/field overwrite;
+- HTTPS origin or a validated short instance is fixed before invocation;
+  redirects, userinfo, query/fragment and argument-selected destinations are
+  rejected;
+- missing credentials fail during materialization instead of later client
+  construction;
+- null response fields use the SDK's ten-field defaults, and an empty string
+  also uses those defaults rather than silently requesting every field;
+- `number_of_entries` defaults to 100, is bounded to `1..=100`, controls only
+  the first-page limit and is no longer accidentally emitted as a table
+  column filter;
+- filter keys are limited to the documented incident fields; encoded-query
+  metacharacters, oversized values, invalid 32-character `sys_id`s, malformed
+  update JSON and unbounded field sets fail before network use;
+- request, streamed response, projected output, argument depth/node/string
+  counts and deadlines are bounded; provider bodies, credentials, URLs,
+  filters and update data never appear in diagnostics;
+- reads expose transient retry hints but the client performs one attempt;
+  create/PATCH transport and status ambiguity is never advertised retryable.
+- `pysnc` silently drops an update field when it was absent from the configured
+  GET projection. Rust deliberately sends every validated field requested by
+  the caller, preventing a successful-looking update from losing data.
+
+| Current business source | Preserved behavior | Rust owner / deliberate hardening |
+| --- | --- | --- |
+| Main freezer/materializer and Python shared SDK adapter | Claim-scoped nested configuration, selected tools and one application/ad-hoc family contract | `config.rs` parses the exact materialized authority and creates no process-global or environment authority |
+| SDK `ServiceNowAPIWrapper::get_incidents` and `pysnc::GlideRecord.query` | Documented equality/description filters, default fields, one ordered first page and raw-value JSON-array string | `client.rs::ServiceNowApi::get_incidents` preserves the result meaning while fixing the accidental control filter and bounding query, fields, results and bytes |
+| SDK `ServiceNowAPIWrapper::create_incident` | Create one incident, omit null fields, permit an empty body and return the created raw-value record | `client.rs::ServiceNowApi::create_incident` performs one non-retried POST with bounded body/result and stable ambiguity-safe errors |
+| SDK `ServiceNowAPIWrapper::update_incident` | Read the exact incident first, omit null updates, patch once and return the updated raw-value record | `client.rs::ServiceNowApi::update_incident` validates the `sys_id` and bounded JSON object, then performs the same GET/PATCH fanout without write retry; unlike `pysnc`, it does not silently discard requested fields missing from the GET projection |
+| SDK `ServiceNowToolkit` and shared `BaseAction` | Exact catalog order, empty/subset selection, top-level null normalization and operation groups | `tools.rs` plus the shared invocation/policy kernel expose all three tools; effects are not omitted |
+
+Neither the configuration nor toolkit defines `check_connection`; current
+catalogs truthfully report it unsupported. Rust does not invent a probe. A
+future check can reuse the same origin-bound client only after Main defines a
+truthful provider contract.
+
+Production registration remains disabled, not functionally reduced. The read,
+create and update implementations are all compiled and tested. Authorized
+materialization, a credentialed ServiceNow component test and the shared
+durable exact-`interrupt_id` guardrail remain activation gates. Before either
+write is enabled, an owned cancellation-safe effect boundary must also retain
+effect identity through provider completion and reconcile an ambiguous
+POST/PATCH rather than settling cancellation as if no effect occurred. Group
+metadata does not decide sensitivity: policy may require approval for the read,
+either write, all three or none.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -519,9 +622,11 @@ may reuse this family client, but must not revive the Azure OpenAI check.
 
 The shared schema, bounded HTTP, credential, policy, invocation-event,
 cancellation and ADK `Toolset` kernel is now stable enough for independent
-read-only REST families; Google Places and Sonar are the first complete examples
-after the partial GitHub reference family. Parallel family work still must not
-share mutable files or weaken the capability gate.
+REST families; Google Places, Sonar and Azure Search are complete reads, while
+ServiceNow proves the same boundary can retain bounded create/update effects
+without activating them ahead of durable approval. These follow the partial
+GitHub reference family. Parallel family work still must not share mutable files
+or weaken the capability gate.
 Non-overlapping batches are:
 
 1. GitHub completion as the broad reference family, including its gated effects.

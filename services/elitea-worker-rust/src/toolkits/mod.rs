@@ -22,6 +22,8 @@ mod invocation_tests;
 #[cfg(test)]
 mod policy_tests;
 #[cfg(test)]
+mod service_now_tests;
+#[cfg(test)]
 mod snapshot_tests;
 #[cfg(test)]
 mod sonar_tests;

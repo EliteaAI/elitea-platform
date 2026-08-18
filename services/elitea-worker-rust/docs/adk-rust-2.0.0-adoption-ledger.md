@@ -40,6 +40,16 @@ passing upstream test does not register a production worker capability.
 | Realtime/voice | Optional realtime runner and transport/provider features | Defer and wrap | Map current voice/ASR/TTS session behavior, cancellation, quotas and `NodeEventV1`/media boundaries first; do not enable the enterprise preset |
 | Redis | ADK offers optional execution-state backends | Do not substitute | The restricted redis-rs transport owns Elitea command intake, PEL reclaim/heartbeat and exact post-settlement retirement. A crate-private generation owner now serializes explicit replacement after retryable failure without replaying an ambiguous command or allowing a late old-generation failure to evict the replacement. The fair worker serve loop, stop-aware TLS-material reload and real Redis 7 reconnect/reclaim system test remain. A later memory/session Redis backend must use separate keys and failure semantics |
 
+The toolset foundation also contains the complete capability-disabled
+`ServiceNow` incident family: one bounded read plus create and update effects,
+all backed by one invocation-scoped origin/credential pool and exact SDK result
+projection. The effects are implemented rather than omitted. Production
+composition remains closed until authorized materialization, provider proof and
+the shared durable sensitive-tool pause path can bind the exact invocation.
+Write activation additionally requires an owned cancellation-safe effect
+identity/reconciliation boundary: dropping an ADK tool future must never turn
+an accepted but response-lost remote mutation into an ordinary cancellation.
+
 ## Parallel node decision
 
 The new YAML node is a graph construct, not concurrent subagent dispatch. Its
