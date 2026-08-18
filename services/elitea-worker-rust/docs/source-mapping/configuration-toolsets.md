@@ -131,7 +131,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `zephyr_essential` | `ZephyrEssentialConfiguration` | `ZephyrEssentialToolkit` | 51 | Yes | corresponding family paths | Planned; largest fixed catalog, no focused tests |
 | `figma` | `configurations/figma.py::FigmaConfiguration` | `tools/figma::FigmaToolkit` | 17 | Yes | corresponding family paths | Planned; content/artifact limits required |
 | `rally` | `configurations/rally.py::RallyConfiguration` | `tools/rally::RallyToolkit` | 8 | No | corresponding family paths | Planned; source has no focused family tests |
-| `sonar` | `configurations/sonar.py::SonarConfiguration` | `tools/code/sonar::SonarToolkit` | 1 | No | corresponding family paths | Planned |
+| `sonar` | `configurations/sonar.py::SonarConfiguration` | `tools/code/sonar::SonarToolkit` | 1 | No | `toolkits/families/sonar/{config,client,tools}.rs` | Capability-disabled complete read family: one project-bound `/api/issues/search` request with bounded filters and raw JSON projection; authorized materialization and live Sonar TLS proof remain gates |
 | `sql` | `configurations/sql.py::SqlConfiguration` | `tools/sql::SQLToolkit` | 2 | No | corresponding family paths | Planned; dialect/driver and query policy required |
 | `google_places` | `configurations/google_places.py::GooglePlacesConfiguration` | `tools/google_places::GooglePlacesToolkit` | 2 | No | `toolkits/families/google_places/{config,client,tools}.rs` | Capability-disabled complete read family: supported Places API (New) projection for `places` and `find_near`; attribution/persisted-result policy, authorized materialization and live provider proof remain gates |
 | `salesforce` | `SalesforceConfiguration` | `SalesforceToolkit` | 6 | No | corresponding family paths | Planned; source has no focused family tests |
@@ -323,6 +323,89 @@ but the future authorized assembler must still apply the invocation-wide
 bounded ADK tool-concurrency policy; reqwest's idle-pool setting is not an
 execution-concurrency limit.
 
+### Sonar complete read family
+
+Sonar is a complete one-tool read family, not a generic REST proxy. Evidence was
+refreshed on 2026-08-18 against SDK
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, Python worker's pinned SDK
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`, legacy indexer worker
+`62656d2b3bd51ded513693a1bd9b2f3a303ce09c`, and the Rust-branch Main/Python
+source at `557c3c7fd23eed5f0b8d2d1679f7d3367e1a6981`. The only SDK change between
+the worker pin and current catalog is the `read` group annotation; the
+configuration, tool schema, request, output and failure behavior are otherwise
+unchanged.
+
+Main
+`internal/application/agentexecution/tools.go::CurrentApplicationToolSnapshotService.FreezeCurrentApplicationVersion`
+freezes the selected tool, Sonar project and nested configuration.
+`internal/infra/storage/configurations_materializer.go::{materializeAgentExecution,materializeCurrentAgentTools}`
+redeems the token into the claimed input, and Python worker
+`agents/sdk_adapter.py::EliteaSdkAgentAdapter::{execute_application,execute_adhoc}`
+carries the same immutable snapshot for both agent kinds. Rust therefore has
+one invocation-scoped family owner; the model never chooses the origin,
+credential or project.
+
+The current SDK sources are
+`elitea_sdk/configurations/sonar.py::SonarConfiguration`,
+`elitea_sdk/tools/code/sonar/__init__.py::SonarToolkit` and
+`elitea_sdk/tools/code/sonar/api_wrapper.py::SonarApiWrapper`. Empty selection
+means the sole `get_sonar_data(relative_url,params=null)` read tool. The wrapper
+parses a JSON query object, overwrites `componentKeys` with the configured
+project, performs one Basic-token GET and returns decoded provider JSON. The
+callable annotation says `str`, but the actual successful value is an object.
+That object result is the business contract.
+
+The Python implementation also stores its `requests.Session` in class state,
+so constructing a second wrapper replaces the first wrapper's credential. It
+has no timeout, follows redirects, accepts path and query escape in
+`relative_url`, accepts arbitrary valid JSON until a later `TypeError`, and
+places a Python traceback in the invalid-JSON `ToolException`. Those are
+implementation defects, not behavior to preserve.
+
+`src/toolkits/families/sonar/config.rs` validates one HTTPS configured origin
+with an optional trusted context path, rejects userinfo/query/fragment/encoded
+path ambiguity, and owns a bounded zeroized non-`Clone`, non-`Debug` token.
+`client.rs` appends the fixed `/api/issues/search` endpoint, disables redirects,
+uses a sensitive Basic `token:` header and one invocation-scoped connection
+pool, and performs one asynchronous request. The public argument remains for
+schema compatibility but accepts only exact `/api/issues/search`.
+
+The query parser accepts a bounded JSON object and a versioned allowlist of
+public issue-search filters. It rejects nested values, unknown parameters and
+every alternate project/component scope; caller `componentKeys` is discarded
+and the claim-materialized project is injected exactly once. `p` and `ps` are
+positive integers no greater than 100 with a 10,000-item window, missing `ps`
+becomes 100, and array/scalar/query/body/decoded-issue/serialized-output limits
+are explicit. The bounded successful JSON object is returned without inventing
+or silently truncating provider fields. Errors retain only a stable code and
+retryability; token, origin, project, filters, provider text and body never
+enter diagnostics.
+
+| Current business source | Preserved behavior | Rust owner / deliberate hardening |
+| --- | --- | --- |
+| Main tool freezer and configuration materializer | Freeze exact selected tool/project/revision and redeem the owned token only inside a claimed execution | `config.rs` consumes only the materialized nested shape; no environment fallback, lookup, global client or second credential authority |
+| Python worker `EliteaSdkAgentAdapter::{execute_application,execute_adhoc}` | Both kinds use the same frozen standard-toolkit dispatch | Future authorized Rust assembly selects this same family for both; capability registration remains empty |
+| SDK `SonarApiWrapper::parse_payload_params` | Missing/null/empty params mean no caller filters; valid JSON supplies issue filters | `client.rs` accepts an object only, bounds its complete encoded form and emits stable `InvalidInput`/`ResourceExhausted` errors without traceback |
+| SDK `SonarApiWrapper::get_sonar_data` | One issue-search request, configured project overrides caller scope, decoded JSON returned unchanged | `SonarApi::get_sonar_data` keeps one GET and raw bounded object result while fixing endpoint/origin escape, redirect, timeout and class-shared credential defects |
+| SDK `SonarToolkit` and shared `BaseAction` | Empty/subset selection, nullable `params`, read grouping and toolkit-name description | `tools.rs` plus the shared invocation/policy kernel expose exactly `get_sonar_data`, truthfully constrain its schema and reapply the immutable blocklist |
+
+Neither current `SonarConfiguration` nor `SonarToolkit` implements a
+connection check. Legacy
+`methods/indexer_check_connection.py::indexer_configuration_check_connection`
+returns `Check connection is not implemented yet for sonar`, and the static
+catalog declares `check_connection_supported=false`. Rust therefore does not
+invent a public check. Main retains public authorization, revision, audit and
+connection-status ownership; its future route may delegate a real bounded probe
+to this same family client if the product contract adds one.
+
+Production registration remains disabled until the authorized toolkit
+materializer composes this owner into both agent kinds and a credentialed
+component test proves deployment CA/private-DNS policy, Basic-token
+compatibility, exact project isolation, redirects disabled, and Sonar's
+documented `503` behavior while issue indexing is active. The future assembler
+also owns the invocation-wide tool-concurrency ceiling; the HTTP idle-pool
+setting is not an execution limit.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -340,13 +423,13 @@ execution-concurrency limit.
 
 The shared schema, bounded HTTP, credential, policy, invocation-event,
 cancellation and ADK `Toolset` kernel is now stable enough for independent
-read-only REST families; Google Places is the first complete example after the
-partial GitHub reference family. Parallel family work still must not share
-mutable files or weaken the capability gate.
+read-only REST families; Google Places and Sonar are the first complete examples
+after the partial GitHub reference family. Parallel family work still must not
+share mutable files or weaken the capability gate.
 Non-overlapping batches are:
 
 1. GitHub completion as the broad reference family, including its gated effects.
-2. Independent simple REST families using the Google Places ownership pattern.
+2. Independent simple REST families using the Google Places/Sonar ownership pattern.
 3. GitLab plus GitLab Org, Bitbucket and LocalGit with separate owners.
 4. All four ADO toolsets under one owner.
 5. Jira and Confluence after one shared Atlassian normalizer.

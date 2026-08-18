@@ -21,3 +21,5 @@ mod invocation_tests;
 mod policy_tests;
 #[cfg(test)]
 mod snapshot_tests;
+#[cfg(test)]
+mod sonar_tests;
