@@ -150,6 +150,13 @@ jobs:
         # count comes from that glob's own root, and it is printed. `vitest run`
         # leaves `passWithNoTests` at false, which is a second line of defence
         # rather than the measurement.
+        #
+        # `shell: bash` — GitHub defaults job-container steps to `sh` (dash),
+        # not bash, unlike steps on a bare `runs-on` runner. dash rejects
+        # `set -o pipefail` outright ("Illegal option -o pipefail"), which
+        # failed this step before it reached its own logic. The pinned
+        # Playwright image is Ubuntu-based and ships bash.
+        shell: bash
         run: |
           set -euo pipefail
           test -d .storybook || {
