@@ -1178,9 +1178,25 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			)).Put("/scheduling/schedules/{mode}/{projectID}", schedulingHandler.SchedulesUpdate)
 
 			// === Configurations ===
+			//
+			// The per-project CREDENTIAL surface: 22 routes that derive the
+			// tenant schema from `{projectID}` and then read, write or delete
+			// that project's `configuration` rows. Until #496 the mounted
+			// subrouter applied NO gate — see the Routes() header in
+			// internal/api/v2/configurations/handler.go for what that let any
+			// authenticated caller do to any project, and for the permission
+			// each route now takes.
+			//
+			// The gates live inside the package, not on this mount, for the two
+			// reasons /secrets gives: the routes need five different strings, and
+			// a mount carries one middleware. `coreResolver` is used rather than
+			// `permissionResolver` so the route tests can substitute a resolver
+			// through cfg.ProjectPermissionResolver, exactly as the sibling
+			// groups below do; production leaves that field unset and both names
+			// are the same object.
 			r.Mount("/configurations", v2configs.NewHandler(
 				cfg.Pool,
-				v2configs.WithPermissionResolver(permissionResolver),
+				v2configs.WithPermissionResolver(coreResolver),
 				v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
 				v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
 			).Routes())
@@ -2279,15 +2295,47 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			})
 
 			// === Webhooks ===
+			//
+			// Five routes over `webhooks WHERE project_id = $1`. The listing
+			// returns the row's `secret` and the PUT rotates it, and until #496
+			// the subrouter carried no gate, so any authenticated caller could
+			// name any project id. The gates are inside the package — see that
+			// Routes() header for the permission each route takes and why the
+			// `configurations` strings are the proposal for a surface the legacy
+			// matrix has no entry for.
+			//
+			// NOTE FOR A READER MEASURING THE IMPACT: no migration in this
+			// repository creates a `webhooks` table, and nothing dispatches from
+			// it. On a database built from this corpus the routes answer the
+			// repository's error rather than another project's rows. The gate is
+			// still the fix: the disclosure is one CREATE TABLE away, and the
+			// route must not be the thing that decides.
 			if cfg.WebhookRepo != nil {
-				r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(cfg.WebhookRepo).Routes())
+				r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(
+					cfg.WebhookRepo,
+					webhook.WithPermissionResolver(coreResolver),
+				).Routes())
 			}
 
 			// === Events (SSE) ===
+			//
+			// The project event stream. Until #496 it carried no gate, so any
+			// authenticated caller could subscribe to
+			// events.ProjectChannel({projectID}) for any tenant. Both transport
+			// arms take the same resolver: two registrations of one surface must
+			// not carry two authorization contracts, and #152 records what
+			// happens when the two arms of this exact fallback are allowed to
+			// drift.
 			if cfg.EventSource != nil {
-				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandlerFromSource(cfg.EventSource).Routes())
+				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandlerFromSource(
+					cfg.EventSource,
+					v2events.WithPermissionResolver(coreResolver),
+				).Routes())
 			} else if cfg.RedisClient != nil {
-				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandler(cfg.RedisClient).Routes())
+				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandler(
+					cfg.RedisClient,
+					v2events.WithPermissionResolver(coreResolver),
+				).Routes())
 			}
 		})
 	})

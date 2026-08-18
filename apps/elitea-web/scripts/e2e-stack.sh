@@ -525,6 +525,28 @@ CROSS JOIN (VALUES
     ('configuration.artifacts.buckets.view'),
     ('configuration.artifacts.buckets.edit'),
     ('configuration.artifacts.buckets.delete'),
+    -- #496 gated the whole /api/v2/configurations mount, which until then
+    -- applied no permission of any kind. Project 1 carries per-project rows,
+    -- so the central default-mode fallback shared/0072 seeds is SUPPRESSED
+    -- here and every string has to be listed explicitly.
+    --
+    -- Only `update` and `delete` were listed, and both were inert: the routes
+    -- they name checked nothing. The three below are what the browser actually
+    -- calls, and each one 403s without its row:
+    --
+    --   `configurations.configurationS.list` — the plural is the route's, not
+    --   a typo. It gates the credential LIST the AI-configuration page reads,
+    --   the model catalogue `GET /configurations/models/{id}` the chat picker
+    --   and the tokens page read, `GET /configurations/types/{id}`, and
+    --   `GET /configurations/tts_voices/{id}`.
+    --   `configurations.configuration.details` — the singular is a DIFFERENT
+    --   permission (one credential's row). useFormSeeding reads it to fill the
+    --   edit dialog.
+    --   `configurations.configuration.create` — the credential save, and the
+    --   pre-save "Test connection" probe beside it.
+    ('configurations.configurations.list'),
+    ('configurations.configuration.details'),
+    ('configurations.configuration.create'),
     ('configurations.configuration.update'),
     ('configurations.configuration.delete'),
     -- `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` resolves

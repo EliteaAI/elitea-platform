@@ -46,6 +46,10 @@ type Handler struct {
 
 type Option func(*Handler)
 
+// WithPermissionResolver supplies the resolver EVERY project-scoped route in
+// Routes() is gated on. Without it those routes answer 403 — see require below,
+// which is fail-closed by construction, so a Handler built without a resolver
+// exposes nothing rather than everything.
 func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	return func(handler *Handler) {
 		handler.permissionResolver = resolver
@@ -79,52 +83,140 @@ func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	return handler
 }
 
+// Routes is the broad current-main compatibility surface. It is the surface
+// EVERY shipped deployment serves for this plugin, not a prototype: #243 made
+// newProductionRouter the only build path, and router.go mounts this router at
+// /api/v2/configurations there.
+//
+// The comment that stood here said "Production composition uses ProductionRoutes
+// or the typed current handlers instead". Both halves were wrong, and the second
+// half was the dangerous one:
+//
+//   - ProductionRoutes had no caller outside this package's tests. It is deleted
+//     with this change rather than left as a second, differently-authorized
+//     registration of paths this router already owns.
+//   - The typed current handlers (read.go, mutation.go, models.go, types.go,
+//     available_route.go) replace only the MODE-LESS twins, and only when
+//     composed. Reads need ELITEA_CONFIGURATIONS_ENABLED; the writes need
+//     ELITEA_CONFIGURATIONS_MUTATION_ENABLED, which deploy/README.md records as
+//     off in BOTH profiles. So POST, PUT and DELETE on a project's
+//     configurations always land here, and every `{mode}` twin always lands
+//     here, whatever is composed.
+//
+// So this router carried no gate at all over the per-project CREDENTIAL store
+// (#496). GET /configurations/configurations/{mode}/{projectID} answered any
+// authenticated caller for any project id with the whole `configuration` table
+// of that project, `data` included — and this platform stores the provider
+// api_key in `data` verbatim (Create/Update below marshal the request body
+// straight into the column; there is no store_secrets step, so the row holds
+// the literal key rather than the `{{secret.NAME}}` reference the reference
+// implementation writes). DELETE removed any project's row.
+//
+// EVERY GATE BELOW IS THE ONE THE REVIEWED COPY OF THE SAME PATH ALREADY USES,
+// and the five strings are the ones the reference declares
+// (legacy/plugins/configurations/api/v2/{configurations,configuration}.py). They
+// are granted in DEFAULT mode by migrations/shared/0072, so no new migration is
+// needed and no route here answers 403 to every caller on a clean database —
+// the shape of #354, #359 and #402.
+//
+// THE `{mode}` TWINS ARE GATED IN THE DEFAULT MODE, WHATEVER THE SEGMENT SAYS.
+// The reference resolves an `administration`-mode URL against the caller's
+// CENTRAL roles, which would let an operator who is a member of no project read
+// every project's credentials. This router does not reproduce that: the mode
+// segment is decoration here (one handler serves both, unlike /secrets, whose
+// two modes address two different stores), no client in the workspace calls the
+// mode-ful form at all — apps/elitea-web, apps/elitea-ui, elitea-sdk and qa/ all
+// send the mode-LESS URL — and adding a cross-tenant read while closing a
+// cross-tenant read would be the wrong direction. An unknown mode segment stays
+// what it is today rather than becoming a 404: the gate does not read it, so no
+// mode value can change the answer.
+//
+// `/available/` is the ONE route with no gate, and it names no project: it
+// serves the pinned, credential-free registry snapshot. NewCurrentAvailableRoute
+// authenticates and does not authorize the same catalogue for the same reason.
 func (h *Handler) Routes() chi.Router {
-	// Routes is the broad current-main compatibility surface used by parity
-	// tests and the default-off prototype router. Production composition uses
-	// ProductionRoutes or the typed current handlers instead.
 	r := chi.NewRouter()
+	list := h.require(CurrentConfigurationListPermission)
+	details := h.require(CurrentConfigurationGetPermission)
+	create := h.require(CurrentConfigurationCreatePermission)
+	update := h.require(CurrentConfigurationUpdatePermission)
+	remove := h.require(CurrentConfigurationDeletePermission)
+
 	r.Get("/available/", h.Available)
-	r.Get("/configurations/{projectID}", h.List)
-	r.Get("/configurations/{mode}/{projectID}", h.List)
-	r.Post("/configurations/{projectID}", h.Create)
-	r.Post("/configurations/{mode}/{projectID}", h.Create)
-	r.Get("/configuration/{projectID}/{configID}", h.Get)
-	r.Get("/configuration/{mode}/{projectID}/{configID}", h.Get)
-	r.Put("/configuration/{projectID}/{configID}", h.Update)
-	r.Put("/configuration/{mode}/{projectID}/{configID}", h.Update)
-	r.Delete("/configuration/{projectID}/{configID}", h.Delete)
-	r.Delete("/configuration/{mode}/{projectID}/{configID}", h.Delete)
-	r.Post("/check_connection/{projectID}/{configType}", h.CheckConnection)
-	r.Post("/check_connection/{mode}/{projectID}/{configType}", h.CheckConnection)
-	r.Post("/check_connections/{projectID}", h.BatchCheckConnections)
-	r.Post("/check_connections/{mode}/{projectID}", h.BatchCheckConnections)
-	r.Get("/models/{projectID}", h.ListModels)
-	r.Get("/models/{mode}/{projectID}", h.ListModels)
-	r.Post("/models/{projectID}", h.SetDefaultModel)
-	r.Post("/models/{mode}/{projectID}", h.SetDefaultModel)
-	r.Get("/types/{projectID}", h.ListTypes)
-	r.Get("/types/{mode}/{projectID}", h.ListTypes)
-	r.Get("/tts_voices/{projectID}", h.TTSVoices)
-	r.Get("/tts_voices/{mode}/{projectID}", h.TTSVoices)
+	r.With(list).Get("/configurations/{projectID}", h.List)
+	r.With(list).Get("/configurations/{mode}/{projectID}", h.List)
+	r.With(create).Post("/configurations/{projectID}", h.Create)
+	r.With(create).Post("/configurations/{mode}/{projectID}", h.Create)
+	r.With(details).Get("/configuration/{projectID}/{configID}", h.Get)
+	r.With(details).Get("/configuration/{mode}/{projectID}/{configID}", h.Get)
+	r.With(update).Put("/configuration/{projectID}/{configID}", h.Update)
+	r.With(update).Put("/configuration/{mode}/{projectID}/{configID}", h.Update)
+	r.With(remove).Delete("/configuration/{projectID}/{configID}", h.Delete)
+	r.With(remove).Delete("/configuration/{mode}/{projectID}/{configID}", h.Delete)
+	// The connection checks take the CREATE string. The reference declares no
+	// permission on either route, so this is a proposal, and it is the narrowest
+	// one that costs no caller a control: the button they serve sits on the
+	// credential create form and on the edit form, and the legacy matrix gives
+	// `create` and `update` to exactly the same default-mode roles (admin and
+	// editor), so naming one of the two withholds nothing from the other's
+	// holders. It has to be a WRITE-tier string rather than `list`: the handler
+	// makes the platform dial a caller-supplied api_base, attributed to the
+	// {projectID} in the path through the signed identity header, and a viewer
+	// who may not save a credential has no use for a pre-save probe.
+	//
+	// THE TOOLKIT FORMS CALL THIS ROUTE TOO, and that was checked rather than
+	// assumed. apps/elitea-web features/toolkits and features/agents both post
+	// to /configurations/check_connection/{projectID}/{configType} for toolkit
+	// credential types (github, jira, sharepoint), so a caller who may create a
+	// TOOLKIT and not a CREDENTIAL would lose that button. The legacy matrix
+	// gives `models.applications.tools.create` and
+	// `configurations.configuration.create` to the SAME default-mode roles —
+	// admin and editor — so the two sets are identical and no role loses a
+	// control here.
+	r.With(create).Post("/check_connection/{projectID}/{configType}", h.CheckConnection)
+	r.With(create).Post("/check_connection/{mode}/{projectID}/{configType}", h.CheckConnection)
+	r.With(create).Post("/check_connections/{projectID}", h.BatchCheckConnections)
+	r.With(create).Post("/check_connections/{mode}/{projectID}", h.BatchCheckConnections)
+	// models.go and model_default.go gate the reviewed copies of these two on
+	// exactly these strings, over the same paths.
+	r.With(list).Get("/models/{projectID}", h.ListModels)
+	r.With(list).Get("/models/{mode}/{projectID}", h.ListModels)
+	r.With(update).Post("/models/{projectID}", h.SetDefaultModel)
+	r.With(update).Post("/models/{mode}/{projectID}", h.SetDefaultModel)
+	// types.go gates the reviewed copy on the list string, and states why:
+	// "listing stored type names is inventory access, not public schema
+	// discovery".
+	r.With(list).Get("/types/{projectID}", h.ListTypes)
+	r.With(list).Get("/types/{mode}/{projectID}", h.ListTypes)
+	// TTSVoices answers 501 for every project (see ttsVoicesUnavailable). It is
+	// still gated, and on the list string, because a gate must match what the
+	// route is for and not what its body does today: the reference reads the
+	// project's tts configuration row, which is the same inventory access every
+	// other read here takes. When #323 gives it a real body the gate is already
+	// the right one.
+	r.With(list).Get("/tts_voices/{projectID}", h.TTSVoices)
+	r.With(list).Get("/tts_voices/{mode}/{projectID}", h.TTSVoices)
 	return r
 }
 
-// ProductionRoutes is an unmounted cutover candidate containing only methods
-// with an audited exact legacy permission, mode, and project extractor. RBAC
-// parity alone is not business-logic parity; NewRouter must not mount this set
-// until the tenant repository, validation, secret, event, and DTO contracts are
-// complete. Routes() retains the wider prototype surface for parity work.
-func (h *Handler) ProductionRoutes() chi.Router {
-	r := chi.NewRouter()
-	r.With(h.require("configurations.configurations.list")).Get("/configurations/{projectID}", h.List)
-	r.With(h.require("configurations.configuration.create")).Post("/configurations/{projectID}", h.Create)
-	r.With(h.require("configurations.configuration.details")).Get("/configuration/{projectID}/{configID}", h.Get)
-	r.With(h.require("configurations.configuration.update")).Put("/configuration/{projectID}/{configID}", h.Update)
-	r.With(h.require("configurations.configuration.delete")).Delete("/configuration/{projectID}/{configID}", h.Delete)
-	return r
-}
-
+// require gates one route on the named legacy permission, resolved in DEFAULT
+// mode against the `{projectID}` path segment.
+//
+// It fails closed twice over, and both matter here.
+//
+//  1. RequireResolvedPermissionsForProject answers 403 when the resolver is nil,
+//     so a Handler built without WithPermissionResolver serves nothing.
+//  2. legacyrbac.PostgresResolver parses the project id with parsePositiveID in
+//     the default mode, so a project id that is not a positive integer is
+//     refused BEFORE any handler runs. That closes a second hazard on this
+//     surface: every handler below builds its tenant schema as
+//     fmt.Sprintf("p_%s", projectID) and interpolates it with %q, which is Go
+//     string quoting and not SQL identifier quoting (PostgreSQL escapes a quote
+//     inside an identifier by doubling it, never with a backslash). Measured on
+//     PostgreSQL 16, a crafted id does break out of the quoted identifier, and
+//     the breakout is not exploitable only because the backslash %q inserts
+//     lands INSIDE the identifier, so the schema it names cannot exist. That is
+//     an accident, not a defence. No caller reaches it now.
 func (h *Handler) require(permission string) func(http.Handler) http.Handler {
 	return middleware.RequireResolvedPermissions(
 		h.permissionResolver,

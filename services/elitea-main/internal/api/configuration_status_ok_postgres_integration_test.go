@@ -62,16 +62,33 @@ func TestConfigurationWriteRouteMakesACredentialVisibleToTheGateway(t *testing.T
 		t.Fatalf("compose the provider admission: %v", err)
 	}
 
+	// Both routers carry an ENTITLED caller. The write route is gated since
+	// #496 — it applied no permission of any kind before that — and this
+	// database holds no auth_core role rows, so the live resolver would refuse
+	// every request and the test would measure the gate instead of status_ok.
+	// The permission is the one internal/api/v2/configurations gates the write
+	// on, spelled out rather than imported, so a rename shows up as a 403 here
+	// with the string named.
+	entitled := fakePermissionResolver{granted: []string{
+		"configurations.configurations.list",
+		"configurations.configuration.details",
+		"configurations.configuration.create",
+		"configurations.configuration.update",
+		"configurations.configuration.delete",
+	}}
+
 	fixed := NewRouter(RouterConfig{
-		Pool:                    pool,
-		AuthValidator:           testTokenValidator{user: authenticatedTestUser()},
-		ConfigProviderAdmission: admission,
+		Pool:                      pool,
+		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		ConfigProviderAdmission:   admission,
+		ProjectPermissionResolver: entitled,
 	})
 	// The composition of every shipped deployment before this change: the same
 	// route, with no decision behind it.
 	unfixed := NewRouter(RouterConfig{
-		Pool:          pool,
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		Pool:                      pool,
+		AuthValidator:             testTokenValidator{user: authenticatedTestUser()},
+		ProjectPermissionResolver: entitled,
 	})
 
 	credentialSQL, modelSQL := gatewayAdmissionStatements(t)
