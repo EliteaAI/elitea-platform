@@ -74,10 +74,14 @@ function javascriptFiles(root, prefix = '') {
  */
 function initialChunks(html) {
   const names = new Set();
-  const attribute = /(?:src|href)="([^"]+\.js)"/g;
-  const tags = html.match(/<(?:script|link)\b[^>]*>/g) ?? [];
+  // Every pattern below is case-insensitive. HTML tag names and attribute
+  // names are case-insensitive. A case-sensitive read therefore misses <SCRIPT>
+  // and SRC=, drops that chunk from the initial set, and makes the budget
+  // report less than the browser fetches.
+  const attribute = /(?:src|href)="([^"]+\.js)"/gi;
+  const tags = html.match(/<(?:script|link)\b[^>]*>/gi) ?? [];
   for (const tag of tags) {
-    if (/<link\b/.test(tag) && !/rel="modulepreload"/.test(tag)) continue;
+    if (/<link\b/i.test(tag) && !/rel="modulepreload"/i.test(tag)) continue;
     for (const match of tag.matchAll(attribute)) {
       // Skip an absolute URL to another origin or another service's route:
       // it is not a file this build emitted.

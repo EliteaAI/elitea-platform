@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 )
@@ -87,6 +88,18 @@ func (h *Handler) admitConfiguration(
 // configurationAdmissionSnapshot builds the immutable row description the
 // admission decision reads. It carries no resolved secret: Data holds the
 // stored references, exactly as the lifecycle snapshot does.
+//
+// The snapshot holds int32 ids because id, project_id and author_id are
+// INTEGER columns. `projectID` arrives from the request path through
+// strconv.Atoi, which accepts every value an `int` holds. A value above
+// math.MaxInt32 therefore truncates in `int32(projectID)`. admitConfiguration
+// then compares snapshot.ProjectID in the WHERE clause of the status write, so
+// a truncated value points that write at a different project. The row id
+// carries the same risk.
+//
+// A row id or a project id outside int32 names no row this schema holds. The
+// function reports false, and the caller does not admit. Refusal keeps the
+// decision absent. Truncation would make the decision wrong and silent.
 func configurationAdmissionSnapshot(
 	id int,
 	uuid string,
@@ -96,7 +109,10 @@ func configurationAdmissionSnapshot(
 	section string,
 	data map[string]any,
 	authorID *int,
-) configurationapp.CurrentConfigurationLifecycleSnapshot {
+) (configurationapp.CurrentConfigurationLifecycleSnapshot, bool) {
+	if id <= 0 || id > math.MaxInt32 || projectID <= 0 || projectID > math.MaxInt32 {
+		return configurationapp.CurrentConfigurationLifecycleSnapshot{}, false
+	}
 	snapshot := configurationapp.CurrentConfigurationLifecycleSnapshot{
 		ID:          int32(id),
 		UUID:        uuid,
@@ -106,12 +122,17 @@ func configurationAdmissionSnapshot(
 		Section:     section,
 		Data:        data,
 	}
-	if authorID != nil {
+	// The author does not identify the row. An author id outside the
+	// author_id column is therefore left out, not refused. Refusal would drop
+	// the status_ok decision for the whole row. A row with no decision stays
+	// invisible to the LLM gateway (#457), which is worse than a row that
+	// carries no author.
+	if authorID != nil && *authorID > 0 && *authorID <= math.MaxInt32 {
 		author := int32(*authorID)
 		snapshot.AuthorID = &author
 	}
 	if snapshot.Data == nil {
 		snapshot.Data = map[string]any{}
 	}
-	return snapshot
+	return snapshot, true
 }
