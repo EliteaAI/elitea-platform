@@ -9,12 +9,10 @@ import { useParams } from '@tanstack/react-router';
 import { CreateToolkitToolTabBar, ToolkitForm, ToolkitTypeSelector, type ToolkitEditorDeps, useToolkitCreate } from '@/features/toolkits';
 import { t } from '@/shared/i18n';
 
+import { useToolkitCredentialPickerSlot } from './lib/credentialPickerSlots';
 import { SHAREPOINT_AUTH_MODALS } from './lib/sharepointAuthModals';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import type { EditToolDetail } from './lib/toolkitFormTypes';
-
-/** Same reason as `EditToolkit`'s own `sharepointAuth` — a SharePoint toolkit being created can need a delegated login before its first save. Module-level so the `slots` identity is stable. */
-const TOOLKIT_FORM_SLOTS = { sharepointAuthModals: SHAREPOINT_AUTH_MODALS };
 
 const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
 const tabBarSx: SxProps<Theme> = {
@@ -144,6 +142,23 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown>(undefined);
 
+  /*
+   * #308 — the credential picker, supplied here for the same reason
+   * `EditToolkit.tsx` supplies it: `features/toolkits` may not import
+   * `features/credentials` (`no-sideways-features`), and this page may import
+   * both. A toolkit being created needs a credential before its first save,
+   * so this root cannot be skipped.
+   *
+   * `sharepointAuthModals` used to sit in a module-level constant. It moved
+   * into this `useMemo` because the picker is hook-derived (it closes over
+   * `projectId`) and both slots must travel in one object.
+   */
+  const renderCredentialPicker = useToolkitCredentialPickerSlot(projectId);
+  const toolkitFormSlots = useMemo(
+    () => ({ sharepointAuthModals: SHAREPOINT_AUTH_MODALS, renderCredentialPicker }),
+    [renderCredentialPicker],
+  );
+
   const handleSelectTool = useCallback((detail: EditToolDetail) => {
     setEditToolDetail(detail);
     setIsDirty(true);
@@ -234,7 +249,7 @@ export function CreateToolkit({ isMCP = false, isApplication = false, deps }: Cr
             hideOperationButtons
             isMCP={isMCP}
             onSave={noopSave}
-            slots={TOOLKIT_FORM_SLOTS}
+            slots={toolkitFormSlots}
           />
         ) : (
           <ToolkitTypeSelector

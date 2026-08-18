@@ -119,11 +119,46 @@ export async function settle(page: Page): Promise<void> {
  *   `border.lines` #3B3E46 → #545862           1033–3615   passed (invisible)
  *   the accent-hue recolour found below           586–750   passed for months
  *
- * `maxDiffPixels: 20` sits 20x above the worst noise ever observed and 3.5x
- * below the smallest of those changes. It is an absolute count, not a ratio,
- * because the noise it covers is a handful of glyph-edge pixels and does not
- * scale with image area — a ratio makes a large page shot 7x more forgiving
- * than a small one for no measured reason.
+ * `maxDiffPixels` is an absolute count, not a ratio, because the noise it
+ * covers is a handful of glyph-edge pixels and does not scale with image area —
+ * a ratio makes a large page shot 7x more forgiving than a small one for no
+ * measured reason.
+ *
+ * ── THE 70 PX SIGNAL FLOOR WAS WRONG, AND 20 WAS ABOVE A REAL SIGNAL ───────
+ *
+ * The five changes above were all measured in the DARK scheme. The same change
+ * moves a different number of pixels in each scheme, because the count depends
+ * on the contrast between the changed pixels and what they replaced — and the
+ * budget was set from the dark numbers alone.
+ *
+ * Measured on issue #238's sidebar chevron, a 16x16 dropdown arrow added to
+ * `ProjectSwitcher`, which is in every route shot. Counted with Playwright's
+ * own comparator (`getComparator('image/png')`) at this file's threshold, on
+ * all 7 routes that carry both schemes:
+ *
+ *   scheme   px/shot   verdict at maxDiffPixels: 20
+ *   ------   -------   ----------------------------
+ *   dark        21     failed on all 7 — by ONE pixel
+ *   light       11     PASSED on all 7
+ *
+ * So the smallest real signal is 11 px, not 70. The budget of 20 sat ABOVE it,
+ * which inverts the rule this file set for itself: a budget must sit below the
+ * smallest change worth catching. The light half of the suite went on passing
+ * against baselines with no chevron in them, and `--update-snapshots=changed`
+ * never rewrote them, because a passing snapshot is not rewritten. Those
+ * baselines had to be DELETED to be regenerated. The dark half was caught by a
+ * one-pixel margin, which is luck, not a working gate.
+ *
+ * The noise floor was re-measured at the same time, the same way: 19
+ * unchanged-content shots compared across two independent full-suite runs in
+ * CI, at this threshold — min 0, max 0, mean 0 differing pixels. That agrees
+ * with the 0–1 px above and is why the budget can be small.
+ *
+ * `maxDiffPixels: 3` therefore sits 3x above the worst noise ever observed
+ * (1 px; 0 px in the runs just described) and 3.7x below the smallest real
+ * signal now known (11 px) — the same shape of margin 20 was chosen for, with
+ * the signal floor corrected. Anything measured below 11 px in future belongs
+ * in the table above, and the budget moves with it.
  *
  * ── THIS WAS NOT HYPOTHETICAL ──────────────────────────────────────────────
  *
@@ -145,10 +180,20 @@ export async function settle(page: Page): Promise<void> {
  * a small dialog need the same budget.
  *
  * COMPONENT-SCOPED chrome shots (snapshot the nav, not the page) to make a
- * label change a large fraction of a small image: unnecessary here. The
- * amplification would be ~7x, but the gap between signal and noise is already
- * 70x, so the shots would add PNGs against the 12MB budget and a coverage
- * question (`check-visual-coverage` counts DECLARED `@covers` routes, and a
- * component shot claims no route) without changing a single verdict.
+ * label change a large fraction of a small image: still not needed, but the
+ * reason has shrunk. The gap between signal and noise is 11x, not the 70x this
+ * note used to claim, and the amplification would be ~7x. It is now a real
+ * option if a change smaller than 11 px ever has to be caught, rather than the
+ * obviously-unnecessary one it reads as.
+ *
+ * ── WHAT A TIGHTER BUDGET DOES NOT FIX ─────────────────────────────────────
+ *
+ * A snapshot that PASSES is never rewritten, whatever the budget is. So a
+ * baseline that drifted under the old budget stays wrong until someone deletes
+ * it, and a stale baseline is indistinguishable from a correct one by looking
+ * at a green run. Lowering the number shrinks the window; it does not close it.
+ * `scripts/compare-visual-baselines.mjs` and the `full` regeneration mode in
+ * `ci-web-e2e.yml` exist for that: a full rewrite, compared by PIXELS rather
+ * than by bytes, so accumulated drift is visible in one reviewable list.
  */
-export const SNAPSHOT_TOLERANCE = { maxDiffPixels: 20, threshold: 0.05 } as const;
+export const SNAPSHOT_TOLERANCE = { maxDiffPixels: 3, threshold: 0.05 } as const;

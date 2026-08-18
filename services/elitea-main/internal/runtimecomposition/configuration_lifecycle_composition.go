@@ -12,22 +12,61 @@ import (
 // NewCurrentConfigurationLifecycleReconciler composes the exact current
 // Configurations side effects around one shared persistence adapter. Generic
 // SDK-owned configuration types remain passive; the application reconciler
-// selects only the LiteLLM-owned credentials/models and the two internal
+// selects only the provider-owned credentials/models and the two internal
 // reference-repair effects.
+//
+// The lifecycle takes no LLM runtime. It used to need one to push each
+// configuration into the LiteLLM proxy's administration API; the Bifrost
+// gateway instead reads those same p_{projectID}.configuration rows at request
+// time, so the graph is now entirely database-side: resolve the row's
+// references, then let status_ok decide whether any runtime may use it.
+// NewCurrentProviderAdmission composes the status_ok decision for the
+// configuration write routes (#457).
+//
+// It shares the resolution adapter and the project policy with
+// NewCurrentConfigurationLifecycleReconciler below, so the two paths cannot
+// reach different answers about the same row. It needs no lifecycle
+// persistence and no runtime plane: the decision is a read.
+func NewCurrentProviderAdmission(
+	configurations *CurrentConfigurationsRuntime,
+	allowProjectOwnLLMs bool,
+) (*configurationapp.CurrentProviderAdmission, error) {
+	if configurations == nil || configurations.publicProjectID <= 0 ||
+		configurations.expander == nil || configurations.unsecreter == nil {
+		return nil, errors.New("current configuration provider admission composition is incomplete")
+	}
+	resolution, err := newCurrentProviderConfigurationResolution(
+		configurations.expander,
+		configurations.unsecreter,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose current provider configuration resolution: %w", err)
+	}
+	return configurationapp.NewCurrentProviderAdmission(
+		resolution,
+		configurationapp.CurrentProviderProjectPolicy{
+			AllowProjectOwnLLMs: allowProjectOwnLLMs,
+			PublicProjectID:     configurations.publicProjectID,
+		},
+	)
+}
+
 func NewCurrentConfigurationLifecycleReconciler(
 	pool *pgxpool.Pool,
 	configurations *CurrentConfigurationsRuntime,
-	llm *CurrentLLMRuntime,
 	allowProjectOwnLLMs bool,
 ) (*configurationapp.CurrentConfigurationLifecycleEffectsReconciler, error) {
 	if pool == nil || configurations == nil || configurations.publicProjectID <= 0 ||
-		configurations.models == nil || llm == nil {
+		configurations.models == nil || configurations.expander == nil || configurations.unsecreter == nil {
 		return nil, errors.New("current configuration lifecycle composition is incomplete")
 	}
 
-	liteLLMEffects, err := llm.NewConfigurationEffects(configurations)
+	resolution, err := newCurrentProviderConfigurationResolution(
+		configurations.expander,
+		configurations.unsecreter,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("compose current LiteLLM configuration effects: %w", err)
+		return nil, fmt.Errorf("compose current provider configuration resolution: %w", err)
 	}
 	persistence, err := repos.NewCurrentConfigurationLifecycleEffectsRepository(pool)
 	if err != nil {
@@ -51,11 +90,11 @@ func NewCurrentConfigurationLifecycleReconciler(
 		return nil, err
 	}
 	return configurationapp.NewCurrentConfigurationLifecycleEffectsReconciler(
-		liteLLMEffects,
+		resolution,
 		status,
 		renames,
 		deletedLLM,
-		configurationapp.CurrentLiteLLMProjectPolicy{
+		configurationapp.CurrentProviderProjectPolicy{
 			AllowProjectOwnLLMs: allowProjectOwnLLMs,
 			PublicProjectID:     configurations.publicProjectID,
 		},

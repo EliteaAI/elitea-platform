@@ -126,8 +126,7 @@ func getIndexArtifactWriterTestBytes(t *testing.T, url string) []byte {
 // called here). ResolveArtifact then proves the committed bytes are
 // actually readable back through a fresh presigned GET.
 func TestIndexIngestArtifactGrantCommitResolveAndIngestRoundTrip(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	store := newIndexArtifactWriterTestStore(t)
 
 	dispatchPolicy := IndexIngestDispatchPolicy{

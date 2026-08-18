@@ -11,6 +11,13 @@ on:
   push:
     branches:
       - main
+      # The release staging branch (#518). Pull requests merge here first,
+      # and this branch merges into main later, so a push arm that names
+      # only `main` cannot guard the tree that becomes main. The name is
+      # held once in .github/staging-branch.txt, and
+      # scripts/ci/check_workflow_branch_coverage.py fails when a workflow
+      # that names `main` here does not also name that branch.
+      - claude/issue-248-c5b380
 
 permissions:
   contents: read
@@ -32,3 +39,222 @@ jobs:
           bash -n deploy/centry-hybrid/prepare-runtime.sh
           test -s deploy/centry-hybrid/pov-compose.yml
           test -s deploy/centry-hybrid/traefik/index-routes.yml
+      # Issue #485. `services/elitea-main/tests/reliability/index_5681/run.sh` is
+      # an operator wrapper, and NO workflow can run it: it demands 29
+      # environment variables that name the legacy centry stack
+      # (ELITEA_CENTRY_DIR and its compose files), and that stack is not in this
+      # repository. It refuses with exit 2 rather than reporting a passing skip,
+      # so it can never become a green no-op, and `scripts/go/declared-skips.txt`
+      # already records it as the owner of the production-scale gate. The Python
+      # half of that directory runs in ci-go.yml, with a count floor.
+      #
+      # So the only continuous check this repository can honestly make on it is
+      # that it still parses. That is worth little on its own, and it is worth
+      # having for EVERY tracked shell file: the two launchers above got the
+      # same check one at a time, and the set they belong to grew past them.
+      #
+      # This step measures syntax, not behaviour. It is not a substitute for a
+      # caller. The floor turns a glob that stopped matching into a red job.
+      - name: Every tracked shell file parses
+        run: |
+          set -euo pipefail
+          scripts_found=0
+          failed=""
+          for file in $(git ls-files '*.sh'); do
+            scripts_found=$((scripts_found + 1))
+            if ! bash -n "$file"; then
+              failed="$failed $file"
+            fi
+          done
+          if [ "$scripts_found" -lt 35 ]; then
+            echo "::error::found ${scripts_found} tracked .sh file(s), expected at least 35 — the glob stopped matching, so this step checked nothing"
+            exit 1
+          fi
+          if [ -n "$failed" ]; then
+            echo "::error::these shell files do not parse:$failed"
+            exit 1
+          fi
+          echo "shell syntax: ${scripts_found} file(s) parse"
+      # This gate lives here, and not only in ci-go.yml, because ci-go.yml is
+      # path-filtered and does not select deploy/centry-hybrid/**. A pull
+      # request that edits only the edge YAML would not run it there. Traefik
+      # drops a router that names an unknown middleware and keeps serving, so
+      # the fault reaches production as a silent fallback to pylon rather than
+      # as an error (#338).
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: services/elitea-main/go.sum
+      # -count=1 is required, not tidiness. The gate reads YAML from deploy/,
+      # which is outside this module, so the Go test cache does not notice an
+      # edit to those files and can serve a stale pass.
+      - name: Validate the Traefik edge middleware references
+        working-directory: services/elitea-main
+        run: go test -count=1 ./tests/deployedge/...
+      # The permission-grant gate lives here for the same reason as the step
+      # above. A route gated on a permission that no migration grants answers
+      # 403 to every caller on a clean database, and every seeded database
+      # hides it (#354, #359). The gate must run on a pull request that
+      # touches a router file OR a migration. ci-go.yml selects
+      # services/elitea-main/** and covers both today, but a path filter is a
+      # second thing to keep correct, and this repository has already shipped a
+      # gate that stopped running when a file moved (#157). This workflow has
+      # no path filter at all, so the gate cannot be switched off by accident.
+      #
+      # The whole package runs, with no -run filter. `go test -run NoSuchName`
+      # exits 0 and reports "no tests to run", so a renamed test would turn this
+      # step into a silent no-op — the same "nothing found, therefore OK" trap.
+      #
+      # -count=1 removes any dependency on the Go test cache. The gate reads
+      # migrations/shared and every source file under internal/, all outside this
+      # package. A local check shows the cache does track those reads today and
+      # does invalidate on a migration edit, so this is insurance rather than a
+      # repair: the tracking is best-effort, this test opens more than a thousand
+      # files, and a stale pass here hides the exact defect the gate exists for.
+      # The run takes about ten seconds, so the insurance is nearly free.
+      - name: Validate that every gated permission has a grant
+        working-directory: services/elitea-main
+        run: go test -count=1 ./internal/api/
+
+  # Issue #424. Six gate scripts validated the checked-in evidence snapshots
+  # under testdata/, and no workflow, Taskfile task or other script called any
+  # of them. A gate that nothing calls cannot fail, and its presence in the
+  # tree reads as coverage.
+  #
+  # They live here, and not in a path-filtered workflow, for the reason the
+  # header of this file gives. Their subjects are spread over three trees
+  # (testdata/baseline, testdata/legacy, testdata/postgres) plus the scripts
+  # themselves, so a path-filtered home would need four more filters to keep
+  # correct — and this repository has twice shipped a gate that stopped running
+  # because a filter or a path stopped matching (#157, #426). This workflow has
+  # no path filter at all.
+  #
+  # The scripts are a separate job, not more steps in the job above, so a
+  # failing evidence check does not hide the binary scan and the reverse.
+  evidence-baselines:
+    name: Checked-in evidence baselines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # Every check reads only the standard library and the committed JSON, so
+      # there is nothing to install.
+      - name: Validate the checked-in security and database evidence
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          checks=(scripts/security/check_*.py scripts/database/check_*.py)
+          # The list comes from the tree, not from a written-down set of names.
+          # A renamed or deleted script therefore changes the count, and the
+          # floor below turns that into a red job instead of a shorter loop
+          # that still says "passed".
+          if [ "${#checks[@]}" -lt 6 ]; then
+            echo "::error::found ${#checks[@]} evidence check scripts, expected at least 6 — the glob stopped matching, so this job would pass without checking anything"
+            exit 1
+          fi
+          for check in "${checks[@]}"; do
+            echo "== ${check}"
+            python "${check}"
+          done
+      - name: Install the test runner
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2
+      # pytest exits 5 when it collects nothing, so an empty run is red rather
+      # than green. The glob floor covers the narrower case where one file of
+      # the set is renamed and the rest still collect.
+      - name: Run the evidence checker unit tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(scripts/security/test_*.py)
+          if [ "${#tests[@]}" -lt 4 ]; then
+            echo "::error::found ${#tests[@]} test files under scripts/security/, expected at least 4 — the glob stopped matching"
+            exit 1
+          fi
+          python -m pytest -q "${tests[@]}"
+
+  # Issue #518. The wiring is a separate artifact from the gate, and only the
+  # gate feels like the work. `helm-lint.yml` was correct in its own file and
+  # its push arm named `main` only, so it could not start on the branch it
+  # guards. A measurement on 2026-08-18 gives the size of the hole: for EVERY
+  # workflow in this repository, `actions/runs?branch=<staging>&event=push`
+  # returned `total_count: 0`. No push run has ever started on the staging
+  # branch.
+  #
+  # This job holds the wiring itself. It reads .github/staging-branch.txt and
+  # the push arm of each workflow, and it fails when a workflow that names
+  # `main` does not also name the staging branch — or when a workflow names a
+  # branch the file does not.
+  #
+  # It lives here, and not in a path-filtered workflow, for the reason the
+  # header of this file gives: a path filter is a second thing to keep correct,
+  # and a gate about triggers must not itself depend on one.
+  workflow-branch-coverage:
+    name: Workflow triggers reach the staging branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # The check asks `origin` whether the branch it names still exists, so the
+      # authenticated remote that actions/checkout leaves behind is required.
+      # It reads only the standard library; there is nothing to install.
+      - name: Every push arm that names main also names the staging branch
+        run: python scripts/ci/check_workflow_branch_coverage.py
+
+  # Issue #520. A migration states its version number when an author writes it.
+  # The number is only true when the pull request MERGES. Pull requests #369 and
+  # #388 both claimed 0072; #495 and #516 both claimed 0084. In each case both
+  # authors read the branch head, both found the number free, and neither made
+  # an error. A repeated version makes LoadManifest fail and a deployment stops.
+  #
+  # The check reads the BASE BRANCH as origin holds it at the time it runs, not
+  # the pull request's own tree. A check that reads its own tree cannot see the
+  # collision.
+  #
+  # It runs here rather than in ci-go.yml because this workflow has no path
+  # filter. ci-go.yml selects `services/elitea-main/**` and would cover the
+  # migration directory today, but a filter is a second thing to keep correct.
+  migration-version:
+    name: Migration version is free on the base branch
+    # Only a pull request has a base branch. A push has already merged, and the
+    # duplicate version is then a LoadManifest failure that ci-go.yml reports.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The check runs `git ls-tree` against the base branch, so it needs a
+          # repository with a remote it can fetch that ref from. The script
+          # fetches the single ref it needs at depth 1.
+          fetch-depth: 1
+      - name: The added migration numbers are above the base head
+        env:
+          MIGRATION_BASE_REF: ${{ github.base_ref }}
+        run: bash scripts/database/check-migration-version.sh
+
+  # Issue #485. `docker/model-cache-init/test_entrypoint.sh` holds 81 assertions
+  # on the model-cache entrypoint, and no workflow, Taskfile task or script
+  # called it. The image cannot run it either, because
+  # `docker/model-cache-init/.dockerignore` excludes it from the build context.
+  # Running it here needs no image at all: the suite states that it runs without
+  # Docker, against a temporary directory.
+  #
+  # It runs in this workflow because no other workflow selects
+  # `docker/model-cache-init/**`, and this one has no path filter. About 15
+  # seconds.
+  #
+  # NOTE for issue #484: that issue corrects the entrypoint so that an empty
+  # manifest FAILS instead of reporting a full cache. `test_empty_models` in
+  # this suite asserts the present behaviour (exit 0), so the change that
+  # corrects the entrypoint must correct that test in the same commit. That is
+  # what a gate is for.
+  model-cache-init:
+    name: Model cache entrypoint suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the entrypoint assertions
+        run: bash docker/model-cache-init/test_entrypoint.sh

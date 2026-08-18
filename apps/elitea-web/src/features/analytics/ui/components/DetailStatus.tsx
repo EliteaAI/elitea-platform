@@ -8,7 +8,12 @@ import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
 
-/** Loading/empty placeholders shared by the three drill-down detail screens. */
+/**
+ * Loading/empty/error placeholders shared by the analytics screens:
+ * `DetailLoading`/`DetailEmpty` by the three drill-down detail screens,
+ * `AnalyticsLoadError` by every screen whose own query can fail
+ * (`AnalyticsTabContent`'s overview branch plus the three list tabs).
+ */
 
 const centeredSx: SxProps<Theme> = {
   display: 'flex',
@@ -44,5 +49,25 @@ function DetailEmptyImpl(): ReactNode {
   );
 }
 
+/**
+ * The load-failure branch. Reuses `analytics.overview.loadError` verbatim —
+ * the analytics routes fail as a unit (they share one absent data source,
+ * issue #303), so a per-tab wording would claim a distinction the backend
+ * does not make, and the string is already the one users see on Overview.
+ */
+function AnalyticsLoadErrorImpl(): ReactNode {
+  return (
+    <Box sx={centeredSx}>
+      <Typography
+        variant="bodyMedium"
+        sx={emptyTextSx}
+      >
+        {t('analytics.overview.loadError', 'Failed to load analytics data.')}
+      </Typography>
+    </Box>
+  );
+}
+
 export const DetailLoading = memo(DetailLoadingImpl);
 export const DetailEmpty = memo(DetailEmptyImpl);
+export const AnalyticsLoadError = memo(AnalyticsLoadErrorImpl);

@@ -34,13 +34,65 @@ REPO="$(cd "$ROOT/../.." && pwd)"
 total_fail=0
 total_warn=0
 
+# Floors on the extraction itself (issue #426). Every grep below is `|| true`
+# by design, so a source directory that moved produced an empty name list, both
+# loops iterated zero times, and the script printed "== total: 0 fail, 0 warn
+# =="  and "env-drift-check passed". Nothing asserted that the extraction had
+# found anything at all.
+#
+# Two floors, because they catch different faults:
+#   • the input check below fails when a named directory or chart file is gone,
+#     which is the exact fault this gate hit — a moved directory;
+#   • the count floors fail when the inputs are all present but a pattern
+#     stopped matching, for example after a refactor to a new env helper.
+# Today the gateway extracts 30 code names and elitea-main 31, and the two
+# charts offer 24 and 69 settable names. The floors sit far under those and far
+# over zero.
+# deploy/helm/elitea-main/tests/render-capabilities.sh carries the same shape.
+MIN_CODE_NAMES="${MIN_CODE_NAMES:-10}"
+MIN_CHART_NAMES="${MIN_CHART_NAMES:-5}"
+
 in_list() { grep -qxF "$1" <<<"$2"; }
+
+count_lines() { grep -c . <<<"$1" || true; }
+
+# require_inputs <label> <chart-dir> <allowlist-file> <src-dir>...
+require_inputs() {
+  local label="$1" chart="$2" allowfile="$3"
+  shift 3
+  local dir missing=0
+
+  for dir in "$@"; do
+    if [ ! -d "$dir" ]; then
+      echo "FAIL: $label source directory $dir does not exist — the extraction would read nothing and this gate would report a clean tree." >&2
+      missing=1
+    elif [ -z "$(find "$dir" -name '*.go' -print -quit)" ]; then
+      echo "FAIL: $label source directory $dir holds no .go file — the extraction would read nothing and this gate would report a clean tree." >&2
+      missing=1
+    fi
+  done
+  if [ ! -f "$chart/values.yaml" ]; then
+    echo "FAIL: $label chart values $chart/values.yaml does not exist — every name would look unsettable or, with an empty code list, nothing would be compared at all." >&2
+    missing=1
+  fi
+  if [ ! -d "$chart/templates" ]; then
+    echo "FAIL: $label chart templates $chart/templates does not exist — the same fault as above." >&2
+    missing=1
+  fi
+  if [ ! -f "$allowfile" ]; then
+    echo "FAIL: $label allowlist $allowfile does not exist — an absent allowlist reads as an empty one and turns every intentional exception into noise." >&2
+    missing=1
+  fi
+  [ "$missing" -eq 0 ] || exit 1
+}
 
 # check_target <label> <chart-dir> <allowlist-file> <src-dir>...
 check_target() {
   local label="$1" chart="$2" allowfile="$3"
   shift 3
   local srcs=("$@")
+
+  require_inputs "$label" "$chart" "$allowfile" "${srcs[@]}"
 
   # --- 1. env vars the code READS, split by whether they have a default -------
   # os.Getenv("X")  -> required (no default)  -> FAIL tier if unset by chart
@@ -90,6 +142,34 @@ check_target() {
                    | { grep -v '_test.go' || true; } \
                    | sed -E 's/.*\("//; s/"$//')" \
               | sed '/^$/d' | sort -u)"
+  # Indirect reads through a validating helper: `required("X")` and
+  # `integer("X")` in internal/runtimecomposition/config.go. Neither pattern
+  # above matches them, so the WHOLE runtime plane — about twenty names —
+  # looked like dead chart config the moment the chart started setting it
+  # (#382). Same WARN-tier-only treatment as `lookup(` above: these helpers DO
+  # fail closed on a missing value, but the regex cannot prove that, so the
+  # required/defaulted split still comes from the os.Getenv form.
+  code_all="$(printf '%s\n%s\n' "$code_all" \
+                "$({ grep -roE '(required|integer)\("[A-Z][A-Z0-9_]+"' \
+                       "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
+                   | { grep -v '_test.go' || true; } \
+                   | sed -E 's/.*\("//; s/"$//')" \
+              | sed '/^$/d' | sort -u)"
+  # Names BUILT BY CONCATENATION. `loadTLSFiles(prefix)` reads
+  # prefix+"_CERT_FILE", prefix+"_KEY_FILE" and prefix+"_CLIENT_CA_FILE", so
+  # the full name of all nine runtime TLS variables exists NOWHERE in the
+  # source as a literal. No amount of literal-matching finds them; the suffixes
+  # have to be reconstructed, exactly as the Go code builds them. Keep this in
+  # step with loadTLSFiles if its suffix set ever changes.
+  code_all="$(printf '%s\n%s\n' "$code_all" \
+                "$({ grep -rhoE 'loadTLSFiles\("[A-Z][A-Z0-9_]+"' \
+                       "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
+                   | sed -E 's/.*\("//; s/"$//' \
+                   | while read -r prefix; do
+                       printf '%s_CERT_FILE\n%s_KEY_FILE\n%s_CLIENT_CA_FILE\n' \
+                         "$prefix" "$prefix" "$prefix"
+                     done)" \
+              | sed '/^$/d' | sort -u)"
   code_required="$({ grep -roE 'os\.Getenv\("[A-Z][A-Z0-9_]+"' \
                        "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
                    | { grep -v '_test.go' || true; } \
@@ -98,18 +178,53 @@ check_target() {
   # --- 2. env vars the CHART can set ------------------------------------------
   # a) keys of the .Values.env map (plaintext); b) keys of the .Values.secrets map
   # (rendered as valueFrom.secretKeyRef); c) hard-coded names in template blocks
-  # (e.g. the mtls TLS paths). All three are legitimate ways the chart sets an env.
-  local chart_env chart_secrets chart_tmpl chart_all allow
+  # (e.g. the mtls TLS paths); d) ConfigMap DATA keys written directly in a
+  # template. All four are legitimate ways the chart sets an env.
+  local chart_env chart_secrets chart_tmpl chart_data chart_all allow
   chart_env="$({ yq -r '.env // {} | keys | .[]' "$chart/values.yaml" 2>/dev/null || true; } | sort -u)"
   chart_secrets="$({ yq -r '.secrets // {} | keys | .[]' "$chart/values.yaml" 2>/dev/null || true; } | sort -u)"
   chart_tmpl="$({ grep -rhoE 'name: [A-Z][A-Z0-9_]+' "$chart/templates" 2>/dev/null || true; } \
                 | sed -E 's/name: //' | sort -u)"
-  chart_all="$(printf '%s\n%s\n%s\n' "$chart_env" "$chart_secrets" "$chart_tmpl" | sort -u | sed '/^$/d')"
+  # (d) covers a block a template emits into a ConfigMap as `KEY: value` rather
+  # than as a container `- name: KEY` entry. elitea-main's runtime plane is
+  # written that way, because it is all-or-nothing and one helper owns the whole
+  # block (#382). Without this pass the chart set thirty runtime names that the
+  # gate still reported as never set.
+  chart_data="$({ grep -rhoE '^[[:space:]]*[A-Z][A-Z0-9_]+:' "$chart/templates" 2>/dev/null || true; } \
+                | sed -E 's/^[[:space:]]*//; s/:$//' | sort -u)"
+  chart_all="$(printf '%s\n%s\n%s\n%s\n' "$chart_env" "$chart_secrets" "$chart_tmpl" "$chart_data" | sort -u | sed '/^$/d')"
 
   allow="$(grep -vE '^\s*#|^\s*$' "$allowfile" 2>/dev/null | sort -u || true)"
 
+  local code_count chart_count
+  code_count="$(count_lines "$code_all")"
+  chart_count="$(count_lines "$chart_all")"
+  if [ "$code_count" -lt "$MIN_CODE_NAMES" ]; then
+    echo "FAIL: $label extracted only $code_count env names from ${srcs[*]}, under the floor of $MIN_CODE_NAMES — the extraction stopped matching, so this gate would report a clean tree." >&2
+    exit 1
+  fi
+  if [ "$chart_count" -lt "$MIN_CHART_NAMES" ]; then
+    echo "FAIL: $label extracted only $chart_count settable env names from $chart, under the floor of $MIN_CHART_NAMES — the chart read stopped matching, so every code name would look unsettable or nothing would be compared." >&2
+    exit 1
+  fi
+
   local fail=0 warn=0 v
-  echo "== env-drift-check: $label =="
+  echo "== env-drift-check: $label ($code_count code names, $chart_count chart names) =="
+
+  # The extraction floor. The directories exist, but a change to how the code
+  # reads env — a new helper name, a package split — can still leave both
+  # patterns matching nothing. Zero extracted names produces zero FAILs, which
+  # reads as a pass. Report what each side found, and refuse an empty code side.
+  local code_count chart_count
+  code_count="$(printf '%s\n' "$code_all" | sed '/^$/d' | wc -l | tr -d ' ')"
+  chart_count="$(printf '%s\n' "$chart_all" | sed '/^$/d' | wc -l | tr -d ' ')"
+  echo "read $code_count env name(s) from ${srcs[*]}, $chart_count from $chart"
+  if [ "$code_count" -eq 0 ]; then
+    echo "FAIL: no env read was extracted from the $label source. The patterns in this script no longer match the code, so a comparison of 0 names against $chart_count is not a pass."
+    echo "== $label summary: 1 fail, 0 warn =="
+    total_fail=$((total_fail + 1))
+    return
+  fi
 
   # code-read but chart-can't-set
   while IFS= read -r v; do

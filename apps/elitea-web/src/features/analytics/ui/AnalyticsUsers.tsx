@@ -11,6 +11,7 @@ import { t } from '@/shared/i18n';
 import { useAnalyticsUsersListQuery } from '../api/useAnalytics';
 import { fmtNum, UNAVAILABLE_METRIC } from '../lib/format';
 import { AnalyticsUserDetailed } from './AnalyticsUserDetailed';
+import { AnalyticsLoadError } from './components/DetailStatus';
 import { PaginatedEntityTable } from './components/PaginatedEntityTable';
 import type { EntityTableColumn } from './components/PaginatedEntityTable';
 
@@ -119,7 +120,7 @@ function AnalyticsUsersImpl({ projectId, dateFrom, dateTo, initialUserId, onBack
   // the local in-tab selection.
   const [cameFromExternal] = useState(() => initialUserId != null);
 
-  const { data, isFetching } = useAnalyticsUsersListQuery(projectId, { dateFrom, dateTo });
+  const { data, isFetching, isError } = useAnalyticsUsersListQuery(projectId, { dateFrom, dateTo });
   // See `isWithinDateRange`'s doc comment: the server ignores `date_from`/
   // `date_to` for this list endpoint, so this filter is what makes the
   // date-range picker actually take effect on this tab.
@@ -147,6 +148,19 @@ function AnalyticsUsersImpl({ projectId, dateFrom, dateTo, initialUserId, onBack
         onBack={handleBack}
       />
     );
+  }
+
+  // See `AnalyticsAgents.tsx`'s identical guard. The placement is
+  // load-bearing HERE in particular: this tab can be entered already inside
+  // the drill-down (`initialUserId`, from the Overview leaderboard), and the
+  // only way back out is `AnalyticsUserDetailed`'s Back button. Checking
+  // `isError` BEFORE the `selectedUser` branch above would replace that
+  // screen — and its Back button — with a bare error message, stranding the
+  // user mid-drill-down over a failure of the LIST query they are not even
+  // looking at. The detail screen runs its own query and surfaces its own
+  // failure.
+  if (isError) {
+    return <AnalyticsLoadError />;
   }
 
   const columns: readonly EntityTableColumn[] = [

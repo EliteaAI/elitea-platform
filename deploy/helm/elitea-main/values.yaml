@@ -2,6 +2,18 @@
 # split database principals, or production secret delivery. An opt-in
 # Ingress/HTTPRoute exists (ingress.enabled) but ships with no TLS secret
 # or hostname configured — see ingress.tls / ingress.hosts below.
+#
+# CAPABILITY FLAGS (issue #382). cmd/elitea-main gates whole capabilities on
+# environment variables, and this file sets every one of them. It did not
+# before, so the same image served the pylon-free configuration on compose and
+# served none of it on Kubernetes. Read the "Capability flags" block in the env
+# map below, and the runtime: block further down.
+#
+# These defaults are for a DEFAULT install, which has no production
+# authentication, so most capabilities ship off. values-standalone.yaml is the
+# values file whose capability set matches the standalone compose stack.
+# Prerequisites are checked while the chart renders, so a wrong combination
+# fails `helm template` rather than the pod.
 replicaCount: 2
 
 image:
@@ -50,6 +62,34 @@ ingress:
     # - secretName: elitea-main-tls
     #   hosts:
     #     - dev.elitea.ai
+  # Client-supplied identity headers stripped on the way in (#326). elitea-main
+  # treats X-Auth-Type + X-Auth-Id from a trusted-proxy source address as a
+  # finished identity, and in a cluster the whole pod network is typically
+  # inside trusted_proxy_cidrs — so anything reaching the Service with these
+  # headers set by the CALLER is an impersonation. Emptying this list re-opens
+  # that; extend it, do not shorten it.
+  #
+  # APPLIES TO THE HTTPRoute PATH ONLY (ingress.gatewayApi: true), where it
+  # renders a RequestHeaderModifier filter. A networking.k8s.io/v1 Ingress has
+  # no portable header-removal field, so on that path the strip MUST be
+  # configured on the ingress controller itself (ingress-nginx:
+  # `more_clear_input_headers` in a configuration-snippet, which many clusters
+  # disallow) or by fronting elitea-main with a Gateway. Do not assume the
+  # plain-Ingress path is covered by this chart.
+  stripIdentityHeaders:
+    - X-Auth-Type
+    - X-Auth-Id
+    - X-Auth-User-Id
+    - X-Auth-Reference
+    - X-Auth-Avatar
+    - X-Auth-Avatar-State
+    - X-Auth-Session-Id
+    - X-Auth-Session-Name
+    - X-Auth-Session-Endpoint
+    - X-Elitea-Identity-Signature
+    - X-Elitea-Project-Id
+    - X-Elitea-User-Id
+    - X-Elitea-Tenant-Id
   # Only consulted when gatewayApi: true — the pre-existing Gateway this
   # HTTPRoute attaches to (not created by this chart).
   gateway:
@@ -66,9 +106,89 @@ ingress:
 fileConfig:
   authConfig:
     enabled: false
+
+    # THE AUTHENTICATION CONFIGURATION ITSELF (issue #444).
+    #
+    # internal/authcomposition/material.go opens FIVE files, and their paths
+    # come from this document. Before issue #444 the document was always
+    # external — the chart knew a ConfigMap name and nothing more — so the
+    # chart could not know the five paths, rendered no volume for them, and
+    # every Kubernetes install of the runtime plane had to place the files by
+    # some other method.
+    #
+    # Put the document here and the chart:
+    #   * renders the ConfigMap for you;
+    #   * checks that all five paths sit in material.mountPath below, while it
+    #     renders, and names the offending path when one does not;
+    #   * mounts the material where the service opens it.
+    #
+    # Leave it empty and set configMapName instead to keep the document
+    # outside the chart. The chart then cannot see the five paths, and
+    # cmd/elitea-auth-material is the only gate: it reads the same document in
+    # the init container and stops the pod when the paths and the mount
+    # disagree.
+    #
+    # Set exactly one of document and configMapName.
+    #
+    # Read internal/authcomposition/config.go for the schema, and
+    # deploy/runtime/auth.form.yml for a complete example with comments.
+    document: {}
+
     configMapName: ""
     key: auth-config.json
     mountPath: /etc/elitea/auth-config.json
+
+    # The five files that the document names: the Auth Redis password, the
+    # Auth Redis CA, the browser-attempt key, the PAT signing key and the Form
+    # users JSON.
+    #
+    # THE KEY NAMES ARE THE OPERATOR'S. Unlike the runtime material, the chart
+    # does not fix them: each name is the last component of a path in the
+    # document above. The Secret must carry one key for each of those names.
+    material:
+      # Where the service reads the five files. Every path in the document must
+      # sit in this directory, because one volume mount serves one directory.
+      #
+      # It must differ from runtime.material.mountPath. Each install container
+      # removes anything in its own directory that its own Secret does not
+      # carry, so one shared directory would make the two delete each other's
+      # files.
+      mountPath: /run/elitea-auth
+
+      # A Kubernetes Secret whose keys are the five file names, for example:
+      #
+      #   kubectl create secret generic elitea-main-auth-material \
+      #     --from-file=redis-auth-password --from-file=auth-redis-ca.crt ...
+      #
+      # The chart cannot mount that Secret straight at mountPath.
+      # internal/security/securefile refuses a path that resolves through a
+      # symlink and requires owner-only bits on private material, and a Secret
+      # volume gives neither: mounted whole it is a symlink farm, and mounted
+      # per file with subPath its files belong to root while this pod runs as
+      # nonroot. So the chart adds an init container, exactly as issue #404
+      # does for the runtime material. It runs the same image and the same
+      # user, copies each key into a memory-backed emptyDir at mode 0600, and
+      # reads every file back through securefile before it exits. A missing key
+      # stops the pod there, with a message.
+      secretName: ""
+
+      # The mode the kubelet gives each key of that Secret. The init container
+      # has to read them, and the kubelet owns them as root, so without a pod
+      # fsGroup the read bit for other users is the only one that reaches this
+      # pod's user. It applies inside this pod's own mount namespace only, and
+      # the copies that the service reads are owner-only. Set
+      # podSecurityContext.fsGroup and lower this to 0440 to tighten it.
+      secretDefaultMode: 0444
+
+      # The bound on the emptyDir that holds the copies.
+      sizeLimit: 8Mi
+
+      # An alternative source, for a deployment whose material is ALREADY real,
+      # owner-owned files at mountPath — a CSI secret driver, for example. It
+      # takes a Kubernetes volume specification without its `name`; the chart
+      # adds the name and mounts it read-only. Mutually exclusive with
+      # secretName, and no init container renders with it.
+      volume: {}
   brandPack:
     enabled: false
     configMapName: ""
@@ -97,6 +217,112 @@ env:
   # deployments explicitly set this to "false" while the current artifacts
   # plugin remains authoritative.
   ELITEA_ARTIFACTS_ENABLED: "true"
+
+  # --- Capability flags (issue #382) -----------------------------------------
+  # cmd/elitea-main gates whole capabilities on these names. Each one makes the
+  # composition root build a dependency, and the router registers a route group
+  # only when that dependency exists. Before issue #382 this chart set none of
+  # them, so a Kubernetes install served none of those route groups while the
+  # same image on compose served all of them.
+  #
+  # They ship "false" here, not "true". Two reasons, and both are about the
+  # DEFAULT install:
+  #   1. Most of them need production authentication, which this chart builds
+  #      only from fileConfig.authConfig (off by default). Shipping "true" with
+  #      authentication off would turn a working default install into a
+  #      CrashLoopBackOff.
+  #   2. An operator must choose a public project id and a Redis endpoint. The
+  #      chart cannot guess either.
+  #
+  # Read values-standalone.yaml for the values file that turns the set on. The
+  # chart checks every prerequisite at `helm template` time, so a wrong
+  # combination fails on the terminal, not in a restarting pod.
+
+  # The Configurations plane: eight configuration and model-catalogue routes,
+  # and the dependency that agent dispatch and index ingest both compose
+  # through. NEEDS production authentication.
+  ELITEA_CONFIGURATIONS_ENABLED: "false"
+
+  # A SECOND set of three configuration WRITE routes. Needs
+  # ELITEA_CONFIGURATIONS_ENABLED and runtime.enabled; this file has neither.
+  #
+  # The reason recorded here before — "demands the LiteLLM lifecycle facade" —
+  # is stale (#460). The lifecycle takes no LLM transport now. The flag stays
+  # off for two reasons that are true: the chart refuses it without the two
+  # prerequisites above, and it is not what makes a saved credential usable.
+  # The routes it composes WIN the path from the compatibility routes that
+  # every install serves — see
+  # TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition — and they
+  # take a different request shape from the one apps/elitea-web sends. Turning
+  # this on is a cutover with its own web-client work.
+  ELITEA_CONFIGURATIONS_MUTATION_ENABLED: "false"
+
+  # The project-information route. NEEDS production authentication.
+  #
+  # With this off, the project-information path falls through to the prototype
+  # handler, which never counts teammates and always reports a null icon. The
+  # project screen reads exactly those two fields, so it shows zero teammates
+  # and no project icon — at 200, which is why nothing looked broken.
+  ELITEA_PROJECT_INFO_ENABLED: "false"
+
+  # The project whose configurations are PUBLIC and merge into every other
+  # project's option lookups. Read only when ELITEA_CONFIGURATIONS_ENABLED is
+  # on, and it must name a project that EXISTS: the model catalogue lists that
+  # project's configurations and propagates the failure, so a missing id fails
+  # every agent turn rather than yielding an empty public set.
+  #
+  # Set the SAME value in deploy/helm/elitea-llm-gateway/values.yaml, where the
+  # key has the same name. The gateway reads the public project to serve the
+  # shared models the operator publishes (issue #316). The two services must
+  # name one project, or the gateway serves a different model set from the one
+  # the UI offers. Empty on BOTH sides leaves shared models unreachable: the
+  # picker offers them and the request then finds no credential.
+  ELITEA_AI_PROJECT_ID: ""
+
+  # Whether a project may define its own LLM credentials. Empty keeps the
+  # binary's own default. Do NOT set ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS:
+  # that is the old name, and cmd/elitea-main refuses to start when it is
+  # present, because silently ignoring it would fail open.
+  ELITEA_ALLOW_PROJECT_OWN_LLMS: ""
+
+  # Path to the secret-vault master key. Empty means the vault key column holds
+  # the Fernet key itself; set means that column holds the key WRAPPED under
+  # this master key. The two readings are incompatible, so a deployment whose
+  # vault rows are unwrapped must leave this empty or every credential read
+  # fails, several layers away from anything that names a vault.
+  ELITEA_VAULT_MASTER_KEY_FILE: ""
+
+  # --- Capabilities deliberately left DARK -----------------------------------
+  # These two are exposed so the chart states them, and they must stay "false".
+  # Their routes answer a shape that the published contract and the generated
+  # client both reject, so turning either on breaks the web client. Issues #394
+  # and #395 track the contract work that must land FIRST. Change these only
+  # together with the contract and the regenerated client.
+  ELITEA_INDEX_TYPES_ENABLED: "false"
+  ELITEA_APPLICATION_SKILLS_ENABLED: "false"
+
+  # --- Project event stream (#152) -------------------------------------------
+  # Transport for GET /api/v2/events/prompt_lib/{projectID}. The router has a
+  # two-arm fallback and BOTH arms were unassigned in this chart, so the route
+  # was never registered and answered 404 — indistinguishable from a typo.
+  #
+  # Host:port of the general-purpose Redis, e.g. "elitea-redis-master:6379".
+  # This is NOT the runtime plane's Redis: that one is separate, mutually
+  # authenticated, and configured under runtime.redis below.
+  REDIS_URL: ""
+  REDIS_USERNAME: ""
+
+  # --- Admin console ---------------------------------------------------------
+  # Directory the admin single-page application is served from. The published
+  # image bakes this path and ships the bundle at it, so the value here matches
+  # the image and the standalone compose stack.
+  #
+  # CAUTION: an EMPTY value turns the admin console off, because the
+  # composition root builds the admin configuration only for a non-empty path —
+  # and this ConfigMap entry OVERRIDES the image's own setting. So clearing
+  # this key is a switch, not a no-op. Set it to "/nonexistent" when you deploy
+  # the `hybrid` image variant, which ships no admin bundle.
+  ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
 
   # --- circular-routing guard #1, upsert time (spec §2.6) --------------------
   # Comma-separated list of the platform's OWN /llm origins, e.g.
@@ -158,9 +384,50 @@ env:
   # override" — the handler falls back to its own default (365 days).
   ARTIFACT_ATTACHMENT_RETENTION_DAYS: ""
 
-  # --- LLM gateway proxy (BF0.9c) -----------------------------------------------
-  # URL of the elitea-llm-gateway service. Empty disables GatewayProxy.
+  # --- LLM gateway proxy (BF0.9c; issue #463) ---------------------------------
+  # URL of the elitea-llm-gateway service. Empty composes no GatewayProxy, and
+  # the /llm path then answers 503 llm_gateway_not_configured.
+  #
+  # WHY THERE IS NO DEFAULT VALUE HERE, and why that is not the old defect.
+  #
+  # The old defect was that an empty value made /llm answer 404, which is the
+  # same answer a misspelt path gets. That is fixed in the CODE, not here:
+  # internal/api/router.go now registers the path and answers 503 with the code
+  # llm_gateway_not_configured and the name of this variable. So the empty
+  # value is now a stated posture instead of a silent one.
+  #
+  # A default URL cannot be correct, and would be worse than the empty value:
+  #   1. internal/llmproxy/proxy.go ALWAYS builds an mTLS transport. With no
+  #      readable client certificate, tls.LoadX509KeyPair fails, llmproxy.New
+  #      returns an error, and cmd/elitea-main turns that into a FATAL boot
+  #      error. A default URL with no certificates is a crash loop, not a
+  #      working /llm path.
+  #   2. This chart cannot supply those certificates. They are issued by the
+  #      gateway chart's cert-manager Certificate into the `elitea-gateway`
+  #      namespace, and a Secret is namespace-scoped. See the "Cross-namespace
+  #      Secrets" section of deploy/README.md.
+  # So the chart refuses the half-configured combination instead: set this URL
+  # and the three file paths below together, or set none of them.
+  # elitea-main.validateLLMGateway in _helpers.tpl performs that check at
+  # `helm template` time, so the terminal that ran the command shows the reason.
+  #
+  # Cross-namespace: this must be an FQDN when the gateway is in another
+  # namespace, e.g.
+  #   https://elitea-llm-gateway-svc.elitea-gateway.svc.cluster.local:8083
   LLM_GATEWAY_URL: ""
+
+  # The mTLS material for the hop above. These three are FILE PATHS, not the
+  # certificate text: internal/llmproxy/proxy.go passes them to
+  # tls.LoadX509KeyPair and os.ReadFile.
+  #
+  # They were previously declared in the `secrets:` block as secretKeyRef
+  # entries. That shape cannot work: a secretKeyRef sets the variable to the
+  # CONTENT of the Secret key, so the process then tried to open a file whose
+  # name was a PEM block. Mount the material as a volume and put the paths
+  # here.
+  LLM_GATEWAY_CLIENT_CERT: ""
+  LLM_GATEWAY_CLIENT_KEY: ""
+  LLM_GATEWAY_CA_FILE: ""
 
   # --- Tracing / observability (issue #250) -----------------------------------
   # OTLP/HTTP collector base URL. Read by both libs/go/observability (elitea-main's
@@ -228,18 +495,199 @@ secrets:
     secretName: elitea-main-llm-gateway-secrets
     key: gateway-identity-secret
     optional: false
-  LLM_GATEWAY_CLIENT_CERT:
-    secretName: elitea-main-llm-gateway-secrets
-    key: llm-gateway-client-cert
+  # LLM_GATEWAY_CLIENT_CERT, LLM_GATEWAY_CLIENT_KEY and LLM_GATEWAY_CA_FILE were
+  # here as secretKeyRef entries. They are removed (issue #463), because that
+  # shape cannot work: internal/llmproxy/proxy.go reads all three as FILE PATHS,
+  # and a secretKeyRef sets the variable to the CONTENT of the Secret key. The
+  # pod then tried to open a file whose name was a PEM block. They are now plain
+  # path entries in the `env:` map above; mount the material as a volume.
+  # Password for the general-purpose Redis named by env.REDIS_URL above — the
+  # project event stream's transport (issue #382). Optional, because a Redis
+  # with no authentication needs no password and the pod must still start.
+  REDIS_PASSWORD:
+    secretName: elitea-main-redis-secrets
+    key: redis-password
     optional: true
-  LLM_GATEWAY_CLIENT_KEY:
-    secretName: elitea-main-llm-gateway-secrets
-    key: llm-gateway-client-key
-    optional: true
-  LLM_GATEWAY_CA_FILE:
-    secretName: elitea-main-llm-gateway-secrets
-    key: llm-gateway-ca-file
-    optional: true
+
+# --- Runtime plane (issue #382) ----------------------------------------------
+# Agent execution, the execution-events stream, index ingest, index scheduling
+# and configuration validation. This is the biggest capability the chart left
+# dark, and it is the one that decides whether a Kubernetes install can run
+# without pylon at all.
+#
+# ALL-OR-NOTHING. internal/runtimecomposition/config.go builds this
+# configuration with a `required()` helper: every name must be present and
+# non-empty, or the process exits at boot. It also REFUSES a setting whose
+# dispatch plane is not explicitly enabled. So there is no "turn on half of
+# it". The chart checks the whole set at `helm template` time and names the
+# missing field, so a partial values file fails on the terminal.
+#
+# PREREQUISITE: production authentication. cmd/elitea-main refuses to compose
+# the runtime without a principal validator and a forwarded-identity verifier,
+# and this chart builds both only from fileConfig.authConfig. Set
+# fileConfig.authConfig.enabled=true as well.
+#
+# WHAT STILL BLOCKS A KUBERNETES INSTALL — read this before you set
+# enabled: true. The runtime reads its keys, passwords and certificates through
+# internal/security/securefile, which applies three rules:
+#   1. The path must be canonical and its final component must NOT be a
+#      symlink.
+#   2. Private material (command-signing-key.pem, redis-producer-password and
+#      the three server .key files) must carry OWNER BITS ONLY — at most 0600.
+#   3. The file must be readable by the process owner.
+# A plain Kubernetes `secret:` volume breaks rule 1: it is a symlink farm, so
+# every path resolves through a ..data/ symlink and securefile refuses it. A
+# per-file `subPath` mount fixes rule 1 and then breaks rules 2 and 3 together:
+# the file is owned by root, this pod runs as nonroot, and the only modes that
+# let a nonroot process read a root-owned file (0440 with fsGroup, or 0444)
+# carry group or other bits that rule 2 rejects.
+#
+# So the runtime plane needs a material source that writes REAL files owned by
+# the pod's own user with mode 0600 — a CSI driver or a sidecar that
+# materialises them into an emptyDir. That mechanism is issue #382's declared
+# out-of-scope ("secret delivery"), so the chart does not choose one for you:
+# runtime.material.volume takes the volume specification and the chart wires
+# every file path under runtime.material.mountPath.
+#
+# deploy/scripts/gen-runtime-certs.sh mints the material and its FILE NAMES are
+# the contract — the chart derives every path from them, so whatever supplies
+# the volume must present exactly these names:
+#   runtime-ca.crt                 command-signing-key.pem
+#   control-server.crt             command-signing-keyring.json
+#   control-server.key             redis-producer-password
+#   output-server.crt              content-server.crt
+#   output-server.key              content-server.key
+runtime:
+  enabled: false
+
+  # The base plane: configuration validation. Always required when enabled.
+  # The stream name must differ from every dispatch stream below.
+  commandStream: ""
+  maxOutstanding: 64
+  streamMaxEntries: 1024
+
+  # The four agent turn routes — the chat send path.
+  agentExecutionDispatch:
+    enabled: false
+    commandStream: ""
+    consumerGroup: ""
+    streamMaxEntries: 1024
+    # An https ORIGIN, with no path, query or fragment. elitea-main calls
+    # itself on it for the next-input-suggestion policy. Cleartext fails that
+    # one call and degrades a suggestion; it does not break the send path.
+    currentMainBaseUrl: ""
+
+  # Index start, index cancel and index metadata. NEEDS
+  # env.ELITEA_CONFIGURATIONS_ENABLED="true": the handlers compose through the
+  # Configurations dependency, and the embedding binding resolves from the same
+  # configuration rows.
+  #
+  # Giving this the SAME commandStream AND the SAME consumerGroup as
+  # agentExecutionDispatch is supported, and it is what the standalone compose
+  # stack does: one worker then serves both capabilities, because the worker
+  # dispatches on the command's capability id rather than on its stream. Doing
+  # that costs no second worker, no second consumer group and no extra Redis
+  # ACL grant. Sharing the stream with a DIFFERENT group is refused.
+  indexIngestDispatch:
+    enabled: false
+    commandStream: ""
+    consumerGroup: ""
+    streamMaxEntries: 1024
+
+  # The index schedule write and delete routes. NEEDS indexIngestDispatch.
+  indexScheduling:
+    enabled: false
+    # Lowercase letters, digits, dot, underscore and hyphen; it must start with
+    # a letter or a digit.
+    instanceId: ""
+
+  # The runtime's OWN Redis — mutually authenticated, and separate from the
+  # general-purpose Redis in env.REDIS_URL above.
+  redis:
+    # Must be a rediss:// URL that carries an ACL USERNAME and NO password, and
+    # it must select database zero explicitly, e.g.
+    #   "rediss://producer@elitea-runtime-redis:6380/0"
+    # The password comes from the redis-producer-password file in the material
+    # volume, never from the URL.
+    url: ""
+    poolSize: 8
+
+  # Must equal the key id inside command-signing-keyring.json. The composition
+  # cross-checks the two and refuses to start on a mismatch.
+  signingKeyId: ""
+
+  # Three listeners, three DISTINCT addresses. The agent worker dials all three
+  # on this Service, so the server certificates must carry the Service name.
+  # The chart opens the ports on the container and the Service when the runtime
+  # is enabled.
+  listeners:
+    controlAddress: ":9443"
+    outputAddress: ":9444"
+    contentAddress: ":9445"
+
+  # Where the runtime keys, passwords and certificates come from, and where the
+  # service reads them.
+  #
+  # THE KEY NAMES ARE THE CONTRACT. The chart derives every ELITEA_RUNTIME_*
+  # file path from mountPath plus one of these names, and they are the names
+  # deploy/scripts/gen-runtime-certs.sh writes:
+  #
+  #   runtime-ca.crt                the trust root: the Redis CA, and the
+  #                                 client CA of all three listeners
+  #   command-signing-key.pem       Ed25519 PKCS#8, signs dispatch envelopes
+  #   command-signing-keyring.json  its public half, keyed by signingKeyId
+  #   redis-producer-password       the runtime Redis ACL password
+  #   control-server.crt / .key     the control listener keypair
+  #   output-server.crt / .key      the output listener keypair
+  #   content-server.crt / .key     the content listener keypair
+  #
+  # The server certificates must carry the Service name, because the agent
+  # worker dials all three listeners on this Service.
+  material:
+    mountPath: /run/elitea-runtime
+
+    # A Kubernetes Secret whose keys are the names above. This is the supported
+    # source, and it is how every other secret in this platform arrives:
+    #
+    #   kubectl create secret generic elitea-runtime-material \
+    #     --from-file=runtime-ca.crt --from-file=command-signing-key.pem ...
+    #
+    # The chart cannot mount that Secret straight at mountPath.
+    # internal/security/securefile refuses a path that resolves through a
+    # symlink and requires owner-only bits on private material, and a Secret
+    # volume gives neither: mounted whole it is a symlink farm, and mounted per
+    # file with subPath its files belong to root while this pod runs as
+    # nonroot. So the chart adds an init container (issue #404). It runs the
+    # same image and the same user, copies each key into a memory-backed
+    # emptyDir at mode 0600, and reads every file back through securefile
+    # before it exits. A missing key stops the pod there, with a message.
+    secretName: ""
+
+    # The mode the kubelet gives each key of that Secret. The init container
+    # has to read them, and the kubelet owns them as root, so without a pod
+    # fsGroup the read bit for other users is the only one that reaches this
+    # pod's user. It applies inside this pod's own mount namespace only, and
+    # the copies that the service reads are owner-only. Set
+    # podSecurityContext.fsGroup and lower this to 0440 to tighten it.
+    secretDefaultMode: 0444
+
+    # The bound on the emptyDir that holds the copies. The whole material is a
+    # few kilobytes; the rest is headroom for a large CA bundle.
+    sizeLimit: 8Mi
+
+    # An alternative source, for a deployment whose material is ALREADY real,
+    # owner-owned files at mountPath — a CSI secret driver, for example. It
+    # takes a Kubernetes volume specification without its `name`; the chart
+    # adds the name and mounts it read-only. Mutually exclusive with
+    # secretName, and no init container renders with it.
+    #
+    #   volume:
+    #     csi:
+    #       driver: secrets-store.csi.k8s.io
+    #       readOnly: true
+    #       volumeAttributes:
+    #         secretProviderClass: elitea-runtime-material
+    volume: {}
 
 # Kubernetes execution path for the versioned migration corpus
 # (services/elitea-main/migrations/{shared,tenant}, applied by the separate

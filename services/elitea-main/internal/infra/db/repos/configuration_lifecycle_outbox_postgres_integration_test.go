@@ -15,8 +15,7 @@ import (
 )
 
 func TestCurrentConfigurationLifecycleOutboxPostgresOrdersAndBlocksRevisions(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repository := mustCurrentConfigurationLifecyclePostgresRepository(t, pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -147,8 +146,7 @@ WHERE event_id = '99999999-9999-4999-8999-999999999991'`).Scan(
 }
 
 func TestCurrentConfigurationLifecycleOutboxPostgresReclaimsAndFencesTransitions(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repository := mustCurrentConfigurationLifecyclePostgresRepository(t, pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -248,8 +246,7 @@ WHERE event_id = $1`, fixture.eventID); err != nil {
 }
 
 func TestCurrentConfigurationLifecycleOutboxPostgresSkipsLocksAndClaimsConcurrently(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repository := mustCurrentConfigurationLifecyclePostgresRepository(t, pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

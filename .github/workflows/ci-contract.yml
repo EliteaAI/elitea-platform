@@ -9,16 +9,42 @@ on:
   push:
     branches:
       - main
+      # The release staging branch (#518). Pull requests merge here first,
+      # and this branch merges into main later, so a push arm that names
+      # only `main` cannot guard the tree that becomes main. The name is
+      # held once in .github/staging-branch.txt, and
+      # scripts/ci/check_workflow_branch_coverage.py fails when a workflow
+      # that names `main` here does not also name that branch.
+      - claude/issue-248-c5b380
     paths:
       - "services/elitea-main/tests/contract/**"
       - "services/elitea-main/api/openapi/**"
+      # This workflow's own file. The pull_request arm above names it and this
+      # arm did not, so a push that edited only the gate could not start the
+      # gate it edited (#518).
+      - ".github/workflows/ci-contract.yml"
+  # The weekly `schedule:` trigger that used to sit here is GONE — issue #309,
+  # Gate 1. It ran the parity job every Monday against `http://elitea-main:8080`
+  # and `http://pylon-main:8000` from a hosted runner that can resolve neither,
+  # with a CONTRACT_AUTH_TOKEN secret that resolves to the empty string, so every
+  # fixture printed SKIP and the job reported success. Four consecutive Monday
+  # runs (31368762173, 30804371729, 30257148568, 29732184979) are all green and
+  # all compared nothing.
+  #
+  # A cadence cannot be honest while no reachable environment exists to compare
+  # against, so the parity job is now dispatch-only and its URLs are inputs a
+  # human supplies for a stack they know is up. It fails loudly rather than
+  # skipping (see the `contract` job).
   workflow_dispatch:
     inputs:
       go_url:
-        description: "Go service URL"
+        description: "Go service URL, reachable from the runner"
+        required: true
         default: "http://elitea-main:8080"
-  schedule:
-    - cron: "23 6 * * 1" # Mondays at 06:23 UTC
+      legacy_url:
+        description: "Legacy Pylon URL, reachable from the runner"
+        required: true
+        default: "http://pylon-main:8000"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -90,11 +116,11 @@ jobs:
         if: always()
         run: docker compose -f deploy/docker-compose.storage-test.yml down -v
 
-  # ── Credential-gated live parity run against staging. Only fires on the
-  #    weekly schedule or manual dispatch, where staging secrets are available. ──
+  # ── Credential-gated live parity run. Dispatch-only, and it FAILS rather
+  #    than skips when it cannot do the comparison it is named after. ──
   contract:
     name: Contract Parity Tests
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -105,17 +131,46 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: services/elitea-main/go.sum
 
+      # Preflight, before a single test runs. Both halves of this job's premise
+      # — credentials, and two reachable stacks — used to be assumed, and each
+      # failed silently in its own way: the empty secret turned every fixture
+      # into a SKIP, and the unresolvable hostnames meant no fixture had ever
+      # compared anything even if the secret had been set.
+      - name: Preflight — credentials and reachability
+        env:
+          CONTRACT_AUTH_TOKEN: ${{ secrets.CONTRACT_AUTH_TOKEN }}
+          GO_URL: ${{ inputs.go_url }}
+          LEGACY_URL: ${{ inputs.legacy_url }}
+        run: |
+          set -euo pipefail
+          fail=0
+          if [ -z "${CONTRACT_AUTH_TOKEN}" ]; then
+            echo "::error::CONTRACT_AUTH_TOKEN is empty. This job compares the Go stack against legacy Pylon and cannot authenticate to either. Set the secret on the 'staging' environment, or do not run this job."
+            fail=1
+          fi
+          # `curl --fail` would also reject a 401/404 from a host that IS up;
+          # reachability is the question here, so any HTTP answer counts and only
+          # a connect/DNS failure does not.
+          for pair in "GO_URL:${GO_URL}" "LEGACY_URL:${LEGACY_URL}"; do
+            name="${pair%%:*}"; url="${pair#*:}"
+            if ! curl -sS -o /dev/null -m 15 "${url}" 2>/dev/null; then
+              echo "::error::${name}=${url} is not reachable from this runner. A hosted runner cannot resolve in-cluster hostnames such as elitea-main or pylon-main; point this job at a routable environment or run it on a self-hosted runner inside the network."
+              fail=1
+            fi
+          done
+          [ "${fail}" -eq 0 ] || exit 1
+
       - name: Run contract tests
         env:
-          CONTRACT_GO_URL: ${{ inputs.go_url || 'http://elitea-main:8080' }}
-          # No override input: diffing against a specific legacy instance is
-          # no longer a meaningful axis to control (see this stage's own
-          # notes in docs/plans/storage-migration-plan.md's S19 section) —
-          # this fixed default is the only legacy deployment that ever
-          # backed it.
-          CONTRACT_LEGACY_URL: "http://pylon-main:8000"
+          CONTRACT_GO_URL: ${{ inputs.go_url }}
+          CONTRACT_LEGACY_URL: ${{ inputs.legacy_url }}
           CONTRACT_AUTH_TOKEN: ${{ secrets.CONTRACT_AUTH_TOKEN }}
           CONTRACT_PROJECT_ID: ${{ secrets.CONTRACT_PROJECT_ID }}
+          # Belt and braces with the preflight above, and the half that survives
+          # a future edit to this workflow: with this set, the fixtures
+          # themselves refuse to skip on an absent token
+          # (tests/contract/contract_test.go's decideParityGate).
+          CONTRACT_REQUIRE_PARITY: "1"
         run: |
           cd services/elitea-main
           go test -v -count=1 -timeout=60s ./tests/contract/

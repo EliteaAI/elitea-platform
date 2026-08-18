@@ -47,6 +47,88 @@ describe('AnalyticsUsers', () => {
     expect(await findByText('bob@example.com')).toBeInTheDocument();
   });
 
+  // ── The load-failure branch (issue #303) — see AnalyticsAgents.test.tsx's
+  // equivalent pair. Asserting the error text alone would pass against a
+  // page rendering the error AND the empty table, so the eight column
+  // headers and the count label are asserted absent too.
+  it('shows the load error and NO table when the list query fails', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () =>
+        HttpResponse.json({ detail: 'analytics: no data source' }, { status: 500 }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsUsers
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    expect(await findByText('Failed to load analytics data.')).toBeVisible();
+    expect(queryByText('User Activity')).not.toBeInTheDocument();
+    expect(queryByText('0 users')).not.toBeInTheDocument();
+    for (const header of ['User', 'Events', 'Days', 'LLM', 'Tool', 'Agent', 'Chat Msg', 'Errors']) {
+      expect(queryByText(header)).not.toBeInTheDocument();
+    }
+  });
+
+  // Control: without it, an always-erroring component would look correct.
+  it('still renders the table with its headers and count when the list query succeeds', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () =>
+        HttpResponse.json({
+          items: [{ user_id: 'u1', email: 'bob@example.com', run_count: 6, last_active_at: '2026-07-22T00:00:00Z' }],
+        }),
+      ),
+    );
+    const { findByText, getByText, queryByText } = renderScreen(
+      <AnalyticsUsers
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    expect(await findByText('bob@example.com')).toBeVisible();
+    expect(getByText('1 users')).toBeVisible();
+    for (const header of ['User', 'Events', 'Days', 'LLM', 'Tool', 'Agent', 'Chat Msg', 'Errors']) {
+      expect(getByText(header)).toBeVisible();
+    }
+    expect(queryByText('Failed to load analytics data.')).not.toBeInTheDocument();
+  });
+
+  // The `isError` guard sits AFTER the drill-down branch on purpose: a user
+  // arriving from the Overview leaderboard (`initialUserId`) is already
+  // inside the detail screen, whose only exit is its Back button. Replacing
+  // that screen with a bare error message over a failure of the LIST query
+  // would strand them there.
+  it('keeps the drill-down (and its Back route) usable when the LIST query fails', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () =>
+        HttpResponse.json({ detail: 'analytics: no data source' }, { status: 500 }),
+      ),
+      http.get(`${BASE}/elitea_core/analytics_user_detail/prompt_lib/7`, () =>
+        HttpResponse.json({ entity_name: '', kpis: {}, agents: [], tools: [], daily_usage: [] }),
+      ),
+    );
+    const user = userEvent.setup();
+    let backToSourceCalls = 0;
+    const { findByRole, queryByText } = renderScreen(
+      <AnalyticsUsers
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+        initialUserId="u1"
+        onBackToSource={() => {
+          backToSourceCalls += 1;
+        }}
+      />,
+    );
+    const backButton = await findByRole('button', { name: 'Back' });
+    expect(queryByText('Failed to load analytics data.')).not.toBeInTheDocument();
+    await user.click(backButton);
+    expect(backToSourceCalls).toBe(1);
+  });
+
   it('renders UNAVAILABLE_METRIC for the six per-type-breakdown columns the real backend does not provide', async () => {
     server.use(
       http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () =>

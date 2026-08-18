@@ -60,6 +60,18 @@ export interface CreateTokenParams {
   readonly name: string;
   /** `null` for never-expiring, or `{ measure, value }` for time-bound. */
   readonly expires: TokenExpirationRequest;
+  /**
+   * OPTIONAL creation-time project binding (`spec-llm-project-scope` §4).
+   *
+   * OMIT the field for an unbound token. Unbound is the existing behaviour
+   * and the spec makes it the mandatory default, so this field must never
+   * acquire a non-`undefined` default: `createToken` serializes `params`
+   * directly, and an absent key is an absent `project_id` in the body.
+   *
+   * There is no update path. The server fixes the binding at creation, so a
+   * caller cannot change it later.
+   */
+  readonly project_id?: number;
 }
 
 export interface CreatedTokenResponse {
@@ -67,6 +79,8 @@ export interface CreatedTokenResponse {
   readonly name: string;
   readonly token: string;
   readonly expires: string | null;
+  /** The bound project, or `null`/absent when the token is unbound. */
+  readonly project_id?: number | null;
 }
 
 /*

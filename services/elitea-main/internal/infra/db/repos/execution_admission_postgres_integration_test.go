@@ -18,8 +18,7 @@ import (
 // application pods contending on the same durable policy row. This is not a
 // multiprocess transport E2E, load, or soak test.
 func TestPostgresServiceBackedExecutionAdmissionCapacity(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	assertPostgresAdmissionCapacitySchema(t, pool)
 
 	const (
@@ -128,8 +127,7 @@ WHERE execution_id = $1 AND generation = $2`, winner.Record.Job.ID, int64(winner
 // authors one timestamp for every admission row and derives the deadline from
 // the bounded policy TTL; exact replay returns that durable timing unchanged.
 func TestPostgresServiceBackedExecutionAdmissionClockAuthority(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	policy := testDispatchPolicy()
 	policy.DeadlineTTL = 10 * time.Minute

@@ -95,10 +95,28 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 	}
 
 	return auth.User{
-		ID:       strconv.FormatInt(int64(principal.UserID), 10),
-		UserID:   strconv.FormatInt(int64(principal.UserID), 10),
-		TokenID:  strconv.FormatInt(int64(principal.TokenID), 10),
-		Email:    principal.Email,
-		AuthType: "token",
+		ID:             strconv.FormatInt(int64(principal.UserID), 10),
+		UserID:         strconv.FormatInt(int64(principal.UserID), 10),
+		TokenID:        strconv.FormatInt(int64(principal.TokenID), 10),
+		Email:          principal.Email,
+		AuthType:       "token",
+		TokenProjectID: tokenProjectID(principal.ProjectID),
 	}, nil
+}
+
+// tokenProjectID converts the stored binding into the identity field. The
+// binding comes from elitea_identity.token_project_binding, which the same
+// GetActivePATPrincipalByUUID row already carries, so it costs no additional
+// round trip (spec-llm-project-scope §3.2). Storage is the only source: no
+// header, no token name and no principal name may reach this value.
+//
+// A non-positive stored value cannot name a project, so it reads as unbound
+// rather than as project 0. That fails closed: the caller falls back to the
+// personal project instead of binding to an identifier that names nothing.
+func tokenProjectID(stored *int32) *int64 {
+	if stored == nil || *stored <= 0 {
+		return nil
+	}
+	value := int64(*stored)
+	return &value
 }

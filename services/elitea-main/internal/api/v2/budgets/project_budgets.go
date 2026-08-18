@@ -77,7 +77,7 @@ SELECT
     limits.hard_limit_usd::text                                  AS monthly_limit,
     COALESCE(limits.enabled, false)                              AS enabled,
     (NOT COALESCE(limits.is_unlimited, true))                    AS enforced,
-    COALESCE(limits.soft_alert_pct, $4::smallint)                AS warning_pct,
+    COALESCE(limits.soft_alert_pct, ` + globalWarningPctSQL + `, $4::smallint) AS warning_pct,
     COALESCE(accrued.accumulated_cost, 0)::text                  AS spend,
     (accrued.accumulated_cost IS NOT NULL)                       AS spend_available,
     CASE WHEN NOT COALESCE(limits.is_unlimited, true) AND limits.hard_limit_usd IS NOT NULL
@@ -143,17 +143,40 @@ LEFT JOIN gateway.llm_budget_accumulators AS accrued
 	return state, nil
 }
 
-// DefaultWarningPct is the utilisation percentage a scope with no configured
-// threshold warns at.
+// DefaultWarningPct is the last-resort utilisation percentage, used when
+// neither the scope nor the platform config names one.
 //
-// It is the SAME number as gateway.project_budget.soft_alert_pct's column
-// default (001_gateway_budget.sql), gateway.user_budget's
-// (003_budget_authoring.sql), and internal/api/gateway
-// .DefaultSoftAlertThresholdPct — which is what the gateway itself falls back
-// to. Four declarations of one value is three too many; the two SQL defaults
-// cannot reference a Go constant, so this one is interpolated into the upsert
-// statements below rather than written out a fifth time.
+// It is the SAME number as internal/api/gateway.DefaultSoftAlertThresholdPct
+// and as the literal in the gateway's own snapshot query
+// (failmode/store.go defaultSoftAlertPctSQL). It is a FALLBACK now rather than
+// a default: since #322 the platform threshold an operator sets through
+// PUT /admin/gateway/budget-alerts is consulted first, and migration 0084 made
+// gateway.project_budget.soft_alert_pct nullable so "this project authored no
+// threshold" is representable and that platform value has something to apply
+// to. Before that the column was NOT NULL DEFAULT 80 and the global default
+// could never reach anything.
 const DefaultWarningPct = 80
+
+// globalWarningPctSQL is the platform default threshold: the same
+// gateway.governance_config row the gateway's snapshot query reads and the
+// budget-alerts surface writes (internal/api/gateway/budget_alerts.go).
+//
+// It is spliced into the COALESCE chain of every read that reports a warning
+// percentage, so the API and the gateway resolve the same threshold for the
+// same project. A reader that stopped at DefaultWarningPct would show an
+// operator 80 while the gateway alerted at the value they set.
+//
+// The cast is guarded for the same reason the gateway's copy is: this JSONB
+// column is reachable by direct SQL, and a bare cast over a non-numeric value
+// raises 22P02 and turns one bad row into a 500 on every budget read. A value
+// that fails the guard falls through to DefaultWarningPct.
+const globalWarningPctSQL = `(SELECT CASE
+	    WHEN data->>'threshold_pct' ~ '^[0-9]{1,3}$'
+	     AND (data->>'threshold_pct')::int BETWEEN 1 AND 100
+	    THEN (data->>'threshold_pct')::smallint END
+	FROM gateway.governance_config
+	WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global'
+	  AND enabled)`
 
 // projectLimitJoin and userLimitJoin (user_budgets.go) are the two fixed
 // limit-table joins readBudgetState selects between. Both MUST expose
@@ -320,21 +343,27 @@ func decodeBudgetWrite(w http.ResponseWriter, r *http.Request) (parsedBudgetWrit
 // projectBudgetUpsert writes the authored limit AND the derived enforcement
 // flag in one statement.
 //
+// An INSERT that supplies no threshold now stores NULL rather than 80, so the
+// project inherits whatever platform default is in force at read time (#322).
+// The UPDATE branch still COALESCEs to the EXISTING value, not to NULL: a PUT
+// that changes only the limit must not silently move a threshold the operator
+// chose earlier.
+//
 // `is_unlimited` is the column the gateway reads; `enabled` and
 // `hard_limit_usd` are what the operator authored. Deriving one from the other
 // in SQL, in the same statement, is what stops them from drifting — a second
 // statement that set is_unlimited separately could be interrupted between the
 // two and leave a project with a limit nothing enforces.
-var projectBudgetUpsert = fmt.Sprintf(`
+const projectBudgetUpsert = `
 INSERT INTO gateway.project_budget AS existing
     (project_id, hard_limit_usd, enabled, is_unlimited, soft_alert_pct, budget_period, updated_at)
-VALUES ($1, $2::numeric, $3, ($2::numeric IS NULL OR NOT $3), COALESCE($4::smallint, %d), 'monthly', now())
+VALUES ($1, $2::numeric, $3, ($2::numeric IS NULL OR NOT $3), $4::smallint, 'monthly', now())
 ON CONFLICT (project_id) DO UPDATE SET
     hard_limit_usd = EXCLUDED.hard_limit_usd,
     enabled        = EXCLUDED.enabled,
     is_unlimited   = EXCLUDED.is_unlimited,
     soft_alert_pct = COALESCE($4::smallint, existing.soft_alert_pct),
-    updated_at     = now()`, DefaultWarningPct)
+    updated_at     = now()`
 
 // PutProjectBudget serves project_budget.py's administration-mode PUT.
 //
@@ -415,7 +444,7 @@ SELECT p.id,
        limits.hard_limit_usd::text                                   AS monthly_limit,
        COALESCE(limits.enabled, false)                               AS enabled,
        (NOT COALESCE(limits.is_unlimited, true))                     AS enforced,
-       COALESCE(limits.soft_alert_pct, $1::smallint)                 AS warning_pct,
+       COALESCE(limits.soft_alert_pct, ` + globalWarningPctSQL + `, $1::smallint) AS warning_pct,
        COALESCE(accrued.accumulated_cost, 0)::text                   AS spend,
        (accrued.accumulated_cost IS NOT NULL)                        AS spend_available,
        CASE WHEN NOT COALESCE(limits.is_unlimited, true) AND limits.hard_limit_usd IS NOT NULL

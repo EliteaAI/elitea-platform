@@ -14,8 +14,7 @@ import (
 // it covers planning ownership, occurrence takeover, fencing and terminal
 // idempotency. It is not a multiprocess restart, load or soak test.
 func TestScheduleOccurrenceRepositoryPostgresTakeover(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	first, err := NewScheduleOccurrenceRepository(pool)
 	if err != nil {
 		t.Fatal(err)

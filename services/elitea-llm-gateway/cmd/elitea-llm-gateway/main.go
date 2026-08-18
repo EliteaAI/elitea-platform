@@ -25,11 +25,13 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -65,6 +67,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", livenessHandler)
 
+	// Issue #465: mount the operator controls on THIS mux. expvar publishes
+	// /debug/vars on http.DefaultServeMux, which this process never serves, so
+	// every published variable was unreadable. /metrics serves an allowlist —
+	// see gatewayMetrics for why the full expvar surface stays unpublished.
+	mux.Handle("/metrics", makeMetricsHandler(gatewayMetrics()))
+
 	// Open the Postgres pool BEFORE the server: it backs the vault-backed
 	// Account (BFF.6), the governance/failmode store (FIX #0), and the
 	// synthetic /llm/v1/models resolver. The pool MUST live for the entire
@@ -89,8 +97,9 @@ func main() {
 		defer pool.Close()
 
 		modelResolver = llmproxy.NewModelResolver(llmproxy.ModelResolverConfig{
-			DB:     llmproxy.NewModelPoolQuerier(pool),
-			Logger: logger,
+			DB:              llmproxy.NewModelPoolQuerier(pool),
+			Logger:          logger,
+			PublicProjectID: cfg.PublicProjectIDString(),
 		})
 	}
 
@@ -108,6 +117,12 @@ func main() {
 	// gateway keeps the zero-provider bootstrap account — it will start, but
 	// every provider call fails until the database returns.
 	var acct schemas.Account
+	// egressPolicy backs /llm/v1/check_connection (#319): it needs the exact
+	// same egress-allowlist decision GetKeysForProvider applies to persisted
+	// credentials, for a credential under test that has no row yet. nil (no
+	// pool) leaves the endpoint refusing every request — fail closed, not
+	// silently unchecked.
+	var egressPolicy llmproxy.EgressPolicy
 	if pool != nil {
 		vault, verr := account.NewFernetVault(account.NewPoolQuerier(pool))
 		if verr != nil {
@@ -123,6 +138,7 @@ func main() {
 			ProviderConcurrency: cfg.ProviderConcurrency,
 			SelfOrigins:         cfg.SelfLLMOrigins,
 			EgressAllowlist:     cfg.EgressAllowlist,
+			PublicProjectID:     cfg.PublicProjectIDString(),
 			Logger:              logger,
 		})
 		if aerr != nil {
@@ -130,6 +146,7 @@ func main() {
 			os.Exit(1)
 		}
 		acct = eliteaAcct
+		egressPolicy = eliteaAcct
 		if len(cfg.SelfLLMOrigins) == 0 {
 			logger.Warn("GATEWAY_SELF_LLM_ORIGINS is empty — the request-time SELF_REFERENTIAL_CREDENTIAL guard (spec §2.6 guard #1) is inert")
 		}
@@ -144,6 +161,16 @@ func main() {
 			logger.Warn("GATEWAY_EGRESS_ALLOWLIST is empty — tenant-authored api_base hosts are UNRESTRICTED (public only). " +
 				"bifrost's SSRF-safe dialer stays on for every provider, so self-hosted vLLM/Ollama on a private " +
 				"network will NOT work until the allowlist names those hosts (issue #13)")
+		}
+		// Issue #316: say whether platform-shared models are reachable. With the
+		// scope off, a project sees only its own credentials, so a deployment
+		// that runs on shared models alone has no usable model at all.
+		if id := cfg.PublicProjectIDString(); id != "" {
+			logger.Info("SHARED MODEL SCOPE ARMED: the gateway also reads the public project's shared credentials and models",
+				"public_project_id", id)
+		} else {
+			logger.Warn("ELITEA_AI_PROJECT_ID is unset — platform-shared models are UNREACHABLE. " +
+				"Each project can use only its own credentials and models (issue #316)")
 		}
 		logger.Info("vault-backed Account ENABLED", "self_origins", len(cfg.SelfLLMOrigins))
 	} else {
@@ -191,6 +218,27 @@ func main() {
 	// endpoints — see issue #242. govStore is nil when enforcement is
 	// disabled, in which case the route reports ready unconditionally.
 	//
+	// Issue #304: "unconditionally" was wrong for one specific case — NATS
+	// CONFIGURED but never reachable, so server.New left the client nil and
+	// govStore was never built. That pod serves /llm with no budget gate and
+	// no billing for the whole life of the process (server.New connects once;
+	// nats.MaxReconnects(-1) only ever resurrects a connection that succeeded
+	// at least once, and there is no later re-wire), yet reported ready.
+	//
+	// This is NOT a new fail-open/closed policy — it removes an inconsistency.
+	// Lose NATS one second AFTER boot and Ping already fails, so /readyz
+	// already answers 503 and the pod already drains, in EVERY fail mode. Lose
+	// it one second BEFORE boot and the same outage produced the opposite
+	// outcome: ready, serving, unmetered. The gate below makes the two agree.
+	//
+	// Scoped to GATEWAY_NATS_URL being set, so the NATS-less dev/CI posture
+	// (URL unset ⇒ enforcement deliberately off) still reports ready.
+	unwired := budgetEnforcementUnwired(cfg, govStore)
+	if unwired {
+		logger.Error("READINESS GATED: budget enforcement is configured but was not wired; /readyz will report not_ready",
+			"reason", budgetDisabledReason(cfg, nc, pool))
+	}
+	//
 	// Passing govStore straight into the pinger parameter puts a typed nil
 	// *GovernanceStore into a non-nil interface, so makeReadyzHandler's
 	// `p != nil` guard stays true and this dispatches to Ping. That used to
@@ -200,7 +248,7 @@ func main() {
 	// which is the one guard this needs: any future caller that boxes a typed
 	// nil *GovernanceStore into an interface is covered too, not just this
 	// call site. Measured against the standalone compose stack.
-	mux.HandleFunc("/readyz", makeReadyzHandler(govStore))
+	mux.HandleFunc("/readyz", makeReadyzHandler(govStore, unwired))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert
@@ -243,6 +291,7 @@ func main() {
 			llmproxy.WithLoopBreakerParams(breakerParams),
 			llmproxy.WithStreamGrace(cfg.StreamGrace),
 			llmproxy.WithStreamDrainLimit(cfg.StreamDrainLimit),
+			llmproxy.WithEgressPolicy(egressPolicy),
 		},
 		budgetOpts...,
 	)
@@ -482,6 +531,24 @@ func buildGovernance(
 	return govStore, calc, nil
 }
 
+// budgetEnforcementUnwired reports whether this process was CONFIGURED to
+// enforce budgets but could not wire enforcement at startup (issue #304).
+//
+// GATEWAY_NATS_URL being set is the operator's statement that this deployment
+// enforces budgets; a nil govStore is the statement that it does not. When the
+// two disagree the pod is serving /llm with no budget gate and no billing, and
+// it will keep doing so until it is restarted — server.New dials NATS exactly
+// once, and nothing rebuilds govStore afterwards. Callers use this to gate
+// /readyz so the pod drains instead of silently serving unmetered traffic.
+//
+// govStore is a concrete pointer rather than an interface on purpose: the
+// caller's variable is a typed *governance.GovernanceStore, and taking it as
+// an interface here would reintroduce the typed-nil-in-non-nil-interface trap
+// that already produced a /readyz panic once.
+func budgetEnforcementUnwired(cfg config.Config, govStore *governance.GovernanceStore) bool {
+	return cfg.NATSURL != "" && govStore == nil
+}
+
 // budgetDisabledReason returns a human-readable explanation for why enforcement
 // is off (for the startup warning log line).
 func budgetDisabledReason(cfg config.Config, nc server.NATSClient, pool *pgxpool.Pool) string {
@@ -513,20 +580,119 @@ func parseLevel(s string) slog.Level {
 	}
 }
 
-// budgetEnforcementEnabled is the scrapable expvar gauge for budget enforcement
-// status (Fix round-3 #9). Set once at startup; operators can alert on 0.
+// metricBudgetEnforcementEnabled is the name of the budget-enforcement gauge.
+const metricBudgetEnforcementEnabled = "gateway_budget_enforcement_enabled"
+
+// budgetEnforcementEnabled is the budget-enforcement gauge (Fix round-3 #9).
+// It is set once at startup. The gateway serves it on GET /metrics, so an
+// operator can alarm on the value 0.
 //
 //	gateway_budget_enforcement_enabled == 1 → enforcement active
 //	gateway_budget_enforcement_enabled == 0 → enforcement DISABLED (loud startup warning already logged)
-var budgetEnforcementEnabled = expvar.NewInt("gateway_budget_enforcement_enabled")
+//
+// Issue #465: this gauge had NO route for its whole life. expvar registers
+// /debug/vars on http.DefaultServeMux, and this process never serves that mux.
+// The alarm this gauge exists for could not be built. That mattered most for
+// issue #304: a gateway that starts while NATS is unreachable enforces nothing
+// for the life of the process, and this gauge is the control that reports it.
+var budgetEnforcementEnabled = expvar.NewInt(metricBudgetEnforcementEnabled)
 
-// recordBudgetEnforcementEnabled sets the expvar gauge. Called once at startup
+// recordBudgetEnforcementEnabled sets the gauge. Called once at startup
 // after governance assembly succeeds or fails.
 func recordBudgetEnforcementEnabled(enabled bool) {
 	if enabled {
 		budgetEnforcementEnabled.Set(1)
 	} else {
 		budgetEnforcementEnabled.Set(0)
+	}
+}
+
+// gatewayMetric is one variable that GET /metrics serves.
+type gatewayMetric struct {
+	name string
+	// kind is the Prometheus metric type: "gauge" or "counter".
+	kind string
+	help string
+	v    expvar.Var
+}
+
+// gatewayMetrics lists every variable GET /metrics serves, in a fixed order.
+//
+// The list is an ALLOWLIST, and that is the answer to the second half of issue
+// #465: /debug/vars must NOT be public. expvar.Handler() writes every variable
+// the process publishes, which includes `cmdline` (the process arguments) and
+// `memstats`, plus anything any dependency publishes. This route writes the
+// gateway's own controls and nothing else.
+//
+// The listener that serves this route also serves /llm. In the shipped
+// deployment that listener is a ClusterIP Service with mutual TLS, and the
+// edge proxies only the /llm paths, so /metrics is reachable from inside the
+// cluster and not from a tenant.
+//
+// The model-map names come from llmproxy.ModelMapMetricNames, so the package
+// that publishes a counter also states its name. Nothing here copies a name
+// from another file.
+func gatewayMetrics() []gatewayMetric {
+	metrics := []gatewayMetric{{
+		name: metricBudgetEnforcementEnabled,
+		kind: "gauge",
+		help: "1 when this gateway enforces budgets. 0 when enforcement is off.",
+		v:    budgetEnforcementEnabled,
+	}}
+	for _, name := range llmproxy.ModelMapMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "counter",
+			help: "Count of requests the model map refused because it could not read the project model set.",
+			v:    expvar.Get(name),
+		})
+	}
+	// Issue #515: the budget-outage controls. A row that the recovery pass owns
+	// holds back the durable spend for its scope, and before these two lines
+	// nothing outside the log said so. The name and the value both come from
+	// the failmode package, which publishes them.
+	metrics = append(metrics,
+		gatewayMetric{
+			name: failmode.MetricBudgetOutageRows,
+			kind: "gauge",
+			help: "Accumulator rows the gateway recovery pass still owns. Above zero, the durable spend for those scopes does not advance.",
+			v:    expvar.Get(failmode.MetricBudgetOutageRows),
+		},
+		gatewayMetric{
+			name: failmode.MetricBudgetRecoveryFailuresTotal,
+			kind: "counter",
+			help: "Count of scopes a recovery pass could not reconcile. The rows stay held until a later pass succeeds.",
+			v:    expvar.Get(failmode.MetricBudgetRecoveryFailuresTotal),
+		},
+	)
+	return metrics
+}
+
+// makeMetricsHandler answers GET /metrics with the given variables, in the
+// Prometheus text exposition format. That format is what an operator's alarm
+// reads, and the gateway published no metrics route before issue #465.
+//
+// A variable that is not published writes an `# UNPUBLISHED` comment line. It
+// does not write nothing: a name that silently disappears from a scrape looks
+// the same as a control that reports zero, and this repository has lost several
+// controls that way. TestGatewayMetrics_EveryListedMetricIsPublished fails
+// before an operator ever sees such a line.
+func makeMetricsHandler(metrics []gatewayMetric) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var b strings.Builder
+		for _, m := range metrics {
+			if m.v == nil {
+				b.WriteString("# UNPUBLISHED " + m.name + "\n")
+				continue
+			}
+			b.WriteString("# HELP " + m.name + " " + m.help + "\n")
+			b.WriteString("# TYPE " + m.name + " " + m.kind + "\n")
+			b.WriteString(m.name + " " + m.v.String() + "\n")
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, b.String())
 	}
 }
 
@@ -589,8 +755,23 @@ func livenessHandler(w http.ResponseWriter, _ *http.Request) {
 // NATS circuit breaker (govStore); a nil p means budget enforcement is
 // disabled, so readiness is unconditional. This is the handler that used to
 // be mounted at /healthz.
-func makeReadyzHandler(p pinger) http.HandlerFunc {
+//
+// enforcementUnwired (issue #304) is the one case a nil p must NOT be read as
+// "deliberately disabled": NATS was configured, the connect failed at boot,
+// and nothing re-wires enforcement for the life of the process. It is decided
+// once at startup because that is exactly how long it stays true — a nil
+// govStore never becomes non-nil. Checked BEFORE the p == nil guard because
+// the disabled path passes a typed-nil *GovernanceStore, which is non-nil as
+// an interface and whose Ping is nil-receiver safe and returns success.
+func makeReadyzHandler(p pinger, enforcementUnwired bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if enforcementUnwired {
+			writeHealthJSON(w, http.StatusServiceUnavailable, healthStatus{
+				Status: "not_ready",
+				Checks: map[string]string{"budget_enforcement": "unwired"},
+			})
+			return
+		}
 		if p == nil {
 			writeHealthJSON(w, http.StatusOK, healthStatus{Status: "ready"})
 			return

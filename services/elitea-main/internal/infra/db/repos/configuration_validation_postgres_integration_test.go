@@ -16,6 +16,7 @@ import (
 	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/dbtest"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenant"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
@@ -27,8 +28,7 @@ import (
 const postgresIntegrationDatabaseURL = "ELITEA_TEST_DATABASE_URL"
 
 func TestTenantBoundariesRejectMissingLegacySchema(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := pool.Exec(ctx, `INSERT INTO centry.project (id) VALUES (2)`); err != nil {
@@ -65,8 +65,7 @@ func TestTenantBoundariesRejectMissingLegacySchema(t *testing.T) {
 }
 
 func TestTenantMigrationPreservesLegacyConfigurationDelete(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	digest := make([]byte, 32)
@@ -102,8 +101,7 @@ WHERE revision_id = 'legacy-delete-shadow'`).Scan(&configurationID); err != nil 
 // service-integration test. It intentionally does not claim full transport
 // E2E, penetration, performance, or soak coverage.
 func TestPostgresServiceBackedCancellationControlPlane(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	t.Run("canonical cancellation is durable idempotent and recoverable cross pod", func(t *testing.T) {
 		frame := postgresValidationFrame(t, "durability")
@@ -223,8 +221,7 @@ WHERE execution_id = $1 AND generation = $2`, frame.Fence.ExecutionID, int64(fra
 // real PostgreSQL state owner: PREPARING is recoverable, while a durably
 // authorized invocation is recovery-only and cannot receive SDK inputs again.
 func TestPostgresServiceBackedInvocationFence(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	frame := postgresValidationFrame(t, "invocation-fence")
 	seed := seedPostgresValidationExecution(t, pool, frame, runtimedomain.DesiredRunning)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -313,8 +310,7 @@ WHERE execution_id = $1 AND generation = $2`,
 }
 
 func TestPostgresServiceBackedDatabaseDeadlineOutputLinearization(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	frame := postgresValidationFrame(t, "database-deadline-output")
 	seed := seedPostgresValidationExecution(t, pool, frame, runtimedomain.DesiredRunning)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -381,8 +377,7 @@ WHERE outbox_id = $1`, seed.outboxID); err != nil {
 // decoding; this gate proves that phase one dispatches only admitted generation
 // one rows and can walk them in bounded oldest-first order.
 func TestPostgresServiceBackedOutboxReconciliation(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	assertPostgresOutboxDispatchIndex(t, pool)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -458,8 +453,7 @@ WHERE outbox_id = 'outbox-order-published'`); err != nil {
 }
 
 func TestPostgresServiceBackedNoAuthorityRetirementRacesAndExclusion(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	assertPostgresRetirementIndexes(t, pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -670,16 +664,123 @@ type postgresOutboxOrderingFixture struct {
 	published   bool
 }
 
-func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
+// postgresIntegrationDeadline bounds each stage of the shared PostgreSQL
+// harness: connect and CREATE DATABASE, and the drop at cleanup.
+//
+// It used to be 20 s. Applying the embedded shared and tenant migration set
+// costs about 1.5 s to 3 s on an idle machine, so 20 s looked generous. It is
+// not. A run of this package on a busy machine failed with
+// "apply shared/0073_mcp_tool_registry.sql: timeout: context deadline
+// exceeded". The test was not wrong, and the migration was not hung. The
+// machine was slow. The failure then reads as a broken migration rather than
+// as a slow suite, which is expensive to diagnose (#409 item 2).
+//
+// The migration replay is no longer on this path (#425). The template build
+// pays it one time under its own deadline. What is left here is CREATE
+// DATABASE and DROP DATABASE, which queue behind the same statements from
+// every other package in a parallel run. That queue is server load, not a
+// hang, so the deadline must still sit far from the real cost. A true hang is
+// still bounded: scripts/go/workspace-run.sh caps the whole package.
+const postgresIntegrationDeadline = 120 * time.Second
+
+// postgresIntegrationTenant is the legacy project whose tenant history the
+// seed and the template cover.
+const postgresIntegrationTenant int64 = 1
+
+// postgresIntegrationTemplate names the template database that
+// newMigratedPostgresIntegrationPool copies. TestMain sets it.
+var postgresIntegrationTemplate string
+
+// postgresIntegrationURL resolves the PostgreSQL server for this package.
+func postgresIntegrationURL() string {
 	databaseURL := os.Getenv(postgresIntegrationDatabaseURL)
 	if databaseURL == "" && os.Getenv("ELITEA_TEST_USE_SERVICE_DATABASE_URL") == "1" {
 		databaseURL = os.Getenv("DATABASE_URL")
 	}
+	return databaseURL
+}
+
+// TestMain builds one template database for the whole package.
+//
+// Before #425 each of the 78 migrated tests replayed the ledgered migration
+// corpus into its own database. One replay costs about 1.5 s to 3 s, so the
+// replays were most of the package duration and pushed it past the 600 s Go
+// default timeout. The template holds the same schema, and every test copies
+// it with CREATE DATABASE ... TEMPLATE.
+//
+// The template is built by the same migrate.Runner that a deployment uses, and
+// its name carries the SHA-256 checksum of every migration. A new migration
+// makes a new name, so a stale template can never be selected.
+func TestMain(m *testing.M) {
+	databaseURL := postgresIntegrationURL()
+	if databaseURL == "" {
+		// Every PostgreSQL test in this package skips itself. Run the rest.
+		os.Exit(m.Run())
+	}
+
+	ctx, cancel := dbtest.BuildContext(context.Background())
+	adminConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "parse %s: %v\n", postgresIntegrationDatabaseURL, err)
+		cancel()
+		os.Exit(1)
+	}
+	adminConfig.MaxConns = 4
+	adminPool, err := pgxpool.NewWithConfig(ctx, adminConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open PostgreSQL admin pool: %v\n", err)
+		cancel()
+		os.Exit(1)
+	}
+	templateName, err := dbtest.EnsureTemplate(ctx, adminPool, postgresIntegrationSpec())
+	adminPool.Close()
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build PostgreSQL integration template: %v\n", err)
+		os.Exit(1)
+	}
+	postgresIntegrationTemplate = templateName
+	os.Exit(m.Run())
+}
+
+// postgresIntegrationSpec describes the migrated schema that the template
+// holds. The migration corpus is the embedded ledgered corpus, never a dump.
+func postgresIntegrationSpec() dbtest.Spec {
+	return dbtest.Spec{
+		Files:   platformmigrations.Files,
+		Seed:    postgresIntegrationSeedSQL,
+		Tenants: []int64{postgresIntegrationTenant},
+	}
+}
+
+// newMigratedPostgresIntegrationPool returns a private database that already
+// holds the seed and the full ledgered migration history.
+func newMigratedPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	if postgresIntegrationURL() == "" {
+		t.Skipf("set %s to run the PostgreSQL 16-18 service-integration test", postgresIntegrationDatabaseURL)
+	}
+	if postgresIntegrationTemplate == "" {
+		t.Fatalf("TestMain did not build the PostgreSQL integration template")
+	}
+	pool := newPostgresIntegrationPoolFromTemplate(t, postgresIntegrationTemplate)
+	verifyPostgresIntegrationSchema(t, pool)
+	return pool
+}
+
+// newPostgresIntegrationPool returns a private empty database.
+func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	return newPostgresIntegrationPoolFromTemplate(t, "")
+}
+
+func newPostgresIntegrationPoolFromTemplate(t *testing.T, templateName string) *pgxpool.Pool {
+	t.Helper()
+	databaseURL := postgresIntegrationURL()
 	if databaseURL == "" {
 		t.Skipf("set %s to run the PostgreSQL 16-18 service-integration test", postgresIntegrationDatabaseURL)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), postgresIntegrationDeadline)
 	defer cancel()
 
 	adminConfig, err := pgxpool.ParseConfig(databaseURL)
@@ -698,7 +799,12 @@ func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 
 	databaseName := fmt.Sprintf("elitea_it_%d_%d", os.Getpid(), time.Now().UnixNano())
 	quotedDatabase := pgx.Identifier{databaseName}.Sanitize()
-	if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+quotedDatabase); err != nil {
+	if templateName == "" {
+		if _, err := adminPool.Exec(ctx, "CREATE DATABASE "+quotedDatabase); err != nil {
+			adminPool.Close()
+			t.Fatalf("create isolated PostgreSQL integration database: %v", err)
+		}
+	} else if err := dbtest.CreateFromTemplate(ctx, adminPool, templateName, databaseName); err != nil {
 		adminPool.Close()
 		t.Fatalf("create isolated PostgreSQL integration database: %v", err)
 	}
@@ -735,7 +841,7 @@ func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 
 	t.Cleanup(func() {
 		pool.Close()
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), postgresIntegrationDeadline)
 		defer dropCancel()
 		if _, err := adminPool.Exec(dropCtx, "DROP DATABASE "+quotedDatabase+" WITH (FORCE)"); err != nil {
 			t.Errorf("drop isolated PostgreSQL integration database: %v", err)
@@ -745,11 +851,11 @@ func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func applyPostgresIntegrationMigrations(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if _, err := pool.Exec(ctx, `
+// postgresIntegrationSeedSQL is the minimum legacy project schema. It runs
+// before the ledgered migrations, because the tenant history alters these
+// legacy tables. It is part of the template fingerprint, so an edit here makes
+// a new template.
+const postgresIntegrationSeedSQL = `
 CREATE SCHEMA centry;
 CREATE TABLE centry.project (
     id INTEGER PRIMARY KEY,
@@ -825,17 +931,21 @@ INSERT INTO p_1.configuration (
     'integration_fixture', 'openapi', 'credentials', '{}'::jsonb, '{}'::jsonb,
     false, false, NULL, 'user', 1
 );
-SELECT setval(pg_get_serial_sequence('p_1.configuration', 'id'), (SELECT MAX(id) FROM p_1.configuration));`); err != nil {
-		t.Fatalf("preseed minimum legacy project schemas: %v", err)
-	}
+SELECT setval(pg_get_serial_sequence('p_1.configuration', 'id'), (SELECT MAX(id) FROM p_1.configuration));`
+
+// verifyPostgresIntegrationSchema proves that the database this test received
+// carries the ledgered migration history, not a copy that drifted from it.
+//
+// It runs on every copied database, so a template that does not match the
+// corpus fails the first test that uses it. CheckHead compares the recorded
+// SHA-256 of every migration against the embedded corpus. The column check
+// then proves that the tenant history really ran against the legacy table.
+func verifyPostgresIntegrationSchema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), postgresIntegrationDeadline)
+	defer cancel()
 
 	runner := migrate.New(pool, platformmigrations.Files)
-	if err := runner.ApplyShared(ctx); err != nil {
-		t.Fatalf("apply embedded shared migrations: %v", err)
-	}
-	if err := runner.ApplyTenant(ctx, 1); err != nil {
-		t.Fatalf("apply embedded tenant migrations: %v", err)
-	}
 	if err := runner.CheckHead(ctx, migrate.ScopeShared, "platform"); err != nil {
 		t.Fatalf("verify shared migration head: %v", err)
 	}

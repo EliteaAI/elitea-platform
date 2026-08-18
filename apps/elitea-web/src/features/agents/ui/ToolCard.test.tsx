@@ -253,6 +253,25 @@ describe('ToolCard', () => {
     expect(onChangeVariable).toHaveBeenCalledWith('TOKEN', 'abc!');
   });
 
+  it('WITHHOLDS the whole variables control when no caller passes the variables prop, even for a tool that carries variables', () => {
+    // #248: nothing on this backend can store per-tool variables, so the
+    // control must not be offered at all — hidden, not disabled (the legacy
+    // baseline omits this toggle rather than greying it out). The tool below
+    // DOES carry variables, so a gate keyed only on `tool.variables` (the
+    // shape this component shipped with) would still render the toggle.
+    const props = baseProps({ tool: { id: 't', type: 'custom', settings: {}, variables: [{ name: 'TOKEN', value: 'abc' }] } });
+    const { variables: _withheld, ...withoutVariables } = props;
+    const { queryByText, queryByTestId, queryByLabelText } = renderWithTheme(<ToolCard {...withoutVariables} />);
+
+    expect(queryByText('Show variables')).not.toBeInTheDocument();
+    expect(queryByText('Hide variables')).not.toBeInTheDocument();
+    // The panel itself, not just its toggle: `AgentVariables` renders the
+    // editable field, and an assertion on the toggle alone would pass against
+    // a card that still rendered the inputs underneath it.
+    expect(queryByTestId('agent-variables')).not.toBeInTheDocument();
+    expect(queryByLabelText('TOKEN')).not.toBeInTheDocument();
+  });
+
   it('shows the duplicate warning tooltip and duplicate styling only when isDuplicate is true', () => {
     const { getByTestId } = renderWithTheme(
       <ToolCard

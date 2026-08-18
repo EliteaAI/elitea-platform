@@ -216,3 +216,30 @@ func TestSelfLLMOriginsParsing(t *testing.T) {
 		t.Fatalf("SelfLLMOrigins = %#v with unset env, want nil", got)
 	}
 }
+
+// TestPublicProjectID covers the shared-project scope switch (issue #316).
+// Unset must stay unset: the gateway then reads the caller's project only, and
+// no deployment changes behaviour when it upgrades.
+func TestPublicProjectID(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{"unset disables the shared scope", "", ""},
+		{"a positive id arms it", "1", "1"},
+		{"any positive id is accepted", "42", "42"},
+		{"zero is treated as unset", "0", ""},
+		{"a negative id is rejected", "-1", ""},
+		{"a non-numeric id is rejected", "abc", ""},
+		{"an injection attempt is rejected", "1; DROP TABLE", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ELITEA_AI_PROJECT_ID", tc.env)
+			if got := FromEnv().PublicProjectIDString(); got != tc.want {
+				t.Errorf("PublicProjectIDString() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

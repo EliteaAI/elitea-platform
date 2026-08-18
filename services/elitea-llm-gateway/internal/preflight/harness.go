@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -488,7 +489,8 @@ func fakeAssign(dest, v any) error {
 // Column order MUST match failmode.Store.ReadSnapshot's Scan call:
 //
 //	is_unlimited, hard_limit_nano, accumulated_nano, soft_alert_pct,
-//	nats_fail_mode (*string/NULL), acc_found, age_seconds
+//	nats_fail_mode (*string/NULL), acc_found, age_seconds,
+//	soft_alerts_disabled
 func (d *FakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 	if d.SnapErr != nil {
 		return fakeRow{err: d.SnapErr}
@@ -503,6 +505,7 @@ func (d *FakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 		natsFM,
 		snap.Found,
 		snap.Age.Seconds(),
+		snap.SoftAlertsDisabled,
 	}}
 }
 
@@ -516,7 +519,12 @@ func (d *FakeDB) Begin(_ context.Context) (failmode.Tx, error) {
 // fakeNopTx is a no-op failmode.Tx for the reconciler in test harness.
 type fakeNopTx struct{}
 
-func (t *fakeNopTx) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
+func (t *fakeNopTx) QueryRow(_ context.Context, sql string, args ...any) failmode.Row {
+	// Issue #515: the outage-window write claims its event id first.
+	if strings.Contains(sql, "processed_event_ids") {
+		id, _ := args[0].(string)
+		return fakeRow{vals: []any{id}}
+	}
 	return fakeRow{err: errors.New("fakeNopTx: not used")}
 }
 func (t *fakeNopTx) Query(_ context.Context, _ string, _ ...any) (failmode.Rows, error) {

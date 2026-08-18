@@ -29,6 +29,7 @@ import type { SecretRow } from '@/entities/secret';
 import { t } from '@/shared/i18n';
 import { EditSecretInputGridTable } from './EditSecretInputGridTable';
 import { SecretValueCell } from './SecretValueCell';
+import type { SecretPermissions } from '../../lib/secrets/secretPermissions';
 import { tableStyles } from './SecretsTable.styles';
 
 /* ── props ─────────────────────────────────────────────────────────────── */
@@ -39,8 +40,8 @@ export interface SecretRowProps {
   rowModesModel: Record<string, { mode: string; fieldToFocus?: string; ignoreModifications?: boolean }>;
   validationErrors: Record<string, boolean>;
   isShowSecretMap: Record<string, boolean>;
-  /** Whether the current user may reveal/hide plaintext values (`PERMISSIONS.secrets.unsecret`). */
-  canUnsecret: boolean;
+  /** What the caller may do. Every control in this row is gated on it (#402). */
+  permissions: SecretPermissions;
   setRows: React.Dispatch<React.SetStateAction<SecretRow[]>>;
   setRowModesModel: React.Dispatch<React.SetStateAction<Record<string, { mode: string; fieldToFocus?: string; ignoreModifications?: boolean }>>>;
   onValidationChange: (rowId: string, field: string, hasError: boolean) => void;
@@ -62,7 +63,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
   rowModesModel,
   validationErrors,
   isShowSecretMap,
-  canUnsecret,
+  permissions,
   setRows,
   setRowModesModel,
   onValidationChange,
@@ -72,6 +73,11 @@ export const SecretRowComponent = memo(function SecretRowComponent({
   const isEditing = rowModesModel[row.id]?.mode === GridRowModes.Edit;
   const hasValidationErrors = validationErrors[`${row.id}-name`] || validationErrors[`${row.id}-secretValue`];
   const isVisible = !!isShowSecretMap[row.id];
+  // The menu opens on three items and each is gated (#402). With none of them
+  // available the button would open an empty menu, so it is not rendered.
+  // `.edit` needs `.unsecret` too, for the reason SecretActionsMenu records.
+  const hasRowActions =
+    (permissions.canEdit && permissions.canUnsecret) || permissions.canHide || permissions.canDelete;
   /** Bundled so the cell-render callbacks below stay within the §3.5 hook-deps budget — these two state setters are always used as a pair. */
   const rowMutators = useMemo(() => ({ setRows, setRowModesModel }), [setRows, setRowModesModel]);
 
@@ -130,7 +136,8 @@ export const SecretRowComponent = memo(function SecretRowComponent({
         label={row.secretName}
         value={row.secretValue}
         isVisible={isVisible}
-        canToggleVisibility={canUnsecret}
+        canToggleVisibility={permissions.canUnsecret}
+        canCopy={permissions.canUnsecret}
         onCopy={async () => {
           await actions.onCopySecretValue(row.id)();
         }}
@@ -143,7 +150,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
         }}
       />
     );
-  }, [isEditing, row, params.value, onValidationChange, actions, isVisible, canUnsecret, rowMutators]);
+  }, [isEditing, row, params.value, onValidationChange, actions, isVisible, permissions, rowMutators]);
 
   /* ── actions cell ──────────────────────────────────────────────────── */
 
@@ -176,7 +183,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
 
     return (
       <Box sx={styles.actionsContainer}>
-        {!row.isNew && canUnsecret && (
+        {!row.isNew && permissions.canUnsecret && (
           <IconButton
             size="small"
             color="tertiary"
@@ -194,21 +201,23 @@ export const SecretRowComponent = memo(function SecretRowComponent({
             {isVisible ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
           </IconButton>
         )}
-        <IconButton
-          size="small"
-          color="tertiary"
-          onClick={(e) => {
-            e.stopPropagation();
-            actions.onActionsMenuClick(row.id)(e);
-          }}
-          sx={styles.actionButton}
-          aria-label={t('entities.secret.actions.moreActions', 'More actions')}
-        >
-          <DotsMenuIcon fontSize="small" />
-        </IconButton>
+        {hasRowActions && (
+          <IconButton
+            size="small"
+            color="tertiary"
+            onClick={(e) => {
+              e.stopPropagation();
+              actions.onActionsMenuClick(row.id)(e);
+            }}
+            sx={styles.actionButton}
+            aria-label={t('entities.secret.actions.moreActions', 'More actions')}
+          >
+            <DotsMenuIcon fontSize="small" />
+          </IconButton>
+        )}
       </Box>
     );
-  }, [isEditing, row, hasValidationErrors, styles, actions, isVisible, canUnsecret]);
+  }, [isEditing, row, hasValidationErrors, styles, actions, isVisible, permissions, hasRowActions]);
 
   /* ── field-scoped render ──────────────────────────────────────────── */
 

@@ -40,7 +40,9 @@ export interface UseCodePreviewResult {
 /**
  * @param model - The selected model whose data drives the generated code example.
  * @param projectId - Currently-selected project id — threaded down from the
- *   route. Only its truthiness is used (mirrors the previous `!project` gate).
+ *   route. This is the BILLING project: the samples send it as `X-Project-Id`,
+ *   the header the `/llm` edge reads (spec-llm-project-scope §6.1, §9).
+ *   It also gates `baseApiUrl` (mirrors the previous `!project` gate).
  */
 export function useCodePreview(model: Record<string, unknown> | null, projectId: string): UseCodePreviewResult {
   const [selectedLanguage, setSelectedLanguage] = useState<string>(DEFAULT_LANGUAGE);
@@ -69,10 +71,16 @@ export function useCodePreview(model: Record<string, unknown> | null, projectId:
 
   const codeExample = useMemo(() => {
     const modelName = (model?.model_name as string) || (model?.name as string) || 'gpt-4o-mini';
-    const apiUrl = baseApiUrl;
-    const projectId = model?.project_id as string | undefined;
-    return generateCodeExample(selectedLanguage, apiUrl, modelName, authToken, projectId);
-  }, [selectedLanguage, model, baseApiUrl, authToken]);
+    /*
+     * The sample carries `projectId`, the project the user works in — NOT
+     * `model.project_id`. A local `const projectId = model?.project_id` used
+     * to shadow the parameter here, so every sample advertised the project
+     * that owns the model. That is the public project for a shared model,
+     * because the models query passes `includeShared`. See
+     * `spec-llm-project-scope` §9.1.
+     */
+    return generateCodeExample(selectedLanguage, baseApiUrl, modelName, authToken, projectId);
+  }, [selectedLanguage, model, baseApiUrl, authToken, projectId]);
 
   const canvasTitle = useMemo(() => {
     const integrationName = model?.integration_name as string | undefined;

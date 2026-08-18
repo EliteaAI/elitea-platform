@@ -44,9 +44,10 @@ name: CI — Web mutation spot-check
 on:
   schedule:
     - cron: "47 8 * * 3"   # Wednesdays 08:47 UTC
-  push:
-    tags:
-      - "v*"
+  # NO `push: tags: v*` — issue #309, Gate 2; see the note in ci-web.yml. Tags
+  # cut by publish.yml carry `secrets.GITHUB_TOKEN` and start no workflow run,
+  # so the release arm of this suite has never executed. The Wednesday cron and
+  # workflow_dispatch below are what have actually been running it.
   workflow_dispatch:
 
 permissions:

@@ -3,13 +3,11 @@ package runtimecomposition
 import (
 	"context"
 	"errors"
-	"reflect"
+	"maps"
 	"strings"
 	"testing"
 
 	vectorstoreapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/vectorstore"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -46,48 +44,50 @@ func TestCurrentProjectPgvectorDatabaseProvisionerOwnsTrustedBootstrap(t *testin
 	}
 }
 
-func TestCurrentProjectPgvectorMaterialRepositoryUsesRegularProjectVaultOnly(t *testing.T) {
+func TestCurrentProjectPgvectorMaterialRepositoryUsesTheProjectVaultOnly(t *testing.T) {
 	t.Parallel()
 
-	vault := &currentProjectPgvectorVaultStub{
-		regular: map[string]centrysecrets.Secret{
-			vectorstoreapp.ProjectPgvectorPasswordKey: {Value: "project-password"},
-			vectorstoreapp.ProjectPgvectorConnstrKey:  {Value: "project-connection"},
+	secrets := &currentProjectPgvectorSecretsStub{
+		stored: map[string]string{
+			vectorstoreapp.ProjectPgvectorPasswordKey: "project-password",
+			vectorstoreapp.ProjectPgvectorConnstrKey:  "project-connection",
 		},
 	}
-	loader := &currentProjectPgvectorVaultLoaderStub{project: vault}
-	mutator := &currentProjectPgvectorVaultMutatorStub{}
-	repository := newCurrentProjectPgvectorMaterialRepositoryForTest(t, loader, mutator)
+	repository := newCurrentProjectPgvectorMaterialRepositoryForTest(t, secrets)
 
 	material, err := repository.LoadProjectPgvectorMaterial(context.Background(), 73)
 	if err != nil || !material.Complete() || material.Password != "project-password" ||
 		material.ConnectionString != "project-connection" {
 		t.Fatalf("LoadProjectPgvectorMaterial() material=%+v error=%v", material, err)
 	}
-	if loader.projectID != 73 || vault.regularLookups != 2 || vault.generalLookups != 0 || loader.adminCalls != 0 {
-		t.Fatalf("vault routing = project %d regular %d general %d admin %d", loader.projectID, vault.regularLookups, vault.generalLookups, loader.adminCalls)
+	// The port is keyed by the vault's own project id form. A read against
+	// another project would open another tenant's vault.
+	if secrets.lookupProjectID != "73" || secrets.lookups != 2 {
+		t.Fatalf("read routing = project %q lookups %d", secrets.lookupProjectID, secrets.lookups)
 	}
 
-	if err := repository.StoreProjectPgvectorMaterial(context.Background(), 73, "project-password", "project-connection"); err != nil {
+	if err := repository.StoreProjectPgvectorMaterial(context.Background(), 73, "new-password", "new-connection"); err != nil {
 		t.Fatal(err)
 	}
-	want := []centrysecrets.Mutation{
-		{Collection: centrysecrets.RegularSecrets, Name: vectorstoreapp.ProjectPgvectorPasswordKey, Value: "project-password"},
-		{Collection: centrysecrets.RegularSecrets, Name: vectorstoreapp.ProjectPgvectorConnstrKey, Value: "project-connection"},
+	// ONE rewrite carries both values. Two writes would leave a password with
+	// no connection string when the second one fails.
+	want := map[string]string{
+		vectorstoreapp.ProjectPgvectorPasswordKey: "new-password",
+		vectorstoreapp.ProjectPgvectorConnstrKey:  "new-connection",
 	}
-	if mutator.calls != 1 || mutator.projectID != 73 || !reflect.DeepEqual(mutator.mutations, want) {
-		t.Fatalf("atomic mutation = calls %d project %d values %#v", mutator.calls, mutator.projectID, mutator.mutations)
+	if secrets.writes != 1 || secrets.writeProjectID != "73" || !maps.Equal(secrets.written, want) {
+		t.Fatalf("atomic write = writes %d project %q values %#v",
+			secrets.writes, secrets.writeProjectID, secrets.written)
 	}
 }
 
 func TestCurrentProjectPgvectorMaterialRepositoryHandlesMissingAndRedactsFailures(t *testing.T) {
 	t.Parallel()
 
-	t.Run("missing regular password", func(t *testing.T) {
+	t.Run("missing password and connection string", func(t *testing.T) {
 		repository := newCurrentProjectPgvectorMaterialRepositoryForTest(
 			t,
-			&currentProjectPgvectorVaultLoaderStub{project: &currentProjectPgvectorVaultStub{regular: map[string]centrysecrets.Secret{}}},
-			&currentProjectPgvectorVaultMutatorStub{},
+			&currentProjectPgvectorSecretsStub{stored: map[string]string{}},
 		)
 		material, err := repository.LoadProjectPgvectorMaterial(context.Background(), 1)
 		if err != nil || material.PasswordFound || material.ConnectionStringFound {
@@ -95,11 +95,10 @@ func TestCurrentProjectPgvectorMaterialRepositoryHandlesMissingAndRedactsFailure
 		}
 	})
 
-	t.Run("loader failure", func(t *testing.T) {
+	t.Run("read failure", func(t *testing.T) {
 		repository := newCurrentProjectPgvectorMaterialRepositoryForTest(
 			t,
-			&currentProjectPgvectorVaultLoaderStub{err: errors.New("vault-secret-canary")},
-			&currentProjectPgvectorVaultMutatorStub{},
+			&currentProjectPgvectorSecretsStub{lookupErr: errors.New("vault-secret-canary")},
 		)
 		_, err := repository.LoadProjectPgvectorMaterial(context.Background(), 1)
 		if !errors.Is(err, vectorstoreapp.ErrProjectPgvectorVault) || strings.Contains(err.Error(), "vault-secret-canary") {
@@ -107,11 +106,10 @@ func TestCurrentProjectPgvectorMaterialRepositoryHandlesMissingAndRedactsFailure
 		}
 	})
 
-	t.Run("mutation failure", func(t *testing.T) {
+	t.Run("write failure", func(t *testing.T) {
 		repository := newCurrentProjectPgvectorMaterialRepositoryForTest(
 			t,
-			&currentProjectPgvectorVaultLoaderStub{project: &currentProjectPgvectorVaultStub{}},
-			&currentProjectPgvectorVaultMutatorStub{err: errors.New("vault-secret-canary")},
+			&currentProjectPgvectorSecretsStub{storeErr: errors.New("vault-secret-canary")},
 		)
 		err := repository.StoreProjectPgvectorMaterial(context.Background(), 1, "password", "connection")
 		if !errors.Is(err, vectorstoreapp.ErrProjectPgvectorVault) || strings.Contains(err.Error(), "vault-secret-canary") {
@@ -123,9 +121,10 @@ func TestCurrentProjectPgvectorMaterialRepositoryHandlesMissingAndRedactsFailure
 func TestCurrentProjectPgvectorMaterialRepositoryValidatesAndPreservesCancellation(t *testing.T) {
 	t.Parallel()
 
-	loader := &currentProjectPgvectorVaultLoaderStub{project: &currentProjectPgvectorVaultStub{}}
-	mutator := &currentProjectPgvectorVaultMutatorStub{}
-	repository := newCurrentProjectPgvectorMaterialRepositoryForTest(t, loader, mutator)
+	repository := newCurrentProjectPgvectorMaterialRepositoryForTest(
+		t,
+		&currentProjectPgvectorSecretsStub{stored: map[string]string{}},
+	)
 
 	var nilContext context.Context
 	if _, err := repository.LoadProjectPgvectorMaterial(nilContext, 1); !errors.Is(err, vectorstoreapp.ErrInvalidProjectPgvectorRequest) {
@@ -144,82 +143,62 @@ func TestCurrentProjectPgvectorMaterialRepositoryValidatesAndPreservesCancellati
 	}
 }
 
+func TestCurrentProjectPgvectorMaterialRepositoryRequiresItsVaultPort(t *testing.T) {
+	t.Parallel()
+
+	if _, err := newCurrentProjectPgvectorMaterialRepository(nil); err == nil {
+		t.Fatal("a repository with no vault port was accepted")
+	}
+}
+
 func newCurrentProjectPgvectorMaterialRepositoryForTest(
 	t *testing.T,
-	loader storage.SecretVaultLoader,
-	mutator currentProjectSecretVaultMutator,
+	secrets ProjectVaultSecrets,
 ) *currentProjectPgvectorMaterialRepository {
 	t.Helper()
-	repository, err := newCurrentProjectPgvectorMaterialRepository(loader, mutator)
+	repository, err := newCurrentProjectPgvectorMaterialRepository(secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return repository
 }
 
-type currentProjectPgvectorVaultLoaderStub struct {
-	project    storage.SecretVault
-	err        error
-	projectID  int64
-	adminCalls int
+// currentProjectPgvectorSecretsStub stands in for internal/api/v2/secrets.Handler.
+type currentProjectPgvectorSecretsStub struct {
+	stored          map[string]string
+	lookupErr       error
+	storeErr        error
+	lookupProjectID string
+	lookups         int
+	written         map[string]string
+	writeProjectID  string
+	writes          int
 }
 
-func (s *currentProjectPgvectorVaultLoaderStub) LoadProjectVault(_ context.Context, projectID int64) (storage.SecretVault, error) {
-	s.projectID = projectID
-	return s.project, s.err
-}
-
-func (s *currentProjectPgvectorVaultLoaderStub) LoadAdminVault(context.Context) (storage.SecretVault, error) {
-	s.adminCalls++
-	return nil, errors.New("admin vault must not be used")
-}
-
-type currentProjectPgvectorVaultStub struct {
-	regular        map[string]centrysecrets.Secret
-	regularLookups int
-	generalLookups int
-}
-
-func (s *currentProjectPgvectorVaultStub) Lookup(string) (centrysecrets.Secret, error) {
-	s.generalLookups++
-	return centrysecrets.Secret{}, errors.New("general lookup must not be used")
-}
-
-func (s *currentProjectPgvectorVaultStub) LookupRegular(name string) (centrysecrets.Secret, error) {
-	s.regularLookups++
-	secret, ok := s.regular[name]
-	if !ok {
-		return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
-	}
-	return secret, nil
-}
-
-func (*currentProjectPgvectorVaultStub) LookupProjectID(string) (centrysecrets.Secret, error) {
-	return centrysecrets.Secret{}, errors.New("project ID lookup must not be used")
-}
-
-func (*currentProjectPgvectorVaultStub) LookupRegularProjectID(string) (centrysecrets.Secret, error) {
-	return centrysecrets.Secret{}, errors.New("project ID lookup must not be used")
-}
-
-func (*currentProjectPgvectorVaultStub) LookupRegularInteger(string) (centrysecrets.Secret, error) {
-	return centrysecrets.Secret{}, errors.New("integer lookup must not be used")
-}
-
-type currentProjectPgvectorVaultMutatorStub struct {
-	projectID int64
-	mutations []centrysecrets.Mutation
-	err       error
-	calls     int
-}
-
-func (s *currentProjectPgvectorVaultMutatorStub) MutateProject(
+func (s *currentProjectPgvectorSecretsStub) LookupProjectSecret(
 	_ context.Context,
-	projectID int64,
-	mutations []centrysecrets.Mutation,
+	projectID string,
+	name string,
+) (string, bool, error) {
+	s.lookups++
+	s.lookupProjectID = projectID
+	if s.lookupErr != nil {
+		return "", false, s.lookupErr
+	}
+	value, ok := s.stored[name]
+	return value, ok, nil
+}
+
+func (s *currentProjectPgvectorSecretsStub) StoreProjectSecrets(
+	_ context.Context,
+	projectID string,
+	values map[string]string,
 ) error {
-	s.calls++
-	s.projectID = projectID
-	s.mutations = append([]centrysecrets.Mutation(nil), mutations...)
-	return s.err
+	s.writes++
+	s.writeProjectID = projectID
+	if s.storeErr != nil {
+		return s.storeErr
+	}
+	s.written = maps.Clone(values)
+	return nil
 }

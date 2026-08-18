@@ -81,6 +81,17 @@ export interface ApplicationToolsProps {
   readonly applicationId?: number | string | undefined;
   /** Renders one `markedDuplicateTools` entry — see the module doc comment for why this is injected rather than a direct `ToolCard` render. */
   readonly renderToolCard: (tool: AgentToolAssociation, index: number, isDuplicate: boolean) => ReactNode;
+  /**
+   * Forwarded to `ToolMenu`, fired after any successful attach. Added when
+   * this component was first actually mounted (#307): `ToolMenu` invalidates
+   * only its OWN `getApplication` cache entry and documents, in its "known
+   * integration gap" paragraph, that a parent owning a SEPARATE `tools` list
+   * "must refetch its own copy on `onToolsChanged` too" — but this component
+   * (that exact parent) rendered `<ToolMenu applicationId={…} />` with no
+   * callback at all, so an attach could never reach the `tools` prop it
+   * renders from. The tool appeared only after a manual page reload.
+   */
+  readonly onToolsChanged?: (() => void) | undefined;
   readonly disabled?: boolean | undefined;
   readonly title?: string | undefined;
   readonly hidePythonSandbox?: boolean | undefined;
@@ -99,6 +110,7 @@ export function ApplicationTools({
   onInternalToolsChange,
   applicationId,
   renderToolCard,
+  onToolsChanged,
   disabled,
   title = 'Tools',
   hidePythonSandbox = false,
@@ -178,7 +190,10 @@ export function ApplicationTools({
             <Box sx={containerSx}>
               {!disabled && (
                 <Box sx={toolMenuWrapperSx}>
-                  <ToolMenu applicationId={applicationId} />
+                  <ToolMenu
+                    applicationId={applicationId}
+                    onToolsChanged={onToolsChanged}
+                  />
                 </Box>
               )}
 

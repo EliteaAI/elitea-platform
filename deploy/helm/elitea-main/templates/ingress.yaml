@@ -30,6 +30,21 @@ spec:
         - path:
             type: {{ .Values.ingress.pathType }}
             value: {{ .Values.ingress.path }}
+      # Remove client-supplied identity headers before the request reaches
+      # elitea-main (#326). tryTrustedProxyHeaders in
+      # internal/api/middleware/auth.go accepts X-Auth-Type + X-Auth-Id as a
+      # finished identity from any source inside the configured
+      # trusted_proxy_cidrs — which in a cluster is the pod network the Gateway
+      # itself sits on — so a client that can set the header picks its own user.
+      # RequestHeaderModifier acts on the REQUEST going in; it does not affect
+      # headers an authenticating edge adds afterwards.
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove:
+              {{- range .Values.ingress.stripIdentityHeaders }}
+              - {{ . | quote }}
+              {{- end }}
       backendRefs:
         - name: {{ include "elitea-main.fullname" . }}
           port: {{ .Values.service.port }}

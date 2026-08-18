@@ -17,9 +17,23 @@ on:
       # either side.
       - "deploy/helm/elitea-main/**"
       - "services/elitea-llm-gateway/scripts/env-drift-check.sh"
+      # The vet and test steps below run scripts/go/workspace-run.sh. A change
+      # to that script, or to the Taskfile that calls it, must run this
+      # workflow. A gate that does not trigger on the file it guards is the
+      # same false green in another costume (#409).
+      - "scripts/go/**"
+      - "scripts/coverage/**"
+      - "Taskfile.yml"
   push:
     branches:
       - main
+      # The release staging branch (#518). Pull requests merge here first,
+      # and this branch merges into main later, so a push arm that names
+      # only `main` cannot guard the tree that becomes main. The name is
+      # held once in .github/staging-branch.txt, and
+      # scripts/ci/check_workflow_branch_coverage.py fails when a workflow
+      # that names `main` here does not also name that branch.
+      - claude/issue-248-c5b380
     paths:
       - "services/elitea-main/**"
       - "services/elitea-scheduler/**"
@@ -31,6 +45,13 @@ on:
       - ".github/workflows/ci-go.yml"
       - "deploy/helm/elitea-main/**"
       - "services/elitea-llm-gateway/scripts/env-drift-check.sh"
+      # The vet and test steps below run scripts/go/workspace-run.sh. A change
+      # to that script, or to the Taskfile that calls it, must run this
+      # workflow. A gate that does not trigger on the file it guards is the
+      # same false green in another costume (#409).
+      - "scripts/go/**"
+      - "scripts/coverage/**"
+      - "Taskfile.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -77,27 +98,55 @@ jobs:
             services/elitea-main/internal services/elitea-main/cmd
 
   lint:
-    name: Lint (${{ matrix.service }})
+    name: Lint (workspace)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service:
-          - services/elitea-main
-          - services/elitea-scheduler
+    # Issue #427. This job used to carry a hand-written matrix of two modules,
+    # `services/elitea-main` and `services/elitea-scheduler`, while go.work
+    # names nine. gen/go, libs/go/authlib, libs/go/eventslib,
+    # libs/go/observability, libs/go/rpclib, libs/proto/gen/go and tools/uictl
+    # were never linted, and this workflow triggers on `libs/go/**` — so it ran
+    # on their changes and looked at none of them.
+    #
+    # A hand-written matrix cannot report what it left out. The module list is
+    # read from go.work at run time instead, by the same script the vet and
+    # test steps use, and that script prints the Go modules on disk that the
+    # run did NOT cover (services/elitea-llm-gateway, which ci-gateway.yml
+    # lints on its own Go release).
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+          # This job lints nine modules now, so the cache key reads every module
+          # that has a go.sum. tools/uictl has none — it declares no external
+          # dependency. The block below is a literal string, so a comment
+          # inside it would become a path.
           cache-dependency-path: |
             services/elitea-main/go.sum
             services/elitea-scheduler/go.sum
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: latest
-          working-directory: ${{ matrix.service }}
+            gen/go/go.sum
+
+      # golangci-lint-action installs AND runs in one step, and it runs in one
+      # working directory. Nine directories therefore need the binary on its
+      # own. The version is PINNED: `version: latest` made the gate a moving
+      # target, so a new release could red an untouched branch, and the local
+      # run that proves a change can never match what CI will do. Raise this
+      # value deliberately, and read the release notes when you do.
+      - name: Install golangci-lint
+        env:
+          GOLANGCI_LINT_VERSION: v2.9.0
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # The script fails when the binary is absent, so a broken install above
+      # cannot turn into a green "nothing to report" below.
+      - name: golangci-lint (workspace)
+        run: bash scripts/go/workspace-run.sh lint
 
   test:
     name: Test
@@ -111,7 +160,12 @@ jobs:
     # server instance, so a single service container is enough.
     services:
       postgres:
-        image: postgres:16-alpine
+        # pgvector, not plain postgres: the projectprovisioning tests run
+        # CREATE EXTENSION vector, and four other tests skip themselves on a
+        # server without it. Same PG major and same credentials, so the DSN
+        # below is unchanged. A skip guard was rejected deliberately: it would
+        # turn this job green while giving that coverage zero execution.
+        image: pgvector/pgvector:0.8.5-pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -120,6 +174,21 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      # Backs ELITEA_TEST_REDIS_ADDR below (#423). Twelve tests across
+      # internal/transport/redisdispatch, internal/infra/db/repos,
+      # internal/infra/authsvc and internal/infra/redis want a real Redis.
+      # Every one of them skipped itself on every run, so the transport that
+      # carries every worker command had no service-backed coverage at all.
+      # A Redis container costs a few seconds.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
@@ -134,6 +203,24 @@ jobs:
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
 
+      # Three suites need a database with NOTHING in it: they create the
+      # legacy `centry` schema and the `auth_core__*` tables themselves, then
+      # roll back. They cannot share one database, because two of them would
+      # then race on `CREATE SCHEMA centry`, and they cannot use the shared
+      # `postgres` database, because their own emptiness check would skip them
+      # again — the second-order silent skip that hid behind the first (#423).
+      #
+      # `psql -c` on a name this script controls, so no injection surface.
+      - name: Create the isolated test databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          for database in elitea_legacy_rbac_test elitea_projects_test elitea_social_authors_test; do
+            psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+              -c "CREATE DATABASE ${database}"
+          done
+
       - name: Verify generated OpenAPI server is current
         run: |
           cd services/elitea-main
@@ -141,14 +228,21 @@ jobs:
             --config api/openapi/oapi-codegen.yaml api/openapi/v2.yaml
           git diff --exit-code -- internal/api/generated/api.gen.go
 
-      # go.work wildcards must resolve within a module root, so `./services/...`
-      # fails with "directory prefix does not contain modules". Iterate the real
-      # module directories reported by `go list -m` instead.
+      # The response SHAPE each listed handler writes, against what the SPA
+      # reads. It parses Go source and starts no server, so it costs a second.
+      #
+      # It ran in no workflow until #428. That mattered twice over: the script
+      # also turned every unreadable assertion into a warning and exited 0, so
+      # even a manual run reported success after measuring nothing. It now fails
+      # on a skipped assertion and prints how many of the 17 ran. #424 tracks the
+      # other gates that still have no caller.
+      - name: Static API contract (handler response shapes)
+        run: bash services/elitea-main/scripts/validate_contract_static.sh
+
+      # One aggregation for CI and for `task vet`. The inline loop that used to
+      # live here reported the status of its LAST module only (#409).
       - name: Go vet (workspace)
-        run: |
-          for mod in $(go list -m -f '{{.Dir}}'); do
-            (cd "$mod" && go vet ./...)
-          done
+        run: bash scripts/go/workspace-run.sh vet
 
       # Emulator stack for internal/infra/storage/conformance (S4). --wait
       # blocks until every service's healthcheck passes (see the compose
@@ -168,33 +262,103 @@ jobs:
           AZURE_STORAGE_ENDPOINT: "http://127.0.0.1:10000/devstoreaccount1"
           GCS_ENDPOINT: "http://127.0.0.1:4443/storage/v1/"
           ELITEA_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+
+          # ---- #423: the variables no workflow used to set -----------------
+          #
+          # Each name below was a guard that called t.Skip, so `go test`
+          # compiled the suite, ran nothing, and printed `ok`. The skip ledger
+          # at the end of workspace-run.sh now names every remaining skip, and
+          # ELITEA_REQUIRE_DECLARED_SKIPS below turns an undeclared one into a
+          # failure.
+
+          # An ADMIN DSN, not a test database: identityrepo, authsvc and
+          # api/v2/auth each run CREATE DATABASE and work in their own.
+          ELITEA_AUTH_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+
+          # One empty database each — see the creation step above.
+          ELITEA_LEGACY_RBAC_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/elitea_legacy_rbac_test?sslmode=disable"
+          ELITEA_PROJECTS_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/elitea_projects_test?sslmode=disable"
+          ELITEA_SOCIAL_AUTHORS_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/elitea_social_authors_test?sslmode=disable"
+
+          # The legacy-RBAC and prompt-context guards each accept a "require"
+          # flag that turns their own skips into failures. With the databases
+          # above provisioned, a skip here means the provisioning broke, and
+          # that must read as a failure rather than as silence.
+          ELITEA_REQUIRE_LEGACY_RBAC_POSTGRES_TEST: "true"
+          ELITEA_REQUIRE_PROMPT_CONTEXT_POSTGRES_TEST: "true"
+
+          # The Redis service above.
+          ELITEA_TEST_REDIS_ADDR: "localhost:6379"
+
+          # Opt-in real-service reliability tests. Each needs only the
+          # PostgreSQL and Redis services this job already runs. Measured
+          # locally: backlog 19 s, visibility repair 41 s, three Redis
+          # capacity rounds under 2 s.
+          ELITEA_RUNTIME_POSTGRES_RELIABILITY_TEST: "1"
+          ELITEA_RUNTIME_VISIBILITY_REPAIR_TEST: "1"
+          ELITEA_RUNTIME_REDIS_RELIABILITY_ROUNDS: "3"
+
+          # tests/system/index_v2_preflight_binary_system_test.go starts its
+          # own PostgreSQL and TLS Redis containers and builds the shipped
+          # binaries, so it needs no service from this job. It is the only one
+          # of the nine tests/system files that CI can run; the rest want a
+          # bootstrapped Centry compose profile or the Python SDK, and
+          # scripts/go/declared-skips.txt names each with its reason.
+          ELITEA_INDEX_V2_PREFLIGHT_SYSTEM_TEST: "1"
+
+          # A skip that nothing declares FAILS this job. Locally the ledger
+          # only reports, so a developer with no PostgreSQL or Redis can still
+          # run `task test`. Same shape as CONTRACT_REQUIRE_PARITY.
+          ELITEA_REQUIRE_DECLARED_SKIPS: "1"
+        # One aggregation for CI and for `task test`. The inline loop that used
+        # to live here reported the status of its LAST module, and it ended
+        # each subshell with `[ -f coverage.out ] && strip-generated.sh`, which
+        # could own the status of a failed `go test` (#409). The script runs
+        # every module, records every status, names every failed module, and
+        # exits non-zero if any module failed. It also names the modules that
+        # this run did NOT cover, so a green step cannot be read as
+        # "the whole repository was tested".
+        run: bash scripts/go/workspace-run.sh coverage --race
+
+      # Split out of the step above on purpose. Two different suites in one
+      # step give one step name for two different failures, and a step name
+      # that does not match the thing that failed costs real diagnosis time.
+      #
+      # `python3 -m unittest discover` exits 0 when it discovers NOTHING. A
+      # renamed directory or a changed pattern would therefore turn this gate
+      # into a green no-op. The count is asserted first (#409).
+      - name: Run index reliability tests (Python)
         run: |
-          root="$PWD"
-          for mod in $(go list -m -f '{{.Dir}}'); do
-            (
-              cd "$mod" && go test -race -count=1 -coverprofile=coverage.out ./...
-              # Generated code is excluded from the profile, not from the test
-              # run: oapi-codegen's internal/api/generated and sqlc's
-              # internal/db/sqlcgen are ~3.4k instrumented blocks nobody writes
-              # tests for, and leaving them in makes the number move on every
-              # regeneration for reasons unrelated to the tests. Their contract
-              # is enforced by the codegen-freshness and conformance gates.
-              [ -f coverage.out ] && "$root/scripts/coverage/strip-generated.sh" coverage.out
-            )
-          done
-          python3 -m unittest discover \
-            -s services/elitea-main/tests/reliability/index_5681 \
-            -p 'test_*.py' -v
+          python3 - <<'PY'
+          import sys, unittest
+
+          start = "services/elitea-main/tests/reliability/index_5681"
+          suite = unittest.defaultTestLoader.discover(start, pattern="test_*.py", top_level_dir=start)
+          count = suite.countTestCases()
+          print(f"discovered {count} test(s) in {start}")
+          if count == 0:
+              sys.exit(f"no test discovered in {start}; the gate would pass without running anything")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY
 
       - name: Stop storage emulators
         if: always()
         run: docker compose -f deploy/docker-compose.storage-test.yml down -v
 
+      # `path: coverage.out` collected nothing. The profiles are written INSIDE
+      # each module directory, and no module is the repository root, so the
+      # root holds no coverage.out. The default `if-no-files-found: warn` kept
+      # the step green while it uploaded an empty artifact (#409).
+      #
+      # `error` is deliberate: an upload that finds no file must fail, because
+      # an empty artifact reads exactly like a passing one.
       - name: Upload coverage
         uses: actions/upload-artifact@v7
         with:
           name: coverage
-          path: coverage.out
+          path: "**/coverage.out"
+          if-no-files-found: error
 
   integration:
     name: Integration (Postgres + pgvector)
@@ -225,6 +389,17 @@ jobs:
         run: |
           cd services/elitea-main
           go test -count=1 -timeout=120s ./tests/integration/
+
+  # The `container-scan` job that PR #432 added here (issue #224) now lives in
+  # .github/workflows/ci-image-scan.yml, together with the five other published
+  # images that had no scan at all (#433). Nothing about the elitea-main scan
+  # changed — same `target: final` build, same HIGH,CRITICAL threshold, same
+  # "a report with no Go binary is a failure" guard.
+  #
+  # It moved because path filters are per workflow. elitea-web and elitea-ui are
+  # published images too, and adding apps/elitea-web/** to this workflow's
+  # triggers would run the Postgres service, the storage emulators and the whole
+  # Go test suite on every front-end change.
 
   build:
     name: Build

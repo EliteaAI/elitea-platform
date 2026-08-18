@@ -120,22 +120,23 @@ const EXEMPT = new Map([
   // The obstacle is that EVERY visible value on this screen is a function of the
   // wall clock at seed time, so a baseline taken against one stack cannot match
   // a stack seeded at a different time of day — which is every other stack,
-  // including every CI run. Specifically: the page opens on a `Today` preset
-  // computed from the BROWSER's clock (auditFormat.ts's DEFAULT_PRESET) while
-  // the fixture is anchored on the DATABASE's `date_trunc('day', now())` — the
-  // residue of #214, whose midnight failure was fixed on the seed side without
-  // making the two clocks the same one; both DateRangeFields render today's
-  // date; the Time column is second-resolution local time; and the heatmap's
-  // column geometry and per-cell alpha are computed from where the four seeded
-  // rows fall inside the range (`cellAlpha` re-scales every cell against the
-  // grid's max, so nothing about that chart is stable).
+  // including every CI run. Both DateRangeFields render today's date; the Time
+  // column is second-resolution local time; and the heatmap's column geometry
+  // and per-cell alpha are computed from where the four seeded rows fall inside
+  // the range (`cellAlpha` re-scales every cell against the grid's max, so
+  // nothing about that chart is stable).
+  //
+  // WHICH day it is no longer belongs on that list. #214 pinned one timezone for
+  // the browser and the seed, and journey 29 freezes its clock to the day the
+  // fixture was written on, so the `Today` window and the rows agree by
+  // construction. That fixes correctness, not stability: the rows still land at
+  // whatever minute the seed ran, which is what a baseline cannot survive.
   //
   // Masking is not a way out: what would have to be masked is the entire content
   // area, which is the whole page. What WOULD unblock it is a fixture at a fixed
-  // absolute timestamp plus a deterministic range — i.e. driving the page to an
-  // explicit preset before the shot, which is a different screen from the one
-  // an operator lands on and should be decided rather than smuggled in here.
-  ['/admin/app/audit', 'not snapshotted — the route is wired and renders real seeded data (journey 29 covers it), but its default screen is entirely wall-clock-derived: a `Today` window from the browser clock over a fixture anchored on the database clock (#214 residue), second-resolution timestamps, and a heatmap whose bucket geometry and per-cell alpha depend on where the seeded rows fall in the range. A baseline could only ever match the stack that produced it. Unblocking it needs a fixed-timestamp fixture and an explicit date range, not a mask.'],
+  // absolute timestamp — journey 29's frozen clock is half of that already —
+  // read through a deterministic range.
+  ['/admin/app/audit', 'not snapshotted — the route is wired and renders real seeded data (journey 29 covers it), but its default screen is entirely wall-clock-derived: second-resolution timestamps, two date fields showing today, and a heatmap whose bucket geometry and per-cell alpha depend on where the seeded rows fall in the range. WHICH day is no longer part of it — #214 pinned one timezone for browser and seed and froze journey 29 to the seeded day — but the rows still land at whatever minute the seed ran, so a baseline could only ever match the stack that produced it. Unblocking it needs a fixed-timestamp fixture, not a mask.'],
   ['/help-center', 'not snapshotted — needs seeded resource links, NOT a missing backend. `useResourcesConfig` reads GET /admin/plugin_config_values/prompt_lib/resources, which the admin port (#200) made serve real values; the section is authored on Admin › Features and journey 36g asserts the round trip. This stack configures none, so a baseline would still pin an unconfigured screen; seed a fixed set of links and it is coverable. Measured meanwhile, its stalled and loaded renders are byte-identical, so it will need only a mount guard, not a data landmark.'],
 ]);
 

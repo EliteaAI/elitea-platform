@@ -64,6 +64,18 @@ func (r *CurrentSecretVaultRepository) MutateAdmin(ctx context.Context, mutation
 	return r.mutate(ctx, "admin", mutations)
 }
 
+// THIS TYPE CREATES NO VAULT, AND MUST NOT (#399). It used to carry
+// EnsureProjectVault and DeleteProjectVault, keyed off
+// ELITEA_VAULT_MASTER_KEY_FILE. No file under deploy/ sets that variable, while
+// five set SECRETS_MASTER_KEY, which is the key the secrets handler uses. Two
+// creators with two key sources compose without an error — both are
+// create-if-absent and idempotent — and leave a vault that one path cannot
+// decrypt. Nothing reports the fault until a later read fails.
+//
+// internal/api/v2/secrets.Handler is now the ONE creator, called by the
+// project_secrets provisioning step. Every writer that needs a vault must run
+// after that step and hold that step's key.
+
 func (r *CurrentSecretVaultRepository) mutate(ctx context.Context, vaultID string, mutations []centrysecrets.Mutation) error {
 	if r == nil || r.store == nil {
 		return ErrCurrentVaultUnavailable

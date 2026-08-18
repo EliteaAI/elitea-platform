@@ -107,13 +107,14 @@ const adminSecretsKeys = {
  *     two deliberately: reporting "no secrets" here would invite a write that
  *     replaced the vault.
  *
- * A 403 is NOT among them: `shared/api/http.ts` escalates 401 AND 403 into the
- * re-auth flow, and that branch (`failure.kind === 'auth'`) carries no body. So a
- * caller refused for lack of `configuration.secrets.secret.view` — a real state,
- * since the administration-mode `editor` role holds every write permission on
- * secrets and not that one — gets the re-auth path and then the generic message,
- * not a sentence naming the permission. Changing that means changing the shared
- * client's 403 policy, which is out of this unit's scope.
+ * A 403 IS among them now. `shared/api/http.ts` used to escalate 401 AND 403
+ * into the re-auth flow, whose `failure.kind === 'auth'` branch carries no body,
+ * so a caller refused for lack of `configuration.secrets.secret.view` — a real
+ * state, since the administration-mode `editor` role holds every write
+ * permission on secrets and not that one — got the generic message rather than
+ * a sentence naming the permission. Issue 93 changed that shared 403 policy:
+ * an authorization refusal is not a session failure, arrives as `kind: 'http'`,
+ * and explains itself here like any other 4xx.
  */
 export function adminSecretFailureReason(error: unknown): string | undefined {
   if (!(error instanceof EliteaApiError)) return undefined;

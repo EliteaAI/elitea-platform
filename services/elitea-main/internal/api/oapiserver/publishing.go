@@ -64,11 +64,34 @@ func (s *Server) ForkAgent(w http.ResponseWriter, r *http.Request, projectId gen
 	srcSchema := fmt.Sprintf("p_%s", projectId)
 	dstSchema := fmt.Sprintf("p_%s", body.TargetProjectID)
 
-	// Copy application
+	// A fork is all-or-nothing. Every statement below used to run on the pool
+	// with its error discarded, so the handler could — and on every deployment
+	// did — answer `{"ok":true}` after copying an application with no versions,
+	// or versions with no attachments. A half-copied agent that looks
+	// successful is worse than a fork that fails and can be retried: the user
+	// keeps the shell and silently loses the toolkits and skills that made it
+	// an agent. One transaction, rolled back on the first error, 500 to the
+	// caller.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to fork application"})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once Commit has run
+
+	// Copy application.
+	//
+	// The column list is the one the schema actually has. `type` was named here
+	// and exists in neither shape this service runs against — not in the
+	// bootstrap table (internal/infra/db/migrations/001_initial.sql:310-323) and
+	// not in any tenant migration — so this statement raised 42703 and the
+	// handler answered 500 before it ever reached the mappings below. Same for
+	// `prompt` on application_versions: the column is `instructions`
+	// (001_initial.sql:327-346, internal/db/schema/application_version_baseline.sql).
 	var newAppID int
-	err := s.pool.QueryRow(ctx, fmt.Sprintf(`
-		INSERT INTO %q.applications (name, description, type, created_at)
-		SELECT name || ' (fork)', description, type, NOW()
+	err = tx.QueryRow(ctx, fmt.Sprintf(`
+		INSERT INTO %q.applications (name, description, owner_id, created_at)
+		SELECT name || ' (fork)', description, owner_id, NOW()
 		FROM %q.applications WHERE id = $1
 		RETURNING id`, dstSchema, srcSchema), body.ApplicationID).Scan(&newAppID)
 	if err != nil {
@@ -76,39 +99,84 @@ func (s *Server) ForkAgent(w http.ResponseWriter, r *http.Request, projectId gen
 		return
 	}
 
-	// Copy versions
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
-		SELECT id, name, prompt, status FROM %q.application_versions WHERE application_id = $1 ORDER BY created_at`, srcSchema), body.ApplicationID)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var srcVersionID int
-			var name, status string
-			var prompt []byte
-			if err := rows.Scan(&srcVersionID, &name, &prompt, &status); err != nil {
-				continue
-			}
-
-			var newVersionID int
-			_ = s.pool.QueryRow(ctx, fmt.Sprintf(`
-				INSERT INTO %q.application_versions (application_id, name, prompt, status, created_at)
-				VALUES ($1, $2, $3, 'draft', NOW()) RETURNING id`, dstSchema),
-				newAppID, name, prompt).Scan(&newVersionID) // newVersionID stays 0 on error; mappings below will no-op
-
-			// Copy skill mappings
-			_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
-				INSERT INTO %q.entity_skill_mapping (entity_version_id, skill_id, skill_version_id)
-				SELECT $1, skill_id, skill_version_id
-				FROM %q.entity_skill_mapping WHERE entity_version_id = $2`, dstSchema, srcSchema),
-				newVersionID, srcVersionID) // best-effort mapping copy
-
-			// Copy tool mappings
-			_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
-				INSERT INTO %q.entity_tool_mapping (entity_version_id, tool_id)
-				SELECT $1, tool_id
-				FROM %q.entity_tool_mapping WHERE entity_version_id = $2`, dstSchema, srcSchema),
-				newVersionID, srcVersionID) // best-effort mapping copy
+	// Collect the source version ids first: the copies below run on the same
+	// transaction, and pgx cannot interleave statements with an open rows
+	// cursor on one connection.
+	rows, err := tx.Query(ctx, fmt.Sprintf(`
+		SELECT id FROM %q.application_versions WHERE application_id = $1 ORDER BY created_at, id`, srcSchema), body.ApplicationID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to fork application versions"})
+		return
+	}
+	var srcVersionIDs []int
+	for rows.Next() {
+		var srcVersionID int
+		if err := rows.Scan(&srcVersionID); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to fork application versions"})
+			return
 		}
+		srcVersionIDs = append(srcVersionIDs, srcVersionID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to fork application versions"})
+		return
+	}
+
+	for _, srcVersionID := range srcVersionIDs {
+		var newVersionID int
+		if err := tx.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %q.application_versions (
+				application_id, name, status, author_id, instructions, llm_settings,
+				conversation_starters, welcome_message, agent_type, meta, pipeline_settings, created_at)
+			SELECT $1, name, 'draft', author_id, instructions, llm_settings,
+				conversation_starters, welcome_message, agent_type, meta, pipeline_settings, NOW()
+			FROM %q.application_versions WHERE id = $2
+			RETURNING id`, dstSchema, srcSchema),
+			newAppID, srcVersionID).Scan(&newVersionID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to fork application versions"})
+			return
+		}
+
+		// Copy skill mappings. `entity_type` is NOT NULL with no default in both
+		// shapes (001_initial.sql:422-431, agent_chat_baseline.sql:143-153) and
+		// was omitted, so this INSERT raised 23502 on every row it ever tried to
+		// write. It is carried from the source row rather than defaulted: the
+		// unique key is (entity_version_id, skill_id, entity_type), so inventing
+		// a value here would move the attachment to a different key.
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+			SELECT $1, entity_type, skill_id, skill_version_id
+			FROM %q.entity_skill_mapping WHERE entity_version_id = $2`, dstSchema, srcSchema),
+			newVersionID, srcVersionID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to fork skill attachments"})
+			return
+		}
+
+		// Copy tool mappings. Same omission as the skills above plus `entity_id`,
+		// which migration 0125 states the meaning of: it is the owning
+		// APPLICATION, not the version — the chat read joins
+		// `entity_id = application_version.application_id`
+		// (internal/db/queries/agent_chat.sql:107). So it must be the FORK's new
+		// application id, not the source row's: copying the source value would
+		// satisfy NOT NULL and point the new version's toolkits at the agent it
+		// was forked from. `selected_tools` rides along for the same reason
+		// eliteacore's clone carries it (internal/api/v2/eliteacore/handler.go:712)
+		// — dropping it silently re-enables every tool in the toolkit.
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
+			SELECT $1, $2, entity_type, tool_id, selected_tools
+			FROM %q.entity_tool_mapping WHERE entity_version_id = $3`, dstSchema, srcSchema),
+			newVersionID, newAppID, srcVersionID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to fork tool attachments"})
+			return
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to fork application"})
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": newAppID})

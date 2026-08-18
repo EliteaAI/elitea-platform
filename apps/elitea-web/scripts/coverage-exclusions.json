@@ -1,0 +1,17 @@
+{
+  "$comment": [
+    "Declared, expiring waivers for coverage.exclude globs in vitest.config.ts that name",
+    "code something actually imports. scripts/check-ci-dormancy.mjs fails the build for any",
+    "such glob that is NOT listed here, and for any listing whose reviewBy date has passed.",
+    "Issue #309: the previous mechanism was a code comment saying 'REMOVE this line when a",
+    "consumer lands'; ten consumers landed and the comment stayed."
+  ],
+  "waivers": {
+    "src/features/chat-messages/**": {
+      "owner": "elitea-web",
+      "issue": "https://github.com/EliteaAI/elitea-platform/issues/309",
+      "reviewBy": "2026-11-30",
+      "reason": "69 modules, 8 test files. Now imported by the live chat layer (processes/chat, widgets/chat-box, features/toolkits), so the original 'no consumer yet' reason is void. Measuring it today drops the merged run under the 80% gate; the unit needs tests before the exclusion can go, and this waiver is the deadline for that rather than a permanent pass."
+    }
+  }
+}

@@ -169,13 +169,15 @@ func TestList_Success(t *testing.T) {
 	}
 }
 
-func TestGet_Success(t *testing.T) {
-	// getVersions() calls h.pool.Query() directly with no nil-pool guard (handler.go:145).
-	// Without a live pgxpool.Pool there is no observable behaviour — only a nil-pointer
-	// panic.  Full coverage of the Get() success path requires an integration test with a
-	// real database pool; skip here and rely on that tier.
-	t.Skip("getVersions() dereferences h.pool without a nil guard; integration-test coverage required")
-}
+// The Get() success path is covered by
+// TestHandlerPostgres_CreateThenReadBackIsWhatJourney14Asserts in
+// handler_postgres_integration_test.go, which drives the real pool and reads
+// the created application back with its versions and version_details.
+//
+// A `TestGet_Success` used to sit here holding one unconditional `t.Skip`.
+// It ran on every CI run, executed nothing, and printed `ok` (#423). A test
+// that can never fail is not coverage; it is the appearance of coverage, so
+// the real one above is now the only claim made.
 
 func TestGet_NotFound(t *testing.T) {
 	repo := &mockRepo{apps: nil}
@@ -348,5 +350,99 @@ func TestUpdateVersion_OmittedPipelineSettingsStaysNil(t *testing.T) {
 	}
 	if repo.lastUpdate.PipelineSettings != nil {
 		t.Errorf("expected nil pipeline_settings, got %v", repo.lastUpdate.PipelineSettings)
+	}
+}
+
+// #307: the agent editor sends `variables` on every save, and UpdateVersion
+// had no branch for the key at all — the PUT answered 201 and the edit was
+// gone. Variables have no column of their own; they are stored inside
+// `meta` (see versionFromBody), so the assertion is on meta["variables"],
+// and it deliberately runs with a `meta` in the body carrying the STALE
+// variables the client spreads from the stored blob: the fold has to win
+// over that or the round-trip still loses the edit.
+func TestUpdateVersion_ForwardsVariablesIntoMeta(t *testing.T) {
+	repo := &recordingRepo{}
+	r := setupVersionRouter(repo)
+
+	body, _ := json.Marshal(map[string]any{
+		"name": "base",
+		"meta": map[string]any{
+			"step_limit": 25,
+			"variables":  []any{map[string]any{"name": "stale", "value": "old"}},
+		},
+		"variables": []any{
+			map[string]any{"name": "region", "value": "emea"},
+			map[string]any{"name": "tier", "value": "gold"},
+		},
+	})
+	req := httptest.NewRequest("PUT", "/version/prompt_lib/1/2/3", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if repo.lastUpdate.Meta == nil {
+		t.Fatalf("meta was dropped; version = %+v", repo.lastUpdate)
+	}
+	vars, ok := repo.lastUpdate.Meta["variables"].([]any)
+	if !ok || len(vars) != 2 {
+		t.Fatalf("meta.variables = %v, want the 2 edited variables", repo.lastUpdate.Meta["variables"])
+	}
+	first, _ := vars[0].(map[string]any)
+	if first["name"] != "region" || first["value"] != "emea" {
+		t.Errorf("meta.variables[0] = %v, want {region emea} — the client's stale meta.variables won", vars[0])
+	}
+	if repo.lastUpdate.Meta["step_limit"] != float64(25) {
+		t.Errorf("meta.step_limit = %v (%T), want 25 — folding variables must not drop the rest of meta",
+			repo.lastUpdate.Meta["step_limit"], repo.lastUpdate.Meta["step_limit"])
+	}
+}
+
+// Deleting the last variable is a real user action and must reach the
+// repository as an empty list, not be swallowed the way a `len(vars) > 0`
+// guard would swallow it.
+func TestUpdateVersion_ClearsVariablesWhenEmptyListSent(t *testing.T) {
+	repo := &recordingRepo{}
+	r := setupVersionRouter(repo)
+
+	body, _ := json.Marshal(map[string]any{
+		"name":      "base",
+		"meta":      map[string]any{"variables": []any{map[string]any{"name": "gone", "value": "x"}}},
+		"variables": []any{},
+	})
+	req := httptest.NewRequest("PUT", "/version/prompt_lib/1/2/3", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	vars, ok := repo.lastUpdate.Meta["variables"].([]any)
+	if !ok || len(vars) != 0 {
+		t.Errorf("meta.variables = %v, want an empty list", repo.lastUpdate.Meta["variables"])
+	}
+}
+
+// A body with no `variables` key must leave the stored value alone rather
+// than blanking it — the same "unset means untouched" contract every other
+// branch of UpdateVersion keeps.
+func TestUpdateVersion_OmittedVariablesLeavesMetaAlone(t *testing.T) {
+	repo := &recordingRepo{}
+	r := setupVersionRouter(repo)
+
+	body, _ := json.Marshal(map[string]any{"name": "base"})
+	req := httptest.NewRequest("PUT", "/version/prompt_lib/1/2/3", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if repo.lastUpdate.Meta != nil {
+		t.Errorf("expected nil meta, got %v", repo.lastUpdate.Meta)
 	}
 }

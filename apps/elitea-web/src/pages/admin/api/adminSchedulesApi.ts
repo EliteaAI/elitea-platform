@@ -95,11 +95,12 @@ const adminSchedulesKeys = {
  * and rendering "Failed to save" over all of them would hide the only sentence
  * that says which.
  *
- * A 401/403 does NOT arrive here, and that is the shared client's decision, not
- * an oversight: `shared/api/http.ts` routes both into the single-flight re-auth
- * path and reports `kind: 'auth'`, which carries no body. Those render the
- * generic notice. Only `kind: 'http'` — 4xx and 5xx that are not an auth
- * challenge — can explain itself.
+ * A 401 does NOT arrive here, and that is the shared client's decision, not an
+ * oversight: `shared/api/http.ts` routes it into the single-flight re-auth path
+ * and reports `kind: 'auth'`, which carries no body. Those render the generic
+ * notice. Only `kind: 'http'` — 4xx and 5xx that are not an auth challenge —
+ * can explain itself, and since issue 93 that INCLUDES a 403: an authorization
+ * refusal is not a session failure, so it keeps its body.
  *
  * The `kind !== 'http'` line below is TYPE narrowing and documentation, not a
  * behavioural guard: no other failure variant has a `body` field, so deleting it
@@ -112,7 +113,7 @@ export function scheduleFailureReason(error: unknown): string | undefined {
   if (!(error instanceof EliteaApiError)) return undefined;
   const failure = error.failure;
   // `auth` failures carry no body — a 401 is handled by the re-auth path — so
-  // only `http` can explain itself.
+  // only `http` can explain itself. A 403 is `http` (issue 93).
   if (failure.kind !== 'http') return undefined;
   const body = failure.body;
   if (typeof body !== 'object' || body === null) return undefined;

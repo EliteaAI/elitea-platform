@@ -2,10 +2,12 @@ package applications
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -409,6 +411,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	// the repository — in one transaction. An application with no version row
 	// is invisible to List (which INNER JOINs application_versions) and cannot
 	// be opened in the agent editor, so a half-created agent must not commit.
+	var initialVariables []any
 	if versions, ok := body["versions"].([]any); ok && len(versions) > 0 {
 		if vBody, ok := versions[0].(map[string]any); ok {
 			// Validate model_project_id if llm_settings provided
@@ -422,6 +425,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			req.InitialVersion = versionFromBody(vBody, ownerID)
+			initialVariables, _ = vBody["variables"].([]any)
 		}
 	}
 
@@ -429,6 +433,36 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		apierr.Write(w, err)
 		return
+	}
+
+	// #307, create half — versionFromBody folds `variables` into `meta`, and
+	// that is all the create paths did, so an agent created WITH variables
+	// answered 201 with them echoed back (the echo is built from `meta`) and
+	// then read back empty forever: the READ path (fetchVersionDetails, which
+	// serves the editor's own reload) SELECTs `application_variables` and
+	// ignores `meta`. The rows must be written after repo.Create, not before —
+	// application_variables.application_version_id REFERENCES
+	// application_versions(id) (migrations/001_initial.sql), so the version row
+	// has to exist first, and the repository owns that insert in its own
+	// transaction which this handler cannot join.
+	//
+	// That ordering means the variable write can fail with a version already
+	// committed. The application is deleted rather than returning a 500 over a
+	// surviving half-created agent: the same rule the InitialVersion comment
+	// above states for a missing version row, and the FK's ON DELETE CASCADE
+	// takes any rows that did land with it. A create the caller was told
+	// failed must leave nothing behind for them to find in the list.
+	if len(initialVariables) > 0 && len(app.Versions) > 0 {
+		if err := h.replaceVersionVariables(r.Context(), projectID, app.Versions[0].ID, initialVariables); err != nil {
+			if delErr := h.repo.Delete(r.Context(), projectID, app.ID); delErr != nil {
+				// Nothing left to do for the caller — they get the failure
+				// either way — but a stranded agent is worth a trail.
+				slog.ErrorContext(r.Context(), "rollback of a half-created application failed",
+					"application_id", app.ID, "err", delErr)
+			}
+			apierr.Write(w, err)
+			return
+		}
 	}
 
 	resp := map[string]any{
@@ -759,6 +793,27 @@ func (h *Handler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, err)
 		return
 	}
+
+	// #307, the other create entry point ("save as a new version"). Same fold,
+	// same gap, same ordering constraint as Create: the version row has to
+	// exist before anything can reference it, so the rows go in afterwards and
+	// a failure is undone by deleting the version that was just made. Unlike
+	// Create there is no application to remove — the application predates this
+	// request and keeps its other versions.
+	//
+	// Note this handler does NOT validate the project id itself; it relies on
+	// replaceVersionVariables' own tenantSchema check, which is why that helper
+	// returns a BadRequest rather than assuming a caller already screened it.
+	if variables, _ := body["variables"].([]any); len(variables) > 0 {
+		if err := h.replaceVersionVariables(r.Context(), projectID, ver.ID, variables); err != nil {
+			if delErr := h.repo.DeleteVersion(r.Context(), projectID, applicationID, ver.ID); delErr != nil {
+				slog.ErrorContext(r.Context(), "rollback of a half-created version failed",
+					"application_id", applicationID, "version_id", ver.ID, "err", delErr)
+			}
+			apierr.Write(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, userID))
 }
 
@@ -826,6 +881,28 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 	if meta, ok := body["meta"].(map[string]any); ok {
 		v.Meta = meta
 	}
+	// #307 — `variables` had NO branch here at all, so the agent editor's
+	// variables were accepted with a 201 and silently discarded on every
+	// save; only CreateVersion persisted them, and only into `meta`.
+	//
+	// Presence-based, not `len(vars) > 0` as on the create path: on an
+	// update, an empty array is a real, distinguishable user action
+	// ("I deleted my last variable"), and dropping it would leave exactly
+	// the silent no-op this branch exists to fix. A body with no
+	// `variables` key at all still leaves the stored value alone.
+	variables, hasVariables := body["variables"].([]any)
+	// The write-side fold `versionFromBody` performs (variables have no
+	// column on application_versions), kept so this endpoint's own 201 echo
+	// — built by `versionDetailsResponse`, which reads `meta["variables"]`
+	// — reports what was actually saved. It must run AFTER the `meta`
+	// assignment above or the client's stale `meta.variables` (which it
+	// spreads from the stored blob) would win over the edit.
+	if hasVariables {
+		if v.Meta == nil {
+			v.Meta = map[string]any{}
+		}
+		v.Meta["variables"] = variables
+	}
 	// Pipeline flow-graph layout. Without this the pipeline editor's Save
 	// returned 200 while silently discarding every node/edge edit (#135) —
 	// the graph itself round-trips through `instructions` (the pipeline
@@ -840,7 +917,75 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, err)
 		return
 	}
+	// #307, second half — the meta fold above is NOT enough on its own, and a
+	// green "the row's meta now holds my variables" assertion hides why: the
+	// two sides of the round trip read different stores. Every write path
+	// puts variables in `meta`, but the READ path (`fetchVersionDetails`,
+	// which serves GET /version/... and therefore the editor's own reload)
+	// SELECTs them from the `application_variables` table and ignores `meta`
+	// entirely. So a save whose only effect was on `meta` still came back
+	// empty on reload — the same 200-that-lies shape the field already had.
+	// This replaces the version's rows in that table, the pylon-shaped store
+	// `eliteacore`'s own version-create path already writes
+	// (eliteacore/handler.go:2485-2497).
+	if hasVariables {
+		if err := h.replaceVersionVariables(r.Context(), projectID, versionID, variables); err != nil {
+			apierr.Write(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusCreated, versionDetailsResponse(ver, user, strconv.FormatInt(ownerID, 10)))
+}
+
+// replaceVersionVariables makes `application_variables` match the list the
+// caller sent, exactly — deleting the rows they dropped, not only upserting
+// the ones they kept. Transactional: a partial application would leave the
+// version showing a mixture of the old and new lists with nothing reporting
+// a failure. A nil pool (the unit-test/repo-only wiring) is a no-op, matching
+// every other pool-guarded branch in this file.
+func (h *Handler) replaceVersionVariables(ctx context.Context, projectID, versionID string, variables []any) error {
+	if h.pool == nil {
+		return nil
+	}
+	s, ok := tenantSchema(projectID)
+	if !ok {
+		return apierr.BadRequest("invalid project id")
+	}
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return apierr.Internal("could not save variables")
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, fmt.Sprintf(
+		`DELETE FROM %s.application_variables WHERE application_version_id = $1`, s), versionID); err != nil {
+		return apierr.Internal("could not save variables")
+	}
+	for _, raw := range variables {
+		entry, _ := raw.(map[string]any)
+		if entry == nil {
+			continue
+		}
+		name, _ := entry["name"].(string)
+		if name == "" {
+			// The table's own UNIQUE (application_version_id, name) makes a
+			// nameless variable meaningless, and the editor emits a blank
+			// row the moment a user clicks "add" — skipping it here is what
+			// keeps that half-typed row from failing the whole save.
+			continue
+		}
+		value, _ := entry["value"].(string)
+		if _, err := tx.Exec(ctx, fmt.Sprintf(
+			`INSERT INTO %s.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)
+			 ON CONFLICT (application_version_id, name) DO UPDATE SET value = EXCLUDED.value`, s),
+			versionID, name, value); err != nil {
+			return apierr.Internal("could not save variables")
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return apierr.Internal("could not save variables")
+	}
+	return nil
 }
 
 func (h *Handler) DeleteVersion(w http.ResponseWriter, r *http.Request) {
@@ -913,20 +1058,68 @@ func (h *Handler) BatchReplaceVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// GetVersionExpanded returns version details with expanded and unsecreted toolkit configurations.
-// Authenticated via X-SECRET header (must match APPLICATION_SECRET_KEY env var).
-func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
-	secretKey := os.Getenv("APPLICATION_SECRET_KEY")
-	if secretKey == "" {
-		apierr.Write(w, apierr.Internal("APPLICATION_SECRET_KEY not configured"))
-		return
+// secretHeaderMatches reports whether the `X-SECRET` request header equals the
+// project vault's `secrets_header_value`, which is what pylon's
+// `check_secret_header` compares.
+//
+// An absent secret falls back to `currentSecretsHeaderDefault`, as pylon does.
+// A vault that exists and will not open is a different case: `ResolveSecretValue`
+// then returns a decryption error rather than a not-found, and this function
+// refuses the request instead of comparing against the fallback. Treating an
+// unreadable vault as "no secret set" would turn a broken vault into an open
+// door.
+func (h *Handler) secretHeaderMatches(
+	ctx context.Context,
+	secretsHandler *secrets.Handler,
+	projectID, received string,
+) bool {
+	expected, err := secretsHandler.ResolveSecretValue(ctx, projectID, currentSecretsHeaderName)
+	switch {
+	case err == nil:
+	case errors.Is(err, secrets.ErrSecretNotFound), errors.Is(err, secrets.ErrVaultAbsent):
+		expected = currentSecretsHeaderDefault
+	default:
+		return false
 	}
-	xSecret := r.Header.Get("X-SECRET")
-	if xSecret == "" || xSecret != secretKey {
-		apierr.Write(w, apierr.Unauthorized("invalid or missing X-SECRET header"))
-		return
-	}
+	// Constant-time comparison: the header is attacker-supplied and the vault
+	// value is a shared credential.
+	return subtle.ConstantTimeCompare([]byte(received), []byte(expected)) == 1
+}
 
+// currentSecretsHeaderName is the project-vault secret pylon compares the
+// `X-SECRET` request header against.
+const currentSecretsHeaderName = "secrets_header_value"
+
+// currentSecretsHeaderDefault is the value pylon expects when the project vault
+// holds no `secrets_header_value`. `check_secret_header`
+// (legacy/plugins/elitea_core/utils/secrets.py:4-9) reads
+// `secrets.get("secrets_header_value", "secret")`, so a project that never set
+// the secret accepts the literal string below.
+//
+// This fallback is replicated deliberately, and it is NOT the access control on
+// this route: the route also requires authentication and the
+// `models.applications.version.details` project permission, exactly as pylon's
+// handler does. Removing the fallback would refuse every SDK sub-agent call on
+// a project whose vault omits the key — calls pylon answers today — so the
+// change would be a silent outage, not a hardening. The pull request records
+// the follow-up recommendation.
+const currentSecretsHeaderDefault = "secret"
+
+// GetVersionExpanded returns version details with expanded and unsecreted
+// toolkit configurations.
+//
+// It serves the SDK's `get_app_version_details`
+// (elitea_sdk/runtime/clients/client.py:681-688), which issues a body-less
+// PATCH. The handler therefore never reads the request body: a PATCH on this
+// path is a READ, not a partial update, and pylon's handler
+// (legacy/plugins/elitea_core/api/v2/version.py:107-156) reads no body either.
+//
+// Authentication follows pylon: the `X-SECRET` header must equal the PROJECT
+// vault's `secrets_header_value`. The retired implementation compared it to the
+// `APPLICATION_SECRET_KEY` process environment variable — one value for every
+// project, which no deployment sets — so the route could never have
+// authenticated a real SDK caller.
+func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	applicationID := chi.URLParam(r, "applicationID")
 	versionID := chi.URLParam(r, "versionID")
@@ -940,6 +1133,13 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 	s, ok := tenantSchema(projectID)
 	if !ok {
 		apierr.Write(w, apierr.BadRequest("invalid project id"))
+		return
+	}
+
+	secretsHandler := secrets.NewHandler(h.pool)
+	if !h.secretHeaderMatches(ctx, secretsHandler, projectID, r.Header.Get("X-SECRET")) {
+		// The exact pylon status and body for this failure.
+		apierr.Write(w, apierr.BadRequest("Invalid secret header"))
 		return
 	}
 
@@ -985,8 +1185,6 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 	if welcomeMsg != nil {
 		welcomeVal = *welcomeMsg
 	}
-
-	secretsHandler := secrets.NewHandler(h.pool)
 
 	// Fetch tools from entity_tool_mapping
 	tools := make([]map[string]any, 0)
@@ -1071,6 +1269,19 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	variables, err := h.versionVariables(ctx, s, versionID)
+	if err != nil {
+		apierr.Write(w, err)
+		return
+	}
+	attachedSkills, err := h.versionAttachedSkills(ctx, s, versionID, agentType)
+	if err != nil {
+		apierr.Write(w, err)
+		return
+	}
+
+	metaMap, _ := meta.(map[string]any)
+
 	resp := map[string]any{
 		"id":                    strconv.Itoa(id),
 		"application_id":        strconv.Itoa(appID),
@@ -1087,8 +1298,139 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 		"author_id":             authorIDStr,
 		"tools":                 tools,
 		"tags":                  []any{},
+		"variables":             variables,
+		"icon_meta":             iconMetaFromMeta(metaMap),
+		"is_forked":             isForkedFromMeta(metaMap),
+		"attached_skills":       attachedSkills,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// iconMetaFromMeta mirrors ApplicationVersionDetailModel.set_icon_meta
+// (legacy/plugins/elitea_core/models/pd/version.py:288-295): the value lives
+// inside the `meta` JSONB under `icon_meta`, and a missing or falsy value
+// becomes an empty object rather than null. `meta` keeps its own copy — pylon
+// does not strip the key.
+func iconMetaFromMeta(meta map[string]any) map[string]any {
+	value, ok := meta["icon_meta"].(map[string]any)
+	if !ok || value == nil {
+		return map[string]any{}
+	}
+	return value
+}
+
+// isForkedFromMeta mirrors ApplicationVersionDetailModel.set_is_forked
+// (legacy/plugins/elitea_core/models/pd/version.py:282-287): true when `meta`
+// carries BOTH `parent_entity_id` and `parent_project_id`. Pylon tests key
+// presence and never inspects the values, so a null value still yields true.
+func isForkedFromMeta(meta map[string]any) bool {
+	_, hasEntity := meta["parent_entity_id"]
+	_, hasProject := meta["parent_project_id"]
+	return hasEntity && hasProject
+}
+
+// versionVariables reads the version's variables in the shape the SDK iterates.
+//
+// The SDK indexes `var['name']` directly
+// (elitea_sdk/runtime/clients/client.py:819-821), so a missing `name` key
+// raises there rather than degrading. `value` is emitted as "" and never null
+// for the same reason, which also matches pylon: its
+// ApplicationVariableDetailedModel types `value` as a non-optional str.
+func (h *Handler) versionVariables(ctx context.Context, schema, versionID string) ([]map[string]any, error) {
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT id, name, COALESCE(value, '')
+		FROM %s.application_variables
+		WHERE application_version_id = $1
+		ORDER BY id`, schema), versionID)
+	if err != nil {
+		return nil, apierr.Internal("could not read the version variables")
+	}
+	defer rows.Close()
+
+	variables := make([]map[string]any, 0)
+	for rows.Next() {
+		var variableID int
+		var variableName, variableValue string
+		if err := rows.Scan(&variableID, &variableName, &variableValue); err != nil {
+			return nil, apierr.Internal("could not read the version variables")
+		}
+		variables = append(variables, map[string]any{
+			"id":    variableID,
+			"name":  variableName,
+			"value": variableValue,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, apierr.Internal("could not read the version variables")
+	}
+	return variables, nil
+}
+
+// versionAttachedSkills reads the skill registry the SDK binds `load_skill`
+// against.
+//
+// The key is `attached_skills`, NOT `skills`. Pylon builds a 7-key `skills`
+// list, then `apply_runtime_skills`
+// (legacy/plugins/elitea_core/utils/skill_utils.py:1547-1567) replaces it: it
+// appends this 5-key projection under `attached_skills` and POPS `skills`
+// entirely. The SDK reads only the new key
+// (elitea_sdk/runtime/tools/application.py:453-454), so emitting `skills`
+// would serve a key no consumer reads and omit the one that binds the tools.
+//
+// Two pylon filter rules are reproduced:
+//   - a pipeline contributes no skills at all;
+//   - a skill with no name, or with blank instructions, is dropped, because
+//     `load_skill` could neither name nor serve it.
+func (h *Handler) versionAttachedSkills(
+	ctx context.Context,
+	schema, versionID, agentType string,
+) ([]map[string]any, error) {
+	attached := make([]map[string]any, 0)
+	if agentType == "pipeline" {
+		return attached, nil
+	}
+
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT mapping.skill_id,
+			skill.name,
+			skill.description,
+			COALESCE(version.instructions, ''),
+			COALESCE(version.meta -> 'icon_meta', 'null'::jsonb)::text
+		FROM %s.entity_skill_mapping AS mapping
+		JOIN %s.skills AS skill ON skill.id = mapping.skill_id
+		LEFT JOIN %s.skill_versions AS version ON version.id = mapping.skill_version_id
+		WHERE mapping.entity_version_id = $1
+			AND mapping.entity_type = 'agent'
+		ORDER BY mapping.id`, schema, schema, schema), versionID)
+	if err != nil {
+		return nil, apierr.Internal("could not read the attached skills")
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var skillID int
+		var skillName, skillDescription, instructions, iconMetaJSON string
+		if err := rows.Scan(&skillID, &skillName, &skillDescription, &instructions, &iconMetaJSON); err != nil {
+			return nil, apierr.Internal("could not read the attached skills")
+		}
+		if skillName == "" || strings.TrimSpace(instructions) == "" {
+			continue
+		}
+		var iconMeta any
+		// The column is DB-stored JSON, coalesced to 'null' — it cannot be invalid.
+		_ = json.Unmarshal([]byte(iconMetaJSON), &iconMeta)
+		attached = append(attached, map[string]any{
+			"skill_id":     skillID,
+			"name":         skillName,
+			"description":  skillDescription,
+			"icon_meta":    iconMeta,
+			"instructions": instructions,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, apierr.Internal("could not read the attached skills")
+	}
+	return attached, nil
 }
 
 // expandToolSettings expands configuration references in tool settings.

@@ -48,6 +48,11 @@ export {
 // Socket-driven message_group sync (chat_message_sync) — waived, see budgets-core.mjs.
 export { useSyncChatMessage } from './model/useSyncChatMessage';
 
+// REST-start + SSE-replay chat transport (issue #93) — waived, see budgets-core.mjs.
+export { useChatStreamTransport } from './model/useChatStreamTransport';
+export type { UseChatStreamTransportParams, UseChatStreamTransportResult } from './model/useChatStreamTransport';
+export type { ChatStreamContext } from './lib/chatStreamReducer';
+
 // Delete-confirmation dialog orchestrator — waived, see budgets-core.mjs.
 export { useDeleteMessageAlert, ALL_MESSAGES } from './model/useDeleteMessageAlert';
 export type { UseDeleteMessageAlertParams, UseDeleteMessageAlertResult } from './model/useDeleteMessageAlert';

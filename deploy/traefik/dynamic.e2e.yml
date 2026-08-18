@@ -9,6 +9,8 @@ http:
       service: elitea-main
       entryPoints:
         - web
+      middlewares:
+        - strip-client-identity
     # The MCP SERVER (issue 252) shares the /app prefix with the SPA but is
     # served by elitea-main: pylon serves it from the app blueprint, and the
     # internal-toolkit URLs already written into projects hardcode
@@ -31,6 +33,8 @@ http:
       service: elitea-main
       entryPoints:
         - web
+      middlewares:
+        - strip-client-identity
     app:
       rule: "PathPrefix(`/app`)"
       service: elitea-web
@@ -46,6 +50,31 @@ http:
       priority: 1
 
   middlewares:
+    # Identical to deploy/traefik/dynamic.yml's copy — see the reasoning there.
+    # This file REPLACES that one at runtime in the e2e and standalone-full
+    # stacks, so the strip has to be duplicated here; a fix in only one of the
+    # two leaves whichever stack mounts the other wide open (#326).
+    #
+    # INGRESS-only: `customRequestHeaders` with an empty value deletes what the
+    # CLIENT sent. This edge runs no forwardAuth, so no identity header here is
+    # ever legitimate input.
+    strip-client-identity:
+      headers:
+        customRequestHeaders:
+          X-Auth-Type: ""
+          X-Auth-ID: ""
+          X-Auth-User-ID: ""
+          X-Auth-Reference: ""
+          X-Auth-Avatar: ""
+          X-Auth-Avatar-State: ""
+          X-Auth-Session-Id: ""
+          X-Auth-Session-Name: ""
+          X-Auth-Session-Endpoint: ""
+          X-Elitea-Identity-Signature: ""
+          X-Elitea-Project-Id: ""
+          X-Elitea-User-Id: ""
+          X-Elitea-Tenant-Id: ""
+
     redirect-to-app:
       redirectRegex:
         regex: "^(https?://[^/]*)/$"

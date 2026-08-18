@@ -246,6 +246,68 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   separate human call. The chart's opt-in `networkPolicy` is defence in depth,
   not the primary control — see values.yaml for why it cannot default to on.
 
+## Shared/public project scope
+- **[human decision] The public project id is OPERATOR CONFIGURATION
+  (`ELITEA_AI_PROJECT_ID`), not a field on the signed identity.** Chosen
+  2026-08-14 for issue #316, which allowed either shape and asked that the
+  choice be recorded.
+
+  *Context:* the gateway read `p_{caller}` only. Elitea has always had two
+  sources of models for a project — its own rows, and the public project's
+  `shared = true` rows. The UI pickers offer both (`include_shared`), so a user
+  could select a platform model that the gateway then had no credential for. In
+  the `ELITEA_ALLOW_PROJECT_OWN_LLMS=false` deployment mode that left no usable
+  model at all.
+
+  *Rationale for configuration over the identity header:*
+  1. The value is a DEPLOYMENT-WIDE CONSTANT. elitea-main reads it from the
+     environment too (`ELITEA_AI_PROJECT_ID`, default 1); it does not vary per
+     request, per user or per tenant. Sending a constant per request only
+     creates ways for it to be wrong.
+  2. It selects a SECOND SCHEMA TO READ. A request-carried value would let
+     anyone who can set headers name any project as "public" and read that
+     project's rows — a cross-tenant read, and exactly the failure this issue
+     warned against. Configuration removes that surface completely.
+  3. Carrying it on the identity means changing the HMAC canonical string, which
+     both modules must change in lockstep; a version skew either fails every
+     request or, if the field is left unsigned, is forgeable. Changing the
+     signing scheme is a trust-boundary change (see CLAUDE.md's autonomy
+     boundary) and needs a human, which this issue did not ask for.
+
+  *Accepted cost:* the id is set in two places and can drift. A gateway pointed
+  at the wrong project serves a model set the UI does not offer. Mitigations:
+  the chart documents that the value must match elitea-main's, and main() logs
+  the resolved mode at startup — armed with the id, or an explicit warning that
+  shared models are unreachable.
+
+  *Default OFF (empty), not 1.* An id naming a schema that does not exist makes
+  every credential read fail, so the operator opts in. An unset scope reproduces
+  the previous project-local behaviour exactly.
+
+- **Precedence: the caller's OWN row wins.** This matches the legacy resolver
+  (`runtime_interface_litellm` `_map_model_name`), which probed
+  `{project}_{model}` before `{public}_{model}`. Credentials from the caller's
+  project are returned first; on a model-id collision the caller's row is kept
+  and the shared row is dropped, so the id appears exactly once. Both rules are
+  pinned by tests. NOTE the issue explicitly did NOT decide which credential
+  should win where two rows share an id but carry different secrets — bifrost
+  picks from the key list we return, and ordering is the only lever this change
+  takes. Revisit if product wants shared credentials to override a project's own.
+
+- **Two isolation invariants, and neither may be weakened without a human:**
+  1. The public scope is read ONLY with `AND shared = true`. The predicate is a
+     constant and is never built from caller-supplied input.
+  2. Every row returned from the public scope is re-checked against its own
+     `shared` column in Go before use, and the read FAILS if one escapes. This
+     mirrors elitea-main's "escaped its authorized scope" check on the same
+     table. It exists because the SQL predicate is the kind of thing a later
+     refactor drops silently.
+
+  A shared credential's `{{secret.NAME}}` reference resolves against the PUBLIC
+  project's Fernet vault, not the caller's — the vault scope follows the
+  credential's owner. Resolving against the caller would either fail or pick up
+  an unrelated same-named secret of the caller's.
+
 ## Topology / build
 - Gateway is a standalone Go 1.26.4 module, deliberately OUT of the root go.work
   (which stays 1.25.8 for elitea-main/scheduler). Build with GOWORK=off. Rationale:
@@ -260,6 +322,181 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
      chart-settable or allowlisted.
   3. **Coverage floor** (`scripts/coverage-floor.sh`) — enforcement packages must
      not regress below current coverage.
+
+## Model-name mapping
+- **The advertised model id and the provider model name are two different
+  names, and the gateway maps one onto the other before dispatch (issue #317).**
+  `GET /llm/v1/models` advertises `elitea_title`, a user-authored label. The
+  provider only knows the row's `data.name`. The two are independent by
+  construction, so the inference path sent the provider a name it does not know.
+  LiteLLM did this mapping; nothing replaced it when LiteLLM was removed.
+
+  `internal/llmproxy/modelmap.go` is the single resolution point. Every dialect
+  calls `mapModel` after it decodes the request and BEFORE the budget gate. The
+  order is load-bearing twice: the provider must never see an unmapped title,
+  and the cost tables are keyed by the provider's model name.
+
+- **The provider wire name stays inside the gateway.** `modelObject.providerModel`
+  is unexported, so `encoding/json` cannot put it in a caller-facing response.
+  Guarded by `TestModelMap_ListDoesNotLeakTheProviderWireName`.
+
+- **The request accepts BOTH the advertised id and the row's own `data.name`.**
+  Both name the same configuration row, so both map to the same dispatch. This
+  is not a widening: a name that no configured row carries is still rejected.
+
+  *Why both:* every caller that exists today sends `data.name`, not the title.
+  elitea-main's model catalog exposes an `llm` row under `data->>'name'`
+  (`internal/infra/db/repos/models.go`), the web model picker posts that string
+  back as `llm_settings.model_name`, and the e2e seed gives the same row the
+  title `e2e-mock-model-llm` and the name `E2E-MOCK-MODEL`. An id-only rule
+  would 404 the whole chat path on the first request.
+
+- **An id that matches nothing is 404 at the gateway** (`model_not_found`),
+  not an opaque provider error. Guarded by
+  `TestModelMap_UnknownModelIs404AndNeverReachesTheProvider`.
+
+- **An UNREADABLE model set forwards the caller's model unchanged.** This is the
+  degraded path only: no project on the request, no database, or a query failure
+  with nothing cached. The gateway cannot prove the model is wrong, and a 404
+  here would turn a database blip into a total inference outage. It is
+  deliberately NOT the fail-closed rule the budget path uses — no money and no
+  tenant boundary depend on this mapping, and a wrong name fails at the provider
+  anyway. Do not change it to fail closed without a human.
+
+  The resolver reports "read the set" and "could not read the set" as different
+  answers (`ModelResolver.list`). `List` collapses both to an empty slice, which
+  is correct for `/llm/v1/models` and WRONG for dispatch. Keep them distinct.
+
+- **Which name SHOULD be the addressable one is still a product decision.**
+  Issue #317 did not pick one, because it changes what external SDK users type.
+  This change only makes the list and the request path agree.
+
+- **The shared scope and the name mapping compose in one row loop (#316 + #317).**
+  The scope decides WHICH rows come back. The mapping decides WHAT EACH ROW
+  CARRIES. They are independent, so `queryScope` builds every row the same way
+  in both scopes: a shared row carries `providerModel` exactly like an own row.
+
+  A shared row that carries no provider model name sends the provider a
+  user-authored title, and it prices the wrong model at the budget gate, because
+  the cost tables are keyed by the provider's name. Both suites are blind to
+  this on their own: the #316 tests assert model ids only, and the #317 tests
+  seed one scope only.
+
+  `shared_modelmap_test.go` pins the join. It asserts what the PROVIDER
+  received, never the status. Three properties are guarded:
+  - A shared model dispatches its `data.name`
+    (`TestSharedModelDispatchesTheProviderWireName`).
+  - On an id collision the CALLER's row supplies the dispatched name
+    (`TestCollidingModelIDDispatchesTheOwnRowWireName`). The two rows share an
+    id, so the dispatched name is the only evidence of which row won.
+  - An unpublished row dispatches under NEITHER of its two names
+    (`TestUnpublishedModelIsNotDispatchable`). #317 accepts `data.name` as an
+    alias, so the wire name is a second way in if the predicate ever fails.
+
+- **The model set is EVERY addressable configuration section, not the `llm`
+  section.** `addressableModelSections` (`internal/llmproxy/models.go`) lists the
+  `(section, type)` pairs the resolver reads: `llm`/`llm_model`,
+  `embedding`/`embedding_model`, and
+  `image_generation`/`image_generation_model`.
+
+  *Why this is a correctness rule and not a preference:* `mapModel` gates EVERY
+  dialect against this one set. While the resolver read `llm` rows alone, a
+  project's `embedding`/`embedding_model` row was invisible to it, so
+  `POST /llm/v1/embeddings` answered 404 `model_not_found` for a model the
+  project had configured and whose credential resolved. Measured on the
+  standalone stack: the index plane's embedding hop could not dispatch at all.
+  `/llm/v1/images/*` had the identical defect. The `llm`-only read predates
+  `mapModel` — it was written for `GET /llm/v1/models`, where it was harmless,
+  and #317 turned it into a gate without widening it.
+
+- **The fix is in the gateway, NOT in the seed.** Seeding an embedding model as
+  an extra `llm`/`llm_model` row also makes it resolve, and it is a smaller
+  change. It is rejected because those rows ARE the chat catalogue: elitea-main's
+  `/configurations/models/{projectId}` selects `section = 'llm'`
+  (`CurrentModelSectionLLM`), which is what the web chat model picker reads. An
+  embedding model would become a selectable chat model in the product, for every
+  project seeded that way. Keep each model in its own section and make the
+  gateway read them all.
+
+- **`asr` and `tts` are deliberately absent, and that is a routing fact.** The
+  gateway mounts no audio route, so admitting those sections would advertise a
+  model no caller can reach. `vectorstorage` holds no model. Add a pair to
+  `addressableModelSections` when, and only when, you add a route that
+  dispatches it — `model_sections_test.go` covers each pair on its own route.
+
+- **The declared order is the precedence order.** `modelsSQL` joins the pairs
+  with `WITH ORDINALITY` and orders by the ordinality before the row id, so a
+  model id two sections both carry resolves to the earlier section, and `llm`
+  first keeps the chat models in the positions they held before the set grew.
+  The pairs travel as bind parameters: no part of the statement text is built
+  from the section list.
+
+- **Advertising the other sections on `GET /llm/v1/models` is intended.** OpenAI's
+  own `/v1/models` lists embedding and image models, the legacy LiteLLM list did
+  too (`preflight.StaticLegacyModels` carries `text-embedding-3-*`, and the BFF.3
+  parity gate asserts they stay present), and the web pickers do not read this
+  route. It also keeps the invariant `modelmap.go` states: list and dispatch
+  agree.
+
+- **[human decision] 2026-08-17 (issue #469) — an unreadable model set REFUSES
+  the request. It does not forward the caller's model unmapped.** *Finding:* the
+  three conditions in which the resolver cannot read a project's model set all
+  produced one outcome: HTTP 200, with the caller's model name sent to the
+  provider with no map. The deleted elitea-main handler refused the same
+  condition with 502. Pull request #285 reversed that direction and recorded no
+  reason. *Decision, per condition:*
+
+  | Condition | Behaviour | Why |
+  |---|---|---|
+  | Empty project identifier | 404 `model_not_found` | A condition of the request, not a fault. A caller with no project has no configured model and no credential: `GetKeysForProvider` returns zero keys for an empty project. The budget gate also skips a request with no project, so an accepted request would be unmapped AND unmetered. |
+  | Nil database handle | 502 `model_catalogue_unavailable` | A wiring fault. `main.go` gives a gateway with no pool NO resolver, and that posture forwards every model unchanged. A resolver that exists with no database can never map anything, so forwarding would make the degraded path permanent. |
+  | Query failure, nothing cached | 502 `model_catalogue_unavailable` | A database fault, and the gateway has never read this project's list. |
+
+  *Why no new permissive path is bounded and kept:* the bounded permissive path
+  already exists one layer down. A query failure WITH a cached list serves the
+  last good list and reports the set as known, so the request maps and dispatches
+  as normal (`models.go`, `List`). That list is bounded because every name in it
+  came from a real configuration row. The three conditions above are exactly the
+  ones in which no list exists, so "permit only a cached name" would permit
+  nothing. `TestModelMap_QueryFailureWithACachedListStillDispatches` pins the
+  stale path; delete it and a database blip becomes a total outage.
+
+  *Accepted cost:* a project whose model set has never been read gets 502 for
+  every request during a database outage, instead of a provider error. The
+  counters below make that state visible.
+
+- **A refusal an operator cannot count is a refusal nobody sees.** Each condition
+  above increments its own `expvar` counter
+  (`gateway_model_map_refused_no_project_total`, `..._no_database_total`,
+  `..._lookup_failed_total`). `llmproxy.ModelMapMetricNames` is the ONE named
+  path by which they reach `GET /metrics`, so the package that publishes a
+  counter also states its name. No name is copied into a second file.
+
+## Observability
+- **[human decision] 2026-08-17 (issue #465) — `GET /metrics` serves a named
+  allowlist. `/debug/vars` stays unpublished.** *Finding:* the
+  `gateway_budget_enforcement_enabled` gauge had no route for its whole life.
+  `expvar` registers `/debug/vars` on `http.DefaultServeMux`, and this process
+  serves its own multiplexer. The comment said operators could alarm on the
+  value 0, and no operator could read the value at all. This mattered most for
+  issue #304: a gateway that starts while NATS is unreachable enforces nothing
+  for the life of the process, and this gauge is the control that reports it.
+
+  *Decision:* mount `/metrics` on the gateway multiplexer, in the Prometheus
+  text exposition format, serving the variables `gatewayMetrics` names and
+  nothing else. `expvar.Handler()` is NOT used: it writes every variable the
+  process publishes, `cmdline` (the process arguments) and `memstats` included,
+  on the same listener that serves `/llm`. The wiring gate in `main_test.go`
+  forbids the call, and requires the `mux.Handle("/metrics"` mount.
+
+  *Exposure:* the shipped Service is ClusterIP with mutual TLS, and the edge
+  proxies only the `/llm` paths, so `/metrics` is reachable from inside the
+  cluster and not from a tenant.
+
+  *Proof rule for this route:* a test that reads the variable in the same
+  process does not prove a route exists. `TestMetricsRoute_IsServedByTheRunningGateway`
+  builds the binary, starts it, and scrapes it over HTTP. Remove the mount and
+  that test answers 404, while every handler-level test still passes.
 
 ## Resolved follow-ups
 - ✅ `SECRETS_MASTER_KEY` + `GATEWAY_IDENTITY_SECRET` now wired via the chart's

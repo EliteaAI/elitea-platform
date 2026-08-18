@@ -99,6 +99,55 @@ else
     --defaults
 fi
 
-log "done — assets:"
+# -- The informational listings come first (issue #486) -----------------------
+#
+# `$NATS kv ls || true` and `$NATS stream ls || true` used to be the LAST two
+# commands of this Helm post-install hook Job, so the Job reported success
+# whether or not NATS still answered. The creates above are protected by
+# `set -eu`, so the risk was low. The exit status was still wrong.
+#
+# The listings stay, because an operator reads them. They are no longer the
+# commands whose status the Job reports.
+log "assets:"
 $NATS kv ls || true
 $NATS stream ls || true
+
+# -- The verdict (issue #486) -------------------------------------------------
+#
+# Three assets, and each one is read back by name. The creates above are
+# conditional: every branch either created the asset or found it already
+# there, so a run that skipped all three looks the same as a run that made
+# all three. Only a read-back tells them apart.
+#
+# The count is stated as a floor, in the idiom of
+# `deploy/scripts/embedding-path-check.sh`. A counter sees only the assertions
+# that REACH it, so a deleted block, or one guard standing in for three, shows
+# up as a shortfall here rather than as silence.
+EXPECTED_ASSERTIONS=3
+ASSERTED=0
+
+assert_asset() {
+  kind="$1"
+  name="$2"
+  if ! $NATS "${kind}" info "${name}" >/dev/null 2>&1; then
+    log "FAILED: ${kind} ${name} does not exist after bootstrap"
+    exit 1
+  fi
+  ASSERTED=$((ASSERTED + 1))
+  log "  ok ${kind} ${name}"
+}
+
+log "verifying the three assets"
+assert_asset kv GATEWAY_BUDGET
+assert_asset kv GATEWAY_ALERT_COOLDOWN
+assert_asset stream GATEWAY_BUDGET_DELTAS
+
+log "${ASSERTED} of ${EXPECTED_ASSERTIONS} expected assertions reported a result"
+if [ "${ASSERTED}" -ne "${EXPECTED_ASSERTIONS}" ]; then
+  log "FAILED: ${ASSERTED} assertion(s) reported a result, and ${EXPECTED_ASSERTIONS} were expected."
+  log "  An assertion that reports nothing is not a passed assertion. If you"
+  log "  added or removed an asset, move EXPECTED_ASSERTIONS with it."
+  exit 1
+fi
+
+log "done"

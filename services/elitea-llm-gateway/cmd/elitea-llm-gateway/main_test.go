@@ -7,13 +7,18 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/config"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/governance"
+	natsinfra "github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/server"
 )
 
 // TestMainWiring is the "wiring gate": it parses main.go and asserts that each
@@ -34,6 +39,7 @@ func TestMainWiring(t *testing.T) {
 		why  string
 	}{
 		{"llmproxy.WithBudgetGate(", "the budget gate is never attached to the handler — every /llm request would be admitted unconditionally (enforcement silently off)"},
+		{"llmproxy.WithModelResolver(", "the model resolver is never attached to the handler — /llm/v1/models advertises nothing AND the inference path stops mapping the advertised model id onto the provider's own model name, so a caller that picks a model from the list sends the provider a name it does not know (issue #317)"},
 		{"account.New(", "the vault-backed Account is never constructed — the gateway runs the zero-provider bootstrap account and cannot resolve ANY provider credential (BFF.6)"},
 		{"account.NewFernetVault(", "the Fernet vault is never constructed — {{secret.NAME}} credential references cannot be resolved (BFF.6)"},
 		{"llmproxy.WithLoopBreakerParams(", "the per-(project_id, model) amplification backstop (spec §2.6 guard #2's implementation) is never armed — unbounded request amplification for one tuple would run unchecked in production"},
@@ -46,7 +52,9 @@ func TestMainWiring(t *testing.T) {
 		{"llmproxy.WithOpsEventPublisher(", "budget.unbilled_stream is never published — a stream the gateway could not bill would be invisible to operators (issue #9)"},
 		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
 		{"makeReadyzHandler(", "the NATS circuit-breaker /readyz handler is never mounted — a pod with a dead budget-enforcement path stays in the load-balancer rotation"},
+		{"budgetEnforcementUnwired(", "the /readyz gate for a NATS that never connected is never computed — a pod that boots during a NATS outage serves /llm unmetered, for the life of the process, while reporting ready (issue #304)"},
 		{`mux.HandleFunc("/healthz"`, "the liveness /healthz route is never mounted — issue #242's healthz/readyz split silently loses liveness, and the chart's livenessProbe would 404 every pod"},
+		{`mux.Handle("/metrics"`, "the operator controls have no route — the budget-enforcement gauge and the model-map refusal counters cannot be read, so the alarm for a gateway that enforces nothing (issue #304) cannot be built (issue #465)"},
 		{"drainForShutdown(", "in-flight billing + persist goroutines must be drained before pool.Close() or spend is dropped / a pool races"},
 		{"grace.StopStreamGrace(", "phase 1 of shutdown is missing — the stream grace would extend the pod's termination window (issue #9)"},
 		{"srv.ShutdownHTTP(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
@@ -106,6 +114,23 @@ func TestMainWiring(t *testing.T) {
 				"A lifecycle method that isn't called from the composition root is a "+
 				"'built but not wired' bug (this class recurred 3x in review). Wire it in main().",
 				r.call, r.why)
+		}
+	}
+
+	// The gate also holds one decision in place. Issue #465 asked whether the
+	// whole expvar surface must be public, and the answer is no: /metrics serves
+	// an allowlist (see gatewayMetrics). expvar.Handler() writes every published
+	// variable, `cmdline` and `memstats` included, on the same listener that
+	// serves /llm.
+	forbidden := []struct {
+		call string
+		why  string
+	}{
+		{"expvar.Handler(", "expvar.Handler() publishes EVERY variable this process holds, including the process arguments and the memory statistics. /metrics serves a named allowlist instead (issue #465). Add the variable to gatewayMetrics rather than publishing the whole surface"},
+	}
+	for _, f := range forbidden {
+		if calls[f.call] {
+			t.Errorf("WIRING GATE: %s is called from package main — %s.", f.call, f.why)
 		}
 	}
 }
@@ -193,7 +218,7 @@ type fakePinger struct {
 func (f *fakePinger) Ping(_ context.Context) error { return f.err }
 
 func TestReadyz_PingFailureReturns503(t *testing.T) {
-	h := makeReadyzHandler(&fakePinger{err: errors.New("breaker open")})
+	h := makeReadyzHandler(&fakePinger{err: errors.New("breaker open")}, false)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
@@ -221,7 +246,7 @@ func TestReadyz_PingFailureReturns503(t *testing.T) {
 }
 
 func TestReadyz_PingOKReturns200(t *testing.T) {
-	h := makeReadyzHandler(&fakePinger{err: nil})
+	h := makeReadyzHandler(&fakePinger{err: nil}, false)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
@@ -246,7 +271,7 @@ func TestReadyz_PingOKReturns200(t *testing.T) {
 }
 
 func TestReadyz_NilPingerReturns200(t *testing.T) {
-	h := makeReadyzHandler(nil)
+	h := makeReadyzHandler(nil, false)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
@@ -271,7 +296,7 @@ func TestReadyz_NilPingerReturns200(t *testing.T) {
 // typed-nil hazard on the drain path.
 func TestReadyz_TypedNilGovStoreReturns200(t *testing.T) {
 	var nilStore *governance.GovernanceStore // typed nil, as the disabled path passes
-	h := makeReadyzHandler(nilStore)
+	h := makeReadyzHandler(nilStore, false)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
@@ -353,6 +378,116 @@ func TestStartupIdentityCheck(t *testing.T) {
 			}
 			if tc.wantErr && !strings.Contains(err.Error(), "GATEWAY_IDENTITY_SECRET") {
 				t.Fatalf("error must name the env var an operator has to set; got %q", err)
+			}
+		})
+	}
+}
+
+// --- issue #304: a gateway that boots without NATS must not report ready ----
+//
+// What this catches, and why the tests above could not.
+//
+// TestReadyz_TypedNilGovStoreReturns200 asserts that a nil govStore reports
+// ready. That is correct for the posture it was written for (GATEWAY_NATS_URL
+// unset — enforcement deliberately off) and wrong for the one below
+// (GATEWAY_NATS_URL SET, the connect failed): same nil govStore, opposite
+// correct answer. Nothing distinguished the two, so a pod that booted during a
+// NATS outage stayed in rotation serving /llm with no budget gate and no
+// billing — for the life of the process, because server.New dials once and
+// nothing re-wires enforcement afterwards.
+//
+// This drives the REAL startup path rather than hand-setting the flag: it
+// builds a Server through server.New with a connector that fails exactly the
+// way an unreachable NATS fails, then feeds the resulting (nil) client into
+// the same decision main() makes. Set the connector to succeed, or unset the
+// URL, and the pod is ready again — so the test discriminates the outage from
+// the deliberate-dev posture rather than asserting a constant.
+func TestReadyz_NATSConfiguredButUnreachableAtStartupIsNotReady(t *testing.T) {
+	cases := []struct {
+		name          string
+		natsURL       string
+		connectErr    error
+		wantUnwired   bool
+		wantStatus    int
+		wantBodyState string
+	}{
+		{
+			name:          "configured NATS unreachable at boot",
+			natsURL:       "nats://nats.invalid:4222",
+			connectErr:    errors.New("dial tcp: connection refused"),
+			wantUnwired:   true,
+			wantStatus:    http.StatusServiceUnavailable,
+			wantBodyState: "not_ready",
+		},
+		{
+			// The dev/CI posture (issue #242's nil-govStore case) must be
+			// untouched: no NATS configured means enforcement is off on
+			// purpose, and the pod is legitimately ready.
+			name:          "NATS deliberately not configured",
+			natsURL:       "",
+			connectErr:    nil,
+			wantUnwired:   false,
+			wantStatus:    http.StatusOK,
+			wantBodyState: "ready",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{
+				HTTPAddr:            "127.0.0.1:0",
+				InitialPoolSize:     1,
+				ProviderConcurrency: 1,
+				NATSURL:             tc.natsURL,
+			}
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			srv, err := server.New(
+				context.Background(), cfg, logger, new(slog.LevelVar), nil, http.NewServeMux(),
+				server.WithNATSConnector(func(context.Context, natsinfra.Config) (server.NATSClient, error) {
+					return nil, tc.connectErr
+				}),
+			)
+			if err != nil {
+				t.Fatalf("server.New: %v", err)
+			}
+			t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+			// main() builds governance only when srv.NATS() != nil, so an
+			// unreachable NATS leaves a nil *GovernanceStore here — the exact
+			// typed nil the composition root passes on.
+			if srv.NATS() != nil {
+				t.Fatalf("srv.NATS() = non-nil, want nil for this fixture")
+			}
+			var govStore *governance.GovernanceStore
+
+			unwired := budgetEnforcementUnwired(cfg, govStore)
+			if unwired != tc.wantUnwired {
+				t.Fatalf("budgetEnforcementUnwired = %v, want %v", unwired, tc.wantUnwired)
+			}
+
+			rec := httptest.NewRecorder()
+			makeReadyzHandler(govStore, unwired).ServeHTTP(
+				rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("/readyz status = %d, want %d (body %s)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var body struct {
+				Status string            `json:"status"`
+				Checks map[string]string `json:"checks"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not valid JSON: %s", rec.Body.String())
+			}
+			if body.Status != tc.wantBodyState {
+				t.Errorf("status = %q, want %q", body.Status, tc.wantBodyState)
+			}
+			// The reason must be legible to whoever is looking at a drained
+			// pod: "nats: unavailable" would send them to the breaker, which
+			// is a different failure with a different remedy.
+			if tc.wantUnwired && body.Checks["budget_enforcement"] != "unwired" {
+				t.Errorf("checks[budget_enforcement] = %q, want %q",
+					body.Checks["budget_enforcement"], "unwired")
 			}
 		})
 	}

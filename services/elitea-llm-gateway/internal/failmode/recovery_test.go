@@ -77,6 +77,7 @@ type recDB struct {
 	perScopeAccum map[string]int64
 
 	beginErr    error
+	beginPanics bool
 	queryErr    error
 	markErr     error
 	commitErr   error
@@ -85,15 +86,34 @@ type recDB struct {
 
 	begins    int
 	finalized []string // row ids finalized (phase 3)
+
+	// outageCount / countErr script the non-transactional gauge read
+	// (countOutageRowsSQL, issue #515).
+	outageCount int64
+	countErr    error
+	countHits   int
 }
 
-func (d *recDB) QueryRow(context.Context, string, ...any) Row {
+func (d *recDB) QueryRow(_ context.Context, sql string, _ ...any) Row {
+	if strings.Contains(sql, "count(*)") {
+		d.mu.Lock()
+		d.countHits++
+		err, n := d.countErr, d.outageCount
+		d.mu.Unlock()
+		if err != nil {
+			return scriptedRow{scanErr: err}
+		}
+		return scriptedRow{vals: []any{n}}
+	}
 	return scriptedRow{scanErr: errors.New("unused non-tx QueryRow")}
 }
 
 func (d *recDB) Begin(context.Context) (Tx, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.beginPanics {
+		panic("recDB: Begin panicked")
+	}
 	if d.beginErr != nil {
 		return nil, d.beginErr
 	}

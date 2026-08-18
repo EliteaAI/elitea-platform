@@ -1,0 +1,33 @@
+# Images that .github/workflows/ci-image-scan.yml scans and reports, but that do
+# NOT fail the merge on a HIGH or CRITICAL finding.
+#
+# This file exists so that every exemption is visible in one place, and so that
+# a pull request which adds one changes a file whose only subject is exemptions.
+# A `blocking: false` buried in a matrix is easy to miss in review.
+#
+# An image belongs here only when BOTH of these hold:
+#
+#   1. The finding set is owned outside this repository, so no branch here can
+#      make the job green.
+#   2. The image is on a recorded retirement path.
+#
+# Name both issues on the line above the entry: the findings, and the
+# retirement. Delete the entry when the image goes.
+#
+# What an entry does NOT do:
+#
+#   - it does not change the HIGH,CRITICAL threshold;
+#   - it does not suppress a CVE, and the full count is still printed;
+#   - it does not relax the dormancy guards. A missing report, or a report
+#     without the expected target type, still FAILS the job;
+#   - it does not survive its cause. The job FAILS when an exempt image reports
+#     zero findings, because the entry is then stale.
+#
+# The scan matrix in ci-image-scan.yml must set `blocking: false` for exactly
+# these names. The coverage job fails when the two files disagree.
+#
+# Lines that start with # are comments. Blank lines are ignored.
+
+# findings #509 — 77 CRITICAL and 527 HIGH, all from ghcr.io/eliteaai/pylon
+# retirement #339 — the index plane moves to index v2 and this image is deleted
+pylon-indexer

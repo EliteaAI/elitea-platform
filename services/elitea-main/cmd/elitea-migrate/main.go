@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
@@ -43,7 +42,7 @@ func main() {
 
 	var projectIDs []int64
 	if allTenants {
-		projectIDs, err = migrationTenantProjects(ctx, pool)
+		projectIDs, err = migrate.TenantProjects(ctx, pool)
 		if err != nil {
 			exitError(err)
 		}
@@ -68,69 +67,6 @@ func main() {
 		tenantCount = len(projectIDs)
 	}
 	slog.Info("migrations applied", "tenant_project", projectID, "all_tenants", allTenants, "tenant_count", tenantCount)
-}
-
-type tenantProjectQueryer interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-}
-
-func migrationTenantProjects(ctx context.Context, queryer tenantProjectQueryer) ([]int64, error) {
-	rows, err := queryer.Query(ctx, `
-SELECT
-    project.id,
-    EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_namespace
-        WHERE nspname = 'p_' || project.id::text
-    ) AS schema_exists
-FROM centry.project AS project
-WHERE project.create_success = TRUE
-ORDER BY project.id`)
-	if err != nil {
-		return nil, fmt.Errorf("preflight legacy tenant projects: %w", err)
-	}
-	defer rows.Close()
-
-	projects := make([]tenantProjectPreflight, 0)
-	for rows.Next() {
-		var project tenantProjectPreflight
-		if err := rows.Scan(&project.id, &project.schemaExists); err != nil {
-			return nil, fmt.Errorf("scan legacy tenant project: %w", err)
-		}
-		projects = append(projects, project)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate legacy tenant projects: %w", err)
-	}
-	return validateTenantProjectPreflight(projects)
-}
-
-type tenantProjectPreflight struct {
-	id           int64
-	schemaExists bool
-}
-
-func validateTenantProjectPreflight(projects []tenantProjectPreflight) ([]int64, error) {
-	projectIDs := make([]int64, 0, len(projects))
-	missingSchemas := make([]int64, 0)
-	for _, project := range projects {
-		projectIDs = append(projectIDs, project.id)
-		if !project.schemaExists {
-			missingSchemas = append(missingSchemas, project.id)
-		}
-	}
-	if len(missingSchemas) != 0 {
-		shown := missingSchemas
-		if len(shown) > 20 {
-			shown = shown[:20]
-		}
-		return nil, fmt.Errorf(
-			"preflight found %d create-successful projects without tenant schemas (first IDs: %v)",
-			len(missingSchemas),
-			shown,
-		)
-	}
-	return projectIDs, nil
 }
 
 func exitError(err error) {

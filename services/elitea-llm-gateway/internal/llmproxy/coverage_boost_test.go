@@ -148,7 +148,8 @@ func TestStaticModelRowsIter_NextAndScan(t *testing.T) {
 	}
 	var title string
 	var data []byte
-	if err := it.Scan(&title, &data); err != nil {
+	var shared bool
+	if err := it.Scan(&title, &data, &shared); err != nil {
 		t.Fatalf("Scan error: %v", err)
 	}
 	if title != "m1" {
@@ -162,7 +163,7 @@ func TestStaticModelRowsIter_NextAndScan(t *testing.T) {
 	if !it.Next() {
 		t.Fatal("Next() should return true for second row")
 	}
-	if err := it.Scan(&title, &data); err != nil {
+	if err := it.Scan(&title, &data, &shared); err != nil {
 		t.Fatalf("Scan error: %v", err)
 	}
 	if title != "m2" {
@@ -194,7 +195,8 @@ func TestStaticModelQuerier_Query(t *testing.T) {
 		count++
 		var title string
 		var data []byte
-		if scanErr := rows.Scan(&title, &data); scanErr != nil {
+		var shared bool
+		if scanErr := rows.Scan(&title, &data, &shared); scanErr != nil {
 			t.Fatalf("Scan error: %v", scanErr)
 		}
 	}
@@ -379,7 +381,7 @@ func (s *softAlertChecker) CheckBudget(_ context.Context, _ int, _, _ string, _,
 	return s.checkResult, s.checkErr
 }
 
-func (s *softAlertChecker) UpdateUsage(_ context.Context, _ int, _, _, _ string, _, _, _ int64) error {
+func (s *softAlertChecker) UpdateUsage(_ context.Context, _ int, _, _, _ string, _, _, _ int64, _ *failmode.UsageDimensions) error {
 	return nil
 }
 
@@ -582,7 +584,7 @@ func TestUpdateUsageDirect_BillsImageCost(t *testing.T) {
 	// Call updateUsageDirect directly with a known cost.
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "42")
-	h.updateUsageDirect(ctx, "42", wantCostNano)
+	h.updateUsageDirect(ctx, "42", "", "openai", "dall-e-3", wantCostNano)
 
 	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
@@ -608,7 +610,7 @@ func TestUpdateUsageDirect_ZeroCostNoOp(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "42")
-	h.updateUsageDirect(ctx, "42", 0)
+	h.updateUsageDirect(ctx, "42", "", "openai", "dall-e-3", 0)
 
 	// Give a brief window; UpdateUsage must NOT be called.
 	time.Sleep(30 * time.Millisecond)
@@ -626,7 +628,7 @@ func TestUpdateUsageDirect_NilGateNoOp(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "42")
 	// Must not panic.
-	h.updateUsageDirect(ctx, "42", perImageFallbackNano)
+	h.updateUsageDirect(ctx, "42", "", "openai", "dall-e-3", perImageFallbackNano)
 }
 
 // ── ImageGeneration handler — per-image fallback billing path ─────────────────

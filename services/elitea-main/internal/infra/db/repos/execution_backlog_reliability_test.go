@@ -28,8 +28,7 @@ func TestPostgresServiceBackedRedisOutageBacklogReliability(t *testing.T) {
 	if os.Getenv(postgresReliabilityOptIn) != "1" {
 		t.Skipf("set %s=1 with %s to run the PostgreSQL backlog reliability test", postgresReliabilityOptIn, postgresIntegrationDatabaseURL)
 	}
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	const (
 		maxOutstanding    = int64(64)

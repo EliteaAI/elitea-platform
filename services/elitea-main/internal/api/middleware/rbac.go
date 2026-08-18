@@ -8,6 +8,20 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// RequirePermissions gates a route on the permission set the caller ALREADY
+// carries in `auth.User.Permissions`. It asks no resolver and reads no database.
+//
+// DO NOT USE IT ON A PRODUCTION ROUTE. Production never fills that field. The
+// only source that assigns it is the legacy Redis-RPC validator at
+// internal/infra/authsvc/rpc.go:121, and production wires
+// `authsvc.NewPrincipalValidator` instead, which leaves the field nil. So a
+// route gated this way answers 403 to EVERY caller, the operator included, and
+// no migration can grant a way in.
+//
+// That defect shipped on the gateway governance routes and #386 fixed it. The
+// route now uses RequireCentralPermissions. This constructor has no production
+// call site today. Use RequireCentralPermissions for a platform-wide surface, or
+// RequireResolvedPermissions for a project-scoped one. Both ask the resolver.
 func RequirePermissions(required ...string) func(http.Handler) http.Handler {
 	requiredSet := make(map[string]struct{}, len(required))
 	for _, p := range required {

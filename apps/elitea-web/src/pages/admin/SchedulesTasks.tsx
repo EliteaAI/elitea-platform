@@ -74,13 +74,12 @@ import Typography from '@mui/material/Typography';
 
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { ScheduleHistoryDrawer } from './ScheduleHistoryDrawer';
 import { SchedulesTable } from './SchedulesTable';
 import { useAdminSchedulesPage, type AdminSchedulesPageState } from './useAdminSchedulesPage';
 
-const { DrawerPage } = drawerPage;
 
 /**
  * Applied to each `Tab` rather than through a `& .MuiTab-root` selector on the

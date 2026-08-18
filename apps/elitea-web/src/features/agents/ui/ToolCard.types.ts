@@ -137,7 +137,17 @@ export interface ToolCardProps {
   readonly context: ToolCardContext;
   readonly icon?: ToolCardIcon | undefined;
   readonly disassociate: ToolCardDisassociateProps;
-  readonly variables: ToolCardVariablesProps;
+  /**
+   * OPTIONAL, and omitting it WITHHOLDS the whole variables control — no
+   * "Show variables" toggle, no variables panel, regardless of
+   * `tool.variables` (#248). There is nowhere to store per-tool variables on
+   * this backend (no column, no table, no `tools` branch in `UpdateVersion`,
+   * and `fetchVersionDetails` emits no `variables` key), so the only caller
+   * — `AgentToolRow`, see its module doc comment — passes nothing rather than
+   * offering an editable field whose input is discarded. Hidden, not
+   * disabled, matching the legacy baseline's own omit-when-empty gate.
+   */
+  readonly variables?: ToolCardVariablesProps | undefined;
   readonly toolSelection: ToolCardToolSelectionProps;
   readonly validation?: ToolCardValidationProps | undefined;
   readonly delegatedAuth?: ToolCardDelegatedAuthProps | undefined;

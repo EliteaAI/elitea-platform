@@ -145,4 +145,38 @@ describe('CreateApplication', () => {
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/agents/latest/1'));
   }, 15_000);
+
+  /*
+   * #307 — `CreateAgentForm` now renders the conversation-starters editor
+   * itself, so this page had to route the path or the create form would ship
+   * the same inert control the edit page was filed for. Asserted off the
+   * POST body: the editor keeps no state of its own, so "the text is on
+   * screen" would prove only that the page echoed it back.
+   */
+  // 15s, not the 5s default: this one test types into three fields (starter,
+  // name, description) and `user.type` is per-keystroke — it passed alone and
+  // timed out when the whole `pages/agents` + `features/agents` suite ran in
+  // parallel on this machine.
+  it('sends a conversation starter typed on the create form in the create POST body', { timeout: 15_000 }, async () => {
+    const user = userEvent.setup();
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    const add = await screen.findByTestId('agent-conversation-starter-add');
+    expect(add).toBeVisible();
+    await user.click(add);
+    await user.type(screen.getByTestId('agent-conversation-starter-input'), 'Ask');
+
+    await fillAndSave(user);
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const versions = bodies[0]?.['versions'] as Record<string, unknown>[] | undefined;
+    expect(versions?.[0]?.['conversation_starters']).toEqual(['Ask']);
+  });
 });

@@ -73,9 +73,31 @@ export interface ToolFormContainerProps {
 
 const SECRET_FIELD_KEY_PATTERNS = ['password', 'secret', 'token', 'credential'];
 
+/**
+ * #311 — the schema `default` fills a field only while that field is ABSENT
+ * from `toolInputVariables`, never once the key is present.
+ *
+ * The `key in dict` test is what separates "never set" from "deliberately
+ * cleared": `CommonStringField` emits `onChange(fieldKey, undefined)` for an
+ * emptied input (`CommonStringField.tsx:225`) and the owning form merges that
+ * as `{...values, [key]: undefined}` (`IndexesTab.tsx`'s `handleChange`), so
+ * a cleared field arrives here as a PRESENT key holding `undefined`. Testing
+ * the value alone — as the port did, and as the pre-EL-6110 baseline did —
+ * cannot tell those two apart, so it re-applied the default the instant the
+ * user emptied the field: the field refused to stay blank and the default was
+ * what got saved. Fixed in the baseline by `hotfix/EL-6110`
+ * (`ToolFormContainer.jsx`, "Allow clearing fields with schema defaults");
+ * this is the same guard, same shape.
+ *
+ * The `typeof result === 'function'` arm is the baseline's own defence
+ * against a setter leaking into the value dict and is kept unchanged — but it
+ * too now only applies to an absent key, since a present-but-function value
+ * is equally not a default's business.
+ */
 function resolveFieldValue(fieldKey: string, property: ToolFormContainerProperty, toolInputVariables: Readonly<Record<string, unknown>> | undefined): unknown {
   const result = toolInputVariables?.[fieldKey];
-  if ((result === undefined || typeof result === 'function') && property.default !== undefined) return property.default;
+  const keyExists = toolInputVariables !== undefined && fieldKey in toolInputVariables;
+  if (!keyExists && (result === undefined || typeof result === 'function') && property.default !== undefined) return property.default;
   return result;
 }
 

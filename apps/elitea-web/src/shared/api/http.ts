@@ -9,9 +9,10 @@
  *  1. explicit `credentials`: 'same-origin', switching to 'include' when the
  *     resolved base URL is cross-origin (old `fetchBaseQuery` set none —
  *     apps/elitea-ui/src/api/eliteaApi.js:13-15).
- *  2. real 401/403 → re-auth; redirect-sniff kept as SECONDARY signal
+ *  2. real 401 → re-auth; redirect-sniff kept as SECONDARY signal
  *     (old app had redirect-sniff only — eliteaApi.js:21-49; the genuine 401
  *     from elitea-main middleware/auth.go:155 surfaced as a plain error).
+ *     403 is DELIBERATELY not a re-auth signal any more — see `needsReauth`.
  *  3. single-flight re-auth: N concurrent 401s → one re-auth flow.
  *  6. dev bearer ONLY under `import.meta.env.DEV` (statically eliminated from
  *     production bundles; old app leaked it via runtime config —
@@ -84,7 +85,7 @@ export interface HttpClient {
   readonly baseUrl: string;
   readonly credentials: RequestCredentials;
   /**
-   * True when this client escalates 401/403 into the re-auth flow. Callers
+   * True when this client escalates a 401 into the re-auth flow. Callers
    * that must NOT trigger re-auth — the callback page's session probe above
    * all — assert on it (see auth/verify-session.ts).
    */
@@ -136,8 +137,39 @@ function isAuthRedirect(finalUrl: string): boolean {
   return stripped.includes('/forward-auth/') && stripped.includes('/login');
 }
 
+/**
+ * 401 only, not 403.
+ *
+ * elitea-main splits the two cleanly: `middleware/auth.go` answers 401
+ * `authentication_error` when it cannot establish a principal, and
+ * `middleware/rbac.go` answers 403 `insufficient permissions` when it can but
+ * the permission is missing. Re-authenticating the SAME user cannot add a
+ * permission, so a 403 that re-auths always replays into the same 403 — the
+ * flow is pure cost.
+ *
+ * It is worse than pure cost, which is why this changed. Measured against a
+ * live standalone stack (issue 93, project 1 without
+ * `models.applications.index_meta.details`): the indexes rail's 403 opened the
+ * re-auth flow, the flow did not settle, and `useQuery` therefore stayed
+ * PENDING — eight loading skeletons still on screen after nine seconds, with
+ * the Indexes tab itself still rendered because tab visibility comes from the
+ * toolkit type schema rather than from permissions. A refusal presented as a
+ * hung fetch. Any future permission misconfiguration presented the same way.
+ *
+ * The escalation also DISCARDED the response body for every 403, since the
+ * `kind: 'auth'` failure carries none — a gap already disclosed from four
+ * separate call sites (`pages/admin/api/adminSecretsApi.ts`,
+ * `adminSchedulesApi.ts`, `adminConfigurationApi.ts`, `adminAppRequestsApi.ts`)
+ * and worked around in a fifth (`pages/settings/Secrets.tsx`, which tests
+ * `kind === 'http' || kind === 'auth'` for its 403). A 403 now takes the
+ * ordinary `kind: 'http'` path with its status and body intact; every consumer
+ * of `HttpFailure` already switches exhaustively over both kinds.
+ *
+ * The redirect sniff is unchanged and still secondary: a forward-auth login
+ * redirect is a session failure whatever status it carries.
+ */
 function needsReauth(response: Response): boolean {
-  if (response.status === 401 || response.status === 403) return true;
+  if (response.status === 401) return true;
   return response.redirected && isAuthRedirect(response.url);
 }
 
@@ -160,9 +192,9 @@ function needsReauth(response: Response): boolean {
  * useCreateConfiguration.ts`'s `isAuthRequiredError` disclosed the same gap
  * from the other side.
  *
- * Deliberately narrow: 401 only (not 403), JSON only, and only when the flag
- * is literally `true` — every other 401/403 keeps the existing re-auth
- * behaviour untouched. Reads a CLONE, so the original response is still
+ * Deliberately narrow: 401 only, JSON only, and only when the flag is
+ * literally `true` — every other 401 keeps the existing re-auth behaviour
+ * untouched. Reads a CLONE, so the original response is still
  * consumable by `toResult`.
  */
 async function resourceAuthorizationBody(response: Response): Promise<unknown> {
@@ -331,7 +363,7 @@ export function createHttpClient(cfg: HttpConfig): HttpClient {
       if (resourceAuth !== undefined) {
         return failure({ kind: 'http', status: response.status, url: response.url, body: resourceAuth });
       }
-      // Behaviour 2: real 401/403 is the PRIMARY signal, redirect-sniff the
+      // Behaviour 2: a real 401 is the PRIMARY signal, redirect-sniff the
       // secondary one; both funnel into the same single-flight re-auth.
       const restored = await runReauth();
       if (!restored) return failure({ kind: 'auth', status: response.status, url: response.url });

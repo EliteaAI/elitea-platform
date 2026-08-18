@@ -40,74 +40,65 @@ func (s *embeddingConfigurationReaderStub) FindCurrentEmbeddingConfiguration(
 	return configuration, found, nil
 }
 
-type embeddingRuntimeReaderStub struct {
-	groups map[string]CurrentEmbeddingRuntimeGroup
-	calls  []string
-	err    error
-}
-
-func (s *embeddingRuntimeReaderStub) GetCurrentEmbeddingRuntimeGroup(
-	_ context.Context,
-	name string,
-) (CurrentEmbeddingRuntimeGroup, bool, error) {
-	s.calls = append(s.calls, name)
-	if s.err != nil {
-		return CurrentEmbeddingRuntimeGroup{}, false, s.err
-	}
-	group, found := s.groups[name]
-	return group, found, nil
-}
-
-func TestCurrentEmbeddingBindingResolverPreservesProjectPublicRawRoute(t *testing.T) {
+// TestCurrentEmbeddingBindingResolverBindsTheConfigurationRowTheGatewayReads
+// pins the post-LiteLLM contract. The binding always carries the plain model
+// name (route "raw"), because the gateway derives the project from the edge's
+// signed identity rather than from a `{projectID}_` group prefix; the
+// project -> public scope decision survives, but is now visible only in the
+// bound configuration identity and in the exact reader calls made.
+func TestCurrentEmbeddingBindingResolverBindsTheConfigurationRowTheGatewayReads(t *testing.T) {
+	projectLocal := currentEmbeddingConfiguration(
+		7,
+		"00000000-0000-0000-0000-000000000701",
+		"embed",
+		false,
+	)
+	publicShared := currentEmbeddingConfiguration(
+		1,
+		"00000000-0000-0000-0000-000000000101",
+		"embed",
+		true,
+	)
 	tests := []struct {
 		name       string
-		groups     map[string]CurrentEmbeddingRuntimeGroup
-		wantGroup  string
-		wantRoute  string
-		wantCalls  []string
 		configs    map[int32]CurrentEmbeddingConfiguration
-		configCall []embeddingConfigurationCall
+		wantCalls  []embeddingConfigurationCall
+		wantConfig *CurrentEmbeddingConfiguration
 	}{
 		{
-			name:      "project",
-			groups:    embeddingGroups("7_embed"),
-			wantGroup: "7_embed",
-			wantRoute: "project",
-			wantCalls: []string{"7_embed"},
+			// The caller's own row must win over an identically named shared
+			// row: if the public project were searched first (or at all), the
+			// bound uuid and digest would be the public one.
+			name: "project local wins over identically named shared model",
 			configs: map[int32]CurrentEmbeddingConfiguration{
-				7: currentEmbeddingConfiguration(7, "00000000-0000-0000-0000-000000000701", "embed", false),
+				7: projectLocal,
+				1: publicShared,
 			},
-			configCall: []embeddingConfigurationCall{{projectID: 7, modelName: "embed"}},
+			wantCalls:  []embeddingConfigurationCall{{projectID: 7, modelName: "embed"}},
+			wantConfig: &projectLocal,
 		},
 		{
-			name:      "public",
-			groups:    embeddingGroups("1_embed"),
-			wantGroup: "1_embed",
-			wantRoute: "public",
-			wantCalls: []string{"7_embed", "1_embed"},
+			// The public project is consulted only after the caller's project
+			// misses, and only with sharedOnly: a private public-project row
+			// must stay invisible to another tenant.
+			name: "public fallback is consulted second and shared-only",
 			configs: map[int32]CurrentEmbeddingConfiguration{
-				1: currentEmbeddingConfiguration(1, "00000000-0000-0000-0000-000000000101", "embed", true),
+				1: publicShared,
 			},
-			configCall: []embeddingConfigurationCall{
+			wantCalls: []embeddingConfigurationCall{
 				{projectID: 7, modelName: "embed"},
 				{projectID: 1, modelName: "embed", sharedOnly: true},
 			},
+			wantConfig: &publicShared,
 		},
-		{
-			name:       "raw external",
-			groups:     map[string]CurrentEmbeddingRuntimeGroup{},
-			wantGroup:  "embed",
-			wantRoute:  "raw",
-			wantCalls:  []string{"7_embed", "1_embed"},
-			configs:    map[int32]CurrentEmbeddingConfiguration{},
-			configCall: []embeddingConfigurationCall{{projectID: 7, modelName: "embed"}, {projectID: 1, modelName: "embed", sharedOnly: true}},
-		},
+		// A model that no row holds used to be a third case here, and it
+		// expected a binding with no configuration identity. It is now a
+		// refusal, and it has its own test below.
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			configurations := &embeddingConfigurationReaderStub{configurations: test.configs}
-			runtime := &embeddingRuntimeReaderStub{groups: test.groups}
-			resolver, err := NewCurrentEmbeddingBindingResolver(configurations, runtime, 1)
+			resolver, err := NewCurrentEmbeddingBindingResolver(configurations, 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,17 +106,26 @@ func TestCurrentEmbeddingBindingResolverPreservesProjectPublicRawRoute(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if binding.ModelName != "embed" ||
-				binding.ResolvedModelGroup != test.wantGroup ||
-				binding.Route != test.wantRoute ||
-				binding.ModelProjectID != 0 {
-				t.Fatalf("binding=%+v", binding)
+			want := EmbeddingBinding{
+				SchemaVersion:      CurrentEmbeddingBindingSchema,
+				ModelName:          "embed",
+				ResolvedModelGroup: "embed",
+				Route:              "raw",
 			}
-			if !reflect.DeepEqual(runtime.calls, test.wantCalls) {
-				t.Fatalf("runtime calls=%v want=%v", runtime.calls, test.wantCalls)
+			if test.wantConfig != nil {
+				digest, digestErr := currentEmbeddingConfigurationDigest(*test.wantConfig, "embed")
+				if digestErr != nil {
+					t.Fatal(digestErr)
+				}
+				want.ConfigurationProjectID = test.wantConfig.ProjectID
+				want.ConfigurationUUID = test.wantConfig.UUID
+				want.ConfigurationDigest = digest
 			}
-			if !reflect.DeepEqual(configurations.calls, test.configCall) {
-				t.Fatalf("configuration calls=%+v want=%+v", configurations.calls, test.configCall)
+			if !reflect.DeepEqual(binding, want) {
+				t.Fatalf("binding=%+v want=%+v", binding, want)
+			}
+			if !reflect.DeepEqual(configurations.calls, test.wantCalls) {
+				t.Fatalf("configuration calls=%+v want=%+v", configurations.calls, test.wantCalls)
 			}
 			encoded, err := binding.MarshalCanonical()
 			if err != nil {
@@ -137,6 +137,145 @@ func TestCurrentEmbeddingBindingResolverPreservesProjectPublicRawRoute(t *testin
 				}
 			}
 		})
+	}
+}
+
+// TestCurrentEmbeddingBindingResolverRefusesAModelNameNoRowHolds is the
+// negative direction of issue #470, and it is the admission half of issue #468.
+//
+// The toolkit names its embedding model in `settings.embedding_model`. When
+// that name matches no `p_{project}.configuration` row, the run must not start.
+// It used to start: the resolver returned a valid binding with no configuration
+// identity, the platform made the admission durable, and the worker then got
+// 404 model_not_found from the gateway, which reads the same rows.
+//
+// Issue #468 produces exactly this state on a correctly built stack. Two seed
+// steps write one row from two different variables. When the step that writes
+// the toolkit setting runs first, the configuration row afterwards holds a
+// different model name, and no row holds the name the worker sends.
+//
+// Two things are asserted, and the second one matters as much as the first:
+//
+//  1. the resolver refuses, with the unavailable sentinel the start route maps
+//     to 503 and a message that names the embedding model; and
+//  2. the resolver searches both scopes and then substitutes NOTHING. A silent
+//     fallback to some other embedding row would give a green run against a
+//     model the operator did not ask for.
+func TestCurrentEmbeddingBindingResolverRefusesAModelNameNoRowHolds(t *testing.T) {
+	configurations := &embeddingConfigurationReaderStub{
+		configurations: map[int32]CurrentEmbeddingConfiguration{},
+	}
+	resolver, err := NewCurrentEmbeddingBindingResolver(configurations, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := resolver.Resolve(context.Background(), 7, "embed", nil)
+	if !errors.Is(err, ErrCurrentEmbeddingBindingUnavailable) {
+		t.Fatalf("err=%v want=%v", err, ErrCurrentEmbeddingBindingUnavailable)
+	}
+	if !reflect.DeepEqual(binding, EmbeddingBinding{}) {
+		t.Fatalf("a refused resolution must return no binding, got %+v", binding)
+	}
+	// Both scopes were searched before the refusal. Refusing before the public
+	// scope is read would break the shared-model case above.
+	wantCalls := []embeddingConfigurationCall{
+		{projectID: 7, modelName: "embed"},
+		{projectID: 1, modelName: "embed", sharedOnly: true},
+	}
+	if !reflect.DeepEqual(configurations.calls, wantCalls) {
+		t.Fatalf("configuration calls=%+v want=%+v", configurations.calls, wantCalls)
+	}
+
+	// The same refusal when the caller's project DOES hold an embedding row,
+	// but under another name. This is the half that proves no substitution: a
+	// resolver that fell back to "any embedding row of this project" would bind
+	// this row and admit the run against a model the operator did not ask for.
+	withOther := &embeddingNameAwareReaderStub{
+		rows: map[string]CurrentEmbeddingConfiguration{
+			"some-other-embedding": currentEmbeddingConfiguration(
+				7,
+				"00000000-0000-0000-0000-000000000702",
+				"some-other-embedding",
+				false,
+			),
+		},
+	}
+	resolverWithOther, err := NewCurrentEmbeddingBindingResolver(withOther, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err = resolverWithOther.Resolve(context.Background(), 7, "embed", nil)
+	if !errors.Is(err, ErrCurrentEmbeddingBindingUnavailable) {
+		t.Fatalf("err=%v want=%v", err, ErrCurrentEmbeddingBindingUnavailable)
+	}
+	if binding.ModelName != "" {
+		t.Fatalf("a refused resolution must name no model, got %q", binding.ModelName)
+	}
+
+	// The control: the very same reader admits the name it does hold. Without
+	// this line the assertions above would also pass against a resolver that
+	// refused every request.
+	admitted, err := resolverWithOther.Resolve(context.Background(), 7, "some-other-embedding", nil)
+	if err != nil {
+		t.Fatalf("the reader's own row must still bind: %v", err)
+	}
+	if admitted.ModelName != "some-other-embedding" || admitted.ConfigurationUUID == "" {
+		t.Fatalf("binding=%+v want the row's own name and identity", admitted)
+	}
+}
+
+// embeddingNameAwareReaderStub answers by MODEL NAME, which the shared stub
+// above does not: that one keys on project alone and returns its row for any
+// name asked. Only a name-aware reader can express "this project holds an
+// embedding row, but not this one".
+type embeddingNameAwareReaderStub struct {
+	rows map[string]CurrentEmbeddingConfiguration
+}
+
+func (s *embeddingNameAwareReaderStub) FindCurrentEmbeddingConfiguration(
+	_ context.Context,
+	_ int32,
+	modelName string,
+	_ bool,
+) (CurrentEmbeddingConfiguration, bool, error) {
+	configuration, found := s.rows[modelName]
+	return configuration, found, nil
+}
+
+// TestCurrentEmbeddingBindingResolverRejectsDuplicateMutableDefinitions keeps
+// the LIMIT 2 duplicate sentinel of FindCurrentEmbeddingConfigurations a
+// distinct admission outcome. Collapsing it into "unavailable" would hide an
+// ambiguous catalog behind a transient-looking dependency failure.
+func TestCurrentEmbeddingBindingResolverRejectsDuplicateMutableDefinitions(t *testing.T) {
+	configurations := &embeddingConfigurationReaderStub{
+		err: ErrCurrentEmbeddingBindingAmbiguous,
+	}
+	resolver, err := NewCurrentEmbeddingBindingResolver(configurations, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(
+		context.Background(),
+		7,
+		"embed",
+		nil,
+	); !errors.Is(err, ErrCurrentEmbeddingBindingAmbiguous) {
+		t.Fatalf("duplicate embedding definitions error=%v", err)
+	}
+	if len(configurations.calls) != 1 {
+		t.Fatalf("ambiguity did not stop the search: %+v", configurations.calls)
+	}
+}
+
+func TestCurrentEmbeddingBindingResolverRequiresConfigurationReader(t *testing.T) {
+	if _, err := NewCurrentEmbeddingBindingResolver(nil, 1); err == nil {
+		t.Fatal("resolver composed without a configuration reader")
+	}
+	if _, err := NewCurrentEmbeddingBindingResolver(
+		&embeddingConfigurationReaderStub{},
+		0,
+	); err == nil {
+		t.Fatal("resolver composed without a public project")
 	}
 }
 
@@ -158,8 +297,7 @@ func TestCurrentEmbeddingBindingResolverRetainsAuthoritativeDefaultTupleWithDupl
 			1: public,
 		},
 	}
-	runtime := &embeddingRuntimeReaderStub{groups: embeddingGroups("7_embed", "1_embed")}
-	resolver, err := NewCurrentEmbeddingBindingResolver(configurations, runtime, 1)
+	resolver, err := NewCurrentEmbeddingBindingResolver(configurations, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,9 +319,11 @@ func TestCurrentEmbeddingBindingResolverRetainsAuthoritativeDefaultTupleWithDupl
 		first.ConfigurationDigest.IsZero() {
 		t.Fatalf("default tuple bound the wrong duplicate: %+v", first)
 	}
-	// The current proxy route remains project-first and is recorded separately;
-	// the worker does not rewrite the model to either group.
-	if first.Route != "project" || first.ResolvedModelGroup != "7_embed" {
+	// The authoritative default tuple selected the public duplicate, and the
+	// wire name stays the plain model name: the gateway resolves that project's
+	// own configuration row from the edge identity, so a project-prefixed group
+	// would not resolve at all.
+	if first.Route != "raw" || first.ResolvedModelGroup != "embed" {
 		t.Fatalf("current route drifted: %+v", first)
 	}
 	if !reflect.DeepEqual(configurations.calls, []embeddingConfigurationCall{
@@ -197,7 +337,6 @@ func TestCurrentEmbeddingBindingResolverRetainsAuthoritativeDefaultTupleWithDupl
 func TestCurrentEmbeddingBindingResolverRejectsDefaultFromUnrelatedProject(t *testing.T) {
 	resolver, err := NewCurrentEmbeddingBindingResolver(
 		&embeddingConfigurationReaderStub{},
-		&embeddingRuntimeReaderStub{},
 		1,
 	)
 	if err != nil {
@@ -258,8 +397,7 @@ func TestCurrentEmbeddingBindingAcceptsCurrentOptionalCredentialReference(t *tes
 
 func TestCurrentEmbeddingBindingResolverRedactsDependencyFailuresAndPreservesCancellation(t *testing.T) {
 	resolver, err := NewCurrentEmbeddingBindingResolver(
-		&embeddingConfigurationReaderStub{},
-		&embeddingRuntimeReaderStub{err: errors.New("credential-details")},
+		&embeddingConfigurationReaderStub{err: errors.New("credential-details")},
 		1,
 	)
 	if err != nil {
@@ -383,14 +521,6 @@ func currentEmbeddingConfiguration(
 		Data:      data,
 		Shared:    shared,
 	}
-}
-
-func embeddingGroups(names ...string) map[string]CurrentEmbeddingRuntimeGroup {
-	groups := make(map[string]CurrentEmbeddingRuntimeGroup, len(names))
-	for _, name := range names {
-		groups[name] = CurrentEmbeddingRuntimeGroup{Name: name}
-	}
-	return groups
 }
 
 func currentEmbeddingDigest(value string) runtimedomain.Digest {

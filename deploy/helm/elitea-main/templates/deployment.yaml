@@ -27,6 +27,109 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "elitea-main.serviceAccountName" . }}
       terminationGracePeriodSeconds: 30
+      {{- $runtimeMaterialInit := and .Values.runtime.enabled .Values.runtime.material.secretName }}
+      {{- $authMaterialInit := and .Values.fileConfig.authConfig.enabled .Values.fileConfig.authConfig.material.secretName }}
+      {{- if or $runtimeMaterialInit $authMaterialInit }}
+      initContainers:
+      {{- end }}
+      {{- if $runtimeMaterialInit }}
+        # Install the runtime material where securefile can read it (issue
+        # #404). internal/security/securefile refuses a path that resolves
+        # through a symlink, and it requires owner-only bits on private
+        # material. A Kubernetes Secret volume gives neither: mounted whole it
+        # is a symlink farm, and mounted per file with subPath its files belong
+        # to root while this pod runs as nonroot.
+        #
+        # So this container copies. It runs the SAME IMAGE as the service and
+        # the SAME USER, so every file it writes belongs to the user that then
+        # reads it. It reads the same ConfigMap, so the destination comes from
+        # the same ELITEA_RUNTIME_*_FILE names the service opens — there is no
+        # second list to keep in step.
+        #
+        # It also reads every installed file back through securefile before it
+        # exits. A missing Secret key or a wrong mode therefore stops the pod
+        # HERE, with a message, instead of in a restart loop of the service.
+        #
+        # The compose stack solves the same problem in the same way; read
+        # deploy/runtime/install-material.sh.
+        - name: runtime-material
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/elitea-runtime-material"]
+          args: ["-source", "{{ include "elitea-main.runtimeMaterialSourcePath" . }}"]
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "elitea-main.fullname" . }}-config
+          resources:
+            # The service's own request, deliberately. An init container's
+            # request is compared with the application containers' requests
+            # rather than added to them, so reusing this block leaves the pod's
+            # effective request exactly where it was.
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: runtime-material-source
+              mountPath: {{ include "elitea-main.runtimeMaterialSourcePath" . }}
+              readOnly: true
+            - name: runtime-material
+              mountPath: {{ .Values.runtime.material.mountPath }}
+      {{- end }}
+      {{- if $authMaterialInit }}
+        # Install the AUTHENTICATION material where securefile can read it
+        # (issue #444). internal/authcomposition/material.go opens five files:
+        # the Auth Redis password, the Auth Redis CA, the browser-attempt key,
+        # the PAT signing key and the Form users JSON.
+        #
+        # Same defect as the runtime material above, so the SAME mechanism.
+        # There is one copy engine, internal/security/materialinstall, and both
+        # commands call it.
+        #
+        # One difference, and it decides the arguments below. The chart owns
+        # every runtime file NAME, so the runtime command derives its whole
+        # destination from the ConfigMap. The five authentication paths belong
+        # to the operator's authentication document instead. So this command
+        # READS THAT DOCUMENT: -config gives it the very file the service reads,
+        # and it derives the five paths and their directory from it. -mount
+        # states what the pod mounts, and the command refuses a disagreement by
+        # name. Neither value can drift into silence.
+        - name: auth-material
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/elitea-auth-material"]
+          args:
+            - "-config"
+            - "{{ .Values.fileConfig.authConfig.mountPath }}"
+            - "-source"
+            - "{{ include "elitea-main.authMaterialSourcePath" . }}"
+            - "-mount"
+            - "{{ .Values.fileConfig.authConfig.material.mountPath }}"
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            # The service's own request, deliberately. An init container's
+            # request is compared with the application containers' requests
+            # rather than added to them, so reusing this block leaves the pod's
+            # effective request exactly where it was.
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # The same ConfigMap, the same key and the same path the service
+            # reads. A subPath mount gives a real file rather than a symlink,
+            # which is why securefile accepts it here and refuses the Secret.
+            - name: auth-config
+              mountPath: {{ .Values.fileConfig.authConfig.mountPath }}
+              subPath: {{ .Values.fileConfig.authConfig.key }}
+              readOnly: true
+            - name: auth-material-source
+              mountPath: {{ include "elitea-main.authMaterialSourcePath" . }}
+              readOnly: true
+            - name: auth-material
+              mountPath: {{ .Values.fileConfig.authConfig.material.mountPath }}
+      {{- end }}
       containers:
         - name: elitea-main
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -39,6 +142,20 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            {{- if .Values.runtime.enabled }}
+            # The runtime plane's three listeners (issue #382). The agent
+            # worker dials all three, so they must be reachable on the Service
+            # as well as declared here.
+            - name: runtime-control
+              containerPort: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.controlAddress }}
+              protocol: TCP
+            - name: runtime-output
+              containerPort: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.outputAddress }}
+              protocol: TCP
+            - name: runtime-content
+              containerPort: {{ include "elitea-main.runtimePort" .Values.runtime.listeners.contentAddress }}
+              protocol: TCP
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "elitea-main.fullname" . }}-config
@@ -97,6 +214,22 @@ spec:
               mountPath: {{ .Values.fileConfig.authConfig.mountPath }}
               subPath: {{ .Values.fileConfig.authConfig.key }}
               readOnly: true
+            # The five files that the authentication configuration above names
+            # (issue #444): the Auth Redis password, the Auth Redis CA, the
+            # browser-attempt key, the PAT signing key and the Form users JSON.
+            # A WHOLE-DIRECTORY mount, deliberately, for the same reason as the
+            # runtime material below: securefile refuses a path that resolves
+            # through a symlink, so the five must be real files in one
+            # directory.
+            #
+            # This container never mounts the raw Secret. With
+            # fileConfig.authConfig.material.secretName the init container above
+            # reads the Secret and this mount holds its copies; with
+            # fileConfig.authConfig.material.volume it holds the volume you
+            # supply. Read-only in both shapes.
+            - name: auth-material
+              mountPath: {{ .Values.fileConfig.authConfig.material.mountPath }}
+              readOnly: true
             {{- end }}
             {{- if .Values.fileConfig.brandPack.enabled }}
             # BRAND_PACK_PATH is "one pack file per deployment" (branding
@@ -107,13 +240,85 @@ spec:
               subPath: {{ .Values.fileConfig.brandPack.key }}
               readOnly: true
             {{- end }}
+            {{- if .Values.runtime.enabled }}
+            # The runtime material (issue #382): signing key, verification
+            # keyring, Redis password, Redis CA and the three server keypairs.
+            # A WHOLE-DIRECTORY mount, deliberately — not the per-file subPath
+            # mounts used above. internal/security/securefile also rejects any
+            # path that resolves through a symlink, and the file names are
+            # fixed by deploy/scripts/gen-runtime-certs.sh, so the source must
+            # present all of them under one directory.
+            #
+            # This container never mounts the raw Secret. With
+            # runtime.material.secretName the init container above reads the
+            # Secret and this mount holds its copies; with
+            # runtime.material.volume it holds the volume you supply.
+            #
+            # Read-only in BOTH shapes. A volumeMount is per container, so the
+            # init container can still write the copies while the service can
+            # only read them.
+            - name: runtime-material
+              mountPath: {{ .Values.runtime.material.mountPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.runtime.enabled }}
+        - name: runtime-material
+          {{- if .Values.runtime.material.secretName }}
+          # Memory-backed, so the copies never reach node storage, and they
+          # disappear with the pod. The init container fills it; the service
+          # reads it.
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.runtime.material.sizeLimit | quote }}
+          {{- else }}
+          {{- toYaml .Values.runtime.material.volume | nindent 10 }}
+          {{- end }}
+        {{- if .Values.runtime.material.secretName }}
+        - name: runtime-material-source
+          secret:
+            secretName: {{ .Values.runtime.material.secretName }}
+            # The kubelet owns these files as root. Without a pod fsGroup, the
+            # read bit for other users is the only one that reaches this pod's
+            # nonroot user, and the init container has to read them. The bits
+            # are scoped to this pod's own mount namespace: no other pod sees
+            # this tmpfs, and the copies the service reads are owner-only.
+            # With podSecurityContext.fsGroup set, 0440 is enough.
+            defaultMode: {{ .Values.runtime.material.secretDefaultMode }}
+        {{- end }}
+        {{- end }}
         {{- if .Values.fileConfig.authConfig.enabled }}
         - name: auth-config
           configMap:
-            name: {{ required "fileConfig.authConfig.configMapName is required when fileConfig.authConfig.enabled=true" .Values.fileConfig.authConfig.configMapName }}
+            # Rendered by templates/auth-config.yaml from
+            # fileConfig.authConfig.document, or supplied by you through
+            # fileConfig.authConfig.configMapName.
+            name: {{ include "elitea-main.authConfigMapName" . }}
+        - name: auth-material
+          {{- if .Values.fileConfig.authConfig.material.secretName }}
+          # Memory-backed, so the copies never reach node storage, and they
+          # disappear with the pod. The init container fills it; the service
+          # reads it.
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.fileConfig.authConfig.material.sizeLimit | quote }}
+          {{- else }}
+          {{- toYaml .Values.fileConfig.authConfig.material.volume | nindent 10 }}
+          {{- end }}
+        {{- if .Values.fileConfig.authConfig.material.secretName }}
+        - name: auth-material-source
+          secret:
+            secretName: {{ .Values.fileConfig.authConfig.material.secretName }}
+            # The kubelet owns these files as root. Without a pod fsGroup, the
+            # read bit for other users is the only one that reaches this pod's
+            # nonroot user, and the init container has to read them. The bits
+            # are scoped to this pod's own mount namespace: no other pod sees
+            # this tmpfs, and the copies the service reads are owner-only.
+            # With podSecurityContext.fsGroup set, 0440 is enough.
+            defaultMode: {{ .Values.fileConfig.authConfig.material.secretDefaultMode }}
+        {{- end }}
         {{- end }}
         {{- if .Values.fileConfig.brandPack.enabled }}
         - name: brand-pack

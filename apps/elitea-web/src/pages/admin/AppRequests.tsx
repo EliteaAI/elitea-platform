@@ -54,7 +54,7 @@ import Typography from '@mui/material/Typography';
 
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AppRequestsTable } from './AppRequestsTable';
 import { RejectAppRequestDialog } from './RejectAppRequestDialog';
@@ -64,7 +64,6 @@ import {
   type AppRequestStatusFilter,
 } from './useAdminAppRequestsPage';
 
-const { DrawerPage } = drawerPage;
 
 const TAB_SX = { textTransform: 'none', minHeight: '2.5rem' } as const;
 

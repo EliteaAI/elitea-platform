@@ -12,6 +12,7 @@ import { InputBase } from '@/shared/ui/InputBase';
 import { RadioButtonGroup } from '@/shared/ui/RadioButtonGroup';
 import { CronField } from '@/shared/ui/cron';
 
+import { adjustLabel } from '../../../lib/helpers/toolBase.helpers';
 import { IndexCronDefault } from '../../lib/constants/indexDetails.constants';
 import { validateCronExpressionDaily } from '../../lib/helpers/indexSchedule.helpers';
 
@@ -42,6 +43,10 @@ import { validateCronExpressionDaily } from '../../lib/helpers/indexSchedule.hel
  * the baseline did), a caller ABOVE both `features/toolkits` and
  * `features/credentials` (a `pages/`/`widgets/` composition root, which
  * legitimately may import both) supplies the actual rendered picker.
+ *
+ * That supplier is `pages/toolkits/lib/credentialPickerSlots.tsx` since #308.
+ * Before it, the slot travelled down four components and no production caller
+ * filled it, so this modal rendered no credential field at all.
  */
 
 export interface CredentialsSelectSlotProps {
@@ -61,6 +66,36 @@ export interface CredentialsFieldDescriptor {
   readonly description?: string;
   readonly options?: readonly unknown[];
   readonly configuration_types?: readonly string[];
+  /** The property's own key in the schema (`github_configuration`, ...). `IndexActions`' `resolveCredentialsData` carries it here — see `resolveCredentialsLabel` below for why the label needs it. */
+  readonly propertyKey?: string;
+}
+
+/**
+ * The picker's label (#308).
+ *
+ * The served property carries NO `description`. PR #352 states why: the pinned
+ * SDK catalogue holds only a DIGEST of each configuration schema, so the
+ * backend has no label to serve and cannot invent one. This field used to fall
+ * back to `''`, which renders an unlabelled picker.
+ *
+ * The label is therefore derived on the client, from the property KEY, through
+ * `adjustLabel` — the very function the toolkit form already applies to every
+ * other property (`ToolBaseProperty.tsx`: `adjustLabel(schema.title || key)`).
+ * `github_configuration` becomes "Github Configuration" on both surfaces.
+ *
+ * Two alternatives were rejected. A hand-written type-to-label map goes stale
+ * the moment the SDK adds a configuration type, and nothing fails when it does
+ * — the same silent-drift class of defect this issue sits under. The referenced
+ * configuration's own type name (`github`) names the PROVIDER, not the field,
+ * so a toolkit with two references would label both the same.
+ *
+ * A served `description` still wins, so the backend can take the label back
+ * whenever it has one.
+ */
+function resolveCredentialsLabel(credentialsData: CredentialsFieldDescriptor): string {
+  if (credentialsData.description !== undefined && credentialsData.description.trim() !== '') return credentialsData.description;
+  if (credentialsData.propertyKey !== undefined && credentialsData.propertyKey.trim() !== '') return adjustLabel(credentialsData.propertyKey);
+  return t('features.toolkits.indexScheduleModal.credentialsLabel', 'Credentials');
 }
 
 export interface IndexScheduleModalProps {
@@ -191,7 +226,7 @@ export function IndexScheduleModal(props: IndexScheduleModalProps): ReactNode {
               renderCredentialsSelect?.({
                 value: innerCredentials,
                 onChange: setInnerCredentials,
-                label: credentialsData.description ?? '',
+                label: resolveCredentialsLabel(credentialsData),
                 configurationTypes: credentialsData.configuration_types ?? [],
                 error: credentialsError,
                 helperText: 'Your configuration does not match any available configurations.',

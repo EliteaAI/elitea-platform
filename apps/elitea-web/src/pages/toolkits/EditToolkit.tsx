@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ComponentProps, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -17,6 +17,7 @@ import { BaseTab } from '@/shared/ui/BaseTab';
 import { BaseTabs } from '@/shared/ui/BaseTabs';
 import type { ControlsDropdownItem } from '@/shared/ui/ControlsDropdown';
 
+import { useScheduleCredentialsSelectSlot, useToolkitCredentialPickerSlot } from './lib/credentialPickerSlots';
 import { SHAREPOINT_AUTH_MODALS } from './lib/sharepointAuthModals';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { INDEXES_CHAT_UI } from './lib/indexesChatUI';
@@ -149,7 +150,13 @@ function useCopyLinkMenuItem(): ControlsDropdownItem[] {
  * only while the route params are still resolving, at which point there is
  * no toolkit to list indexes for.
  */
-function IndexesTabPanel({ toolkitId, state }: { readonly toolkitId: string | undefined; readonly state: IndexesTabState }): ReactNode {
+interface IndexesTabPanelProps {
+  readonly toolkitId: string | undefined;
+  readonly state: IndexesTabState;
+  readonly renderCredentialsSelect: ComponentProps<typeof IndexesTab>['renderCredentialsSelect'];
+}
+
+function IndexesTabPanel({ toolkitId, state, renderCredentialsSelect }: IndexesTabPanelProps): ReactNode {
   if (toolkitId === undefined) return null;
   return (
     <Box
@@ -161,6 +168,7 @@ function IndexesTabPanel({ toolkitId, state }: { readonly toolkitId: string | un
         values={state.toolkitValues}
         selectedIndexTools={state.selectedIndexTools}
         chatUI={INDEXES_CHAT_UI}
+        renderCredentialsSelect={renderCredentialsSelect}
       />
     </Box>
   );
@@ -304,6 +312,12 @@ export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNod
    */
   const indexesTab = useIndexesTabState({ isMCP, detail, editToolDetail, tab });
 
+  // #308. This page is a legal composition root for BOTH `features/toolkits`
+  // and `features/credentials`. Supplying these two slots is what makes the
+  // toolkit credential field and the schedule credential select render at all.
+  const renderCredentialPicker = useToolkitCredentialPickerSlot(projectId);
+  const renderCredentialsSelect = useScheduleCredentialsSelectSlot(projectId);
+
   const title = resolveTitle(isMCP, detail?.name);
 
   return (
@@ -357,6 +371,7 @@ export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNod
               // delegated-login UI a REAL `McpAuthModal` — see
               // `./lib/sharepointAuthModals.tsx`.
               sharepointAuth: SHAREPOINT_AUTH_MODALS,
+              renderCredentialPicker,
               renderTestPane: () => (
                 // Composition gap: the right-pane live test-chat content
                 // (`TestTools`, a sibling A4 sub-unit's owned file — see
@@ -376,6 +391,7 @@ export function EditToolkit({ isMCP = false, deps }: EditToolkitProps): ReactNod
           <IndexesTabPanel
             toolkitId={toolkitId}
             state={indexesTab}
+            renderCredentialsSelect={renderCredentialsSelect}
           />
         )}
       </Box>

@@ -41,8 +41,12 @@ on:
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web.yml"
-    tags:
-      - "v*"
+    # NO `tags: v*` — issue #309, Gate 2. publish.yml cuts release tags with
+    # `secrets.GITHUB_TOKEN`, and GitHub does not start workflow runs for refs
+    # created by GITHUB_TOKEN. Measured: `gh api .../actions/runs` returns zero
+    # runs on any `v1.*` ref, for any workflow. A tag trigger here was never a
+    # release gate, only the appearance of one.
+    # scripts/check-ci-dormancy.mjs fails the build if one is added back.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -93,6 +97,37 @@ jobs:
   storybook:
     name: Storybook tests
     runs-on: ubuntu-latest
+    # @storybook/addon-vitest launches a real headless Chromium for every
+    # story's interaction/a11y test (independently of the plain vitest
+    # `browser` project, which this job never runs — see package.json's
+    # test:unit script). `npx playwright install --with-deps chromium` used
+    # to provide it and cost up to 20 minutes: the browser download is
+    # ~14s, the rest is `apt-get` fetching ~114 MB of system libraries onto a
+    # runner that then throws them away, and on a slow/rate-limited mirror
+    # that apt run is what stretched to 20 minutes.
+    #
+    # `mcr.microsoft.com/playwright:vX.Y.Z-noble` ships Chromium AND those
+    # system libraries pre-installed, so running the whole job inside it
+    # removes the install step instead of caching around it (caching
+    # ~/.cache/ms-playwright only recovers the ~14s download, not the apt
+    # cost). This is the same mechanism ci-web-e2e.yml's `e2e`/`chat-stream`/
+    # `index-stream` jobs use — see their "No `npx playwright install
+    # --with-deps`" comments — except THIS job can use a job-level
+    # `container:` where those can't: they reach a compose stack on the
+    # HOST's network, which a job container doesn't share, while this job
+    # talks to nothing outside itself (vitest's own browser-mode server).
+    #
+    # `--ipc=host`: Playwright's documented Docker recommendation, avoids
+    # Chromium running out of /dev/shm. No `--user`: playwright-core adds
+    # `--no-sandbox` for Chromium automatically when it detects uid 0.
+    #
+    # The tag is kept honest by scripts/check-playwright-image-tag.mjs, which
+    # scans EVERY workflow and asserts each
+    # `mcr.microsoft.com/playwright:vX.Y.Z-noble` matches the pinned
+    # @playwright/test — so this reference is gated automatically.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.0-noble
+      options: --ipc=host
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -102,29 +137,39 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Install Playwright browser (Storybook's @storybook/addon-vitest)
-        # Real CI gap, found the first time this job ran end-to-end against
-        # a populated .storybook/ (draft-PR CI hadn't executed before unit
-        # S1 landed): @storybook/addon-vitest launches a real headless
-        # browser for interaction/a11y tests, independently of the plain
-        # vitest `browser` project (which this job never runs — see
-        # package.json's test:unit script) — nothing upstream of this step
-        # installs it. The E2E/visual-regression jobs already do their own
-        # `playwright install`; this is the same fix for the job that was
-        # missing it.
-        run: |
-          if [ -d .storybook ]; then
-            npx playwright install --with-deps chromium
-          fi
       - name: Storybook tests
-        # The storybook vitest project is stub-commented in vitest.config.ts
-        # exactly as §6.3 shows; unit S1 lands .storybook/ and uncomments it.
+        # Issue #483, the fourth gate of the same shape. This step read
+        # `if [ -d .storybook ] … else echo "storybook project pending"`. The
+        # comment describing the stub outlived the stub: `.storybook/` and the
+        # vitest `storybook` project both exist, so the else arm was a green
+        # tick waiting for a rename.
+        #
+        # The directory is not the subject. The STORIES are: addon-vitest turns
+        # each story into a test, so a `stories` glob in .storybook/main.ts that
+        # stops matching leaves the directory in place and the suite empty. The
+        # count comes from that glob's own root, and it is printed. `vitest run`
+        # leaves `passWithNoTests` at false, which is a second line of defence
+        # rather than the measurement.
+        #
+        # `shell: bash` — GitHub defaults job-container steps to `sh` (dash),
+        # not bash, unlike steps on a bare `runs-on` runner. dash rejects
+        # `set -o pipefail` outright ("Illegal option -o pipefail"), which
+        # failed this step before it reached its own logic. The pinned
+        # Playwright image is Ubuntu-based and ships bash.
+        shell: bash
         run: |
-          if [ -d .storybook ]; then
-            npm run test:storybook
-          else
-            echo "storybook project pending (unit S1) — stub per §6.3"
+          set -euo pipefail
+          test -d .storybook || {
+            echo "::error::apps/elitea-web/.storybook is missing, so the Storybook suite cannot run. Restore the directory under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          stories=$(find src/shared/ui -name '*.stories.ts' -o -name '*.stories.tsx' | grep -c '' || true)
+          echo "${stories} story file(s) under src/shared/ui — the .storybook/main.ts glob root"
+          if [ "${stories}" -eq 0 ]; then
+            echo "::error::no *.stories.ts(x) file under apps/elitea-web/src/shared/ui, so the Storybook suite would run nothing. Move the glob in .storybook/main.ts with the stories. Do not let the job pass."
+            exit 1
           fi
+          npm run test:storybook
 
   unit-tests:
     name: Unit tests (sharded + coverage)
@@ -143,23 +188,35 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - id: shard
-        name: Unit tests (coverage shard)
+      - name: Unit tests (coverage shard)
         env:
           VITEST_SKIP_COVERAGE_THRESHOLDS: true
+        # Issue #421, item 4. A pipeline decided whether coverage ran at all:
+        # `find … | grep -q .`.
+        #
+        # The status of a pipeline is the status of its last element. GitHub's
+        # default shell does not set `pipefail`. So a failing `find` gave no
+        # output, `grep` reported no match, and the else arm ran the suite
+        # without --coverage. The shard then uploaded no artifact. The merge,
+        # the coverage validation and the mutator gate had nothing to read.
+        #
+        # This step captures the `find` status and tests it on its own. The
+        # else arm is gone with it. That arm was written before the first unit
+        # test landed. The tree holds 1126 unit test files today. An empty
+        # result must fail here. It must not downgrade the run silently.
         run: |
-          if find src \( -name '*.test.*' -o -name '*.spec.*' \) \
-               ! -path 'src/smoke/*' ! -path 'src/test/*' | grep -q .; then
-            echo "coverage_ran=true" >> $GITHUB_OUTPUT
-            echo "real unit tests present — §6.6 coverage thresholds armed"
-            npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }} --coverage --coverage.reporter=json --coverage.reportsDirectory=coverage-shards/shard-${{ matrix.shardIndex }} --coverage.clean=false --coverage.thresholds.lines=0 --coverage.thresholds.statements=0 --coverage.thresholds.functions=0 --coverage.thresholds.branches=0 --coverage.thresholds.perFile=false
-          else
-            echo "coverage_ran=false" >> $GITHUB_OUTPUT
-            echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
-            npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }}
+          if ! unit_tests=$(find src \( -name '*.test.*' -o -name '*.spec.*' \) \
+               ! -path 'src/smoke/*' ! -path 'src/test/*'); then
+            echo "FAIL: find could not scan src/ for unit tests"
+            exit 1
           fi
+          if [ -z "$unit_tests" ]; then
+            echo "FAIL: no unit test files under src/ — the coverage shard would be vacuous"
+            exit 1
+          fi
+          echo "$(grep -c '' <<< "$unit_tests") unit test file(s) found — §6.6 coverage thresholds armed"
+          npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }} --coverage --coverage.reporter=json --coverage.reportsDirectory=coverage-shards/shard-${{ matrix.shardIndex }} --coverage.clean=false --coverage.thresholds.lines=0 --coverage.thresholds.statements=0 --coverage.thresholds.functions=0 --coverage.thresholds.branches=0 --coverage.thresholds.perFile=false
       - name: Upload coverage shard
-        if: steps.shard.outputs.coverage_ran == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-shard-${{ matrix.shardIndex }}
@@ -187,12 +244,17 @@ jobs:
           pattern: coverage-shard-*
           path: apps/elitea-web/coverage-shards/
       - name: Merge coverage (no validation — thresholds checked in coverage-validation)
-        id: merge
-        run: |
-          node scripts/merge-coverage.mjs --no-validate
-          echo "merged=$?" >> $GITHUB_OUTPUT
+        # Issue #421, item 3. This step ended with
+        # `echo "merged=$?" >> $GITHUB_OUTPUT`. The upload below then read
+        # `steps.merge.outputs.merged == '0'`.
+        #
+        # GitHub runs each `run:` block with `bash -e`. A non-zero `node`
+        # status ends the step before the echo. So the output could hold only
+        # `0` or nothing. The guard read as a check on the merge. It tested
+        # nothing. A failed merge ends this step, this job, and the two jobs
+        # that need this one. That is the behaviour the guard described.
+        run: node scripts/merge-coverage.mjs --no-validate
       - name: Upload merged coverage
-        if: steps.merge.outputs.merged == '0'
         uses: actions/upload-artifact@v7
         with:
           name: elitea-web-coverage
@@ -240,6 +302,15 @@ jobs:
         run: npm ci
       - name: Run rule-layer self-test
         run: node scripts/check-gates-selftest.mjs
+
+      # Issue #309. Fails when a workflow declares a trigger or a step guard
+      # that can never fire (a `v*` tag cut by GITHUB_TOKEN starts no run), or
+      # when a coverage exclusion matches nothing or waives code that something
+      # imports without a dated, owned entry in scripts/coverage-exclusions.json.
+      # It reads .github/workflows, so it covers every workflow in the
+      # repository, not only this one.
+      - name: Gate-dormancy check (workflow triggers + coverage exclusions)
+        run: node scripts/check-ci-dormancy.mjs
 
   gate-script-coverage:
     name: Gate-script decision-logic coverage
@@ -398,56 +469,26 @@ jobs:
         # working-directory makes the cwd apps/elitea-web/ where
         # ./coverage/ resolves to apps/elitea-web/coverage/
         working-directory: apps/elitea-web
-        # mutator.ts is generated code — coverage is enforced via the merged
-        # shard artifact, not a separate vitest run. Reads the JSON directly.
-        run: |
-          node -e '
-            const fs = require("fs");
-            const path = require("path");
-            const coveragePath = path.join(process.cwd(), "coverage", "coverage-final.json");
-            if (!fs.existsSync(coveragePath)) {
-              console.error("Coverage file not found at: " + coveragePath);
-              console.error("Files in cwd: " + fs.readdirSync(process.cwd()));
-              console.error("Files in coverage dir: " + (fs.existsSync(path.join(process.cwd(), "coverage")) ? fs.readdirSync(path.join(process.cwd(), "coverage")) : "N/A"));
-              process.exit(1);
-            }
-            const data = require(coveragePath);
-            // istanbul map format: s/b/f are objects {id: hits}, not arrays
-            let coveredStmts = 0, totalStmts = 0;
-            let coveredFns = 0, totalFns = 0;
-            let coveredBranches = 0, totalBranches = 0;
-            for (const [file, f] of Object.entries(data)) {
-              if (!file.includes("src/shared/api/generated/mutator.ts") && !file.includes("mutator.test.ts")) continue;
-              // s/b/f can be arrays (vitest V8) or objects {id: hits} (istanbul map)
-              if (Array.isArray(f.s)) {
-                totalStmts += f.s.length; coveredStmts += f.s.filter(v => v > 0).length;
-                totalFns += f.f.length; coveredFns += f.f.filter(v => v > 0).length;
-                totalBranches += f.b.reduce((a, row) => a + row.length, 0);
-                coveredBranches += f.b.reduce((a, row) => a + row.filter(v => v > 0).length, 0);
-              } else {
-                totalStmts += Object.keys(f.s || {}).length;
-                coveredStmts += Object.values(f.s || {}).filter(v => v > 0).length;
-                totalFns += Object.keys(f.f || {}).length;
-                coveredFns += Object.values(f.f || {}).filter(v => v > 0).length;
-                totalBranches += Object.keys(f.b || {}).length;
-                coveredBranches += Object.values(f.b || {}).filter(v => v > 0).length;
-              }
-            }
-            if (totalStmts === 0) { console.log("mutator.ts not in coverage (excluded per config) — skipping"); process.exit(0); }
-            function pct(covered, total) { return total ? Math.round(covered / total * 100) : 100; }
-            const lp = pct(coveredStmts, totalStmts);
-            const fp = pct(coveredFns, totalFns);
-            const bp = pct(coveredBranches, totalBranches);
-            const sp = pct(totalStmts, totalStmts);
-            console.log("Mutator coverage — lines: " + lp + "% functions: " + fp + "% branches: " + bp + "% statements: " + sp + "%");
-            let fail = false;
-            if (lp < 90) { console.error("Lines below 90% threshold (" + lp + "%)"); fail = true; }
-            if (fp < 90) { console.error("Functions below 90% threshold (" + fp + "%)"); fail = true; }
-            if (bp < 85) { console.error("Branches below 85% threshold (" + bp + "%)"); fail = true; }
-            if (sp < 90) { console.error("Statements below 90% threshold (" + sp + "%)"); fail = true; }
-            if (fail) process.exit(1);
-            console.log("OK — thresholds met");
-          '
+        # mutator.ts is hand-written, not orval output. See its own header. It
+        # is the `eliteaFetch` adapter that every generated hook calls, so it
+        # carries a real coverage floor. The numbers come from the merged shard
+        # artifact. This job starts no vitest run of its own.
+        #
+        # This step held the gate as an inline `node -e` program. It carried
+        # three of issue #421's defects:
+        #   • `pct(totalStmts, totalStmts)` divided a count by itself. The
+        #     statement percentage read 100 on every run. `if (sp < 90)` was
+        #     dead code.
+        #   • `if (totalStmts === 0) … process.exit(0)` fired on every run.
+        #     vitest.config.ts excluded the whole generated directory from
+        #     coverage, so the gate never saw its target.
+        #   • A `file.includes("mutator.test.ts")` filter let the test file's
+        #     own near-100% score into the module's numbers.
+        #
+        # The rules live in scripts/lib/mutator-coverage-core.mjs now. The
+        # gate-script-coverage job holds that file at 100%. Each rule has a RED
+        # case and a GREEN case.
+        run: node scripts/check-mutator-coverage.mjs
 
   gate-endpoint-manifest:
     name: Endpoint manifest
@@ -461,15 +502,19 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #426. Both the checker and the manifest it reads are in the tree,
+      # so the "pending" branch that let this job pass with neither is gone.
+      # A missing file is now a red job with the name of the file in it.
       - name: Validate endpoint manifest
         run: |
-          if [ -f scripts/check-endpoint-manifest.mjs ]; then
-            node scripts/check-endpoint-manifest.mjs
-          elif [ -f src/shared/api/endpoints.manifest.json ]; then
-            echo "endpoints.manifest.json exists but scripts/check-endpoint-manifest.mjs is missing (R-A5)"; exit 1
-          else
-            echo "endpoint manifest pending (units S4+W2)"
-          fi
+          set -euo pipefail
+          for subject in scripts/check-endpoint-manifest.mjs src/shared/api/endpoints.manifest.json; do
+            test -f "${subject}" || {
+              echo "::error::apps/elitea-web/${subject} is missing, so the endpoint manifest gate cannot check anything. Restore the file under its old name, or point this job at the new one. Do not let the job pass."
+              exit 1
+            }
+          done
+          node scripts/check-endpoint-manifest.mjs
 
   gate-msw-handler-hygiene:
     name: MSW handler hygiene
@@ -483,13 +528,16 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #426. The script is in the tree. The "pending" branch made this
+      # job a green no-op on the day somebody renamed it.
       - name: Run MSW handler hygiene
         run: |
-          if [ -f scripts/check-handlers.mjs ]; then
-            node scripts/check-handlers.mjs
-          else
-            echo "check-handlers.mjs pending (unit M1); rule logic proven by the self-test (scripts/lib/mock-rules-core.mjs)"
-          fi
+          set -euo pipefail
+          test -f scripts/check-handlers.mjs || {
+            echo "::error::apps/elitea-web/scripts/check-handlers.mjs is missing, so the MSW handler hygiene gate cannot check anything. Restore the file under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          node scripts/check-handlers.mjs
 
   gate-i18n-sync:
     name: i18n en.json sync
@@ -503,13 +551,15 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #426. Same shape as the gate above, same repair.
       - name: Check en.json sync (issue #44)
         run: |
-          if [ -f scripts/i18n-backfill.mjs ]; then
-            node scripts/i18n-backfill.mjs --check
-          else
-            echo "i18n-backfill.mjs pending (issue #44); rule logic proven by scripts/lib/i18n-backfill-core.test.mjs"
-          fi
+          set -euo pipefail
+          test -f scripts/i18n-backfill.mjs || {
+            echo "::error::apps/elitea-web/scripts/i18n-backfill.mjs is missing, so the en.json sync gate cannot check anything. Restore the file under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          node scripts/i18n-backfill.mjs --check
 
   gate-fixture-freshness:
     name: Fixture freshness
@@ -523,13 +573,15 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #426. Same shape as the two gates above, same repair.
       - name: Run fixture freshness
         run: |
-          if [ -f scripts/check-fixture-freshness.mjs ]; then
-            node scripts/check-fixture-freshness.mjs
-          else
-            echo "check-fixture-freshness.mjs pending (unit M1); rule logic proven by the self-test"
-          fi
+          set -euo pipefail
+          test -f scripts/check-fixture-freshness.mjs || {
+            echo "::error::apps/elitea-web/scripts/check-fixture-freshness.mjs is missing, so the fixture freshness gate cannot check anything. Restore the file under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          node scripts/check-fixture-freshness.mjs
 
   gate-layer-cycle:
     name: Layer + cycle gate
@@ -574,6 +626,22 @@ jobs:
           node-version: "24"
       - name: Check the container tag matches package.json
         run: node scripts/check-playwright-image-tag.mjs
+
+  gate-wave2-partition:
+    name: Wave-2 partition
+    # Issue #424. check-partition.mjs says "Exit code 0 = partition valid,
+    # non-zero = violation" and ran in no workflow, so no exit code was ever
+    # read. Its subject, apps/elitea-web/parity/wave2-partition.json, sits
+    # under apps/elitea-web/**, which this workflow's trigger already selects.
+    # The script needs no dependency, so this job skips `npm ci`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Check the Wave-2 unit partition
+        run: node scripts/check-partition.mjs
 
   gate-visual-coverage:
     name: Visual coverage
@@ -668,15 +736,19 @@ jobs:
         run: npm ci
       - name: Build (app + admin + maintenance)
         run: npm run build
+      # Issue #426. This step used to ask whether lighthouserc.json existed and
+      # print "lhci bundle budget pending" when it did not. Neither that file
+      # nor .lighthouserc.json has ever been in the tree, so the step was a
+      # green tick for a budget that nothing measured.
+      #
+      # check-bundle-budget.mjs measures the build output that the step above
+      # just produced. It derives the target list from dist/, the initial set
+      # from each target's own HTML, and the route-chunk set from the rest, so
+      # a renamed output directory or a changed chunking strategy moves the
+      # subject with it. Every count has a floor and the budget file must be
+      # present: a run that finds nothing fails.
       - name: Bundle budget (§3.5 — 300 KB initial, 250 KB per route chunk)
-        # @lhci/cli is pinned; its config lands when the app has routes to
-        # measure (post-R1). Until then the guard documents the pending gate.
-        run: |
-          if [ -f lighthouserc.json ] || [ -f .lighthouserc.json ]; then
-            npx lhci autorun
-          else
-            echo "lhci bundle budget pending (needs the R1 route tree; §3.5 last two rows)"
-          fi
+        run: node scripts/check-bundle-budget.mjs
       - name: Upload dist
         uses: actions/upload-artifact@v7
         with:
@@ -714,10 +786,24 @@ jobs:
         run: |
           go run ./tools/uictl parity-routes --baseline apps/elitea-ui
           go run ./tools/uictl parity-manifest --validate
-      - name: Require-must parity (release/cutover gate)
+      - name: Require-must parity (cutover gate)
         # This release-readiness audit deliberately remains outside normal PR
         # validation until the migration register's priority:must items are
         # complete. Route + manifest parity above remains PR-blocking.
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/cutover/')
+        #
+        # The `refs/tags/v` half of this condition is GONE (issue #309, Gate 2)
+        # and its removal changes no behaviour, which is the point: publish.yml
+        # cuts tags with GITHUB_TOKEN, GitHub starts no run for such a ref, and
+        # measurement confirms zero runs on any `v1.*` ref. Written as a
+        # release gate, it was never one.
+        #
+        # It is NOT simply switched on for releases instead, and that is a
+        # decision rather than an omission: `uictl parity-manifest
+        # --require-must` currently exits 1 with "694 priority:must item(s) not
+        # verified" (measured on this branch). Wiring it into the release path
+        # today would make every release run red on a known, tracked backlog —
+        # a second kind of signal nobody can act on. `cutover/*` is a branch
+        # that really does fire, and is where the audit is meant to bite.
+        if: startsWith(github.ref, 'refs/heads/cutover/')
         working-directory: .
         run: go run ./tools/uictl parity-manifest --require-must

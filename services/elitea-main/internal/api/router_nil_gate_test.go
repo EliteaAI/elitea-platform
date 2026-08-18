@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -89,7 +91,12 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 		// within the gated block yields zero and the field looks inert. The five
 		// routes live in the handler's Routes(). Any future audit of this pattern
 		// has to follow Mount targets, or it will undercount exactly here.
-		"LLMProxy": "optional by design: the LLM proxy is a separate deployment (services/elitea-llm-gateway)",
+		// Never assigned by cmd/elitea-main: GatewayProxy is what every real
+		// deployment composes, and the LiteLLM facade that once could have
+		// filled this field is deleted. It stays as an unwired seam for an
+		// alternative backend behind the same Auth+Project middleware — see
+		// router.go's "/llm has one composed backend" comment.
+		"LLMProxy": "optional by design: the LLM data plane is a separate deployment (services/elitea-llm-gateway), reached via GatewayProxy",
 		// EventSource is the NATS arm of the project-SSE fallback pair. It is
 		// genuinely optional — but ONLY because RedisClient, the other arm, is
 		// now wired (see the fallback-pair check below, which is what makes
@@ -109,16 +116,35 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	}
 
 	root := repoRootFrom(t)
-	routerSrc := readFile(t, filepath.Join(root, "internal/api/router.go"))
+	// Both router sources, not just router.go (#367). router.go was the only
+	// file this test read, and the defect class moved: production_router.go's
+	// mountReviewedProductionRoutes carries 25 more `cfg.X != nil` gates that
+	// nothing checked. A gate is a gate whichever file declares it, so the
+	// scan is driven by this list and a third router file is added here.
+	routerFiles := []string{
+		"internal/api/router.go",
+		"internal/api/production_router.go",
+	}
+	routerSources := map[string]string{}
+	for _, name := range routerFiles {
+		routerSources[name] = readFile(t, filepath.Join(root, name))
+	}
 	mainSrc := readFile(t, filepath.Join(root, "cmd/elitea-main/main.go"))
 
 	gated := regexp.MustCompile(`cfg\.([A-Za-z][A-Za-z0-9]*) != nil`)
-	seen := map[string]bool{}
-	for _, m := range gated.FindAllStringSubmatch(routerSrc, -1) {
-		seen[m[1]] = true
+	// Field name to the router file that gates it, for error messages that
+	// name the file a reader has to open.
+	seen := map[string]string{}
+	for _, name := range routerFiles {
+		for _, m := range gated.FindAllStringSubmatch(routerSources[name], -1) {
+			if _, already := seen[m[1]]; !already {
+				seen[m[1]] = name
+			}
+		}
 	}
 	if len(seen) == 0 {
-		t.Fatal("found no `cfg.X != nil` gates in router.go — this test's premise no longer holds; " +
+		t.Fatal("found no `cfg.X != nil` gates in " + strings.Join(routerFiles, " or ") +
+			" — this test's premise no longer holds; " +
 			"either the pattern changed or the regex is wrong. Do not delete this test without replacing the guarantee.")
 	}
 
@@ -153,32 +179,177 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	ifGateRe := regexp.MustCompile(`if cfg\.([A-Za-z][A-Za-z0-9]*) != nil \{`)
 	elseIfGateRe := regexp.MustCompile(`\}\s*else if cfg\.([A-Za-z][A-Za-z0-9]*) != nil \{`)
 
-	var pairs [][2]string
-	for _, loc := range elseIfGateRe.FindAllStringSubmatchIndex(routerSrc, -1) {
-		second := routerSrc[loc[2]:loc[3]]
-		prior := ifGateRe.FindAllStringSubmatch(routerSrc[:loc[0]], -1)
-		if len(prior) == 0 {
-			continue
+	// Pairs are matched WITHIN one file. Concatenating the router sources and
+	// scanning the join would let an `else if` in production_router.go walk
+	// back into router.go and report a chain that spans two files and exists
+	// in neither.
+	type fallbackPair struct{ file, first, second string }
+	var pairs []fallbackPair
+	for _, name := range routerFiles {
+		src := routerSources[name]
+		for _, loc := range elseIfGateRe.FindAllStringSubmatchIndex(src, -1) {
+			second := src[loc[2]:loc[3]]
+			prior := ifGateRe.FindAllStringSubmatch(src[:loc[0]], -1)
+			if len(prior) == 0 {
+				continue
+			}
+			pairs = append(pairs, fallbackPair{file: name, first: prior[len(prior)-1][1], second: second})
 		}
-		pairs = append(pairs, [2]string{prior[len(prior)-1][1], second})
 	}
 	if len(pairs) == 0 {
-		t.Fatal("found no `if cfg.A != nil { … } else if cfg.B != nil { … }` fallback chains in router.go — " +
+		t.Fatal("found no `if cfg.A != nil { … } else if cfg.B != nil { … }` fallback chains in " +
+			strings.Join(routerFiles, " or ") + " — " +
 			"either the last one was removed (delete this block) or the pattern changed. " +
 			"Do not delete this without replacing the guarantee: a fallback pair with both arms nil " +
 			"is how #152 shipped a route that existed in no deployment.")
 	}
 	for _, pair := range pairs {
-		first, second := pair[0], pair[1]
+		first, second := pair.first, pair.second
 		if assigned(first) || assigned(second) {
 			continue
 		}
-		t.Errorf("RouterConfig.%s and RouterConfig.%s form a fallback pair in router.go "+
+		t.Errorf("RouterConfig.%s and RouterConfig.%s form a fallback pair in %s "+
 			"(`if cfg.%s != nil … else if cfg.%s != nil …`) and NEITHER is assigned in cmd/elitea-main/main.go.\n"+
 			"  The routes behind that chain are registered by no arm and answer 404 in every deployment.\n"+
 			"  An allowlist entry for one arm that points at the other is circular and does NOT satisfy this:\n"+
 			"  at least one member has to be genuinely wired. (#152)",
-			first, second, first, second)
+			first, second, pair.file, first, second)
+	}
+
+	// --- Flag-dark composition -------------------------------------------
+	//
+	// Extending the scan to production_router.go found nothing, and that is
+	// the point (#367). All 25 of its gates ARE assigned in main.go's
+	// RouterConfig literal, so the question this test asks — "does the
+	// composition root assign this field?" — answers yes for every one of
+	// them. The defect class changed shape rather than going away:
+	//
+	//	var currentApplicationSkills *applicationskillsapi.CurrentApplicationSkillsRoute
+	//	if currentApplicationSkillsSettings.Enabled { currentApplicationSkills = … }
+	//	…
+	//	CurrentApplicationSkills: currentApplicationSkills,
+	//
+	// The field is assigned. It is assigned nil, in every deployment, because
+	// the flag defaults off and no deployment sets it. A textual assignment
+	// check cannot tell that apart from a real wiring, so it passed while the
+	// route it gates was registered nowhere.
+	//
+	// So the flags themselves are checked. A composition-root flag that no
+	// deployment sets is a branch that runs in no deployment: whatever it
+	// composes is dark, and — worse than a 404 — it can leave a lower-priority
+	// route to answer instead. That is exactly what happened to
+	// application_skills, where chi fell through to a handler that ignores
+	// {appVersionID} and returns every skill in the project, at 200.
+	//
+	// An entry here asserts "no deployment sets this flag, and that is
+	// intended". It carries the same obligation as declaredAbsent above: a
+	// reason, and a tracking issue.
+	darkFlags := map[string]string{
+		// Off on purpose. The reason recorded here before was the retired
+		// LiteLLM lifecycle facade; that reason is stale (#460), because the
+		// lifecycle takes no LLM transport now.
+		//
+		// It also cannot be set on its own.
+		// currentConfigurationsConfigFromEnv rejects a deployment that sets it
+		// while ELITEA_CONFIGURATIONS_ENABLED is off, so it can never be the
+		// only flag standing between a route and its handler.
+		//
+		// Two earlier claims here were wrong, and the correction is the point
+		// of this entry. "Nothing answers in its place" and "dark here means
+		// 404" both fail: router.go mounts the compatibility configuration
+		// handler on the same three methods and the same two paths, with no
+		// flag on the mount. So the flag does not darken a route — it decides
+		// WHICH of two handlers answers.
+		// TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition
+		// runs both compositions and records the answer: the reviewed route
+		// wins when it is composed, and the compatibility mount serves the
+		// path in every shipped install, where it is not.
+		"ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "#460 — the compatibility write routes serve this path in every install; turning the flag on is a cutover to a second route with a different request shape",
+		// #367 — cannot be turned on until the response contract is
+		// reconciled, and must not be deleted while it is the only
+		// SDK-derived implementation. A dedicated follow-up issue should
+		// replace this reference; #367 is where the conflict is recorded.
+		//
+		// The route it composes answers {document_types, image_types,
+		// code_types} from the pinned SDK snapshot. The published contract for
+		// the same path is DocumentLoadersResponse — {items, total} — at
+		// api/openapi/v2.yaml:2023, and elitea-web's generated client is built
+		// from it. Turning the flag on makes the current route win the path
+		// and hands that client a body it cannot read.
+		//
+		// Unlike application_skills, the handler answering today is not
+		// returning another resource's data: internal/api/v2/toolkits'
+		// IndexTypes returns a static six-loader list. It is stale rather than
+		// wrong-scoped, so the flag stays off until the contract moves.
+		"ELITEA_INDEX_TYPES_ENABLED": "#367 — enabling it would serve a shape the published contract and the generated client do not accept",
+		// #367 — same conflict, and the harm it used to mask is now fixed on
+		// the path every deployment reaches. A dedicated follow-up issue
+		// should replace this reference too.
+		//
+		// The route it composes answers {skills, max_skills}; elitea-web reads
+		// the SkillsList envelope. #367 fixed the handler that actually serves
+		// this path instead (router.go's /application_skills/{mode}/… now
+		// reads {appVersionID}), so the flag no longer hides a wrong answer —
+		// only a second, contract-incompatible implementation kept for the
+		// Pylon edge cutover its CURRENT_PARITY_EVIDENCE.md describes.
+		"ELITEA_APPLICATION_SKILLS_ENABLED": "#367 — the Pylon-parity read kept for the edge cutover; its {skills,max_skills} shape conflicts with the shipped client",
+	}
+
+	flagFiles, globErr := filepath.Glob(filepath.Join(root, "cmd/elitea-main/*_config.go"))
+	if globErr != nil {
+		t.Fatalf("glob composition-root flag readers: %v", globErr)
+	}
+	flagLookupRe := regexp.MustCompile(`lookup\("(ELITEA_[A-Z0-9_]*_ENABLED)"\)`)
+	compositionFlags := map[string]string{}
+	for _, file := range flagFiles {
+		src := readFile(t, file)
+		for _, m := range flagLookupRe.FindAllStringSubmatch(src, -1) {
+			if _, already := compositionFlags[m[1]]; !already {
+				compositionFlags[m[1]] = filepath.Base(file)
+			}
+		}
+	}
+	if len(compositionFlags) == 0 {
+		t.Fatal("found no `lookup(\"ELITEA_…_ENABLED\")` reads in cmd/elitea-main/*_config.go — " +
+			"either the composition-root flag readers moved or the pattern changed. " +
+			"Do not delete this block without replacing the guarantee: a flag no deployment sets " +
+			"is how #367 shipped a route that answered with the wrong project's skills.")
+	}
+
+	deployed := deployAssignedEnv(t, filepath.Join(root, "..", "..", "deploy"))
+	var darkUndeclared, staleDark []string
+	for flag := range compositionFlags {
+		_, isDeployed := deployed[flag]
+		_, declared := darkFlags[flag]
+
+		switch {
+		case isDeployed && declared:
+			staleDark = append(staleDark, flag)
+		case !isDeployed && !declared:
+			darkUndeclared = append(darkUndeclared, flag)
+		}
+	}
+	sort.Strings(darkUndeclared)
+	sort.Strings(staleDark)
+
+	for _, flag := range darkUndeclared {
+		t.Errorf("%s is read by cmd/elitea-main/%s, and no file under deploy/ sets it.\n"+
+			"  Every branch behind it is dead in every deployment, so whatever it composes is\n"+
+			"  unreachable — and any lower-priority route on the same path answers in its place.\n"+
+			"  Either set it in a deployment, delete the flag and its branch, or add it to darkFlags\n"+
+			"  in this test WITH an issue reference. (#367)", flag, compositionFlags[flag])
+	}
+	for _, flag := range staleDark {
+		t.Errorf("darkFlags lists %s, but %s sets it.\n"+
+			"  Remove the entry: a stale allowlist hides the next real regression for this flag.",
+			flag, deployed[flag])
+	}
+	for flag := range darkFlags {
+		if _, read := compositionFlags[flag]; !read {
+			t.Errorf("darkFlags lists %s, but no reader in cmd/elitea-main/*_config.go looks it up.\n"+
+				"  The flag was removed and the entry was left behind, where it reads as a live\n"+
+				"  claim about a branch that no longer exists. Delete the entry.", flag)
+		}
 	}
 
 	var unwired, staleAllowlist []string
@@ -197,10 +368,10 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	sort.Strings(staleAllowlist)
 
 	for _, f := range unwired {
-		t.Errorf("RouterConfig.%s gates routes in router.go but is never assigned in cmd/elitea-main/main.go.\n"+
+		t.Errorf("RouterConfig.%s gates routes in %s but is never assigned in cmd/elitea-main/main.go.\n"+
 			"  Those routes are silently unregistered and answer 404 in every deployment.\n"+
 			"  Either wire it, or add it to declaredAbsent in this test WITH an issue reference —\n"+
-			"  so the gap is visible instead of being discovered by someone debugging a 404.", f)
+			"  so the gap is visible instead of being discovered by someone debugging a 404.", f, seen[f])
 	}
 	for _, f := range staleAllowlist {
 		t.Errorf("RouterConfig.%s is now wired in main.go but is still listed in declaredAbsent.\n"+
@@ -218,16 +389,129 @@ func TestNilGatedRouterFieldsAreWiredOrDeclared(t *testing.T) {
 	// the allowlist exists to prevent, so it is checked too.
 	var orphaned []string
 	for field := range declaredAbsent {
-		if !seen[field] {
+		if _, gatedSomewhere := seen[field]; !gatedSomewhere {
 			orphaned = append(orphaned, field)
 		}
 	}
 	sort.Strings(orphaned)
 	for _, f := range orphaned {
-		t.Errorf("declaredAbsent lists RouterConfig.%s, but router.go has no `cfg.%s != nil` gate.\n"+
+		t.Errorf("declaredAbsent lists RouterConfig.%s, but no `cfg.%s != nil` gate exists in %s.\n"+
 			"  The field or its gate was removed and the entry was left behind, where it reads as a\n"+
-			"  live claim about routes that no longer exist. Delete the entry.", f, f)
+			"  live claim about routes that no longer exist. Delete the entry.",
+			f, f, strings.Join(routerFiles, " or "))
 	}
+}
+
+// deployAssignedEnv reports every ELITEA_* variable that a file under deploy/
+// actually ASSIGNS, mapped to the file:line that assigns it.
+//
+// "Assigns", not "mentions". deploy/docker-compose.standalone-full.yml:22 reads
+//
+//	# ELITEA_CONFIGURATIONS_ENABLED=true, which nothing here sets.
+//
+// so a plain substring search — or a regex run over the whole file rather than
+// per line — reports that flag as configured on the strength of a comment
+// saying it is not. That inverted answer is worse than no check: it turns the
+// gate green for precisely the flag it is meant to catch.
+//
+// Documentation is excluded for the same reason. deploy/INDEX_V2_CUTOVER.md
+// contains a fenced YAML sample with `ELITEA_RUNTIME_ENABLED: "true"` in it; a
+// runbook showing an operator what to type is not a deployment that types it.
+func deployAssignedEnv(t *testing.T, dir string) map[string]string {
+	t.Helper()
+
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		// Not "nothing found, so everything is fine". A missing deploy/ means
+		// this check silently stops checking, which is how a gate keeps
+		// reporting success after the thing it reads moves away.
+		t.Fatalf("deploy/ not found at %s: the flag check cannot run without it (%v)", dir, err)
+	}
+
+	configExt := map[string]bool{
+		".yml": true, ".yaml": true, ".env": true, ".sh": true, ".tpl": true, ".conf": true,
+	}
+	// `ELITEA_X: value` (compose) or `ELITEA_X=value` (env file, shell).
+	assignRe := regexp.MustCompile(`^(ELITEA_[A-Z0-9_]+)\s*[:=]\s*(.*)$`)
+	// `- name: ELITEA_X` (a Kubernetes env entry, whose value is the next key).
+	namedRe := regexp.MustCompile(`^-?\s*name:\s*"?(ELITEA_[A-Z0-9_]+)"?\s*$`)
+
+	assigned := map[string]string{}
+	walkErr := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !configExt[filepath.Ext(path)] {
+			return nil
+		}
+		body, readErr := os.ReadFile(path) //nolint:gosec // fixed, test-local path
+		if readErr != nil {
+			return readErr
+		}
+		for number, line := range strings.Split(string(body), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			trimmed = strings.TrimPrefix(trimmed, "export ")
+			name := ""
+			if m := assignRe.FindStringSubmatch(trimmed); m != nil {
+				// Assigned OFF is not assigned. A flag set to "false" leaves
+				// every branch behind it exactly as unreachable as no
+				// assignment at all, so counting it as deployed would report
+				// the flag as live on the strength of the line that turns it
+				// off — the same inverted answer the comment rule above
+				// avoids. It also inverts the darkFlags check: a chart that
+				// documents a dark flag as "false" would make the darkFlags
+				// entry look stale, and deleting that entry is what would
+				// then let someone flip the flag to "true" unchallenged.
+				if !envValueIsOn(m[2]) {
+					continue
+				}
+				name = m[1]
+			} else if m := namedRe.FindStringSubmatch(trimmed); m != nil {
+				name = m[1]
+			} else {
+				continue
+			}
+			if _, already := assigned[name]; !already {
+				assigned[name] = fmt.Sprintf("%s:%d", filepath.Base(path), number+1)
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk %s: %v", dir, walkErr)
+	}
+	return assigned
+}
+
+// envValueIsOn reports whether a deploy-file assignment turns a flag ON.
+//
+// Only the ELITEA_*_ENABLED booleans this file grades are ever read back, so a
+// non-boolean value (a URL, a path, a port) counts as assigned. The quotes are
+// stripped because the Helm values files write "false" and the compose files
+// write false, and a trailing comment is dropped because `FLAG: false # why`
+// is a normal way to write the line.
+//
+// GRADE BOOLEANS ONLY. Do not use this helper for a variable that holds a
+// number. It reads "0" as off, because a boolean flag written as 0 is off.
+// But 0 is also a correct value for a worker count, a replica count or a
+// port. For those variables this helper answers "not assigned" when the
+// deployment did assign them, which is the inverted answer the caller above
+// exists to prevent. If you must grade a numeric variable, give it a
+// different helper.
+func envValueIsOn(raw string) bool {
+	value := strings.TrimSpace(raw)
+	if idx := strings.Index(value, "#"); idx >= 0 {
+		value = strings.TrimSpace(value[:idx])
+	}
+	value = strings.Trim(value, `"'`)
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "false", "off", "no", "0":
+		return false
+	}
+	return true
 }
 
 func repoRootFrom(t *testing.T) string {

@@ -44,12 +44,11 @@ import Typography from '@mui/material/Typography';
 
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { PermissionMatrix } from './PermissionMatrix';
 import { useAdminRolesPage, type AdminRolesPageState } from './useAdminRolesPage';
 
-const { DrawerPage } = drawerPage;
 
 function savedText(message: string): string {
   return message === 'synced'

@@ -9,9 +9,33 @@ on:
       - "libs/proto/pyproject.toml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-python.yml"
+      # The "Runtime worker" job reads the files below. It compares each
+      # committed projection with the SDK that the worker lock selects.
+      # Start this workflow when one of these files changes. The worker lock
+      # is in the services/elitea-worker-python/ directory. The entry above
+      # covers the lock.
+      - "scripts/contract/**"
+      - "services/elitea-main/internal/runtimecomposition/current_index_types_snapshot.json"
+      - "services/elitea-main/internal/runtimecomposition/current_toolkit_schema_snapshot.json"
+      - "services/elitea-main/internal/api/v2/indextypes/testdata/current_index_types_ui_response.json"
+      # Issue #424. sync_current_available_sdk.py --check and
+      # sync_worker_sdk_catalog.py --check now run in the "Runtime worker" job.
+      # Each one compares a committed projection with the locked SDK. Add the
+      # path of each projection. Without the path the gate cannot start for the
+      # file that it protects — the defect that kept this workflow off the
+      # branch until #448.
+      - "services/elitea-main/internal/application/configurations/current_available_snapshot.json"
+      - "services/elitea-main/internal/runtimecomposition/current_sdk_configuration_catalog_snapshot.json"
   push:
     branches:
       - main
+      # The release staging branch (#518). Pull requests merge here first,
+      # and this branch merges into main later, so a push arm that names
+      # only `main` cannot guard the tree that becomes main. The name is
+      # held once in .github/staging-branch.txt, and
+      # scripts/ci/check_workflow_branch_coverage.py fails when a workflow
+      # that names `main` here does not also name that branch.
+      - claude/issue-248-c5b380
     paths:
       - "services/pylon-indexer/**"
       - "services/elitea-worker-python/**"
@@ -19,6 +43,12 @@ on:
       - "libs/proto/pyproject.toml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-python.yml"
+      - "scripts/contract/**"
+      - "services/elitea-main/internal/runtimecomposition/current_index_types_snapshot.json"
+      - "services/elitea-main/internal/runtimecomposition/current_toolkit_schema_snapshot.json"
+      - "services/elitea-main/internal/api/v2/indextypes/testdata/current_index_types_ui_response.json"
+      - "services/elitea-main/internal/application/configurations/current_available_snapshot.json"
+      - "services/elitea-main/internal/runtimecomposition/current_sdk_configuration_catalog_snapshot.json"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -129,17 +159,33 @@ jobs:
           ELITEA_CONFORMANCE_ROOT: ${{ github.workspace }}/testdata/proto/runtime/v1
           ELITEA_SDK_SOURCE_ROOT: /tmp/elitea-sdk-current
         run: |
+          # Every test_*.py under scripts/contract/ runs. A named list stops
+          # covering a file the day somebody adds one, and two files had sat
+          # unrun since they were written (#424). The shell glob is the whole
+          # point: it derives the list from the tree.
+          contract_tests=(scripts/contract/test_*.py)
+          if [ "${#contract_tests[@]}" -lt 4 ]; then
+            echo "::error::found ${#contract_tests[@]} test files under scripts/contract/, expected at least 4 — the glob stopped matching, so this step would prove nothing"
+            exit 1
+          fi
           python -m pytest \
             /tmp/elitea-sdk-current/tests/runtime/test_mcp_discovery_hang.py \
             services/elitea-worker-python/tests \
-            scripts/contract/test_sync_index_types_snapshot.py \
-            scripts/contract/test_sync_toolkit_schema_snapshot.py
+            "${contract_tests[@]}"
           elitea-worker conformance --suite runtime-v1
 
       - name: Compile Python sources
         run: python -m compileall -q services/elitea-worker-python/src libs/proto/gen/python
 
       - name: Verify source-backed SDK projections
+        env:
+          # sync_current_available_sdk.py refuses to run when
+          # elitea_sdk/configurations holds an uncommitted or untracked file.
+          # The projections above import that package straight out of the
+          # checkout, so the interpreter would drop __pycache__ directories in
+          # it and the next check would report a dirty SDK source. Write no
+          # bytecode instead.
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           # Schema projection imports the complete current SDK registry. Keep
           # its build-only dependencies after the runtime tests so they cannot
@@ -150,6 +196,16 @@ jobs:
             --sdk-root /tmp/elitea-sdk-current \
             --check
           python scripts/contract/sync_toolkit_schema_snapshot.py \
+            --sdk-root /tmp/elitea-sdk-current \
+            --check
+          # Issue #424. These two --check modes ran in no workflow. Each one
+          # reads the same locked SDK source as the two calls above and
+          # compares a committed projection with it. The trigger list carries
+          # the path of each projection.
+          python scripts/contract/sync_current_available_sdk.py \
+            --sdk-root /tmp/elitea-sdk-current \
+            --check
+          python scripts/contract/sync_worker_sdk_catalog.py \
             --sdk-root /tmp/elitea-sdk-current \
             --check
 

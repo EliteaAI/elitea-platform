@@ -62,6 +62,25 @@ func (q *Queries) CreatePATForActiveUser(ctx context.Context, arg CreatePATForAc
 	return i, err
 }
 
+const createTokenProjectBinding = `-- name: CreateTokenProjectBinding :exec
+INSERT INTO elitea_identity.token_project_binding (token_id, project_id)
+VALUES ($1::integer, $2::integer)
+`
+
+type CreateTokenProjectBindingParams struct {
+	TokenID   int32 `db:"token_id" json:"token_id"`
+	ProjectID int32 `db:"project_id" json:"project_id"`
+}
+
+// A binding is written once, in the same transaction as the token INSERT, and
+// after the membership check. There is no update query on purpose: a binding is
+// a fact about a key, not a setting that changes under a running integration
+// (spec-llm-project-scope §4).
+func (q *Queries) CreateTokenProjectBinding(ctx context.Context, arg CreateTokenProjectBindingParams) error {
+	_, err := q.db.Exec(ctx, createTokenProjectBinding, arg.TokenID, arg.ProjectID)
+	return err
+}
+
 const deletePATByID = `-- name: DeletePATByID :execrows
 DELETE FROM public.auth_core__token
 WHERE id = $1::integer
@@ -73,6 +92,27 @@ func (q *Queries) DeletePATByID(ctx context.Context, id int32) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteTokenProjectBinding = `-- name: DeleteTokenProjectBinding :exec
+
+DELETE FROM elitea_identity.token_project_binding
+WHERE token_id = $1::integer
+`
+
+// The list and get responses read the binding back through the LEFT JOIN
+// above, so no point-read query exists. A separate read would be a second round
+// trip for a value the same row already carries.
+// Token deletion deletes the binding explicitly, in the same transaction, and
+// does NOT rely on ON DELETE CASCADE (spec-llm-project-scope §3.1). Migration
+// 0071 guards its foreign key with to_regclass, because elitea-migrate can run
+// before pylon creates auth_core. When the guard skips, the migration is still
+// ledgered as applied and no later run adds the constraint, so that database
+// has no cascade for its whole life. The constraint stays as the second of two
+// independent guarantees; this query is the first.
+func (q *Queries) DeleteTokenProjectBinding(ctx context.Context, tokenID int32) error {
+	_, err := q.db.Exec(ctx, deleteTokenProjectBinding, tokenID)
+	return err
 }
 
 const getActivePATForUser = `-- name: GetActivePATForUser :one
@@ -117,24 +157,37 @@ const getActivePATPrincipalByUUID = `-- name: GetActivePATPrincipalByUUID :one
 SELECT
     token.id AS token_id,
     owner.id AS user_id,
-    COALESCE(owner.email, '')::text AS email
+    COALESCE(owner.email, '')::text AS email,
+    binding.project_id
 FROM public.auth_core__token AS token
 JOIN public.auth_core__user AS owner ON owner.id = token.user_id
+LEFT JOIN elitea_identity.token_project_binding AS binding
+       ON binding.token_id = token.id
 WHERE token.uuid = $1::text
   AND owner.suspended = false
   AND (token.expires IS NULL OR token.expires > (clock_timestamp() AT TIME ZONE 'UTC'))
 `
 
 type GetActivePATPrincipalByUUIDRow struct {
-	TokenID int32  `db:"token_id" json:"token_id"`
-	UserID  int32  `db:"user_id" json:"user_id"`
-	Email   string `db:"email" json:"email"`
+	TokenID   int32  `db:"token_id" json:"token_id"`
+	UserID    int32  `db:"user_id" json:"user_id"`
+	Email     string `db:"email" json:"email"`
+	ProjectID *int32 `db:"project_id" json:"project_id"`
 }
 
+// This is the single query the credential validator runs for every request.
+// The token binding rides along on the row the validator already reads, so a
+// bound token costs no additional round trip on the request path
+// (spec-llm-project-scope §3.2). Do not split it into a second lookup.
 func (q *Queries) GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error) {
 	row := q.db.QueryRow(ctx, getActivePATPrincipalByUUID, uuid)
 	var i GetActivePATPrincipalByUUIDRow
-	err := row.Scan(&i.TokenID, &i.UserID, &i.Email)
+	err := row.Scan(
+		&i.TokenID,
+		&i.UserID,
+		&i.Email,
+		&i.ProjectID,
+	)
 	return i, err
 }
 
@@ -197,8 +250,11 @@ SELECT
     token.uuid,
     token.expires,
     COALESCE(token.user_id, 0)::integer AS user_id,
-    token.name
+    token.name,
+    binding.project_id
 FROM public.auth_core__token AS token
+LEFT JOIN elitea_identity.token_project_binding AS binding
+       ON binding.token_id = token.id
 WHERE token.uuid = $1::text
   AND token.user_id = $2::integer
 `
@@ -209,11 +265,12 @@ type GetOwnedPATParams struct {
 }
 
 type GetOwnedPATRow struct {
-	ID      int32            `db:"id" json:"id"`
-	Uuid    *string          `db:"uuid" json:"uuid"`
-	Expires pgtype.Timestamp `db:"expires" json:"expires"`
-	UserID  int32            `db:"user_id" json:"user_id"`
-	Name    *string          `db:"name" json:"name"`
+	ID        int32            `db:"id" json:"id"`
+	Uuid      *string          `db:"uuid" json:"uuid"`
+	Expires   pgtype.Timestamp `db:"expires" json:"expires"`
+	UserID    int32            `db:"user_id" json:"user_id"`
+	Name      *string          `db:"name" json:"name"`
+	ProjectID *int32           `db:"project_id" json:"project_id"`
 }
 
 func (q *Queries) GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error) {
@@ -225,6 +282,7 @@ func (q *Queries) GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOw
 		&i.Expires,
 		&i.UserID,
 		&i.Name,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -235,20 +293,27 @@ SELECT
     token.uuid,
     token.expires,
     COALESCE(token.user_id, 0)::integer AS user_id,
-    token.name
+    token.name,
+    binding.project_id
 FROM public.auth_core__token AS token
+LEFT JOIN elitea_identity.token_project_binding AS binding
+       ON binding.token_id = token.id
 WHERE token.user_id = $1::integer
 ORDER BY token.id
 `
 
 type ListOwnedPATsRow struct {
-	ID      int32            `db:"id" json:"id"`
-	Uuid    *string          `db:"uuid" json:"uuid"`
-	Expires pgtype.Timestamp `db:"expires" json:"expires"`
-	UserID  int32            `db:"user_id" json:"user_id"`
-	Name    *string          `db:"name" json:"name"`
+	ID        int32            `db:"id" json:"id"`
+	Uuid      *string          `db:"uuid" json:"uuid"`
+	Expires   pgtype.Timestamp `db:"expires" json:"expires"`
+	UserID    int32            `db:"user_id" json:"user_id"`
+	Name      *string          `db:"name" json:"name"`
+	ProjectID *int32           `db:"project_id" json:"project_id"`
 }
 
+// The LEFT JOIN onto elitea_identity.token_project_binding is what lets a user
+// see which project a key bills (ADR-0018, spec-llm-project-scope §4). It is a
+// LEFT JOIN because an unbound token is the default and must still be listed.
 func (q *Queries) ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error) {
 	rows, err := q.db.Query(ctx, listOwnedPATs, userID)
 	if err != nil {
@@ -264,6 +329,7 @@ func (q *Queries) ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedP
 			&i.Expires,
 			&i.UserID,
 			&i.Name,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}

@@ -10,8 +10,7 @@ import (
 )
 
 func TestCurrentNotificationRepositoryPostgresPreservesGenericUserContract(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

@@ -5,26 +5,17 @@ import (
 	"testing"
 )
 
-// readGatewaySQL returns the concatenated gateway migration SQL.
+// readGatewaySQL returns the gateway schema migration SQL. It reads it through
+// GatewayMigrationSQL — i.e. out of the LEDGERED corpus that elitea-migrate
+// applies (issue #306) — so these shape assertions describe the file production
+// runs, not a copy that only the dev bootstrap ever executed.
 func readGatewaySQL(t *testing.T) string {
 	t.Helper()
-	entries, err := gatewayMigrations.ReadDir("gateway_migrations")
+	sql, err := GatewayMigrationSQL()
 	if err != nil {
-		t.Fatalf("read gateway_migrations dir: %v", err)
+		t.Fatalf("read gateway migration: %v", err)
 	}
-	var sb strings.Builder
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := gatewayMigrations.ReadFile("gateway_migrations/" + e.Name())
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		sb.Write(data)
-		sb.WriteString("\n")
-	}
-	return sb.String()
+	return sql
 }
 
 // TestGatewayMigrationCutoverColumns asserts the six cutover-critical columns

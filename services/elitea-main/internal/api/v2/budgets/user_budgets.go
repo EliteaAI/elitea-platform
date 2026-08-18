@@ -6,26 +6,24 @@ package budgets
 //	PUT  /elitea_core/user_budget/administration/{project_id}/user_budget/{user_id}
 //	GET  /elitea_core/user_budgets/{mode}/{project_id}                       ← user_budgets.py
 //
-// # These limits are NOT enforced, and every response says so
+// # These limits ARE enforced (issue #321)
 //
-// The gateway's admission check is project-scoped: internal/llmproxy/
-// budget_gate.go declares a single `budgetScopeProject = "project"` and there
-// is no user-scoped path through CheckBudget. Issue #246's scope boundary
-// forbids changing that here. So a per-member limit written through this API is
-// an authored intention that nothing currently stops a call on.
+// They were not, for as long as the gateway's admission check knew a single
+// scope. A project admin could set a member cap, get a 200, watch the value
+// round-trip, and that member could spend the whole project budget. Every read
+// carried `"enforced": false` to say so, which was honest but was still a
+// control that did nothing.
 //
-// That is exactly the shape #218 exists about — a surface that persists a
-// policy and returns success while nothing enforces it — so the disclosure is
-// not a comment. Every read carries `"enforced": false`, and
-// TestUserBudgetReportsThatItIsNotEnforced pins it. When gateway per-user
-// enforcement lands, that test fails and the field has to be updated
-// deliberately; a doc comment would have gone quietly stale instead, which is
-// what #135 is a record of.
+// The gateway now admits and bills a second scope keyed (project, member):
+// llmproxy/budget_gate.go asks gateway.user_budget after the project ceiling
+// admits, refuses an over-cap member with 402 `member_budget_exceeded`, and
+// bills the member accumulator alongside the project one under its own event
+// id. `enforced` is therefore true.
 //
-// The rows are still worth storing and reading back: the admin surface needs
-// somewhere to author them, and the alternative — dropping the endpoints — was
-// rejected because it would leave the Settings → Usage members table with
-// nothing at all.
+// It is still a FIELD rather than a constant in a doc comment, and
+// TestUserBudgetReportsThatItIsEnforced still pins it, so the day per-member
+// enforcement is removed or bypassed the payload has to be changed
+// deliberately — the property #135 records as the one a doc comment loses.
 
 import (
 	"context"
@@ -37,9 +35,12 @@ import (
 // project and user ids; see projectLimitJoin for the project counterpart and
 // for why both joins must expose `is_unlimited`.
 //
-// gateway.user_budget has no is_unlimited column — there is no gateway-side
-// enforcement flag to store, because nothing enforces these rows — so it is
-// derived here with the same rule the project upsert applies.
+// gateway.user_budget has no is_unlimited column, so it is derived here with
+// the same rule the project upsert applies — and, since #321, with the same
+// rule the gateway's own per-member snapshot derives it with
+// (failmode/store.go userSnapshotSQL). The two must not drift: this expression
+// is what the API reports as `enforced`, and that one is what actually refuses
+// the call.
 const userLimitJoin = `LEFT JOIN (
     SELECT project_id, user_id, hard_limit_usd, enabled, soft_alert_pct,
            (hard_limit_usd IS NULL OR NOT enabled) AS is_unlimited
@@ -50,9 +51,9 @@ const userLimitJoin = `LEFT JOIN (
 type userBudgetState struct {
 	ProjectID int64 `json:"project_id"`
 	UserID    int64 `json:"user_id"`
-	// Enforced is false for as long as the gateway bills and admits by project
-	// scope alone. It is a field rather than a comment so a client can render
-	// the limit as authored-but-inactive instead of implying it blocks calls.
+	// Enforced reports whether the gateway holds calls to this cap. It is a
+	// field rather than a comment so a client renders what is true of the
+	// deployment it is talking to, not what was true when the client shipped.
 	Enforced bool `json:"enforced"`
 	budgetState
 }
@@ -158,26 +159,30 @@ func (h *Handler) userBudget(ctx context.Context, projectID, userID int64) (user
 		return userBudgetState{}, err
 	}
 	return userBudgetState{
-		ProjectID:   projectID,
-		UserID:      userID,
-		Enforced:    false,
+		ProjectID: projectID,
+		UserID:    userID,
+		// True since #321: llmproxy/budget_gate.go checkMemberBudget reads this
+		// exact row on every /llm call that carries a member id.
+		Enforced:    true,
 		budgetState: state,
 	}, nil
 }
 
 /* ── PUT one member's budget ───────────────────────────────────────────── */
 
-// userBudgetUpsert mirrors projectBudgetUpsert minus is_unlimited: there is no
-// enforcement flag to derive, because nothing enforces this row.
-var userBudgetUpsert = fmt.Sprintf(`
+// userBudgetUpsert mirrors projectBudgetUpsert minus is_unlimited: the gateway
+// derives that flag from (hard_limit_usd IS NULL OR NOT enabled) when it reads
+// the row, so there is nothing to store and nothing that can go stale against
+// the two columns it is derived from.
+const userBudgetUpsert = `
 INSERT INTO gateway.user_budget AS existing
     (project_id, user_id, hard_limit_usd, enabled, soft_alert_pct, updated_at)
-VALUES ($1, $2, $3::numeric, $4, COALESCE($5::smallint, %d), now())
+VALUES ($1, $2, $3::numeric, $4, $5::smallint, now())
 ON CONFLICT (project_id, user_id) DO UPDATE SET
     hard_limit_usd = EXCLUDED.hard_limit_usd,
     enabled        = EXCLUDED.enabled,
     soft_alert_pct = COALESCE($5::smallint, existing.soft_alert_pct),
-    updated_at     = now()`, DefaultWarningPct)
+    updated_at     = now()`
 
 // PutUserBudget serves user_budget.py's administration-mode PUT.
 func (h *Handler) PutUserBudget(w http.ResponseWriter, r *http.Request) {
@@ -249,12 +254,13 @@ SELECT member.id,
        members.names                                                 AS roles,
        limits.hard_limit_usd::text                                   AS monthly_limit,
        COALESCE(limits.enabled, false)                               AS enabled,
-       COALESCE(limits.soft_alert_pct, $2::smallint)                 AS warning_pct,
+       COALESCE(limits.soft_alert_pct, ` + globalWarningPctSQL + `, $2::smallint) AS warning_pct,
        COALESCE(accrued.accumulated_cost, 0)::text                   AS spend,
        (accrued.accumulated_cost IS NOT NULL)                        AS spend_available,
        -- Enforcement, derived exactly as userLimitJoin derives it, so the
        -- listing and the single-member read cannot disagree about whether a
-       -- ceiling applies. gateway.user_budget has no is_unlimited column.
+       -- ceiling applies. gateway.user_budget has no is_unlimited column, and
+       -- the gateway derives it the same way on the admission path.
        CASE WHEN limits.enabled AND limits.hard_limit_usd IS NOT NULL
             THEN GREATEST(0, limits.hard_limit_usd - COALESCE(accrued.accumulated_cost, 0))::text
        END                                                           AS remaining,
@@ -349,7 +355,10 @@ func (h *Handler) listUserBudgets(ctx context.Context, projectID int64) (*userBu
 			return nil, fmt.Errorf("budgets: scan member budget row: %w", err)
 		}
 		row.ProjectID = projectID
-		row.Enforced = false
+		// Same value the single-member read reports, for the same reason. The
+		// two are set from one constant truth about the deployment; a listing
+		// that disagreed with the detail view would be worse than either.
+		row.Enforced = true
 		if row.Name == "" {
 			row.Name = row.Email
 		}
@@ -392,6 +401,7 @@ func (h *Handler) projectWarningPct(ctx context.Context, projectID int64) (int, 
 	err := h.pool.QueryRow(ctx, `
 SELECT COALESCE(
     (SELECT soft_alert_pct FROM gateway.project_budget WHERE project_id = $1),
+    `+globalWarningPctSQL+`,
     $2::smallint
 )`, projectID, DefaultWarningPct).Scan(&pct)
 	if err != nil {

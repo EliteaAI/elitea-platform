@@ -7,6 +7,10 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/account"
 )
 
 // DefaultModelsCacheTTL is the per-project models-list cache lifetime. The
@@ -39,6 +43,50 @@ type modelObject struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+
+	// providerModel is the row's data.name — the model name the PROVIDER
+	// accepts. ID is elitea_title, a user-authored label, and the two are
+	// independent by construction, so the inference path must translate ID to
+	// providerModel before it dispatches (issue #317).
+	//
+	// The field is deliberately UNEXPORTED: encoding/json skips it, so the
+	// provider's wire name can never leak into a caller-facing /llm/v1/models
+	// response (the gateway is the model owner from the caller's view — see
+	// modelsOwnedBy).
+	providerModel string
+
+	// credentialProvider is the bifrost provider the row's linked credential
+	// serves, derived from that credential's configuration type (issue #451).
+	// It is empty when the row links to no credential, or when the link names a
+	// credential the caller's scopes do not hold, or when the credential type is
+	// one this gateway cannot serve.
+	//
+	// It is the ONLY provider source for a bare model name. Measured on the
+	// staging dump of 2026-07-09: 48 of 48 chat rows and 8 of 8 embedding rows
+	// hold a bare data.name, so the model-string prefix names a provider for
+	// none of them.
+	credentialProvider schemas.ModelProvider
+	// credentialProject and credentialID identify the linked credential row.
+	// They travel to the account package on the request context so it returns
+	// that one credential instead of every credential of the provider.
+	credentialProject string
+	credentialID      string
+	// credentialTitle is the link's elitea_title. It identifies the credential
+	// when credentialID is empty, and it names the row in a log line.
+	credentialTitle string
+}
+
+// linkedCredential returns the account-side selector for this model's linked
+// credential, and whether the row links to one.
+func (mo modelObject) linkedCredential() (account.LinkedCredential, bool) {
+	if mo.credentialID == "" && mo.credentialTitle == "" {
+		return account.LinkedCredential{}, false
+	}
+	return account.LinkedCredential{
+		ProjectID: mo.credentialProject,
+		ConfigID:  mo.credentialID,
+		Title:     mo.credentialTitle,
+	}, true
 }
 
 // modelsList is the OpenAI /v1/models list envelope.
@@ -63,24 +111,144 @@ type modelRows interface {
 	Close()
 }
 
-// modelConfigData is the subset of an llm_model configuration row's JSONB
-// `data` the resolver reads. name is the underlying model wire name; it backs
-// the exposed id only when elitea_title is empty.
+// modelConfigData is the subset of a model configuration row's JSONB `data` the
+// resolver reads. name is the underlying model wire name; it backs the exposed
+// id only when elitea_title is empty. ai_credentials is the row's link to the
+// ONE credential the model uses (issue #451).
 type modelConfigData struct {
-	Name string `json:"name"`
+	Name          string              `json:"name"`
+	AICredentials *modelCredentialRef `json:"ai_credentials"`
+}
+
+// modelCredentialRef is a model row's link to a credential row. TWO shapes
+// exist, and a correct reader accepts both:
+//
+//  1. The STORED shape, `{"elitea_title": "...", "private": true|false}`. This
+//     is what the platform persists. Measured on the staging dump of
+//     2026-07-09: all 58 model rows carry this shape and none carries any
+//     other. `alita_title` is the pre-debranding spelling of the same field;
+//     legacy/plugins/configurations/methods/admin_tasks.py renames it in place,
+//     so a database that has not run that task still holds the old name.
+//
+//  2. The EXPANDED shape, which adds `configuration_type`,
+//     `configuration_uuid` and `configuration_project_id`. The legacy platform
+//     built it in memory (legacy/plugins/configurations/utils.py,
+//     expand_configuration) and never wrote it back, and the deleted LiteLLM
+//     mapper read that in-memory form. elitea-main writes the same three keys
+//     when it freezes a configuration reference
+//     (application/configurations/toolkit_settings.go), so a row CAN hold it.
+//
+// Shape 2 answers the provider question by itself. Shape 1 does not: it names
+// the credential by title only, so the credential's own row must be read to
+// learn its type. credentialRefs does that read.
+type modelCredentialRef struct {
+	EliteaTitle string `json:"elitea_title"`
+	AlitaTitle  string `json:"alita_title"`
+	// ConfigurationType is the credential row's `type` column, present only in
+	// the expanded shape.
+	ConfigurationType string `json:"configuration_type"`
+	// ConfigurationUUID is the credential row's uuid, present only in the
+	// expanded shape.
+	ConfigurationUUID string `json:"configuration_uuid"`
+	// ConfigurationProjectID is the credential owner's project id, present only
+	// in the expanded shape. json.Number accepts it whether it was written as a
+	// number or as a string.
+	ConfigurationProjectID json.Number `json:"configuration_project_id"`
+}
+
+// title returns the credential's elitea_title, accepting the pre-debranding
+// spelling.
+func (r *modelCredentialRef) title() string {
+	if r == nil {
+		return ""
+	}
+	if r.EliteaTitle != "" {
+		return r.EliteaTitle
+	}
+	return r.AlitaTitle
+}
+
+// names reports whether the link names a credential at all. A row can carry an
+// `ai_credentials` key whose object is empty; that names nothing.
+func (r *modelCredentialRef) names() bool {
+	return r != nil && (r.title() != "" || r.ConfigurationUUID != "")
+}
+
+// credentialRef is one credential row as the model resolver needs it: enough to
+// name the provider and to pin the credential. It carries no secret material —
+// the account package reads the secret, per request, from the vault.
+type credentialRef struct {
+	// configID matches the account package's own credential id, which is the
+	// row's uuid when it has one and its numeric id otherwise. The two SELECT
+	// expressions MUST stay identical or the pin will never match.
+	configID string
+	// typ is the row's `type` column, e.g. "azure_open_ai". It selects the
+	// provider through account.ProviderForCredentialType.
+	typ string
+	// ownerProjectID is the project whose schema holds the row.
+	ownerProjectID string
+}
+
+// modelSection is one (section, type) pair in p_{projectID}.configuration that
+// holds a model a /llm route can address.
+type modelSection struct {
+	section string
+	typ     string
+}
+
+// addressableModelSections enumerates the configuration rows that describe a
+// model the gateway can dispatch to. elitea-main writes the two columns as a
+// pair (internal/api/v2/configurations/handler.go) and its own reads verify
+// both before they trust a row, so both are matched here too.
+//
+// This is the WHOLE model surface, not the chat surface. mapModel gates EVERY
+// dialect against this set, so a section that is absent here makes the gateway
+// answer 404 `model_not_found` for every model it holds — even though the
+// project configured the model and the credential resolves. That is what
+// happened to POST /llm/v1/embeddings while the resolver read the `llm` section
+// alone: an `embedding`/`embedding_model` row was invisible, so the embedding
+// hop of the index plane could never dispatch.
+//
+// The order is precedence: a model id that two sections both carry resolves to
+// the first section in this list (see modelsSQL's ORDER BY).
+//
+// Keep this in step with the routes in internal/api/router.go. `asr` and `tts`
+// are deliberately absent — the gateway serves no audio route, so advertising
+// those models would name something no caller can reach. `vectorstorage` holds
+// no model at all. ADD THE PAIR HERE when you add a route that dispatches one.
+var addressableModelSections = []modelSection{
+	{section: "llm", typ: "llm_model"},                           // /chat/completions, /completions, /responses, /messages
+	{section: "embedding", typ: "embedding_model"},               // /embeddings
+	{section: "image_generation", typ: "image_generation_model"}, // /images/generations, /images/edits, /images/variations
+}
+
+// modelSectionArgs returns the two parallel arrays modelsSQL binds, in
+// addressableModelSections order. Passing the pairs as bind parameters keeps
+// the statement text fixed: nothing about which sections are read is built by
+// string concatenation.
+func modelSectionArgs() (sections, types []string) {
+	sections = make([]string, len(addressableModelSections))
+	types = make([]string, len(addressableModelSections))
+	for i, s := range addressableModelSections {
+		sections[i], types[i] = s.section, s.typ
+	}
+	return sections, types
 }
 
 // ModelResolver synthesises the per-project /llm/v1/models set from
-// p_{projectID}.configuration (section 'llm', type 'llm_model'). It caches the
-// resolved list per project for a short TTL and, on a query failure, serves a
-// stale cached list if one exists so a transient database blip does not empty a
-// project's model surface. It is safe for concurrent use and NEVER routes
-// through bifrost/core (design §4.2, §3.4).
+// p_{projectID}.configuration, reading every pair in addressableModelSections.
+// It caches the resolved list per project for a short TTL and, on a query
+// failure, serves a stale cached list if one exists so a transient database blip
+// does not empty a project's model surface. It is safe for concurrent use and
+// NEVER routes through bifrost/core (design §4.2, §3.4).
 type ModelResolver struct {
-	db     modelRowQuerier
-	ttl    time.Duration
-	now    func() time.Time
-	logger *slog.Logger
+	db  modelRowQuerier
+	ttl time.Duration
+	now func() time.Time
+	// publicProjectID is the platform's shared project (issue #316). Empty
+	// disables the shared scope. Operator configuration, never request data.
+	publicProjectID string
+	logger          *slog.Logger
 
 	mu    sync.RWMutex
 	cache map[string]modelsCacheEntry
@@ -105,6 +273,14 @@ type ModelResolverConfig struct {
 	Now func() time.Time
 	// Logger is used for resolution warnings; nil uses slog.Default().
 	Logger *slog.Logger
+	// PublicProjectID is the platform's shared ("public") project id as a
+	// decimal string (ELITEA_AI_PROJECT_ID). When set, List also returns that
+	// project's `shared = true` models, so /llm/v1/models agrees with the model
+	// picker the caller just used (issue #316). Empty disables the shared scope.
+	//
+	// This MUST be operator configuration. A request-supplied value would let a
+	// caller name any project as "public" and enumerate its models.
+	PublicProjectID string
 }
 
 // NewModelResolver builds a ModelResolver from cfg.
@@ -122,23 +298,108 @@ func NewModelResolver(cfg ModelResolverConfig) *ModelResolver {
 		logger = slog.Default()
 	}
 	return &ModelResolver{
-		db:     cfg.DB,
-		ttl:    ttl,
-		now:    now,
-		logger: logger,
-		cache:  make(map[string]modelsCacheEntry),
+		db:              cfg.DB,
+		ttl:             ttl,
+		now:             now,
+		publicProjectID: cfg.PublicProjectID,
+		logger:          logger,
+		cache:           make(map[string]modelsCacheEntry),
 	}
 }
 
-// modelsSQL reads the caller-visible model ids for a project's configured LLM
+// modelsSQL reads the caller-visible model ids for a project's configured
 // models. elitea_title is the alias the caller uses in the request `model`
 // field (it is what ChatConfig surfaces as the model "name"); data carries the
-// underlying wire name as a fallback id. Rows are ordered by id so the
-// synthesised set is stable.
-const modelsSQL = `SELECT COALESCE(elitea_title, ''), data
-	FROM %q.configuration
-	WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
-	ORDER BY id`
+// underlying wire name as a fallback id.
+//
+// The admitted rows are the (section, type) pairs of addressableModelSections,
+// bound as two parallel arrays and joined WITH ORDINALITY. The ordinality is
+// load-bearing rather than decorative: it orders the result by the declared
+// section order first and by row id second. The chat models therefore keep the
+// position they held when the `llm` section was the only one read, and a model
+// id that two sections both carry resolves to the same row on every call.
+//
+// %q is the schema name. %s is the scope predicate: empty for the caller's own
+// project, and sharedModelPredicate for the public project, whose rows are
+// visible to another project ONLY when the platform published them. `shared` is
+// selected so the public-scope result can be re-verified in Go.
+const modelsSQL = `SELECT COALESCE(c.elitea_title, ''), c.data, c.shared
+	FROM %q.configuration AS c
+	JOIN unnest($1::text[], $2::text[]) WITH ORDINALITY AS s(section, type, ord)
+	  ON c.section = s.section AND c.type = s.type
+	WHERE c.status_ok = true%s
+	ORDER BY s.ord, c.id`
+
+// sharedModelPredicate restricts a cross-project read to published rows. It is
+// the only thing that makes reading a second schema safe, so it is a constant
+// and is never built from a caller-supplied value.
+const sharedModelPredicate = " AND c.shared = true"
+
+// credentialSection is the configuration section that holds provider
+// credentials. It appears in credentialRefsSQL, and the test doubles for
+// modelRowQuerier match on it to tell the two statements apart.
+const credentialSection = "section = 'ai_credentials'"
+
+// credentialRefsSQL reads the id, type and title of every credential row in one
+// project scope. It reads NO credential data: the secret stays in the account
+// package, which resolves it per request through the Fernet vault.
+//
+// The id expression MUST match credentialsSQL in the account package
+// (COALESCE(uuid::text, id::text)). The model resolver pins a credential by the
+// id it reads here, and the account package matches on the id it reads there;
+// two different expressions would make every pin miss.
+//
+// %q is the schema name. %s is the scope predicate, exactly as in modelsSQL.
+const credentialRefsSQL = `SELECT COALESCE(c.uuid::text, c.id::text), COALESCE(c.type, ''), COALESCE(c.elitea_title, '')
+	FROM %q.configuration AS c
+	WHERE c.` + credentialSection + ` AND c.status_ok = true%s
+	ORDER BY c.id`
+
+// credentialRefs reads one project scope's credential rows, keyed by
+// elitea_title. sharedOnly restricts a cross-project read to published rows.
+//
+// A credential with no title is skipped: the stored link names a credential by
+// title, so an untitled row can never be the target of one.
+//
+// The map is built once per model-list refresh, not once per request: the
+// resolved model list is cached for CacheTTL and carries the answer with it.
+func (m *ModelResolver) credentialRefs(
+	ctx context.Context,
+	scopeProjectID string,
+	sharedOnly bool,
+) (map[string]credentialRef, error) {
+	predicate := ""
+	if sharedOnly {
+		predicate = sharedModelPredicate
+	}
+	q := fmt.Sprintf(credentialRefsSQL, "p_"+scopeProjectID, predicate)
+	rows, err := m.db.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("query credentials for project %s: %w", scopeProjectID, err)
+	}
+	defer rows.Close()
+
+	refs := make(map[string]credentialRef)
+	for rows.Next() {
+		var id, typ, title string
+		if err := rows.Scan(&id, &typ, &title); err != nil {
+			return nil, fmt.Errorf("scan credential row: %w", err)
+		}
+		if title == "" {
+			continue
+		}
+		// elitea_title is unique within a schema, so the first row for a title
+		// is the only row for it. Keeping the first also matches the ORDER BY.
+		if _, dup := refs[title]; dup {
+			continue
+		}
+		refs[title] = credentialRef{configID: id, typ: typ, ownerProjectID: scopeProjectID}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate credential rows: %w", err)
+	}
+	return refs, nil
+}
 
 // List returns the synthesised model set for projectID. It serves a fresh
 // cached list when one exists, else queries Postgres and caches the result. On
@@ -147,8 +408,30 @@ const modelsSQL = `SELECT COALESCE(elitea_title, ''), data
 // failing/absent database it returns an empty (non-nil) slice. An empty
 // projectID yields an empty set (no project ⇒ no models).
 func (m *ModelResolver) List(ctx context.Context, projectID string) []modelObject {
+	models, _ := m.list(ctx, projectID)
+	return models
+}
+
+// list is List plus the "did I actually read this project's model set?" answer.
+// known is false when the set is UNKNOWN — an empty projectID, no database, or
+// a query failure with nothing cached — and true when the returned set is the
+// project's real (possibly stale, possibly empty) model set.
+//
+// A query failure WITH something cached is NOT unknown: the stale list is
+// served and reported as known. The three conditions above are therefore the
+// whole of the unknown case.
+//
+// The two cases must stay distinct because the inference path acts on them
+// differently. mapModel owns that policy and is the only place that states it;
+// do not restate the outcome here, because it has changed once already. List
+// collapses both cases to an empty slice, which is correct for the
+// /llm/v1/models surface.
+func (m *ModelResolver) list(ctx context.Context, projectID string) (models []modelObject, known bool) {
 	if projectID == "" {
-		return []modelObject{}
+		return []modelObject{}, false
+	}
+	if m.db == nil {
+		return []modelObject{}, false
 	}
 
 	m.mu.RLock()
@@ -156,7 +439,7 @@ func (m *ModelResolver) List(ctx context.Context, projectID string) []modelObjec
 	fresh := cached && m.now().Before(ent.expires)
 	m.mu.RUnlock()
 	if fresh {
-		return ent.models
+		return ent.models, true
 	}
 
 	models, err := m.query(ctx, projectID)
@@ -166,17 +449,17 @@ func (m *ModelResolver) List(ctx context.Context, projectID string) []modelObjec
 		if cached {
 			m.logger.WarnContext(ctx, "models: query failed; serving stale cached list",
 				"project_id", projectID, "err", err, "stale_count", len(ent.models))
-			return ent.models
+			return ent.models, true
 		}
 		m.logger.WarnContext(ctx, "models: query failed and no cache; returning empty set",
 			"project_id", projectID, "err", err)
-		return []modelObject{}
+		return []modelObject{}, false
 	}
 
 	m.mu.Lock()
 	m.cache[projectID] = modelsCacheEntry{models: models, expires: m.now().Add(m.ttl)}
 	m.mu.Unlock()
-	return models
+	return models, true
 }
 
 // Get returns the single synthesised model with the given id for projectID and
@@ -191,9 +474,20 @@ func (m *ModelResolver) Get(ctx context.Context, projectID, id string) (modelObj
 	return modelObject{}, false
 }
 
-// query reads and decodes the project's llm_model rows into a deduplicated,
-// order-preserving model set. A row with no usable id (empty elitea_title and
-// empty data.name) is skipped; a duplicate id keeps its first occurrence.
+// query reads and decodes the project's model rows into a deduplicated,
+// order-preserving model set.
+//
+// It reads two scopes (issue #316): the caller's own project, then the public
+// project's `shared = true` rows. The own-project scope is read FIRST and a
+// duplicate id keeps its first occurrence, so where both scopes expose the same
+// model id the project's own row wins — the precedence the legacy
+// _map_model_name resolver had. The second scope is skipped when it is unset or
+// when the caller IS the public project.
+//
+// A row with no usable id (empty elitea_title and empty data.name) is skipped.
+//
+// TENANT ISOLATION: publicProjectID is operator configuration, never request
+// data, and the public-scope read always carries sharedModelPredicate.
 func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObject, error) {
 	if m.db == nil {
 		return []modelObject{}, nil
@@ -202,27 +496,97 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 		return nil, err
 	}
 
-	// projectID is a signed, server-resolved, numeric-validated value (never raw
-	// client input), so the fmt-built schema identifier is not an injection
-	// vector — same guard the account package applies (design §5.3).
-	q := fmt.Sprintf(modelsSQL, "p_"+projectID)
-	rows, err := m.db.Query(ctx, q)
+	// Read the credential rows BEFORE the model rows. A model row names its
+	// credential by title, so the model rows cannot be turned into dispatchable
+	// models until the titles can be looked up (issue #451).
+	ownCreds, err := m.credentialRefs(ctx, projectID, false)
 	if err != nil {
-		return nil, fmt.Errorf("query models: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 
 	models := make([]modelObject, 0)
 	seen := make(map[string]struct{})
+
+	publicScope := m.publicProjectID != "" && m.publicProjectID != projectID
+	if !publicScope {
+		if err := m.queryScope(ctx, projectID, false, []map[string]credentialRef{ownCreds}, &models, seen); err != nil {
+			return nil, err
+		}
+		return models, nil
+	}
+
+	if err := validateNumericProjectID(m.publicProjectID); err != nil {
+		return nil, fmt.Errorf("public project id: %w", err)
+	}
+	publicCreds, err := m.credentialRefs(ctx, m.publicProjectID, true)
+	if err != nil {
+		return nil, err
+	}
+
+	// The caller's own model row may link to a credential the platform
+	// published. Its own project is searched first, so a same-titled credential
+	// of its own wins — the precedence the rest of this file already keeps.
+	if err := m.queryScope(ctx, projectID, false,
+		[]map[string]credentialRef{ownCreds, publicCreds}, &models, seen); err != nil {
+		return nil, err
+	}
+	// A public model row links to a public credential. The caller's own
+	// credentials are NOT searched for it: a published model must not resolve
+	// differently for each caller.
+	if err := m.queryScope(ctx, m.publicProjectID, true,
+		[]map[string]credentialRef{publicCreds}, &models, seen); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+// queryScope reads one project's model rows, across every pair in
+// addressableModelSections, and appends the new ids to models, skipping any id
+// already in seen. sharedOnly adds the `shared = true` predicate and re-verifies
+// every returned row against its own `shared` column.
+//
+// creds are the credential lookups to search for a row's ai_credentials link,
+// in precedence order (issue #451).
+func (m *ModelResolver) queryScope(
+	ctx context.Context,
+	scopeProjectID string,
+	sharedOnly bool,
+	creds []map[string]credentialRef,
+	models *[]modelObject,
+	seen map[string]struct{},
+) error {
+	predicate := ""
+	if sharedOnly {
+		predicate = sharedModelPredicate
+	}
+	// scopeProjectID is either the signed, server-resolved caller project or the
+	// operator-configured public project. Both are numeric-validated before they
+	// reach here, so the fmt-built schema identifier is not an injection vector
+	// — the same guard the account package applies (design §5.3).
+	q := fmt.Sprintf(modelsSQL, "p_"+scopeProjectID, predicate)
+	sections, types := modelSectionArgs()
+	rows, err := m.db.Query(ctx, q, sections, types)
+	if err != nil {
+		return fmt.Errorf("query models for project %s: %w", scopeProjectID, err)
+	}
+	defer rows.Close()
+
 	for rows.Next() {
 		var (
 			title     string
 			dataBytes []byte
+			shared    bool
 		)
-		if err := rows.Scan(&title, &dataBytes); err != nil {
-			return nil, fmt.Errorf("scan model row: %w", err)
+		if err := rows.Scan(&title, &dataBytes, &shared); err != nil {
+			return fmt.Errorf("scan model row: %w", err)
 		}
-		id := modelID(title, dataBytes)
+		// Defence in depth: a cross-project read must never yield an unpublished
+		// row. Reaching here means the query lost its predicate, so fail the read
+		// rather than advertise another project's private model.
+		if sharedOnly && !shared {
+			return fmt.Errorf("model row from project %s escaped the shared scope", scopeProjectID)
+		}
+		id, providerModel, link := modelNames(title, dataBytes)
 		if id == "" {
 			continue
 		}
@@ -230,34 +594,126 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 			continue
 		}
 		seen[id] = struct{}{}
-		models = append(models, modelObject{
-			ID:      id,
-			Object:  modelObjectType,
-			Created: 0,
-			OwnedBy: modelsOwnedBy,
-		})
+		mo := modelObject{
+			ID:            id,
+			Object:        modelObjectType,
+			Created:       0,
+			OwnedBy:       modelsOwnedBy,
+			providerModel: providerModel,
+		}
+		// A shared row carries providerModel exactly like an own row (issue
+		// #317). The scope decides WHICH rows come back; it does not change what
+		// a row carries. A shared model must map to the provider's name too,
+		// else the budget gate prices the wrong model and the provider gets a
+		// title it does not know.
+		m.applyCredentialLink(ctx, &mo, link, scopeProjectID, creds)
+		*models = append(*models, mo)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate model rows: %w", err)
+		return fmt.Errorf("iterate model rows: %w", err)
 	}
-	return models, nil
+	return nil
 }
 
-// modelID resolves the caller-visible id for an llm_model row: the elitea_title
-// alias when present, else the underlying data.name. Returns "" when neither is
-// usable (the row is then skipped). A malformed data JSONB is treated as absent.
-func modelID(title string, dataBytes []byte) string {
-	if title != "" {
-		return title
+// applyCredentialLink resolves a model row's ai_credentials link onto mo and
+// records the provider and the credential the row named (issue #451).
+//
+// The order is: the expanded shape first, because it answers by itself; then
+// the stored shape, by title, against each lookup in precedence order.
+//
+// It leaves mo untouched in three cases, and each one keeps the pre-#451
+// behaviour of taking the provider from a prefix in the model string:
+//
+//   - The row links to no credential. The standalone seed writes such rows and
+//     relies on the prefix, so this path must not change.
+//   - The link names a credential the caller's scopes do not hold. Failing here
+//     would refuse a model that the prefix path can still dispatch today.
+//   - The credential type is one the gateway cannot serve.
+//
+// The last two are logged. They are not silent: the row is advertised but not
+// improved, and an operator needs to see which link did not resolve.
+func (m *ModelResolver) applyCredentialLink(
+	ctx context.Context,
+	mo *modelObject,
+	link *modelCredentialRef,
+	scopeProjectID string,
+	creds []map[string]credentialRef,
+) {
+	if !link.names() {
+		return
 	}
-	if len(dataBytes) == 0 {
-		return ""
+
+	credentialType := link.ConfigurationType
+	configID := link.ConfigurationUUID
+	ownerProject := link.ConfigurationProjectID.String()
+	title := link.title()
+
+	if credentialType == "" {
+		ref, ok := lookupCredentialRef(creds, title)
+		if !ok {
+			m.logger.WarnContext(ctx, "model links to a credential that is not in scope; keeping the model-name prefix",
+				"project_id", scopeProjectID, "model", mo.ID, "credential_title", title)
+			return
+		}
+		credentialType, configID, ownerProject = ref.typ, ref.configID, ref.ownerProjectID
 	}
+
+	provider, ok := account.ProviderForCredentialType(credentialType)
+	if !ok {
+		m.logger.WarnContext(ctx, "model links to a credential type this gateway cannot serve; keeping the model-name prefix",
+			"project_id", scopeProjectID, "model", mo.ID, "credential_type", credentialType)
+		return
+	}
+
+	mo.credentialProvider = provider
+	mo.credentialProject = ownerProject
+	mo.credentialID = configID
+	mo.credentialTitle = title
+}
+
+// lookupCredentialRef finds title in the first lookup that holds it.
+func lookupCredentialRef(creds []map[string]credentialRef, title string) (credentialRef, bool) {
+	if title == "" {
+		return credentialRef{}, false
+	}
+	for _, scope := range creds {
+		if ref, ok := scope[title]; ok {
+			return ref, true
+		}
+	}
+	return credentialRef{}, false
+}
+
+// modelNames resolves the names and the credential link of one model row:
+//
+//   - id is the caller-visible model id: the elitea_title alias when present,
+//     else the underlying data.name. It is "" when neither is usable, and the
+//     row is then skipped.
+//   - providerModel is the name to send to the provider: data.name. It falls
+//     back to id when data.name is absent, so a row that carries a title and no
+//     wire name dispatches the title exactly as it did before issue #317.
+//   - link is the row's data.ai_credentials object, or nil when it has none.
+//
+// A malformed data JSONB is treated as absent.
+func modelNames(title string, dataBytes []byte) (id, providerModel string, link *modelCredentialRef) {
 	var d modelConfigData
-	if err := json.Unmarshal(dataBytes, &d); err != nil {
-		return ""
+	if len(dataBytes) > 0 {
+		if err := json.Unmarshal(dataBytes, &d); err != nil {
+			d = modelConfigData{}
+		}
 	}
-	return d.Name
+	id = title
+	if id == "" {
+		id = d.Name
+	}
+	if id == "" {
+		return "", "", nil
+	}
+	providerModel = d.Name
+	if providerModel == "" {
+		providerModel = id
+	}
+	return id, providerModel, d.AICredentials
 }
 
 // validateNumericProjectID rejects a non-numeric projectID before it is

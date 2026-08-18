@@ -87,12 +87,26 @@ func (id identity) sign(secret []byte) string {
 //   - X-Auth-Type / X-Auth-Id / X-Auth-Reference (Traefik forward-auth headers)
 //   - Authorization, X-Api-Key (bearer / API-key credentials)
 //   - Cookie (session cookies; must not reach the downstream gateway)
+//   - X-Project-Id / OpenAI-Organization (the edge project selector; the edge
+//     consumes it and speaks the result as signed identity)
+//   - OpenAI-Project (never a selector, but it must not travel onward either)
 func stripIdentityHeaders(h http.Header) {
 	// Signed edge identity headers — re-injected after stripping.
 	h.Del(HeaderProjectID)
 	h.Del(HeaderUserID)
 	h.Del(HeaderTenantID)
 	h.Del(HeaderSignature)
+
+	// The project headers are edge control headers (issue #318). The edge
+	// already read the selector, checked the caller's membership, and expressed
+	// the result as X-Elitea-Project-Id. Forwarding any of them would send an
+	// Elitea project id onward under a name a real provider reads: OpenAI
+	// rejects a request whose OpenAI-Organization names an organization the key
+	// cannot use. OpenAI-Project is stripped as well, although the edge never
+	// reads it as a selector, because it carries an Elitea project id too.
+	for _, name := range middleware.ProjectHeadersStrippedOutbound() {
+		h.Del(name)
+	}
 
 	// Traefik forward-auth headers that the auth middleware reads; remove so the
 	// gateway never sees inbound authentication context.
@@ -126,6 +140,33 @@ func injectIdentity(ctx context.Context, out http.Header, secret []byte) {
 	// Sign only when we have both a secret and a project identity to bind; an
 	// unsigned request over the mTLS-internal network is still authenticated by
 	// the transport, but a signature lets the gateway reject stray traffic.
+	if len(secret) > 0 && id.projectID != "" {
+		out.Set(HeaderSignature, id.sign(secret))
+	}
+}
+
+// SignIdentityHeaders sets the signed X-Elitea-* identity headers on out from
+// explicit project/user/tenant values, using the identical HMAC scheme
+// injectIdentity uses. It exists for elitea-main callers that resolve their
+// own project identity from something other than the request-scoped
+// middleware context injectIdentity reads — e.g. the configurations
+// check-connection client (internal/api/v2/configurations), whose project id
+// is a URL path parameter, not a *middleware.ProjectContext the /configurations
+// mount never populates. Mirrors the gateway's own exported
+// SignIdentityHeaders (elitea-llm-gateway/internal/llmproxy/identity.go) so
+// the two sides cannot silently diverge on the signing scheme.
+func SignIdentityHeaders(out http.Header, secret []byte, projectID, userID, tenantID string) {
+	stripIdentityHeaders(out)
+	id := identity{projectID: projectID, userID: userID, tenantID: tenantID}
+	if id.projectID != "" {
+		out.Set(HeaderProjectID, id.projectID)
+	}
+	if id.userID != "" {
+		out.Set(HeaderUserID, id.userID)
+	}
+	if id.tenantID != "" {
+		out.Set(HeaderTenantID, id.tenantID)
+	}
 	if len(secret) > 0 && id.projectID != "" {
 		out.Set(HeaderSignature, id.sign(secret))
 	}

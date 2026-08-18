@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -46,17 +48,80 @@ type Repository interface {
 // The transport was retired (see the IndexerDeps note in
 // internal/api/router.go) and the seam went with it. #194 records the gap.
 
+// ToolkitArgumentSchemaSource supplies one built-in toolkit type's per-tool
+// argument JSON Schemas, keyed by tool name. found=false means the type is not
+// a built-in SDK toolkit; an empty map means it is, and legitimately declares no
+// argument schemas (mcp, mcp_config and openapi discover their tools at runtime).
+//
+// It is an interface here, and injected by the composition root, because the
+// only implementation lives in internal/runtimecomposition — the package that
+// owns the digest-pinned SDK snapshot. That package already imports ten sibling
+// internal/api/v2 packages, so importing it from an api package would invert the
+// dependency and put this package one edge away from an import cycle.
+type ToolkitArgumentSchemaSource interface {
+	ToolkitArgumentSchemas(toolkitType string) (map[string]map[string]any, bool, error)
+}
+
+// ToolkitSettingsDefinitionSource supplies the JSON Schema definitions one
+// built-in toolkit type's SETTINGS properties reference: the "$defs" block, and
+// the properties that "$ref" into it, keyed by property name. found=false means
+// the type is not a built-in SDK toolkit.
+//
+// It is a second, separate seam from ToolkitArgumentSchemaSource because the
+// two answer different questions from different pinned files — argument schemas
+// describe a TOOL's inputs, definitions describe a SETTINGS field's referenced
+// configuration — and because the implementation joins two snapshots that only
+// internal/runtimecomposition owns. The same dependency rule applies: that
+// package imports this one, so the interface lives here and the composition
+// root injects the implementation.
+//
+// Unassigned, the endpoint serves settings schemas with no "$defs" at all. The
+// web client then produces no property of kind `configuration`, so the toolkit
+// credential picker and the index schedule credential select are both
+// unreachable — the defect #330 records.
+type ToolkitSettingsDefinitionSource interface {
+	ToolkitSettingsDefinitions(toolkitType string) (map[string]any, map[string]any, bool, error)
+}
+
 type Handler struct {
-	repo Repository
-	pool *pgxpool.Pool
+	repo                Repository
+	pool                *pgxpool.Pool
+	argumentSchemas     ToolkitArgumentSchemaSource
+	settingsDefinitions ToolkitSettingsDefinitionSource
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{repo: &pgRepo{pool: pool}, pool: pool}
+// Option configures a Handler at construction, matching the pattern
+// internal/api/v2/secrets uses for its permission resolver.
+type Option func(*Handler)
+
+// WithArgumentSchemas supplies the toolkit argument schemas served by
+// ListTypeSchemas. Without it the endpoint falls back to the built-in tool name
+// lists below, which carry no argument schemas at all — see ListTypeSchemas.
+func WithArgumentSchemas(source ToolkitArgumentSchemaSource) Option {
+	return func(h *Handler) { h.argumentSchemas = source }
 }
 
-func NewHandlerWithRepo(repo Repository) *Handler {
-	return &Handler{repo: repo}
+// WithSettingsDefinitions supplies the settings "$defs" served by
+// ListTypeSchemas. Without it the endpoint serves settings schemas that
+// reference nothing — see ToolkitSettingsDefinitionSource.
+func WithSettingsDefinitions(source ToolkitSettingsDefinitionSource) Option {
+	return func(h *Handler) { h.settingsDefinitions = source }
+}
+
+func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
+	h := &Handler{repo: &pgRepo{pool: pool}, pool: pool}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+func NewHandlerWithRepo(repo Repository, opts ...Option) *Handler {
+	h := &Handler{repo: repo}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // knownToolkitTypes is the baseline list of toolkit types pylon_indexer supports.
@@ -74,9 +139,22 @@ var knownToolkitTypes = []string{
 	"custom",
 }
 
+// ListTypes serves the toolkit type list.
+//
+// This route keeps its fallback on purpose. The static knownToolkitTypes list
+// is a correct answer on its own, and the create-toolkit form must stay usable
+// when the tenant read fails. The route therefore stays at 200. But the
+// degradation is now recorded (#381). Before, the repository turned the failure
+// into an empty list and a nil error, and the handler dropped the error with
+// `_`, so a dead pool served the static list and left no trace anywhere.
 func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	dbTypes, _ := h.repo.ListTypes(r.Context(), projectID)
+	dbTypes, err := h.repo.ListTypes(r.Context(), projectID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "toolkit_types: tenant type read failed; serving the static type list only",
+			"project_id", projectID, "err", err)
+		dbTypes = nil
+	}
 
 	// Merge DB types with known list, deduplicating.
 	seen := make(map[string]struct{})
@@ -97,8 +175,38 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rows": merged, "total": len(merged)})
 }
 
-// toolkitTypeSchemas defines the JSON Schema for each toolkit type's settings.
-// This matches what pylon_indexer returns at /toolkits/ endpoint.
+// toolkitTypeSchemas defines the JSON Schema for each toolkit type's SETTINGS —
+// the fields a user fills in when creating a toolkit of that type (bucket,
+// repository, connection_string, …).
+//
+// Its selected_tools.args_schemas entries are NOT authoritative and are
+// replaced, per type, by ListTypeSchemas: the tool ARGUMENT schemas come from
+// the digest-pinned SDK snapshot embedded in internal/runtimecomposition
+// (current_toolkit_schema_snapshot.json, generated by
+// scripts/contract/sync_toolkit_schema_snapshot.py from the exact elitea-sdk
+// revision the Python workers are admitted to run). That snapshot is the only
+// source in this repository that reflects the tools and arguments the workers
+// actually accept; the names below were hand-written and several of them — every
+// artifact tool except index_data, for instance — name no SDK tool at all. They
+// survive only as the fallback for the four types the SDK does not define:
+// database, custom, datasource and application (measured against revision
+// b5113a1, which has 52 types; sql is the SDK's database toolkit, and the other
+// three are elitea_core-native, not SDK toolkits).
+//
+// Note that the snapshot's own "properties" are NOT a replacement for the
+// settings schemas here: they are an annotation projection (configuration_model,
+// configuration_types, toolkit_name) covering only annotated fields, so e.g.
+// artifact's bucket and github's repository do not appear in them at all.
+//
+// One of those annotations IS authoritative, however. configuration_types marks
+// a settings field as a reference to a saved configuration, and ListTypeSchemas
+// expands it into a "$defs" entry plus a "$ref" property that replaces the
+// hand-written stub of the same name (see withSettingsDefinitions). The entries
+// below therefore do not declare the *_configuration fields themselves; the
+// pinned SDK snapshot names them. github's access_token and jira's
+// url/username/password are the pre-configuration inline shape and are left as
+// they are — removing them changes the create-toolkit form, which #330 does not
+// own.
 var toolkitTypeSchemas = map[string]map[string]any{
 	"artifact": {
 		"type": "object",
@@ -226,27 +334,178 @@ var toolkitTypeSchemas = map[string]map[string]any{
 	},
 }
 
+// ListTypeSchemas serves the toolkit TYPE catalogue: a map of toolkit type name
+// to its settings JSON Schema, with each type's per-tool argument schemas at
+// properties.selected_tools.args_schemas — the exact path the web client indexes
+// into (apps/elitea-web/src/features/toolkits/ui/test-tools/
+// useGetSelectedToolSchema.ts and ui/form/ToolBase/). Settings come from
+// toolkitTypeSchemas; argument schemas come from the pinned SDK snapshot.
+//
+// Each type also carries a "$defs" block beside its properties, holding the
+// configuration definitions its settings reference. The web client keys its
+// whole configuration-property kind off that block, so a type schema without it
+// renders no credential picker at all.
 func (h *Handler) ListTypeSchemas(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, toolkitTypeSchemas)
+	catalogue, err := h.toolkitTypeCatalogue()
+	if err != nil {
+		// A built-in snapshot that will not yield its schemas is a broken
+		// binary, not a client error, and serving the placeholder tool lists
+		// instead would reproduce the empty create-index form silently.
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, catalogue)
 }
 
+// toolkitTypeCatalogue merges the settings schemas with the snapshot's argument
+// schemas. It rebuilds every node it replaces rather than editing
+// toolkitTypeSchemas in place: that map is package-level state shared by every
+// request.
+func (h *Handler) toolkitTypeCatalogue() (map[string]map[string]any, error) {
+	catalogue := make(map[string]map[string]any, len(toolkitTypeSchemas))
+	for toolkitType, settingsSchema := range toolkitTypeSchemas {
+		typeSchema := settingsSchema
+
+		argsSchemas, found, err := h.toolkitArgumentSchemas(toolkitType)
+		if err != nil {
+			return nil, fmt.Errorf("toolkit type %q argument schemas: %w", toolkitType, err)
+		}
+		if found {
+			typeSchema = withArgumentSchemas(typeSchema, argsSchemas)
+		}
+
+		definitions, configurationProperties, found, err := h.toolkitSettingsDefinitions(toolkitType)
+		if err != nil {
+			return nil, fmt.Errorf("toolkit type %q settings definitions: %w", toolkitType, err)
+		}
+		if found && len(definitions) > 0 {
+			typeSchema = withSettingsDefinitions(typeSchema, definitions, configurationProperties)
+		}
+
+		catalogue[toolkitType] = typeSchema
+	}
+	return catalogue, nil
+}
+
+func (h *Handler) toolkitArgumentSchemas(toolkitType string) (map[string]map[string]any, bool, error) {
+	if h == nil || h.argumentSchemas == nil {
+		return nil, false, nil
+	}
+	return h.argumentSchemas.ToolkitArgumentSchemas(toolkitType)
+}
+
+func (h *Handler) toolkitSettingsDefinitions(
+	toolkitType string,
+) (map[string]any, map[string]any, bool, error) {
+	if h == nil || h.settingsDefinitions == nil {
+		return nil, nil, false, nil
+	}
+	return h.settingsDefinitions.ToolkitSettingsDefinitions(toolkitType)
+}
+
+// withSettingsDefinitions copies one type's settings schema with the "$defs"
+// block added at the schema root and the configuration properties merged into
+// properties. The root is where the web client reads them: it hands one type's
+// schema to convertToolkitSchema, which takes its $defs key set from
+// Object.keys(schema.$defs).
+//
+// A configuration property REPLACES the hand-written entry of the same name.
+// The pinned SDK snapshot is authoritative about which settings field is a
+// configuration reference, and the hand-written stubs predate that: artifact's
+// pgvector_configuration was a bare {"type":"object"}, which the client sorts
+// into the ordinary-property bucket and renders as a plain object field.
+// Settings that no configuration property names are carried over untouched.
+func withSettingsDefinitions(
+	settingsSchema map[string]any,
+	definitions map[string]any,
+	configurationProperties map[string]any,
+) map[string]any {
+	typeSchema := make(map[string]any, len(settingsSchema)+1)
+	for key, value := range settingsSchema {
+		typeSchema[key] = value
+	}
+	settingsProperties, _ := settingsSchema["properties"].(map[string]any)
+	properties := make(map[string]any, len(settingsProperties)+len(configurationProperties))
+	for key, value := range settingsProperties {
+		properties[key] = value
+	}
+	for key, value := range configurationProperties {
+		properties[key] = value
+	}
+	typeSchema["properties"] = properties
+	typeSchema["$defs"] = definitions
+	return typeSchema
+}
+
+// withArgumentSchemas copies one type's settings schema with
+// properties.selected_tools.args_schemas replaced. Only the three nodes on that
+// path are rebuilt; the settings properties beside selected_tools are carried
+// over as they are, and are never written to.
+func withArgumentSchemas(
+	settingsSchema map[string]any,
+	argsSchemas map[string]map[string]any,
+) map[string]any {
+	typeSchema := make(map[string]any, len(settingsSchema))
+	for key, value := range settingsSchema {
+		typeSchema[key] = value
+	}
+	settingsProperties, _ := settingsSchema["properties"].(map[string]any)
+	properties := make(map[string]any, len(settingsProperties)+1)
+	for key, value := range settingsProperties {
+		properties[key] = value
+	}
+	selectedTools := map[string]any{"type": "object"}
+	if existing, ok := settingsProperties["selected_tools"].(map[string]any); ok {
+		for key, value := range existing {
+			selectedTools[key] = value
+		}
+	}
+	selectedTools["args_schemas"] = argsSchemas
+	properties["selected_tools"] = selectedTools
+	typeSchema["properties"] = properties
+	return typeSchema
+}
+
+// availableToolsReadFailed and discoverToolsReadFailed are the named reasons
+// that the two tool-list reads report. The client gets the reason and no
+// database detail. The log line carries the wrapped driver error (#381 AC6).
+const (
+	availableToolsReadFailed = "available tools read failed"
+	discoverToolsReadFailed  = "discover tools read failed"
+)
+
+// AvailableTools lists the tools that one toolkit instance has.
+//
+// A read fault must not answer 200 with an empty list (#381). An empty list is a
+// correct state for a toolkit with no attached tools. A failed read that copies
+// that same body removes the only signal that keeps the two apart. The screen
+// then shows "no tools" for a dead pool, for a missing tenant schema and for a
+// bad row. No record shows that a read was tried and lost. This handler keeps
+// the two outcomes apart. No tools gives 200 and an empty list. A lost read
+// gives 500 and a named reason.
 func (h *Handler) AvailableTools(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitID := chi.URLParam(r, "toolkitID")
 	tools, err := h.repo.AvailableTools(r.Context(), projectID, toolkitID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"tools": []any{}, "total": 0})
+		slog.ErrorContext(r.Context(), "toolkit_available_tools: "+availableToolsReadFailed,
+			"project_id", projectID, "toolkit_id", toolkitID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": availableToolsReadFailed})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools, "total": len(tools)})
 }
 
+// DiscoverTools lists the tools that one toolkit type offers. It keeps the two
+// outcomes apart for the same reason that AvailableTools does (#381).
 func (h *Handler) DiscoverTools(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitType := chi.URLParam(r, "toolkitType")
 	tools, err := h.repo.DiscoverTools(r.Context(), projectID, toolkitType)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"tools": []any{}, "total": 0})
+		slog.ErrorContext(r.Context(), "toolkit_discover_tools: "+discoverToolsReadFailed,
+			"project_id", projectID, "toolkit_type", toolkitType, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": discoverToolsReadFailed})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools, "total": len(tools)})
@@ -610,9 +869,17 @@ func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, pro
 	}
 
 	if hasRelation {
-		q := fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id) VALUES ($1, $2, $3, $4) ON CONFLICT (entity_version_id, tool_id, entity_type) DO NOTHING`, s)
-		_, err := h.pool.Exec(ctx, q, entityVersionID, entityID, entityType, toolID)
+		selectedTools, hasSelectedTools, err := selectedToolsPayload(body)
 		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		q := selectedToolsRelationInsertSQL(s, hasSelectedTools)
+		args := []any{entityVersionID, entityID, entityType, toolID}
+		if hasSelectedTools {
+			args = append(args, selectedTools)
+		}
+		if _, err := h.pool.Exec(ctx, q, args...); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -625,6 +892,67 @@ func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, pro
 		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"message": "ok"})
+}
+
+// selectedToolsPayload reads the per-mapping `selected_tools` list off the
+// relation request body.
+//
+// ABSENT vs EMPTY, deliberately distinguished (#248). The same body serves two
+// different intents on this one route:
+//
+//   - An ATTACH (`ToolMenu`, and the import/clone paths) sends no
+//     `selected_tools` key at all — it has nothing to say about the selection.
+//     Treating that as "select nothing" would wipe a selection the user saved
+//     earlier, every time the toolkit was re-attached or the same mapping was
+//     touched for any other reason.
+//   - A SELECTION EDIT sends the full resulting list, and `[]` ("I unchecked
+//     the last tool") is a meaningful value that must be stored.
+//
+// So presence of the key — not its length — decides whether the column is
+// written, exactly the distinction `applications.replaceVersionVariables`'
+// callers already draw (`hasVariables` on the update path vs `len(...) > 0` on
+// the create path). A JSON `null` is treated as absent for the same reason: it
+// carries no list.
+//
+// The value must be a JSON array of strings. Anything else is rejected rather
+// than coerced: the column is read back verbatim by
+// `applications.fetchVersionDetails` into `version_details.tools[].selected_tools`,
+// and the UI indexes it as a string list.
+func selectedToolsPayload(body map[string]any) ([]byte, bool, error) {
+	raw, present := body["selected_tools"]
+	if !present || raw == nil {
+		return nil, false, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, false, fmt.Errorf("selected_tools must be an array of tool names")
+	}
+	names := make([]string, 0, len(list))
+	for _, entry := range list {
+		name, ok := entry.(string)
+		if !ok {
+			return nil, false, fmt.Errorf("selected_tools must be an array of tool names")
+		}
+		names = append(names, name)
+	}
+	encoded, err := json.Marshal(names)
+	if err != nil {
+		return nil, false, fmt.Errorf("selected_tools must be an array of tool names")
+	}
+	return encoded, true, nil
+}
+
+// selectedToolsRelationInsertSQL builds the attach statement. `_entity_tool_unique
+// (entity_version_id, tool_id, entity_type)` is the upsert target, so a selection
+// edit on an ALREADY-attached toolkit (the only way the UI ever sends the key)
+// updates the existing mapping row instead of conflicting into a no-op — the
+// bug this whole branch removes: the previous statement was an unconditional
+// `DO NOTHING` and never named `selected_tools` at all.
+func selectedToolsRelationInsertSQL(schema string, withSelectedTools bool) string {
+	if !withSelectedTools {
+		return fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id) VALUES ($1, $2, $3, $4) ON CONFLICT (entity_version_id, tool_id, entity_type) DO NOTHING`, schema)
+	}
+	return fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools) VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT (entity_version_id, tool_id, entity_type) DO UPDATE SET selected_tools = EXCLUDED.selected_tools, updated_at = now()`, schema)
 }
 
 // Delete removes a toolkit instance.
@@ -642,28 +970,50 @@ type pgRepo struct {
 	pool *pgxpool.Pool
 }
 
+// ListTypes reports the toolkit types that the tenant schema holds.
+//
+// The error is now returned to the caller. Before #381 this function turned a
+// failed query into an empty list and a nil error, so the handler could not
+// know that the read was lost. The handler continues to serve the static type
+// list when the read fails, because the create-toolkit form needs a type list
+// to stay usable. The difference is that the handler now records the
+// degradation. See the ListTypes handler above.
 func (r *pgRepo) ListTypes(ctx context.Context, projectID string) ([]string, error) {
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`SELECT DISTINCT type FROM %q.elitea_tools WHERE type != '' ORDER BY type`, s)
 	rows, err := r.pool.Query(ctx, q)
 	if err != nil {
-		return []string{}, nil
+		return nil, fmt.Errorf("query toolkit types in %q: %w", s, err)
 	}
 	defer rows.Close()
-	var types []string
+	types := []string{}
 	for rows.Next() {
 		var t string
 		if err := rows.Scan(&t); err != nil {
-			continue
+			return nil, fmt.Errorf("scan toolkit type row in %q: %w", s, err)
 		}
 		types = append(types, t)
 	}
-	if types == nil {
-		types = []string{}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read toolkit type rows in %q: %w", s, err)
 	}
 	return types, nil
 }
 
+// AvailableTools reads the tools that are attached to one toolkit instance.
+//
+// Every read fault is returned to the caller (#381). Three separate faults were
+// discarded here before:
+//
+//  1. The query itself failed. A dead pool or a missing tenant schema became
+//     `[]Tool{}, nil`.
+//  2. A row failed to scan. `continue` dropped that row and kept the rest, so a
+//     type change in the table could empty the list with no signal at all.
+//  3. The row set failed part way through. `rows.Err()` was never read, so a
+//     connection that died mid-read looked like the end of the data.
+//
+// All three now produce an error. Only a real empty result produces an empty
+// list, and the empty list is non-nil so that the response encodes as `[]`.
 func (r *pgRepo) AvailableTools(ctx context.Context, projectID, toolkitID string) ([]Tool, error) {
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`
@@ -673,41 +1023,38 @@ func (r *pgRepo) AvailableTools(ctx context.Context, projectID, toolkitID string
 		WHERE etm.entity_version_id = $1`, s, s)
 	rows, err := r.pool.Query(ctx, q, toolkitID)
 	if err != nil {
-		return []Tool{}, nil
+		return nil, fmt.Errorf("query available tools for toolkit %q in %q: %w", toolkitID, s, err)
 	}
-	defer rows.Close()
-	var tools []Tool
-	for rows.Next() {
-		var t Tool
-		if err := rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description); err != nil {
-			continue
-		}
-		tools = append(tools, t)
-	}
-	if tools == nil {
-		tools = []Tool{}
-	}
-	return tools, nil
+	return scanTools(rows, fmt.Sprintf("available tools for toolkit %q in %q", toolkitID, s))
 }
 
+// DiscoverTools reads the tools that one toolkit type offers. It returns every
+// read fault for the same reason that AvailableTools does (#381).
 func (r *pgRepo) DiscoverTools(ctx context.Context, projectID, toolkitType string) ([]Tool, error) {
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`SELECT id, name, type, COALESCE(description, '') FROM %q.elitea_tools WHERE type = $1 ORDER BY name`, s)
 	rows, err := r.pool.Query(ctx, q, toolkitType)
 	if err != nil {
-		return []Tool{}, nil
+		return nil, fmt.Errorf("query discoverable tools of type %q in %q: %w", toolkitType, s, err)
 	}
+	return scanTools(rows, fmt.Sprintf("discoverable tools of type %q in %q", toolkitType, s))
+}
+
+// scanTools reads a four-column tool row set into a slice. A scan fault and a
+// row-set fault both stop the read and give an error. The subject names the
+// read in the error text.
+func scanTools(rows pgx.Rows, subject string) ([]Tool, error) {
 	defer rows.Close()
-	var tools []Tool
+	tools := []Tool{}
 	for rows.Next() {
 		var t Tool
 		if err := rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description); err != nil {
-			continue
+			return nil, fmt.Errorf("scan row %d of %s: %w", len(tools)+1, subject, err)
 		}
 		tools = append(tools, t)
 	}
-	if tools == nil {
-		tools = []Tool{}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read %s: %w", subject, err)
 	}
 	return tools, nil
 }

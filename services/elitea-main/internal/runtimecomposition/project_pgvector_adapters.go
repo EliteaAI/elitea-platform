@@ -3,11 +3,10 @@ package runtimecomposition
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	vectorstoreapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/vectorstore"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -90,49 +89,61 @@ func (a *currentProjectPgvectorDatabaseProvisioner) Provision(
 	}, nil
 }
 
-type currentProjectSecretVaultMutator interface {
-	MutateProject(context.Context, int64, []centrysecrets.Mutation) error
+// ProjectVaultSecrets reads and writes one project's vault material. It is
+// satisfied by internal/api/v2/secrets.Handler.
+//
+// WHY THE PORT IS THIS SHAPE AND NOT A LOADER PLUS A MUTATOR (#399). The read
+// half and the write half must hold the SAME master key, because they open the
+// same ciphertext. Two dependencies can be given two key sources; one cannot.
+// The earlier pair took storage.SecretVaultLoader and a MutateProject mutator,
+// both built by the Configurations runtime from ELITEA_VAULT_MASTER_KEY_FILE,
+// which no deployment sets — while the vault they wrote into is created by the
+// secrets handler under SECRETS_MASTER_KEY, which five deployments do set. So
+// the writer could not open the vault the creator made, and nothing reported it.
+//
+// The port also does NOT create a vault. The project_secrets provisioning step
+// is the one creator, and it runs before project_pgvector.
+type ProjectVaultSecrets interface {
+	LookupProjectSecret(ctx context.Context, projectID string, name string) (string, bool, error)
+	StoreProjectSecrets(ctx context.Context, projectID string, values map[string]string) error
 }
 
 type currentProjectPgvectorMaterialRepository struct {
-	loader  storage.SecretVaultLoader
-	mutator currentProjectSecretVaultMutator
+	secrets ProjectVaultSecrets
 }
 
 func newCurrentProjectPgvectorMaterialRepository(
-	loader storage.SecretVaultLoader,
-	mutator currentProjectSecretVaultMutator,
+	secrets ProjectVaultSecrets,
 ) (*currentProjectPgvectorMaterialRepository, error) {
-	if loader == nil || mutator == nil {
+	if secrets == nil {
 		return nil, errors.New("current project pgvector vault dependencies are required")
 	}
-	return &currentProjectPgvectorMaterialRepository{loader: loader, mutator: mutator}, nil
+	return &currentProjectPgvectorMaterialRepository{secrets: secrets}, nil
 }
 
 func (r *currentProjectPgvectorMaterialRepository) LoadProjectPgvectorMaterial(
 	ctx context.Context,
 	projectID int64,
 ) (vectorstoreapp.ProjectMaterial, error) {
-	if ctx == nil || projectID <= 0 || r == nil || r.loader == nil {
+	if ctx == nil || projectID <= 0 || r == nil || r.secrets == nil {
 		return vectorstoreapp.ProjectMaterial{}, vectorstoreapp.ErrInvalidProjectPgvectorRequest
 	}
 	if err := ctx.Err(); err != nil {
 		return vectorstoreapp.ProjectMaterial{}, err
 	}
-	vault, err := r.loader.LoadProjectVault(ctx, projectID)
-	if err != nil || vault == nil {
-		return vectorstoreapp.ProjectMaterial{}, currentProjectPgvectorAdapterError(ctx, err)
-	}
+	vaultProjectID := strconv.FormatInt(projectID, 10)
 
-	password, passwordFound, err := lookupCurrentProjectPgvectorMaterial(
-		vault,
+	password, passwordFound, err := r.secrets.LookupProjectSecret(
+		ctx,
+		vaultProjectID,
 		vectorstoreapp.ProjectPgvectorPasswordKey,
 	)
 	if err != nil {
 		return vectorstoreapp.ProjectMaterial{}, currentProjectPgvectorAdapterError(ctx, err)
 	}
-	connectionString, connectionStringFound, err := lookupCurrentProjectPgvectorMaterial(
-		vault,
+	connectionString, connectionStringFound, err := r.secrets.LookupProjectSecret(
+		ctx,
+		vaultProjectID,
 		vectorstoreapp.ProjectPgvectorConnstrKey,
 	)
 	if err != nil {
@@ -146,40 +157,23 @@ func (r *currentProjectPgvectorMaterialRepository) LoadProjectPgvectorMaterial(
 	}, nil
 }
 
-func lookupCurrentProjectPgvectorMaterial(vault storage.SecretVault, name string) (string, bool, error) {
-	secret, err := vault.LookupRegular(name)
-	if errors.Is(err, centrysecrets.ErrSecretNotFound) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return secret.Value, true, nil
-}
-
 func (r *currentProjectPgvectorMaterialRepository) StoreProjectPgvectorMaterial(
 	ctx context.Context,
 	projectID int64,
 	password string,
 	connectionString string,
 ) error {
-	if ctx == nil || projectID <= 0 || connectionString == "" || r == nil || r.mutator == nil {
+	if ctx == nil || projectID <= 0 || connectionString == "" || r == nil || r.secrets == nil {
 		return vectorstoreapp.ErrInvalidProjectPgvectorRequest
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := r.mutator.MutateProject(ctx, projectID, []centrysecrets.Mutation{
-		{
-			Collection: centrysecrets.RegularSecrets,
-			Name:       vectorstoreapp.ProjectPgvectorPasswordKey,
-			Value:      password,
-		},
-		{
-			Collection: centrysecrets.RegularSecrets,
-			Name:       vectorstoreapp.ProjectPgvectorConnstrKey,
-			Value:      connectionString,
-		},
+	// One rewrite for both values. A password stored without its connection
+	// string is material an index run cannot use and cannot diagnose.
+	if err := r.secrets.StoreProjectSecrets(ctx, strconv.FormatInt(projectID, 10), map[string]string{
+		vectorstoreapp.ProjectPgvectorPasswordKey: password,
+		vectorstoreapp.ProjectPgvectorConnstrKey:  connectionString,
 	}); err != nil {
 		return currentProjectPgvectorAdapterError(ctx, err)
 	}

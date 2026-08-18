@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 
-import { writePersistedProject } from '@/widgets/app-shell';
+import { writePersistedProject } from '@/shared/lib/selectedProjectPersistence';
 
 import { server } from '../test/setup';
 

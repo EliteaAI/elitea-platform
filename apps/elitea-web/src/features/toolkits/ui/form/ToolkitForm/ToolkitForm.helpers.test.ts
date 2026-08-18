@@ -311,4 +311,36 @@ describe('applyAutoSelectFormReset', () => {
   it('does not throw when onResetForm is undefined, even with isAutoSelect: true', () => {
     expect(() => applyAutoSelectFormReset({ isAutoSelect: true }, {}, 'name', 'x', undefined)).not.toThrow();
   });
+
+  /**
+   * [EL-6180 regression] `CredentialsSelect` auto-selects a sole saved
+   * credential. Rebaselining on that pick leaves the form not dirty, so Save
+   * stays disabled and the user cannot save the credential the app chose for
+   * them. Baseline carve-out: `EliteaUI@a693e4fe`, `ToolkitForm.jsx:295`.
+   * Fails against the pre-fix helper, which rebaselined for any isAutoSelect.
+   */
+  it('does not call onResetForm when the auto-selected field is in the credentials section', () => {
+    const onResetForm = vi.fn();
+    applyAutoSelectFormReset(
+      { isAutoSelect: true, section: 'credentials' },
+      { type: 'github', settings: { github_configuration: null } },
+      'settings.github_configuration',
+      { id: 7 },
+      onResetForm,
+    );
+    expect(onResetForm).not.toHaveBeenCalled();
+  });
+
+  /** The carve-out is for `credentials` only: every other section keeps the suppression. */
+  it('still calls onResetForm for an auto-selected field in another section', () => {
+    const onResetForm = vi.fn();
+    applyAutoSelectFormReset(
+      { isAutoSelect: true, section: 'vectorstorage' },
+      { type: 'github', settings: { pgvector_configuration: null } },
+      'settings.pgvector_configuration',
+      { id: 9 },
+      onResetForm,
+    );
+    expect(onResetForm).toHaveBeenCalledWith({ type: 'github', settings: { pgvector_configuration: { id: 9 } } });
+  });
 });

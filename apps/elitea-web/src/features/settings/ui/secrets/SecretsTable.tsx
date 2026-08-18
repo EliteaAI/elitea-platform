@@ -30,6 +30,7 @@ import type { GridColDef, GridRenderCellParams } from '@mui/x-data-grid';
 import { DataGrid, GridRowModes } from '@mui/x-data-grid';
 
 import type { SecretRow } from '@/entities/secret';
+import type { SecretPermissions } from '../../lib/secrets/secretPermissions';
 import { SecretRowComponent } from './SecretRow';
 import { ConfirmDialog } from './ConfirmDialog';
 import { SecretActionsMenu } from './SecretActionsMenu';
@@ -53,8 +54,8 @@ export interface SecretsTableProps {
 
   /* Visibility state */
   isShowSecretMap: Record<string, boolean>;
-  /** Whether the current user may reveal/hide plaintext values (`PERMISSIONS.secrets.unsecret`). */
-  canUnsecret: boolean;
+  /** What the caller may do here. Every control below is gated on it. */
+  permissions: SecretPermissions;
 
   /* Validation */
   validationErrors: Record<string, boolean>;
@@ -152,7 +153,7 @@ export const SecretsTable = memo(function SecretsTable({
   setRowModesModel,
   isFetching,
   isShowSecretMap,
-  canUnsecret,
+  permissions,
   validationErrors,
   onValidationChange,
   actions,
@@ -210,14 +211,14 @@ export const SecretsTable = memo(function SecretsTable({
         rowModesModel={rowModesModel}
         validationErrors={validationErrors}
         isShowSecretMap={isShowSecretMap}
-        canUnsecret={canUnsecret}
+        permissions={permissions}
         setRows={setRows}
         setRowModesModel={setRowModesModel}
         onValidationChange={onValidationChange}
         actions={actions}
       />
     ),
-    [rowModesModel, validationErrors, isShowSecretMap, canUnsecret, onValidationChange, actions, setRows, setRowModesModel],
+    [rowModesModel, validationErrors, isShowSecretMap, permissions, onValidationChange, actions, setRows, setRowModesModel],
   );
 
   // Every column shares the same cell renderer — `SecretRowComponent`
@@ -314,6 +315,7 @@ export const SecretsTable = memo(function SecretsTable({
             rowId={anchorRowId}
             isNew={(rows.find((r) => r.id === anchorRowId)?.isNew) ?? true}
             isDefault={(rows.find((r) => r.id === anchorRowId)?.isDefault) ?? false}
+            permissions={permissions}
             anchorEl={menu.anchorEl}
             onClose={menu.onCloseMenu}
             onEdit={() => { void actions.onEdit(anchorRowId)(); }}

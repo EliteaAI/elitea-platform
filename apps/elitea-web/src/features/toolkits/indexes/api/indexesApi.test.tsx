@@ -273,4 +273,36 @@ describe('startIndexExecution (issue #93)', () => {
     server.use(http.post(`${BASE}/elitea_core/test_toolkit_tool/prompt_lib/7`, () => new HttpResponse(null, { status: 404 })));
     await expect(startIndexExecution({ projectId: 7, toolkitId: 'tk-1', toolParams: {} })).rejects.toThrow();
   });
+
+  /**
+   * #311, the save-path half. A field the user cleared arrives here as a
+   * PRESENT `tool_params` key holding `undefined` (`ToolFormContainer`'s own
+   * fix, `resolveFieldValue`). Plain `JSON.stringify` would drop that key —
+   * the field would reach the Go handler indistinguishable from "never set",
+   * and a later fetch of the saved index configuration would carry the same
+   * gap, so `resolveFieldValue` reapplies the schema default on reload. This
+   * test reads the ACTUAL body MSW received off the wire (not the JS object
+   * passed in), which is the only way to catch a `JSON.stringify` key drop —
+   * asserting against the pre-serialization object cannot reach this defect.
+   */
+  it('keeps a cleared tool_params field on the wire as an explicit null, not a dropped key', async () => {
+    let seenBody: unknown;
+    server.use(
+      http.post(`${BASE}/elitea_core/test_toolkit_tool/prompt_lib/7`, async ({ request }) => {
+        seenBody = await request.json();
+        return HttpResponse.json({ task_id: 'exec-1' });
+      }),
+    );
+
+    await startIndexExecution({
+      projectId: 7,
+      toolkitId: 'tk-1',
+      toolParams: { index_name: 'docs', output_format: undefined },
+    });
+
+    const toolParams = (seenBody as { tool_params: Record<string, unknown> }).tool_params;
+    expect(Object.hasOwn(toolParams, 'output_format')).toBe(true);
+    expect(toolParams['output_format']).toBeNull();
+    expect(toolParams['output_format']).not.toBe('json');
+  });
 });

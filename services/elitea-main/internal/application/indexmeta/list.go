@@ -21,9 +21,13 @@ import (
 )
 
 const (
-	MaxCurrentIndexMetaRows          = 10_000
-	MaxCurrentIndexMetaIDBytes       = 4 << 10
-	MaxCurrentIndexMetaMetadataBytes = 1 << 20
+	MaxCurrentIndexMetaRows    = 10_000
+	MaxCurrentIndexMetaIDBytes = 4 << 10
+	// MaxCurrentIndexMetaMetadataBytes is the read ceiling, not the write cap.
+	// A row that grew past the write cap before the writer bounded its history
+	// must still list, because the reindex that repairs it starts from this
+	// list. A row over this ceiling still fails the request.
+	MaxCurrentIndexMetaMetadataBytes = indexingapp.MaxCurrentIndexMetaReadBytes
 	MaxCurrentIndexMetaTotalBytes    = 16 << 20
 	MaxCurrentPgvectorDSNBytes       = 16 << 10
 )
@@ -182,7 +186,11 @@ func (s *Service) List(ctx context.Context, request Request) ([]Item, error) {
 		}
 		decodeCurrentNestedJSON(metadata, "index_configuration")
 		decodeCurrentNestedJSON(metadata, "history")
+		// The created-marker repair reads the true first entry, so it runs
+		// before the bound drops the oldest entries.
 		markCurrentFirstHistoryEntryCreated(metadata)
+		boundCurrentHistoryEntries(metadata)
+		omitCurrentHistoryChunkingConfig(metadata)
 		stale, err := currentIndexIsStale(metadata, now, timeout)
 		if err != nil {
 			return nil, ErrCurrentIndexMetaInvalid
@@ -387,6 +395,79 @@ func markCurrentFirstHistoryEntryCreated(metadata map[string]any) {
 		return
 	}
 	first["state"] = "created"
+}
+
+// boundCurrentHistoryEntries keeps the newest run entries of one list element
+// and drops the oldest ones. The writer applies the same bound when it stores
+// the row, so this only takes effect on a row that grew past the bound before
+// the writer repaired it (issue #299). Such a row would otherwise return every
+// entry it ever accumulated. The run-history view shows the newest run first
+// and reads no entry beyond the ones kept here. Persisted history is
+// untouched, exactly like the created-marker repair above.
+func boundCurrentHistoryEntries(metadata map[string]any) {
+	history, ok := metadata["history"].([]any)
+	if !ok || len(history) <= indexingapp.MaxCurrentIndexMetaHistoryEntries {
+		return
+	}
+	metadata["history"] =
+		history[len(history)-indexingapp.MaxCurrentIndexMetaHistoryEntries:]
+}
+
+// omitCurrentHistoryChunkingConfig drops the chunking configuration from the
+// per-run history entries of one list element. Each entry is a full clone of
+// the top level, so the SDK's ~3.4 KB default chunking_config is repeated once
+// per run and is what made this response grow linearly (issue #297). Nothing
+// reads it from a history entry: reindex, the edit form and the scheduler all
+// take the top-level index_configuration, which stays whole here, and the
+// exact (detail) read still returns every entry verbatim. Persisted history is
+// untouched, exactly like the created-marker repair above.
+func omitCurrentHistoryChunkingConfig(metadata map[string]any) {
+	history, ok := metadata["history"].([]any)
+	if !ok {
+		return
+	}
+	for _, value := range history {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch configuration := entry["index_configuration"].(type) {
+		case map[string]any:
+			delete(configuration, "chunking_config")
+		case string:
+			// Rows written by the earlier Python path nest this object as a
+			// JSON string. Keep that shape so callers see the same type.
+			trimmed, ok := currentConfigurationWithoutChunking(configuration)
+			if ok {
+				entry["index_configuration"] = trimmed
+			}
+		}
+	}
+}
+
+func currentConfigurationWithoutChunking(encoded string) (string, bool) {
+	if len(encoded) > MaxCurrentIndexMetaMetadataBytes {
+		return "", false
+	}
+	configuration := map[string]any{}
+	decoder := json.NewDecoder(strings.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&configuration); err != nil || configuration == nil {
+		return "", false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return "", false
+	}
+	if _, present := configuration["chunking_config"]; !present {
+		return "", false
+	}
+	delete(configuration, "chunking_config")
+	trimmed, err := json.Marshal(configuration)
+	if err != nil {
+		return "", false
+	}
+	return string(trimmed), true
 }
 
 func currentHistoryEntriesHaveSameRun(first, second map[string]any) bool {

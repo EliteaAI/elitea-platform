@@ -72,6 +72,8 @@ interface AgentVersionDetails {
   readonly instructions?: string | undefined;
   readonly welcome_message?: string | undefined;
   readonly notes?: string | undefined;
+  /** #307 — the agent's chat starters. Present in the baseline's Formik `values` all along (`ConversationStarters.jsx` reads `version_details.conversation_starters`); it was missing here only because no editor had been ported. */
+  readonly conversation_starters?: readonly string[] | undefined;
   readonly tags?: readonly string[] | undefined;
   readonly variables?: readonly AgentVariable[] | undefined;
   readonly tools?: readonly AgentToolRef[] | undefined;

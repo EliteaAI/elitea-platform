@@ -105,6 +105,15 @@ function configurationsPath(projectId: string): string {
   return `/configurations/configurations/${projectId}`;
 }
 
+/* The MODEL CATALOGUE, which is a different route from the configuration list
+   above. `/configurations/configurations/{id}?section=models` returns
+   CREDENTIAL rows (elitea_title / label / data); this one returns models
+   (`name`, `display_name`, `context_window`, `supports_reasoning`) — the shape
+   `ConfigModel` declares, field for field. */
+function modelCatalogPath(projectId: string): string {
+  return `/configurations/models/${projectId}`;
+}
+
 function availableTypesPath(): string {
   return `/configurations/available/`;
 }
@@ -268,20 +277,27 @@ export interface ListModelsParams {
   readonly include_shared?: boolean;
 }
 
+/**
+ * The models a project can run — what the chat composer's picker offers.
+ *
+ * Reads the MODEL CATALOGUE, not the configuration list. It used to call
+ * `/configurations/configurations/{id}?section=models`, which returns model
+ * CREDENTIALS: rows carrying `elitea_title`/`label`/`data` and no `name` at
+ * all. Every consumer here reads `.name`, so the picker rendered rows with an
+ * EMPTY label — a menu of entries nobody can identify — and anything that did
+ * choose one sent a credential's title where the backend expects a model alias,
+ * which it rejects (#293).
+ *
+ * The catalogue answers `{name, display_name, project_id, shared,
+ * context_window, max_output_tokens, supports_reasoning}` — `ConfigModel`'s
+ * declared shape, field for field, which is the evidence this was always the
+ * intended source.
+ */
 export async function listModels(
   params: ListModelsParams,
 ): Promise<ConfigModelsListResponse> {
-  const qs = new URLSearchParams({
-    section: 'models',
-    include_shared: String(params.include_shared ?? false),
-    limit: '100',
-    offset: '0',
-    sort_by: 'created_at',
-    sort_order: 'desc',
-  });
-  return fetchData<ConfigModelsListResponse>(
-    `${configurationsPath(params.projectId)}?${qs}`,
-  );
+  const qs = new URLSearchParams({ include_shared: String(params.include_shared ?? false) });
+  return fetchData<ConfigModelsListResponse>(`${modelCatalogPath(params.projectId)}?${qs}`);
 }
 
 export function useListModelsQuery(

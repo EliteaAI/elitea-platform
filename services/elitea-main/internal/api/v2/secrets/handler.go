@@ -41,7 +41,12 @@ import (
 // (SECRETS_MASTER_KEY env var, base64url-encoded 32-byte Fernet key).
 type Handler struct {
 	pool      *pgxpool.Pool
-	masterKey []byte // nil when SECRETS_MASTER_KEY is unset
+	masterKey []byte // nil when SECRETS_MASTER_KEY is absent
+	// masterKeyErr is set when SECRETS_MASTER_KEY is present and malformed.
+	// Every vault read and every vault write then fails with it, so the
+	// handler stores NOTHING rather than storing project keys unwrapped
+	// (#412). See MasterKeyFromEnv for why the two cases differ.
+	masterKeyErr error
 	// permissionResolver authorises BOTH mode families: the `administration`
 	// routes (admin.go, central mode) and the project routes below (`default`
 	// mode, keyed on the `{projectID}` in the path). nil for the two
@@ -60,16 +65,68 @@ func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	return func(h *Handler) { h.permissionResolver = resolver }
 }
 
+// MasterKeyEnvVar names the one variable that decides whether a project
+// vault's key row is wrapped. Every message this package writes about the
+// master key names it, so an operator can search the logs for it.
+const MasterKeyEnvVar = "SECRETS_MASTER_KEY"
+
+// MasterKeyFromEnv reads the master key and validates it.
+//
+// It separates the two cases the old NewHandler answered identically:
+//
+//   - ABSENT: key is nil and err is nil. The deployment asks for unwrapped
+//     storage. That stays supported, because centry supports it and because a
+//     local stack has no key to give. The caller must say so out loud —
+//     cmd/elitea-main logs a warning that names the consequence.
+//   - MALFORMED: err is not nil. The deployment asks for wrapped storage and
+//     cannot get it. A wrong length, bad base64, or a stray space or tab from a
+//     mounted secret is an operator error. It is never an instruction to
+//     downgrade the storage.
+//
+// The old code read the second case as the first. It left masterKey nil, and
+// the handler then minted and wrote UNWRAPPED vaults while the operator
+// believed the keys were wrapped. Nothing logged and nothing failed, because
+// every later read of an unwrapped vault also succeeds (#412).
+//
+// WHAT COUNTS AS MALFORMED IS UNCHANGED. This function validates with
+// fernetDecodeKey, exactly as the old code did, and adds no whitespace rule of
+// its own. That matters for one shape in particular: Go's base64 decoder
+// IGNORES "\r" and "\n", so a key read from a file with a trailing newline
+// decodes to the same 32 bytes and keeps working. Python's
+// base64.urlsafe_b64decode ignores it too, so pylon's secrets engine agrees.
+// Rejecting a newline here would stop a deployment that works today, which is
+// the opposite of the repair. A space or a tab is a different matter: neither
+// decoder pair agrees on it, so it stays an error.
+//
+// getenv is injected so a test can supply a value without t.Setenv, which
+// forbids t.Parallel.
+func MasterKeyFromEnv(getenv func(string) string) ([]byte, error) {
+	value := getenv(MasterKeyEnvVar)
+	if value == "" {
+		return nil, nil
+	}
+	raw, err := fernetDecodeKey(value)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"%s is set and malformed: %w; supply a base64url-encoded 32-byte Fernet key "+
+				"with no stray spaces or tabs, or remove the variable to store project "+
+				"vault keys unwrapped", MasterKeyEnvVar, err)
+	}
+	return raw, nil
+}
+
 // NewHandler constructs the secrets handler.  The pool is used for
 // centry.secrets_key / centry.secrets_data reads and writes.
+//
+// A malformed SECRETS_MASTER_KEY does not stop construction, because this
+// constructor cannot report an error: two of its four callers build a handler
+// per request, so an error here would surface long after provisioning had
+// already written vaults. cmd/elitea-main validates the variable at start-up
+// instead, and stops. This constructor keeps the fault so that a handler built
+// WITHOUT that gate still fails closed (#412).
 func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	h := &Handler{pool: pool}
-	if mk := os.Getenv("SECRETS_MASTER_KEY"); mk != "" {
-		raw, err := fernetDecodeKey(mk)
-		if err == nil {
-			h.masterKey = raw
-		}
-	}
+	h.masterKey, h.masterKeyErr = MasterKeyFromEnv(os.Getenv)
 	for _, opt := range opts {
 		opt(h)
 	}
@@ -317,7 +374,7 @@ func dbKey(projectID string) string {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		writeJSON(w, http.StatusOK, []SecretListItem{})
 		return
 	}
@@ -378,7 +435,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		http.Error(w, `{"error":"secret not found"}`, http.StatusNotFound)
 		return
 	}
@@ -426,7 +483,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, oldName), http.StatusBadRequest)
 		return
 	}
@@ -457,7 +514,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -482,7 +539,7 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, name), http.StatusBadRequest)
 		return
 	}
@@ -525,13 +582,13 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 // Collapsing the two is a silent data loss: the project path's old
 // readOrInitVault answered ANY read failure by writing a fresh empty vault, so
 // a single POST against an unreadable-but-present vault replaced every secret
-// in it and reported 201.  errVaultAbsent is returned for the first cause only,
+// in it and reported 201.  ErrVaultAbsent is returned for the first cause only,
 // and only a caller that has checked for it may write.
 
-// errVaultAbsent means the vault's rows do not exist yet — the only condition
+// ErrVaultAbsent means the vault's rows do not exist yet — the only condition
 // under which a write is allowed to create them.  Any OTHER read failure means
 // rows exist that could not be opened, and must never be overwritten.
-var errVaultAbsent = errors.New("secrets: vault has not been initialised")
+var ErrVaultAbsent = errors.New("secrets: vault has not been initialised")
 
 // newFernetKey returns 32 fresh random bytes — the raw form; `encryptKey`
 // renders them in centry's on-disk representation.
@@ -558,14 +615,14 @@ func (h *Handler) vaultKeyRow(ctx context.Context, vaultID string) ([]byte, erro
 
 // readVaultByID reads and decrypts one vault.
 //
-// It returns errVaultAbsent ONLY when neither row exists.  Every other failure —
+// It returns ErrVaultAbsent ONLY when neither row exists.  Every other failure —
 // a missing key row beside a present data row, a decrypt failure, a body that is
 // not the expected shape — is returned as itself, so no caller can mistake
 // "I could not open this" for "there is nothing here" and write over it.
 func (h *Handler) readVaultByID(ctx context.Context, vaultID string) (vaultData, error) {
 	keyBytes, err := h.vaultKeyRow(ctx, vaultID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return vaultData{}, errVaultAbsent
+		return vaultData{}, ErrVaultAbsent
 	}
 	if err != nil {
 		return vaultData{}, fmt.Errorf("read %s secrets_key: %w", vaultID, err)
@@ -611,7 +668,7 @@ func (h *Handler) readVaultByID(ctx context.Context, vaultID string) (vaultData,
 // and its rows are left exactly as they are.
 func (h *Handler) vaultForWriteByID(ctx context.Context, vaultID string) (vaultData, error) {
 	v, err := h.readVaultByID(ctx, vaultID)
-	if errors.Is(err, errVaultAbsent) {
+	if errors.Is(err, ErrVaultAbsent) {
 		return vaultData{Secrets: map[string]string{}, HiddenSecrets: map[string]string{}}, nil
 	}
 	return v, err
@@ -691,7 +748,7 @@ func (h *Handler) writeVaultByID(ctx context.Context, vaultID string, v vaultDat
 
 // ─── the project vault ────────────────────────────────────────────────────────
 
-// readVaultCtx reads project `projectID`'s vault.  errVaultAbsent means the
+// readVaultCtx reads project `projectID`'s vault.  ErrVaultAbsent means the
 // project has no vault yet; any other error means one exists and would not open.
 func (h *Handler) readVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
 	return h.readVaultByID(ctx, dbKey(projectID))
@@ -731,6 +788,12 @@ func vaultUnreadable(w http.ResponseWriter) {
 // (`fernetEncrypt` would slice a 28-byte AES key out of the 44 and fail).
 // Found while making the chat-config route reachable (#194).
 func (h *Handler) encryptKey(raw []byte) ([]byte, error) {
+	// A malformed master key stops the write here (#412). Returning the
+	// unwrapped encoding instead is what made the defect silent: the vault was
+	// minted in the clear and every later read of it succeeded.
+	if h.masterKeyErr != nil {
+		return nil, h.masterKeyErr
+	}
 	encoded := []byte(base64.URLEncoding.EncodeToString(raw))
 	if h.masterKey == nil {
 		return encoded, nil
@@ -743,6 +806,11 @@ func (h *Handler) encryptKey(raw []byte) ([]byte, error) {
 // encryptKey now writes) and the raw 32 bytes earlier builds of this handler
 // wrote, so an existing database keeps opening.
 func (h *Handler) decryptKey(stored []byte) ([]byte, error) {
+	// A malformed master key stops the read too (#412). A wrapped key row would
+	// otherwise be read as an unwrapped one, which fails later and further away.
+	if h.masterKeyErr != nil {
+		return nil, h.masterKeyErr
+	}
 	if h.masterKey != nil {
 		unwrapped, err := fernetDecrypt(h.masterKey, stored)
 		if err != nil {
@@ -912,6 +980,135 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 	return data[:len(data)-pad], nil
 }
 
+// EnsureProjectVault creates an EMPTY vault for a project that has none, and
+// does nothing for a project that already has a readable one (#373).
+//
+// WHY PROVISIONING NEEDS THIS. Every write route below mints a project's Fernet
+// key lazily, so the secrets API alone never needs a vault created in advance.
+// The model catalogue does. storage.PostgresSecretVaultLoader reports absent
+// rows as ErrContentUnavailable, storage.CurrentModelDefaultsReader fails the
+// whole read on that error, and the configurations route turns it into a 500 —
+// so a project with no vault rows presents to its owner as "the product has no
+// models". internal/application/projectprovisioning calls this as its
+// project_secrets step.
+//
+// WHY IT IS HERE AND NOT IN THE PROVISIONER. This is the only code in the tree
+// that mints a vault key, and it decides — from SECRETS_MASTER_KEY — whether
+// the stored key is wrapped. A second minter with its own rule would write
+// vaults this handler cannot open, and readVaultByID never overwrites an
+// unreadable vault, so that project's secrets would 500 for ever with no way
+// back. One minter, one rule.
+//
+// IDEMPOTENT, and deliberately narrow about which failure it acts on. Only
+// ErrVaultAbsent — neither row present — permits a write. A vault that exists
+// and will not open is reported, never replaced.
+func (h *Handler) EnsureProjectVault(ctx context.Context, projectID string) error {
+	_, err := h.readVaultCtx(ctx, projectID)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrVaultAbsent):
+		return h.writeVaultCtx(ctx, projectID, vaultData{
+			Secrets:       map[string]string{},
+			HiddenSecrets: map[string]string{},
+		})
+	default:
+		return err
+	}
+}
+
+// RemoveProjectVault deletes a project's vault rows.
+//
+// It is the compensation half of EnsureProjectVault, and the delete half of
+// project deprovisioning. Neither centry.secrets_key nor centry.secrets_data
+// carries a foreign key to centry.project — the id is the TEXT `project-<id>`
+// rather than the integer — so nothing removes these rows for us, and a vault
+// left behind would be adopted by the next project that draws the same id.
+//
+// Removing an absent vault is success, so a re-run and a compensation for a
+// step that never ran both converge.
+func (h *Handler) RemoveProjectVault(ctx context.Context, projectID string) error {
+	vaultID := dbKey(projectID)
+	// One transaction: a key row without its data row is the half state
+	// readVaultByID reports as a hard error rather than as an absent vault.
+	transaction, err := h.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin %s vault delete: %w", vaultID, err)
+	}
+	defer func() { _ = transaction.Rollback(context.WithoutCancel(ctx)) }()
+
+	for _, statement := range []string{
+		`DELETE FROM centry.secrets_data WHERE id = $1`,
+		`DELETE FROM centry.secrets_key WHERE id = $1`,
+	} {
+		if _, err := transaction.Exec(ctx, statement, vaultID); err != nil {
+			return fmt.Errorf("delete %s vault rows: %w", vaultID, err)
+		}
+	}
+	return transaction.Commit(ctx)
+}
+
+// StoreProjectSecrets writes several regular secrets to one project vault in a
+// SINGLE rewrite. It never creates a vault: an absent or unreadable vault is an
+// error (#399).
+//
+// WHY IT IS HERE AND NOT IN THE PROVISIONER, for the same reason
+// EnsureProjectVault is. This handler holds the only master key a deployment
+// actually sets. A material writer built anywhere else derives its own key, so
+// it writes material this handler cannot open, and it cannot open material this
+// handler wrote. The creator and the writer must share one key source, or the
+// vault is unusable whichever creator ran first.
+//
+// WHY ONE REWRITE, AND NOT REPEATED StoreSecret CALLS. Provisioning stores a
+// project's PgVector password and its connection string together. Two calls are
+// two read-modify-write cycles, so a failure between them leaves half the
+// material behind. A later index run then reads a password with no connection
+// string.
+//
+// The caller must create the vault first. The project_secrets provisioning step
+// does that, and it runs before every caller of this.
+func (h *Handler) StoreProjectSecrets(ctx context.Context, projectID string, values map[string]string) error {
+	vaultID := dbKey(projectID)
+	if len(values) == 0 {
+		return fmt.Errorf("store %s secrets: no values given", vaultID)
+	}
+	vault, err := h.readVaultCtx(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("store %s secrets: %w", vaultID, err)
+	}
+	for name, value := range values {
+		if name == "" {
+			return fmt.Errorf("store %s secrets: a secret name is empty", vaultID)
+		}
+		vault.Secrets[name] = value
+	}
+	return h.writeVaultCtx(ctx, projectID, vault)
+}
+
+// LookupProjectSecret reads one regular secret from a project vault.
+//
+// found is false only when the vault opens and holds no such name. An absent
+// vault and an unreadable vault are both errors, so no caller can read a key
+// mismatch as an empty result.
+func (h *Handler) LookupProjectSecret(
+	ctx context.Context,
+	projectID string,
+	name string,
+) (value string, found bool, err error) {
+	vaultID := dbKey(projectID)
+	if name == "" {
+		return "", false, fmt.Errorf("look up %s secret: the name is empty", vaultID)
+	}
+	vault, err := h.readVaultCtx(ctx, projectID)
+	if err != nil {
+		return "", false, fmt.Errorf("look up %s secret: %w", vaultID, err)
+	}
+	if stored, ok := vault.Secrets[name]; ok {
+		return stored, true, nil
+	}
+	return "", false, nil
+}
+
 // StoreSecret programmatically stores a secret value without going through HTTP.
 func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, name, value string) error {
 	vault, err := h.readOrInitVaultCtx(ctx, projectID)
@@ -921,6 +1118,14 @@ func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, n
 	vault.Secrets[name] = value
 	return h.writeVaultCtx(ctx, projectID, vault)
 }
+
+// ErrSecretNotFound means the vault opened and holds no secret of that name.
+// It is distinct from ErrVaultAbsent (the project has no vault yet) and from
+// every other read failure (a vault that exists and would not open). A caller
+// that applies a default value must separate the three: only the first two mean
+// "not set", and treating an unreadable vault as "not set" turns a broken vault
+// into an accepted default.
+var ErrSecretNotFound = errors.New("secrets: secret not found")
 
 // ResolveSecretValue resolves a {{secret.name}} reference to its plaintext value.
 func (h *Handler) ResolveSecretValue(ctx context.Context, projectID, secretRef string) (string, error) {
@@ -935,7 +1140,7 @@ func (h *Handler) ResolveSecretValue(ctx context.Context, projectID, secretRef s
 	if val, ok := vault.HiddenSecrets[name]; ok {
 		return val, nil
 	}
-	return "", fmt.Errorf("secret %q not found", name)
+	return "", fmt.Errorf("%w: %q", ErrSecretNotFound, name)
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

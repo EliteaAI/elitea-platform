@@ -41,6 +41,7 @@
  */
 import { z as zod } from "zod";
 import { BudgetState } from "./budgetState.zod";
+import { UsageDimensions } from "./usageDimensions.zod";
 
 export const UsageReport = zod
   .object({
@@ -56,6 +57,7 @@ export const UsageReport = zod
       .optional()
       .describe("Present for scope=project only."),
   })
+  .and(UsageDimensions)
   .and(BudgetState);
 
 export type UsageReport = zod.input<typeof UsageReport>;

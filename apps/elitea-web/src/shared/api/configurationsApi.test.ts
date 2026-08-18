@@ -86,14 +86,25 @@ describe('getAvailableConfigurationsType', () => {
 });
 
 describe('listModels', () => {
-  it('resolves the response body, not the transport envelope', async () => {
+  it('reads the MODEL CATALOGUE, not the configuration list', async () => {
+    // The two routes answer different things. `/configurations/configurations`
+    // returns model CREDENTIALS — `elitea_title`/`label`/`data`, no `name` —
+    // so a picker built on it renders rows with an empty label and sends a
+    // credential's title where a model alias belongs (#293). Only the
+    // catalogue answers `ConfigModel`'s declared shape.
+    //
+    // The credentials route is registered here as a TRAP: if the caller ever
+    // points back at it, this test fails on the assertion below rather than
+    // passing on a plausible-looking empty list.
+    let credentialsRouteCalled = false;
     server.use(
-      http.get(`${BASE}/configurations/configurations/1`, () =>
+      http.get(`${BASE}/configurations/configurations/1`, () => {
+        credentialsRouteCalled = true;
+        return HttpResponse.json({ items: [{ id: 7, elitea_title: 'creds', section: 'models' }], total: 1 });
+      }),
+      http.get(`${BASE}/configurations/models/1`, () =>
         HttpResponse.json({
-          items: [],
-          total: 0,
-          offset: 0,
-          limit: 100,
+          items: [{ name: 'vllm/E2E-MOCK-MODEL', display_name: 'Mock', project_id: '1' }],
           default_model_name: 'gpt-4o',
         }),
       ),
@@ -101,7 +112,23 @@ describe('listModels', () => {
 
     const response = await listModels({ projectId: '1' });
 
+    expect(credentialsRouteCalled, 'listModels must not read the credentials route').toBe(false);
     expect(response.default_model_name).toBe('gpt-4o');
-    expect(response.items).toEqual([]);
+    // `name` is what every consumer reads; a row without it renders blank.
+    expect(response.items[0]?.name).toBe('vllm/E2E-MOCK-MODEL');
+  });
+
+  it('passes include_shared through', async () => {
+    let seenUrl = '';
+    server.use(
+      http.get(`${BASE}/configurations/models/1`, ({ request }) => {
+        seenUrl = request.url;
+        return HttpResponse.json({ items: [], default_model_name: '' });
+      }),
+    );
+
+    await listModels({ projectId: '1', include_shared: true });
+
+    expect(new URL(seenUrl).searchParams.get('include_shared')).toBe('true');
   });
 });

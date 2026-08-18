@@ -17,6 +17,7 @@ import { fmtDuration, fmtNum, UNAVAILABLE_METRIC } from '../lib/format';
 import { AnalyticsAgentDetailed } from './AnalyticsAgentDetailed';
 import { ChartTooltip } from './components/ChartTooltip';
 import { renderColoredBar } from './components/coloredBarShape';
+import { AnalyticsLoadError } from './components/DetailStatus';
 import { PaginatedEntityTable } from './components/PaginatedEntityTable';
 import type { EntityTableColumn } from './components/PaginatedEntityTable';
 
@@ -105,7 +106,7 @@ function AnalyticsAgentsImpl({ projectId, dateFrom, dateTo }: AnalyticsAgentsPro
   // this file's header) — only pre-aggregated `run_count`/`avg_duration_ms`/
   // `total_tokens`/`error_rate` — so there is nothing on the already-fetched
   // rows to filter by.
-  const { data, isFetching } = useAnalyticsAgentsListQuery(projectId, { dateFrom, dateTo });
+  const { data, isFetching, isError } = useAnalyticsAgentsListQuery(projectId, { dateFrom, dateTo });
   const items = useMemo(() => data?.items ?? [], [data]);
 
   const chartData = useMemo(
@@ -131,6 +132,18 @@ function AnalyticsAgentsImpl({ projectId, dateFrom, dateTo }: AnalyticsAgentsPro
         onBack={handleBack}
       />
     );
+  }
+
+  // A failed list query must not fall through to the table below: with
+  // `data` undefined `items` is `[]`, which renders the card chrome, the
+  // five column headers and "0 agents" — indistinguishable from a project
+  // that genuinely has no agents. The routes now answer 500 ("analytics: no
+  // data source", issue #303) instead of fabricating zeros, and this is the
+  // same fabrication one layer up. Placed AFTER the drill-down branch above
+  // so a failing LIST query never replaces a detail screen the user is
+  // already inside (that screen owns its own query and its own Back button).
+  if (isError) {
+    return <AnalyticsLoadError />;
   }
 
   const columns: readonly EntityTableColumn[] = [

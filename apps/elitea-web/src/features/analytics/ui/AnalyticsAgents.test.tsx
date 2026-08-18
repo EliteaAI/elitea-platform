@@ -48,6 +48,61 @@ describe('AnalyticsAgents', () => {
     expect(getByText('Agent Activity')).toBeInTheDocument();
   });
 
+  // ── The load-failure branch (issue #303) ────────────────────────────────
+  // The routes no longer fabricate zeros: they answer 500 with
+  // "analytics: no data source". Without the `isError` guard this tab
+  // rendered `items = []` — the card, the five headers and "0 agents" —
+  // which is the same fabrication one layer up. Asserting the error text
+  // alone would pass against a page showing BOTH, so the table's own
+  // markers must be asserted absent.
+  it('shows the load error and NO table when the list query fails', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_agents/prompt_lib/7`, () =>
+        HttpResponse.json({ detail: 'analytics: no data source' }, { status: 500 }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsAgents
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    // `toBeVisible`, not `toBeInTheDocument`: an empty `<Box>` satisfies the
+    // latter (no layout box) and would hide a blank error branch.
+    expect(await findByText('Failed to load analytics data.')).toBeVisible();
+    expect(queryByText('Agent Activity')).not.toBeInTheDocument();
+    expect(queryByText('0 agents')).not.toBeInTheDocument();
+    for (const header of ['Agent', 'Events', 'Users', 'Avg Latency', 'Errors']) {
+      expect(queryByText(header)).not.toBeInTheDocument();
+    }
+  });
+
+  // Control for the test above: a component that errored unconditionally
+  // would satisfy it. A successful query must still render the table.
+  it('still renders the table with its headers and count when the list query succeeds', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_agents/prompt_lib/7`, () =>
+        HttpResponse.json({
+          items: [{ application_id: 'app1', name: 'My Agent', run_count: 12, avg_duration_ms: 300, total_tokens: 5, error_rate: 0 }],
+        }),
+      ),
+    );
+    const { findByText, getByText, queryByText } = renderScreen(
+      <AnalyticsAgents
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    expect(await findByText('My Agent')).toBeVisible();
+    expect(getByText('1 agents')).toBeVisible();
+    for (const header of ['Agent', 'Events', 'Users', 'Avg Latency', 'Errors']) {
+      expect(getByText(header)).toBeVisible();
+    }
+    expect(queryByText('Failed to load analytics data.')).not.toBeInTheDocument();
+  });
+
   it('renders a real error_rate fraction scaled ×100 as a percentage, not the raw fraction (the 100x display defect fix)', async () => {
     server.use(
       http.get(`${BASE}/elitea_core/analytics_agents/prompt_lib/7`, () =>

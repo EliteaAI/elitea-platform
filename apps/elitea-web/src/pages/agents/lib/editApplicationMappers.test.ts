@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ApplicationDetail, ApplicationVersionDetail, ApplicationVersionSummary } from '@/shared/api/generated/model';
+import { VersionWriteRequest } from '@/shared/api/generated/model/versionWriteRequest.zod';
 
 import {
   applicationDetailDisplayName,
   toFormValues,
   toVersionDraft,
   toVersionOptions,
+  toVersionSaveBody,
   toVersionSummaries,
   toVersionWriteBody,
 } from './editApplicationMappers';
@@ -58,6 +60,41 @@ describe('toVersionWriteBody', () => {
     expect(body).not.toHaveProperty('meta');
     expect(body).not.toHaveProperty('tags');
     expect(body).not.toHaveProperty('agent_type');
+  });
+});
+
+describe('toVersionSaveBody', () => {
+  /*
+   * This asserts the CONTRACT, not the mapper: `VersionWriteRequest` is the
+   * generated zod schema, and zod object parsing STRIPS keys the schema does
+   * not declare. So the assertion below fails outright if `internal_tools`
+   * is ever dropped from `VersionMeta` in
+   * `services/elitea-main/api/openapi/v2.yaml` — which is exactly the state
+   * this test was written to rule out. `zod.record`-style passthrough would
+   * not make it pass either: the generated `VersionMeta` is a plain
+   * `zod.object`, so the key has to be modelled by name.
+   */
+  it('survives a round trip through the generated VersionWriteRequest schema', () => {
+    const version = {
+      name: 'base',
+      meta: { step_limit: 40, internal_tools: ['internal_mcp'], category: 'sales' },
+    } as unknown as ApplicationVersionDetail;
+    const edits = {
+      instructions: 'Be helpful.',
+      welcomeMessage: '',
+      variables: [],
+      stepLimit: 12,
+      internalTools: ['internal_mcp', 'internal_web'],
+    };
+
+    const body = toVersionSaveBody(version, [], edits);
+    expect(body.meta?.internal_tools).toEqual(['internal_mcp', 'internal_web']);
+
+    const parsed = VersionWriteRequest.parse(body);
+    expect(parsed.meta?.internal_tools).toEqual(['internal_mcp', 'internal_web']);
+    // The untouched keys ride along through the same merge.
+    expect(parsed.meta?.step_limit).toBe(12);
+    expect(parsed.meta?.category).toBe('sales');
   });
 });
 

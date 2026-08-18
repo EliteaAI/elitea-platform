@@ -1,0 +1,120 @@
+package api
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+)
+
+// The chat surface reads the execution-events stream with an EventSource, which
+// can send a cookie and nothing else — no bearer, no forwarded identity. With
+// the routes composed for forwarded identity alone, the product's own UI could
+// not read a stream every server-side hop could (#93/#289).
+//
+// Accepting a session must not widen what a caller may see: these routes still
+// require a runtime principal, and the handler behind them authorizes per
+// request against the execution's project and capability.
+func TestProductionRuntimeRoutesAcceptBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	const secret = "production-runtime-session-secret"
+	served := false
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// The principal must arrive as a RUNTIME principal, not merely an
+		// authenticated user: requireRuntimePrincipal is what the route's
+		// downstream authorizer depends on.
+		if _, ok := auth.RuntimePrincipalFromContext(request.Context()); !ok {
+			t.Error("session-authenticated caller did not become a runtime principal")
+		}
+		served = true
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	principal := productionRuntimePrincipalValidatorFunc(func(_ context.Context, user auth.User) (auth.User, error) {
+		user.Email = "member@example.test"
+		return user, nil
+	})
+	peer := productionRuntimePeerVerifierFunc(func(*http.Request) error {
+		return nil
+	})
+
+	t.Run("session cookie is accepted when a secret is configured", func(t *testing.T) {
+		routes, err := NewProductionRuntimeRoutes(handler, handler, principal, peer, secret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		router := NewRouter(RouterConfig{ProductionRuntime: routes})
+
+		request := httptest.NewRequest(http.MethodGet, "/api/v2/executions/42/execution-1/events", nil)
+		request.AddCookie(&http.Cookie{Name: "elitea_session", Value: sessionToken(secret, "7")})
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d — the browser cannot read its own stream", response.Code, http.StatusNoContent)
+		}
+		if !served {
+			t.Fatal("handler never ran")
+		}
+	})
+
+	t.Run("an edge-only deployment is unchanged", func(t *testing.T) {
+		// Passing "" must behave exactly as before this parameter existed:
+		// no cookie is read, so the same request is rejected.
+		routes, err := NewProductionRuntimeRoutes(handler, handler, principal, peer, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		router := NewRouter(RouterConfig{ProductionRuntime: routes})
+
+		request := httptest.NewRequest(http.MethodGet, "/api/v2/executions/42/execution-1/events", nil)
+		request.AddCookie(&http.Cookie{Name: "elitea_session", Value: sessionToken(secret, "7")})
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+
+		if response.Code == http.StatusNoContent {
+			t.Fatal("a cookie was honoured with no session secret configured")
+		}
+	})
+
+	t.Run("a forged session is rejected", func(t *testing.T) {
+		routes, err := NewProductionRuntimeRoutes(handler, handler, principal, peer, secret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		router := NewRouter(RouterConfig{ProductionRuntime: routes})
+
+		request := httptest.NewRequest(http.MethodGet, "/api/v2/executions/42/execution-1/events", nil)
+		request.AddCookie(&http.Cookie{Name: "elitea_session", Value: sessionToken("a-different-secret", "7")})
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+
+		if response.Code == http.StatusNoContent {
+			t.Fatal("a session signed with the wrong secret was accepted")
+		}
+	})
+}
+
+// sessionToken mirrors v2auth.makeSessionToken: base64url(JSON payload) + "." +
+// hex(HMAC-SHA256). Reproduced rather than imported because that helper is
+// unexported and this package must not depend on the OIDC handler to state what
+// a browser presents.
+func sessionToken(secret, userID string) string {
+	payload, _ := json.Marshal(map[string]any{
+		"uid":   userID,
+		"email": "member@example.test",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+	})
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(encoded))
+	return encoded + "." + hex.EncodeToString(mac.Sum(nil))
+}

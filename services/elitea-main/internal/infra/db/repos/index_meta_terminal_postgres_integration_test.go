@@ -14,8 +14,7 @@ import (
 // reclaim. PgVector materialization is covered by its separate integration
 // test.
 func TestPostgresCurrentIndexMetaTerminalClaimRecovery(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	policy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",

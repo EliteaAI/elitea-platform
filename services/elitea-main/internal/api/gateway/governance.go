@@ -29,7 +29,7 @@ type governanceQuerier interface {
 }
 
 // GovernanceRow is one authored governance definition in the global
-// gateway.governance_config table (see gateway_migrations/002_governance_config.sql).
+// gateway.governance_config table (see migrations/shared/0067_gateway_budget_schema.sql).
 // The JSONB `Data` payload carries the entity-specific fields the schema-driven
 // admin form produces and the gateway GovernanceStore consumes.
 type GovernanceRow struct {
@@ -238,8 +238,42 @@ func validateGovernanceRow(row GovernanceRow) error {
 	if strings.TrimSpace(row.Name) == "" {
 		return errors.New("name is required")
 	}
-	if row.Type == "routing_rule" {
+	switch row.Type {
+	case "routing_rule":
 		return validateRoutingRule(row.Data)
+	case alertConfigType:
+		return validateBudgetAlertData(row.Data)
+	}
+	return nil
+}
+
+// validateBudgetAlertData rejects a global soft-alert row this surface would
+// write but the gateway could not read.
+//
+// The gateway's budget snapshot casts both keys of this row on EVERY /llm call.
+// The cast is guarded, so a bad value degrades to the shipped default rather
+// than failing the request — but a value that silently does nothing is the
+// defect #322 is about. The dedicated PUT /admin/gateway/budget-alerts surface
+// validates the range already; this generic path writes the same row and must
+// hold the same rule, or the two disagree about what a valid config is.
+func validateBudgetAlertData(data map[string]any) error {
+	if raw, present := data["enabled"]; present {
+		if _, ok := raw.(bool); !ok {
+			return errors.New("enabled must be a boolean")
+		}
+	}
+	raw, present := data["threshold_pct"]
+	if !present {
+		return nil
+	}
+	// JSON numbers decode as float64 here; an integral value is required
+	// because the column is smallint.
+	pct, ok := raw.(float64)
+	if !ok || pct != math.Trunc(pct) {
+		return errors.New("threshold_pct must be a whole number")
+	}
+	if pct < 1 || pct > 100 {
+		return errors.New("threshold_pct must be between 1 and 100")
 	}
 	return nil
 }

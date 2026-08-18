@@ -53,6 +53,21 @@ describe('installTestEventSource', () => {
     expect(explicit?.data).toBe('body');
   });
 
+  it('carries the id: line as lastEventId — the value a resume sends back', () => {
+    // `events.go` writes `id: <cursor>` before every frame. A double that
+    // dropped it would let a broken resume pass its own test.
+    registry = installTestEventSource();
+    const source = construct('/a');
+    const handler = vi.fn<(event: MessageEvent) => void>();
+    source.addEventListener('tick', handler);
+
+    registry.emit('tick', 'body', '17');
+    expect(handler.mock.calls[0]?.[0]?.lastEventId).toBe('17');
+
+    registry.emit('tick', 'body');
+    expect(handler.mock.calls[1]?.[0]?.lastEventId).toBe('');
+  });
+
   it('stops delivering to a removed listener', () => {
     registry = installTestEventSource();
     const source = construct('/a');

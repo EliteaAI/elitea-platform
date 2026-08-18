@@ -65,6 +65,7 @@ import type {
   ApplicationUpdateRequest,
   ApplicationUpdatedResponse,
   ApplicationVersionDetail,
+  ApplicationVersionDetailExpanded,
   AuthorDetail,
   BatchReplaceVersionReferencesParams,
   DefaultIcon,
@@ -3357,6 +3358,281 @@ export function useUpdateApplicationVersion<
     applicationId,
     versionId,
     versionWriteRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getApplicationVersionDetailExpandedResponse200 = {
+  data: ApplicationVersionDetailExpanded;
+  status: 200;
+};
+
+export type getApplicationVersionDetailExpandedResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type getApplicationVersionDetailExpandedResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getApplicationVersionDetailExpandedResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getApplicationVersionDetailExpandedResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type getApplicationVersionDetailExpandedResponseSuccess =
+  getApplicationVersionDetailExpandedResponse200 & {
+    headers: Headers;
+  };
+export type getApplicationVersionDetailExpandedResponseError = (
+  | getApplicationVersionDetailExpandedResponse400
+  | getApplicationVersionDetailExpandedResponse401
+  | getApplicationVersionDetailExpandedResponse403
+  | getApplicationVersionDetailExpandedResponse404
+) & {
+  headers: Headers;
+};
+
+export type getApplicationVersionDetailExpandedResponse =
+  | getApplicationVersionDetailExpandedResponseSuccess
+  | getApplicationVersionDetailExpandedResponseError;
+
+export const getGetApplicationVersionDetailExpandedUrl = (
+  projectId: string,
+  applicationId: number,
+  versionId: number,
+) => {
+  return `/elitea_core/version/prompt_lib/${projectId}/${applicationId}/${versionId}`;
+};
+
+/**
+ * NOTE(#336): PATCH on this path is a READ, not a partial update. It
+ * serves elitea-sdk's `get_app_version_details`
+ * (elitea_sdk/runtime/clients/client.py:681-688), which sends NO request
+ * body. The handler reads no body and writes nothing.
+ *
+ * The caller must send `X-SECRET`. The value must equal the project
+ * vault's `secrets_header_value`, which is what pylon's
+ * `check_secret_header` compares
+ * (legacy/plugins/elitea_core/utils/secrets.py:4-9). A mismatch answers
+ * 400 `{"error": "Invalid secret header"}`, the exact pylon body.
+ *
+ * Implementation: internal/api/v2/applications/handler.go,
+ * GetVersionExpanded.
+ * @summary Retrieve the expanded, secret-resolved detail of a version
+ */
+export const getApplicationVersionDetailExpanded = async (
+  projectId: string,
+  applicationId: number,
+  versionId: number,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getApplicationVersionDetailExpandedResponse> => {
+  return eliteaFetch<getApplicationVersionDetailExpandedResponse>(
+    getGetApplicationVersionDetailExpandedUrl(
+      projectId,
+      applicationId,
+      versionId,
+    ),
+    {
+      ...options,
+      method: "PATCH",
+    },
+  );
+};
+
+export const getGetApplicationVersionDetailExpandedQueryKey = (
+  projectId: string,
+  applicationId: number,
+  versionId: number,
+) => {
+  return [
+    "PATCH",
+    `/elitea_core/version/prompt_lib/${projectId}/${applicationId}/${versionId}`,
+  ] as const;
+};
+
+export const getGetApplicationVersionDetailExpandedQueryOptions = <
+  TData = Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+  TError = N400Response | N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  applicationId: number,
+  versionId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getGetApplicationVersionDetailExpandedQueryKey(
+      projectId,
+      applicationId,
+      versionId,
+    );
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>
+  > = ({ signal }) =>
+    getApplicationVersionDetailExpanded(projectId, applicationId, versionId, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      projectId !== null &&
+      projectId !== undefined &&
+      applicationId !== null &&
+      applicationId !== undefined &&
+      versionId !== null &&
+      versionId !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetApplicationVersionDetailExpandedQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>
+>;
+export type GetApplicationVersionDetailExpandedQueryError =
+  N400Response | N401Response | N403Response | N404Response;
+
+export function useGetApplicationVersionDetailExpanded<
+  TData = Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+  TError = N400Response | N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  applicationId: number,
+  versionId: number,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+          TError,
+          Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetApplicationVersionDetailExpanded<
+  TData = Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+  TError = N400Response | N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  applicationId: number,
+  versionId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+          TError,
+          Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetApplicationVersionDetailExpanded<
+  TData = Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+  TError = N400Response | N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  applicationId: number,
+  versionId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Retrieve the expanded, secret-resolved detail of a version
+ */
+
+export function useGetApplicationVersionDetailExpanded<
+  TData = Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+  TError = N400Response | N401Response | N403Response | N404Response,
+>(
+  projectId: string,
+  applicationId: number,
+  versionId: number,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getApplicationVersionDetailExpanded>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetApplicationVersionDetailExpandedQueryOptions(
+    projectId,
+    applicationId,
+    versionId,
     options,
   );
 

@@ -1,0 +1,100 @@
+# Production Form authentication for the standalone stack's runtime plane.
+#
+# WHY THIS FILE EXISTS AT ALL, given the stack logs in through oidc-mock:
+# cmd/elitea-main/main.go:686-688 refuses to boot with ELITEA_RUNTIME_ENABLED=true
+# unless production authentication is composed, and the PrincipalValidator and
+# ForwardedIdentityVerifier it means are only ever assigned inside the
+# ELITEA_AUTH_CONFIG_FILE branch (main.go:222-223). The runtime's HTTP surface
+# authenticates against those two — internal/api/production_runtime.go:31-37
+# composes the execution-events SSE route with them and NO session-cookie
+# fallback — so there is no "runtime without production auth" configuration.
+#
+# The auth schema (internal/authcomposition/config.go) currently models exactly
+# one provider, `form`; OIDC and SAML are documented as awaiting their own
+# versioned schemas. So the Form provider here is a structural requirement, not
+# a login path anyone uses: the browser still authenticates through oidc-mock
+# and receives the OIDC session cookie, and the single Form user in
+# auth-form-users.json has a random password that is never typed anywhere.
+#
+# Every *_file below is provisioned by deploy/scripts/gen-runtime-certs.sh and
+# installed into this container's /run/elitea-runtime by the runtime-material
+# init service. They are read through internal/security/securefile, which
+# requires absolute canonical non-symlink paths and exact permission bits, and
+# rejects two references that resolve to one file or carry equal bytes — which
+# is why the generator mints each one independently at random.
+schema_version: elitea.auth.form.v1
+
+# This is NOT decoration, and it is not the browser's origin.
+#
+# TrustedProxyResolver.Resolve rejects a forward-auth call whose
+# X-Forwarded-Proto and X-Forwarded-Host do not EQUAL this origin's scheme and
+# host (internal/api/browserauth/forwarded.go:109-116), answering 403 before the
+# credential is even read. The only forward-auth caller in this stack is
+# platform-edge, whose host is elitea-platform-edge, so that is what this must
+# say — pointing it at the browser edge (http://localhost:8084) made every
+# execution-events request 403 with nothing naming the header that mismatched.
+#
+# The browser is unaffected: it authenticates through oidc-mock against traefik
+# on :8084 and never traverses forward-auth. If a deployment routes browser
+# traffic through the forward-auth edge too, this must name THAT origin and the
+# edge must be the only public entrypoint.
+public_origin: https://elitea-platform-edge
+
+# The compose network. Non-empty is mandatory; these are the RFC1918 ranges
+# podman/docker hand out to compose networks.
+trusted_proxy_cidrs:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+
+redirects:
+  direct_access_denied: /app/
+  main_access_denied: /app/
+  default_login: /app/
+  default_logout: /app/
+
+cookie:
+  # Distinct from the OIDC session cookie APPLICATION_SECRET_KEY signs — the two
+  # stores are deliberately separate and must not collapse onto one name.
+  name: elitea_browser_auth
+  same_site: lax
+  lifetime_seconds: 86400
+
+redis:
+  topology: single_primary_endpoint
+  # The same TLS Redis the runtime dispatch plane uses, under its own ACL user
+  # and key prefix. go-redis takes the password from password_file, so the URL
+  # carries a username and no password by contract.
+  url: rediss://auth@runtime-redis:6380/0
+  password_file: /run/elitea-runtime/redis-auth-password
+  ca_file: /run/elitea-runtime/runtime-ca.crt
+  # Quoted because validRedisKeyPrefix REQUIRES a trailing ':', and an unquoted
+  # scalar ending in ':' is a nested mapping key to YAML, not a string — the
+  # loader rejects the whole document with "YAML document" and no line number.
+  key_prefix: "elitea-standalone-auth:"
+  attempt_key_file: /run/elitea-runtime/auth-attempt-key
+
+credentials:
+  pat_signing_key_file: /run/elitea-runtime/auth-pat-signing-key
+  # No legacy other_auth_headers aliases in this stack. Authorization Bearer and
+  # Basic are mandatory built-ins and are not configured here.
+  credential_headers: []
+
+mappers:
+  contract: elitea.auth_mappers.tracked.v1
+
+authorization:
+  # Empty on purpose: api.CurrentMainRoutePublicRules() supplies the audited
+  # route-owned rules at composition time, and this stack adds none of its own.
+  main_configured_public_rules: []
+
+identity:
+  # Empty on purpose. A non-empty list enrolls global admins at startup; the
+  # standalone stack's admin is seeded through the E2E seeder against the OIDC
+  # identities, and a second source of truth here would fight it.
+  initial_global_admins: []
+
+provider:
+  kind: form
+  form:
+    users_json_file: /run/elitea-runtime/auth-form-users.json

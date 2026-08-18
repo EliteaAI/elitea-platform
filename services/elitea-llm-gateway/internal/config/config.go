@@ -205,6 +205,23 @@ type Config struct {
 	LoopBreakerThreshold int
 	LoopBreakerWindow    time.Duration
 	LoopBreakerOpenFor   time.Duration
+
+	// PublicProjectID is the platform's shared ("public") project id
+	// (ELITEA_AI_PROJECT_ID — the same variable elitea-main reads). The gateway
+	// reads that project's `shared = true` configuration rows IN ADDITION to the
+	// caller's own rows, so a platform-published model and its credential
+	// resolve for every project (issue #316).
+	//
+	// 0 means UNSET, and unset disables the second scope completely: the gateway
+	// then reads p_{caller} only, exactly as it did before. This default is
+	// deliberate — an id naming a schema that does not exist would make every
+	// credential read fail, so an operator opts in.
+	//
+	// This is operator configuration, NOT request data. It must never come from
+	// a header: the value selects a second schema to read, so a request-supplied
+	// value would let a caller name any project and read its rows. See
+	// DECISIONS.md ("Shared/public project scope").
+	PublicProjectID int
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -241,7 +258,19 @@ func FromEnv() Config {
 		LoopBreakerThreshold:    signedIntOr("LLM_LOOP_BREAKER_THRESHOLD", 0),
 		LoopBreakerWindow:       plainMillisOr("LLM_LOOP_BREAKER_WINDOW_MS", 0),
 		LoopBreakerOpenFor:      secondsOr("LLM_LOOP_BREAKER_OPEN_SEC", 0),
+		PublicProjectID:         intOr("ELITEA_AI_PROJECT_ID", 0),
 	}
+}
+
+// PublicProjectIDString returns the configured public project id as the string
+// the schema-name builders take, or "" when the scope is unset. intOr already
+// rejects a non-numeric or non-positive value, so the result is always either
+// "" or a positive decimal integer.
+func (c Config) PublicProjectIDString() string {
+	if c.PublicProjectID <= 0 {
+		return ""
+	}
+	return strconv.Itoa(c.PublicProjectID)
 }
 
 // millisOr reads an integer number of milliseconds from key and clamps it to

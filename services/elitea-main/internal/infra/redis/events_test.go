@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -11,19 +12,37 @@ import (
 	infraredis "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/redis"
 )
 
-func skipIfNoRedis(t *testing.T, rdb *goredis.Client) {
+// redisAddressEnv is the one name the whole repository uses for a test Redis.
+// It used to be absent here: the address was the literal "localhost:6379" and
+// the guard skipped whenever nothing answered. That skip could not be turned
+// off from outside the process, so these tests never ran in CI and their
+// green said nothing (#423).
+const redisAddressEnv = "ELITEA_TEST_REDIS_ADDR"
+
+// newTestRedis returns a client for the configured test Redis.
+//
+// With ELITEA_TEST_REDIS_ADDR set, a Redis was PROMISED, so an unreachable
+// one is a FAILURE. Only the unset case skips, so that a developer with no
+// Redis can still run `go test ./...`. Same shape as CONTRACT_REQUIRE_PARITY
+// in .github/workflows/ci-contract.yml.
+func newTestRedis(t *testing.T) *goredis.Client {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		t.Skipf("Redis not available: %v", err)
+	address := os.Getenv(redisAddressEnv)
+	if address == "" {
+		t.Skipf("set %s to run the real-Redis event bus test", redisAddressEnv)
 	}
+	client := goredis.NewClient(&goredis.Options{Addr: address})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatalf("ping the %s Redis at %s: %v", redisAddressEnv, address, err)
+	}
+	return client
 }
 
 func TestEventBus_PublishSubscribe(t *testing.T) {
-	rdb := goredis.NewClient(&goredis.Options{Addr: "localhost:6379"})
-	skipIfNoRedis(t, rdb)
-	defer func() { _ = rdb.Close() }()
+	rdb := newTestRedis(t)
 
 	eb := infraredis.NewEventBus(rdb, "test-service")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,8 +71,8 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 		}
 		var p map[string]string
 		if err := json.Unmarshal(evt.Payload, &p); err != nil {
-				t.Errorf("unmarshal payload: %v", err)
-			}
+			t.Errorf("unmarshal payload: %v", err)
+		}
 		if p["key"] != "value" {
 			t.Errorf("expected payload key=value, got %v", p)
 		}
@@ -63,9 +82,7 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 }
 
 func TestEventBus_Ping(t *testing.T) {
-	rdb := goredis.NewClient(&goredis.Options{Addr: "localhost:6379"})
-	skipIfNoRedis(t, rdb)
-	defer func() { _ = rdb.Close() }()
+	rdb := newTestRedis(t)
 
 	eb := infraredis.NewEventBus(rdb, "test-service")
 	if err := eb.Ping(context.Background()); err != nil {

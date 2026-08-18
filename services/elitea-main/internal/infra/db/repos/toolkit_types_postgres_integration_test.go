@@ -10,8 +10,7 @@ import (
 )
 
 func TestCurrentToolkitTypesRepositoryPostgresParity(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	prepareCurrentToolkitTypesProjects(t, pool)
 
 	repository, err := NewCurrentToolkitTypesRepository(pool)

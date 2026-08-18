@@ -59,7 +59,7 @@ func (a *accountingChecker) CheckBudget(_ context.Context, _ int, _, _ string, _
 	return a.verdict, nil
 }
 
-func (a *accountingChecker) UpdateUsage(_ context.Context, _ int, _, _, _ string, costNano, _, _ int64) error {
+func (a *accountingChecker) UpdateUsage(_ context.Context, _ int, scope, _, _ string, costNano, _, _ int64, _ *failmode.UsageDimensions) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.deltas = append(a.deltas, costNano)
@@ -262,7 +262,7 @@ func TestBillingRefusedAfterDrain_AppliesNothing(t *testing.T) {
 
 	h.DrainBilling() // billing closed
 
-	got := h.updateUsage(context.Background(), "openai", "gpt-4o", 10, 20, "77")
+	got := h.updateUsage(context.Background(), "openai", "gpt-4o", 10, 20, "77", "")
 	if got != billRefused {
 		t.Fatalf("updateUsage after drain = %v, want billRefused", got)
 	}

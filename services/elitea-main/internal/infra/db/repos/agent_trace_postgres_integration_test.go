@@ -19,8 +19,7 @@ import (
 )
 
 func TestPostgresCurrentAgentTraceUsesExistingTenantAccumulatorAndStableRows(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentActivitySchemas(t, pool)
 
 	const (
@@ -277,8 +276,8 @@ func seedCurrentAgentResponseGroup(
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `
 WITH conversation AS (
-    INSERT INTO p_1.chat_conversations (uuid, author_id, source)
-    VALUES ($1, 7, 'agent')
+    INSERT INTO p_1.chat_conversations (uuid, name, author_id, source)
+    VALUES ($1, 'trace', 7, 'agent')
     RETURNING id
 ),
 participant AS (

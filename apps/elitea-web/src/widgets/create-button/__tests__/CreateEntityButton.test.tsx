@@ -139,6 +139,35 @@ describe('CreateEntityButton', () => {
     expect(agentOption).toHaveAttribute('aria-disabled', 'true');
   });
 
+  // SHELL-024 (waived) — both directions of the Secret entry's gate. The
+  // dropdown is opened from `/chat`, whose active kind is `chat`, so the
+  // trigger stays enabled in BOTH cases and the only variable under test is
+  // the Secret option itself.
+  it('SHELL-024: a caller holding secrets.create gets a live "Secret" option that opens the new-secret row', async () => {
+    const user = userEvent.setup();
+    const permissions = new Set([PERMISSIONS.chat.create, PERMISSIONS.secrets.create]);
+    const { router } = await renderAtPath('/chat', <CreateEntityButton permissions={permissions} />);
+    await user.click(screen.getByRole('button', { name: 'Choose what to create' }));
+    expect(screen.getByRole('menuitem', { name: 'Secret' })).toHaveAttribute('aria-disabled', 'false');
+    await user.click(screen.getByRole('menuitem', { name: 'Secret' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings/secrets'));
+    expect(router.state.location.search).toEqual({ createSecret: '1' });
+  });
+
+  it('SHELL-024: a caller holding ONLY secrets.list gets a dead "Secret" option that never navigates', async () => {
+    const user = userEvent.setup();
+    // Exactly the migration-0083 project `viewer`: it lists secret names and
+    // cannot create one. Before this gate moved to `secrets.create`, this
+    // caller got an enabled option that landed on a page opening no row.
+    const permissions = new Set([PERMISSIONS.chat.create, PERMISSIONS.secrets.list]);
+    const { router } = await renderAtPath('/chat', <CreateEntityButton permissions={permissions} />);
+    const before = router.state.location.pathname;
+    await user.click(screen.getByRole('button', { name: 'Choose what to create' }));
+    expect(screen.getByRole('menuitem', { name: 'Secret' })).toHaveAttribute('aria-disabled', 'true');
+    await user.click(screen.getByRole('menuitem', { name: 'Secret' }));
+    expect(router.state.location.pathname).toBe(before);
+  });
+
   it('disables the trigger on the system-prompts settings page regardless of permissions', async () => {
     await renderAtPath('/settings/prompts', <CreateEntityButton permissions={allPermissions} />);
     expect(screen.getByTestId('sidebar-create-button')).toBeDisabled();

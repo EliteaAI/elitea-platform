@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { PERMISSIONS } from '@/shared/lib/permissions';
+
 import {
   currentEntityFromPathname,
   defaultEntityKind,
@@ -110,6 +112,32 @@ describe('hasCreatePermission', () => {
     const chatPerms = CREATE_ENTITY_PERMISSIONS.chat ?? [];
     expect(chatPerms.length).toBeGreaterThan(1);
     expect(hasCreatePermission('chat', new Set([chatPerms[1] as string]))).toBe(true);
+  });
+
+  // SHELL-024 (waived) — the "Secret" entry is gated on the permission the
+  // server checks the create request against, NOT on the permission that
+  // merely opens the secrets page. Migration 0083 (issue #402) grants
+  // `secrets.list` to the project `viewer` role while withholding
+  // `secrets.create`, so the two sets of holders are no longer the same and
+  // a `list` gate would offer a viewer an option that opens nothing.
+  it('SHELL-024: gates Secret on secrets.create, not on secrets.list', () => {
+    expect(CREATE_ENTITY_PERMISSIONS.secret).toEqual([PERMISSIONS.secrets.create]);
+  });
+
+  it('SHELL-024: grants Secret to a caller holding secrets.create', () => {
+    expect(hasCreatePermission('secret', new Set([PERMISSIONS.secrets.create]))).toBe(true);
+  });
+
+  it('SHELL-024: denies Secret to a caller holding ONLY secrets.list (the migration-0083 viewer)', () => {
+    expect(hasCreatePermission('secret', new Set([PERMISSIONS.secrets.list]))).toBe(false);
+  });
+
+  it('SHELL-024: the main-button gate agrees with the dropdown gate for Secret in both directions', () => {
+    // `hasMainButtonCreatePermission` bypasses only `bucket`; `secret` must
+    // inherit the strict gate, so the trigger cannot be enabled on
+    // `/settings/secrets` for a list-only caller either.
+    expect(hasMainButtonCreatePermission('secret', new Set([PERMISSIONS.secrets.create]))).toBe(true);
+    expect(hasMainButtonCreatePermission('secret', new Set([PERMISSIONS.secrets.list]))).toBe(false);
   });
 });
 

@@ -27,6 +27,7 @@ describe('ToolCardBody', () => {
         toolkitName="GitHub"
         isAttachmentToolkit={false}
         isAgentOrPipeline={false}
+        showVariablesToggle={false}
         onToggleVariables={vi.fn()}
         showVariables={false}
         showActions={false}
@@ -45,6 +46,7 @@ describe('ToolCardBody', () => {
         isAttachmentToolkit={false}
         isAgentOrPipeline
         versionSelector={{ versions: [{ id: 1, name: 'base' }], onSelectVersion: vi.fn() }}
+        showVariablesToggle={false}
         onToggleVariables={vi.fn()}
         showVariables={false}
         showActions={false}
@@ -62,6 +64,7 @@ describe('ToolCardBody', () => {
         toolkitName="Artifact"
         isAttachmentToolkit
         isAgentOrPipeline={false}
+        showVariablesToggle={false}
         onToggleVariables={vi.fn()}
         showVariables={false}
         showActions={false}
@@ -80,6 +83,7 @@ describe('ToolCardBody', () => {
         toolkitName="GitHub"
         isAttachmentToolkit={false}
         isAgentOrPipeline={false}
+        showVariablesToggle
         onToggleVariables={onToggleVariables}
         showVariables={false}
         showActions={false}
@@ -89,5 +93,25 @@ describe('ToolCardBody', () => {
     expect(getByText('(1)')).toBeInTheDocument();
     await user.click(getByText('Show variables'));
     expect(onToggleVariables).toHaveBeenCalledTimes(1);
+  });
+
+  it('WITHHOLDS the variables toggle when showVariablesToggle is false, even though the tool carries variables', () => {
+    // #248: the caller decides, because only the caller knows whether an edit
+    // could be persisted — see `ToolCardProps.variables`.
+    const { queryByText } = renderWithTheme(
+      <ToolCardBody
+        tool={{ type: 'github', settings: {}, variables: [{ name: 'TOKEN', value: 'x' }] }}
+        toolkitName="GitHub"
+        isAttachmentToolkit={false}
+        isAgentOrPipeline={false}
+        showVariablesToggle={false}
+        onToggleVariables={vi.fn()}
+        showVariables={false}
+        showActions={false}
+        onClickShowActions={vi.fn()}
+      />,
+    );
+    expect(queryByText('Show variables')).not.toBeInTheDocument();
+    expect(queryByText('(1)')).not.toBeInTheDocument();
   });
 });

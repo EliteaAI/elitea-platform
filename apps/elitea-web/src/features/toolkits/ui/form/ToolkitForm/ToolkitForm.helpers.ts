@@ -44,15 +44,28 @@ export function updateDetailByPath(detail: ToolkitFormEditDetail, path: string, 
  * every normal, user-driven field edit. Extracted out of `editField`'s own
  * body (rather than inlined) purely to stay under the §3.5 complexity
  * budget (12).
+ *
+ * [EL-6180] The `credentials` section is carved out of that suppression.
+ * `CredentialsSelect` auto-selects a sole saved credential, and rebaselining
+ * on that pick leaves the form not dirty, so Save stays disabled and the user
+ * cannot store the credential the app just chose for them. Baseline fix:
+ * `EliteaUI@a693e4fe` — `ToolkitForm.jsx:295` guards the same reset with
+ * `options?.section !== 'credentials'`, and `ToolBaseProperty.jsx:501` is what
+ * threads the `section` through as `editField`'s 4th argument.
+ *
+ * The carve-out compares the section exactly, as the baseline does. The
+ * section reaching this function originates in the served schema, where it is
+ * the literal `"credentials"` (`metadata.section` on the referenced `$defs`
+ * entry — see the toolkit type catalogue in elitea-main).
  */
 export function applyAutoSelectFormReset(
-  options: { readonly isAutoSelect?: boolean } | undefined,
+  options: { readonly isAutoSelect?: boolean; readonly section?: string } | undefined,
   formValues: Readonly<Record<string, unknown>>,
   field: string,
   value: unknown,
   onResetForm: ((values: Readonly<Record<string, unknown>>) => void) | undefined,
 ): void {
-  if (!options?.isAutoSelect) return;
+  if (!options?.isAutoSelect || options.section === 'credentials') return;
   onResetForm?.(updateDetailByPath(formValues, field, value));
 }
 

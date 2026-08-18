@@ -46,7 +46,7 @@ import Typography from '@mui/material/Typography';
 
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AuditHeatmap } from './AuditHeatmap';
 import { AuditSpanTable } from './AuditSpanTable';
@@ -54,7 +54,6 @@ import { AuditTraceTable } from './AuditTraceTable';
 import { AuditTrailFilters } from './AuditTrailFilters';
 import { AUDIT_PAGE_SIZE_OPTIONS, useAdminAuditTrailPage } from './useAdminAuditTrailPage';
 
-const { DrawerPage } = drawerPage;
 
 /** How much of a trace id fits in a filter chip before it stops being a label. */
 const TRACE_CHIP_LENGTH = 12;

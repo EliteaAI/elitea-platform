@@ -18,8 +18,10 @@ package budgets_test
 //   - spend is checked against a row planted in gateway.llm_budget_accumulators
 //     exactly as elitea-scheduler's budgetwriteback consumer would write it,
 //     and against a row in a DIFFERENT period that must not be counted.
-//   - the per-member limit is checked to report `enforced: false`, which is the
-//     claim the package makes about the platform rather than about itself.
+//   - the per-member limit is checked to report `enforced: true`, which is the
+//     claim the package makes about the platform rather than about itself, and
+//     which the gateway's own per-member admission test (llmproxy
+//     budget_member_test.go) proves on the other side of the boundary.
 //
 // The schema is the REAL migration (db.GatewayMigrationSQL) rather than a
 // hand-copied DDL, so a schema change cannot pass here and fail in production.
@@ -276,7 +278,11 @@ func newBudgetsPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		// 120 s, not the old 20 s to 30 s. This DROP queues behind the
+		// CREATE DATABASE calls of every package that `go test ./...` runs at
+		// the same time, so the wait is server load and not a hang. Two full
+		// runs failed here with "drop isolated ... database: timeout" (#409).
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer dropCancel()
 		if _, err := adminPool.Exec(dropCtx, "DROP DATABASE "+quotedDatabase+" WITH (FORCE)"); err != nil {
 			t.Errorf("drop isolated PostgreSQL integration database: %v", err)
@@ -588,18 +594,19 @@ func TestListProjectBudgetsFiltersAndPaginatesTheFilteredSet(t *testing.T) {
 
 /* ── per-member budgets ────────────────────────────────────────────────── */
 
-// The claim this package makes about the platform, pinned. When the gateway
-// grows a user-scoped admission check, this test fails and `enforced` has to be
-// changed deliberately — which is the point of it being a field rather than a
-// comment (#218, #135).
-func TestUserBudgetReportsThatItIsNotEnforced(t *testing.T) {
+// The claim this package makes about the platform, pinned. It was `false` until
+// issue #321 gave the gateway a per-member admission check; if that check is
+// ever removed or bypassed this test fails and the field has to be changed
+// deliberately — which is the point of it being a field rather than a comment
+// (#218, #135).
+func TestUserBudgetReportsThatItIsEnforced(t *testing.T) {
 	_, router := newBudgetsEnvironment(t)
 
 	recorder := budgetsDo(t, router, http.MethodPut,
 		fmt.Sprintf("/user_budget/administration/%d/user_budget/%d", budgetProjectID, budgetMemberUser),
 		budgetAdminUser, map[string]any{"monthly_limit": 25, "enabled": true})
 	requireStatus(t, recorder, http.StatusOK)
-	wantBool(t, decodeMap(t, recorder), "enforced", false)
+	wantBool(t, decodeMap(t, recorder), "enforced", true)
 }
 
 func TestUserBudgetRoundTripsThroughStorage(t *testing.T) {
@@ -710,7 +717,7 @@ func TestListUserBudgetsIsProjectAdminOnlyAndListsRealMembers(t *testing.T) {
 			wantNumber(t, row, "monthly_limit", "15.00")
 			wantNumber(t, row, "spend", "3.00000000")
 			wantNumber(t, row, "percent_used", "20.00")
-			wantBool(t, row, "enforced", false)
+			wantBool(t, row, "enforced", true)
 			roles, _ := row["roles"].([]any)
 			if len(roles) != 1 || fmt.Sprint(roles[0]) != "editor" {
 				t.Fatalf("roles = %v, want [editor] exactly once", roles)
@@ -882,9 +889,10 @@ func TestUsageUserScopeReportsTheMembersOwnBudget(t *testing.T) {
 	if fmt.Sprint(body["user_id"]) != fmt.Sprint(budgetAdminUser) {
 		t.Fatalf("user_id = %v, want the caller's own %d", body["user_id"], budgetAdminUser)
 	}
-	// The per-member scope reports no spend of its own, because the billing
-	// path accrues by project. `spend_available:false` is how a client tells
-	// that apart from "you spent nothing".
+	// This member has no accumulator row of their own in this period, so the
+	// per-member scope reports spend_available=false. Since #321 the gateway
+	// DOES write user-scoped rows, so this is "this member has not spent yet",
+	// not "nothing ever writes these" — the distinction the field exists for.
 	wantBool(t, body, "spend_available", false)
-	wantBool(t, body, "enforced", false)
+	wantBool(t, body, "enforced", true)
 }

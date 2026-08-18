@@ -34,6 +34,19 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 E2E_PROJECT="${E2E_PROJECT:-elitea-e2e}"
 COMPOSE_F="-p ${E2E_PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.e2e-standalone.yml"
 
+# The IANA zone this seed computes its calendar-day boundaries in (issue #214).
+#
+# It must be the SAME zone playwright.config.ts pins the browser to, because a
+# fixture anchored on the database's day and read through a filter computed from
+# the browser's day only agree while the two zones do. `E2E_TIMEZONE` in
+# playwright.config.ts reads this same variable and carries the full argument;
+# the audit trail fixture below is what consumes it here.
+#
+# UTC by default on both sides, so CI and every existing local invocation keep
+# the boundary they already had — but now by declaration, not by inheriting
+# whatever the runner and the postgres session happened to be set to.
+E2E_TZ="${E2E_TZ:-UTC}"
+
 # ── compose binary detection ─────────────────────────────────────────────────
 detect_compose_bin
 
@@ -55,6 +68,14 @@ case "$CMD" in
 
   seed)
     echo "→ Seeding E2E users…"
+
+    # Drop last run's audit fixture anchor BEFORE anything can fail (#214).
+    # Journey 29 freezes its clock to the day named in this file. A seed that
+    # dies halfway would otherwise leave yesterday's file in place, and the
+    # journey would run against a day this stack no longer holds rows for — a
+    # green-looking seed followed by an unreadable failure. Absent, the journey
+    # says which command to run.
+    rm -f "$(cd "$(dirname "$0")/.." && pwd)/.playwright-state/audit-fixture.json"
 
     # ── 0. Bootstrap DB schema if running on a fresh postgres ────────────────
     # elitea-main uses SKIP_MIGRATIONS=1 in dev (migrations assume a legacy pylon
@@ -141,6 +162,15 @@ case "$CMD" in
 -- E2E seed (issue #60): member + admin personas.
 -- Idempotent via ON CONFLICT DO NOTHING.
 
+-- FIRST statement, deliberately: it is the only one that reads `:'e2e_tz'`
+-- besides the audit trail fixture ~900 lines below, and an unknown zone name
+-- must stop the seed here rather than after everything else has landed.
+-- Postgres answers `invalid value for parameter "TimeZone"` and ON_ERROR_STOP=1
+-- halts. It also prints the wall clock the fixtures will be anchored against,
+-- which is the one number a "why is journey 29 empty" investigation wants.
+\echo '  → audit fixture day boundary:'
+SELECT :'e2e_tz' AS e2e_tz, now() AT TIME ZONE :'e2e_tz' AS seed_local_now;
+
 -- Ensure suspended column exists (001_initial.sql predates this column).
 ALTER TABLE auth_core__user ADD COLUMN IF NOT EXISTS suspended BOOLEAN NOT NULL DEFAULT false;
 
@@ -169,6 +199,48 @@ JOIN auth_core__role r ON r.name = 'admin'
 WHERE u.email = 'e2e-admin@autotest.local'
   AND r.mode = 'default'
 ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- ── suspension fixtures (issue #519) ─────────────────────────────────────
+-- Journey 28 suspends a user, reloads, and unsuspends it. It used to do that
+-- to the MEMBER PERSONA, which is the identity ~110 of the 125 journeys
+-- authenticate as. A suspended principal is refused by
+-- `authsvc.PrincipalValidator` (`GetActiveUserPrincipalByID` filters on
+-- `suspended = false`), so for the whole window every concurrent request of
+-- every other journey answered 401 "authenticated principal is inactive".
+-- `fullyParallel` is on, so that window overlapped a different set of tests
+-- on every run — which is exactly the "same code, different failures" report
+-- of issue #519. Measured in this repository: journey 33, in the same file,
+-- reads the user listing as the member and asserts 403; it received 401.
+--
+-- These rows exist so journey 28 can suspend a user that NOTHING signs in as.
+-- Every assertion of that journey is unchanged; only its subject moves.
+--
+-- ONE ROW PER BROWSER PROJECT, for the reason `admin.features.spec.ts`
+-- documents for its Help Center card: chromium and webkit run the same file
+-- against the same rows when the suite is run locally with both projects, and
+-- one shared row would have each engine observing the other's window.
+--
+-- They hold no role and belong to no project: journey 28 needs a row in
+-- `auth_core__user` that the admin listing shows, and nothing else. A plain
+-- `@autotest.local` address is a PLATFORM user for `systemUserPredicate`
+-- (services/elitea-main/internal/api/v2/admin/users.go), so both appear on the
+-- tab the journey opens.
+INSERT INTO auth_core__user (email, name)
+VALUES
+    ('e2e-suspend-chromium@autotest.local', 'E2E Suspend Fixture chromium'),
+    ('e2e-suspend-webkit@autotest.local', 'E2E Suspend Fixture webkit')
+ON CONFLICT (email) DO NOTHING;
+
+-- Re-run safety: a run that was killed between the suspend and the unsuspend
+-- leaves the fixture suspended, and journey 28 asserts it STARTS from Active.
+-- The seed is the only place that can put it back without weakening that
+-- precondition into "suspend it if it is not suspended already".
+UPDATE auth_core__user
+SET suspended = false
+WHERE email IN (
+    'e2e-suspend-chromium@autotest.local',
+    'e2e-suspend-webkit@autotest.local'
+);
 
 -- ── administration-mode RBAC (unit A14) ──────────────────────────────────
 -- The ROLES are not created here any more. When A14 wrote this block,
@@ -440,6 +512,13 @@ CROSS JOIN (VALUES
     ('models.applications.tool.details'),
     ('models.applications.tool.patch'),
     ('models.applications.tools.export'),
+    -- `.details` is the LIST permission for the indexes rail
+    -- (`internal/api/v2/indexing/index_meta.go:18`) and a DIFFERENT string
+    -- from `.edit`. Project 1 carries per-project rows, so the central
+    -- default-mode fallback that shared/0066 grants is suppressed here and the
+    -- string has to be listed explicitly; without it the rail 403s while the
+    -- Indexes tab still renders, which reads as a hung fetch — measured.
+    ('models.applications.index_meta.details'),
     ('models.applications.index_meta.edit'),
     ('models.chat.conversations.list'),
     ('models.chat.conversations.create'),
@@ -447,6 +526,12 @@ CROSS JOIN (VALUES
     ('models.chat.folders.create'),
     ('models.chat.folders.update'),
     ('models.chat.folders.delete'),
+    -- Starting an agent turn. `agentexecution/route.go:32` requires
+    -- `models.chat.messages.create` and the regenerate route its sibling;
+    -- without them a seeded stack answers 403 to the first message ever sent,
+    -- which is a seed gap that reads exactly like a broken chat backend.
+    ('models.chat.messages.create'),
+    ('models.chat.conversations.regenerate'),
     ('models.project_context.view'),
     ('models.project_context.edit'),
     ('configuration.users.users.view'),
@@ -482,6 +567,28 @@ CROSS JOIN (VALUES
     ('configuration.artifacts.buckets.view'),
     ('configuration.artifacts.buckets.edit'),
     ('configuration.artifacts.buckets.delete'),
+    -- #496 gated the whole /api/v2/configurations mount, which until then
+    -- applied no permission of any kind. Project 1 carries per-project rows,
+    -- so the central default-mode fallback shared/0072 seeds is SUPPRESSED
+    -- here and every string has to be listed explicitly.
+    --
+    -- Only `update` and `delete` were listed, and both were inert: the routes
+    -- they name checked nothing. The three below are what the browser actually
+    -- calls, and each one 403s without its row:
+    --
+    --   `configurations.configurationS.list` — the plural is the route's, not
+    --   a typo. It gates the credential LIST the AI-configuration page reads,
+    --   the model catalogue `GET /configurations/models/{id}` the chat picker
+    --   and the tokens page read, `GET /configurations/types/{id}`, and
+    --   `GET /configurations/tts_voices/{id}`.
+    --   `configurations.configuration.details` — the singular is a DIFFERENT
+    --   permission (one credential's row). useFormSeeding reads it to fill the
+    --   edit dialog.
+    --   `configurations.configuration.create` — the credential save, and the
+    --   pre-save "Test connection" probe beside it.
+    ('configurations.configurations.list'),
+    ('configurations.configuration.details'),
+    ('configurations.configuration.create'),
     ('configurations.configuration.update'),
     ('configurations.configuration.delete'),
     -- `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` resolves
@@ -505,7 +612,62 @@ CROSS JOIN (VALUES
     -- Both were unreachable before A14 — the routes existed but answered from a
     -- constant — so neither string had ever needed to be granted anywhere.
     ('admin.moderation.view'),
-    ('admin.moderation.create')
+    ('admin.moderation.create'),
+    -- #302/#313: the /elitea_core group no longer enforces membership alone —
+    -- every route now resolves the permission its pylon module declares
+    -- (services/elitea-main/internal/api/router.go). This project carries
+    -- per-project rows, which SUPPRESSES the central default-mode fallback
+    -- that shared/0068 seeds, so each of those strings has to be listed here
+    -- explicitly or the route 403s for every persona. Same reasoning, and the
+    -- same measured symptom, as the index_meta pair above.
+    ('configuration.roles.roles.view'),
+    ('models.applications.application.details'),
+    ('models.applications.application_relation.patch'),
+    ('models.applications.applications.details'),
+    ('models.applications.applications.list'),
+    ('models.applications.export_import.import'),
+    ('models.applications.export_toolkit.export'),
+    ('models.applications.index_meta.delete'),
+    ('models.applications.index_types.details'),
+    ('models.applications.skills.create'),
+    ('models.applications.skills.delete'),
+    ('models.applications.skills.details'),
+    ('models.applications.skills.export'),
+    ('models.applications.skills.list'),
+    ('models.applications.skills.publish'),
+    ('models.applications.skills.update'),
+    ('models.applications.task.delete'),
+    ('models.applications.toolkit_validator.check'),
+    ('models.applications.toolkits.details'),
+    ('models.applications.trending_authors.list'),
+    ('models.applications.unpublish.post'),
+    ('models.applications.upload_icon.delete'),
+    ('models.applications.upload_icon.get'),
+    ('models.applications.upload_icon.post'),
+    ('models.applications.upload_icon.update'),
+    ('models.applications.version.delete'),
+    ('models.applications.version.details'),
+    ('models.applications.version.update'),
+    ('models.applications.version_validator.check'),
+    ('models.applications.versions.create'),
+    ('models.applications.versions.get'),
+    ('models.chat.attachments.create'),
+    ('models.chat.attachments.delete'),
+    ('models.chat.canvas.create'),
+    ('models.chat.canvas.details'),
+    ('models.chat.canvas.update'),
+    ('models.chat.conversation.edit'),
+    ('models.chat.conversation.update'),
+    ('models.chat.conversations.delete'),
+    ('models.chat.entity_settings.update'),
+    ('models.chat.messages.delete'),
+    ('models.chat.messages.details'),
+    ('models.chat.messages.list'),
+    ('models.chat.participant.delete'),
+    ('models.chat.participants.create'),
+    ('models.monitoring.tracing.view'),
+    ('models.promptlib_shared.search'),
+    ('models.promptlib_shared.tags.list')
 ) AS p(permission)
 WHERE r.project_id = 1
 ON CONFLICT (project_id, role_id, permission) DO NOTHING;
@@ -525,17 +687,217 @@ JOIN auth_core__project_role r ON r.project_id = 1 AND r.name = 'editor'
 WHERE u.email = 'e2e-member@autotest.local'
 ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 
+-- A dedicated chat-driver persona and its personal project (#290).
+--
+-- Every server-side model call is authenticated as the ACTOR — the worker
+-- carries the user's PAT — and `middleware.Project` resolves that user's
+-- PERSONAL project to find the provider credential
+-- (`db/queries/auth_projects.sql:5-37`). Without one the LLM hop answers
+-- `project_not_resolved` and an agent turn streams `agent_llm_start` straight
+-- to `pipeline_finish` with no token ever produced: admitted, streamed, empty.
+--
+-- A SEPARATE persona rather than giving `e2e-member`/`e2e-admin` a personal
+-- project, and that separation is load-bearing: the app auto-selects the
+-- signed-in user's personal project over the one `auth.setup.ts` writes to
+-- localStorage. Handing the existing personas one silently moves every journey
+-- off project 1 — measured: the chat page began issuing
+-- `…/conversations/prompt_lib/90102`, so every journey asserting a project-1
+-- URL would break for a reason unrelated to its own subject.
+--
+-- The resolver needs BOTH halves — a `project_user_<uid>` project AND a
+-- project-role assignment on it — so the pair is created together; the project
+-- alone resolves to nothing. The id is derived (90100 + user id) because this
+-- persona is inserted with a serial id, and stays inside the 9xxxx range the
+-- fixtures below reserve.
+INSERT INTO auth_core__user (email, name)
+VALUES ('e2e-chat@autotest.local', 'E2E Chat Driver')
+ON CONFLICT (email) DO NOTHING;
+
+INSERT INTO centry.project (id, name, owner_id, keycloak_groups, create_success, suspended)
+SELECT 90100 + u.id, 'project_user_' || u.id, u.id, '{}', true, false
+FROM auth_core__user u
+WHERE u.email = 'e2e-chat@autotest.local'
+ON CONFLICT (id) DO UPDATE
+    SET name = EXCLUDED.name, owner_id = EXCLUDED.owner_id, suspended = EXCLUDED.suspended;
+
+INSERT INTO auth_core__project_role (project_id, name)
+SELECT 90100 + u.id, 'admin'
+FROM auth_core__user u
+WHERE u.email = 'e2e-chat@autotest.local'
+ON CONFLICT (project_id, name) DO NOTHING;
+
+INSERT INTO auth_core__project_user_role (project_id, user_id, role_id)
+SELECT r.project_id, u.id, r.id
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 90100 + u.id AND r.name = 'admin'
+WHERE u.email = 'e2e-chat@autotest.local'
+ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
+
+-- The chat driver acts INSIDE its personal project, so the permissions the chat
+-- routes check have to exist there too — the project-1 grants above do not
+-- reach it.
+--
+-- The INDEX permissions below (#93 Surface A) are on this SAME persona rather
+-- than on a fourth one, and that is the smaller change of the two available:
+--   * The index-start route resolves `models.applications.tool.patch` against
+--     the project in its URL, while the embedding hop underneath it resolves
+--     the CALLER's PERSONAL project for the provider credential — so the one
+--     caller who can drive an index run end to end is a caller who has both.
+--     Only this persona has a personal project at all (measured: the sole
+--     `project_user_%` row belongs to it), and only project 1 grants
+--     `tool.patch` — the two never met, which is why an index run used to die
+--     on `project_not_resolved` before the permission was even consulted.
+--   * Giving `e2e-member`/`e2e-admin` a personal project instead is the option
+--     the comment above already rules out, for a reason that has not changed.
+--   * A fourth persona would need its own OIDC login, storageState, Playwright
+--     project, `social_users` row, vault blob and tenant schema — and would
+--     still end up with exactly this permission list. Widening one autotest
+--     persona's rights INSIDE ITS OWN personal project changes nothing any
+--     other persona can see or assert: no journey reads this project, and the
+--     project-1 grant list is untouched.
+INSERT INTO auth_core__project_role_permission (project_id, role_id, permission)
+SELECT r.project_id, r.id, p.permission
+FROM auth_core__user u
+JOIN auth_core__project_role r ON r.project_id = 90100 + u.id AND r.name = 'admin'
+CROSS JOIN (VALUES
+    ('projects.projects.project.view'),
+    ('models.chat.conversations.list'),
+    ('models.chat.conversations.create'),
+    ('models.chat.conversations.regenerate'),
+    ('models.chat.conversation.details'),
+    ('models.chat.messages.create'),
+    ('models.chat.folders.get'),
+    -- #93 Surface A. `tool.patch` is the index-start route's own permission
+    -- (`internal/api/v2/indexing/route.go:15`); the rest are what the browser
+    -- needs to REACH the run control — list the toolkits, open one, read and
+    -- write its index_meta rows.
+    ('models.applications.tools.list'),
+    ('models.applications.tools.create'),
+    ('models.applications.tool.details'),
+    ('models.applications.tool.update'),
+    ('models.applications.tool.patch'),
+    -- `.details` is the LIST permission for `GET .../index_meta/...`
+    -- (`internal/api/v2/indexing/index_meta.go:18`), and it is a different
+    -- string from `.edit`. Without it the indexes rail 403s and renders
+    -- loading skeletons forever, which looks like a hung fetch rather than a
+    -- refusal — measured.
+    ('models.applications.index_meta.details'),
+    ('models.applications.index_meta.edit'),
+    ('models.applications.index_meta.delete'),
+    -- The `artifact` toolkit indexes an artifact bucket, so the driver has to
+    -- be able to create one and put a document in it.
+    ('configuration.artifacts.artifacts.view'),
+    ('configuration.artifacts.artifacts.create'),
+    ('configuration.artifacts.artifacts.edit'),
+    ('configuration.artifacts.artifacts.delete'),
+    -- `configurations.configurationS.list` — the plural is the route's, not a
+    -- typo: handler.go:102 requires it for the model catalogue the picker
+    -- reads. The singular form below is a DIFFERENT permission (one config's
+    -- details), and granting only that leaves the picker empty behind a 403.
+    ('configurations.configurations.list'),
+    ('configurations.configuration.details'),
+    -- The three configuration WRITES, for the same reason as the two reads
+    -- above and for one more that is specific to this project (#496).
+    --
+    -- deploy/scripts/standalone-stack.sh reuses this seeder verbatim, and its
+    -- own `#457` check writes a credential and two model rows through the
+    -- product route — POST /api/v2/configurations/configurations/{projectID} —
+    -- as THIS persona, in THIS project, then deletes them again through the
+    -- product's delete route. That mount applied no permission at all until
+    -- #496, so the write needed no grant. It does now, and without these three
+    -- rows the check reports "the credential write failed: insufficient
+    -- permissions" — measured.
+    ('configurations.configuration.create'),
+    ('configurations.configuration.update'),
+    ('configurations.configuration.delete'),
+    -- #302/#313: the /elitea_core group no longer enforces membership alone —
+    -- every route now resolves the permission its pylon module declares
+    -- (services/elitea-main/internal/api/router.go). This project carries
+    -- per-project rows, which SUPPRESSES the central default-mode fallback
+    -- that shared/0068 seeds, so each of those strings has to be listed here
+    -- explicitly or the route 403s for every persona. Same reasoning, and the
+    -- same measured symptom, as the index_meta pair above.
+    ('configuration.roles.roles.view'),
+    ('configuration.users.users.view'),
+    ('models.applications.application.delete'),
+    ('models.applications.application.details'),
+    ('models.applications.application.update'),
+    ('models.applications.application_relation.patch'),
+    ('models.applications.applications.create'),
+    ('models.applications.applications.details'),
+    ('models.applications.applications.list'),
+    ('models.applications.export_import.export'),
+    ('models.applications.export_import.import'),
+    ('models.applications.export_toolkit.export'),
+    ('models.applications.fork.post'),
+    ('models.applications.index_types.details'),
+    ('models.applications.publish.post'),
+    ('models.applications.skills.create'),
+    ('models.applications.skills.delete'),
+    ('models.applications.skills.details'),
+    ('models.applications.skills.export'),
+    ('models.applications.skills.list'),
+    ('models.applications.skills.publish'),
+    ('models.applications.skills.update'),
+    ('models.applications.task.delete'),
+    ('models.applications.tool.delete'),
+    ('models.applications.toolkit_validator.check'),
+    ('models.applications.toolkits.details'),
+    ('models.applications.trending_authors.list'),
+    ('models.applications.unpublish.post'),
+    ('models.applications.upload_icon.delete'),
+    ('models.applications.upload_icon.get'),
+    ('models.applications.upload_icon.post'),
+    ('models.applications.upload_icon.update'),
+    ('models.applications.version.delete'),
+    ('models.applications.version.details'),
+    ('models.applications.version.update'),
+    ('models.applications.version_validator.check'),
+    ('models.applications.versions.create'),
+    ('models.applications.versions.get'),
+    ('models.chat.attachments.create'),
+    ('models.chat.attachments.delete'),
+    ('models.chat.canvas.create'),
+    ('models.chat.canvas.details'),
+    ('models.chat.canvas.update'),
+    ('models.chat.conversation.edit'),
+    ('models.chat.conversation.update'),
+    ('models.chat.conversations.delete'),
+    ('models.chat.entity_settings.update'),
+    ('models.chat.folders.create'),
+    ('models.chat.folders.delete'),
+    ('models.chat.folders.update'),
+    ('models.chat.messages.delete'),
+    ('models.chat.messages.details'),
+    ('models.chat.messages.list'),
+    ('models.chat.participant.delete'),
+    ('models.chat.participants.create'),
+    ('models.monitoring.tracing.view'),
+    ('models.project_context.edit'),
+    ('models.project_context.view'),
+    ('models.promptlib_shared.search'),
+    ('models.promptlib_shared.tags.list')
+) AS p(permission)
+WHERE u.email = 'e2e-chat@autotest.local'
+ON CONFLICT (project_id, role_id, permission) DO NOTHING;
+
 -- social_users rows (needed for personal_project_id resolution).
+--
+-- The chat driver is in this list and must stay in it: `/social/author` reads
+-- these rows to answer `personal_project_id`, and WITHOUT one it falls back to
+-- project 1. The app then opens the chat in a project the driver holds no chat
+-- permission in and the turn 403s — measured, and indistinguishable from a
+-- broken start route until you look at which project the request names.
 INSERT INTO centry.social_users (user_id, title)
 SELECT u.id, u.name
 FROM auth_core__user u
-WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local')
+WHERE u.email IN ('e2e-admin@autotest.local', 'e2e-member@autotest.local', 'e2e-chat@autotest.local')
 ON CONFLICT (user_id) DO NOTHING;
 
 -- p_1.configuration: one mock model config so the personal-token create button is
--- enabled (tokens.tsx: isAddButtonDisabled = configurations.length === 0).
--- useListModelsQuery calls /configurations/configurations/{id}?section=models, so
--- the row must use section='models'. status_ok=true satisfies the UI gate.
+-- enabled (tokens.tsx: isAddButtonDisabled = configurations.length === 0). This
+-- row is the CREDENTIAL, section='models', which is what
+-- /configurations/configurations/{id}?section=models lists.
 INSERT INTO p_1.configuration
     (project_id, elitea_title, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
 VALUES
@@ -543,6 +905,30 @@ VALUES
      '{"api_key":"e2e-mock-key","api_base":"http://localhost/mock","api_version":"2024-02-01","model":"gpt-4o"}',
      '{}', false, true, 'user', NOW(), NOW())
 ON CONFLICT (elitea_title) DO UPDATE SET section = EXCLUDED.section, updated_at = NOW();
+
+-- The row the MODEL PICKER reads, and a DIFFERENT section from the credential
+-- above. The picker was moved off the credentials list onto the model
+-- CATALOGUE (`/configurations/models/{projectId}`), and that route selects
+-- `section = 'llm'` (CurrentModelSectionLLM, application/configurations/models.go)
+-- — so the section='models' credential row alone leaves the picker with nothing
+-- to show and it renders "NONE".
+--
+-- Caught by the @visual chat snapshots, which are the only place the picker's
+-- resolved label is asserted: no unit test covers it, because the seed and the
+-- route live on opposite sides of the wire. The three sections are genuinely
+-- distinct and easy to conflate — `ai_credentials` (what the gateway resolves),
+-- `models` (the credentials list), and `llm`/`llm_model` (the catalogue the
+-- picker and GET /llm/v1/models read). deploy/scripts/standalone-stack.sh seeds
+-- all three for the same reason.
+INSERT INTO p_1.configuration
+    (project_id, elitea_title, label, type, section, data, meta, shared, status_ok, source, created_at, updated_at)
+VALUES
+    (1, 'e2e-mock-model-llm', 'E2E-MOCK-MODEL', 'llm_model', 'llm',
+     '{"name":"E2E-MOCK-MODEL"}',
+     '{}', false, true, 'user', NOW(), NOW())
+ON CONFLICT (elitea_title) DO UPDATE
+    SET data = EXCLUDED.data, section = EXCLUDED.section, type = EXCLUDED.type,
+        label = EXCLUDED.label, status_ok = true, updated_at = NOW();
 
 -- centry secret vaults for the admin scope and project 1.
 --
@@ -609,6 +995,35 @@ INSERT INTO centry.secrets_data (id, data) VALUES
     ('project-1', '\x674141414141426f6d544b4141414543417751464267634943516f4c4441304f447738384e6179597230503157334c364279534e5257346647764e5f6778596831726f472d386d646b77547a5155666a42735a785366694a62304f35726a4b2d455a707971362d5436704c7252674a4c6851395935376753595546446955383237486a36634473756a4b2d78'::bytea)
 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;
 
+-- The same EMPTY vault for every personal project this seed creates.
+--
+-- `CurrentModelCatalogReader` loads the project's model defaults out of the
+-- centry vault and fails the whole read when the rows are ABSENT — not when
+-- they are empty. So a project without them answers 500 to
+-- `GET /configurations/models/{project}`, which is what the chat page asks for
+-- its model catalogue: the picker then presents nothing and a turn cannot name
+-- a model (#293).
+--
+-- The pair is COPIED from project-1 rather than generated: the blobs are Fernet
+-- (AES-128-CBC + HMAC-SHA256), which psql cannot produce, and project-1's vault
+-- is deliberately empty — so copying key AND data together yields a valid,
+-- consistent, empty vault under a key that decrypts it. The five real upload
+-- limits live in the ADMIN vault, which stays the shared fallback for every
+-- project exactly as before.
+INSERT INTO centry.secrets_key (id, data)
+SELECT 'project-' || p.id::text, source.data
+FROM centry.project p
+CROSS JOIN (SELECT data FROM centry.secrets_key WHERE id = 'project-1') AS source
+WHERE p.name LIKE 'project\_user\_%'
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO centry.secrets_data (id, data)
+SELECT 'project-' || p.id::text, source.data
+FROM centry.project p
+CROSS JOIN (SELECT data FROM centry.secrets_data WHERE id = 'project-1') AS source
+WHERE p.name LIKE 'project\_user\_%'
+ON CONFLICT (id) DO NOTHING;
+
 -- ── admin projects fixture (unit A14) ────────────────────────────────────
 -- 001_initial.sql seeds ONE project ("Default Project"), which is not enough
 -- to tell a working listing from a broken one: with a single row, the tab
@@ -651,6 +1066,48 @@ JOIN auth_core__project_role r ON r.project_id = 90001 AND r.name = 'admin'
 WHERE u.email IN ('e2e-project-admin@autotest.local', 'e2e-admin@autotest.local')
 ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 
+-- Tenant schemas for every project this seed created.
+--
+-- POSITION IS LOAD-BEARING: this must run after EVERY `centry.project` insert,
+-- including the admin fixtures below-that-were-above. Placed earlier it
+-- provisions only the rows that happen to exist yet, and the next migrate call
+-- fails its preflight on the rest — a FIRST seed then breaks while a second
+-- one "fixes" it, which is exactly how this was found.
+--
+-- In a real deployment pylon provisions `p_<id>` when it creates the project;
+-- this seeder is that provisioner's stand-in, so it owes the same schema.
+-- elitea-migrate VALIDATES the schema and never creates one
+-- (`migrate/runner.go:50`), and its `-all-tenants` preflight ERRORS on any
+-- create_success project that lacks one — so a project row seeded without a
+-- schema does not merely miss migrations, it makes the next `up` fail for the
+-- whole stack. The admin fixtures (90001-90003) have always been in that state;
+-- they only escaped notice because migrate runs before the seeder on a first
+-- `up` and nobody re-ran it afterwards.
+DO $schemas$
+DECLARE
+    target RECORD;
+BEGIN
+    FOR target IN
+        -- Every create_success project, not only those missing a schema:
+        -- `create_tenant_schema` is idempotent (all 47 tables are
+        -- CREATE TABLE IF NOT EXISTS), so running it unconditionally also
+        -- repairs a schema that exists but is empty — the state a bare
+        -- CREATE SCHEMA would have left behind.
+        SELECT p.id
+        FROM centry.project p
+        WHERE p.create_success = TRUE
+        ORDER BY p.id
+    LOOP
+        -- `create_tenant_schema` is the stack's own tenant DDL, defined by
+        -- 001_initial.sql and used there to build p_1. A bare CREATE SCHEMA is
+        -- NOT enough: the tenant migration history expands tables the baseline
+        -- is expected to have already created, so an empty schema fails on
+        -- `relation "configuration" does not exist`.
+        PERFORM create_tenant_schema('p_' || target.id::text);
+    END LOOP;
+END
+$schemas$;
+
 -- ── audit trail fixture (unit A14) ───────────────────────────────────────
 -- `centry.audit_events` is written by the legacy tracing plugin, which the Go
 -- E2E stack does not run — so without these rows the Audit Trail page is
@@ -660,19 +1117,28 @@ ON CONFLICT (project_id, user_id, role_id) DO NOTHING;
 -- a failure mode.
 --
 -- Timestamps are relative to now() so they land inside the page's default
--- "Today" window in any timezone the runner happens to be in.
+-- "Today" window — a window the BROWSER computes, from `DEFAULT_PRESET` in
+-- src/pages/admin/auditFormat.ts, as local midnight to local end of day.
 --
--- …which `now() - interval '20 minutes'` does NOT achieve in the twenty minutes
--- after local midnight: the page's default preset is `Today`
--- (src/pages/admin/auditFormat.ts `DEFAULT_PRESET`), computed from the
--- BROWSER's clock, so a row stamped 23:5x lands on yesterday and journey 29
--- fails with "element not found" on a row that is plainly in the table. Seen
--- for real at 00:15 local. The fix anchors the fixture on a BASE that is never
--- earlier than the start of the current day and lays the four rows out forward
--- from it, so the relative ordering the span tree needs is preserved and every
--- row is inside the window. Away from midnight the base is `now() - 20 minutes`
--- and the timestamps are exactly what they were. CI runs at arbitrary times, so
--- this was luck rather than design.
+-- `now() - interval '20 minutes'` alone does NOT land inside it in the twenty
+-- minutes after midnight: a row stamped 23:5x belongs to yesterday, and
+-- journey 29 fails with "element not found" on a row that is plainly in the
+-- table. Seen for real at 00:15 local. So the four rows anchor on a BASE that
+-- is never earlier than the start of the current day, and run forward from it
+-- (+0/+1/+2/+10 min) to preserve the ordering the span tree needs. Away from
+-- midnight the base is `now() - 20 minutes` and the timestamps are unchanged.
+--
+-- WHICH day, though, is the whole of issue #214. `date_trunc('day', now())`
+-- takes the day boundary from the postgres session's zone; the browser takes
+-- it from the runner's. Clamping to a day the browser does not agree is today
+-- only moves the failure: at UTC+10 and 00:10 local, a UTC clamp yields a base
+-- that is still yesterday for that browser. So both sides now name ONE zone —
+-- `E2E_TZ`, which playwright.config.ts pins the browser to as `E2E_TIMEZONE`
+-- and psql receives below as `:'e2e_tz'`. `now() AT TIME ZONE :'e2e_tz'` is
+-- the wall clock the browser reads, `date_trunc('day', …)` is that browser's
+-- midnight, and the second `AT TIME ZONE :'e2e_tz'` returns it as the instant
+-- the page will send as `date_from`. The two boundaries are then the same
+-- instant by construction, at every time of day, in every zone.
 --
 -- One trace of three spans, and one single-span trace. The counts are chosen
 -- so the two views CANNOT agree by accident: 4 spans, 2 traces.
@@ -690,7 +1156,10 @@ FROM (VALUES
     (interval '10 minutes', 'api',  'GET /agents/e2e',  'GET',  200::smallint, 15.0,    false, NULL,           'e2e-trace-beta',  'e2ebetaroot',  NULL)
 ) AS seeded(offset_minutes, event_type, action, http_method, status_code, duration_ms, is_error, tool_name, trace_id, span_id, parent_span_id)
 CROSS JOIN LATERAL (
-    SELECT greatest(now() - interval '20 minutes', date_trunc('day', now())) AS ts
+    SELECT greatest(
+        now() - interval '20 minutes',
+        date_trunc('day', now() AT TIME ZONE :'e2e_tz') AT TIME ZONE :'e2e_tz'
+    ) AS ts
 ) AS base
 CROSS JOIN LATERAL (
     SELECT id AS user_id, email AS user_email FROM auth_core__user WHERE email = 'e2e-admin@autotest.local'
@@ -707,9 +1176,17 @@ ENDSQL
     # back to back, and the only thing that noticed was the postcondition below,
     # several statements later and with none of the context. A statement that
     # fails here must stop the seed at the statement that failed.
-    $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -U elitea -d elitea < "$SEED_TMP"
+    # `-v e2e_tz`: the heredoc above is quoted (`<<'ENDSQL'`), so the shell does
+    # not expand anything inside it and the zone must arrive as a psql variable.
+    # The audit trail fixture reads it as `:'e2e_tz'`, which psql expands to a
+    # quoted SQL literal. An unknown zone name raises `invalid value for
+    # parameter "TimeZone"` and ON_ERROR_STOP=1 halts the seed there, which is
+    # the correct outcome: a seed that fell back to the session's zone would
+    # reintroduce exactly the disagreement #214 is about, silently.
+    $EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -v e2e_tz="$E2E_TZ" \
+      -U elitea -d elitea < "$SEED_TMP"
     rm -f "$SEED_TMP"
-    echo "  ✓ DB rows seeded."
+    echo "  ✓ DB rows seeded (calendar-day fixtures anchored in ${E2E_TZ})."
 
     # ── postcondition: the personas must actually resolve permissions ────────
     #
@@ -849,6 +1326,84 @@ ENDSQL
       exit 1
     fi
     echo "  ✓ admin projects fixture verified: ${SEEDED_PROJECTS} project(s), ${PROJECT_PERMS}/4 permission(s)."
+
+    # The suspension fixtures (issue #519). Asserted here rather than trusted,
+    # for the reason every other block on this page is asserted: journey 28
+    # would otherwise report "the row is not on the page", which reads as a
+    # broken listing and not as a seed that wrote nothing. Both rows must
+    # exist AND both must start Active, because that journey asserts the
+    # Active precondition before it suspends.
+    SUSPEND_FIXTURES=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(*) FROM auth_core__user
+      WHERE email IN (
+        'e2e-suspend-chromium@autotest.local',
+        'e2e-suspend-webkit@autotest.local'
+      ) AND suspended = false;")
+    if [ "${SUSPEND_FIXTURES:-0}" -lt 2 ]; then
+      echo "ERROR: seed did not leave the two suspension fixture users Active (got ${SUSPEND_FIXTURES:-0} of 2)." >&2
+      echo "  Journey 28 suspends one of them. It must not suspend the member persona:" >&2
+      echo "  a suspended principal answers 401 for every concurrent journey (issue #519)." >&2
+      exit 1
+    fi
+    echo "  ✓ suspension fixtures verified: ${SUSPEND_FIXTURES}/2 active."
+
+    # ── postcondition: publish the audit fixture's DAY to the test run (#214) ──
+    #
+    # One zone (above) stops the browser and the database disagreeing about when
+    # a day STARTS. It does not stop them disagreeing about WHICH day it is: the
+    # seed runs once, at the front of the run, and journey 29 asserts minutes or
+    # hours later. A run that seeds at 23:59 and reaches that journey at 00:01
+    # has four rows on yesterday and a page filtering on today, which is the
+    # failure #214 reports and the one no clamp can reach — the two events are
+    # simply on different days.
+    #
+    # So the seed states which day it wrote, and journey 29 pins its browser
+    # clock to it (`page.clock.setFixedTime`). Neither side then reads the wall
+    # clock at assertion time, and the window contains the rows by construction.
+    #
+    # The values are READ BACK from the rows, not recomputed here. A restatement
+    # of the same expression would agree with a broken INSERT; this cannot.
+    # `.playwright-state/` is where the run already keeps per-run provisioning
+    # output (the persona storageState files), it is gitignored, and in CI it is
+    # inside the directory the Playwright container mounts at /work. The path is
+    # `AUDIT_FIXTURE_ANCHOR` in playwright.config.ts; a shell script cannot
+    # import it, so the two must be changed together.
+    APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+    AUDIT_FIXTURE_FILE="${APP_ROOT}/.playwright-state/audit-fixture.json"
+    # Over stdin, not `-c`: psql does NOT interpolate `-v` variables into a `-c`
+    # command string. Measured — `-c "… :'e2e_tz' …"` answers
+    #   ERROR:  syntax error at or near ":"
+    # so the zone would have had to be pasted in by the shell instead.
+    AUDIT_FIXTURE=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAq \
+      -v ON_ERROR_STOP=1 -v e2e_tz="$E2E_TZ" <<'ENDFIXTURE'
+SELECT json_build_object(
+  'timeZone', :'e2e_tz',
+  'rows', COUNT(*),
+  'firstRow', MIN(timestamp),
+  'lastRow', MAX(timestamp),
+  'localDay', to_char(MIN(timestamp) AT TIME ZONE :'e2e_tz', 'YYYY-MM-DD')
+)::text
+FROM centry.audit_events
+WHERE trace_id IN ('e2e-trace-alpha', 'e2e-trace-beta');
+ENDFIXTURE
+    )
+    # `"rows":4` is the whole postcondition. An empty table answers
+    # `{"rows":0,"firstRow":null,…}` — valid JSON, and a file journey 29 would
+    # read and then fail against for a reason it could not name.
+    case "$AUDIT_FIXTURE" in
+      *'"rows" : 4'*|*'"rows":4'*) ;;
+      *)
+        echo "ERROR: the audit trail fixture did not write its four rows." >&2
+        echo "  psql answered: ${AUDIT_FIXTURE:-<nothing>}" >&2
+        echo "  Journey 29 asserts 2 traces over 4 spans against them; without the rows" >&2
+        echo "  the page is correctly empty and the journey cannot tell that from a stub." >&2
+        exit 1
+        ;;
+    esac
+    mkdir -p "${APP_ROOT}/.playwright-state"
+    printf '%s\n' "$AUDIT_FIXTURE" > "$AUDIT_FIXTURE_FILE"
+    echo "  ✓ audit trail fixture verified and published: ${AUDIT_FIXTURE}"
+
     echo "→ Seed complete."
     ;;
 

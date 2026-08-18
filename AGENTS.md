@@ -117,6 +117,31 @@ task lint
 task build
 ```
 
+Read the exit status of `task test` directly. Do not pipe it through `grep`,
+`tail` or `head` and then read `$?`. A pipeline reports the status of its LAST
+element, and that has produced several false green reports here.
+
+`task test` runs `scripts/go/workspace-run.sh test`. The script runs every
+workspace module and prints a summary. Read the summary:
+
+- A `FAIL` line names the module that failed. The run continues past it, so a
+  later `PASS` line does not cancel it.
+- A `NOT COVERED` line names a Go module on disk that this command did not
+  open. `services/elitea-llm-gateway` is always there. It sits outside
+  `go.work`, it builds with `GOWORK=off`, and `ci-gateway.yml` runs it. A green
+  `task test` is not evidence about that module.
+- A `workspace-run skip ledger` line gives the number of tests that skipped
+  themselves, and names each one with its reason. `go test` prints `ok` for a
+  package whose tests all called `t.Skip`, so a suite that ran and a suite
+  that did nothing look the same without this list. Eighteen suites did
+  exactly that (#423). A skipped test gave you no result. Read the list before
+  you call a run green.
+  - `DECLARED` means `scripts/go/declared-skips.txt` states why the test
+    cannot run in this environment.
+  - `UNDECLARED` means nothing states why. Give the test what it needs, or add
+    the reason to that file. Set `ELITEA_REQUIRE_DECLARED_SKIPS=1` to make an
+    undeclared skip fail the run, as CI does.
+
 For Go-only work, run from `services/elitea-main/`:
 
 ```bash

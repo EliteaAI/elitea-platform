@@ -310,10 +310,16 @@ components:
             enforced:
               type: boolean
               description: |
-                FALSE for as long as the gateway admits and bills by project
-                scope alone. A per-member limit is stored and read back
-                faithfully, but nothing blocks a call on it — render it as
-                authored-but-inactive rather than as a live ceiling.
+                TRUE since issue #321: the gateway reads this limit on every
+                LLM call that carries a member id, refuses an over-cap member
+                with 402 `member_budget_exceeded`, and bills a member-scoped
+                accumulator alongside the project one.
+
+                It stays a field rather than a constant so a client renders
+                what is true of the deployment it is talking to. A call that
+                carries no resolvable member — a token-authenticated
+                integration, a service account — has no member cap to apply and
+                remains bounded by the project ceiling alone.
         - $ref: '#/components/schemas/BudgetState'
 
     BudgetWrite:
@@ -405,7 +411,7 @@ components:
                 type: string
             enforced:
               type: boolean
-              description: See MemberBudget.enforced — always false today.
+              description: See MemberBudget.enforced.
         - $ref: '#/components/schemas/BudgetState'
 
     MemberBudgetListing:
@@ -445,7 +451,109 @@ components:
               type: string
               enum: [monthly]
               description: Present for scope=project only.
+        - $ref: '#/components/schemas/UsageDimensions'
         - $ref: '#/components/schemas/BudgetState'
+
+    UsageDimensions:
+      type: object
+      required: [usage_events_available]
+      description: |
+        The per-model, per-day and per-token views, from the per-request usage
+        ledger (issue #320). Before that ledger existed the platform kept one
+        accumulated figure per scope and period, and these views could not be
+        populated at all.
+
+        Every field except `usage_events_available` is ABSENT when the ledger
+        holds no row for the scope in this period. Read the flag first.
+      properties:
+        usage_events_available:
+          type: boolean
+          description: |
+            Whether the ledger holds any row for this scope in this period.
+            FALSE means no data, which is NOT the same claim as no calls — the
+            accumulated `spend` may still be non-zero for a period that began
+            before the ledger did.
+        prompt_tokens:
+          type: integer
+          format: int64
+          description: Provider-reported prompt tokens for the period. Never estimated.
+        completion_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        api_requests:
+          type: integer
+          format: int64
+          description: Billed requests in the period.
+        daily:
+          type: array
+          description: |
+            One entry per day that had at least one call. Days with no calls are
+            omitted rather than zero-filled: the period runs to the end of the
+            calendar month, and a zero for a day nobody could have used yet is a
+            claim about the future.
+          items:
+            $ref: '#/components/schemas/UsageDailyEntry'
+        models:
+          type: array
+          description: One entry per (provider, model) billed in the period, ordered by spend.
+          items:
+            $ref: '#/components/schemas/UsageModelEntry'
+
+    UsageDailyEntry:
+      type: object
+      required: [date, total_tokens, api_requests, prompt_tokens, completion_tokens]
+      properties:
+        date:
+          type: string
+          format: date
+          description: The UTC calendar day, the zone billing periods are computed in.
+        spend:
+          type: number
+          nullable: true
+          description: |
+            USD for the day. REMOVED for a caller who may not see amounts, like
+            every other money field.
+        prompt_tokens:
+          type: integer
+          format: int64
+        completion_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        api_requests:
+          type: integer
+          format: int64
+
+    UsageModelEntry:
+      type: object
+      required: [provider, model, total_tokens, api_requests, prompt_tokens, completion_tokens]
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        spend:
+          type: number
+          nullable: true
+          description: |
+            USD for the model. REMOVED for a caller who may not see amounts.
+        prompt_tokens:
+          type: integer
+          format: int64
+        completion_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        api_requests:
+          type: integer
+          format: int64
 
     AnalyticsCostBreakdown:
       type: object
@@ -1037,6 +1145,16 @@ components:
           description: >
             Written by UpdateAttachmentStorage as {"toolkit_id": "..."}
             (eliteacore/handler.go:1777-1781).
+        internal_tools:
+          type: array
+          items: { type: string }
+          description: >
+            Identifiers of the agent's enabled internal tools (e.g.
+            "internal_mcp"). Client-owned: elitea-main never inspects the key
+            — UpdateVersion assigns the whole meta map it receives
+            (applications/handler.go:826-828) — but the legacy UI writes it
+            here and the replatformed edit page both reads and writes it, so
+            it is modelled rather than left to the passthrough marker below.
       additionalProperties: true
       x-elitea-passthrough: >-
         NOTE(W2): DB jsonb column `application_versions.meta` round-trips
@@ -1304,6 +1422,57 @@ components:
         present as "" when the DB column is NULL (COALESCE / pointer deref
         to "" — applications/handler.go:222-229).
 
+    AttachedSkill:
+      type: object
+      required: [skill_id, name, description, instructions]
+      properties:
+        skill_id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        instructions:
+          type: string
+          description: The skill body `load_skill` serves on demand.
+        icon_meta:
+          type: object
+          nullable: true
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): NOTE(#336) — the value of skill_versions.meta ->
+            'icon_meta', a jsonb column versionAttachedSkills copies without
+            inspecting it (internal/api/v2/applications/handler.go:1384). It is
+            null when the mapping references no skill version.
+      description: >
+        NOTE(#336): one entry of the runtime skill registry the SDK binds
+        `load_skill` against (elitea_sdk/runtime/tools/skill_tools.py:127-131).
+        It is the five-key projection pylon's `resolve_runtime_skills` produces
+        (legacy/plugins/elitea_core/utils/skill_utils.py:1570-1607);
+        `skill_version_id` and `version_name` are deliberately absent.
+
+    ApplicationVersionDetailExpanded:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationVersionDetail'
+        - type: object
+          properties:
+            icon_meta:
+              type: object
+              additionalProperties: true
+              x-elitea-passthrough: >-
+                NOTE(W2): NOTE(#336) — lifted verbatim from the version's `meta`
+                jsonb under the `icon_meta` key, which
+                internal/api/v2/applications/handler.go:1314 copies without
+                inspecting it. An absent or falsy value becomes `{}`, which is
+                what pylon's set_icon_meta produces.
+            attached_skills:
+              type: array
+              items: { $ref: '#/components/schemas/AttachedSkill' }
+      description: >
+        NOTE(#336): the body-less PATCH response — the expanded,
+        secret-resolved version detail elitea-sdk fetches through
+        `get_app_version_details` (elitea_sdk/runtime/clients/client.py:681-688).
+        It adds `icon_meta` and `attached_skills` to the shared version detail,
+        and its `tools[].settings` carry configurations already resolved against
+        the project secret vault.
+
     ApplicationDetail:
       type: object
       required: [id, name, description, icon, owner_id, created_at, versions]
@@ -1483,7 +1652,7 @@ components:
         total: { type: integer }
       description: >
         Users response map, internal/api/v2/eliteacore/handler.go's Users.
-        NOTE (issue 130): this used to be the response of POST/PUT/DELETE too —
+        NOTE (issue #130): this used to be the response of POST/PUT/DELETE too —
         the router mounted all four verbs on the same listing handler, so every
         write echoed the member list and changed nothing. The write verbs now
         have their own handlers and their own response shapes below.
@@ -5894,6 +6063,42 @@ paths:
         '403': { $ref: '#/components/responses/403' }
         '404': { $ref: '#/components/responses/404' }
 
+    patch:
+      operationId: getApplicationVersionDetailExpanded
+      summary: Retrieve the expanded, secret-resolved detail of a version
+      description: |
+        NOTE(#336): PATCH on this path is a READ, not a partial update. It
+        serves elitea-sdk's `get_app_version_details`
+        (elitea_sdk/runtime/clients/client.py:681-688), which sends NO request
+        body. The handler reads no body and writes nothing.
+
+        The caller must send `X-SECRET`. The value must equal the project
+        vault's `secrets_header_value`, which is what pylon's
+        `check_secret_header` compares
+        (legacy/plugins/elitea_core/utils/secrets.py:4-9). A mismatch answers
+        400 `{"error": "Invalid secret header"}`, the exact pylon body.
+
+        Implementation: internal/api/v2/applications/handler.go,
+        GetVersionExpanded.
+      tags: [applications]
+      parameters:
+        - name: X-SECRET
+          in: header
+          required: true
+          schema: { type: string }
+          description: Must equal the project vault's `secrets_header_value`.
+      responses:
+        '200':
+          description: Expanded version detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationVersionDetailExpanded'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+
     delete:
       operationId: deleteApplicationVersion
       summary: Remove a version
@@ -6937,16 +7142,24 @@ paths:
         date range is accepted.
 
         `scope=project` reports the whole project; `scope=user` reports only the
-        calling member's own budget within it — which is NOT enforced (see
-        `enforced`) and reports no spend of its own, because the billing path
-        accrues by project.
+        calling member's own budget within it.
+
+        The dimensional views — `daily`, `models` and the token totals — come
+        from the per-request usage ledger added by issue #320. They are ABSENT,
+        not empty, when the ledger holds no row for the scope in this period:
+        an empty series reads as "no calls were made", which is a different and
+        wrong claim about a deployment upgraded part-way through a period.
+        `usage_events_available` says which case the payload is in, exactly as
+        `spend_available` distinguishes "no spend yet" from "no data".
 
         A member who may not see platform cost figures receives the same payload
         with `monthly_limit`, `effective_limit`, `spend`, `remaining` and
-        `currency` REMOVED and `can_see_amounts: false`; percentages, the
-        warning threshold and the period are still present, so the usage bar
-        still renders. Project admins, and the owner of a personal project, see
-        the amounts.
+        `currency` REMOVED and `can_see_amounts: false`; the `spend` inside each
+        `daily` and `models` row is removed too, because leaving the same money
+        in a per-day series would make the control decorative. Percentages, the
+        warning threshold, the period and the token counts are still present, so
+        the usage bar and the charts still render. Project admins, and the owner
+        of a personal project, see the amounts.
       tags: [budgets]
       parameters:
         - name: scope
@@ -8104,10 +8317,15 @@ paths:
       operationId: listApplicationSkills
       summary: List skills attached to an agent version
       description: |
-        NOTE(W2): the router points this at the skills List handler
-        (internal/api/router.go:360 → skills/handler.go:61-78) — the
-        app_version_id segment is not read; the response is the project
-        skills list envelope.
+        Returns only the skills attached to app_version_id, read from
+        entity_skill_mapping.
+
+        NOTE(#367): this route used to point at the project skills List
+        handler, which never read app_version_id and answered with every
+        skill in the project, at 200. The envelope is unchanged — it is
+        still SkillsList — so a client sees the same shape and different,
+        correct contents. A malformed app_version_id is now refused with
+        400 instead of being coerced.
       tags: [skills]
       responses:
         '200':
@@ -8116,6 +8334,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsList'
+        '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
 

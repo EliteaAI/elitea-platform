@@ -48,6 +48,22 @@ on:
           artifact, look at the PNGs, commit the ones you meant to change.
         type: boolean
         default: false
+      full_visual_refresh:
+        description: >-
+          Rewrite EVERY @visual baseline (--update-snapshots=all) instead of
+          only the ones that fail. Requires update_visual_baselines. Use this to
+          find drift that the maxDiffPixels budget has been absorbing: a
+          snapshot that passes is never rewritten, so a baseline that moved less
+          than the budget stays wrong indefinitely and a green run cannot tell
+          you. Issue #238 is the worked example — a dropdown arrow moved 11 px
+          in the light scheme against a 20 px budget, so 7 baselines went on
+          matching an image with no arrow in it, and no regeneration touched
+          them until they were deleted. The run prints a pixel-level comparison
+          (scripts/compare-visual-baselines.mjs) so the artifact is reviewable:
+          a full rewrite re-encodes all of them, and a byte diff calls every
+          file changed.
+        type: boolean
+        default: false
   pull_request:
     paths:
       - "apps/elitea-web/**"
@@ -59,6 +75,13 @@ on:
   push:
     branches:
       - main
+      # The release staging branch (#518). Pull requests merge here first,
+      # and this branch merges into main later, so a push arm that names
+      # only `main` cannot guard the tree that becomes main. The name is
+      # held once in .github/staging-branch.txt, and
+      # scripts/ci/check_workflow_branch_coverage.py fails when a workflow
+      # that names `main` here does not also name that branch.
+      - claude/issue-248-c5b380
     paths:
       - "apps/elitea-web/**"
       - "tools/uictl/**"
@@ -66,8 +89,11 @@ on:
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web-e2e.yml"
-    tags:
-      - "v*"
+    # NO `tags: v*` — issue #309, Gate 2; see the identical note in ci-web.yml.
+    # A GITHUB_TOKEN-created tag starts no workflow run, so this arm has never
+    # fired. Both jobs below reach every PR, every push to main and
+    # workflow_dispatch on their own, which is what has actually been running
+    # them; removing the dead arm changes no execution, only the claim.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -239,6 +265,13 @@ jobs:
         # `--project` is explicit rather than `npm run e2e` so that (a) each
         # matrix leg reports one engine's result, and (b) the `visual` project
         # stays out of this job — its snapshots are the `visual` job's business.
+        #
+        # E2E_TZ pins the browser's timezone, and the seed step above anchors its
+        # calendar-day fixtures in the SAME zone (issue #214). UTC on both sides
+        # by default, so this line changes nothing today. It is here so that
+        # setting E2E_TZ on the job cannot move the seed's day boundary while
+        # leaving the browser on the runner's, which is the disagreement that
+        # made journey 29 fail after midnight.
         run: |
           docker run --rm --network host \
             -v "$PWD":/work -w /work \
@@ -246,6 +279,7 @@ jobs:
             -e E2E_REUSE_STACK=1 \
             -e E2E_PORT=8080 \
             -e PLAYWRIGHT_BASE_URL=http://localhost:8080 \
+            -e E2E_TZ="${E2E_TZ:-UTC}" \
             mcr.microsoft.com/playwright:v1.62.0-noble \
             npx playwright test --project=${{ matrix.engine }}
       - name: Give the report back to the runner user
@@ -296,6 +330,111 @@ jobs:
         env:
           COMPOSE_BIN: docker compose
         run: bash scripts/e2e-stack.sh down
+
+  chat-stream:
+    name: Chat definition-of-done journey (#284)
+    # The product core loop, end to end through the UI: send → SSE stream →
+    # rendered answer → persisted after a reload. It runs on PRs for the same
+    # reason the journeys do — the 2026-08-12 audit found Send silently no-op
+    # with every unit suite green, and this is the only job that can catch that
+    # class of regression.
+    #
+    # A separate job from `e2e` because it needs a DIFFERENT stack: the full
+    # standalone compose (runtime plane + agent worker + mock LLM). The E2E
+    # stack cannot run an agent turn at all, so this journey would fail there
+    # for a reason that has nothing to do with the change under test.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The web and worker images build from repo-root context.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Install Playwright chromium
+        # The `setup` project (OIDC login → storageState) and this journey both
+        # run under Desktop Chrome; webkit would double the stack time for no
+        # additional signal about a transport.
+        run: npx playwright install --with-deps chromium
+      - name: Run the journey against a fresh standalone stack
+        # The script owns the whole lifecycle: runtime PKI, compose up, the
+        # three seed steps, then Playwright. It uses its own compose project so
+        # it can never disturb another stack, and tears down on exit.
+        #
+        # COMPOSE_BIN is docker on the runner; the script auto-detects podman
+        # locally. MOCK_LLM_CHUNK_DELAY_MS makes the partial-render assertion
+        # deterministic rather than a race against a one-paint reply.
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          CHAT_STREAM_PROJECT: elitea-chatstream-ci
+          CHAT_STREAM_PORT: "8084"
+          MOCK_LLM_CHUNK_DELAY_MS: "120"
+        run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-chat-stream
+          path: apps/elitea-web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  index-stream:
+    name: Index definition-of-done journey (#93)
+    # Issue #485. `apps/elitea-web/scripts/index-stream-e2e.sh` ran in no
+    # workflow, and neither did `deploy/scripts/embedding-path-check.sh`, which
+    # it calls. That second script is the reference honest validator in this
+    # repository — it counts its assertions and exits non-zero when fewer than
+    # 13 run — and no continuous-integration job could reach it. Its only two
+    # callers were `standalone-stack.sh check` and this journey, and neither
+    # ran anywhere.
+    #
+    # A separate job from `chat-stream` for the reason `chat-stream` is separate
+    # from `e2e`: it needs its own compose project on its own runner. Only one
+    # standalone stack can be up per host, because oidc-mock's port 9400 cannot
+    # be remapped (the issuer comes from the Host header).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The web and worker images build from repo-root context.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run the journey against a fresh standalone stack
+        # The script owns the whole lifecycle: runtime PKI, build, compose up,
+        # four seed steps, the embedding-path assertions, then Playwright. It
+        # uses its own compose project and tears down on exit.
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          INDEX_STREAM_PROJECT: elitea-indexstream-ci
+          INDEX_STREAM_PORT: "8087"
+          INDEX_STREAM_MOCK_PORT: "8091"
+        run: bash apps/elitea-web/scripts/index-stream-e2e.sh
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-index-stream
+          path: apps/elitea-web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
 
   visual:
     name: Visual regression
@@ -352,7 +491,23 @@ jobs:
               || echo "::warning::background pull of the pinned Playwright image failed or timed out; the snapshot step will pull it inline"
           ) &
           pw_pull=$!
-          ./scripts/e2e-stack.sh up && ./scripts/e2e-stack.sh seed
+          # ONE COMMAND PER LINE, and not `up && seed` (issue #422).
+          #
+          # GitHub runs this block with `bash -e`. `errexit` does not act on a
+          # command that is a non-final member of an AND list, so a failed `up`
+          # did not stop the step: `seed` was skipped and the step took its
+          # status from the last command instead. That last command is
+          # `wait "$pw_pull"`, and the background job is a subshell that ends in
+          # `|| echo`, so it always exits 0. The step therefore reported success
+          # on a stack that never came up and was never seeded, and the failure
+          # first appeared in the snapshot step as an unreachable base URL.
+          #
+          # Written as two simple commands, `errexit` acts on each one.
+          ./scripts/e2e-stack.sh up
+          ./scripts/e2e-stack.sh seed
+          # Only joins the background pull; the subshell swallows its own
+          # failure, so this cannot fail the step and must not be the last word
+          # on whether the stack came up.
           wait "$pw_pull"
 
       # Only the TEST RUN is containerised, in the image pinned to the same
@@ -373,25 +528,69 @@ jobs:
       # deploy/docker-compose.e2e-standalone.yml, which is why the whole stack
       # came up healthy and seven tests ran. `e2e`'s two explicit builds are
       # belt-and-braces for a job with a matrix; this one does not need them.
+      # Keep the committed baselines aside BEFORE the suite overwrites them in
+      # place. Without this copy there is nothing left to compare the
+      # regenerated tree against, because the regeneration writes over the very
+      # files that were the reference.
+      - name: Keep the committed baselines for comparison
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
+        working-directory: apps/elitea-web
+        run: cp -r e2e/snapshots /tmp/committed-snapshots
+
       - name: Snapshot suite (pinned container, host network)
         env:
           # Baseline-regeneration mode. Manual dispatch only — `inputs` is null
           # on every other event, so a tag build or a PR can never take this
           # branch. See the `on:` input's description for why that matters.
           UPDATE_BASELINES: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
+          FULL_REFRESH: ${{ github.event_name == 'workflow_dispatch' && inputs.full_visual_refresh == true }}
         run: |
           test -d e2e/visual || { echo "release tag without a visual suite (unit V2) — refusing"; exit 1; }
           if [ "$UPDATE_BASELINES" = "true" ]; then
             echo "::warning::Baseline-regeneration mode — this run CANNOT fail on a snapshot diff."
-            update_arg="--update-snapshots=changed"
+            if [ "$FULL_REFRESH" = "true" ]; then
+              # `all`, not `changed`: a snapshot that PASSES is never rewritten,
+              # so `changed` cannot refresh a baseline that drifted under the
+              # maxDiffPixels budget. That drift is exactly what this mode is
+              # for, and it is invisible to every green run until someone looks.
+              echo "::warning::FULL refresh — every baseline is rewritten, including ones that pass."
+              update_arg="--update-snapshots=all"
+            else
+              update_arg="--update-snapshots=changed"
+            fi
           else
             update_arg=""
+            if [ "$FULL_REFRESH" = "true" ]; then
+              echo "full_visual_refresh needs update_visual_baselines; it does nothing on its own" >&2
+              exit 1
+            fi
           fi
+          # -e E2E_TZ: the browser must run in the same zone the seed anchored
+          # its calendar-day fixtures in (issue #214). UTC on both sides by
+          # default; see the `e2e` job's copy of this note.
           docker run --rm --network host \
             -v "$PWD":/work -w /work \
             -e CI=1 -e E2E_REUSE_STACK=1 \
+            -e E2E_TZ="${E2E_TZ:-UTC}" \
             mcr.microsoft.com/playwright:v1.62.0-noble \
             npx playwright test --grep @visual $update_arg
+
+      # What actually moved, by PIXELS. A regeneration re-encodes every PNG, so
+      # `git status` and any byte comparison call all of them changed — measured
+      # on #238, 37 files reported for 18 real movements, with admin pages and
+      # the collapsed rail among the false ones. A reviewer handed that list
+      # cannot find the real change in it.
+      #
+      # It runs on the HOST rather than in the container: the comparison only
+      # reads PNGs and reuses playwright-core's own comparator, so it needs no
+      # browser, and the count it prints is the count the gate would compute.
+      #
+      # `|| true` because the script exits non-zero whenever anything differs,
+      # which in this mode is the normal and expected outcome, not a failure.
+      - name: Report what the regeneration changed
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_visual_baselines == true }}
+        working-directory: apps/elitea-web
+        run: node scripts/compare-visual-baselines.mjs e2e/snapshots /tmp/committed-snapshots || true
 
       # A snapshot diff is unreviewable as prose: "183 pixels (ratio 0.01) are
       # different" tells a reviewer that something moved, never what. The only

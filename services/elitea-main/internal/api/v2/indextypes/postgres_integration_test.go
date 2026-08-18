@@ -254,9 +254,13 @@ func newCurrentIndexTypesPostgresPool(t *testing.T) *pgxpool.Pool {
 
 	t.Cleanup(func() {
 		pool.Close()
+		// 120 s, not the old 20 s to 30 s. This DROP queues behind the
+		// CREATE DATABASE calls of every package that `go test ./...` runs at
+		// the same time, so the wait is server load and not a hang. Two full
+		// runs failed here with "drop isolated ... database: timeout" (#409).
 		dropCtx, dropCancel := context.WithTimeout(
 			context.Background(),
-			20*time.Second,
+			120*time.Second,
 		)
 		defer dropCancel()
 		if _, err := adminPool.Exec(

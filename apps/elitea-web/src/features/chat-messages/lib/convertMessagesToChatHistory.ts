@@ -69,12 +69,25 @@ export interface ChatMessage {
   readonly exception?: unknown;
   readonly isStreaming?: boolean | undefined;
   readonly isLoading?: boolean | undefined;
+  /**
+   * Set alongside `isStreaming`/`isLoading` by the stream reducer's interrupt
+   * slice. A pause has to CLEAR it: `isMessageInFlight` treats it as in-flight,
+   * so a message that paused mid-regenerate would keep the composer disabled
+   * and suppress the live thinking view that hosts the approval card.
+   */
+  readonly isRegenerating?: boolean | undefined;
   readonly questionId?: string | undefined;
   readonly replyToId?: string | undefined;
   readonly references?: readonly unknown[] | undefined;
   readonly isSummarized?: boolean | undefined;
   readonly hitlInterrupt?: unknown;
   readonly hitlInterrupts?: readonly unknown[] | undefined;
+  /**
+   * The continue-button prompt shown when a turn stopped on the model's token
+   * limit rather than on a completed answer. `ApplicationAnswer` reads it to
+   * decide whether to render `ChatContinue`.
+   */
+  readonly requiresConfirmation?: { readonly message: string; readonly buttonText: string } | undefined;
   readonly threadId?: string | undefined;
   readonly taskId?: string | undefined;
   readonly originalId?: string | number | undefined;
@@ -95,7 +108,22 @@ export function isUserMessage(
   userIds: readonly (string | number)[],
   replyToId: string | number | undefined,
   sentTo: { entity_name?: string } | undefined,
+  /**
+   * The row's own `role`, when the source states one.
+   *
+   * `GET /elitea_core/messages/prompt_lib/{project}/{conversation}` — what a
+   * conversation deep link reads — answers rows shaped
+   * `{id, uid, role, content}` with NO `author_participant_id`, `sent_to_id`
+   * or `reply_to_id`. Every clause of the heuristic below then misses except
+   * `(!sentToId && !replyToId)`, which is TRUE, so an assistant reply was
+   * classified as a USER message: on reload the answer rendered as a second
+   * question, authored by "User No Longer Available" (measured). An explicit
+   * role is authoritative and needs no inference.
+   */
+  role?: string,
 ): boolean {
+  if (role === 'user') return true;
+  if (role === 'assistant') return false;
   return (
     userIds.includes(authorParticipantId ?? '') ||
     userIds.includes(sentToId ?? '') ||
@@ -260,6 +288,7 @@ export function convertMessagesToChatHistory(
       userIds,
       reply_to_id,
       sent_to,
+      (messageGroup as { role?: string }).role,
     );
 
     if (isUser) {

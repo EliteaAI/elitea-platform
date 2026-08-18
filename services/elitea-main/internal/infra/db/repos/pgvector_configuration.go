@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"errors"
+	"math"
 
 	vectorstoreapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/vectorstore"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -15,6 +16,10 @@ type currentProjectPgvectorQueries interface {
 		context.Context,
 		sqlcgen.UpsertCurrentProjectPgvectorConfigurationParams,
 	) (int32, error)
+	DeleteCurrentProjectPgvectorConfiguration(
+		context.Context,
+		sqlcgen.DeleteCurrentProjectPgvectorConfigurationParams,
+	) (int64, error)
 }
 
 type currentProjectPgvectorQueryFactory func(sqlExecutor) (currentProjectPgvectorQueries, error)
@@ -110,6 +115,62 @@ func (r *CurrentProjectPgvectorConfigurationsRepository) UpsertProjectPgvectorCo
 		return 0, vectorstoreapp.ErrProjectPgvectorConfiguration
 	}
 	return configurationID, nil
+}
+
+// DeleteProjectPgvectorConfiguration removes the system PgVector row for one
+// project, and reports whether a row was there to remove.
+//
+// It is the compensation half of the upsert (#371). An absent row is not an
+// error: provisioning compensates every ATTEMPTED step, so this runs for a step
+// that failed before it wrote anything. A missing tenant schema is not an error
+// either — the schema is dropped by a later compensation in the same rollback,
+// and either order must converge on "no row".
+func (r *CurrentProjectPgvectorConfigurationsRepository) DeleteProjectPgvectorConfiguration(
+	ctx context.Context,
+	projectID int64,
+	title string,
+) (bool, error) {
+	if r == nil || r.projects == nil || r.queries == nil ||
+		ctx == nil || projectID <= 0 || projectID > math.MaxInt32 || title == "" {
+		return false, vectorstoreapp.ErrInvalidProjectPgvectorRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	var removed int64
+	err := r.projects.WithinProjectTx(
+		ctx,
+		projectID,
+		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite},
+		func(tx sqlExecutor) error {
+			queries, err := r.queries(tx)
+			if err != nil {
+				return err
+			}
+			removed, err = queries.DeleteCurrentProjectPgvectorConfiguration(
+				ctx,
+				sqlcgen.DeleteCurrentProjectPgvectorConfigurationParams{
+					ProjectID:   int32(projectID),
+					EliteaTitle: title,
+				},
+			)
+			return err
+		},
+	)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		if errors.Is(err, context.Canceled) {
+			return false, context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return false, context.DeadlineExceeded
+		}
+		return false, vectorstoreapp.ErrProjectPgvectorConfiguration
+	}
+	return removed > 0, nil
 }
 
 func validCurrentProjectPgvectorConfiguration(

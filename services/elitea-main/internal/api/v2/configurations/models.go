@@ -3,6 +3,7 @@ package configurations
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -110,6 +111,11 @@ func (h *currentModelCatalogHandler) get(w http.ResponseWriter, r *http.Request)
 		case errors.Is(err, configurationapp.ErrInvalidCurrentModelCatalogRequest):
 			writeCurrentConfigurationError(w, http.StatusBadRequest, "invalid model catalog request")
 		default:
+			// Logged for the same reason as the configuration read (#293): the
+			// generic body is deliberate, discarding the cause is not. This
+			// route is what the model picker asks for its catalogue, so a
+			// silent 500 here presents as "the product has no models".
+			slog.ErrorContext(r.Context(), "current model catalog read failed", "error", err)
 			writeCurrentConfigurationError(w, http.StatusInternalServerError, "internal server error")
 		}
 		return

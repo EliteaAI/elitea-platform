@@ -224,6 +224,59 @@ describe('computeParamsCandidates', () => {
     expect(computeParamsCandidates(doc)).toEqual([]);
   });
 
+  // A header parameter belongs to orval's own `<Op>Headers` type. Repeating it
+  // in `Params` writes a duplicate file, and a hyphenated header name makes
+  // that file a TypeScript parse error (the `X-SECRET` case, spec issue 336).
+  it('a header parameter is excluded, so a header-only operation produces no candidate', () => {
+    const doc = {
+      components: { parameters: {} },
+      paths: {
+        '/apps/{id}': {
+          patch: {
+            operationId: 'getApplicationVersionDetailExpanded',
+            parameters: [
+              { name: 'id', in: 'path', schema: { type: 'string' } },
+              { name: 'X-SECRET', in: 'header', required: true, schema: { type: 'string' } },
+            ],
+          },
+        },
+      },
+    };
+    expect(computeParamsCandidates(doc)).toEqual([]);
+  });
+
+  it('a cookie parameter is excluded too, and a query param alongside one is kept', () => {
+    const doc = {
+      components: { parameters: {} },
+      paths: {
+        '/x': {
+          get: {
+            operationId: 'opX',
+            parameters: [
+              { name: 'elitea_session', in: 'cookie', schema: { type: 'string' } },
+              { name: 'v', in: 'query', schema: { type: 'string' } },
+            ],
+          },
+        },
+      },
+    };
+    expect(computeParamsCandidates(doc)).toEqual([
+      { name: 'OpXParams', operationId: 'opX', fields: [{ propName: 'v', schema: { type: 'string' } }] },
+    ]);
+  });
+
+  it('excludes a $ref header parameter as well as an inline one', () => {
+    const doc = {
+      components: {
+        parameters: { Secret: { name: 'X-SECRET', in: 'header', schema: { type: 'string' } } },
+      },
+      paths: {
+        '/x': { get: { operationId: 'opX', parameters: [{ $ref: '#/components/parameters/Secret' }] } },
+      },
+    };
+    expect(computeParamsCandidates(doc)).toEqual([]);
+  });
+
   it('an operation with no operationId is ignored', () => {
     const doc = { paths: { '/x': { get: { parameters: [{ name: 'v', in: 'query', schema: {} }] } } } };
     expect(computeParamsCandidates(doc)).toEqual([]);
@@ -322,6 +375,40 @@ describe('renderParamsFile', () => {
     expect(content).toContain('limit: zod.number().int().min(1).max(1000).optional(),');
     expect(content).toContain('offset: zod.number().int().min(0).optional(),');
     expect(content).toContain('export type RoleListParams = zod.input<typeof RoleListParams>;');
+  });
+
+  // OpenAPI parameter names are free-form, so a bare object key is only safe
+  // when the name is a valid JS identifier. An unquoted `X-SECRET:` key is a
+  // TypeScript parse error, not a lint nit.
+  it('quotes a property name that is not a valid JS identifier', () => {
+    const { content } = renderParamsFile({
+      name: 'WeirdParams',
+      fields: [
+        { propName: 'X-Trace-Id', schema: { type: 'string' } },
+        { propName: 'filter[name]', schema: { type: 'string' } },
+        { propName: '2fa', schema: { type: 'boolean' } },
+      ],
+    });
+    expect(content).toContain('"X-Trace-Id": zod.string().optional(),');
+    expect(content).toContain('"filter[name]": zod.string().optional(),');
+    expect(content).toContain('"2fa": zod.boolean().optional(),');
+  });
+
+  it('leaves a valid identifier property name unquoted', () => {
+    const { content } = renderParamsFile({
+      name: 'PlainParams',
+      fields: [
+        { propName: 'limit', schema: { type: 'integer' } },
+        { propName: '_private', schema: { type: 'string' } },
+        { propName: '$dollar', schema: { type: 'string' } },
+        { propName: 'sort_by2', schema: { type: 'string' } },
+      ],
+    });
+    expect(content).toContain('  limit: zod.number().int().optional(),');
+    expect(content).toContain('  _private: zod.string().optional(),');
+    expect(content).toContain('  $dollar: zod.string().optional(),');
+    expect(content).toContain('  sort_by2: zod.string().optional(),');
+    expect(content).not.toContain('"limit"');
   });
 
   it('surfaces per-field warnings without failing the render', () => {

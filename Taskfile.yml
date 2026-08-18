@@ -17,49 +17,49 @@ tasks:
       - go build -o bin/cutover-ctl ./cmd/cutover-ctl
       - go build -o bin/elitea-auth-validate ./cmd/elitea-auth-validate
       - go build -o bin/index-v2-preflight ./cmd/index-v2-preflight
+      # The runtime material installer (issue #404). It ships in the same image
+      # and runs as the init container of the elitea-main pod.
+      - go build -o bin/elitea-runtime-material ./cmd/elitea-runtime-material
+      # The authentication material installer (issue #444). Same image, same
+      # mechanism, and a second init container of the same pod.
+      - go build -o bin/elitea-auth-material ./cmd/elitea-auth-material
 
   test:
     desc: Run all Go tests across the workspace
     cmds:
-      # go.work wildcards must resolve within a module root, so `./services/...`
-      # fails ("directory prefix does not contain modules"). Iterate real module dirs.
-      - |
-        for mod in $(go list -m -f '{{`{{.Dir}}`}}'); do
-          (cd "$mod" && go test -race -count=1 ./...)
-        done
+      # The loop that used to live here took the exit status of its LAST
+      # iteration, so a failed module followed by a passed module read as a
+      # pass (#409). The script runs every module, records every status, names
+      # every failure, and exits non-zero if any module failed.
+      - bash scripts/go/workspace-run.sh test
 
   coverage:
     desc: Run Go tests with a coverage profile per module (generated code excluded)
     cmds:
-      # Same module iteration as `test`, plus the profile CI produces. The
+      # Same module aggregation as `test`, plus the profile CI produces. The
       # strip step drops generated files (oapi-codegen, sqlc) from the profile
       # — they are compiled and instrumented like any package, and counting
       # ~3.4k blocks nobody tests makes the number a function of the last
-      # regeneration rather than of the tests.
-      - |
-        root="$PWD"
-        for mod in $(go list -m -f '{{`{{.Dir}}`}}'); do
-          (
-            cd "$mod" && go test -count=1 -coverprofile=coverage.out ./...
-            [ -f coverage.out ] && "$root/scripts/coverage/strip-generated.sh" coverage.out
-          )
-        done
+      # regeneration rather than of the tests. The script reads the `go test`
+      # status BEFORE the strip step, so the strip step can no longer overwrite
+      # a test failure (#409).
+      - bash scripts/go/workspace-run.sh coverage
 
   lint:
-    desc: Run golangci-lint on Go code
-    dir: "{{.SERVICE}}"
+    desc: Run golangci-lint across the workspace
     cmds:
-      - golangci-lint run ./...
+      # This task used to run in `{{.SERVICE}}` only, so it linted one module of
+      # nine and `task all` then reported "all checks" (#427). Same aggregation
+      # as `test` and `vet`: every module runs, every failed module is named,
+      # and the modules this command does NOT cover are named as well.
+      - bash scripts/go/workspace-run.sh lint
 
   vet:
     desc: Run go vet across the workspace
     cmds:
-      # go.work wildcards must resolve within a module root, so `./services/...`
-      # fails ("directory prefix does not contain modules"). Iterate real module dirs.
-      - |
-        for mod in $(go list -m -f '{{`{{.Dir}}`}}'); do
-          (cd "$mod" && go vet ./...)
-        done
+      # Same aggregation as `test`: the old inline loop reported the status of
+      # its last module only (#409).
+      - bash scripts/go/workspace-run.sh vet
 
   run:
     desc: Run elitea-main locally
@@ -177,6 +177,13 @@ tasks:
 
   hybrid:config:
     desc: Validate the mixed Centry and selected Go-slice deployment
+    # deploy:check-edge runs first, and `hybrid:up` depends on this task. The
+    # PoV launcher deploy/centry-hybrid/compose.sh already calls the same gate
+    # (#368). The foundation stack had no such call, and that is the stack
+    # #378 broke: it mounted a whole directory and loaded routers whose
+    # forward-auth endpoint it never registers. `docker compose config`
+    # accepts that model, because the defect is in the edge YAML.
+    deps: ["deploy:check-edge"]
     cmds:
       - >-
         ELITEA_PLATFORM_DIR="{{.ROOT_DIR}}"
@@ -275,14 +282,92 @@ tasks:
     cmds:
       - podman build -t ghcr.io/eliteaai/pylon-indexer:dev -f services/pylon-indexer/Containerfile services/pylon-indexer
 
+  # ── Deploy ────────────────────────────────────────────────────────────────────
+  deploy:check-edge:
+    desc: Check the middleware, the service and the forward-auth target of every Traefik router
+    cmds:
+      # -count=1 is required. The gate reads YAML from deploy/, which is
+      # outside the module, so the Go test cache does not notice an edit to
+      # those files and can serve a stale pass.
+      - cd services/elitea-main && go test -count=1 ./tests/deployedge/...
+
   # ── Helm ──────────────────────────────────────────────────────────────────────
   helm:lint:
     desc: Lint all Helm charts
     cmds:
+      # Same defect as the Go loops above (#409). A bare loop reports the
+      # status of its LAST chart, so a broken early chart read as a pass. A
+      # glob that matches nothing is also a failure here, not an empty loop
+      # that passes.
       - |
+        failed=""
+        found=0
         for chart in deploy/helm/*/Chart.yaml; do
-          helm lint "$(dirname "$chart")"
+          [ -f "$chart" ] || continue
+          found=$((found + 1))
+          dir="$(dirname "$chart")"
+          if ! helm lint "$dir"; then
+            failed="$failed $dir"
+          fi
         done
+        if [ "$found" -eq 0 ]; then
+          echo "helm:lint: no chart matched deploy/helm/*/Chart.yaml" >&2
+          exit 1
+        fi
+        if [ -n "$failed" ]; then
+          echo "helm:lint: these charts failed:$failed" >&2
+          exit 1
+        fi
+        echo "helm:lint: $found chart(s) passed"
+      - task: helm:capabilities
+      - task: helm:llmpath
+      - task: helm:bf02b
+
+  helm:capabilities:
+    desc: Check that the elitea-main chart renders the capability flags the composition root reads
+    cmds:
+      # `helm lint` proves the chart is well formed. It does not read the
+      # rendered environment, so it stayed green for as long as the chart set
+      # no capability flag at all and a Kubernetes install ran with the runtime
+      # plane dark (#382). This gate asserts the RENDERED YAML instead, and it
+      # reads the required runtime names out of the Go source, so a new one
+      # fails here until the chart renders it.
+      - bash deploy/helm/elitea-main/tests/render-capabilities.sh
+
+  helm:llmpath:
+    desc: Check that the charts do not ship the LLM path off, and that the gateway guards refuse
+    cmds:
+      # #473 wrote this script for issues #463, #467, #458 and #464, and no job
+      # ran it. It asserts both directions: the charts render the LLM path ON,
+      # and the gateway chart REFUSES an empty guard variable. Without this
+      # step, a deleted guard leaves every other Helm gate green (#497).
+      # Needs yq on PATH.
+      - bash deploy/helm/tests/render-llm-path.sh
+
+  helm:bf02b:
+    desc: Check the NATS profiles, the KV/stream bootstrap, the gateway Service and the ArgoCD sync-wave order
+    cmds:
+      # It was `deploy/test_bf0_2b.sh`, and no workflow, task or script called
+      # it (#485). Two defects came out on the first run: the gateway chart has
+      # refused an empty guard since #467/#473 and the script rendered it with
+      # no values, and the ArgoCD assertion read a path that moved in #265.
+      # Needs helm, python3 and PyYAML.
+      - bash deploy/helm/tests/render-bf0-2b.sh
+
+  migrations:check:
+    desc: Check that each added migration number is above the highest on the base branch
+    summary: |
+      Reads the base branch as origin holds it NOW, not the branch under test.
+      Give the base branch name, for example:
+
+        task migrations:check -- main
+
+      Two authors can each read the branch head, each find a number free, and
+      still collide when both merge (#520). This finds the collision early. It
+      does not renumber: the rename at merge time stays with the merge queue,
+      because only the queue knows the order in which pull requests land.
+    cmds:
+      - bash scripts/database/check-migration-version.sh {{.CLI_ARGS}}
 
   # ── All ───────────────────────────────────────────────────────────────────────
   all:

@@ -10,6 +10,7 @@ import {
   EXECUTION_EVENT_FAILED,
   EXECUTION_EVENT_INDEX_INGEST_COMPLETED,
   EXECUTION_EVENT_NODE,
+  EXECUTION_EVENT_REPLAY_RESET,
   parseExecutionEventData,
   resolveExecutionEventsUrl,
   useExecutionEventStream,
@@ -75,6 +76,13 @@ describe('useExecutionEvents', () => {
     const onNodeEvent = vi.fn();
     const onIndexIngestCompleted = vi.fn();
     const onFailed = vi.fn();
+    // `execution.replay_reset` is the fourth name the backend emits
+    // (`infra/db/repos/replay_events.go:16`). It is asserted here because an
+    // SSE `event:` with no registered listener is dropped SILENTLY by
+    // EventSource — so the ONLY way to tell "handled" from "ignored" is to
+    // emit it and require the callback. Fails against any build that leaves
+    // the name unregistered, which is exactly what this module used to do.
+    const onReplayReset = vi.fn();
     render(
       <Probe
         projectId={7}
@@ -82,6 +90,7 @@ describe('useExecutionEvents', () => {
         onNodeEvent={onNodeEvent}
         onIndexIngestCompleted={onIndexIngestCompleted}
         onFailed={onFailed}
+        onReplayReset={onReplayReset}
       />,
     );
 
@@ -89,11 +98,13 @@ describe('useExecutionEvents', () => {
       registry.emit(EXECUTION_EVENT_NODE, '{"type":"chunk"}');
       registry.emit(EXECUTION_EVENT_INDEX_INGEST_COMPLETED, '{"status":"ok"}');
       registry.emit(EXECUTION_EVENT_FAILED, '{"message":"boom"}');
+      registry.emit(EXECUTION_EVENT_REPLAY_RESET, '{"reason":"progress_retention_window_elapsed"}');
     });
 
     expect(onNodeEvent).toHaveBeenCalledWith({ type: 'chunk' });
     expect(onIndexIngestCompleted).toHaveBeenCalledWith({ status: 'ok' });
     expect(onFailed).toHaveBeenCalledWith({ message: 'boom' });
+    expect(onReplayReset).toHaveBeenCalledWith({ reason: 'progress_retention_window_elapsed' });
   });
 
   it('drops an unparseable frame instead of invoking the callback', () => {
@@ -195,6 +206,47 @@ describe('useExecutionEvents', () => {
 
     unmount();
     expect(registry.getOpen()).toHaveLength(0);
+  });
+
+  // issue #310: "task ids are bounds-checked before use in a URL" — an
+  // out-of-bounds executionId (however the caller obtained it) must never
+  // be interpolated, whatever the reason it is malformed.
+  it('opens nothing for an out-of-bounds executionId', () => {
+    for (const executionId of ['', ' ', ' exec-1', 'exec-1 ', 'exec\r\n1', 'exec\x001', 'x'.repeat(513)]) {
+      const { unmount } = render(
+        <Probe
+          projectId="7"
+          executionId={executionId}
+        />,
+      );
+      expect(registry.getSources(), `executionId ${JSON.stringify(executionId)} must not open a stream`).toHaveLength(0);
+      unmount();
+    }
+  });
+
+  it('opens for an executionId at exactly the 512-byte bound', () => {
+    render(
+      <Probe
+        projectId="7"
+        executionId={'x'.repeat(512)}
+      />,
+    );
+    expect(registry.getSources()).toHaveLength(1);
+  });
+
+  it('forwards a successful connection to onOpen', () => {
+    const onOpen = vi.fn();
+    render(
+      <Probe
+        projectId="7"
+        executionId="exec-1"
+        onOpen={onOpen}
+      />,
+    );
+    act(() => {
+      registry.emit('open');
+    });
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });
 

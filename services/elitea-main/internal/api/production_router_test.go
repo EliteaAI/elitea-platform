@@ -1535,28 +1535,43 @@ func TestProductionRouterMountsCurrentAvailableAliasesAsGetOnly(t *testing.T) {
 	}
 }
 
-func TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath(t *testing.T) {
-	calls := 0
-	facade := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		calls++
-		if request.URL.Path != "/llm/v1/embeddings" || request.Method != http.MethodPost {
-			t.Fatalf("facade request = %s %s", request.Method, request.URL.Path)
-		}
-		writer.WriteHeader(http.StatusNoContent)
-	})
-	router := NewRouter(RouterConfig{CurrentLLMFacade: facade})
-
+// The /llm routing contract after the LiteLLM removal.
+//
+// This replaces TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath,
+// which pinned the opposite contract: a bare RouterConfig carrying only a
+// CurrentLLMFacade served /llm from that facade. There is no facade and no
+// last-resort arm any more — the Bifrost gateway is the only backend.
+//
+// Issue #463 changed HOW the uncomposed state answers, not WHAT it serves. The
+// path is now registered and answers 503 llm_gateway_not_configured. So the
+// discriminating signal can no longer be "no /llm pattern exists": it is the
+// not-configured code in the body, which no real backend would ever produce.
+// A reintroduced fallback turns this test from that code into a served
+// response, exactly as the 404 assertion used to.
+func TestProductionRouterLLMRouteHasNoLastResortBackend(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", strings.NewReader(`{"model":"embed"}`)))
-	if recorder.Code != http.StatusNoContent || calls != 1 {
-		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+	NewRouter(RouterConfig{}).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`)),
+	)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("uncomposed /llm status=%d body=%s (want 503: no backend is composed)", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), LLMNotConfiguredCode) {
+		t.Fatalf("uncomposed /llm body=%s — want the %s code, which proves nothing served the request", recorder.Body.String(), LLMNotConfiguredCode)
 	}
 
-	unmounted := NewRouter(RouterConfig{})
-	recorder = httptest.NewRecorder()
-	unmounted.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", nil))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("uncomposed facade status=%d", recorder.Code)
+	// With the gateway composed the pattern appears, so the assertion above is
+	// reading a real registration and not a router that never mounts /llm.
+	withGateway := routePatterns(t, NewRouter(RouterConfig{GatewayProxy: http.NotFoundHandler()}))
+	mounted := false
+	for _, pattern := range withGateway {
+		if strings.Contains(pattern, "/llm") {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("GatewayProxy composed but no /llm pattern registered; patterns=%v", withGateway)
 	}
 }
 
@@ -1628,11 +1643,16 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/notifications/notification/prompt_lib/{projectID}/{notificationID}",
 		"DELETE /api/v2/notifications/notifications/prompt_lib/{projectID}",
 		"DELETE /api/v2/projects/group/prompt_lib/{projectID}/{groupID}",
+		// Project DELETE (#333). Destructive: it drops the tenant schema.
+		"DELETE /api/v2/projects/project/{mode}/{projectID}",
 		"DELETE /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/application/{applicationID}",
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
+		// The S3-shaped write verbs, root-mounted and wildcard-captured for
+		// the same reasons as the reads below.
+		"DELETE /artifacts/s3/{bucket}/*",
 		"GET /api/openapi.json",
 		"GET /api/openapi.yaml",
 		"GET /api/v2/admin/active_tasks/{mode}",
@@ -1649,6 +1669,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/admin/plugin_config_values/administration/{plugin}",
 		"GET /api/v2/admin/plugin_config_values/prompt_lib/resources",
 		"GET /api/v2/admin/projects/{mode}",
+		"GET /api/v2/admin/roles/administration/{projectID}",
 		"GET /api/v2/admin/roles/{mode}/{projectID}",
 		"GET /api/v2/admin/runtime_plugin/{mode}/{pluginName}",
 		"GET /api/v2/admin/runtime_remote/{mode}",
@@ -1658,6 +1679,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/admin/tasks/{mode}",
 		"GET /api/v2/admin/tasks/{mode}/",
 		"GET /api/v2/admin/user_project_permissions/administration",
+		"GET /api/v2/admin/users/administration/{projectID}",
 		"GET /api/v2/admin/users/{mode}/{projectID}",
 		"GET /api/v2/artifacts/buckets/{projectID}",
 		"GET /api/v2/artifacts/buckets/{projectID}/{bucket}",
@@ -1757,6 +1779,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/elitea_core/toolkits/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/tools/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/tools_list/default/{projectID}",
+		"GET /api/v2/elitea_core/tools_list/{projectID}",
 		"GET /api/v2/elitea_core/trending_authors/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/upload_icon/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/usage/prompt_lib/{projectID}/usage",
@@ -1791,6 +1814,13 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
 		"GET /app/{projectID}/mcp",
 		"GET /app/{projectID}/mcp/*",
+		// Root-mounted on purpose: the SDK builds this URL from a bare
+		// origin with no /api/v2 segment, so this is the path that actually
+		// arrives. See mountArtifactRoutes in router.go.
+		"GET /artifacts/s3/{bucket}",
+		// The object read, wildcard-captured so a nested key
+		// ("folder/sub/file.txt") matches as one key rather than 404ing.
+		"GET /artifacts/s3/{bucket}/*",
 		"GET /auth",
 		"GET /avatars/{projectID}/{filename}",
 		"GET /docs",
@@ -1800,6 +1830,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /startupz",
 		"HEAD /api/v2/artifacts/objects/{projectID}/{bucket}/*",
 		"HEAD /api/v2/branding/bootstrap.js",
+		"HEAD /artifacts/s3/{bucket}/*",
 		"PATCH /api/v2/artifacts/buckets/{projectID}/{bucket}",
 		"PATCH /api/v2/elitea_core/application_relation/prompt_lib/{projectID}/{appID}/{versionID}",
 		"PATCH /api/v2/elitea_core/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}",
@@ -1809,6 +1840,8 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PATCH /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/skill_default_version/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
+		// The expanded version READ the SDK calls with a body-less PATCH (#336).
+		"PATCH /api/v2/elitea_core/version/prompt_lib/{projectID}/{applicationID}/{versionID}",
 		"POST /api/v2/admin/auth_users/{mode}",
 		"POST /api/v2/admin/gateway/governance",
 		"POST /api/v2/admin/gateway/governance/validate-cel",
@@ -1882,6 +1915,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/elitea_core/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}",
 		"POST /api/v2/elitea_core/versions/prompt_lib/{projectID}/{applicationID}",
 		"POST /api/v2/projects/group/prompt_lib/{projectID}",
+		// Project CREATE (#333). The handler refuses any {mode} other than
+		// `administration`, matching the reference's route table.
+		"POST /api/v2/projects/project/{mode}",
 		"POST /api/v2/secrets/hide/{mode}/{projectID}/{name}",
 		"POST /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"POST /api/v2/secrets/secrets/{mode}/{projectID}",
@@ -1937,6 +1973,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PUT /api/v2/social/author",
 		"PUT /api/v2/social/author/",
 		"PUT /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
+		"PUT /artifacts/s3/{bucket}/*",
 	}
 
 	if len(got) != len(want) {

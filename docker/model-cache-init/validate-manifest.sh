@@ -12,6 +12,26 @@
 # Exit codes:
 #   0 — all checks pass
 #   1 — validation failure
+#
+# ── Why a missing tool is a failure here (issue #429) ────────────────────────
+#
+# Every unreachable URL used to be a warning, and so did a missing `curl` and a
+# missing `aws`. Only ERRORS exited 1. So on a host with neither tool on the
+# path, every entry of the manifest produced one warning, no error, and the
+# validator reported success while measuring nothing. That is the whole check 3
+# gone, silently.
+#
+# The rule now: a reachability check this script could not RUN is a failure.
+# "curl is not installed" is a statement about this host, not about the URL, and
+# a validator that cannot measure must not report a pass.
+#
+# A URL that answers something other than 2xx/3xx stays a warning ON PURPOSE and
+# is counted separately: a private bucket answering 403 to an unauthenticated
+# HEAD is normal, and that outcome IS a measurement. "I could not look" and "I
+# looked and saw a refusal" are different results.
+#
+# The last line reports how many reachability checks RAN against how many
+# entries the manifest holds. Read that line, not the exit code alone.
 
 set -euo pipefail
 
@@ -28,6 +48,9 @@ log_fail() { echo -e "${RED}✗${NC} $1"; }
 
 ERRORS=0
 WARNINGS=0
+# Reachability checks that actually ran. Compared against the entry count at the
+# end, so an entry whose URL was never looked at cannot pass unnoticed.
+REACHED=0
 
 # --- Check 1: File exists ---
 if [ ! -f "$MANIFEST" ]; then
@@ -112,6 +135,7 @@ for i in $(seq 0 $((MODELS_COUNT - 1))); do
     case "$URL" in
         s3://*)
             if command -v aws &>/dev/null; then
+                REACHED=$((REACHED + 1))
                 BUCKET=$(echo "$URL" | sed 's|s3://||' | cut -d'/' -f1)
                 KEY=$(echo "$URL" | sed "s|s3://${BUCKET}/||")
                 if aws s3 ls "s3://${BUCKET}/${KEY}" --no-sign-request 2>/dev/null || \
@@ -122,25 +146,32 @@ for i in $(seq 0 $((MODELS_COUNT - 1))); do
                     WARNINGS=$((WARNINGS + 1))
                 fi
             else
-                log_warn "  Cannot check S3 URL (aws CLI not installed)"
-                WARNINGS=$((WARNINGS + 1))
+                # An unrun check, not a soft result. Without the aws CLI this
+                # entry's URL was never looked at.
+                log_fail "  Cannot check S3 URL — the aws CLI is not installed, so this entry is UNMEASURED: $URL"
+                ERRORS=$((ERRORS + 1))
             fi
             ;;
         http://*|https://*)
             if command -v curl &>/dev/null; then
+                REACHED=$((REACHED + 1))
                 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --head --max-time 10 "$URL" 2>/dev/null || echo "000")
                 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
                     log_ok "  URL reachable: $URL (HTTP $HTTP_CODE)"
                 elif [ "$HTTP_CODE" = "000" ]; then
-                    log_warn "  URL unreachable (timeout/DNS): $URL"
-                    WARNINGS=$((WARNINGS + 1))
+                    # No answer at all: DNS, timeout or a refused connection.
+                    # Nothing was measured about the URL, so this is an error.
+                    log_fail "  URL unreachable (timeout/DNS), so this entry is UNMEASURED: $URL"
+                    ERRORS=$((ERRORS + 1))
                 else
+                    # A real answer. 403 from a private bucket is expected, so
+                    # this stays a warning — it is a measurement, not a gap.
                     log_warn "  URL returned HTTP $HTTP_CODE: $URL"
                     WARNINGS=$((WARNINGS + 1))
                 fi
             else
-                log_warn "  Cannot check HTTP URL (curl not installed)"
-                WARNINGS=$((WARNINGS + 1))
+                log_fail "  Cannot check HTTP URL — curl is not installed, so this entry is UNMEASURED: $URL"
+                ERRORS=$((ERRORS + 1))
             fi
             ;;
         *)
@@ -153,9 +184,15 @@ done
 # --- Summary ---
 echo ""
 echo "=== Validation Summary ==="
-echo "  Entries:  $MODELS_COUNT"
-echo "  Errors:   $ERRORS"
-echo "  Warnings: $WARNINGS"
+echo "  Entries:              $MODELS_COUNT"
+echo "  Reachability checked: $REACHED of $MODELS_COUNT"
+echo "  Errors:               $ERRORS"
+echo "  Warnings:             $WARNINGS"
+
+if [ "$REACHED" -ne "$MODELS_COUNT" ]; then
+    log_fail "Only $REACHED of $MODELS_COUNT entries had their URL checked. An unchecked entry is not a valid one."
+    ERRORS=$((ERRORS + 1))
+fi
 
 if [ "$ERRORS" -gt 0 ]; then
     log_fail "Validation FAILED with $ERRORS error(s)"

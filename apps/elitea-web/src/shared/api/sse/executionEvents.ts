@@ -48,6 +48,17 @@ import { useEventSource } from './useEventSource';
 export const EXECUTION_EVENT_NODE = 'execution.node_event';
 export const EXECUTION_EVENT_FAILED = 'execution.failed';
 export const EXECUTION_EVENT_INDEX_INGEST_COMPLETED = 'index.ingest.completed';
+/**
+ * The durable log was PRUNED past the cursor this client asked to resume
+ * from, so an unknown number of progress frames between that cursor and the
+ * one carried here will never be delivered
+ * (`infra/db/repos/replay_events.go:89-102` — `{"reason":
+ * "progress_retention_window_elapsed"}`). Registered because an unregistered
+ * SSE `event:` name is dropped SILENTLY by `EventSource`: without this the
+ * frame arrives, nothing reacts, and a resumed long run shows a continuous
+ * transcript with a hole in the middle that nothing on screen discloses.
+ */
+export const EXECUTION_EVENT_REPLAY_RESET = 'execution.replay_reset';
 
 /**
  * A parsed frame body. Deliberately a loose record: every consumer reads it
@@ -55,6 +66,39 @@ export const EXECUTION_EVENT_INDEX_INGEST_COMPLETED = 'index.ingest.completed';
  * `shared/api/socket/events.ts` argues for the socket side of the same wire.
  */
 export type ExecutionEventData = Readonly<Record<string, unknown>>;
+
+/**
+ * The bound every backend admission route enforces on a client-supplied or
+ * client-correlated id — e.g. `services/elitea-main/internal/application/
+ * indexing/start.go`'s `MaxClientCorrelationBytes`, which `start_handler.go`'s
+ * `validTaskID` applies to every `task_id` it ever returns.
+ */
+const MAX_EXECUTION_ID_BYTES = 512;
+
+/**
+ * Bounds-checks an execution/task id BEFORE it is interpolated into the SSE
+ * URL below (issue #310: "task ids are bounds-checked before use in a URL")
+ * — non-empty, no leading/trailing whitespace, no NUL/CR/LF, at most 512
+ * bytes. This is the one place every caller's `executionId` (however it was
+ * obtained — a normal start response, an adopted 409 conflict, a recovered
+ * value) actually becomes a URL, so the guard lives here rather than relying
+ * on every caller to have checked first. `features/toolkits/indexes/lib/
+ * helpers/indexExecution.helpers.ts`'s `isBoundedIndexExecutionTaskId`
+ * applies the identical rule where a `task_id` is first accepted off the
+ * wire — duplicated rather than imported because `shared/` must not depend
+ * on a feature slice (R-L3): this file protects the transport boundary for
+ * every execution kind, not only index runs.
+ */
+function isBoundedExecutionId(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value === value.trim() &&
+    !value.includes('\0') &&
+    !value.includes('\r') &&
+    !value.includes('\n') &&
+    new TextEncoder().encode(value).length <= MAX_EXECUTION_ID_BYTES
+  );
+}
 
 /**
  * `JSON.parse` at a transport boundary, as a value and never a throw (§3.6):
@@ -106,8 +150,20 @@ export interface ExecutionEventCallbacks {
   readonly onNodeEvent?: ((frame: ExecutionEventData) => void) | undefined;
   /** The index-ingest terminal frame. */
   readonly onIndexIngestCompleted?: ((frame: ExecutionEventData) => void) | undefined;
-  /** The runtime-failure frame (also emitted on deadline retirement and cancellation). */
+  /** The runtime-failure frame (also emitted on deadline retirement and cancellation). Carries `code`, `safe_message` and `retryable` — see `infra/db/repos/command_outbox.go:29-30`. */
   readonly onFailed?: ((frame: ExecutionEventData) => void) | undefined;
+  /** Progress frames were pruned before this client could read them; the frame carries `reason`. */
+  readonly onReplayReset?: ((frame: ExecutionEventData) => void) | undefined;
+  /**
+   * The durable cursor of the frame just delivered — `events.go` writes an
+   * `id: <cursor>` line before every event, and that is what a resume has to
+   * send back (`./resume.ts`). Fired for EVERY event name, including the ones
+   * this caller has no handler for, because the cursor is a property of the
+   * stream rather than of any one frame family: resuming from the last frame
+   * a caller happened to care about would ask the server to replay everything
+   * in between all over again.
+   */
+  readonly onCursor?: ((cursor: string) => void) | undefined;
   /**
    * The stream failed to OPEN, or dropped — a transport failure, not a
    * frame. Distinct from `onFailed` (which is the server telling you the
@@ -118,6 +174,15 @@ export interface ExecutionEventCallbacks {
    * needs the run to proceed must act here.
    */
   readonly onError?: ((event: Event) => void) | undefined;
+  /**
+   * The stream actually OPENED (see `./useEventSource.ts`'s own doc comment
+   * on this option) — fired before any frame arrives, as soon as the HTTP
+   * response headers come back successfully. A caller that must tell "this
+   * `executionId` was never a real stream" apart from "it opened, then
+   * later dropped" needs this: `onError` alone cannot make that
+   * distinction (issue #310).
+   */
+  readonly onOpen?: ((event: Event) => void) | undefined;
 }
 
 /**
@@ -125,32 +190,38 @@ export interface ExecutionEventCallbacks {
  * returned (issue #93's chat surface). Prefer this over re-deriving the
  * path: the server owns that shape.
  *
- * All three event names are ALWAYS registered, whether or not the caller
+ * All four event names are ALWAYS registered, whether or not the caller
  * passed the matching callback: the registered name set is what
  * `useEventSource` keys its connection on, so a conditional map would
  * reopen the HTTP stream whenever a caller's callback appeared or
  * disappeared. Frames with no callback are parsed and dropped.
  */
 export function useExecutionEventStream(eventsUrl: string | null | undefined, callbacks: ExecutionEventCallbacks): void {
-  const { onNodeEvent, onIndexIngestCompleted, onFailed, onError } = callbacks;
+  const { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError, onOpen } = callbacks;
   const config = getConfig();
   const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
   const url = useMemo(() => resolveExecutionEventsUrl(serverUrl, eventsUrl), [serverUrl, eventsUrl]);
 
+  /**
+   * Record the cursor FIRST, then dispatch the frame.
+   *
+   * The cursor advances even for a frame that fails to parse: a resume from
+   * before a malformed frame would ask the server to send that same frame
+   * again, and it would fail again — an unparseable frame is a hole in the
+   * transcript, not a reason to loop on it.
+   */
+  const deliver = (handler: ((frame: ExecutionEventData) => void) | undefined) => (event: MessageEvent) => {
+    if (event.lastEventId) onCursor?.(event.lastEventId);
+    const frame = parseExecutionEventData(event);
+    if (frame) handler?.(frame);
+  };
+
   useEventSource(url, {
-    [EXECUTION_EVENT_NODE]: (event) => {
-      const frame = parseExecutionEventData(event);
-      if (frame) onNodeEvent?.(frame);
-    },
-    [EXECUTION_EVENT_INDEX_INGEST_COMPLETED]: (event) => {
-      const frame = parseExecutionEventData(event);
-      if (frame) onIndexIngestCompleted?.(frame);
-    },
-    [EXECUTION_EVENT_FAILED]: (event) => {
-      const frame = parseExecutionEventData(event);
-      if (frame) onFailed?.(frame);
-    },
-  }, { onError });
+    [EXECUTION_EVENT_NODE]: deliver(onNodeEvent),
+    [EXECUTION_EVENT_INDEX_INGEST_COMPLETED]: deliver(onIndexIngestCompleted),
+    [EXECUTION_EVENT_FAILED]: deliver(onFailed),
+    [EXECUTION_EVENT_REPLAY_RESET]: deliver(onReplayReset),
+  }, { onError, onOpen });
 }
 
 export interface UseExecutionEventsParams extends ExecutionEventCallbacks {
@@ -162,22 +233,25 @@ export interface UseExecutionEventsParams extends ExecutionEventCallbacks {
 /**
  * Subscribe to one execution's durable event stream.
  *
- * All three event names are ALWAYS registered, whether or not the caller
+ * All four event names are ALWAYS registered, whether or not the caller
  * passed the matching callback: the registered name set is what
  * `useEventSource` keys its connection on, so a conditional map would
  * reopen the HTTP stream whenever a caller's callback appeared or
  * disappeared. Frames with no callback are parsed and dropped.
  */
 export function useExecutionEvents(params: UseExecutionEventsParams): void {
-  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onError } = params;
+  const { projectId, executionId, onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError, onOpen } = params;
   const config = getConfig();
   const serverUrl = config.status === 'ok' ? config.config.vite_server_url : null;
 
   // The index surface starts its run through a route that returns only a
-  // `task_id`, so the path is derived here rather than supplied.
+  // `task_id`, so the path is derived here rather than supplied. Bounds-checked
+  // (issue #310) before it is interpolated: an out-of-bounds `executionId`
+  // produces no URL at all, exactly like a missing one — see
+  // `isBoundedExecutionId`'s own doc comment.
   const eventsUrl = useMemo(
     () =>
-      projectId !== undefined && projectId !== '' && executionId && serverUrl
+      projectId !== undefined && projectId !== '' && executionId && isBoundedExecutionId(executionId) && serverUrl
         ? `${serverUrl}/executions/${String(projectId)}/${executionId}/events`
         : null,
     [projectId, executionId, serverUrl],
@@ -186,5 +260,5 @@ export function useExecutionEvents(params: UseExecutionEventsParams): void {
   // Already absolute against `vite_server_url` ⇒ `useExecutionEventStream`'s
   // own resolution is a no-op for it (same-origin prefix returns the path
   // unchanged; an absolute origin was already baked in above).
-  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onError });
+  useExecutionEventStream(eventsUrl, { onNodeEvent, onIndexIngestCompleted, onFailed, onReplayReset, onCursor, onError, onOpen });
 }
