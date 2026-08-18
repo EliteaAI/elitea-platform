@@ -26,6 +26,8 @@ mod salesforce_tests;
 #[cfg(test)]
 mod service_now_tests;
 #[cfg(test)]
+mod slack_tests;
+#[cfg(test)]
 mod snapshot_tests;
 #[cfg(test)]
 mod sonar_tests;

@@ -60,6 +60,20 @@ the shared exact-`interrupt_id` sensitive-tool flow and a cancellation-safe
 effect identity/reconciliation owner are composed. Operation grouping remains
 model/catalog metadata and never grants execution authority.
 
+The complete capability-disabled `Slack` family adds all seven current SDK
+tools in source order: three messaging/membership effects and four bounded
+conversation/workspace reads. One invocation-scoped zeroizing token owner uses
+the fixed Slack Web API origin with no redirects or automatic retry. Rust
+preserves configured-channel fallback and success projections while removing
+the redundant history `auth.test`, bounding every first page and running
+member-info fanout with an eight-request structured concurrency limit.
+Selection-oriented tool and parameter descriptions are part of the tested
+contract. Production composition remains closed until authorized application
+and ad-hoc materialization, live Slack scope/rate-limit proof, the shared exact
+`interrupt_id` sensitive-tool flow and a cancellation-safe effect
+identity/reconciliation owner are composed; reads may be sensitive regardless
+of their catalog group.
+
 ## Parallel node decision
 
 The new YAML node is a graph construct, not concurrent subagent dispatch. Its

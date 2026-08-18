@@ -135,7 +135,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `configurations/families/postman.rs`; `toolkits/families/postman/` | Planned |
 | `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `toolkits/families/service_now/{config,client,tools}.rs` | Capability-disabled complete family: one bounded incident read plus create and update effects over fixed-origin Table API; shared durable sensitive-tool approval, authorized materialization and cancellation-safe effect reconciliation remain gates |
 | `testrail` | `configurations/testrail.py::TestRailConfiguration` | `tools/testrail::TestrailToolkit` | 23 | Yes | `configurations/families/testrail.rs`; `toolkits/families/testrail/` | Planned |
-| `slack` | `configurations/slack.py::SlackConfiguration` | `tools/slack::SlackToolkit` | 7 | No | `configurations/families/slack.rs`; `toolkits/families/slack/` | Planned |
+| `slack` | `configurations/slack.py::SlackConfiguration` | `tools/slack::SlackToolkit` | 7 | No | `toolkits/families/slack/{config,client,tools}.rs` | Capability-disabled complete family: seven bounded fixed-origin messaging, membership and workspace operations; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
 | `azure_search` | `configurations/azure_search.py::AzureSearchConfiguration` | `tools/azure_ai/search::AzureSearchToolkit` | 2 | No | `toolkits/families/azure_search/{config,client,tools}.rs` | Capability-disabled complete read family: fixed configured index, two bounded reads, SDK 11.5.2 wire/result projection and no unbounded continuation; authorized materialization and live provider proof remain gates |
 | `delta_lake` | `configurations/delta_lake.py::DeltaLakeConfiguration` | `tools/aws/delta_lake::DeltaLakeToolkit` | 3 | No | `configurations/families/delta_lake.rs`; `toolkits/families/delta_lake/` | Planned; source has no focused family tests |
 | `bigquery` | `configurations/bigquery.py::BigQueryConfiguration` | `tools/google/bigquery::BigQueryToolkit` | 11 | No | `configurations/families/bigquery.rs`; `toolkits/families/bigquery/` | Planned; source has no focused family tests |
@@ -709,6 +709,80 @@ identity through provider completion or explicit unknown-outcome recovery;
 dropping an ADK tool future must not settle cancellation as proof that a
 create, PATCH or DELETE did not happen.
 
+### Slack complete messaging family
+
+Slack is a complete seven-tool family over the fixed Slack Web API origin. The
+source baseline is SDK `9bba9da409771803f28c0ee21f5d0b9a8f456219` and the
+Python worker's pinned SDK source
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`; their Slack behavior is identical
+apart from the current source's `read`/`write` group annotations. The worker's
+two SDK patches are MCP-only. The source declares `slack_sdk==3.35.0`, although
+the standalone Python worker's selective dependency lock does not install that
+extra; therefore deployment availability is not used as parity evidence.
+
+Main freezes `type`, `toolkit_name`, selected tools and the nested Slack
+configuration, then claim-scoped materialization resolves its token for both
+application and ad-hoc execution. Rust accepts authority only from that nested
+claimed map. One non-`Clone`, non-`Debug`, zeroizing token owner creates an
+invocation-scoped pool against exactly `https://slack.com/api/`; arguments
+cannot select another host, redirects and reqwest retries are disabled, the
+Bearer header is sensitive, and request, response, projection and deadlines
+are bounded.
+
+The complete catalog remains in SDK order:
+
+1. `send_message` (`write`) posts a top-level message or thread reply and
+   returns `success`, `channel_id`, `ts` and the supplied `thread_ts`.
+2. `read_messages` (`read`) returns the newest first-page messages projected to
+   `ts`, `user`, `message`, `app_name` and optional `thread_ts`.
+3. `create_slack_channel` (`write`) creates one public or private channel.
+4. `list_channel_users` (`read`) projects first-page member IDs and names.
+5. `list_workspace_users` (`read`) projects first-page IDs, names, bot flags,
+   email and team fields.
+6. `invite_to_conversation` (`write`) changes channel membership and retains
+   Slack's bounded successful response object.
+7. `list_workspace_conversations` (`read`) projects the first public-channel
+   page; the source description incorrectly promises groups and DMs even
+   though it does not set Slack's `types` argument.
+
+Tool descriptions and every parameter schema are treated as executable model
+contracts. They distinguish configured fallback from explicit conversation
+IDs, include representative IDs and timestamps, explain result shapes and
+first-page behavior, state the history limit (`1..=15`, default 10), the
+channel-name grammar and invitee bound, and warn that visible-content and
+membership effects cannot be blindly retried after an unknown outcome. The
+send contract also states that the source-compatible Slack defaults retain
+`mrkdwn` parsing and link unfurling rather than calling the content plain text. These
+clarifications intentionally replace misleading source prose, including the
+source channel-name parameter that describes a destination ID.
+
+| Python/SDK source | Observable responsibility | Rust owner / deliberate improvement |
+| --- | --- | --- |
+| SDK `SlackConfiguration`, `SlackToolkit::get_tools` and Main/Python worker materialization | Nested token/default channel, empty/subset selection, source order, toolkit identity and groups | `config.rs` and `tools.rs` retain the exact seven operations, fail unknown selections, keep credentials out of model metadata and apply immutable deployment policy |
+| SDK `SlackApiWrapper::send_message` and `slack_sdk::WebClient.chat_postMessage` | Configured target fallback, optional thread reply and posted-message identity | `client.rs::SlackApi::send_message` performs one non-retried bounded effect and preserves the successful projection; transport or response ambiguity is explicit `UnknownOutcome` |
+| SDK `SlackApiWrapper::read_messages` | Latest first-page history plus the exact browser-useful message projection | Rust performs one history request instead of the source's redundant preceding `auth.test`, caps broadly deployable history at 15 and does not fetch continuations |
+| SDK `SlackApiWrapper::create_slack_channel` | Public/private channel creation and returned channel ID | Rust validates the documented lowercase 80-character name, sends one effect attempt and returns the same success meaning |
+| SDK `SlackApiWrapper::list_channel_users` | First membership page followed by one `users.info` lookup per ID | Rust caps the member page and runs at most eight lookups concurrently, drains them without detached tasks and restores original membership order; source fanout is unbounded and sequential |
+| SDK `SlackApiWrapper::{list_workspace_users,list_workspace_conversations}` | First provider pages and fixed field projections | Rust makes the page bounds explicit, preserves nullable fields and truthfully describes public-channel-only behavior |
+| SDK `SlackApiWrapper::invite_to_conversation` | Comma-joined user invitation and raw successful response | Rust validates one through 100 unique IDs, preserves caller order, bounds the result and never retries the effect after ambiguity |
+
+Slack's configuration model has no connection check and the current catalog
+truthfully records `connection_check_supported=false`. The toolkit schema's
+dynamically attached check is not evidence: it reads a nonexistent top-level
+token, returns a dictionary where the shared decorator expects an HTTP
+response, and can fail before a Slack request. Rust does not reproduce or
+advertise it. A future check must be an explicit Main-owned audited `auth.test`
+operation using this same bounded client.
+
+Production registration remains disabled, not functionally reduced. Sending,
+channel creation and invitations are implemented effects. Their activation
+requires exact durable approval keyed by `interrupt_id` plus the canonical
+target and arguments, and an owned post-dispatch outcome/reconciliation
+boundary. Reads are not automatically safe: trusted configuration may also
+mark message, membership or user-email access sensitive. Operation group never
+grants execution authority. Live Slack scope/rate-limit proof and both
+application/ad-hoc claim-materialization component tests remain gates.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -727,7 +801,7 @@ create, PATCH or DELETE did not happen.
 The shared schema, bounded HTTP, credential, policy, invocation-event,
 cancellation and ADK `Toolset` kernel is now stable enough for independent
 REST families; Google Places, Sonar and Azure Search are complete reads, while
-ServiceNow and Salesforce prove the same boundary can retain bounded
+ServiceNow, Salesforce and Slack prove the same boundary can retain bounded
 create/update/delete effects without activating them ahead of durable approval.
 These follow the partial GitHub reference family. Parallel family work still
 must not share mutable files or weaken the capability gate.
