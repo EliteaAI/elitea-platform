@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 use crate::toolkits::invocation::{MaterializedToolsetError, admit_materialized_toolset};
 use crate::toolkits::policy::ToolAdmissionPolicy;
 
-use super::client::{GitHubApi, GitHubClient, GitHubClientError};
+use super::client::{GitHubApi, GitHubClient, GitHubClientError, GitHubFileScope};
 use super::config::{GitHubToolkitConfig, GitHubToolkitConfigError};
 
 const GET_ME: &str = "get_me";
@@ -18,6 +18,9 @@ const LIST_BRANCHES: &str = "list_branches_in_repo";
 const READ_FILE: &str = "read_file";
 const READ_MULTIPLE_FILES: &str = "read_multiple_files";
 const GREP_FILE: &str = "grep_file";
+const LIST_MAIN_FILES: &str = "list_files_in_main_branch";
+const LIST_ACTIVE_FILES: &str = "list_files_in_bot_branch";
+const LIST_DIRECTORY_FILES: &str = "get_files_from_directory";
 const MAX_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_OUTPUT_CHARS: usize = 200_000;
 const MAX_BATCH_FILES: usize = 32;
@@ -102,7 +105,7 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
 /// Build the capability-disabled first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. Five explicitly selected ordinary read
+/// until the full family is ported. Eight explicitly selected ordinary read
 /// operations can use this path. The production capability remains disabled
 /// until sensitive effects, the rest of the read catalog, GitHub App
 /// installation auth and cross-process TLS integration are complete.
@@ -127,7 +130,14 @@ fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
         || selected.iter().any(|name| {
             !matches!(
                 name.as_ref(),
-                GET_ME | LIST_BRANCHES | READ_FILE | READ_MULTIPLE_FILES | GREP_FILE
+                GET_ME
+                    | LIST_BRANCHES
+                    | READ_FILE
+                    | READ_MULTIPLE_FILES
+                    | GREP_FILE
+                    | LIST_MAIN_FILES
+                    | LIST_ACTIVE_FILES
+                    | LIST_DIRECTORY_FILES
             )
         })
     {
@@ -153,6 +163,9 @@ fn build_with_api(
             READ_FILE => GitHubReadToolKind::ReadFile,
             READ_MULTIPLE_FILES => GitHubReadToolKind::ReadMultipleFiles,
             GREP_FILE => GitHubReadToolKind::GrepFile,
+            LIST_MAIN_FILES => GitHubReadToolKind::ListMainFiles,
+            LIST_ACTIVE_FILES => GitHubReadToolKind::ListActiveFiles,
+            LIST_DIRECTORY_FILES => GitHubReadToolKind::ListDirectoryFiles,
             _ => {
                 return Err(GitHubToolsetError {
                     code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -176,6 +189,9 @@ enum GitHubReadToolKind {
     ReadFile,
     ReadMultipleFiles,
     GrepFile,
+    ListMainFiles,
+    ListActiveFiles,
+    ListDirectoryFiles,
 }
 
 struct GitHubReadTool {
@@ -205,6 +221,15 @@ impl GitHubReadTool {
             GitHubReadToolKind::GrepFile => {
                 "Search one UTF-8 file with a bounded literal or regular expression."
             }
+            GitHubReadToolKind::ListMainFiles => {
+                "List all bounded file paths in the configured base branch."
+            }
+            GitHubReadToolKind::ListActiveFiles => {
+                "List all bounded file paths in the configured active branch."
+            }
+            GitHubReadToolKind::ListDirectoryFiles => {
+                "Recursively list bounded file paths below one active-branch directory."
+            }
         };
         let description = bounded_description(&format!(
             "Toolkit: {toolkit_name}\nRepository: {repository}\n{action}"
@@ -226,6 +251,9 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ReadFile => READ_FILE,
             GitHubReadToolKind::ReadMultipleFiles => READ_MULTIPLE_FILES,
             GitHubReadToolKind::GrepFile => GREP_FILE,
+            GitHubReadToolKind::ListMainFiles => LIST_MAIN_FILES,
+            GitHubReadToolKind::ListActiveFiles => LIST_ACTIVE_FILES,
+            GitHubReadToolKind::ListDirectoryFiles => LIST_DIRECTORY_FILES,
         }
     }
 
@@ -248,6 +276,10 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ReadFile => read_file_schema(),
             GitHubReadToolKind::ReadMultipleFiles => read_multiple_files_schema(),
             GitHubReadToolKind::GrepFile => grep_file_schema(),
+            GitHubReadToolKind::ListMainFiles | GitHubReadToolKind::ListActiveFiles => {
+                get_me_schema()
+            }
+            GitHubReadToolKind::ListDirectoryFiles => list_directory_files_schema(),
         })
     }
 
@@ -289,6 +321,20 @@ impl Tool for GitHubReadTool {
                 self.execute_read_multiple_files(arguments).await
             }
             GitHubReadToolKind::GrepFile => self.execute_grep_file(arguments).await,
+            GitHubReadToolKind::ListMainFiles => {
+                self.execute_list_files(arguments, GitHubFileScope::BaseBranch, None)
+                    .await
+            }
+            GitHubReadToolKind::ListActiveFiles => {
+                self.execute_list_files(arguments, GitHubFileScope::ActiveBranch, None)
+                    .await
+            }
+            GitHubReadToolKind::ListDirectoryFiles => {
+                reject_unknown_keys(arguments, &["directory_path"])?;
+                let directory = required_directory(arguments, "directory_path")?;
+                self.execute_list_files(arguments, GitHubFileScope::ActiveBranch, Some(directory))
+                    .await
+            }
         }
     }
 }
@@ -424,6 +470,21 @@ fn grep_file_schema() -> Value {
             }
         },
         "required": ["file_path", "pattern"],
+        "additionalProperties": false
+    })
+}
+
+fn list_directory_files_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "directory_path": {
+                "type": "string",
+                "maxLength": 4096,
+                "description": "Directory path to list recursively, for example src/my_dir."
+            }
+        },
+        "required": ["directory_path"],
         "additionalProperties": false
     })
 }
@@ -567,6 +628,21 @@ impl GitHubReadTool {
             context_lines,
         )?))
     }
+
+    async fn execute_list_files(
+        &self,
+        arguments: &Map<String, Value>,
+        scope: GitHubFileScope,
+        directory: Option<&str>,
+    ) -> adk_rust::Result<Value> {
+        if directory.is_none() && !arguments.is_empty() {
+            return Err(invalid_arguments());
+        }
+        self.client
+            .list_repository_files(scope, directory)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
 }
 
 fn reject_unknown_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> adk_rust::Result<()> {
@@ -603,6 +679,19 @@ fn validate_text_value(value: &Value, max_bytes: usize) -> adk_rust::Result<&str
             !value.is_empty()
                 && value.len() <= max_bytes
                 && !value.chars().any(|character| character.is_ascii_control())
+        })
+        .ok_or_else(invalid_arguments)
+}
+
+fn required_directory<'a>(
+    arguments: &'a Map<String, Value>,
+    key: &str,
+) -> adk_rust::Result<&'a str> {
+    arguments
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| {
+            value.len() <= 4 * 1_024 && !value.chars().any(|character| character.is_ascii_control())
         })
         .ok_or_else(invalid_arguments)
 }

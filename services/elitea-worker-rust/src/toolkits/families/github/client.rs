@@ -22,6 +22,10 @@ const MAX_IDLE_PER_HOST: usize = 8;
 const MAX_RESPONSE_BYTES: usize = 512 * 1_024;
 const MAX_FILE_RESPONSE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_FILE_BYTES: usize = 1_024 * 1_024;
+const MAX_TREE_RESPONSE_BYTES: usize = 8 * 1_024 * 1_024;
+const MAX_TREE_ENTRIES: usize = 100_000;
+const MAX_PROJECTED_FILES: usize = 10_000;
+const MAX_PROJECTED_FILE_CHARS: usize = 200_000;
 const MAX_BRANCHES: usize = 100;
 const MAX_BRANCH_BYTES: usize = 1_024;
 const MAX_FILE_PATH_BYTES: usize = 4 * 1_024;
@@ -177,6 +181,19 @@ pub(crate) trait GitHubApi: Send + Sync {
         branch: Option<&str>,
         repository: Option<&str>,
     ) -> Result<String, GitHubClientError>;
+
+    async fn list_repository_files(
+        &self,
+        scope: GitHubFileScope,
+        directory_path: Option<&str>,
+    ) -> Result<Value, GitHubClientError>;
+}
+
+/// Selects one of the two immutable branches admitted with the toolkit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::toolkits) enum GitHubFileScope {
+    BaseBranch,
+    ActiveBranch,
 }
 
 /// One invocation-scoped, pooled and origin-bound GitHub client.
@@ -350,6 +367,36 @@ impl GitHubClient {
         }
         serde_json::from_slice(&body).map_err(|_| invalid_response())
     }
+
+    async fn resolve_tree_sha(
+        &self,
+        owner: &str,
+        repository: &str,
+        reference: &str,
+    ) -> Result<String, GitHubClientError> {
+        let branch = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "branches", reference],
+                &[],
+                MAX_RESPONSE_BYTES,
+            )
+            .await;
+        let response = match branch {
+            Ok(response) => response,
+            Err(error) if error.code() == GitHubClientErrorCode::NotFound => {
+                self.get_json(
+                    GitHubRequestKind::Repository,
+                    &["repos", owner, repository, "commits", reference],
+                    &[],
+                    MAX_RESPONSE_BYTES,
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
+        project_tree_sha(&response)
+    }
 }
 
 #[async_trait]
@@ -409,6 +456,29 @@ impl GitHubApi for GitHubClient {
             )
             .await?;
         project_text_file(&response)
+    }
+
+    async fn list_repository_files(
+        &self,
+        scope: GitHubFileScope,
+        directory_path: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        let (owner, repository) = validate_repository(self.config.repository())?;
+        let reference = match scope {
+            GitHubFileScope::BaseBranch => self.config.base_branch(),
+            GitHubFileScope::ActiveBranch => self.config.active_branch(),
+        };
+        let directory = normalize_directory_path(directory_path.unwrap_or(""))?;
+        let tree_sha = self.resolve_tree_sha(owner, repository, reference).await?;
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "git", "trees", &tree_sha],
+                &[("recursive", "1".to_owned())],
+                MAX_TREE_RESPONSE_BYTES,
+            )
+            .await?;
+        project_tree_files(&response, directory)
     }
 }
 
@@ -523,6 +593,74 @@ fn project_text_file(value: &Value) -> Result<String, GitHubClientError> {
     String::from_utf8(decoded).map_err(|_| invalid_response())
 }
 
+fn project_tree_sha(value: &Value) -> Result<String, GitHubClientError> {
+    let sha = value
+        .get("commit")
+        .and_then(|commit| commit.get("commit"))
+        .and_then(|commit| commit.get("tree"))
+        .and_then(|tree| tree.get("sha"))
+        .and_then(Value::as_str)
+        .filter(|sha| {
+            matches!(sha.len(), 40 | 64) && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .ok_or_else(invalid_response)?;
+    Ok(sha.to_ascii_lowercase())
+}
+
+fn project_tree_files(value: &Value, directory: &str) -> Result<Value, GitHubClientError> {
+    let object = value.as_object().ok_or_else(invalid_response)?;
+    match object.get("truncated").and_then(Value::as_bool) {
+        Some(false) => {}
+        Some(true) => return Err(resource_exhausted()),
+        None => return Err(invalid_response()),
+    }
+    let tree = object
+        .get("tree")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid_response)?;
+    if tree.len() > MAX_TREE_ENTRIES {
+        return Err(resource_exhausted());
+    }
+    let prefix = if directory.is_empty() {
+        String::new()
+    } else {
+        format!("{directory}/")
+    };
+    let mut files = Vec::new();
+    let mut projected_chars = 2_usize;
+    for entry in tree {
+        let entry = entry.as_object().ok_or_else(invalid_response)?;
+        let entry_type = entry
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|entry_type| matches!(*entry_type, "blob" | "tree" | "commit"))
+            .ok_or_else(invalid_response)?;
+        let path = entry
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid_response)?;
+        validate_response_path(path)?;
+        if entry_type == "blob" && (prefix.is_empty() || path.starts_with(&prefix)) {
+            if files.len() >= MAX_PROJECTED_FILES {
+                return Err(resource_exhausted());
+            }
+            let encoded_chars = serde_json::to_string(path)
+                .map_err(|_| invalid_response())?
+                .chars()
+                .count();
+            projected_chars = projected_chars
+                .checked_add(encoded_chars)
+                .and_then(|value| value.checked_add(usize::from(!files.is_empty())))
+                .ok_or_else(resource_exhausted)?;
+            if projected_chars > MAX_PROJECTED_FILE_CHARS {
+                return Err(resource_exhausted());
+            }
+            files.push(Value::String(path.to_owned()));
+        }
+    }
+    Ok(Value::Array(files))
+}
+
 fn validate_repository(value: &str) -> Result<(&str, &str), GitHubClientError> {
     let (owner, repository) = value.split_once('/').ok_or_else(invalid_configuration)?;
     if repository.contains('/')
@@ -574,6 +712,25 @@ fn validate_file_path(value: &str) -> Result<Vec<&str>, GitHubClientError> {
         });
     }
     Ok(segments)
+}
+
+fn normalize_directory_path(value: &str) -> Result<&str, GitHubClientError> {
+    let normalized = value.trim_matches('/');
+    if normalized.is_empty() {
+        return Ok("");
+    }
+    let _ = validate_file_path(normalized)?;
+    Ok(normalized)
+}
+
+fn validate_response_path(value: &str) -> Result<(), GitHubClientError> {
+    validate_file_path(value).map(|_| ()).map_err(|error| {
+        if error.code() == GitHubClientErrorCode::ResourceExhausted {
+            error
+        } else {
+            invalid_response()
+        }
+    })
 }
 
 fn map_status(status: StatusCode, headers: &HeaderMap) -> Result<(), GitHubClientError> {
@@ -781,6 +938,21 @@ pub(in crate::toolkits) fn test_project_text_file(
 #[cfg(test)]
 pub(in crate::toolkits) fn test_validate_file_path(value: &str) -> Result<(), GitHubClientError> {
     validate_file_path(value).map(|_| ())
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_project_tree_files(
+    value: &Value,
+    directory: &str,
+) -> Result<Value, GitHubClientError> {
+    project_tree_files(value, directory)
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_project_tree_sha(
+    value: &Value,
+) -> Result<String, GitHubClientError> {
+    project_tree_sha(value)
 }
 
 #[cfg(test)]

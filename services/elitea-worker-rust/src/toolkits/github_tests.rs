@@ -12,9 +12,9 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::{Map, Value, json};
 
 use super::families::github::client::{
-    GitHubApi, GitHubClient, GitHubClientError, GitHubClientErrorCode, GitHubRequestKind,
-    test_map_status, test_project_branches, test_project_text_file, test_project_user,
-    test_validate_file_path,
+    GitHubApi, GitHubClient, GitHubClientError, GitHubClientErrorCode, GitHubFileScope,
+    GitHubRequestKind, test_map_status, test_project_branches, test_project_text_file,
+    test_project_tree_files, test_project_tree_sha, test_project_user, test_validate_file_path,
 };
 use super::families::github::config::{GitHubAuthKind, GitHubToolkitConfig};
 use super::families::github::tools::{
@@ -275,6 +275,29 @@ fn response_projection_is_bounded_and_omits_unknown_or_null_fields() {
     for invalid_path in ["/etc/passwd", "../secret", "src/../secret", "src//lib.rs"] {
         assert!(test_validate_file_path(invalid_path).is_err());
     }
+
+    let tree = json!({
+        "truncated": false,
+        "tree": [
+            {"path": "README.md", "type": "blob"},
+            {"path": "src", "type": "tree"},
+            {"path": "src/lib.rs", "type": "blob"},
+            {"path": "src/nested/mod.rs", "type": "blob"},
+            {"path": "vendor/dependency", "type": "commit"}
+        ]
+    });
+    assert_eq!(
+        test_project_tree_files(&tree, "src").expect("bounded recursive tree"),
+        json!(["src/lib.rs", "src/nested/mod.rs"])
+    );
+    assert!(test_project_tree_files(&json!({"truncated": true, "tree": []}), "").is_err());
+    assert_eq!(
+        test_project_tree_sha(&json!({
+            "commit": {"commit": {"tree": {"sha": "A".repeat(40)}}}
+        }))
+        .expect("branch tree SHA"),
+        "a".repeat(40)
+    );
 }
 
 #[test]
@@ -533,6 +556,61 @@ async fn native_grep_and_batch_reads_are_bounded_before_network_use() {
     );
 }
 
+#[tokio::test]
+async fn native_repository_navigation_uses_the_admitted_base_and_active_scopes() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    let selected = vec![
+        "list_files_in_main_branch".to_owned(),
+        "list_files_in_bot_branch".to_owned(),
+        "get_files_from_directory".to_owned(),
+    ];
+    let toolset = test_build_with_api(
+        "team-github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &(client.clone() as Arc<dyn GitHubApi>),
+    )
+    .expect("native GitHub navigation toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset.tools(readonly).await.expect("navigation tools");
+
+    for (name, arguments) in [
+        ("list_files_in_main_branch", json!({})),
+        ("list_files_in_bot_branch", json!({})),
+        (
+            "get_files_from_directory",
+            json!({"directory_path": "/src/nested/"}),
+        ),
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .expect("selected navigation tool");
+        assert_eq!(
+            tool.execute(context(), arguments)
+                .await
+                .expect("repository file list"),
+            json!(["src/lib.rs", "src/nested/mod.rs"])
+        );
+    }
+    assert_eq!(
+        client
+            .file_list_calls
+            .lock()
+            .expect("file list call fixture lock")
+            .as_slice(),
+        &[
+            (GitHubFileScope::BaseBranch, None),
+            (GitHubFileScope::ActiveBranch, None),
+            (
+                GitHubFileScope::ActiveBranch,
+                Some("/src/nested/".to_owned())
+            )
+        ]
+    );
+}
+
 #[test]
 fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
@@ -557,9 +635,11 @@ struct FixtureGitHubApi {
     branch_limits: Mutex<Vec<usize>>,
     files: Mutex<BTreeMap<String, String>>,
     file_calls: Mutex<Vec<FileCall>>,
+    file_list_calls: Mutex<Vec<FileListCall>>,
 }
 
 type FileCall = (String, Option<String>, Option<String>);
+type FileListCall = (GitHubFileScope, Option<String>);
 
 #[async_trait]
 impl GitHubApi for FixtureGitHubApi {
@@ -596,5 +676,17 @@ impl GitHubApi for FixtureGitHubApi {
             .get(file_path)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn list_repository_files(
+        &self,
+        scope: GitHubFileScope,
+        directory_path: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        self.file_list_calls
+            .lock()
+            .expect("file list call fixture lock")
+            .push((scope, directory_path.map(ToOwned::to_owned)));
+        Ok(json!(["src/lib.rs", "src/nested/mod.rs"]))
     }
 }
