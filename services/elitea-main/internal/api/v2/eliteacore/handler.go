@@ -2323,6 +2323,11 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	importUUIDToToolID := map[string]int{}
 	failedToolkitImportUUIDs := map[string]bool{}
 
+	// elitea_tools.owner_id is the DESTINATION PROJECT and is NOT NULL on a
+	// schema this repository's migration corpus made — see
+	// importToolkitInsertSQL for the column's meaning and the evidence for it.
+	toolkitOwnerID, toolkitOwnerErr := tenantOwnerID(projectID)
+
 	for _, tk := range toolkitEntries {
 		tkName, _ := tk.raw["name"].(string)
 		tkType, _ := tk.raw["type"].(string)
@@ -2364,10 +2369,14 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		}
 
 		tkDesc, _ := tk.raw["description"].(string)
+		if toolkitOwnerErr != nil {
+			errorToolkits = append(errorToolkits, map[string]any{"index": tk.entityIdx, "name": tkName, "msg": "Import function has been failed: " + toolkitOwnerErr.Error()})
+			failedToolkitImportUUIDs[tk.importUUID] = true
+			continue
+		}
 		var toolID int
-		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.elitea_tools (name, type, settings, author_id, description, meta) VALUES ($1, $2, $3::jsonb, $4, $5, '{}'::jsonb) RETURNING id`, s),
-			tkName, tkType, settingsJSON, userID, tkDesc).Scan(&toolID)
+		err := h.pool.QueryRow(ctx, importToolkitInsertSQL(s),
+			tkName, tkType, settingsJSON, toolkitOwnerID, userID, tkDesc).Scan(&toolID)
 		if err == nil {
 			if tk.importUUID != "" {
 				importUUIDToToolID[tk.importUUID] = toolID
