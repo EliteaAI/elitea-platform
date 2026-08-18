@@ -55,19 +55,29 @@
  * which is worse than no test: it teaches the next reader to re-run rather than
  * to look.
  *
- * So they take a cross-process MUTEX (`withPlatformFlagLock`). `mkdir` is the
- * primitive because it is atomic on every platform and needs no dependency — the
- * same reason lockfiles have used it for decades — and Playwright's own
- * `describe.serial` cannot help here, since it orders tests within a project and
- * does nothing across them.
+ * So they take the EXCLUSIVE half of the platform-flag lock
+ * (`withPlatformFlagLock`, `e2e/fixtures/platformFlags.ts`). Playwright's own
+ * `describe.serial` cannot help here, since it orders tests within a project
+ * and does nothing across them.
+ *
+ * ## The readers (issue #519)
+ *
+ * The mutex used to be held by the writers only, and that is not enough. While
+ * `mcp_enabled` is off the MCP surfaces are gone for EVERY journey, not just
+ * for the ones that take the lock: `useIsMcpVisible()` is false, so
+ * `ToolkitTypeSelector` returns null, the `/mcps` route is closed and
+ * `ToolBase` stops drawing "Make tools available by MCP". Journey 17.3 and the
+ * two MCP journeys of JRNY-018 failed inside that window in three CI runs and
+ * in 2 local runs of 10.
+ *
+ * Those journeys now take the SHARED half (`readsPlatformFlags`), so the
+ * window below is closed to them. The lock is one writer and many readers,
+ * over the filesystem; that file's header states the protocol.
  */
-import { mkdir, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-import { test as adminTest, expect, type Page } from '@playwright/test';
+import { test as adminTest, expect, request as apiRequest, type Page } from '@playwright/test';
 
 import { checkA11y } from '../../fixtures/axe';
+import { withPlatformFlagLock } from '../../fixtures/platformFlags';
 import { BASE_URL, STORAGE_STATE } from '../../../playwright.config';
 
 adminTest.use({ storageState: STORAGE_STATE.admin });
@@ -125,40 +135,12 @@ async function openSection(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: new RegExp(name) }).click();
 }
 
-/**
- * Serialises the tests that flip a platform-wide switch, across browser
- * projects as well as within one.
- *
- * `mkdir` on an existing directory fails atomically on every platform, which is
- * the whole mechanism. The lock is released in a `finally`, and a stale one from
- * a killed run is broken after `staleAfterMs` rather than deadlocking the suite
- * — a lock that can wedge CI is a worse failure than the race it prevents.
+/*
+ * The exclusive half of the platform-flag lock now lives in
+ * `e2e/fixtures/platformFlags.ts`, next to the SHARED half that the journeys
+ * reading these flags take (issue #519). A mutex that only the writers held
+ * left every reader inside the window — see that file's header.
  */
-async function withPlatformFlagLock<T>(run: () => Promise<T>): Promise<T> {
-  const lockPath = join(tmpdir(), 'elitea-e2e-platform-flags.lock');
-  const staleAfterMs = 90_000;
-  const deadline = Date.now() + staleAfterMs;
-
-  for (;;) {
-    try {
-      await mkdir(lockPath);
-      break;
-    } catch {
-      if (Date.now() > deadline) {
-        // Whoever held it is gone. Take it over rather than fail the run.
-        await rm(lockPath, { recursive: true, force: true });
-        continue;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  }
-
-  try {
-    return await run();
-  } finally {
-    await rm(lockPath, { recursive: true, force: true });
-  }
-}
 
 /** Writes one section through the product's own PUT, from the page's session. */
 async function putValues(
@@ -182,6 +164,123 @@ async function putValues(
     [section, values] as const,
   );
 }
+
+/**
+ * Puts a platform-wide section back, and proves the platform reads it back.
+ *
+ * WHY THIS IS NOT "ADD A RETRY" (issue #519). This does not retry an
+ * assertion and it cannot turn a failing test green: if the section is not
+ * restored by the deadline the test still fails, and it now fails with the
+ * SERVER'S OWN BODY in the message. What it removes is a different failure —
+ * one test's single failed write leaving a platform-wide switch off for every
+ * other journey in the run.
+ *
+ * Measured, on `mcp_enabled`: one restore answered 401, the flag stayed off,
+ * and the two MCP journeys plus the toolkit journey then failed for a reason
+ * that was not theirs. The whole file is `mode: 'serial'`, so the eight tests
+ * after the failing one were reported as "did not run" — which is not a pass
+ * and is not a failure, and nothing in the output says which.
+ *
+ * The status alone was also not enough to say WHY. A 401 on this route has
+ * two very different causes in elitea-main — a principal that is no longer
+ * active, and a session cookie that was not accepted — and they carry
+ * different bodies (`authentication_error` / `unauthenticated`). The body is
+ * in the failure message now so the next occurrence is read once, not
+ * investigated.
+ *
+ * `verify` reads the PRODUCT surface, not this admin route, because a PUT that
+ * answers 200 and writes nothing is the defect class this whole file exists
+ * for.
+ */
+async function restoreSection(
+  page: Page,
+  section: string,
+  values: Record<string, unknown>,
+  verify?: () => Promise<boolean>,
+): Promise<void> {
+  // Well inside the 30 s test budget, deliberately. A restore that ran to a
+  // longer deadline could END the test by timeout, and a timed-out test loses
+  // its page mid-restore — measured, `page.evaluate: Target page, context or
+  // browser has been closed` on this very line. The `afterEach` net below
+  // covers the case this bound gives up on.
+  const deadline = Date.now() + 6_000;
+  let last = { status: 0, body: 'no attempt was made' };
+
+  for (;;) {
+    last = await putValues(page, section, values);
+    if (last.status === 200 && (verify === undefined || (await verify()))) return;
+    if (Date.now() > deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  expect(
+    last.status,
+    `${section} was NOT restored, so the stack is left changed for every other journey. ` +
+      `Last response: ${last.status} ${last.body}`,
+  ).toBe(200);
+  // The PUT answered 200 and the product still disagrees — the #519 shape.
+  expect(
+    verify === undefined ? true : await verify(),
+    `${section} answered 200 but the platform still does not read the restored value`,
+  ).toBe(true);
+}
+
+/**
+ * The platform-wide sections this file writes, and the values the seed leaves
+ * behind. Used by the net below.
+ */
+const PLATFORM_DEFAULTS: readonly { section: string; values: Record<string, unknown> }[] = [
+  { section: 'mcp_configuration', values: { mcp_enabled: true } },
+  { section: 'agent_publishing', values: { is_publish_blocked: false } },
+  {
+    section: 'voice_features',
+    values: {
+      vite_voice_features_enabled: true,
+      vite_voice_features_temporarily_disabled: false,
+    },
+  },
+];
+
+/**
+ * A NET, not the restore (issue #519).
+ *
+ * Each test that flips a platform-wide switch puts it back in its own
+ * `finally`, inside the lock, so the window stays as short as the assertions
+ * allow. This runs afterwards, and it exists for the one case the `finally`
+ * cannot cover: a test that ends on its own TIMEOUT loses its page while the
+ * restore is still running. Measured on this file — `page.evaluate: Target
+ * page, context or browser has been closed`, raised from inside the restore,
+ * with `mcp_enabled` left false for the rest of the run.
+ *
+ * Playwright gives hooks their own budget and runs them after a timeout, and
+ * this hook opens its OWN request context, so neither the dead page nor the
+ * test's spent clock can stop it.
+ *
+ * Only after a test that did not pass: a passing test has already restored,
+ * and writing these rows on every test would put a second writer on a
+ * platform-wide row for no reason. The lock is not taken here — the run is
+ * already in the state the lock exists to avoid, and leaving the platform
+ * switched off is the worse of the two.
+ */
+// Playwright requires the fixture parameter to be an object pattern, and this
+// hook takes no fixture.
+// eslint-disable-next-line no-empty-pattern
+adminTest.afterEach(async ({}, testInfo) => {
+  if (testInfo.status === 'passed') return;
+  const api = await apiRequest.newContext({
+    baseURL: BASE_URL,
+    storageState: STORAGE_STATE.admin,
+  });
+  try {
+    for (const { section, values } of PLATFORM_DEFAULTS) {
+      await api.put(`/api/v2/admin/plugin_config_values/administration/${section}`, {
+        data: { values },
+      });
+    }
+  } finally {
+    await api.dispose();
+  }
+});
 
 /* ── the page itself ───────────────────────────────────────────────────── */
 
@@ -218,15 +317,31 @@ adminTest(
   async ({ page }) => {
     await openFeatures(page);
     await withPlatformFlagLock(async () => {
-      const settingsBefore = await page.evaluate(async () => {
-        const response = await fetch('/api/v2/elitea_core/platform_settings/prompt_lib', {
-          credentials: 'include',
-        });
-        return (await response.json()) as Record<string, unknown>;
-      });
-      expect(settingsBefore.mcp_enabled, 'the probe starts from MCP enabled').toBe(true);
-
       try {
+        const settingsBefore = await page.evaluate(async () => {
+          const response = await fetch('/api/v2/elitea_core/platform_settings/prompt_lib', {
+            credentials: 'include',
+          });
+          return (await response.json()) as Record<string, unknown>;
+        });
+        /*
+         * INSIDE the try, deliberately (issue #519). It used to sit above it,
+         * and that one line is what turned a single failed restore into a red
+         * suite.
+         *
+         * `mcp_enabled` is ONE platform-wide row. When the restore below
+         * failed once, the flag stayed off; the retry then failed on THIS
+         * assertion, before entering the try, so the `finally` never ran and
+         * the flag was never put back. Every remaining MCP-reading journey in
+         * the run — the two MCP ones, the toolkit one — failed for a reason
+         * that had nothing to do with them, and the eight tests after this one
+         * in this serial file were reported "did not run".
+         *
+         * From inside the try, a retry that finds the flag off still restores
+         * it on its way out.
+         */
+        expect(settingsBefore.mcp_enabled, 'the probe starts from MCP enabled').toBe(true);
+
         await page.getByRole('switch', { name: 'Enable MCP' }).click();
         const [saved] = await Promise.all([
           page.waitForResponse(
@@ -278,11 +393,18 @@ adminTest(
         expect(proxied.body).toContain('MCP exposure is disabled');
       } finally {
         // Restored inside the test, so a later failure cannot leave the stack
-        // with MCP switched off for every other journey.
-        const restored = await putValues(page, 'mcp_configuration', {
-          mcp_enabled: true,
+        // with MCP switched off for every other journey — and restored through
+        // `restoreSection`, which keeps trying for the length of the lock and
+        // then reads the PRODUCT flag back. See that function's note.
+        await restoreSection(page, 'mcp_configuration', { mcp_enabled: true }, async () => {
+          const settings = await page.evaluate(async () => {
+            const response = await fetch('/api/v2/elitea_core/platform_settings/prompt_lib', {
+              credentials: 'include',
+            });
+            return (await response.json()) as Record<string, unknown>;
+          });
+          return settings.mcp_enabled === true;
         });
-        expect(restored.status).toBe(200);
       }
     });
   },
@@ -320,10 +442,10 @@ adminTest('J36c: blocking publishing is enforced by the publish endpoint', async
       expect(refused.status, 'the publish guardrail must be enforced server-side').toBe(403);
       expect(refused.body).toContain('publishing is blocked');
     } finally {
-      const restored = await putValues(page, 'agent_publishing', {
-        is_publish_blocked: false,
-      });
-      expect(restored.status).toBe(200);
+      // Same reason as J36b's restore: this guardrail is platform-wide, and a
+      // restore that fails silently blocks every publish in the rest of the
+      // run. See `restoreSection`.
+      await restoreSection(page, 'agent_publishing', { is_publish_blocked: false });
     }
   });
 });
@@ -430,11 +552,11 @@ adminTest(
           'temporarily disabling must not HIDE the control',
         ).toBe(true);
       } finally {
-        const restored = await putValues(page, 'voice_features', {
+        // Same reason as J36b's restore — see `restoreSection`.
+        await restoreSection(page, 'voice_features', {
           vite_voice_features_enabled: true,
           vite_voice_features_temporarily_disabled: false,
         });
-        expect(restored.status).toBe(200);
       }
     });
   },

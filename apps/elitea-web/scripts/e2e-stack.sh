@@ -200,6 +200,48 @@ WHERE u.email = 'e2e-admin@autotest.local'
   AND r.mode = 'default'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
+-- ── suspension fixtures (issue #519) ─────────────────────────────────────
+-- Journey 28 suspends a user, reloads, and unsuspends it. It used to do that
+-- to the MEMBER PERSONA, which is the identity ~110 of the 125 journeys
+-- authenticate as. A suspended principal is refused by
+-- `authsvc.PrincipalValidator` (`GetActiveUserPrincipalByID` filters on
+-- `suspended = false`), so for the whole window every concurrent request of
+-- every other journey answered 401 "authenticated principal is inactive".
+-- `fullyParallel` is on, so that window overlapped a different set of tests
+-- on every run — which is exactly the "same code, different failures" report
+-- of issue #519. Measured in this repository: journey 33, in the same file,
+-- reads the user listing as the member and asserts 403; it received 401.
+--
+-- These rows exist so journey 28 can suspend a user that NOTHING signs in as.
+-- Every assertion of that journey is unchanged; only its subject moves.
+--
+-- ONE ROW PER BROWSER PROJECT, for the reason `admin.features.spec.ts`
+-- documents for its Help Center card: chromium and webkit run the same file
+-- against the same rows when the suite is run locally with both projects, and
+-- one shared row would have each engine observing the other's window.
+--
+-- They hold no role and belong to no project: journey 28 needs a row in
+-- `auth_core__user` that the admin listing shows, and nothing else. A plain
+-- `@autotest.local` address is a PLATFORM user for `systemUserPredicate`
+-- (services/elitea-main/internal/api/v2/admin/users.go), so both appear on the
+-- tab the journey opens.
+INSERT INTO auth_core__user (email, name)
+VALUES
+    ('e2e-suspend-chromium@autotest.local', 'E2E Suspend Fixture chromium'),
+    ('e2e-suspend-webkit@autotest.local', 'E2E Suspend Fixture webkit')
+ON CONFLICT (email) DO NOTHING;
+
+-- Re-run safety: a run that was killed between the suspend and the unsuspend
+-- leaves the fixture suspended, and journey 28 asserts it STARTS from Active.
+-- The seed is the only place that can put it back without weakening that
+-- precondition into "suspend it if it is not suspended already".
+UPDATE auth_core__user
+SET suspended = false
+WHERE email IN (
+    'e2e-suspend-chromium@autotest.local',
+    'e2e-suspend-webkit@autotest.local'
+);
+
 -- ── administration-mode RBAC (unit A14) ──────────────────────────────────
 -- The ROLES are not created here any more. When A14 wrote this block,
 -- 001_initial.sql seeded `default`-mode roles only, so no persona held a single
@@ -1284,6 +1326,26 @@ ENDSQL
       exit 1
     fi
     echo "  ✓ admin projects fixture verified: ${SEEDED_PROJECTS} project(s), ${PROJECT_PERMS}/4 permission(s)."
+
+    # The suspension fixtures (issue #519). Asserted here rather than trusted,
+    # for the reason every other block on this page is asserted: journey 28
+    # would otherwise report "the row is not on the page", which reads as a
+    # broken listing and not as a seed that wrote nothing. Both rows must
+    # exist AND both must start Active, because that journey asserts the
+    # Active precondition before it suspends.
+    SUSPEND_FIXTURES=$($EXEC_BIN exec -i "$POSTGRES_CONTAINER" psql -U elitea -d elitea -tAc "
+      SELECT COUNT(*) FROM auth_core__user
+      WHERE email IN (
+        'e2e-suspend-chromium@autotest.local',
+        'e2e-suspend-webkit@autotest.local'
+      ) AND suspended = false;")
+    if [ "${SUSPEND_FIXTURES:-0}" -lt 2 ]; then
+      echo "ERROR: seed did not leave the two suspension fixture users Active (got ${SUSPEND_FIXTURES:-0} of 2)." >&2
+      echo "  Journey 28 suspends one of them. It must not suspend the member persona:" >&2
+      echo "  a suspended principal answers 401 for every concurrent journey (issue #519)." >&2
+      exit 1
+    fi
+    echo "  ✓ suspension fixtures verified: ${SUSPEND_FIXTURES}/2 active."
 
     # ── postcondition: publish the audit fixture's DAY to the test run (#214) ──
     #

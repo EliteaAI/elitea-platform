@@ -45,9 +45,20 @@ import type { Page } from '@playwright/test';
 import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
 import { AUTOTEST_PREFIX, API_BASE, DEFAULT_PROJECT_ID, clickCreateButton } from '../../fixtures/api';
+import { readsPlatformFlags } from '../../fixtures/platformFlags';
 
 /** Unique to THIS file so concurrent journeys never collide on a name. */
 const toolkitName = (): string => `${AUTOTEST_PREFIX}tk${Date.now()}`;
+
+/*
+ * J17.3 asserts the "Make tools available by MCP" field, which `ToolBase` draws
+ * only while `useIsMcpVisible()` is true — that is the platform-wide
+ * `mcp_enabled` row, and `admin.features.spec.ts` turns it off and back on to
+ * prove the platform obeys it. J17.3 failed inside that window in 2 local runs
+ * of 10 and in three CI runs of `E2E (webkit)` (issue #519). The shared half of
+ * the platform-flag lock keeps this file out of the window.
+ */
+readsPlatformFlags(test);
 
 /** Ids created by this file, deleted in afterAll. Never a blanket `autotest_` sweep — other specs run concurrently. */
 const createdIds: string[] = [];
@@ -76,16 +87,44 @@ test('J17.1: an empty toolkit list redirects to the create page', async ({ page 
   // (pages/toolkits/Toolkits.tsx:57-67) driven by the REAL list response
   // (GET /elitea_core/tools/prompt_lib/{id} -> total 0). A stub page cannot
   // redirect, because the redirect is a function of server data.
-  const listResponse = page.waitForResponse(
-    (r) => r.request().method() === 'GET' && /\/elitea_core\/tools\/prompt_lib\//.test(r.url()),
-    { timeout: 20_000 },
-  );
-  await page.goto(BASE_URL + '/app/toolkits/all');
-
-  const resp = await listResponse;
-  expect(resp.status()).toBe(200);
-  const body = (await resp.json()) as { rows: unknown[]; total: number };
-  expect(body.total).toBe(0);
+  /*
+   * THE EMPTY LIST IS NOT THIS TEST'S TO ASSUME (issue #519).
+   *
+   * The subject is the redirect, and its input is the SERVER's row count for
+   * project 1. That project is shared: J17.3 below and the MCP journeys create
+   * a toolkit in it and delete it again, and `fullyParallel` runs all of them
+   * at once. So "the list is empty" is a condition of the platform at one
+   * moment, not a property of this test — and when the sample was taken while
+   * a sibling's fixture existed, this test reported `expect(0) received 1` and
+   * read as a broken redirect. Measured locally: 1 failure in 10 runs of the
+   * three files together.
+   *
+   * The load is therefore repeated until the response it is judged on really
+   * carries `total: 0`. Nothing is asserted more weakly: the count still comes
+   * from the product's own GET, the redirect is still driven by that response,
+   * and a platform that never empties fails this test by timeout rather than
+   * passing. What is removed is the comparison of a redirect against a list
+   * state that a different journey owned.
+   */
+  let listTotal = -1;
+  await expect
+    .poll(
+      async () => {
+        const listResponse = page.waitForResponse(
+          (r) =>
+            r.request().method() === 'GET' && /\/elitea_core\/tools\/prompt_lib\//.test(r.url()),
+          { timeout: 20_000 },
+        );
+        await page.goto(BASE_URL + '/app/toolkits/all');
+        const resp = await listResponse;
+        expect(resp.status()).toBe(200);
+        listTotal = ((await resp.json()) as { rows: unknown[]; total: number }).total;
+        return listTotal;
+      },
+      { timeout: 30_000, intervals: [500, 1_000, 2_000] },
+    )
+    .toBe(0);
+  expect(listTotal, 'the redirect below is judged on THIS response').toBe(0);
 
   await page.waitForURL(/\/app\/toolkits\/create/, { timeout: 20_000 });
   // The create screen really mounted — a form control, not a heading.
