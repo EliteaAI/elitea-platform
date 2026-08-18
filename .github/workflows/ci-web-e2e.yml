@@ -75,6 +75,13 @@ on:
   push:
     branches:
       - main
+      # The release staging branch (#518). Pull requests merge here first,
+      # and this branch merges into main later, so a push arm that names
+      # only `main` cannot guard the tree that becomes main. The name is
+      # held once in .github/staging-branch.txt, and
+      # scripts/ci/check-workflow-branch-coverage.sh fails when a workflow
+      # that names `main` here does not also name that branch.
+      - claude/issue-248-c5b380
     paths:
       - "apps/elitea-web/**"
       - "tools/uictl/**"
@@ -375,6 +382,56 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report-chat-stream
+          path: apps/elitea-web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  index-stream:
+    name: Index definition-of-done journey (#93)
+    # Issue #485. `apps/elitea-web/scripts/index-stream-e2e.sh` ran in no
+    # workflow, and neither did `deploy/scripts/embedding-path-check.sh`, which
+    # it calls. That second script is the reference honest validator in this
+    # repository — it counts its assertions and exits non-zero when fewer than
+    # 13 run — and no continuous-integration job could reach it. Its only two
+    # callers were `standalone-stack.sh check` and this journey, and neither
+    # ran anywhere.
+    #
+    # A separate job from `chat-stream` for the reason `chat-stream` is separate
+    # from `e2e`: it needs its own compose project on its own runner. Only one
+    # standalone stack can be up per host, because oidc-mock's port 9400 cannot
+    # be remapped (the issuer comes from the Host header).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The web and worker images build from repo-root context.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run the journey against a fresh standalone stack
+        # The script owns the whole lifecycle: runtime PKI, build, compose up,
+        # four seed steps, the embedding-path assertions, then Playwright. It
+        # uses its own compose project and tears down on exit.
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          INDEX_STREAM_PROJECT: elitea-indexstream-ci
+          INDEX_STREAM_PORT: "8087"
+          INDEX_STREAM_MOCK_PORT: "8091"
+        run: bash apps/elitea-web/scripts/index-stream-e2e.sh
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-index-stream
           path: apps/elitea-web/playwright-report/
           if-no-files-found: ignore
           retention-days: 14

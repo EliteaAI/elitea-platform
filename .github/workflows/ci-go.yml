@@ -27,6 +27,13 @@ on:
   push:
     branches:
       - main
+      # The release staging branch (#518). Pull requests merge here first,
+      # and this branch merges into main later, so a push arm that names
+      # only `main` cannot guard the tree that becomes main. The name is
+      # held once in .github/staging-branch.txt, and
+      # scripts/ci/check-workflow-branch-coverage.sh fails when a workflow
+      # that names `main` here does not also name that branch.
+      - claude/issue-248-c5b380
     paths:
       - "services/elitea-main/**"
       - "services/elitea-scheduler/**"
