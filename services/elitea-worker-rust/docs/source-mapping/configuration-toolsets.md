@@ -54,7 +54,7 @@ tools.
 
 Evidence was refreshed against the platform/Python worker commit
 `a87561d7a051e13716739764eb62299a253e10ba`, SDK commit
-`c0443b175adb8437e89826c17150330e32074faf`, and legacy indexer-worker commit
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, and legacy indexer-worker commit
 `b6c4ce83d997acbbbeb58fe040317a9e9352236f` on 2026-08-18. Later slices must
 refresh these pins because all three Python sources continue to evolve.
 
@@ -111,7 +111,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 
 | Configuration family | Python configuration symbol | Python toolkit symbol(s) | Fixed tools | Check | Rust targets | Status / notable gate |
 | --- | --- | --- | ---: | :---: | --- | --- |
-| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,code_search,commits,pull_requests,workflow_runs,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus nineteen explicit identity, branch, file, repository-navigation, issue, pull-request, commit, server-side code-search and workflow-status reads; the other 25 tools, workflow-log archives, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
+| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,code_search,commits,projects,pull_requests,workflow_runs,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus twenty explicit identity, branch, file, repository-navigation, issue, pull-request, commit, server-side code-search, workflow-status and Project V2 reads; the other 24 tools, workflow-log archives, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
 | `ado` | `configurations/ado.py::AdoConfiguration` | `tools/ado` dispatcher; repos, plans, boards, wiki toolkits | 74 | Yes | `configurations/families/ado.rs`; `toolkits/families/ado/` | Planned; one owner for shared auth/client and aliases |
 | `gitlab` | `configurations/gitlab.py::GitlabConfiguration` | `EliteAGitlabToolkit`, GitLab Org toolkit | 44 | Yes | `configurations/families/gitlab.rs`; `toolkits/families/gitlab/` | Planned; standard and org stay together |
 | `qtest` | `configurations/qtest.py::QtestConfiguration` | `tools/qtest::QtestToolkit` | 25 | Yes | `configurations/families/qtest.rs`; `toolkits/families/qtest/` | Planned |
@@ -189,7 +189,7 @@ validation-only success, token/basic call `/user`, and App JWT calls `/app`.
 App-backed tool execution is still rejected because an installation-token
 exchange has not been implemented.
 
-`src/toolkits/families/github/tools.rs` exposes nineteen explicitly selected
+`src/toolkits/families/github/tools.rs` exposes twenty explicitly selected
 ordinary reads through ADK-Rust 2.0.0's native `Tool`/`BasicToolset` boundary
 and the shared immutable blocklist. Empty selection still means all 44 SDK
 tools, so the partial Rust family rejects it instead of silently shrinking
@@ -214,6 +214,7 @@ The first file group follows this source-to-Rust chain:
 | SDK `tools/github/github_client.py::{get_commits,get_commit_changes,get_commits_diff}` plus `schemas.py::{GetCommits,GetCommitChanges,GetCommitsDiff}` | List commits with optional repository/ref/path/time/author filters; inspect one commit's totals and changed-file fragments; compare two general commit, branch or tag refs | `client.rs::GitHubApi::{list_commits,get_commit_changes,compare_commits}`, `commits.rs` and `tools.rs` preserve the public names, default count, success field names, renamed-file metadata and Python timestamp form. Rust canonicalizes date-only and offset timestamps to UTC before transport, safely projects missing authors as `Unknown`/null, caps list and compare commits at 100, commit files at 300, compare files below GitHub's ambiguous 300-file ceiling, patch fragments at 64 KiB and total output at 200,000 characters. It pages one commit until complete and rejects mismatched SHAs or overflow instead of silently returning a partial change set. Empty identical/behind comparisons derive the head only from the same compare snapshot (`base_commit`/`merge_base_commit`), so a mutable ref cannot be substituted by a later fallback request |
 | SDK `tools/github/github_client.py::search_code` plus `schemas.py::SearchCode` and PyGithub 2.3.0 `Github.search_code` | Blank-query rejection; configured-repository auto-scope unless an explicit `repo:`, `org:` or `user:` scope exists; optional indexed sort/order and caller-visible page metadata; file/repository/text-match success fields | `client.rs::GitHubApi::search_code`, `code_search.rs` and `tools.rs` preserve the public schema and explicit-scope behavior. Rust sends `page`/`per_page` in one direct `/search/code` request instead of walking and discarding lazy PyGithub pages, reports GitHub's actual `incomplete_results`, omits unknown provider fields, and never performs a per-result content request merely to discover absent text matches. Query, first-1,000 search window, page size, response, item/fragment/match collections and 200,000-character output are bounded; enums and 422 responses become stable invalid-input failures, and query/repository/upstream bodies are not logged or rendered |
 | SDK `tools/github/github_client.py::get_workflow_status` plus `schemas.py::GetWorkflowStatus` and PyGithub 2.3.0 `Repository.get_workflow_run`/`WorkflowRun.jobs` | Decimal string run ID, optional repository override, run identity/status/ref/timestamp metadata and job identity/status/timestamps | `client.rs::GitHubApi::get_workflow_status`, `workflow_runs.rs` and `tools.rs` preserve the callable schema and success fields through one run request plus one explicit jobs request. Rust validates the run ID before transport, verifies every returned job belongs to that run, preserves provider-nullable status/name/URL fields, caps each response and serialized output, normalizes timestamps, omits steps/unknown provider fields and returns at most 100 jobs together with `jobs_total_count` and `jobs_truncated`; this makes the deliberate bound visible instead of materializing the SDK's unbounded lazy iterator. Workflow log ZIP retrieval is a separate gate because archive, entry, path and decompressed-byte limits must be enforced together |
+| SDK `tools/github/graphql_client_wrapper.py::{list_project_issues,_list_project_issues_internal,_process_project_fields,_process_project_items}`, `tool_prompts.py::GraphQLTemplates` and `schemas.py::ListProjectIssues` | Select a repository Project V2 by number and return its identity, fields, single-select options, bounded item content, labels, assignees and text/date/single-select values | `client.rs::GitHubApi::list_project_issues`, `projects.rs` and `tools.rs` preserve the callable schema and projected success fields. Rust deliberately replaces the SDK's structure request plus mutable pagination loop with one fixed GraphQL query for at most 100 items, requests the option color that the Python projector exposes but its query omits, adds `items_total_count`/`items_truncated`, caps every nested collection, response and serialized output, and rejects partial GraphQL data whenever `errors` is nonempty. The endpoint is derived from the admitted REST base as GitHub documents: `/graphql` for a root API base and `/api/graphql` for an Enterprise `/api/v3` base; the pinned SDK's unconditional `requester.base_url + "/graphql"` is not copied. `search_project_issues` remains gated because the pinned GraphQL query declares but never uses `search_query`; Rust will not advertise an unfiltered list as search |
 
 The GitHub REST projection accepts only a `type=file`, exact base64-declared
 size and valid UTF-8 payload. Directories, symlinks, submodules, malformed
@@ -224,6 +225,10 @@ admitted API origin. Repository navigation first resolves the configured branch
 (falling back to the commit endpoint for a SHA, tag or other ref like the SDK), then accepts only a complete
 bounded recursive Git tree. Main/active whole-tree tools take no arguments, as
 their current SDK schemas require; directory listing is active-branch scoped.
+The GraphQL path shares the same invocation-scoped pool, immutable credentials,
+origin and timeout policy, but uses a fixed POST body and a separately derived
+GitHub-documented endpoint. Provider error messages and partial data are never
+returned to the model or retained in diagnostics.
 
 Connection checking remains a Main API responsibility. Main owns caller and
 project authorization, configuration/revision selection, request bounds,
@@ -243,7 +248,7 @@ not one prescribed language.
 Production registration remains disabled. Before this family can execute live
 agent work it still needs the authorized materializer connection, platform
 egress/private-DNS and Enterprise-CA policy, real GitHub TLS component proof,
-GitHub App installation-token support, the remaining 25 SDK operations
+GitHub App installation-token support, the remaining 24 SDK operations
 (including six indexing-only operations), and direct sensitive-tool/HITL
 fencing.
 

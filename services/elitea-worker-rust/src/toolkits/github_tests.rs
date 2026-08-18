@@ -25,6 +25,7 @@ use super::families::github::commits::{
     test_project_commit_changes, test_project_commit_comparison, test_project_commit_list,
 };
 use super::families::github::config::{GitHubAuthKind, GitHubToolkitConfig};
+use super::families::github::projects::{test_project_project_issues, test_project_query_payload};
 use super::families::github::pull_requests::{
     test_project_pull_request_detail, test_project_pull_request_files,
     test_project_pull_request_list,
@@ -254,6 +255,62 @@ fn workflow_status_requests_are_origin_bound_and_job_paging_is_explicit() {
     assert_eq!(
         jobs.url().as_str(),
         "https://github.example.test/api/v3/repos/EliteaAI/elitea-platform/actions/runs/9001/jobs?per_page=100&page=1"
+    );
+}
+
+#[test]
+fn project_query_uses_the_enterprise_graphql_endpoint_and_one_bounded_body() {
+    let client =
+        GitHubClient::new(token_config(&["list_project_issues"])).expect("GitHub project client");
+    let payload = test_project_query_payload("EliteaAI", "elitea-platform", 7, 25);
+    let request = client
+        .test_graphql_request(&payload, UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+        .expect("origin-bound GraphQL request");
+
+    assert_eq!(request.method().as_str(), "POST");
+    assert_eq!(
+        request.url().as_str(),
+        "https://github.example.test/api/graphql"
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get(AUTHORIZATION)
+            .expect("GraphQL authorization header"),
+        "token fixture-token"
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("content-type")
+            .expect("GraphQL content type"),
+        "application/json"
+    );
+    let encoded = request
+        .body()
+        .and_then(reqwest::Body::as_bytes)
+        .expect("bounded GraphQL request body");
+    assert_eq!(
+        serde_json::from_slice::<Value>(encoded).expect("GraphQL request JSON"),
+        payload
+    );
+
+    let public_config = GitHubToolkitConfig::parse(&settings(
+        &json!({
+            "configuration_type": "github",
+            "base_url": "https://api.github.com",
+            "access_token": "fixture-token"
+        }),
+        &["list_project_issues"],
+    ))
+    .expect("public GitHub project configuration");
+    let public = GitHubClient::new(public_config).expect("public GitHub project client");
+    let public_request = public
+        .test_graphql_request(&payload, UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+        .expect("public GraphQL request");
+    assert_eq!(
+        public_request.url().as_str(),
+        "https://api.github.com/graphql"
     );
 }
 
@@ -930,6 +987,154 @@ fn workflow_status_projection_preserves_sdk_fields_and_exposes_job_truncation() 
         "jobs": vec![job; 101]
     });
     assert!(test_project_workflow_status(&run, &oversized, 9001).is_err());
+}
+
+fn project_response() -> Value {
+    json!({
+        "data": {
+            "repository": {
+                "projectV2": {
+                    "id": "PVT_project",
+                    "title": "Runtime delivery",
+                    "url": "https://github.example.test/orgs/EliteaAI/projects/7",
+                    "fields": {
+                        "nodes": [{
+                            "id": "field-status",
+                            "name": "Status",
+                            "dataType": "SINGLE_SELECT",
+                            "options": [{"id": "todo", "name": "Todo", "color": "GRAY"}]
+                        }]
+                    },
+                    "items": {
+                        "totalCount": 2,
+                        "pageInfo": {"hasNextPage": true},
+                        "nodes": [{
+                            "id": "item-1",
+                            "type": "ISSUE",
+                            "fieldValues": {"nodes": [{
+                                "field": {"id": "field-status", "name": "Status"},
+                                "name": "Todo",
+                                "optionId": "todo"
+                            }]},
+                            "content": {
+                                "id": "issue-1",
+                                "number": 42,
+                                "title": "Make recovery boring",
+                                "state": "OPEN",
+                                "url": "https://github.example.test/EliteaAI/elitea-platform/issues/42",
+                                "labels": {"nodes": [{"id": "label-1", "name": "runtime", "color": "0052cc"}]},
+                                "assignees": {"nodes": [{"id": "user-1", "login": "octocat", "name": null}]}
+                            }
+                        }]
+                    }
+                }
+            }
+        }
+    })
+}
+
+#[test]
+fn project_projection_preserves_sdk_fields_and_reports_the_bounded_window() {
+    let response = project_response();
+    let projected = test_project_project_issues(&response, 1).expect("bounded project projection");
+    assert_eq!(
+        projected,
+        json!({
+            "id": "PVT_project",
+            "title": "Runtime delivery",
+            "url": "https://github.example.test/orgs/EliteaAI/projects/7",
+            "fields": [{
+                "id": "field-status",
+                "name": "Status",
+                "dataType": "SINGLE_SELECT",
+                "options": [{"id": "todo", "name": "Todo", "color": "GRAY"}]
+            }],
+            "items": [{
+                "id": "item-1",
+                "type": "ISSUE",
+                "fieldValues": [{
+                    "field": {"id": "field-status", "name": "Status"},
+                    "optionId": "todo",
+                    "optionName": "Todo"
+                }],
+                "content": {
+                    "id": "issue-1",
+                    "number": 42,
+                    "title": "Make recovery boring",
+                    "state": "OPEN",
+                    "url": "https://github.example.test/EliteaAI/elitea-platform/issues/42",
+                    "labels": [{"id": "label-1", "name": "runtime", "color": "0052cc"}],
+                    "assignees": [{"id": "user-1", "login": "octocat", "name": null}]
+                }
+            }],
+            "items_total_count": 2,
+            "items_truncated": true
+        })
+    );
+}
+
+#[test]
+fn project_projection_rejects_partial_or_wrong_windows_and_preserves_draft_nulls() {
+    let response = project_response();
+    let provider_limit = json!({
+        "errors": [{"extensions": {"type": "RATE_LIMITED"}}],
+        "data": response["data"].clone()
+    });
+    let rate_limit = test_project_project_issues(&provider_limit, 1)
+        .expect_err("GraphQL errors must not return partial project data");
+    assert_eq!(rate_limit.code(), GitHubClientErrorCode::RateLimited);
+    assert!(rate_limit.retryable());
+
+    let mut wrong_window = response;
+    wrong_window["data"]["repository"]["projectV2"]["items"]["nodes"] = json!([{}, {}]);
+    assert!(test_project_project_issues(&wrong_window, 1).is_err());
+
+    let draft = json!({
+        "data": {"repository": {"projectV2": {
+            "id": "PVT_project",
+            "title": "Runtime delivery",
+            "url": null,
+            "fields": {"nodes": []},
+            "items": {
+                "totalCount": 1,
+                "pageInfo": {"hasNextPage": false},
+                "nodes": [{
+                    "id": "draft-item",
+                    "type": "DRAFT_ISSUE",
+                    "fieldValues": {"nodes": []},
+                    "content": {"id": "draft-1", "title": "Untriaged"}
+                }]
+            }
+        }}}
+    });
+    let draft = test_project_project_issues(&draft, 1).expect("nullable draft projection");
+    assert_eq!(draft["url"], Value::Null);
+    assert_eq!(draft["items"][0]["content"]["number"], Value::Null);
+    assert_eq!(draft["items"][0]["content"]["url"], Value::Null);
+    assert_eq!(draft["items"][0]["content"]["state"], Value::Null);
+}
+
+#[test]
+fn project_projection_classifies_mixed_graphql_errors_independently_of_order() {
+    for errors in [
+        json!([
+            {"extensions": {"type": "RATE_LIMITED"}},
+            {"extensions": {"type": "FORBIDDEN"}}
+        ]),
+        json!([
+            {"extensions": {"type": "FORBIDDEN"}},
+            {"extensions": {"type": "RATE_LIMITED"}}
+        ]),
+    ] {
+        let response = json!({
+            "errors": errors,
+            "data": project_response()["data"].clone()
+        });
+        let failure = test_project_project_issues(&response, 1)
+            .expect_err("mixed GraphQL error categories must fail closed");
+        assert_eq!(failure.code(), GitHubClientErrorCode::InvalidResponse);
+        assert!(!failure.retryable());
+    }
 }
 
 #[test]
@@ -1690,6 +1895,93 @@ async fn native_workflow_status_preserves_the_string_id_and_optional_repository_
     );
 }
 
+#[tokio::test]
+async fn native_project_read_preserves_the_sdk_schema_with_a_visible_hard_bound() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    let selected = vec!["list_project_issues".to_owned()];
+    let toolset = test_build_with_api(
+        "team-github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &(client.clone() as Arc<dyn GitHubApi>),
+    )
+    .expect("native project toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset.tools(readonly).await.expect("project tool");
+    let projects = tools
+        .iter()
+        .find(|tool| tool.name() == "list_project_issues")
+        .expect("selected project tool");
+
+    assert!(
+        projects
+            .execute(
+                context(),
+                json!({
+                    "board_repo": "EliteaAI/elitea-platform",
+                    "project_number": 7,
+                    "items_count": 25
+                }),
+            )
+            .await
+            .is_ok()
+    );
+    assert!(
+        projects
+            .execute(
+                context(),
+                json!({
+                    "board_repo": "EliteaAI/elitea-platform",
+                    "project_number": 7,
+                    "items_count": null
+                }),
+            )
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        client
+            .project_calls
+            .lock()
+            .expect("project calls fixture lock")
+            .as_slice(),
+        &[
+            "EliteaAI/elitea-platform:7:25".to_owned(),
+            "EliteaAI/elitea-platform:7:100".to_owned()
+        ]
+    );
+    assert_eq!(
+        projects
+            .parameters_schema()
+            .and_then(|schema| schema.pointer("/properties/items_count/maximum").cloned()),
+        Some(json!(100))
+    );
+
+    let calls_before = client
+        .project_calls
+        .lock()
+        .expect("project calls fixture lock")
+        .len();
+    for invalid in [
+        json!({"board_repo": "missing-slash", "project_number": 7}),
+        json!({"board_repo": "EliteaAI/elitea-platform", "project_number": 0}),
+        json!({"board_repo": "EliteaAI/elitea-platform", "project_number": 2_147_483_648_u64}),
+        json!({"board_repo": "EliteaAI/elitea-platform", "project_number": 7, "items_count": 101}),
+        json!({"board_repo": "EliteaAI/elitea-platform", "project_number": 7, "unknown": true}),
+    ] {
+        assert!(projects.execute(context(), invalid).await.is_err());
+    }
+    assert_eq!(
+        client
+            .project_calls
+            .lock()
+            .expect("project calls fixture lock")
+            .len(),
+        calls_before
+    );
+}
+
 #[test]
 fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
@@ -1720,6 +2012,7 @@ struct FixtureGitHubApi {
     commit_calls: Mutex<Vec<String>>,
     code_search_calls: Mutex<Vec<String>>,
     workflow_status_calls: Mutex<Vec<String>>,
+    project_calls: Mutex<Vec<String>>,
 }
 
 type FileCall = (String, Option<String>, Option<String>);
@@ -1930,5 +2223,26 @@ impl GitHubApi for FixtureGitHubApi {
             .expect("workflow-status calls fixture lock")
             .push(format!("{run_id}:{}", repository.unwrap_or("default")));
         Ok(json!({"id": run_id, "jobs": []}))
+    }
+
+    async fn list_project_issues(
+        &self,
+        board_repository: &str,
+        project_number: u32,
+        items_count: usize,
+    ) -> Result<Value, GitHubClientError> {
+        self.project_calls
+            .lock()
+            .expect("project calls fixture lock")
+            .push(format!("{board_repository}:{project_number}:{items_count}"));
+        Ok(json!({
+            "id": "project-1",
+            "title": "Delivery",
+            "url": "https://github.example.test/orgs/EliteaAI/projects/7",
+            "fields": [],
+            "items": [],
+            "items_total_count": 0,
+            "items_truncated": false
+        }))
     }
 }

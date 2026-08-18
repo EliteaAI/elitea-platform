@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat};
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, HeaderMap, HeaderValue, RETRY_AFTER};
+use reqwest::header::{
+    ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER,
+};
 use reqwest::{Method, StatusCode, Url};
 use ring::rand::SystemRandom;
 use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
@@ -22,6 +24,9 @@ use super::commits::{
     commit_response_sha, finish_commit_changes, project_commit_comparison, project_commit_list,
 };
 use super::config::{GitHubAuthKind, GitHubToolkitConfig};
+use super::projects::{
+    MAX_PROJECT_ITEMS, MAX_PROJECT_RESPONSE_BYTES, project_project_issues, project_query_payload,
+};
 use super::pull_requests::{
     MAX_PULL_REQUEST_FILES, MAX_PULL_REQUESTS, PULL_REQUEST_FILES_PER_PAGE,
     append_pull_request_file_page, finish_pull_request_files, project_pull_request_detail,
@@ -274,6 +279,13 @@ pub(crate) trait GitHubApi: Send + Sync {
         run_id: u64,
         repository: Option<&str>,
     ) -> Result<Value, GitHubClientError>;
+
+    async fn list_project_issues(
+        &self,
+        board_repository: &str,
+        project_number: u32,
+        items_count: usize,
+    ) -> Result<Value, GitHubClientError>;
 }
 
 /// Selects one of the two immutable branches admitted with the toolkit.
@@ -402,6 +414,35 @@ impl GitHubClient {
         Ok(endpoint)
     }
 
+    fn graphql_endpoint(&self) -> Result<Url, GitHubClientError> {
+        let mut endpoint = self.config.base_url().clone();
+        match endpoint.path().trim_end_matches('/') {
+            "" => endpoint.set_path("/graphql"),
+            "/api/v3" => endpoint.set_path("/api/graphql"),
+            _ => return Err(invalid_configuration()),
+        }
+        Ok(endpoint)
+    }
+
+    fn build_graphql_request_at(
+        &self,
+        payload: &Value,
+        now: SystemTime,
+    ) -> Result<reqwest::Request, GitHubClientError> {
+        let body = serde_json::to_vec(payload).map_err(|_| invalid_configuration())?;
+        let mut builder = self
+            .http
+            .request(Method::POST, self.graphql_endpoint()?)
+            .header(ACCEPT, "application/json")
+            .header(CONTENT_TYPE, "application/json")
+            .timeout(REQUEST_TIMEOUT)
+            .body(body);
+        if let Some(authorization) = self.authorization(GitHubRequestKind::Repository, now)? {
+            builder = builder.header(AUTHORIZATION, authorization);
+        }
+        builder.build().map_err(|_| invalid_configuration())
+    }
+
     fn authorization(
         &self,
         kind: GitHubRequestKind,
@@ -442,6 +483,23 @@ impl GitHubClient {
     ) -> Result<Value, GitHubClientError> {
         let request =
             self.build_request_at(kind, path, query, REQUEST_TIMEOUT, SystemTime::now())?;
+        self.execute_json_request(request, max_response_bytes).await
+    }
+
+    async fn post_graphql_json(
+        &self,
+        payload: &Value,
+        max_response_bytes: usize,
+    ) -> Result<Value, GitHubClientError> {
+        let request = self.build_graphql_request_at(payload, SystemTime::now())?;
+        self.execute_json_request(request, max_response_bytes).await
+    }
+
+    async fn execute_json_request(
+        &self,
+        request: reqwest::Request,
+        max_response_bytes: usize,
+    ) -> Result<Value, GitHubClientError> {
         let mut response = self
             .http
             .execute(request)
@@ -926,6 +984,23 @@ impl GitHubApi for GitHubClient {
             .await?;
         project_workflow_status(&run, &jobs, run_id)
     }
+
+    async fn list_project_issues(
+        &self,
+        board_repository: &str,
+        project_number: u32,
+        items_count: usize,
+    ) -> Result<Value, GitHubClientError> {
+        if items_count == 0 || items_count > MAX_PROJECT_ITEMS {
+            return Err(invalid_input());
+        }
+        let (owner, repository) = validate_repository(board_repository)?;
+        let payload = project_query_payload(owner, repository, project_number, items_count);
+        let response = self
+            .post_graphql_json(&payload, MAX_PROJECT_RESPONSE_BYTES)
+            .await?;
+        project_project_issues(&response, items_count)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1330,7 +1405,7 @@ fn bounded_issue_output(value: Value) -> Result<Value, GitHubClientError> {
     Ok(value)
 }
 
-fn validate_repository(value: &str) -> Result<(&str, &str), GitHubClientError> {
+pub(super) fn validate_repository(value: &str) -> Result<(&str, &str), GitHubClientError> {
     let (owner, repository) = value.split_once('/').ok_or_else(invalid_configuration)?;
     if repository.contains('/')
         || !valid_repository_segment(owner)
@@ -1555,7 +1630,7 @@ fn secret_header(prefix: &str, secret: &str) -> Result<HeaderValue, GitHubClient
     HeaderValue::from_str(&value).map_err(|_| invalid_configuration())
 }
 
-const fn error(code: GitHubClientErrorCode) -> GitHubClientError {
+pub(super) const fn error(code: GitHubClientErrorCode) -> GitHubClientError {
     GitHubClientError { code }
 }
 
@@ -1593,6 +1668,14 @@ impl GitHubClient {
         now: SystemTime,
     ) -> Result<reqwest::Request, GitHubClientError> {
         self.build_request_at(kind, path, query, REQUEST_TIMEOUT, now)
+    }
+
+    pub(in crate::toolkits) fn test_graphql_request(
+        &self,
+        payload: &Value,
+        now: SystemTime,
+    ) -> Result<reqwest::Request, GitHubClientError> {
+        self.build_graphql_request_at(payload, now)
     }
 }
 

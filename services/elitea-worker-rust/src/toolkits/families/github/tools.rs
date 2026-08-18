@@ -13,7 +13,7 @@ use crate::toolkits::policy::ToolAdmissionPolicy;
 
 use super::client::{
     GitHubApi, GitHubClient, GitHubClientError, GitHubCodeSearchQuery, GitHubCommitQuery,
-    GitHubFileScope,
+    GitHubFileScope, validate_repository,
 };
 use super::config::{GitHubToolkitConfig, GitHubToolkitConfigError};
 
@@ -36,6 +36,7 @@ const GET_COMMIT_CHANGES: &str = "get_commit_changes";
 const COMPARE_COMMITS: &str = "get_commits_diff";
 const SEARCH_CODE: &str = "search_code";
 const GET_WORKFLOW_STATUS: &str = "get_workflow_status";
+const LIST_PROJECT_ISSUES: &str = "list_project_issues";
 const MAX_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_OUTPUT_CHARS: usize = 200_000;
 const MAX_BATCH_FILES: usize = 32;
@@ -120,7 +121,7 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
 /// Build the capability-disabled first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. Nineteen explicitly selected ordinary read
+/// until the full family is ported. Twenty explicitly selected ordinary read
 /// operations can use this path. The production capability remains disabled
 /// until sensitive effects, the rest of the read catalog, GitHub App
 /// installation auth and cross-process TLS integration are complete.
@@ -164,6 +165,7 @@ fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
                     | COMPARE_COMMITS
                     | SEARCH_CODE
                     | GET_WORKFLOW_STATUS
+                    | LIST_PROJECT_ISSUES
             )
         })
     {
@@ -203,6 +205,7 @@ fn build_with_api(
             COMPARE_COMMITS => GitHubReadToolKind::CompareCommits,
             SEARCH_CODE => GitHubReadToolKind::SearchCode,
             GET_WORKFLOW_STATUS => GitHubReadToolKind::GetWorkflowStatus,
+            LIST_PROJECT_ISSUES => GitHubReadToolKind::ListProjectIssues,
             _ => {
                 return Err(GitHubToolsetError {
                     code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -240,6 +243,7 @@ enum GitHubReadToolKind {
     CompareCommits,
     SearchCode,
     GetWorkflowStatus,
+    ListProjectIssues,
 }
 
 struct GitHubReadTool {
@@ -309,6 +313,9 @@ impl GitHubReadTool {
             GitHubReadToolKind::GetWorkflowStatus => {
                 "Inspect one GitHub Actions run and its first bounded page of job status details."
             }
+            GitHubReadToolKind::ListProjectIssues => {
+                "List one bounded GitHub Project V2 snapshot with fields and items."
+            }
         };
         let description = bounded_description(&format!(
             "Toolkit: {toolkit_name}\nRepository: {repository}\n{action}"
@@ -344,6 +351,7 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::CompareCommits => COMPARE_COMMITS,
             GitHubReadToolKind::SearchCode => SEARCH_CODE,
             GitHubReadToolKind::GetWorkflowStatus => GET_WORKFLOW_STATUS,
+            GitHubReadToolKind::ListProjectIssues => LIST_PROJECT_ISSUES,
         }
     }
 
@@ -381,6 +389,7 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::CompareCommits => compare_commits_schema(),
             GitHubReadToolKind::SearchCode => search_code_schema(),
             GitHubReadToolKind::GetWorkflowStatus => get_workflow_status_schema(),
+            GitHubReadToolKind::ListProjectIssues => list_project_issues_schema(),
         })
     }
 
@@ -462,6 +471,9 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::SearchCode => self.execute_search_code(arguments).await,
             GitHubReadToolKind::GetWorkflowStatus => {
                 self.execute_get_workflow_status(arguments).await
+            }
+            GitHubReadToolKind::ListProjectIssues => {
+                self.execute_list_project_issues(arguments).await
             }
         }
     }
@@ -824,6 +836,35 @@ fn get_workflow_status_schema() -> Value {
             "repo_name": optional_string_schema(512, "Optional repository in owner/name form.")
         },
         "required": ["run_id"],
+        "additionalProperties": false
+    })
+}
+
+fn list_project_issues_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "board_repo": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 512,
+                "description": "Organization and repository that owns the project, in owner/name form."
+            },
+            "project_number": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": i32::MAX,
+                "description": "Project V2 number shown in the GitHub project URL."
+            },
+            "items_count": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "maximum": 100,
+                "default": 100,
+                "description": "Maximum project items returned by one bounded GraphQL request."
+            }
+        },
+        "required": ["board_repo", "project_number"],
         "additionalProperties": false
     })
 }
@@ -1193,6 +1234,28 @@ impl GitHubReadTool {
         let repository = optional_text(arguments, "repo_name", 512)?;
         self.client
             .get_workflow_status(run_id, repository)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
+
+    async fn execute_list_project_issues(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["board_repo", "project_number", "items_count"])?;
+        let board_repository = required_text(arguments, "board_repo", 512)?;
+        validate_repository(board_repository).map_err(GitHubClientError::into_adk)?;
+        let project_number = required_positive_u64(arguments, "project_number")?;
+        let project_number = u32::try_from(project_number)
+            .ok()
+            .filter(|number| i32::try_from(*number).is_ok())
+            .ok_or_else(invalid_arguments)?;
+        let items_count = optional_positive_usize(arguments, "items_count")?.unwrap_or(100);
+        if items_count > 100 {
+            return Err(invalid_arguments());
+        }
+        self.client
+            .list_project_issues(board_repository, project_number, items_count)
             .await
             .map_err(GitHubClientError::into_adk)
     }
