@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
@@ -345,7 +346,12 @@ func importPrincipalUserID(ctx context.Context) (int, bool) {
 		return 0, false
 	}
 	ownerID, ok := user.OwningUserID()
-	if !ok {
+	// The author and owner columns are INTEGER, so an id above math.MaxInt32
+	// names no row this schema holds. On a 32-bit build, `int(ownerID)`
+	// truncates such an id into one that belongs to a different account. That
+	// is the same mis-attribution this function exists to stop. An id outside
+	// the range is refused, not truncated.
+	if !ok || ownerID <= 0 || ownerID > math.MaxInt32 {
 		return 0, false
 	}
 	return int(ownerID), true

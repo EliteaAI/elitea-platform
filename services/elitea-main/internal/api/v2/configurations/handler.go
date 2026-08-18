@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -529,7 +530,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var authorID any
 	var snapshotAuthorID *int
 	if user, ok := auth.UserFromContext(ctx); ok {
-		if owningUserID, safe := user.OwningUserID(); safe {
+		// author_id is an INTEGER column, so an id above math.MaxInt32 names
+		// no row. The sibling mutation service applies the same bound
+		// (application/configurations/mutation.go). Without the bound,
+		// `int(owningUserID)` truncates on a 32-bit build. The row is then
+		// stored against a different person's id.
+		if owningUserID, safe := user.OwningUserID(); safe && owningUserID > 0 && owningUserID <= math.MaxInt32 {
 			authorID = owningUserID
 			owner := int(owningUserID)
 			snapshotAuthorID = &owner
@@ -581,9 +587,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	// resolves must reach status_ok = true here, in this request, because the
 	// LLM gateway admits only status_ok = true and no other component in a
 	// shipped stack writes the column (#457).
-	c.StatusOK = h.admitConfiguration(ctx, schema, c.StatusOK, configurationAdmissionSnapshot(
+	if snapshot, ok := configurationAdmissionSnapshot(
 		id, uuid, pID, title, configType, section, c.Data, snapshotAuthorID,
-	))
+	); ok {
+		c.StatusOK = h.admitConfiguration(ctx, schema, c.StatusOK, snapshot)
+	}
 
 	writeJSON(w, http.StatusCreated, c)
 }
@@ -695,9 +703,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	// The path project identifier is the one the schema was built from, so it
 	// is the project whose row was just written.
 	if pID, convErr := strconv.Atoi(projectID); convErr == nil {
-		c.StatusOK = h.admitConfiguration(ctx, schema, c.StatusOK, configurationAdmissionSnapshot(
+		if snapshot, ok := configurationAdmissionSnapshot(
 			c.ID, c.UUID, pID, c.Name, c.Type, c.Section, c.Data, c.AuthorID,
-		))
+		); ok {
+			c.StatusOK = h.admitConfiguration(ctx, schema, c.StatusOK, snapshot)
+		}
 	}
 	writeJSON(w, http.StatusOK, c)
 }
