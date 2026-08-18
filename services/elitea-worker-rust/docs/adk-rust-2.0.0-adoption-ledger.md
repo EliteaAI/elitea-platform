@@ -50,6 +50,16 @@ Write activation additionally requires an owned cancellation-safe effect
 identity/reconciliation boundary: dropping an ADK tool future must never turn
 an accepted but response-lost remote mutation into an ordinary cancellation.
 
+The complete capability-disabled `Salesforce` family adds six native ADK
+tools in SDK order: two creates, one SOQL read, two updates and the generic
+GET/POST/PATCH/DELETE escape hatch. One invocation-scoped client owns the
+claim-materialized nested credential, lazy OAuth token, fixed HTTPS/version
+root and bounded response projection. All effects are present, but production
+composition remains closed until authorized materialization, provider proof,
+the shared exact-`interrupt_id` sensitive-tool flow and a cancellation-safe
+effect identity/reconciliation owner are composed. Operation grouping remains
+model/catalog metadata and never grants execution authority.
+
 ## Parallel node decision
 
 The new YAML node is a graph construct, not concurrent subagent dispatch. Its

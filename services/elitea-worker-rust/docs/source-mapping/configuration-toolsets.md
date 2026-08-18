@@ -148,7 +148,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `sonar` | `configurations/sonar.py::SonarConfiguration` | `tools/code/sonar::SonarToolkit` | 1 | No | `toolkits/families/sonar/{config,client,tools}.rs` | Capability-disabled complete read family: one project-bound `/api/issues/search` request with bounded filters and raw JSON projection; authorized materialization and live Sonar TLS proof remain gates |
 | `sql` | `configurations/sql.py::SqlConfiguration` | `tools/sql::SQLToolkit` | 2 | No | corresponding family paths | Planned; dialect/driver and query policy required |
 | `google_places` | `configurations/google_places.py::GooglePlacesConfiguration` | `tools/google_places::GooglePlacesToolkit` | 2 | No | `toolkits/families/google_places/{config,client,tools}.rs` | Capability-disabled complete read family: supported Places API (New) projection for `places` and `find_near`; attribution/persisted-result policy, authorized materialization and live provider proof remain gates |
-| `salesforce` | `SalesforceConfiguration` | `SalesforceToolkit` | 6 | No | corresponding family paths | Planned; source has no focused family tests |
+| `salesforce` | `configurations/salesforce.py::SalesforceConfiguration` | `tools/salesforce::SalesforceToolkit` | 6 | No | `toolkits/families/salesforce/{config,client,tools}.rs` | Capability-disabled complete family: six bounded CRM tools, including create/update and generic GET/POST/PATCH/DELETE; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
 | `sharepoint` | `SharepointConfiguration` | `SharepointToolkit` | 28 | Yes | corresponding family paths | Planned; delegated/app-only auth and content limits |
 | `carrier` | `CarrierConfiguration` | `EliteACarrierToolkit` | 18 | No | corresponding family paths | Planned; source has no focused family tests |
 | `report_portal` | `ReportPortalConfiguration` | `ReportPortalToolkit` | 9 | Yes | corresponding family paths | Planned; source has no focused family tests |
@@ -606,6 +606,109 @@ POST/PATCH rather than settling cancellation as if no effect occurred. Group
 metadata does not decide sensitivity: policy may require approval for the read,
 either write, all three or none.
 
+### Salesforce complete CRM family
+
+The source baseline is current SDK
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, worker-pinned SDK
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`, Python worker/Main
+`1282fc7d2111a46d3e2e7ec15ecdc013e8b3c93e` and the worker's
+`requests==2.34.0` transport contract. The current-versus-pinned SDK behavior
+diff only adds `write`/`read`/`execute` group annotations. Both SDK versions
+define the same configuration, callable arguments, lazy OAuth flow and result
+shapes; neither contains focused Salesforce family tests.
+
+Main freezes `{type, toolkit_name, settings}` in
+`internal/application/agentexecution/tools.go` and claim-time
+`internal/infra/storage/configurations_materializer.go` resolves the nested
+`salesforce_configuration`. Python worker
+`agents/sdk_adapter.py::EliteaSdkAgentAdapter::{execute_application,execute_adhoc}`
+passes the same frozen tool snapshot into both SDK entry points. Rust accepts
+only this materialized nested authority. It has no environment credential or
+secondary configuration lookup.
+
+SDK `tools/salesforce/api_wrapper.py::SalesforceApiWrapper` exposes the full
+family in this order:
+
+1. `create_case` (`write`) creates one Case from subject, description, origin
+   and status;
+2. `create_lead` (`write`) creates one Lead from last name, company, email and
+   phone;
+3. `search_salesforce` (`read`) runs one complete SOQL query; the required
+   `object_type` remains a compatibility label and does not alter the query;
+4. `update_case` (`write`) changes status and optionally a nonempty
+   Description;
+5. `update_lead` (`write`) changes nonempty Email and/or Phone;
+6. `execute_generic_rq` (`execute`) calls a version-relative Salesforce REST
+   resource using GET, POST, PATCH or DELETE.
+
+Empty selection means all six and a subset retains this source order. The Rust
+catalog does not hide effects. Each model-facing description distinguishes the
+business operation, read/effect behavior, retry ambiguity and preferred
+dedicated tool. Every argument schema states its required format, null/default
+meaning, bound and useful example where one affects selection. This is a
+deliberate clarity improvement over the SDK's one-line action labels: tool
+selection quality and avoidable retry tokens are part of the functional
+contract, while the operations and result meaning remain unchanged.
+
+The client lazily POSTs the client-credentials form to
+`/services/oauth2/token`, then binds all resource requests to the configured
+HTTPS origin and `/services/data/{api_version}` root. Dedicated creates POST
+the source field names, search encodes one `q` pair and returns the first page,
+and updates PATCH a validated 15- or 18-character Salesforce record ID.
+Generic GET maps its JSON-object string to scalar query pairs; generic
+POST/PATCH/DELETE use it as a JSON body. A successful JSON response is returned
+as the SDK-compatible object/array, while 204 update/generic success returns
+the same `{success,message}` shape.
+
+Rust preserves functionality while closing source defects and unbounded
+behavior:
+
+- one materialized toolkit owns one non-`Clone`, non-`Debug`, zeroizing client
+  credential, lazy token and bounded HTTP pool;
+- only an exact HTTPS origin and `v<digits>.<digits>` API version are admitted;
+  redirects, userinfo, path/query/fragment authority and argument-selected
+  origins are rejected;
+- request, response, output, token, SOQL, generic path/query and recursive JSON
+  sizes are bounded; diagnostics contain no token, credential, URL, query,
+  payload or provider body;
+- the client disables reqwest's implicit protocol retries. It refreshes and
+  replays once only after an explicit provider 401, which proves rejection;
+  transport loss, timeout, rate limit or 5xx after an effect dispatch is an
+  `UnknownOutcome`, never automatic retry authority;
+- search intentionally returns one page instead of following unbounded
+  `nextRecordsUrl` fanout;
+- Case Description keeps the SDK rule that omitted/empty means unchanged and
+  cannot clear the field; Lead update rejects the SDK's no-op empty PATCH;
+- generic method is the documented uppercase enum, GET uses query parameters,
+  and a version-root-relative path cannot supply a scheme, authority, query,
+  fragment, percent escape or traversal component.
+
+| Current business source | Preserved behavior | Rust owner / deliberate hardening |
+| --- | --- | --- |
+| Main freezer/materializer and Python shared SDK adapter | Claim-scoped nested configuration, selected tools, stable toolkit name and one application/ad-hoc family contract | `config.rs` parses that exact authority and creates no global credential or lookup fallback |
+| SDK `SalesforceApiWrapper::{authenticate,_headers,create_case,create_lead}` | Lazy client-credentials token plus dedicated Case/Lead POST field maps and raw JSON results | `client.rs::SalesforceApi::{create_case,create_lead}` preserves the calls and results through one bounded origin-bound client; effect ambiguity is typed and nonretryable |
+| SDK `SalesforceApiWrapper::search_salesforce` | Required compatibility label, complete caller SOQL and first raw query page | `client.rs::SalesforceApi::search_salesforce` preserves the label/query contract, encodes one `q` pair and bounds the single returned page |
+| SDK `SalesforceApiWrapper::{update_case,update_lead}` | PATCH one exact record, omit empty optional fields and return the 204 success object | Rust validates Salesforce IDs, retains the Case no-clear rule and rejects the source's empty Lead no-op before network use |
+| SDK `SalesforceApiWrapper::execute_generic_rq` | Version-relative GET/POST/PATCH/DELETE escape hatch and JSON-string params | Rust retains all four methods while fixing lowercase/method ambiguity, GET query semantics and route confinement; DELETE is not omitted |
+| SDK `SalesforceToolkit`, model classes and shared `BaseAction` | Exact source order, empty/subset selection, public arguments and operation groups | `tools.rs` plus the shared invocation/policy kernel expose all six native ADK tools with selection-oriented descriptions and immutable block filtering |
+
+Neither Salesforce configuration nor toolkit defines `check_connection`; the
+current catalogs report it unsupported and Rust does not invent a probe.
+Client construction is offline and OAuth occurs only at real invocation. A
+future explicit check can reuse the same bounded client after Main defines its
+authorization and audit contract.
+
+Production registration remains disabled, not functionally reduced. The read,
+create, update and generic delete-capable implementations are compiled and
+tested. Activation requires the authorized application/ad-hoc materializer, a
+credentialed Salesforce component proof, and the shared durable
+exact-`interrupt_id` guardrail. Operation group is not authorization: trusted
+configuration may mark search, one write, the generic tool, all six or none as
+sensitive. After effect dispatch, the owned invocation must retain effect
+identity through provider completion or explicit unknown-outcome recovery;
+dropping an ADK tool future must not settle cancellation as proof that a
+create, PATCH or DELETE did not happen.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -624,10 +727,10 @@ either write, all three or none.
 The shared schema, bounded HTTP, credential, policy, invocation-event,
 cancellation and ADK `Toolset` kernel is now stable enough for independent
 REST families; Google Places, Sonar and Azure Search are complete reads, while
-ServiceNow proves the same boundary can retain bounded create/update effects
-without activating them ahead of durable approval. These follow the partial
-GitHub reference family. Parallel family work still must not share mutable files
-or weaken the capability gate.
+ServiceNow and Salesforce prove the same boundary can retain bounded
+create/update/delete effects without activating them ahead of durable approval.
+These follow the partial GitHub reference family. Parallel family work still
+must not share mutable files or weaken the capability gate.
 Non-overlapping batches are:
 
 1. GitHub completion as the broad reference family, including its gated effects.
