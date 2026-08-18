@@ -3,6 +3,7 @@ package failmode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -63,7 +64,7 @@ func TestSweep_ClearsRowWithNoBreakerEdge(t *testing.T) {
 	r := NewReconciler(db, c, dc, nil)
 	r.sweepInterval = 5 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer stopSweep(t, cancel, db)
 	r.Start(ctx)
 
 	waitFor(t, time.Second, func() bool {
@@ -100,7 +101,7 @@ func TestSweep_DoesNotResetCapsForScopesItDidNotReconcile(t *testing.T) {
 	r := NewReconciler(db, newFakeCounter(), dc, nil)
 	r.sweepInterval = 5 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer stopSweep(t, cancel, db)
 	r.Start(ctx)
 
 	waitFor(t, time.Second, func() bool {
@@ -131,7 +132,7 @@ func TestSweep_SkipsRecoveryWhileNATSIsDown(t *testing.T) {
 	r.sweepInterval = 5 * time.Millisecond
 	r.SetHealthCheck(up.get)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer stopSweep(t, cancel, db)
 	r.Start(ctx)
 
 	// Several ticks with NATS down.
@@ -152,10 +153,10 @@ func TestSweep_SkipsRecoveryWhileNATSIsDown(t *testing.T) {
 		t.Fatalf("sweep opened %d transactions while NATS was down; it must not even write the crash marker", begins)
 	}
 	// The gauge is still refreshed, so the held row is visible for the whole
-	// outage rather than only after it ends.
-	if got := outageRowsGauge.Value(); got != 1 {
-		t.Fatalf("outage-rows gauge = %d, want 1 while the row is held", got)
-	}
+	// outage rather than only after it ends. It is a process-wide variable, so
+	// this waits for the value instead of reading it once.
+	waitFor(t, time.Second, func() bool { return outageRowsGauge.Value() == 1 },
+		fmt.Sprintf("outage-rows gauge = %d, want 1 while the row is held", outageRowsGauge.Value()))
 
 	// NATS returns. The very next tick releases the row — no breaker edge.
 	up.set(true)
@@ -182,7 +183,7 @@ func TestSweep_FailedReconcileRetainsRowAndCountsFailure(t *testing.T) {
 	r := NewReconciler(db, c, NewDegradedCounters(), nil)
 	r.sweepInterval = 5 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer stopSweep(t, cancel, db)
 	r.Start(ctx)
 
 	waitFor(t, time.Second, func() bool { return recoveryFailuresMetric.Value() > before },
@@ -282,7 +283,6 @@ func TestSweep_StartIsIdempotent(t *testing.T) {
 func TestSweep_PanicDoesNotStopTheTicker(t *testing.T) {
 	db := &recDB{}
 	r := NewReconciler(db, newFakeCounter(), NewDegradedCounters(), nil)
-	r.Start(context.Background())
 
 	orig := runtimeStack
 	runtimeStack = func(buf []byte, _ bool) int { panic("stack blew up") }
@@ -371,6 +371,29 @@ type healthFlag struct {
 
 func (a *healthFlag) get() bool  { a.mu.Lock(); defer a.mu.Unlock(); return a.v }
 func (a *healthFlag) set(v bool) { a.mu.Lock(); a.v = v; a.mu.Unlock() }
+
+// stopSweep cancels a sweep's context and waits until its goroutine has stopped
+// ticking, so a pass from THIS test cannot write the process-wide gauge after
+// the next test has started. Cancel alone does not give that: it returns while
+// the goroutine may still be inside a pass.
+func stopSweep(t *testing.T, cancel context.CancelFunc, db *recDB) {
+	t.Helper()
+	cancel()
+	read := func() int {
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		return db.countHits
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		before := read()
+		time.Sleep(20 * time.Millisecond)
+		if read() == before {
+			return
+		}
+	}
+	t.Fatal("the sweep goroutine kept ticking after its context was cancelled")
+}
 
 // waitFor polls cond until it holds or the deadline passes.
 func waitFor(t *testing.T, limit time.Duration, cond func() bool, msg string) {
