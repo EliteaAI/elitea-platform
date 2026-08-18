@@ -5,6 +5,8 @@ use serde_json::{Map, Value};
 
 use crate::agents::request::{AgentExecutionKind, AgentExecutionRequest};
 
+use super::policy::{ToolAdmissionDecision, ToolAdmissionPolicy};
+
 const MAX_FROZEN_TOOL_REFERENCES: usize = 1_024;
 const MAX_TOOL_IDENTIFIER_BYTES: usize = 1_024;
 const MAX_SELECTED_TOOLS: usize = 1_024;
@@ -65,6 +67,14 @@ pub(crate) struct FrozenToolSnapshot<'a> {
     references: Vec<FrozenToolReference<'a>>,
 }
 
+/// Frozen references after whole-toolkit deployment policy is applied.
+///
+/// Specific tool-name restrictions are evaluated again after materialization,
+/// when concrete ADK tool identities exist.
+pub(crate) struct AdmittedToolSnapshot<'a> {
+    references: Vec<FrozenToolReference<'a>>,
+}
+
 impl<'a> FrozenToolSnapshot<'a> {
     /// Select and validate the authoritative tool list for this request kind.
     ///
@@ -94,6 +104,33 @@ impl<'a> FrozenToolSnapshot<'a> {
         Ok(Self { references })
     }
 
+    #[must_use]
+    pub(crate) fn len(&self) -> usize {
+        self.references.len()
+    }
+
+    #[must_use]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.references.is_empty()
+    }
+
+    /// Remove blocked toolkit families before credentials or clients exist.
+    #[must_use]
+    pub(crate) fn apply_policy(mut self, policy: &ToolAdmissionPolicy) -> AdmittedToolSnapshot<'a> {
+        self.references.retain(|reference| {
+            policy.toolkit_decision(reference.tool_type()) == ToolAdmissionDecision::Allowed
+        });
+        AdmittedToolSnapshot {
+            references: self.references,
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &FrozenToolReference<'a>> {
+        self.references.iter()
+    }
+}
+
+impl<'a> AdmittedToolSnapshot<'a> {
     #[must_use]
     pub(crate) fn len(&self) -> usize {
         self.references.len()

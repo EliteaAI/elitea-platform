@@ -45,13 +45,47 @@ tools.
 | Main `internal/application/agentexecution/start.go::currentApplicationInput` and `adhoc.go::currentAdhocInput` | Put application tools in frozen version details and ad-hoc tools at the top level | `FrozenToolSnapshot::from_request` | Implemented as one unambiguous source per request kind |
 | Python worker `agents/sdk_adapter.py::EliteaSdkAgentAdapter::{execute_application,execute_adhoc}` | Carry the selected snapshot and claim-scoped MCP/HITL inputs into the SDK execution path | future authorized materializer | Snapshot only; no PAT, MCP token or toolkit client is created here |
 | Legacy indexer worker `methods/indexer_agent.py::_indexer_agent_task_inner` and `methods/indexer_predict_agent.py::_indexer_predict_agent_task_inner` | Historical application/ad-hoc selection, MCP secret expansion and SDK invocation behavior | source evidence for materialization and compatibility tests | Intentional deviation: Rust will redeem credentials at the authorized use boundary instead of mutating copied dictionaries before SDK construction |
-| SDK `runtime/toolkits/tools.py::get_tools` | Sanitize references, first-ID-wins deduplication, family dispatch, blocked-tool policy, MCP smart-auth and nested applications | `src/toolkits/{snapshot,materialize,policy}.rs` | Deduplication/classification implemented; materialization, policy, MCP and application execution remain capability-gated |
+| SDK `runtime/toolkits/tools.py::get_tools` | Sanitize references, first-ID-wins deduplication, family dispatch, blocked-tool policy, MCP smart-auth and nested applications | `src/toolkits/{snapshot,materialize,policy}.rs` | Deduplication/classification and immutable blocklist implemented; materialization, MCP and application execution remain capability-gated |
 
 Evidence was refreshed against the platform/Python worker commit
 `e69bb5b3ce5629ba95c3fd1ee50022e0b87cb65a`, SDK commit
 `c0443b175adb8437e89826c17150330e32074faf`, and legacy indexer-worker commit
 `b6c4ce83d997acbbbeb58fe040317a9e9352236f` on 2026-08-18. Later slices must
 refresh these pins because all three Python sources continue to evolve.
+
+### Immutable blocklist generation
+
+`src/toolkits/policy.rs::ToolAdmissionPolicy` implements the current SDK's
+case-, prefix- and separator-insensitive blocklist membership without its
+mutable module globals. One immutable policy generation is intended to be held
+by `Arc`: reconfiguration swaps the generation for new work, while an in-flight
+invocation finishes under the exact policy that admitted it. The future serve
+composition owns that swap; this slice does not read process environment or
+Main configuration directly.
+
+Whole-toolkit restrictions filter the frozen snapshot before any credential or
+client can be materialized. Specific-tool restrictions are evaluated again on
+the concrete ADK tool name, including `toolkit___name` and `toolkit:name`
+aliases. They remain toolkit-scoped: the current blocked-tool contract does not
+apply the sensitive-policy `*` wildcard globally. Separator-only entries are
+ignored, matching SDK behavior. The policy is capped at 16,384 configured
+identifiers and 1,024 bytes per identifier, and errors expose no configured
+names.
+
+Source ownership is split deliberately:
+
+- Main `internal/api/v2/admin/config_schemas.go::guardrailsSection` describes
+  the operator-facing `toolkit_security` shape;
+- legacy indexer worker `module.py::Method._apply_toolkit_security` proves live
+  reconfiguration and the current in-flight snapshot behavior;
+- SDK `runtime/toolkits/security.py` and
+  `tests/runtime/test_blocked_tools.py` define canonical name and alias matching;
+- Rust owns the immutable policy generation and will apply the same value at
+  materialization and invocation boundaries.
+
+This is a static deny policy, not sensitive-action authorization. Sensitive
+tools, MCP smart auth and direct HITL retain their separate durable invocation
+identity and `interrupt_id` state machines.
 
 ## Shared kernel mapping
 
@@ -61,7 +95,7 @@ refresh these pins because all three Python sources continue to evolve.
 | SDK `tools/__init__.py::{toolkit_config_schema,get_tools}` | Toolkit registry, selected tools, dispatch, blocked tools and metadata | `src/toolkits/registry.rs`, `src/toolkits/materialize.rs` | Complete family/tool inventory and invalid-selection tests | Planned |
 | SDK `runtime/toolkits/tools.py::get_tools` | Runtime toolsets before standard/community dispatch | `src/toolkits/materialize.rs` | Runtime/family dispatch tests | Planned |
 | SDK `tools/base/tool.py::BaseAction` and `tools/elitea_base.py::BaseToolApiWrapper.run` | Map selected tool name to bounded invocation | `src/toolkits/invocation.rs` | Argument schema, callback event, cancellation and safe-error tests | Planned |
-| SDK `runtime/toolkits/security.py` | Separator-insensitive blocked toolkit/tool policy | `src/toolkits/policy.rs` | Alias and blocked-policy corpus | Planned |
+| SDK `runtime/toolkits/security.py` | Separator-insensitive blocked toolkit/tool policy | `src/toolkits/policy.rs` | Alias, scope, bound and pre-materialization filter corpus | Implemented foundation; serve-time config generation swap remains planned |
 | SDK `runtime/middleware/sensitive_tool_guard.py` | Sensitive effect admission | `src/agents/sensitive_tools.rs` | Exact invocation-ID and at-most-once tests | Planned |
 
 ## Family inventory
