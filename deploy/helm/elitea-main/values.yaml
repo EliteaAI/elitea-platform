@@ -106,9 +106,89 @@ ingress:
 fileConfig:
   authConfig:
     enabled: false
+
+    # THE AUTHENTICATION CONFIGURATION ITSELF (issue #444).
+    #
+    # internal/authcomposition/material.go opens FIVE files, and their paths
+    # come from this document. Before issue #444 the document was always
+    # external — the chart knew a ConfigMap name and nothing more — so the
+    # chart could not know the five paths, rendered no volume for them, and
+    # every Kubernetes install of the runtime plane had to place the files by
+    # some other method.
+    #
+    # Put the document here and the chart:
+    #   * renders the ConfigMap for you;
+    #   * checks that all five paths sit in material.mountPath below, while it
+    #     renders, and names the offending path when one does not;
+    #   * mounts the material where the service opens it.
+    #
+    # Leave it empty and set configMapName instead to keep the document
+    # outside the chart. The chart then cannot see the five paths, and
+    # cmd/elitea-auth-material is the only gate: it reads the same document in
+    # the init container and stops the pod when the paths and the mount
+    # disagree.
+    #
+    # Set exactly one of document and configMapName.
+    #
+    # Read internal/authcomposition/config.go for the schema, and
+    # deploy/runtime/auth.form.yml for a complete example with comments.
+    document: {}
+
     configMapName: ""
     key: auth-config.json
     mountPath: /etc/elitea/auth-config.json
+
+    # The five files that the document names: the Auth Redis password, the
+    # Auth Redis CA, the browser-attempt key, the PAT signing key and the Form
+    # users JSON.
+    #
+    # THE KEY NAMES ARE THE OPERATOR'S. Unlike the runtime material, the chart
+    # does not fix them: each name is the last component of a path in the
+    # document above. The Secret must carry one key for each of those names.
+    material:
+      # Where the service reads the five files. Every path in the document must
+      # sit in this directory, because one volume mount serves one directory.
+      #
+      # It must differ from runtime.material.mountPath. Each install container
+      # removes anything in its own directory that its own Secret does not
+      # carry, so one shared directory would make the two delete each other's
+      # files.
+      mountPath: /run/elitea-auth
+
+      # A Kubernetes Secret whose keys are the five file names, for example:
+      #
+      #   kubectl create secret generic elitea-main-auth-material \
+      #     --from-file=redis-auth-password --from-file=auth-redis-ca.crt ...
+      #
+      # The chart cannot mount that Secret straight at mountPath.
+      # internal/security/securefile refuses a path that resolves through a
+      # symlink and requires owner-only bits on private material, and a Secret
+      # volume gives neither: mounted whole it is a symlink farm, and mounted
+      # per file with subPath its files belong to root while this pod runs as
+      # nonroot. So the chart adds an init container, exactly as issue #404
+      # does for the runtime material. It runs the same image and the same
+      # user, copies each key into a memory-backed emptyDir at mode 0600, and
+      # reads every file back through securefile before it exits. A missing key
+      # stops the pod there, with a message.
+      secretName: ""
+
+      # The mode the kubelet gives each key of that Secret. The init container
+      # has to read them, and the kubelet owns them as root, so without a pod
+      # fsGroup the read bit for other users is the only one that reaches this
+      # pod's user. It applies inside this pod's own mount namespace only, and
+      # the copies that the service reads are owner-only. Set
+      # podSecurityContext.fsGroup and lower this to 0440 to tighten it.
+      secretDefaultMode: 0444
+
+      # The bound on the emptyDir that holds the copies.
+      sizeLimit: 8Mi
+
+      # An alternative source, for a deployment whose material is ALREADY real,
+      # owner-owned files at mountPath — a CSI secret driver, for example. It
+      # takes a Kubernetes volume specification without its `name`; the chart
+      # adds the name and mounts it read-only. Mutually exclusive with
+      # secretName, and no init container renders with it.
+      volume: {}
   brandPack:
     enabled: false
     configMapName: ""

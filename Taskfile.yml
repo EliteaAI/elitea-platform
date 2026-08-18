@@ -20,6 +20,9 @@ tasks:
       # The runtime material installer (issue #404). It ships in the same image
       # and runs as the init container of the elitea-main pod.
       - go build -o bin/elitea-runtime-material ./cmd/elitea-runtime-material
+      # The authentication material installer (issue #444). Same image, same
+      # mechanism, and a second init container of the same pod.
+      - go build -o bin/elitea-auth-material ./cmd/elitea-auth-material
 
   test:
     desc: Run all Go tests across the workspace

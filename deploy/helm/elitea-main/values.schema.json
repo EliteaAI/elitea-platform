@@ -69,11 +69,36 @@
         "authConfig": {
           "type": "object",
           "additionalProperties": false,
+          "description": "Production authentication. `document` is the authentication configuration itself (issue #444); with it the chart renders the ConfigMap and checks the five material paths while it renders. `configMapName` keeps the document outside the chart, and then only cmd/elitea-auth-material can check the paths. Exactly one of the two: templates/_helpers.tpl refuses both and refuses neither, with a message that names each field.",
           "properties": {
             "enabled": { "type": "boolean" },
+            "document": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "The SHAPE only. internal/authcomposition/config.go owns this schema, and a second copy of it here would drift from it. templates/_helpers.tpl checks the five material paths, which is the part the chart must know to mount them."
+            },
             "configMapName": { "type": "string" },
             "key": { "type": "string" },
-            "mountPath": { "type": "string" }
+            "mountPath": { "type": "string" },
+            "material": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Where the five authentication files come from (issue #444). secretName takes a plain Kubernetes Secret, and the chart adds an init container that installs it where internal/security/securefile can read it. volume takes a volume specification for a deployment that already writes real, owner-owned files. Which of the two is present is a COMBINATION, and templates/_helpers.tpl reports it with a message that names the Go source behind it.",
+              "properties": {
+                "mountPath": { "type": "string", "pattern": "^/" },
+                "secretName": { "type": "string" },
+                "secretDefaultMode": { "type": "integer", "minimum": 0, "maximum": 511 },
+                "sizeLimit": { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|K|M|G)?$" },
+                "volume": { "type": "object" }
+              }
+            }
+          },
+          "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+          "then": {
+            "properties": {
+              "material": { "required": ["mountPath"] }
+            },
+            "required": ["material"]
           }
         },
         "brandPack": {
